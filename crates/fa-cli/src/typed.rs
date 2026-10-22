@@ -668,6 +668,243 @@ fn capitalized(word: &str) -> String {
     })
 }
 
+/// `fa accrue` and `fa defer` (plan §15.3, Appendix B `Accrue`/`Defer`:
+/// effective_date, legs, auto_reverse_on?): an Adjusting entry, with its
+/// scheduled reversal when `--reverse-on` (or `reverse_on` in the intent)
+/// names one. Both are the same entry under the plan's two names; the verb
+/// is the operator's account of why it is posted.
+pub(crate) fn accrue_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    adjusting(ctx, args, "accrue")
+}
+
+pub(crate) fn defer_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    adjusting(ctx, args, "defer")
+}
+
+/// The two forms of an Adjusting posting: `--intent <file|->` (any legs;
+/// `class` may be omitted and anything but Adjusting is refused), or the
+/// two-leg flags `--date --debit --credit --amount`. Either way it posts
+/// through `fa post`'s own path, so `--dry-run`, `--plan-out`, `--draft`,
+/// `--scenario`, `--evidence` and `--reverse-on` behave exactly as there.
+fn adjusting(ctx: &mut Ctx<'_>, args: &Args, verb: &str) -> Result<(), Fail> {
+    let example = format!(
+        "fa {verb} --date 2026-03-31 --debit 6100 --credit 2100 --amount \"1500.00 USD\" [--reverse-on 2026-04-01] [--description <text>] [--key K] --evidence <oid> [--dry-run] --json, or fa {verb} --intent <entry.json|-> [--reverse-on YYYY-MM-DD]"
+    );
+    if args.positional.len() != 1 {
+        return Err(usage(
+            format!("{verb} takes no positional argument"),
+            example,
+        ));
+    }
+    const LEG_FLAGS: [&str; 6] = [
+        "--date",
+        "--debit",
+        "--credit",
+        "--amount",
+        "--description",
+        "--key",
+    ];
+    for flag in LEG_FLAGS
+        .iter()
+        .copied()
+        .chain(["--intent", "--reverse-on"])
+    {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(format!("{verb} takes only one {flag}"), example));
+        }
+    }
+    let class = fa_model::EntryClass::ADJUSTING;
+    if let Some(path) = args.flag("--intent") {
+        if let Some(flag) = LEG_FLAGS.iter().find(|flag| args.flag(flag).is_some()) {
+            return Err(usage(
+                format!(
+                    "{verb} --intent carries its own legs and date; {flag} applies only without --intent"
+                ),
+                example,
+            ));
+        }
+        let text = ctx.files.read_text(path)?;
+        let doc = crate::cli::parse_json(path, &text)?;
+        if doc.get("intents").is_some() {
+            return Err(usage(
+                format!("{verb} posts one Adjusting entry, not a batch"),
+                "post a batch with fa batch --intent <batch.json>",
+            ));
+        }
+        return post_document(ctx, args, Some(class), doc);
+    }
+    let need = |flag: &str, what: &str| {
+        args.flag(flag)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| usage(format!("{verb} needs {flag} {what}"), example.clone()))
+    };
+    let date = need("--date", "YYYY-MM-DD")?;
+    fa_time::DateDay::parse(date)
+        .map_err(|e| usage(format!("--date: {e}"), "--date YYYY-MM-DD"))?;
+    let debit = need("--debit", "<account code>")?;
+    let credit = need("--credit", "<account code>")?;
+    let amount = need("--amount", "\"<amount> <UNIT>\"")?;
+    if debit == credit {
+        return Err(usage(
+            format!(
+                "{verb} --debit and --credit name the same account {debit}: the entry would move nothing"
+            ),
+            example,
+        ));
+    }
+    let key = args.flag("--key").map_or_else(
+        || format!("{verb}:{date}:{debit}:{credit}:{amount}"),
+        str::to_string,
+    );
+    let mut fields = vec![
+        ("effective_date", s(date)),
+        ("idempotency_key", s(key)),
+        (
+            "legs",
+            Json::Arr(vec![
+                obj(vec![
+                    ("side", s("debit")),
+                    ("account", s(debit)),
+                    ("amount", s(amount)),
+                ]),
+                obj(vec![
+                    ("side", s("credit")),
+                    ("account", s(credit)),
+                    ("amount", s(amount)),
+                ]),
+            ]),
+        ),
+    ];
+    if let Some(description) = args.flag("--description") {
+        fields.push(("description", s(description)));
+    }
+    post_document(ctx, args, Some(class), obj(fields))
+}
+
+/// `fa batch --intent <batch.json|->` (plan §15.3, §5.8): a PostBatch,
+/// `{"idempotency_key": K, "intents": [<entry intent>, ...]}`, committed
+/// atomically and in order through `fa post`'s batch path. A single entry
+/// intent is refused rather than posted alone.
+pub(crate) fn batch_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa batch --intent <batch.json|-> [--dry-run] --json, where the batch is {\"idempotency_key\": \"...\", \"intents\": [<entry intent>, ...]}";
+    if args.positional.len() != 1 {
+        return Err(usage("batch takes no positional argument", EXAMPLE));
+    }
+    let path = args.require("--intent", "<batch.json|->")?;
+    let text = ctx.files.read_text(path)?;
+    let doc = crate::cli::parse_json(path, &text)?;
+    if doc.get("intents").is_none() {
+        return Err(usage(
+            "fa batch posts a PostBatch with an intents array; this is a single entry intent",
+            "post one entry with fa post --intent, or wrap it: {\"idempotency_key\": \"...\", \"intents\": [<entry intent>]}",
+        ));
+    }
+    post_document(ctx, args, None, doc)
+}
+
+/// `fa post-reserve <hold vid> --date YYYY-MM-DD --amount "<amount> <UNIT>"`
+/// (plan §15.3, Appendix B `PostReserve` amount sugar): a Resolution posting
+/// `amount` on both legs of a two-leg, single-unit hold and releasing the
+/// rest. A hold of more legs names its posted sub-vector with `fa resolve`.
+pub(crate) fn post_reserve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    resolve_reserve(ctx, args, true)
+}
+
+/// `fa void-reserve <hold vid> --date YYYY-MM-DD --yes` (Appendix B
+/// `VoidReserve`): a Resolution releasing the whole hold; it posts nothing
+/// and is dangerous like `fa resolve` with disposition `voids`.
+pub(crate) fn void_reserve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    resolve_reserve(ctx, args, false)
+}
+
+fn resolve_reserve(ctx: &mut Ctx<'_>, args: &Args, posts: bool) -> Result<(), Fail> {
+    let verb = if posts {
+        "post-reserve"
+    } else {
+        "void-reserve"
+    };
+    let example = if posts {
+        "fa post-reserve <hold vid> --date YYYY-MM-DD --amount \"60.00 USD\" [--description <text>] [--key K] [--evidence <oid>]... [--dry-run] --json"
+    } else {
+        "fa void-reserve <hold vid> --date YYYY-MM-DD [--description <text>] [--key K] --yes --json"
+    };
+    if args.positional.len() != 2 {
+        return Err(usage(format!("{verb} needs exactly one hold vid"), example));
+    }
+    for flag in ["--date", "--amount", "--description", "--key"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(format!("{verb} takes only one {flag}"), example));
+        }
+    }
+    if !posts && args.flag("--amount").is_some() {
+        return Err(usage(
+            "a void releases the whole hold and posts nothing: it takes no --amount",
+            "post part of the hold with fa post-reserve <hold vid> --amount ...",
+        ));
+    }
+    let hold = args.positional[1]
+        .strip_prefix("E:")
+        .unwrap_or(&args.positional[1])
+        .to_string();
+    let date = args
+        .flag("--date")
+        .filter(|date| !date.is_empty())
+        .ok_or_else(|| usage(format!("{verb} needs --date YYYY-MM-DD"), example))?;
+    fa_time::DateDay::parse(date)
+        .map_err(|e| usage(format!("--date: {e}"), "--date YYYY-MM-DD"))?;
+    let mut fields = vec![("effective_date", s(date)), ("resolves", s(hold.as_str()))];
+    let key = if posts {
+        let amount = args
+            .flag("--amount")
+            .filter(|amount| !amount.is_empty())
+            .ok_or_else(|| usage("post-reserve needs --amount \"<amount> <UNIT>\"", example))?;
+        fields.push(("disposition", s("posts")));
+        fields.push(("amount", s(amount)));
+        format!("post-reserve:{hold}:{amount}")
+    } else {
+        fields.push(("disposition", s("voids")));
+        format!("void-reserve:{hold}")
+    };
+    fields.push((
+        "idempotency_key",
+        s(args.flag("--key").map_or(key, str::to_string)),
+    ));
+    if let Some(description) = args.flag("--description") {
+        fields.push(("description", s(description)));
+    }
+    post_document(
+        ctx,
+        args,
+        Some(fa_model::EntryClass::RESOLUTION),
+        obj(fields),
+    )
+}
+
+/// `fa replace <vid> --reason <name> --intent <corrected entry>` (plan
+/// §15.3, Appendix B Replace): typed sugar over `fa reverse --replace-with`,
+/// the target's exact Reversal and its corrected Replacement committed as one
+/// pair, both or neither. It always names the corrected entry, so it is never
+/// a bare reversal; `fa reverse` is that.
+pub(crate) fn replace_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa replace <vid> --reason WrongAmount --intent corrected.json --json";
+    if args.flag_all("--intent").len() != 1 {
+        return Err(usage(
+            "fa replace posts the corrected entry with the reversal: name it once with --intent <file|->",
+            format!(
+                "{EXAMPLE}; to reverse without a replacement, fa reverse <vid> --reason <name>"
+            ),
+        ));
+    }
+    let mut pair = args.clone();
+    if let Some(verb) = pair.positional.first_mut() {
+        "reverse".clone_into(verb);
+    }
+    if let Some(intent) = pair.flags.remove("--intent") {
+        pair.flags.insert("--replace-with".to_string(), intent);
+    }
+    crate::cli::reverse_cmd(ctx, &pair)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

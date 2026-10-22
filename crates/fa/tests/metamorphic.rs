@@ -23,6 +23,11 @@
 //!    draft and promoted by an independent approver equals the same history
 //!    posted to trunk, in folds, trial balances and statements (30 seeds of
 //!    24 entries; its planted break drops one intent).
+//! 10. `Export → Re-read Identity` (fa-eid6): a 500-entry two-currency
+//!     book's interop journal re-reads through ADS, SAF-T and the CSV GL to
+//!     the identical journal, through Beancount and hledger to the same
+//!     balances, and those are the book's trial balance (30 seeds; its
+//!     planted break changes one amount under the original certificate).
 
 #![forbid(unsafe_code)]
 
@@ -1355,6 +1360,163 @@ fn metamorphic_draft_promote_equals_trunk_post() {
             && caught.contains("replay:"),
         "{caught}"
     );
+}
+
+/// Many entries for one fixture book: chunks of the seeded generator, each
+/// under its own derived seed, so no idempotency key repeats.
+fn generate_many_entries(seed: u64, usd: UnitId, eur: UnitId, count: usize) -> Vec<SpecEntry> {
+    let mut out = Vec::with_capacity(count);
+    let mut chunk = 0u64;
+    while out.len() < count {
+        let take = u8::try_from((count - out.len()).min(250)).expect("a chunk is at most 250");
+        let derived = seed ^ chunk.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        out.extend(generate_n_entries(derived, usd, eur, take));
+        chunk += 1;
+    }
+    out
+}
+
+/// The relation `export → re-read` over one book's interop journal: ADS,
+/// SAF-T and the CSV GL re-read to the identical journal under their
+/// verified coordinate certificates (registries/formats.toml
+/// round_trip_identity = true); Beancount and hledger, balance-differential
+/// formats, refold to the same balances; and those balances are the book's
+/// trial balance.
+fn check_export_reread(
+    seed: u64,
+    journal: &fa_formats::FormatJournal,
+    tb: &TrialBalance,
+) -> Result<(), String> {
+    let fail = |what: String| {
+        Err(replay_diagnostic(
+            "metamorphic_export_reread_identity_on_fixture_books",
+            seed,
+            what,
+        ))
+    };
+    let units = fa_formats::UnitCatalog::embedded().expect("unit catalog");
+    for (format, again) in [
+        (
+            "aicpa_ads_gl_v2",
+            fa_formats::ads::write_ads_package(journal)
+                .and_then(|package| fa_formats::ads::read_ads_package(&package, &units)),
+        ),
+        (
+            "oecd_saft_v2",
+            fa_formats::saft::write_saft_xml(journal)
+                .and_then(|xml| fa_formats::saft::read_saft_xml(&xml, &units)),
+        ),
+        (
+            "csv_gl_v1",
+            fa_formats::csv_gl::read_csv_gl(&fa_formats::csv_gl::write_csv_gl(journal), &units),
+        ),
+    ] {
+        let again = match again {
+            Ok(again) => again,
+            Err(e) => return fail(format!("{format} does not re-read: {e}")),
+        };
+        if let Err(e) = fa_formats::verify_round_trip_identity(format, journal, &again) {
+            return fail(format!("{format}: {e}"));
+        }
+    }
+    let balances = match journal.fold_balances() {
+        Ok(balances) => balances,
+        Err(e) => return fail(format!("the journal does not refold: {e}")),
+    };
+    for (format, again) in [
+        (
+            "beancount_v3",
+            fa_formats::beancount::read_beancount(
+                &fa_formats::beancount::write_beancount(journal),
+                &units,
+            ),
+        ),
+        (
+            "hledger",
+            fa_formats::beancount::read_hledger(
+                &fa_formats::beancount::write_hledger(journal),
+                &units,
+            ),
+        ),
+    ] {
+        match again.and_then(|again| again.fold_balances()) {
+            Ok(again) if again == balances => {}
+            Ok(_) => return fail(format!("{format} refolds to different balances")),
+            Err(e) => return fail(format!("{format} does not re-read: {e}")),
+        }
+    }
+    let registry = UnitRegistry::embedded().expect("embedded units");
+    let book: BTreeMap<(String, String), i128> = tb
+        .rows
+        .iter()
+        .filter(|row| row.debits != row.credits)
+        .map(|row| {
+            let unit = registry
+                .get(UnitId(row.unit_id))
+                .map(|unit| unit.code.clone())
+                .unwrap_or_default();
+            ((row.code.clone(), unit), row.debits - row.credits)
+        })
+        .collect();
+    let exported: BTreeMap<(String, String), i128> =
+        balances.into_iter().filter(|(_, net)| *net != 0).collect();
+    if exported != book {
+        return fail("the exported balances are not the book's trial balance".into());
+    }
+    Ok(())
+}
+
+/// fa-eid6 (plan §16.6: export then import is the identity on folds): a
+/// 500-entry, two-currency book's interop journal survives every format's
+/// writer and reader, and refolds to the book's trial balance, over 30
+/// seeds. Planted negative: a journal with one amount changed under its
+/// original coordinate certificate is caught. This is the re-read half of
+/// the law; importing the CSV GL or ADS into a fresh book has no importer
+/// yet.
+#[test]
+fn metamorphic_export_reread_identity_on_fixture_books() {
+    let through = DateDay::from_ymd(2026, 3, 31).expect("2026-03-31");
+    let seeds: Vec<u64> = (0..30u64)
+        .map(|i| 0x3003_0000_0000_0000 ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        .collect();
+    for &seed in &seeds {
+        let mut f = setup_book(seed, 0x49);
+        let entries = generate_many_entries(seed, f.usd, f.eur, 500);
+        let post_cap = Capability::embedded(f.principal, &["post"]).expect("post cap");
+        for spec in &entries {
+            let proposal = build_proposal(&f, spec);
+            f.book
+                .post(PostRequest {
+                    proposal,
+                    approvals: Vec::new(),
+                    plan_certificate: None,
+                    capability: post_cap.clone(),
+                })
+                .expect("post io")
+                .expect("post ok");
+        }
+        let journal = f
+            .book
+            .format_journal(through, None)
+            .expect("format journal");
+        assert_eq!(journal.entries.len(), 500, "seed {seed:#018x}");
+        let (_, tb, _, _) = period_reports(&f);
+        check_export_reread(seed, &journal, &tb).unwrap_or_else(|e| panic!("{e}"));
+
+        // Planted negative, on the first seed: one leg amount changed under
+        // the journal's original coordinate certificate.
+        if seed == seeds[0] {
+            let mut tampered = journal.clone();
+            tampered.entries[0].legs[0].amount.mantissa += 1;
+            let caught = check_export_reread(seed, &tampered, &tb)
+                .expect_err("a changed amount under the original certificate is caught");
+            assert!(
+                caught.contains("metamorphic_export_reread_identity_on_fixture_books")
+                    && caught.contains("replay:"),
+                "{caught}"
+            );
+        }
+    }
 }
 
 #[test]

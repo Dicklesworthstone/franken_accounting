@@ -310,6 +310,78 @@ exits = [0, 2, 3, 4, 5, 6, 7]
 usage = ["payment --party <code> --number <reference> --date YYYY-MM-DD --cash <code> --payable <code> --amount \"300.00 USD\" [--applies <bill vid>[:<leg>][=<amount>]]... [--evidence <oid>]... [--entity <code>] [--key K] [--dry-run [--plan-out <new-file>] | --draft <name> | --scenario <name>]", "As fa receipt, mirrored: a bill's payable leg is leg 0; the key is payment:[<entity>:]<number> unless --key is given (the book numbers its payments)."]
 example = "fa payment --party V-17 --number ACH-OUT-1 --date 2026-03-25 --cash 1000 --payable 2000 --amount \"300.00 USD\" --applies <bill vid> --evidence <oid> --book ./books/myco --json"
 
+[[verb]]
+name = "accrue"
+summary = "Post an accrual (plan §15.3, Appendix B Accrue): an Adjusting entry, reversed on --reverse-on by its scheduled reversal. Typed sugar over fa post: two legs from --debit, --credit and --amount, or any legs from --intent."
+writes = true
+subcommands = []
+flags = ["--intent", "--date", "--debit", "--credit", "--amount", "--reverse-on", "--description", "--key", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned", "scenario_run"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["accrue --date YYYY-MM-DD --debit <code> --credit <code> --amount \"1500.00 USD\" [--reverse-on YYYY-MM-DD] [--description <text>] [--key K] [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name> | --scenario <name>]", "accrue --intent <entry.json|-> [--reverse-on YYYY-MM-DD] [...]   (any legs; class may be omitted and anything but Adjusting is refused)", "The entry is class Adjusting. --reverse-on (or reverse_on in the intent) schedules its exact reversal: the reversal sweep or the open of the period containing that day mints it, as for fa post. The default key is accrue:<date>:<debit>:<credit>:<amount>; give --key for a second identical accrual. Amounts are exact strings with their unit; --debit and --credit must differ."]
+example = "fa accrue --date 2026-03-31 --debit 6100 --credit 2100 --amount \"1500.00 USD\" --reverse-on 2026-04-01 --description \"March utilities\" --evidence <oid> --book ./books/myco --json"
+
+[[verb]]
+name = "defer"
+summary = "Post a deferral (plan §15.3, Appendix B Defer): an Adjusting entry, reversed on --reverse-on by its scheduled reversal. Typed sugar over fa post: two legs from --debit, --credit and --amount, or any legs from --intent."
+writes = true
+subcommands = []
+flags = ["--intent", "--date", "--debit", "--credit", "--amount", "--reverse-on", "--description", "--key", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned", "scenario_run"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["defer --date YYYY-MM-DD --debit <code> --credit <code> --amount \"1200.00 USD\" [--reverse-on YYYY-MM-DD] [--description <text>] [--key K] [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name> | --scenario <name>]", "defer --intent <entry.json|-> [--reverse-on YYYY-MM-DD] [...]   (any legs; class may be omitted and anything but Adjusting is refused)", "The same Adjusting entry as fa accrue under the plan's other name (deferring revenue received or an expense paid in advance). The default key is defer:<date>:<debit>:<credit>:<amount>."]
+example = "fa defer --date 2026-03-31 --debit 4000 --credit 2400 --amount \"1200.00 USD\" --reverse-on 2026-04-01 --description \"Unearned April subscription\" --evidence <oid> --book ./books/myco --json"
+
+[[verb]]
+name = "batch"
+summary = "Post a PostBatch (plan §15.3, §5.8): every member entry intent commits atomically and in order, each seeing the earlier members' effects. Typed sugar over fa post's batch intent."
+writes = true
+subcommands = []
+flags = ["--intent", "--grant", "--plan-out", "--draft", "--scenario"]
+switches = ["--dry-run"]
+events = ["batch_posted", "batch_plan", "draft_planned", "scenario_run"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["batch --intent <batch.json|-> [--dry-run [--plan-out <new-file>]]   (the batch is {\"idempotency_key\": \"...\", \"intents\": [<entry intent>, ...]})", "A member that refuses refuses the batch and names its index; nothing is posted. An identical retry returns the recorded outcome. A single entry intent is refused: post it with fa post. Evidence, reverse_on and timeout_ns go in each member intent."]
+example = "fa batch --intent batch.json --book ./books/myco --json"
+
+[[verb]]
+name = "post-reserve"
+summary = "Post part or all of a two-leg hold (plan §15.3, Appendix B PostReserve): a Resolution posting --amount on both legs and releasing the rest. Typed sugar over fa resolve."
+writes = true
+subcommands = []
+flags = ["--date", "--amount", "--description", "--key", "--evidence", "--grant", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["post-reserve <hold vid> --date YYYY-MM-DD --amount \"60.00 USD\" [--description <text>] [--key K] [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name>]", "The hold must have two legs in one unit without base valuations; each leg posts --amount on its own account, side and dimensions, at most what it reserved, and the rest is released. A hold of more legs names its posted sub-vector with fa resolve --intent (legs with source_ordinal). The default key is post-reserve:<hold>:<amount>."]
+example = "fa post-reserve <hold vid> --date 2026-03-20 --amount \"60.00 USD\" --book ./books/myco --json"
+
+[[verb]]
+name = "void-reserve"
+summary = "Release a whole hold (plan §15.3, Appendix B VoidReserve): a Resolution that posts nothing. Typed sugar over fa resolve with disposition voids; dangerous, so it needs --yes."
+writes = true
+subcommands = []
+flags = ["--date", "--description", "--key", "--grant", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["void-reserve <hold vid> --date YYYY-MM-DD [--description <text>] [--key K] --yes   (a void releases the hold for good; the safe alternative is fa post-reserve)", "The default key is void-reserve:<hold>. Host only: MCP sessions carry no --yes."]
+example = "fa void-reserve <hold vid> --date 2026-03-20 --yes --book ./books/myco --json"
+
+[[verb]]
+name = "replace"
+summary = "Correct an entry (plan §15.3, Appendix B Replace): its exact Reversal and the corrected Replacement commit as one pair, both or neither. Typed sugar over fa reverse --replace-with."
+writes = true
+subcommands = []
+flags = ["--reason", "--intent", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out"]
+switches = ["--dry-run"]
+events = ["corrected", "replacement_plan"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["replace <vid|E:vid> --reason <name|code> --intent <corrected.json|-> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The corrected entry intent carries the legs, without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. --effective, --period, --key and --description apply to the reversal, as on fa reverse. The corrected entry is required: fa reverse <vid> --reason <name> reverses without a replacement. Correction drafts are not supported."]
+example = "fa replace <vid> --reason WrongAmount --intent corrected.json --book ./books/myco --json"
+
 
 [[verb]]
 name = "commit"
@@ -749,12 +821,12 @@ example = "fa export ads --period FY2026-P03 --out ./ads-2026-03 --book ./books/
 name = "verify"
 summary = "Verify derived state against the journal: leg projections, refolded registers, cumulative daily usage, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, complete native period history, accumulator states, FX valuations recomputed from their Rate documents, or a replay of the whole history (exit 8 on drift)."
 writes = false
-subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "fx-conversion", "replay", "close"]
+subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "fx-conversion", "replay", "close", "export"]
 flags = ["--period", "--fiscal-year", "--as-known-at"]
 switches = []
-events = ["registers_verified", "entities_verified", "open_items_verified", "availability_verified", "usage_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "fx_conversion_verified", "replay_verified", "close_verified", "book_verification"]
+events = ["registers_verified", "entities_verified", "open_items_verified", "availability_verified", "usage_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "fx_conversion_verified", "replay_verified", "close_verified", "book_verification", "export_verified"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["verify book   (every target below except close, cheapest first: projections, periods, schedules, accumulator, open-items, availability, usage, fx-conversion, entities and registers over every period, replay; each emits its own event, then book_verification names each verdict: pass, fail, error or skipped. Exit 8 when any target fails; otherwise the first other failure is returned as itself after the remaining targets ran)", "verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)   (also verifies cumulative daily usage at current head before checking the selected period folds)", "verify usage [--as-known-at HEAD|<seq>|<RFC3339>]   (refold every native daily charge and UsageCell from retained history at the selected prefix, including original issuance, gross-debit source entries and committed time witnesses; requires current whole-book read and verify authority; no period filter, no writes or implicit repair; FA-REF-167, exit 8 on drift)", "verify replay   (replays every accounting commit's recorded rows into a fresh scratch book and checks it against the source pair by pair: the same entries with the same digests, and the same period folds. It proves the retained history reproduces the book's accounting state, not that the posting laws hold: rows are copied, not re-posted, and both sides fold with the same code. No period filter; exit 8 on any difference; history the scratch replay cannot reproduce, a divergence included, is FA-REF-134, exit 5)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)", "verify fx-conversion [--as-known-at HEAD|<seq>|<RFC3339>]   (FA-INV-01 base: every FX-valued entry recorded at the selected prefix recomputed from the Rate documents it cites under the FX law it names, the law's registered row whatever its status now; a valued Reversal must be the exact side-swap of the entry it reverses; current whole-book read and verify authority; no period filter; exit 8 on any entry that does not recompute)", "verify entities (--period <code>)... | --fiscal-year N   (FA-INV-01 per-entity: refold each period's per-legal-entity register and prove it against the journal: per account and unit the entity cells sum to the plain fold, every entry balances per unit and legal entity, and in a multi-entity book every leg names a declared entity; exit 8 on any finding)"]
+usage = ["verify book   (every target below except close, cheapest first: projections, periods, schedules, accumulator, open-items, availability, usage, fx-conversion, entities and registers over every period, replay; each emits its own event, then book_verification names each verdict: pass, fail, error or skipped. Exit 8 when any target fails; otherwise the first other failure is returned as itself after the remaining targets ran)", "verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)   (also verifies cumulative daily usage at current head before checking the selected period folds)", "verify usage [--as-known-at HEAD|<seq>|<RFC3339>]   (refold every native daily charge and UsageCell from retained history at the selected prefix, including original issuance, gross-debit source entries and committed time witnesses; requires current whole-book read and verify authority; no period filter, no writes or implicit repair; FA-REF-167, exit 8 on drift)", "verify replay   (replays every accounting commit's recorded rows into a fresh scratch book and checks it against the source pair by pair: the same entries with the same digests, and the same period folds. It proves the retained history reproduces the book's accounting state, not that the posting laws hold: rows are copied, not re-posted, and both sides fold with the same code. No period filter; exit 8 on any difference; history the scratch replay cannot reproduce, a divergence included, is FA-REF-134, exit 5)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)", "verify fx-conversion [--as-known-at HEAD|<seq>|<RFC3339>]   (FA-INV-01 base: every FX-valued entry recorded at the selected prefix recomputed from the Rate documents it cites under the FX law it names, the law's registered row whatever its status now; a valued Reversal must be the exact side-swap of the entry it reverses; current whole-book read and verify authority; no period filter; exit 8 on any entry that does not recompute)", "verify entities (--period <code>)... | --fiscal-year N   (FA-INV-01 per-entity: refold each period's per-legal-entity register and prove it against the journal: per account and unit the entity cells sum to the plain fold, every entry balances per unit and legal entity, and in a multi-entity book every leg names a declared entity; exit 8 on any finding)", "verify export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl <the exported file, or the ads package directory>   (plan §16, export then import is the identity: the format's reader re-reads the file and the book's journal is selected again at the coordinate it carries, under read and verify. ads, saft and csv-gl re-read to the identical journal under their verified coordinate certificate; beancount and hledger, balance-differential formats, refold to the same balances; xbrl re-reads its coordinate and calculation linkbase; ndjson its framing and header. Every file must then be byte for byte what fa export writes there; exit 8 names the first difference. The coordinate is the file's own: no --as-known-at. Known limit (fa-8kpw): export replaces a delimiter in a description, memo or account name (csv-gl: comma or line break; ads: pipe; a line break splits an ads row), so the reader refuses such an export, as its certificate covers the original text)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -929,6 +1001,43 @@ expands = ["document", "import"]
 name = "lots"
 expands = ["gl", "lots"]
 
+# Plan §15.3's own spellings of verbs registered under longer names.
+[[alias]]
+name = "cap"
+expands = ["capability"]
+
+[[alias]]
+name = "doc"
+expands = ["document"]
+
+[[alias]]
+name = "revalue"
+expands = ["fx", "revalue"]
+
+[[alias]]
+name = "book verify"
+expands = ["verify", "book"]
+
+[[alias]]
+name = "book checkpoint"
+expands = ["checkpoint", "create"]
+
+[[alias]]
+name = "chart open-account"
+expands = ["chart", "open"]
+
+[[alias]]
+name = "chart close-account"
+expands = ["chart", "close"]
+
+[[alias]]
+name = "export csv"
+expands = ["export", "csv-gl"]
+
+[[alias]]
+name = "sample random"
+expands = ["sample", "uniform"]
+
 # Operations that cannot be undone in practice (plan §15.3, Appendix D
 # FA-REF-007). Without --yes, or a --plan file naming the exact proposal,
 # they are refused with exit 7 before anything is written, and the refusal's
@@ -998,6 +1107,11 @@ condition = "grant:post_closed"
 safe = "keep the intended reversal date and obtain the authority the period law requires; `fa period list --json` shows the target period's state"
 
 [[dangerous]]
+verb = "replace"
+condition = "grant:post_closed"
+safe = "keep the intended reversal date and obtain the authority the period law requires; `fa period list --json` shows the target period's state"
+
+[[dangerous]]
 verb = "invoice"
 condition = "grant:post_closed"
 safe = "leave the document unposted; keep its true date and obtain the authorization or the admissible adjustment class the period-law refusal names (`fa period list --json` shows each period's state)"
@@ -1019,6 +1133,31 @@ safe = "leave the document unposted; keep its true date and obtain the authoriza
 
 [[dangerous]]
 verb = "reserve"
+condition = "grant:post_closed"
+safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "accrue"
+condition = "grant:post_closed"
+safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "defer"
+condition = "grant:post_closed"
+safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "batch"
+condition = "grant:post_closed"
+safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "post-reserve"
+condition = "grant:post_closed"
+safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "void-reserve"
 condition = "grant:post_closed"
 safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
 
@@ -1948,6 +2087,12 @@ name = "journal_exported"
 book = true
 doc = "The committed journal at (known_at, effective_through) written in format by fa-formats with its export coordinate certificate (content_digest over the canonical journal, certificate_digest over the coordinate). files lists each output file with its byte length and digest; content carries it inline when no --out was given."
 fields = ["format:string", "effective_through:date", "known_at:seq", "entries:int", "accounts:int", "content_digest:hex", "certificate_digest:hex", "out:string?", "files:[export_file]", "proof:ads_proof?"]
+
+[[event]]
+name = "export_verified"
+book = true
+doc = "An export (fa export) re-read with its format's reader, its coordinate certificate checked, and found byte for byte what fa export writes for this book at that coordinate (effective_through, known_at). reread names what the reader re-read and matched: journal (ads, saft, csv-gl: the whole journal, identical to the book's), balances (beancount, hledger: the same refolded balances), coordinate (an XBRL instance: its coordinate and calculation linkbase) or framing (an NDJSON stream: header, footer and row count). legs and refold_digest describe the book's journal the file matches; files lists each verified file with its length and digest."
+fields = ["format:string", "file:string", "effective_through:date", "known_at:seq", "entries:int", "legs:int", "content_digest:hex", "certificate_digest:hex", "refold_digest:hex", "reread:string", "files:[export_file]"]
 
 [[event]]
 name = "proof_exported"
@@ -3353,6 +3498,10 @@ name = "fa.billing"
 on_demand = true
 doc = "Customer invoices, vendor bills, receipts and payments (plan §15.3, Appendix B): typed sugar over fa.post's entry intent. The caller names every account; no posting rule or tax is inferred; dry_run returns the plan."
 [[mcp.cluster]]
+name = "fa.adjust"
+on_demand = true
+doc = "Accruals, deferrals and atomic batches (plan §15.3, Appendix B): typed sugar over fa.post's entry and batch intents. An accrual or deferral is an Adjusting entry with an optional scheduled reversal; a batch commits every member or none. On demand (fa-mcp --cluster fa.adjust): the default surface is at its 40-tool limit."
+[[mcp.cluster]]
 name = "fa.proof"
 on_demand = true
 doc = "General-ledger views at one coordinate (detail, roll-forward, aging, cash flow, lots) that reconcile to the journal fold."
@@ -3375,6 +3524,19 @@ doc = "Rehearse an existing draft atomically and retain its exact balance compar
 name = "fa.notary"
 on_demand = true
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements) and evidence bundles, checked independently without book keys (plan §15.4: discoverable on demand)."
+
+[[mcp.excluded]]
+verb = "verify"
+subcommand = "export"
+reason = "host-only in this slice: it reads an exported file or ADS package directory from the host filesystem, and the MCP export tool returns exports inline, never as host files"
+
+[[mcp.excluded]]
+verb = "replace"
+reason = "fa_post_reverse with replace_with posts the same Reversal and Replacement pair; one tool per correction keeps the cluster within seven"
+
+[[mcp.excluded]]
+verb = "void-reserve"
+reason = "dangerous: a void releases the hold for good and needs --yes, which an MCP session never carries; fa_post_resolve with disposition posts is the safe alternative"
 
 [[mcp.excluded]]
 verb = "checkpoint"
@@ -4267,6 +4429,63 @@ switches = ["--dry-run"]
 required = ["--party", "--date", "--cash", "--payable", "--amount"]
 dont = ["Don't apply more than a bill's open amount: list open items first."]
 mistakes = ["Applying to the bill's expense leg instead of its payable leg (leg 0)."]
+
+[[mcp.tool]]
+cluster = "fa.adjust"
+name = "accrue"
+verb = "accrue"
+subcommands = []
+positionals = []
+flags = ["--intent", "--date", "--debit", "--credit", "--amount", "--reverse-on", "--description", "--key", "--evidence", "--event", "--draft", "--scenario"]
+switches = ["--dry-run"]
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = []
+dont = ["Don't pass both intent and the two-leg properties: intent carries its own legs and date.", "Don't pick reverse_on to dodge a period: it names when the accrual unwinds, judged by the period law at that time."]
+mistakes = ["A JSON number in amount: write \"1500.00 USD\".", "The same account as debit and credit.", "Setting class in the intent to anything but Adjusting (omit it)."]
+
+[[mcp.tool]]
+cluster = "fa.adjust"
+name = "defer"
+verb = "defer"
+subcommands = []
+positionals = []
+flags = ["--intent", "--date", "--debit", "--credit", "--amount", "--reverse-on", "--description", "--key", "--evidence", "--event", "--draft", "--scenario"]
+switches = ["--dry-run"]
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = []
+dont = ["Don't pass both intent and the two-leg properties: intent carries its own legs and date."]
+mistakes = ["A JSON number in amount: write \"1200.00 USD\".", "Setting class in the intent to anything but Adjusting (omit it)."]
+
+[[mcp.tool]]
+cluster = "fa.adjust"
+name = "batch"
+verb = "batch"
+subcommands = []
+positionals = []
+flags = ["--intent", "--draft", "--scenario"]
+switches = ["--dry-run"]
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = ["intent"]
+dont = ["Don't send a single entry intent: a batch is {idempotency_key, intents: [...]}; post one entry with fa_post_post.", "Don't expect a partial batch: one refused member refuses them all."]
+mistakes = ["Putting evidence or reverse_on beside intents instead of in each member intent."]
+
+[[mcp.tool]]
+cluster = "fa.adjust"
+name = "post_reserve"
+verb = "post-reserve"
+subcommands = []
+positionals = ["hold"]
+flags = ["--date", "--amount", "--description", "--key", "--evidence", "--draft"]
+switches = ["--dry-run"]
+required = ["hold", "--date", "--amount"]
+dont = ["Don't post more than the hold reserved: each leg posts at most its reservation and the rest is released.", "Don't use it for a hold of more than two legs: name the sub-vector with fa_post_resolve."]
+mistakes = ["A JSON number in amount: write \"60.00 USD\".", "Naming the original intent's key instead of the hold's vid."]
 
 
 [[mcp.tool]]
@@ -5175,7 +5394,7 @@ subcommands = ["year-end"]
 ops = ["read", "post", "close"]
 
 [[bound]]
-verbs = ["post", "commit", "reverse", "reclass", "reserve", "resolve", "invoice", "bill", "receipt", "payment"]
+verbs = ["post", "commit", "reverse", "reclass", "reserve", "resolve", "invoice", "bill", "receipt", "payment", "accrue", "defer", "batch", "post-reserve", "void-reserve", "replace"]
 ops = ["post"]
 
 [[bound]]

@@ -377,6 +377,148 @@ fn first_try_spellings_matrix() {
     assert!(run.stdout.contains("fa post"), "{}", run.stdout);
 }
 
+/// Plan §15.3 spells some verbs shorter than the registry names them (`fa
+/// cap`, `fa doc`, `fa revalue`) or verb-first (`fa book verify`, `fa chart
+/// open-account`, `fa export csv`, `fa sample random`); each is a
+/// registered alias that runs exactly as its verb. Planted: a two-word
+/// spelling that is not registered is refused, never guessed.
+#[test]
+fn plan_spellings_run_as_their_registered_verbs() {
+    let (dir, book) = posted_book("plan-spellings");
+    // Reads: the same bytes as the registered spelling.
+    for (plan, registered) in [
+        (
+            &["cap", "list", "--json"][..],
+            &["capability", "list", "--json"][..],
+        ),
+        (
+            &["doc", "list", "--json"][..],
+            &["document", "list", "--json"][..],
+        ),
+        (
+            &["export", "csv", "--period", "FY2026-P03", "--json"][..],
+            &["export", "csv-gl", "--period", "FY2026-P03", "--json"][..],
+        ),
+        (
+            &[
+                "sample",
+                "random",
+                "--account",
+                "6000",
+                "--seed",
+                "7",
+                "--size",
+                "1",
+                "--json",
+            ][..],
+            &[
+                "sample",
+                "uniform",
+                "--account",
+                "6000",
+                "--seed",
+                "7",
+                "--size",
+                "1",
+                "--json",
+            ][..],
+        ),
+    ] {
+        let a = fa(Some(&book), plan);
+        log("plan-spellings", plan, &a);
+        let b = fa(Some(&book), registered);
+        assert_eq!(a.code, 0, "{plan:?}\n{}\n{}", a.stdout, a.stderr);
+        assert_eq!(b.code, 0, "{registered:?}\n{}\n{}", b.stdout, b.stderr);
+        assert_eq!(a.stdout, b.stdout, "{plan:?} vs {registered:?}");
+    }
+    // A verification and a refusal: the same exit and the same events. The
+    // registers target needs March's cells advanced first.
+    let advanced = fa(
+        Some(&book),
+        &["registers", "advance", "--period", "FY2026-P03", "--json"],
+    );
+    assert_eq!(advanced.code, 0, "{}\n{}", advanced.stdout, advanced.stderr);
+    for (plan, registered) in [
+        (
+            &["book", "verify", "--json"][..],
+            &["verify", "book", "--json"][..],
+        ),
+        (&["revalue", "--json"][..], &["fx", "revalue", "--json"][..]),
+    ] {
+        let a = fa(Some(&book), plan);
+        log("plan-spellings", plan, &a);
+        let b = fa(Some(&book), registered);
+        assert_eq!(a.code, b.code, "{plan:?}\n{}\n{}", a.stdout, b.stdout);
+        assert_eq!(events(&a.stdout), events(&b.stdout), "{plan:?}");
+    }
+    let verified = fa(Some(&book), &["book", "verify", "--json"]);
+    assert_eq!(verified.code, 0, "{}\n{}", verified.stdout, verified.stderr);
+    assert!(
+        events(&verified.stdout)
+            .iter()
+            .any(|e| e == "book_verification"),
+        "{}",
+        verified.stdout
+    );
+    // Writes run as the registered verb, with its events.
+    let supplies = write(
+        &dir,
+        "supplies.json",
+        r#"{"code":"6100","name":"Office supplies","type":"Expense","unit":"USD"}"#,
+    );
+    for (args, event) in [
+        (
+            &["book", "checkpoint", "--grant", "witness", "--json"][..],
+            "checkpoint_created",
+        ),
+        (
+            &[
+                "chart",
+                "open-account",
+                supplies.as_str(),
+                "--opened",
+                "2026-03-01",
+                "--json",
+            ][..],
+            "account_lifecycle",
+        ),
+        (
+            &[
+                "chart",
+                "close-account",
+                "6100",
+                "--on",
+                "2026-03-20",
+                "--json",
+            ][..],
+            "account_lifecycle",
+        ),
+    ] {
+        let run = fa(Some(&book), args);
+        log("plan-spellings", args, &run);
+        assert_eq!(run.code, 0, "{args:?}\n{}\n{}", run.stdout, run.stderr);
+        assert!(
+            events(&run.stdout).iter().any(|e| e == event),
+            "{args:?}\n{}",
+            run.stdout
+        );
+    }
+    let listed = fa(Some(&book), &["checkpoint", "list", "--json"]);
+    assert_eq!(listed.code, 0, "{}", listed.stderr);
+    assert!(
+        listed.stdout.contains("\"checkpoints\""),
+        "{}",
+        listed.stdout
+    );
+    // An unregistered two-word spelling is a usage error naming the verb's
+    // subcommands; it never runs.
+    let wrong = ["book", "verify-all", "--json"];
+    let run = fa(Some(&book), &wrong);
+    log("plan-spellings", &wrong, &run);
+    assert_eq!(run.code, 2, "{}\n{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("create"), "{}", run.stdout);
+}
+
 /// Plan Appendix D: every non-zero exit emits exactly one `error` event
 /// carrying `refusal_id`, `exit` and `class`, and its `exit` is the
 /// process's exit code; `1` is never an exit code.

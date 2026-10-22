@@ -93,6 +93,12 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("bill", crate::typed::bill_cmd),
     ("receipt", crate::typed::receipt_cmd),
     ("payment", crate::typed::payment_cmd),
+    ("accrue", crate::typed::accrue_cmd),
+    ("defer", crate::typed::defer_cmd),
+    ("batch", crate::typed::batch_cmd),
+    ("post-reserve", crate::typed::post_reserve_cmd),
+    ("void-reserve", crate::typed::void_reserve_cmd),
+    ("replace", crate::typed::replace_cmd),
     ("commit", commit_cmd),
     ("reclass", reclass_cmd),
     ("reverse", reverse_cmd),
@@ -1373,14 +1379,7 @@ fn correct_read_flags(argv: &[String], reg: &Registry) -> (Vec<String>, Vec<Stri
     let reads = args::parse(&corrected, &reg.value_flags(), &reg.switches())
         .ok()
         .and_then(|mut parsed| {
-            if let Some(alias) = parsed.positional.first().and_then(|w| reg.alias(w)) {
-                parsed.positional = alias
-                    .expands
-                    .iter()
-                    .chain(parsed.positional.iter().skip(1))
-                    .cloned()
-                    .collect();
-            }
+            parsed.positional = reg.expand_alias(&parsed.positional);
             let verb = reg.verb(parsed.positional.first()?)?;
             if let Some(default) = &verb.default_subcommand
                 && parsed.positional.len() == 1
@@ -1977,21 +1976,9 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
     }
     // An alias expands in the verb position (plan §15.3: the spellings agents
     // try first). It is a registered synonym, never a guessed correction.
-    let expanded;
-    let args = match args.positional.first().and_then(|w| reg.alias(w)) {
-        Some(alias) => {
-            let mut a = args.clone();
-            a.positional = alias
-                .expands
-                .iter()
-                .chain(args.positional.iter().skip(1))
-                .cloned()
-                .collect();
-            expanded = a;
-            &expanded
-        }
-        None => args,
-    };
+    let mut expanded = args.clone();
+    expanded.positional = reg.expand_alias(&args.positional);
+    let args = &expanded;
     let Some(word) = args.positional.first() else {
         check_flags(reg, None, args)?;
         if args.switch("--help") {
@@ -2148,6 +2135,12 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "bill"
             | "receipt"
             | "payment"
+            | "accrue"
+            | "defer"
+            | "batch"
+            | "post-reserve"
+            | "void-reserve"
+            | "replace"
     ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end"))
         || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue")))
         && (args.switch("--dry-run")
@@ -2314,6 +2307,12 @@ pub fn bound_command_admissible(
             | "bill"
             | "receipt"
             | "payment"
+            | "accrue"
+            | "defer"
+            | "batch"
+            | "post-reserve"
+            | "void-reserve"
+            | "replace"
     ) || (matches!(verb, "allocate" | "settle")
         && sub != Some("approve")
         && !args.switch("--approve"));
@@ -2326,7 +2325,20 @@ pub fn bound_command_admissible(
     // Or run it in a scenario, which never posts to trunk at all.
     let agent_rehearsal = matches!(
         verb,
-        "post" | "reverse" | "reserve" | "resolve" | "invoice" | "bill" | "receipt" | "payment"
+        "post"
+            | "reverse"
+            | "reserve"
+            | "resolve"
+            | "invoice"
+            | "bill"
+            | "receipt"
+            | "payment"
+            | "accrue"
+            | "defer"
+            | "batch"
+            | "post-reserve"
+            | "void-reserve"
+            | "replace"
     ) && (args.switch("--dry-run")
         || args.flag("--draft").is_some()
         || args.flag("--scenario").is_some());
@@ -2395,7 +2407,8 @@ enum HostPath {
     /// An input file of `fa document import run`.
     ImportRun,
     /// An input file: a positional chart, account, party, instrument, entity,
-    /// statement, document or certificate, or a saved-certificate source flag
+    /// statement, document, certificate or export (a file, or an ADS package
+    /// directory), or a saved-certificate source flag
     /// (`--before-certificate`, `--after-certificate`, `--from-diff`,
     /// `--from-source`, `--aging-certificate`, `--control-certificate`).
     Input,
@@ -2491,6 +2504,8 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         | ("certificate", Some("status"))
         | ("finding", Some("replay")) => args.positional.get(2),
         ("replay", _) => args.positional.get(1),
+        // The exported file, or the ADS package directory.
+        ("verify", Some("export")) => args.positional.get(3),
         _ => None,
     };
     if let Some(input) = input {
@@ -3000,10 +3015,8 @@ fn help_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1) {
         None => emit_help(out, reg, None),
         Some(word) => {
-            let name = reg
-                .alias(word)
-                .and_then(|a| a.expands.first())
-                .unwrap_or(word);
+            let words = reg.expand_alias(args.positional.get(1..).unwrap_or_default());
+            let name = words.first().unwrap_or(word);
             match reg.verb(name) {
                 Some(v) => emit_help(out, reg, Some(v)),
                 None => Err(usage(
@@ -4078,14 +4091,7 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
     if args.switch("--version") {
         return Ok(args);
     }
-    if let Some(alias) = args.positional.first().and_then(|w| reg.alias(w)) {
-        args.positional = alias
-            .expands
-            .iter()
-            .chain(args.positional.iter().skip(1))
-            .cloned()
-            .collect();
-    }
+    args.positional = reg.expand_alias(&args.positional);
     let to_usage = |f: Fail| match f {
         Fail::Usage(u) => u,
         other => UsageError {
@@ -6719,7 +6725,7 @@ fn reclass_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     post_document(ctx, args, Some(EntryClass::RECLASSIFICATION), obj(fields))
 }
 
-fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+pub(crate) fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
             "reverse needs exactly one entry vid",
@@ -7219,6 +7225,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "reason",
         "resolves",
         "disposition",
+        "amount",
         "timeout_ns",
         "reverse_on",
         "prior_period_error",
@@ -7379,6 +7386,7 @@ fn build_post_request_with_prior(
             Some(EntryClass::PENDING) => "Pending",
             Some(EntryClass::RESOLUTION) => "Resolution",
             Some(EntryClass::REVERSAL) => "Reversal",
+            Some(EntryClass::ADJUSTING) => "Adjusting",
             _ => "Original",
         },
         Some(Json::Str(name)) => name,
@@ -7418,6 +7426,12 @@ fn build_post_request_with_prior(
         return Err(usage(
             "`reclassifies` names the target of a Reclassification only",
             "set class: \"Reclassification\" (or use fa reclass), or remove `reclassifies`",
+        ));
+    }
+    if doc.get("amount").is_some() && class != EntryClass::RESOLUTION {
+        return Err(usage(
+            "`amount` posts a two-leg hold: it belongs to a Resolution (fa post-reserve) only",
+            "name the entry's legs in `legs`",
         ));
     }
     if doc.get("revises").is_some() && class != EntryClass::REVISION {
@@ -7725,17 +7739,16 @@ fn build_post_request_with_prior(
             ));
         };
         let resolution_of = Some(hold.entry_ref(vid));
-        let disposition =
-            doc.get("disposition")
-                .and_then(Json::as_str)
-                .unwrap_or(if doc.get("legs").is_some() {
-                    "posts"
-                } else {
-                    "voids"
-                });
+        let disposition = doc.get("disposition").and_then(Json::as_str).unwrap_or(
+            if doc.get("legs").is_some() || doc.get("amount").is_some() {
+                "posts"
+            } else {
+                "voids"
+            },
+        );
         match disposition {
             "voids" | "void" | "release" => {
-                if doc.get("legs").is_some() {
+                if doc.get("legs").is_some() || doc.get("amount").is_some() {
                     return Err(usage(
                         "a Voids resolution carries no legs",
                         "remove `legs`, or set disposition to \"posts\"",
@@ -7753,10 +7766,59 @@ fn build_post_request_with_prior(
             }
             "posts" | "post" => {
                 let mut pairs: Vec<(u16, LegPayload)> = Vec::new();
-                for (i, (leg, explicit)) in parse_legs(doc, &ctx, book, earlier)?
-                    .into_iter()
-                    .enumerate()
-                {
+                if let Some(text) = doc.get("amount") {
+                    // Appendix B PostReserve `amount`: sugar for a two-leg,
+                    // single-unit hold, each leg posting `amount` on its
+                    // own account, side and dimensions; the kernel bounds it
+                    // by what each leg reserved.
+                    if doc.get("legs").is_some() {
+                        return Err(usage(
+                            "a Posts resolution names `legs` or `amount`, not both",
+                            "remove `amount`, or remove `legs` to post the same amount on both legs of a two-leg hold",
+                        ));
+                    }
+                    let text = text
+                        .as_str()
+                        .ok_or_else(|| usage("amount must be a string", "amount: \"60.00 USD\""))?;
+                    let [first, second] = hold.proposal.legs.as_slice() else {
+                        return Err(usage(
+                            format!(
+                                "`amount` posts a two-leg hold; this hold has {} legs",
+                                hold.proposal.legs.len()
+                            ),
+                            "name each posted leg in `legs` (with source_ordinal where an account repeats)",
+                        ));
+                    };
+                    if first.amount.unit != second.amount.unit
+                        || first.base_amount.is_some()
+                        || second.base_amount.is_some()
+                    {
+                        return Err(usage(
+                            "`amount` posts a single-unit hold without base valuations",
+                            "name each posted leg in `legs`",
+                        ));
+                    }
+                    let amount = Amount::parse(text, &ctx.units)
+                        .map_err(|e| usage(format!("amount: {e}"), "amount: \"60.00 USD\""))?;
+                    if amount.unit != first.amount.unit {
+                        return Err(usage(
+                            "amount is not in the hold's unit",
+                            "write the amount in the unit the hold reserved",
+                        ));
+                    }
+                    for (ordinal, held) in [(0u16, first), (1, second)] {
+                        let mut leg = held.clone();
+                        leg.amount = amount;
+                        leg.settles = Vec::new();
+                        pairs.push((ordinal, leg));
+                    }
+                }
+                let listed = if pairs.is_empty() {
+                    parse_legs(doc, &ctx, book, earlier)?
+                } else {
+                    Vec::new()
+                };
+                for (i, (leg, explicit)) in listed.into_iter().enumerate() {
                     let ordinal = match explicit {
                         Some(o) => o,
                         None => {
@@ -13289,6 +13351,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     match target {
         Some("book") => verify_book(ctx, args),
+        Some("export") => crate::export::verify_export(ctx, args),
         Some("fx-conversion") => verify_fx_conversion(ctx, args),
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),

@@ -2965,6 +2965,184 @@ fn hex_of(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// fa-lzrn (plan §16, export then import is the identity): `fa verify
+/// export` re-reads every format with its reader, selects the book again at
+/// the export's own coordinate, and requires each file byte for byte. An
+/// export keeps verifying after the book moves on, because its coordinate is
+/// historical. Planted, each refused with exit 8:
+/// - a tampered amount;
+/// - a byte the reader tolerates (an appended blank line);
+/// - another book's export.
+/// Malformed calls are usage errors.
+#[test]
+fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std::io::Result<()> {
+    let dir = tmp("verify-export")?;
+    let ok = |book: &Path, args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    let post = |book: &Path, ev: &str, key: &str, date: &str, legs: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","description":"{key}","idempotency_key":"{key}","legs":[{legs}]}}"#
+            ),
+        );
+        ok(
+            book,
+            &["post", "--intent", &intent, "--evidence", ev, "--json"],
+        );
+    };
+    let rent = r#"{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}"#;
+    let sale = r#"{"side":"debit","account":"1000","amount":"25.00 USD"},{"side":"credit","account":"4000","amount":"25.00 USD"}"#;
+    let open = |book: &Path, name: &str| -> String {
+        ok(book, &["book", "create", "--name", name, "--json"]);
+        ok(book, &["chart", "import", &chart, "--json"]);
+        ok(
+            book,
+            &["period", "create", "--fiscal-year", "2026", "--json"],
+        );
+        ok(book, &["period", "open", "FY2026-P03", "--json"]);
+        source_doc(&dir, book)
+    };
+    let book = dir.join("book");
+    let ev = open(&book, "Verify Co");
+    post(&book, &ev, "rent-1", "2026-03-15", rent);
+    post(&book, &ev, "sale-1", "2026-03-20", sale);
+
+    // Every format verifies at its coordinate, with what its reader re-reads.
+    let mut exported = Vec::new();
+    for (format, name, reread) in [
+        ("ads", "ads", "journal"),
+        ("saft", "export.saft.xml", "journal"),
+        ("csv-gl", "export.csv", "journal"),
+        ("beancount", "export.beancount", "balances"),
+        ("hledger", "export.hledger", "balances"),
+        ("ndjson", "export.ndjson", "framing"),
+        ("xbrl", "export.xbrl", "coordinate"),
+    ] {
+        let path = dir.join(name).display().to_string();
+        ok(
+            &book,
+            &[
+                "export",
+                format,
+                "--period",
+                "FY2026-P03",
+                "--out",
+                &path,
+                "--json",
+            ],
+        );
+        let out = ok(&book, &["verify", "export", format, &path, "--json"]);
+        assert_eq!(field(&out, "event"), Some("export_verified"), "{out}");
+        assert_eq!(field(&out, "format"), Some(format), "{out}");
+        assert_eq!(field(&out, "reread"), Some(reread), "{out}");
+        assert_eq!(field(&out, "entries"), Some("2"), "{out}");
+        assert_eq!(
+            field(&out, "effective_through"),
+            Some("2026-03-31"),
+            "{out}"
+        );
+        exported.push((format, path));
+    }
+
+    // The book moves on; each export still verifies at its own coordinate.
+    post(&book, &ev, "rent-2", "2026-03-25", rent);
+    for (format, path) in &exported {
+        let out = ok(&book, &["verify", "export", format, path, "--json"]);
+        assert_eq!(field(&out, "entries"), Some("2"), "{format}: {out}");
+    }
+
+    // Planted: a tampered amount, a byte the reader tolerates, and another
+    // book's export, each a verification failure naming what failed.
+    let csv = dir.join("export.csv");
+    let tampered = std::fs::read_to_string(&csv)?.replacen("25.00", "26.00", 1);
+    let tampered = write(&dir, "tampered.csv", &tampered);
+    let padded = format!(
+        "{}\n",
+        std::fs::read_to_string(dir.join("export.beancount"))?
+    );
+    let padded = write(&dir, "padded.beancount", &padded);
+    let other = dir.join("other");
+    let other_ev = open(&other, "Other Co");
+    post(&other, &other_ev, "rent-1", "2026-03-15", rent);
+    post(&other, &other_ev, "sale-1", "2026-03-20", sale);
+    let foreign = dir.join("foreign.csv").display().to_string();
+    ok(
+        &other,
+        &[
+            "export",
+            "csv-gl",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            &foreign,
+            "--json",
+        ],
+    );
+    for (what, format, path, says) in [
+        ("tampered amount", "csv-gl", tampered.as_str(), "re-read"),
+        (
+            "appended blank line",
+            "beancount",
+            padded.as_str(),
+            "differs",
+        ),
+        (
+            "another book",
+            "csv-gl",
+            foreign.as_str(),
+            "not this book's",
+        ),
+    ] {
+        let (code, out, err) = fa(Some(&book), &["verify", "export", format, path, "--json"]);
+        assert_eq!(code, 8, "{what}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+        assert!(out.contains(says), "{what}: {out}");
+    }
+    // An ADS package's tables are regular files: links to the real export's
+    // tables are refused before anything is read.
+    let linked = dir.join("linked-ads");
+    std::fs::create_dir(&linked)?;
+    for name in [
+        "Chart_of_Accounts.txt",
+        "GL_Detail.txt",
+        "Trial_Balance.txt",
+        "ADS_Coordinate_Certificate.toml",
+    ] {
+        std::os::unix::fs::symlink(dir.join("ads").join(name), linked.join(name))?;
+    }
+    let linked = linked.display().to_string();
+    let path = exported[2].1.as_str();
+    for args in [
+        vec!["verify", "export", "ads", linked.as_str(), "--json"],
+        vec!["verify", "export", "pdf", path, "--json"],
+        vec!["verify", "export", "ads", "-", "--json"],
+        vec!["verify", "export", "csv-gl", "--json"],
+        vec![
+            "verify",
+            "export",
+            "csv-gl",
+            path,
+            "--as-known-at",
+            "1",
+            "--json",
+        ],
+    ] {
+        let (code, out, _) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    Ok(())
+}
+
 /// Plan §7.4 `AS ORIGINALLY REPORTED`: a period's reads pin to its first
 /// Lock (no StatementIssuance is journaled yet), never its first Close and
 /// never HEAD. A period with no Lock refuses (FA-REF-161) rather than
@@ -6738,10 +6916,13 @@ fn verbs_toml_is_the_single_verb_registry_and_the_binary_agrees() -> std::io::Re
         nowhere.display()
     );
 
-    // Aliases expand to their registered verbs.
+    // Aliases expand to their registered verbs; a two-word alias (`book
+    // verify`) is two argv words.
     for alias in &reg.aliases {
-        let (code, out, _) = fa(None, &[&alias.name, "--help", "--json"]);
-        assert_eq!(code, 0, "{out}");
+        let mut argv: Vec<&str> = alias.name.split(' ').collect();
+        argv.extend(["--help", "--json"]);
+        let (code, out, _) = fa(None, &argv);
+        assert_eq!(code, 0, "{}: {out}", alias.name);
         assert_eq!(
             Some(text(&doc(&out), "verb")),
             alias.expands.first().map(String::as_str)
@@ -8059,6 +8240,16 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(true, &["export", "csv-gl", "--period", "FY2026-P03"]).0,
         0
     );
+    let gl = dir.join("events-gl.csv").display().to_string();
+    assert_eq!(
+        run(
+            true,
+            &["export", "csv-gl", "--period", "FY2026-P03", "--out", &gl]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["verify", "export", "csv-gl", &gl]).0, 0);
     let office = write(
         &dir,
         "office.json",
@@ -17253,6 +17444,513 @@ fn verify_replay_re_performs_the_history_into_an_independent_book() -> std::io::
         2,
         "replay covers the whole history; it takes no period filter"
     );
+    Ok(())
+}
+
+/// Plan §15.3, Appendix B Replace (bead fa-i7e): `fa replace` is `fa
+/// reverse --replace-with`. The exact Reversal and the corrected Replacement
+/// commit as one pair, and a retry through `fa reverse` is that same pair,
+/// recorded. A dry run plans the pair and writes nothing. Planted: no
+/// corrected entry, two of them, and a draft are each refused before any
+/// write. Without the corrected entry, `fa replace` would be a bare reversal.
+#[test]
+fn replace_posts_the_reversal_and_its_replacement_as_one_pair() -> std::io::Result<()> {
+    let dir = tmp("replace-sugar")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Replace Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let intent = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"rent-1","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let posted = ok(&["post", "--intent", &intent, "--evidence", &ev, "--json"]);
+    let vid = field(&posted, "vid").unwrap().to_string();
+    let corrected = write(
+        &dir,
+        "corrected.json",
+        r#"{"description":"rent, corrected","legs":[{"side":"debit","account":"6000","amount":"12.00 USD"},{"side":"credit","account":"1000","amount":"12.00 USD"}]}"#,
+    );
+    let tb = || report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let before = tb();
+
+    // Planted: refused before anything is published.
+    for (what, extra) in [
+        ("no corrected entry", vec![]),
+        (
+            "two corrected entries",
+            vec![
+                "--intent",
+                corrected.as_str(),
+                "--intent",
+                corrected.as_str(),
+            ],
+        ),
+        (
+            "a draft",
+            vec!["--intent", corrected.as_str(), "--draft", "d1"],
+        ),
+    ] {
+        let mut args = vec!["replace", vid.as_str(), "--reason", "WrongAmount"];
+        args.extend(extra);
+        args.extend(["--evidence", ev.as_str(), "--json"]);
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{what}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+    }
+    let (_, out, _) = fa(
+        Some(&book),
+        &["replace", vid.as_str(), "--reason", "WrongAmount", "--json"],
+    );
+    assert!(
+        out.contains("--intent") && out.contains("fa reverse"),
+        "the refusal names the corrected entry and the bare reversal: {out}"
+    );
+    // A dry run plans both members and writes nothing.
+    let planned = ok(&[
+        "replace",
+        vid.as_str(),
+        "--reason",
+        "WrongAmount",
+        "--intent",
+        corrected.as_str(),
+        "--evidence",
+        &ev,
+        "--dry-run",
+        "--json",
+    ]);
+    assert_eq!(
+        field(&planned, "event"),
+        Some("replacement_plan"),
+        "{planned}"
+    );
+    assert_eq!(tb(), before, "nothing refused or planned is written");
+
+    let out = ok(&[
+        "replace",
+        vid.as_str(),
+        "--reason",
+        "WrongAmount",
+        "--intent",
+        corrected.as_str(),
+        "--evidence",
+        &ev,
+        "--json",
+    ]);
+    assert_eq!(field(&out, "event"), Some("corrected"), "{out}");
+    assert_eq!(field(&out, "target"), Some(vid.as_str()));
+    assert_eq!(field(&out, "already_recorded"), Some("false"));
+    let reversal = field(&out, "reversal").unwrap().to_string();
+    let replacement = field(&out, "replacement").unwrap().to_string();
+    for (entry, kind) in [(&reversal, "Reverses"), (&replacement, "Replaces")] {
+        let shown = doc(&ok(&["entry", "show", entry, "--json"]));
+        let lineage = arr(&shown, "supersedes");
+        assert_eq!(lineage.len(), 1, "{entry}");
+        assert_eq!(text(&lineage[0], "entry"), vid);
+        assert_eq!(text(&lineage[0], "kind"), kind);
+    }
+    let after = tb();
+    let row = after
+        .split('{')
+        .find(|row| field(row, "code") == Some("6000"))
+        .expect("rent row");
+    assert_eq!(field(row, "net"), Some("12.00 USD"), "{after}");
+
+    // The same pair through fa reverse is the recorded one.
+    let again = ok(&[
+        "reverse",
+        vid.as_str(),
+        "--reason",
+        "WrongAmount",
+        "--replace-with",
+        corrected.as_str(),
+        "--evidence",
+        &ev,
+        "--json",
+    ]);
+    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
+    assert_eq!(field(&again, "reversal"), Some(reversal.as_str()));
+    assert_eq!(field(&again, "replacement"), Some(replacement.as_str()));
+    assert_eq!(tb(), after);
+    Ok(())
+}
+
+/// Plan §15.3, Appendix B (bead fa-i7e): `fa post-reserve` posts part of a
+/// two-leg hold (each leg at most what it reserved; the rest released) and
+/// `fa void-reserve` releases a whole hold, which is dangerous and needs
+/// --yes. Both are Resolutions through `fa post`'s path, so a retry is the
+/// recorded entry. Planted: posting more than the hold reserved, a hold of
+/// three legs, a void without --yes and a void with an amount are each
+/// refused with nothing written.
+#[test]
+fn post_reserve_and_void_reserve_resolve_two_leg_holds() -> std::io::Result<()> {
+    let dir = tmp("reserve-sugar")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Reserve Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let hold = |key: &str, legs: &str| {
+        let path = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-10","idempotency_key":"{key}","legs":[{legs}]}}"#
+            ),
+        );
+        let out = ok(&["reserve", "--intent", &path, "--evidence", &ev, "--json"]);
+        field(&out, "vid").unwrap().to_string()
+    };
+    let two = r#"{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1000","amount":"80.00 USD"}"#;
+    let rent = |out: &str| {
+        let tb = doc(out);
+        arr(&tb, "rows")
+            .iter()
+            .find(|row| text(row, "code") == "6000")
+            .map(|row| {
+                (
+                    text(row, "net").to_string(),
+                    text(row, "debits_pending").to_string(),
+                )
+            })
+    };
+    let tb = || ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    let head = || {
+        let (_, out, _) = fa(Some(&book), &["book", "info", "--json"]);
+        doc(&out)
+            .get("coordinate")
+            .and_then(|c| c.get("known_at").cloned())
+    };
+
+    // 80.00 reserved; 60.00 posted, the other 20.00 released.
+    let first = hold("rent-hold", two);
+    assert_eq!(
+        rent(&tb()),
+        Some(("0.00 USD".into(), "80.00 USD".into())),
+        "the hold is pending"
+    );
+    let post = [
+        "post-reserve",
+        first.as_str(),
+        "--date",
+        "2026-03-20",
+        "--amount",
+        "60.00 USD",
+        "--json",
+    ];
+    let posted = ok(&post);
+    assert_eq!(field(&posted, "event"), Some("posted"), "{posted}");
+    assert_eq!(
+        rent(&tb()),
+        Some(("60.00 USD".into(), "0.00 USD".into())),
+        "60.00 posted, the rest released"
+    );
+    let again = ok(&post);
+    assert_eq!(field(&again, "event"), Some("recorded"), "{again}");
+
+    // A void releases a whole hold, only with --yes.
+    let second = hold("deposit-hold", two);
+    let before = head();
+    let void = [
+        "void-reserve",
+        second.as_str(),
+        "--date",
+        "2026-03-21",
+        "--json",
+    ];
+    let (code, out, err) = run(&void);
+    assert_ne!(code, 0, "a void needs --yes: {out}\n{err}");
+    assert_eq!(head(), before, "the refused void writes nothing");
+    let mut confirmed = void.to_vec();
+    confirmed.push("--yes");
+    let voided = ok(&confirmed);
+    assert_eq!(field(&voided, "event"), Some("posted"), "{voided}");
+    assert_eq!(
+        rent(&tb()),
+        Some(("60.00 USD".into(), "0.00 USD".into())),
+        "the void posts nothing and releases the hold"
+    );
+
+    // Planted negatives.
+    let third = hold("big-hold", two);
+    let three = hold(
+        "split-hold",
+        r#"{"side":"debit","account":"6000","amount":"30.00 USD"},{"side":"credit","account":"1000","amount":"20.00 USD"},{"side":"credit","account":"2000","amount":"10.00 USD"}"#,
+    );
+    let before = head();
+    for (what, argv) in [
+        (
+            "more than reserved",
+            vec![
+                "post-reserve",
+                third.as_str(),
+                "--date",
+                "2026-03-22",
+                "--amount",
+                "90.00 USD",
+                "--json",
+            ],
+        ),
+        (
+            "three legs",
+            vec![
+                "post-reserve",
+                three.as_str(),
+                "--date",
+                "2026-03-22",
+                "--amount",
+                "10.00 USD",
+                "--json",
+            ],
+        ),
+        (
+            "void with an amount",
+            vec![
+                "void-reserve",
+                third.as_str(),
+                "--date",
+                "2026-03-22",
+                "--amount",
+                "1.00 USD",
+                "--yes",
+                "--json",
+            ],
+        ),
+    ] {
+        let (code, out, err) = run(&argv);
+        assert_ne!(code, 0, "{what}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+    }
+    assert_eq!(head(), before, "no refused resolution writes");
+    Ok(())
+}
+
+/// Plan §15.3, Appendix B (bead fa-i7e): `fa accrue` and `fa defer` post an
+/// Adjusting entry with its scheduled reversal, from two-leg flags or from an
+/// intent of any legs, and `fa batch` posts a PostBatch, all through `fa
+/// post`'s path: a dry run writes nothing, a retry is the recorded entry.
+/// Planted: a float amount, an intent mixed with leg flags, a class the verb
+/// does not post, one account on both sides, and a single entry intent to
+/// `fa batch` are each refused with nothing written.
+#[test]
+fn accrue_defer_and_batch_post_through_the_post_path() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+
+    let dir = tmp("adjusting")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Adjusting Co",
+        "--time-zone",
+        "UTC",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2100","name":"Accrued liabilities","type":"Liability","unit":"USD"},{"code":"2400","name":"Unearned revenue","type":"Liability","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6100","name":"Utilities","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let read = |vid: &str| {
+        let handle = Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+        let (entry, _) = handle
+            .read_entry(fgdb_types::VId(u128::from_str_radix(vid, 16).unwrap()))
+            .unwrap()
+            .expect("posted entry");
+        entry
+    };
+    let head = || {
+        let (_, out, _) = fa(Some(&book), &["book", "info", "--json"]);
+        doc(&out)
+            .get("coordinate")
+            .and_then(|c| c.get("known_at").cloned())
+    };
+    let accrual: Vec<&str> = vec![
+        "accrue",
+        "--date",
+        "2026-03-31",
+        "--debit",
+        "6100",
+        "--credit",
+        "2100",
+        "--amount",
+        "1500.00 USD",
+        "--reverse-on",
+        "2026-04-01",
+        "--description",
+        "March utilities",
+        "--evidence",
+        &ev,
+        "--json",
+    ];
+
+    // A dry run returns the plan and writes nothing.
+    let before = head();
+    let mut dry = accrual.clone();
+    dry.push("--dry-run");
+    let planned = ok(&dry);
+    assert_eq!(field(&planned, "event"), Some("plan"), "{planned}");
+    assert_eq!(head(), before, "a dry run writes nothing");
+
+    // The accrual posts an Adjusting entry scheduled to reverse on April 1.
+    let posted = ok(&accrual);
+    assert_eq!(field(&posted, "event"), Some("posted"), "{posted}");
+    let vid = field(&posted, "vid").unwrap().to_string();
+    let entry = read(&vid);
+    assert_eq!(entry.proposal.class, fa_model::EntryClass::ADJUSTING);
+    assert_eq!(
+        fa_journal::schedule::auto_reverse(&entry.proposal).unwrap(),
+        Some((
+            fa_time::DateDay::parse("2026-04-01").unwrap(),
+            fa_journal::schedule::RULE_EXACT_NEGATION
+        ))
+    );
+    // Its default key makes a retry the recorded entry.
+    let again = ok(&accrual);
+    assert_eq!(field(&again, "event"), Some("recorded"), "{again}");
+    assert_eq!(field(&again, "vid"), Some(vid.as_str()));
+
+    // A deferral from an intent of any legs; class may be omitted.
+    let deferral = write(
+        &dir,
+        "deferral.json",
+        r#"{"effective_date":"2026-03-31","idempotency_key":"unearned-april","description":"April subscription billed in March","reverse_on":"2026-04-01","legs":[{"side":"debit","account":"4000","amount":"1200.00 USD"},{"side":"credit","account":"2400","amount":"1200.00 USD"}]}"#,
+    );
+    let deferred = ok(&["defer", "--intent", &deferral, "--evidence", &ev, "--json"]);
+    let entry = read(field(&deferred, "vid").unwrap());
+    assert_eq!(entry.proposal.class, fa_model::EntryClass::ADJUSTING);
+    assert!(
+        fa_journal::schedule::auto_reverse(&entry.proposal)
+            .unwrap()
+            .is_some()
+    );
+
+    // A batch posts both members atomically.
+    let member = |key: &str, amount: &str| {
+        format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"{key}","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6100","amount":"{amount} USD"}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
+        )
+    };
+    let batch = write(
+        &dir,
+        "batch.json",
+        &format!(
+            r#"{{"idempotency_key":"utilities-batch","intents":[{},{}]}}"#,
+            member("u1", "10.00"),
+            member("u2", "20.00")
+        ),
+    );
+    let batched = ok(&["batch", "--intent", &batch, "--json"]);
+    assert_eq!(field(&batched, "event"), Some("batch_posted"), "{batched}");
+    assert_eq!(arr(&doc(&batched), "members").len(), 2, "{batched}");
+
+    // Planted negatives: each refused, nothing written.
+    let before = head();
+    let single = write(&dir, "single.json", &member("u3", "5.00"));
+    let original = write(
+        &dir,
+        "original.json",
+        r#"{"class":"Original","effective_date":"2026-03-31","idempotency_key":"not-adjusting","legs":[{"side":"debit","account":"6100","amount":"1.00 USD"},{"side":"credit","account":"2100","amount":"1.00 USD"}]}"#,
+    );
+    for (what, argv) in [
+        (
+            "float amount",
+            vec![
+                "accrue",
+                "--date",
+                "2026-03-31",
+                "--debit",
+                "6100",
+                "--credit",
+                "2100",
+                "--amount",
+                "1.5e3 USD",
+                "--evidence",
+                &ev,
+                "--json",
+            ],
+        ),
+        (
+            "intent and leg flags",
+            vec![
+                "accrue",
+                "--intent",
+                &deferral,
+                "--debit",
+                "6100",
+                "--evidence",
+                &ev,
+                "--json",
+            ],
+        ),
+        (
+            "class mismatch",
+            vec!["defer", "--intent", &original, "--evidence", &ev, "--json"],
+        ),
+        (
+            "same account",
+            vec![
+                "accrue",
+                "--date",
+                "2026-03-31",
+                "--debit",
+                "6100",
+                "--credit",
+                "6100",
+                "--amount",
+                "1.00 USD",
+                "--evidence",
+                &ev,
+                "--json",
+            ],
+        ),
+        (
+            "single entry to batch",
+            vec!["batch", "--intent", &single, "--json"],
+        ),
+    ] {
+        let (code, out, err) = run(&argv);
+        assert_ne!(code, 0, "{what}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+    }
+    assert_eq!(head(), before, "no refused command writes");
     Ok(())
 }
 

@@ -365,20 +365,13 @@ pub fn fa_with_authority(
 
 /// Interpret registered aliases as the dispatcher does. Flag-looking values
 /// and words after `--` remain data; never infer discovery from raw argv.
-fn command_words<'a>(parsed: &'a args::Args, reg: &'a verbs::Registry) -> Vec<&'a str> {
-    match parsed.positional.first().and_then(|word| reg.alias(word)) {
-        Some(alias) => alias
-            .expands
-            .iter()
-            .chain(parsed.positional.iter().skip(1))
-            .map(String::as_str)
-            .collect(),
-        None => parsed.positional.iter().map(String::as_str).collect(),
-    }
+fn command_words(parsed: &args::Args, reg: &verbs::Registry) -> Vec<String> {
+    reg.expand_alias(&parsed.positional)
 }
 
 fn discovery(parsed: &args::Args, reg: &verbs::Registry) -> bool {
     let words = command_words(parsed, reg);
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
     parsed.switch("--help")
         || parsed.switch("--version")
         || matches!(
