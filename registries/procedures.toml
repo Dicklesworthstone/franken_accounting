@@ -1290,13 +1290,13 @@ meaning = "Maximum CommitSeq distance between a party identifier update and a su
 
 [[procedure]]
 id = "payroll.ghost"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L47"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "corpus"
-summary = "Ghost-employee and anomalous payroll detector: payroll postings (accounts matching `payroll` / `wage` / `salary` or descriptions matching `payroll`) citing parties with shared bank/tax identifiers, missing employee master records, or duplicate payroll disbursements to the same party in one period."
+summary = "Ghost-employee and anomalous payroll detector: payroll postings (an entry with a leg on an account holding the `payroll` account role (registries/account_roles.toml, assigned with fa chart role)) citing parties with shared bank/tax identifiers, missing employee master records, or duplicate payroll disbursements to the same party in one period. Refused when no account holds the role. Version 1 guessed payroll from account codes and names and from `payroll` in an external id's system name."
 
 [[procedure]]
 id = "expense.capitalization"
@@ -1337,13 +1337,13 @@ summary = "Systematic reversal and re-aging patterns: chains of Reversal or Repl
 
 [[procedure]]
 id = "confirm.coverage"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L51"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "External confirmation and attestation coverage (AS 2310 / ISA 505): measures the share of cash and receivable balances covered by a journaled RegisterEquals or Reviewed attestation, flagging accounts whose corroborated share in basis points falls below min_coverage_bps."
+summary = "External confirmation and attestation coverage (AS 2310 / ISA 505): measures the share of the balances of the accounts holding the `cash` account role or the `receivable` account role (registries/account_roles.toml, assigned with fa chart role) covered by a journaled RegisterEquals or Reviewed attestation, flagging accounts whose corroborated share in basis points falls below min_coverage_bps. Refused when no account holds either role. Version 1 guessed the accounts from code and name tokens."
 
 [[parameter]]
 procedure = "confirm.coverage"
@@ -1372,13 +1372,13 @@ meaning = "Haircut in basis points applied after contra-account netting to each 
 
 [[procedure]]
 id = "solvency.cash_flow_test"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L53"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Equitable cash-flow solvency test (ability to pay debts as they come due): compares liquid cash and cash-equivalent balances against open payable items and short-term obligations maturing within horizon_days of the coordinate's effective date."
+summary = "Equitable cash-flow solvency test (ability to pay debts as they come due): compares the balances of the accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role) against open payable items and short-term obligations maturing within horizon_days of the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
 effective_through = "optional"
 
 [[parameter]]
@@ -1389,13 +1389,13 @@ meaning = "Forward liquidity horizon in civil days for maturing payables and obl
 
 [[procedure]]
 id = "lookback.preferences"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L54"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Avoidable preference lookback (11 U.S.C. 547(b)-(c)): identifies transfers to creditors within 90 days (or 365 days for insiders under 11 U.S.C. 101(31) via RELATED_TO/OWNS/CONTROLS) and computes 547(c)(1) contemporaneous-exchange, 547(c)(2) ordinary-course, and 547(c)(4) subsequent-new-value defenses to report net preference exposure per creditor."
+summary = "Avoidable preference lookback (11 U.S.C. 547(b)-(c)): identifies transfers (credits to accounts holding the `cash` account role (registries/account_roles.toml, assigned with fa chart role)) to creditors within 90 days (or 365 days for insiders under 11 U.S.C. 101(31) via RELATED_TO/OWNS/CONTROLS) and computes 547(c)(1) contemporaneous-exchange, 547(c)(2) ordinary-course, and 547(c)(4) subsequent-new-value defenses to report net preference exposure per creditor. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
 effective_through = "optional"
 
 [[parameter]]
@@ -1453,13 +1453,13 @@ meaning = "UVTA section 9 fraudulent-transfer lookback window in civil days (def
 
 [[procedure]]
 id = "ponzi.net_investment"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L56"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Madoff net-equity Ponzi schedule (In re Bernard L. Madoff Investment Securities LLC, 654 F.3d 229): computes per-investor cash_in minus cash_out, investor cohort by first-inflow date, net-loser equity claims, and net-winner fictitious profits subject to clawback."
+summary = "Madoff net-equity Ponzi schedule (In re Bernard L. Madoff Investment Securities LLC, 654 F.3d 229): computes per-investor cash_in minus cash_out, investor cohort by first-inflow date, net-loser equity claims, and net-winner fictitious profits subject to clawback. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions."
 effective_through = "optional"
 
 [[parameter]]
@@ -1470,13 +1470,13 @@ meaning = "Investor cohort bucket width in civil days from the earliest investor
 
 [[procedure]]
 id = "distribution.rising_tide"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L57"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Rising-tide receivership distribution (SEC v. Huber, 702 F.3d 903): equalizes cumulative recovery rates (pre-receivership withdrawals plus receivership distribution divided by principal invested) across net-loser investors up to the exact rational water level supported by the distributable pool under LargestRemainder."
+summary = "Rising-tide receivership distribution (SEC v. Huber, 702 F.3d 903): equalizes cumulative recovery rates (pre-receivership withdrawals plus receivership distribution divided by principal invested) across net-loser investors up to the exact rational water level supported by the distributable pool under LargestRemainder. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions."
 effective_through = "optional"
 
 [[parameter]]
@@ -1487,13 +1487,13 @@ meaning = "Explicit distributable cash pool in unit mantissa (0 = use the book's
 
 [[procedure]]
 id = "distribution.pro_rata"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L58"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Cunningham v. Brown pro-rata receivership distribution: allocates the distributable cash pool across net-loser investors in exact proportion to their net unrecovered principal (cash_in minus cash_out) under LargestRemainder."
+summary = "Cunningham v. Brown pro-rata receivership distribution: allocates the distributable cash pool across net-loser investors in exact proportion to their net unrecovered principal (cash_in minus cash_out) under LargestRemainder. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions."
 effective_through = "optional"
 
 [[parameter]]

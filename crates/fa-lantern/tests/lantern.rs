@@ -2640,6 +2640,41 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
             })
             .expect("install_chart")
             .expect("chart admitted");
+        // fa-kxc4: the corpus's ground-truth account roles, journaled as
+        // `fa chart role` journals them.
+        for a in &corpus.accounts {
+            for role in &a.roles {
+                let spec = AccountRoleSpec {
+                    account: account_vid(book.book_id, &a.code),
+                    role: role.clone(),
+                    assigned: true,
+                };
+                let key = format!("role:{}:{role}", a.code);
+                let description = Erasable::seal(
+                    &"gen-role".to_string(),
+                    None,
+                    &book.seal_key,
+                    [8; 32],
+                    [8; 24],
+                );
+                runtime
+                    .block_on(async {
+                        record_account_role(
+                            &mut db,
+                            &ctx,
+                            &book,
+                            &spec,
+                            PREPARER,
+                            key.as_bytes(),
+                            description,
+                            &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+                        )
+                        .await
+                    })
+                    .expect("record_account_role")
+                    .expect("role admitted");
+            }
+        }
         let (_, periods) = runtime
             .block_on(async {
                 create_periods(
@@ -4266,11 +4301,13 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     // fa-kxc4, planted: 1500 "Network Property & CapEx" and 1300 "Merchandise
     // Inventory" hold no role, so the role-selected procedures refuse rather
     // than guess from the names.
-    let planted: [Box<dyn Procedure>; 4] = [
+    let planted: [Box<dyn Procedure>; 6] = [
         Box::new(ReconLapping::new().unwrap()),
         Box::new(ExpenseCapitalization::new().unwrap()),
         Box::new(InventoryAging::new().unwrap()),
         Box::new(ReconIntercompany::new().unwrap()),
+        Box::new(PayrollGhost::new().unwrap()),
+        Box::new(ConfirmCoverage::new().unwrap()),
     ];
     for procedure in planted {
         let refused = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap_err();
@@ -4286,6 +4323,10 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
         role_entry(&h, h.account("2000"), "payable", CommitSeq(397)),
         role_entry(&h, capex_vid, "fixed_asset", CommitSeq(396)),
         role_entry(&h, inv_vid, "inventory", CommitSeq(395)),
+        role_entry(&h, payroll_vid, "payroll", CommitSeq(394)),
+        role_entry(&h, h.account("1000"), "cash", CommitSeq(393)),
+        role_entry(&h, h.account("1010"), "cash", CommitSeq(392)),
+        role_entry(&h, h.account("1020"), "cash", CommitSeq(391)),
     ]);
     snapshot.fold_roles().unwrap();
 
@@ -5384,6 +5425,16 @@ fn fa_y4v_solvency_lookback_ponzi_distribution_and_damages_procedures() {
         e_pref_c4,
         e_fraud,
     ];
+    // fa-kxc4: the cash and investor_capital roles the solvency, preference,
+    // Ponzi and distribution procedures read, as real role controls (every
+    // 10xx Asset was cash in version 1).
+    snapshot.entries.extend([
+        role_entry(&h, h.account("1000"), "cash", CommitSeq(380)),
+        role_entry(&h, h.account("1010"), "cash", CommitSeq(381)),
+        role_entry(&h, h.account("1020"), "cash", CommitSeq(382)),
+        role_entry(&h, inv_cap_vid, "investor_capital", CommitSeq(383)),
+    ]);
+    snapshot.fold_roles().unwrap();
 
     // Add a counterfactual baseline RegisterEquals attestation on Revenue (4000) in Apr claiming 125_000
     let rev_claim = RegisterEqualsClaim {

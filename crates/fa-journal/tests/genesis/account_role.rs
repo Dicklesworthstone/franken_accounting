@@ -111,7 +111,7 @@ fn a_role_the_registry_or_the_account_does_not_admit_is_refused_and_writes_nothi
     let cases = [
         (
             h.cash,
-            "cash",
+            "revenue",
             true,
             SCHEMA,
             "is not a registered account role",

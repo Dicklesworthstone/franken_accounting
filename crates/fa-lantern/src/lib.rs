@@ -136,6 +136,17 @@ pub const ROLE_POPULATIONS: &[(&str, &str)] = &[
     ("expense.capitalization", "fixed_asset"),
     ("expense.capitalization", "accrued_expense"),
     ("aging.inventory", "inventory"),
+    ("payroll.ghost", "payroll"),
+    ("confirm.coverage", "cash"),
+    ("confirm.coverage", "receivable"),
+    ("solvency.cash_flow_test", "cash"),
+    ("lookback.preferences", "cash"),
+    ("ponzi.net_investment", "cash"),
+    ("ponzi.net_investment", "investor_capital"),
+    ("distribution.rising_tide", "cash"),
+    ("distribution.rising_tide", "investor_capital"),
+    ("distribution.pro_rata", "cash"),
+    ("distribution.pro_rata", "investor_capital"),
 ];
 
 impl LanternError {

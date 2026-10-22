@@ -20193,7 +20193,7 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
     for (name, chart, expected) in [
         (
             "unregistered.json",
-            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","roles":["cash"]}]}"#,
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","roles":["revenue"]}]}"#,
             "not a registered account role",
         ),
         (
@@ -20266,7 +20266,7 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
             "admits Asset or Liability",
         ),
         (
-            vec!["chart", "role", "1000", "cash"],
+            vec!["chart", "role", "1000", "revenue"],
             "not a registered account role",
         ),
         (
@@ -20284,6 +20284,21 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
         assert!(out.contains(expected), "{args:?}: {out}");
         assert_eq!(known_at(), head, "{args:?}");
     }
+
+    // An account opened later carries its roles the same way.
+    let opened = write(
+        &dir,
+        "clearing.json",
+        r#"{"code":"1960","name":"Lockbox clearing","type":"Asset","unit":"USD","roles":["suspense"]}"#,
+    );
+    let opened = doc(&ok(&["chart", "open", &opened, "--opened", "2026-01-01"]));
+    let opened_roles = arr(&opened, "roles");
+    assert_eq!(opened_roles.len(), 1, "{opened:?}");
+    assert_eq!(text(&opened_roles[0], "account"), "1960");
+    assert_eq!(
+        holders(&role_row(&doc(&ok(&["chart", "roles"])), "suspense")),
+        vec!["1950", "1960"]
+    );
 
     ok(&["period", "create", "--fiscal-year", "2026"]);
     ok(&["period", "open", "FY2026-P01"]);

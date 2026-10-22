@@ -161,14 +161,15 @@ mod tests {
         assert_eq!(suspense.consumers, vec!["jet.suspense_aging"]);
         assert!(roles.get("intercompany").is_some());
         assert!(
-            roles.get("cash").is_none(),
+            roles.get("revenue").is_none(),
             "a role is listed once consumed"
         );
         assert_eq!(
             roles.listing(),
-            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory"
+            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, payroll"
         );
         assert!(roles.get("payable").is_some_and(|r| !r.admits("Asset")));
+        assert!(roles.get("cash").is_some_and(|r| r.consumers.len() == 6));
     }
 
     #[test]

@@ -4287,13 +4287,28 @@ fn chart_lifecycle(ctx: &mut Ctx<'_>, args: &Args, action: &str) -> Result<(), F
                     "one account object parsed to several specs".into(),
                 ));
             };
+            let roles = crate::chart_role::chart_roles(target, &wrapped, &specs)?;
             let key = args
                 .flag("--key")
                 .map_or_else(|| format!("account-open:{}", spec.code), str::to_string);
             let recorded =
                 book.open_account(spec, opened, closed, who, date, key.as_bytes(), &capability)??;
+            // fa-kxc4: the opened account's roles, each its own control keyed
+            // under the open's key, so a retried open completes them.
+            let mut role_items = Vec::with_capacity(roles.len());
+            for (code, role) in &roles {
+                let role_spec = fa::account_role::AccountRoleSpec {
+                    account: fa_model::account_vid(book.context().book_id, code),
+                    role: role.clone(),
+                    assigned: true,
+                };
+                let role_key = format!("{key}:role:{role}");
+                let held =
+                    book.record_account_role(&role_spec, who, role_key.as_bytes(), &capability)??;
+                role_items.push(crate::chart_role::account_role_json(&held.control, code));
+            }
             out.at_book(&book)?;
-            (spec.code.clone(), recorded)
+            (spec.code.clone(), recorded, role_items)
         }
         _ => {
             let on = required_day("--on")?;
@@ -4314,10 +4329,10 @@ fn chart_lifecycle(ctx: &mut Ctx<'_>, args: &Args, action: &str) -> Result<(), F
                 book.promote_to_summary(target, on, who, date, key.as_bytes(), &capability)??
             };
             out.at_book(&book)?;
-            (target.to_string(), recorded)
+            (target.to_string(), recorded, Vec::new())
         }
     };
-    let (code, recorded) = recorded;
+    let (code, recorded, role_items) = recorded;
     out.event(
         "account_lifecycle",
         vec![
@@ -4330,6 +4345,7 @@ fn chart_lifecycle(ctx: &mut Ctx<'_>, args: &Args, action: &str) -> Result<(), F
             ),
             ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
             ("already_recorded", Json::Bool(recorded.already_recorded)),
+            ("roles", Json::Arr(role_items)),
         ],
         &format!(
             "{} account {code} (control entry {:032x}, recorded at {}){}",

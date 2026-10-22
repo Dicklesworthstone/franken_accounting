@@ -2079,8 +2079,8 @@ fields = ["known_at:seq", "instruments:[instrument_summary]"]
 [[event]]
 name = "account_lifecycle"
 book = true
-doc = "An account's life cycle moved by one journaled SchemaChange control (plan §4.3, §5.6): action is open, close or promote; already_recorded is true when an exact retry found the recorded control and wrote nothing."
-fields = ["action:string", "code:string", "account:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+doc = "An account's life cycle moved by one journaled SchemaChange control (plan §4.3, §5.6): action is open, close or promote; already_recorded is true when an exact retry found the recorded control and wrote nothing. `roles` lists the account roles an opened account carries, each journaled after the open as its own role control (bead fa-kxc4); it is empty for close and promote."
+fields = ["action:string", "code:string", "account:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool", "roles:[account_role]"]
 
 [[event]]
 name = "journal_exported"

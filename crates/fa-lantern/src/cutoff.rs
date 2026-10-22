@@ -831,34 +831,25 @@ impl Procedure for PartyMasterChanges {
 }
 
 /// `payroll.ghost` (plan §11.7, `FA-EVID-L47`, `calibration = "corpus"`):
-/// ghost-employee and anomalous payroll detector. Flags payroll postings that:
+/// ghost-employee and anomalous payroll detector. A payroll posting is one
+/// with a leg on an account holding the `payroll` role. Flags those that:
 /// (1) share an identical disbursement amount with another payroll posting in
 ///     the same period,
 /// (2) pay a party whose bank or tax identifier is shared with another party, or
 /// (3) occur off-cycle on a weekend or under self-approval.
+/// Version 2 selects by role; version 1 guessed from account codes and names
+/// and from "payroll" in an external id's system name (fa-kxc4).
 pub struct PayrollGhost {
     params: Params,
 }
 procedure_boilerplate!(PayrollGhost, "payroll.ghost");
-
-fn is_payroll_account(code: &str, name: &str) -> bool {
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl == "1050"
-        || cl == "2200"
-        || cl == "6300"
-        || nl.contains("payroll")
-        || nl.contains("wage")
-        || nl.contains("salary")
-        || nl.contains("salaries")
-}
 
 impl Procedure for PayrollGhost {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -907,22 +898,16 @@ impl Procedure for PayrollGhost {
             weekend_or_self_approved: bool,
         }
 
+        let payroll_accounts = snapshot.role_population(Self::ID)?;
         let mut payroll_entries: Vec<PayrollEntryInfo> = Vec::new();
         for e in &live {
             work.entry()?;
-            let mut is_payroll = e
-                .entry
-                .proposal
-                .external_ids
-                .iter()
-                .any(|x| x.system.to_ascii_lowercase().contains("payroll"));
+            let mut is_payroll = false;
             let mut max_leg: Option<(u32, i128)> = None;
             let mut party: Option<VId> = None;
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                if let Some(acct) = snapshot.accounts.get(&leg.account_ref)
-                    && is_payroll_account(&acct.code, &acct.name)
-                {
+                if payroll_accounts.contains(&leg.account_ref) {
                     is_payroll = true;
                 }
                 let mag = leg.amount.mantissa.unsigned_abs() as i128;
@@ -1218,34 +1203,21 @@ impl Procedure for ReversalPatterns {
 }
 
 /// `confirm.coverage` (plan §11.7, `FA-EVID-L51`, AS 2310 / ISA 505):
-/// external confirmation and attestation coverage over cash and receivable
-/// accounts. Flags accounts whose corroborated debit share in basis points falls
-/// below `min_coverage_bps`.
+/// external confirmation and attestation coverage over the accounts holding
+/// the `cash` or `receivable` role. Flags accounts whose corroborated debit
+/// share in basis points falls below `min_coverage_bps`. Version 2 selects by
+/// role; version 1 guessed from code and name tokens (fa-kxc4).
 pub struct ConfirmCoverage {
     params: Params,
 }
 procedure_boilerplate!(ConfirmCoverage, "confirm.coverage");
-
-fn is_confirmable_asset(code: &str, name: &str, account_type: AccountType) -> bool {
-    if account_type != AccountType::ASSET {
-        return false;
-    }
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl.starts_with("10")
-        || cl.starts_with("11")
-        || cl.starts_with("12")
-        || nl.contains("cash")
-        || nl.contains("bank")
-        || nl.contains("receivable")
-}
 
 impl Procedure for ConfirmCoverage {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1265,6 +1237,7 @@ impl Procedure for ConfirmCoverage {
             });
         }
 
+        let confirmable = snapshot.role_population(Self::ID)?;
         // Collect accounts/periods covered by a RegisterEquals attestation
         let mut attested_cells: BTreeSet<(VId, u32, String)> = BTreeSet::new();
         for att in snapshot.attestations.values() {
@@ -1288,13 +1261,7 @@ impl Procedure for ConfirmCoverage {
             });
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                if leg.side != Side::Debit {
-                    continue;
-                }
-                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
-                    continue;
-                };
-                if !is_confirmable_asset(&acct.code, &acct.name, AccountType(acct.account_type)) {
+                if leg.side != Side::Debit || !confirmable.contains(&leg.account_ref) {
                     continue;
                 }
                 population += 1;
@@ -1368,21 +1335,6 @@ impl Procedure for ConfirmCoverage {
         }
         Ok(out)
     }
-}
-
-fn is_liquid_cash_account(code: &str, name: &str, account_type: AccountType) -> bool {
-    if account_type != AccountType::ASSET {
-        return false;
-    }
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl.starts_with("10")
-        || nl.contains("cash")
-        || nl.contains("bank")
-        || nl.contains("checking")
-        || nl.contains("operating")
-        || nl.contains("treasury")
-        || nl.contains("trust")
 }
 
 /// `solvency.balance_sheet_test` (plan §11.6, `FA-EVID-L52`):
@@ -1536,9 +1488,10 @@ impl Procedure for SolvencyBalanceSheetTest {
 
 /// `solvency.cash_flow_test` (plan §11.6, `FA-EVID-L53`):
 /// Equitable cash-flow solvency test (ability to pay debts as they come due).
-/// Compares liquid cash and cash-equivalent asset balances against unpaid
-/// liabilities and pending commitments maturing within `horizon_days` of the
-/// coordinate's effective date.
+/// Compares the balances of the accounts holding the `cash` role against
+/// unpaid liabilities and pending commitments maturing within `horizon_days`
+/// of the coordinate's effective date. Version 2 selects cash by role;
+/// version 1 guessed it from code and name tokens (fa-kxc4).
 pub struct SolvencyCashFlowTest {
     params: Params,
 }
@@ -1549,7 +1502,7 @@ impl Procedure for SolvencyCashFlowTest {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1569,6 +1522,7 @@ impl Procedure for SolvencyCashFlowTest {
             });
         }
 
+        let cash = snapshot.role_population(Self::ID)?;
         let mut all_live = snapshot.live_postings()?;
         all_live.sort_by_key(|e| e.vid);
         let ref_date = snapshot.coordinate.effective_through.unwrap_or_else(|| {
@@ -1599,7 +1553,7 @@ impl Procedure for SolvencyCashFlowTest {
                 };
                 let at = AccountType(acct.account_type);
                 let signed = signed_leg(leg.side, leg.amount.mantissa)?;
-                if eff <= ref_date && is_liquid_cash_account(&acct.code, &acct.name, at) {
+                if eff <= ref_date && cash.contains(&leg.account_ref) {
                     population += 1;
                     let c = cash_net
                         .entry((leg.account_ref, leg.amount.unit.0))
@@ -1742,7 +1696,9 @@ fn is_insider_at(snapshot: &Snapshot, party_vid: VId, as_of: DateDay) -> bool {
 /// - §547(c)(2) ordinary course of business (`|days_to_pay - baseline_avg| <= ordinary_course_tolerance_days`),
 /// - §547(c)(4) subsequent new value (unpaid subsequent credit extended after a preference transfer),
 ///
-/// emitting net avoidable preference exposure per creditor.
+/// emitting net avoidable preference exposure per creditor. A transfer is a
+/// credit to an account holding the `cash` role. Version 2 selects cash by
+/// role; version 1 guessed it from code and name tokens (fa-kxc4).
 pub struct LookbackPreferences {
     params: Params,
 }
@@ -1753,7 +1709,7 @@ impl Procedure for LookbackPreferences {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1807,6 +1763,7 @@ impl Procedure for LookbackPreferences {
         }
 
         let through = snapshot.coordinate.effective_through;
+        let cash = snapshot.role_population(Self::ID)?;
         let mut live = snapshot.live_postings_through(through)?;
         live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
         if live.is_empty() {
@@ -1876,9 +1833,7 @@ impl Procedure for LookbackPreferences {
                 accts_by_unit.entry(u).or_default().insert(leg.account_ref);
 
                 let total = match (leg.side, at) {
-                    (Side::Credit, AccountType::ASSET)
-                        if is_liquid_cash_account(&acct.code, &acct.name, at) =>
-                    {
+                    (Side::Credit, AccountType::ASSET) if cash.contains(&leg.account_ref) => {
                         cash_credit_by_unit.entry(u).or_default()
                     }
                     (Side::Debit, AccountType::LIABILITY | AccountType::EXPENSE) => {
@@ -2307,34 +2262,21 @@ struct InvestorPosition {
     entries: BTreeSet<VId>,
 }
 
-fn is_investor_contra_account(code: &str, name: &str, account_type: AccountType) -> bool {
-    if account_type == AccountType::EQUITY {
-        return true;
-    }
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl.starts_with("21")
-        || cl.starts_with("25")
-        || cl.starts_with("30")
-        || nl.contains("investor")
-        || nl.contains("capital")
-        || nl.contains("subscription")
-        || nl.contains("redemption")
-        || nl.contains("distribution")
-        || nl.contains("deposit")
-        || nl.contains("ponzi")
-        || nl.contains("partner")
-}
-
 type InvestorPopulation = (Vec<InvestorPosition>, BTreeMap<u32, i128>, u64);
 
 /// Collect investor cash-in and cash-out positions per `(party_vid, unit_id)`,
-/// plus ending positive cash balance per `unit_id`.
+/// plus ending positive cash balance per `unit_id`, for `procedure`. Cash is
+/// the accounts holding its `cash` role (required); an entry is an investor
+/// movement when its contra leg is on an Equity account or one holding the
+/// `investor_capital` role. Version 1 guessed both from code and name tokens
+/// and from words in the entry's description (fa-kxc4).
 fn collect_investor_positions(
+    procedure: &str,
     snapshot: &Snapshot,
-    book: &BookContext,
     work: &mut Meter<'_>,
 ) -> Result<InvestorPopulation, LanternError> {
+    let cash = snapshot.required_role(procedure, "cash")?;
+    let investor_capital = snapshot.role_accounts(procedure, "investor_capital")?;
     let through = snapshot.coordinate.effective_through;
     let mut live = snapshot.live_postings_through(through)?;
     live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
@@ -2348,18 +2290,6 @@ fn collect_investor_positions(
     for e in &live {
         work.entry()?;
         let eff = e.entry.proposal.effective_date;
-        let desc_lower = e
-            .entry
-            .proposal
-            .description
-            .open(&book.seal_key, fa_model::limits::MAX_DESCRIPTION_BYTES)
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let desc_investor = desc_lower.contains("investor")
-            || desc_lower.contains("subscription")
-            || desc_lower.contains("redemption")
-            || desc_lower.contains("distribution")
-            || desc_lower.contains("ponzi");
 
         let mut parties_in_entry: BTreeSet<VId> = BTreeSet::new();
         let mut cash_dr_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
@@ -2381,7 +2311,7 @@ fn collect_investor_positions(
             let u = leg.amount.unit.0;
             accts_by_unit.entry(u).or_default().insert(leg.account_ref);
 
-            if is_liquid_cash_account(&acct.code, &acct.name, at) {
+            if cash.contains(&leg.account_ref) {
                 let balance = cash_balance_by_unit.entry(u).or_default();
                 match leg.side {
                     Side::Debit => {
@@ -2395,7 +2325,7 @@ fn collect_investor_positions(
                         *balance = amount_difference(*balance, mag, "investor cash balance")?;
                     }
                 }
-            } else if is_investor_contra_account(&acct.code, &acct.name, at) || desc_investor {
+            } else if at == AccountType::EQUITY || investor_capital.contains(&leg.account_ref) {
                 contra_investor_flag.insert(u, true);
             }
         }
@@ -2497,7 +2427,7 @@ impl Procedure for PonziNetInvestment {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2517,7 +2447,7 @@ impl Procedure for PonziNetInvestment {
             });
         }
 
-        let (investors, _, population) = collect_investor_positions(snapshot, book, work)?;
+        let (investors, _, population) = collect_investor_positions(Self::ID, snapshot, work)?;
         if investors.is_empty() {
             return Ok(Vec::new());
         }
@@ -2596,7 +2526,7 @@ impl Procedure for DistributionRisingTide {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2617,7 +2547,7 @@ impl Procedure for DistributionRisingTide {
         }
 
         let (investors, cash_by_unit, population) =
-            collect_investor_positions(snapshot, book, work)?;
+            collect_investor_positions(Self::ID, snapshot, work)?;
         let mut by_unit: BTreeMap<u32, Vec<InvestorPosition>> = BTreeMap::new();
         for pos in investors {
             if pos.cash_in > pos.cash_out {
@@ -2748,7 +2678,7 @@ impl Procedure for DistributionProRata {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2769,7 +2699,7 @@ impl Procedure for DistributionProRata {
         }
 
         let (investors, cash_by_unit, population) =
-            collect_investor_positions(snapshot, book, work)?;
+            collect_investor_positions(Self::ID, snapshot, work)?;
         let mut by_unit: BTreeMap<u32, Vec<InvestorPosition>> = BTreeMap::new();
         for pos in investors {
             if pos.cash_in > pos.cash_out {

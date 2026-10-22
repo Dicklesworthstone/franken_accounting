@@ -13,7 +13,7 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
         &["book", "create", "--name", "Extended analytic replay"],
     );
     let chart = dir.join("chart.json");
-    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash A","type":"Asset","unit":"USD"},{"code":"1010","name":"Cash B","type":"Asset","unit":"USD"},{"code":"1020","name":"Cash C","type":"Asset","unit":"USD"},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#).unwrap();
+    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash A","type":"Asset","unit":"USD","roles":["cash"]},{"code":"1010","name":"Cash B","type":"Asset","unit":"USD","roles":["cash"]},{"code":"1020","name":"Cash C","type":"Asset","unit":"USD","roles":["cash"]},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#).unwrap();
     ok(&path, &["chart", "import", chart.to_str().unwrap()]);
     ok(&path, &["period", "create", "--fiscal-year", "2026"]);
     ok(&path, &["period", "open", "FY2026-P01"]);

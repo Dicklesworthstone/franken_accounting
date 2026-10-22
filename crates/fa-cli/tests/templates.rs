@@ -124,6 +124,20 @@ fn templates_list_without_a_book_and_import_into_any_base_unit() {
             &["chart", "import", "--template", template, "--json"],
         );
         assert_eq!(data(&installed, "template").as_str(), Some(*template));
+        // fa-kxc4: a template journals the account roles its accounts carry.
+        let roles = data(&installed, "roles").as_arr().expect("roles");
+        assert!(!roles.is_empty(), "{template}: seeds account roles");
+        let holds = |code: &str, role: &str| {
+            roles.iter().any(|r| {
+                r.get("account").and_then(Json::as_str) == Some(code)
+                    && r.get("role").and_then(Json::as_str) == Some(role)
+            })
+        };
+        match *template {
+            "us-gaap-smb" => assert!(holds("1010", "cash") && holds("1200", "receivable")),
+            "ifrs-sme" => assert!(holds("2500", "cash") && holds("5100", "payable")),
+            _ => assert!(holds("1600", "fixed_asset") && !holds("1420", "receivable")),
+        }
         let listed = templates
             .iter()
             .find(|t| t.get("name").and_then(Json::as_str) == Some(*template))
