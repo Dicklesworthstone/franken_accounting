@@ -327,3 +327,14 @@ local fallback ran. Test results and exact source identity belong in the
 bead when execution completes. Typed, evidenced valuation adjustments
 remain unimplemented in this same open bead; this repair is a book-basis
 screen and does not establish fair value or a legal solvency conclusion.
+
+Update 2026-10-22: the focused Rust run exited 0 with seven tests passed
+(one facade certificate case, two real CLI cases and four Lantern cases).
+The authenticated historical assertion, signed basis and temporal controls,
+numeric/citation boundaries, method-version refusal and retained replay all
+executed. The RCH receipt binds base `1b1c1853` and test overlays to tree
+`b53fcc8752d4a8f8853269e434c2274f22e28cd2`; the complete transcript is
+`/Volumes/trj-data/projects/franken_accounting-verification-output/solvency-rooted-20261022.log`.
+This is focused development evidence. Shared main advanced to `324eeec4`
+during that run and needs its own verification; neither the canonical full
+gate nor typed documented valuations are complete.

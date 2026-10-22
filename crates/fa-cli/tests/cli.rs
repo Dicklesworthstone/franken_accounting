@@ -12749,7 +12749,9 @@ fn concentration_refuses_overflow_from_individually_valid_posts() -> std::io::Re
         .to_owned();
     let positive = doc(&ok(&["procedure", "run", "graph.concentration"]));
     assert_eq!(int(&positive, "finding_count"), Some(2));
-    assert!(arr(&positive, "findings").iter().all(|finding| {
+    let findings = arr(&positive, "findings");
+    assert_eq!(findings.len(), 2);
+    assert!(findings.iter().all(|finding| {
         let statistic = finding.get("statistic").unwrap();
         text(statistic, "name") == "flow_share_bps" && int(statistic, "value") == Some(10_000)
     }));
