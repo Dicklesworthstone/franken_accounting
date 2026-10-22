@@ -1270,6 +1270,14 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
         seed: 0,
     };
 
+    // A launch-bound session never carries --yes: it is a usage error before
+    // any authority check (8716620a), so a row that needs it is the
+    // operator's on the host. The token matrix still judges such rows; the
+    // bound route must refuse them as usage whatever the token holds.
+    let (yes_rows, bound_rows): (Vec<&Row>, Vec<&Row>) = bound_rows
+        .into_iter()
+        .partition(|r| r.argv.iter().any(|a| a == "--yes"));
+
     // The bound-route table names exactly each row's operations.
     for row in &rows {
         assert_eq!(
@@ -1391,6 +1399,17 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
                 }
             }
         }
+    }
+    for row in &yes_rows {
+        let authority = tokens(&mut m, &row.ops);
+        let (exit, out) = m.bound(&authority, &row.argv);
+        assert_eq!(exit, 2, "{:?}: {out:?}", row.argv);
+        let message = "--yes cannot override launch-bound authority";
+        assert!(
+            out.stdout.contains(message) || out.stderr.contains(message),
+            "{:?}: {out:?}",
+            row.argv
+        );
     }
 }
 
