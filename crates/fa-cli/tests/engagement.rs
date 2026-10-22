@@ -903,6 +903,24 @@ fn documentation_completes_once_within_45_days_and_marks_every_later_addition() 
         Some(&Json::Bool(true)),
         "a document is filed once"
     );
+    let refiled = f.refused(
+        &[
+            "engagement",
+            "file",
+            "FY26-audit",
+            "--document",
+            &before,
+            "--key",
+            "again",
+        ],
+        6,
+        "FA-REF-032",
+    );
+    assert!(
+        text(data(&refiled), "message").contains("is already in engagement `FY26-audit`'s index"),
+        "{}",
+        refiled.render()
+    );
     f.refused(
         &[
             "engagement",
@@ -1460,7 +1478,7 @@ fn findings_are_filed_in_the_index_once_and_marked_after_completion() {
         2,
         "FA-REF-100",
     );
-    f.refused(
+    let refiled = f.refused(
         &[
             "engagement",
             "file",
@@ -1472,6 +1490,17 @@ fn findings_are_filed_in_the_index_once_and_marked_after_completion() {
         ],
         6,
         "FA-REF-032",
+    );
+    // The refusal names the filing; a new key cannot help, so it says none.
+    assert!(
+        text(data(&refiled), "message").contains("is already in engagement `FY26-audit`'s index"),
+        "{}",
+        refiled.render()
+    );
+    assert!(
+        !text(data(&refiled), "fix").contains("new --key"),
+        "{}",
+        refiled.render()
     );
     let (status, output) = f.run(&[
         "engagement",
