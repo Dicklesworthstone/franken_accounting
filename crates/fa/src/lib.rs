@@ -143,6 +143,7 @@ pub use equity_certificate::{
     EquityRollForwardCertificate, MAX_EQUITY_CERTIFICATE_BYTES,
 };
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
+pub use fa_docket::intake::{DerivedDocumentResult, extract_pdf_text_layer};
 pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
     BatchPlan, BatchPlanCertificate, IntentError, MAX_BATCH_BYTES, MAX_BATCH_PLAN_BYTES,
