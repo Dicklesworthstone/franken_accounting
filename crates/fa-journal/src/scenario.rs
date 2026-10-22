@@ -1441,6 +1441,26 @@ pub async fn fork_receivership<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit(db, book, &capability, Kind::Open)? {
         return Ok(Err(r));
     }
+    // What the Open below would refuse is refused before the hold is
+    // written, so a refused fork leaves nothing behind: a `receivership`
+    // scenario another principal opened, or one already discarded.
+    if let Some(existing) = read_scenario(db, book, RECEIVERSHIP)? {
+        if existing.state != ScenarioState::Open {
+            return Ok(Err(not_open(&existing.body, existing.state)));
+        }
+        if existing.body.owner != holder {
+            return Ok(Err(Refusal::new(
+                code::IDEMPOTENCY_CONFLICT,
+                exit::CONFLICT,
+                format!(
+                    "this book's receivership was forked by principal {:032x}; a book has one receivership",
+                    existing.body.owner.0
+                ),
+                "plan §15.6 (the receivership is one branch at the appointment)",
+                format!("inspect it with `fa scenario show {RECEIVERSHIP} --json`"),
+            )));
+        }
+    }
     let appointment = match (at, recorded_appointment(db, book, holder)?) {
         (Some(at), Some(recorded)) if at != recorded => {
             return Ok(Err(Refusal::new(

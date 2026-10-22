@@ -5511,6 +5511,61 @@ fn the_receivership_fork_needs_its_authority_and_is_one_per_book() {
     assert_eq!(book.head().expect("head"), head, "nothing written");
 }
 
+/// A fork the `receivership` scenario's Open would refuse (another
+/// principal already opened that name) is refused before the hold is
+/// written: nothing is left behind.
+#[test]
+fn a_refused_receivership_fork_writes_no_hold() {
+    let book_id = Id128([0x4b; 16]);
+    let (spec, _) = spec(book_id);
+    let mut book = Book::create_memory(
+        BookKeys::for_development(0x4b),
+        spec,
+        Entropy::deterministic(0x4b),
+    )
+    .expect("create");
+    let receiver = VId(1);
+    let day = DateDay::from_ymd(2026, 3, 20).unwrap();
+    let doc = |bytes: &[u8]| fa_journal::Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: receiver,
+        bytes: bytes.to_vec(),
+    };
+    let ledger = book
+        .add_document(&doc(b"GENERAL LEDGER EXPORT (pre-appointment)"))
+        .expect("kernel")
+        .expect("admitted");
+    let order = book
+        .add_document(&doc(b"ORDER APPOINTING RECEIVER (refused fork)"))
+        .expect("kernel")
+        .expect("admitted");
+    let other = Capability::embedded(VId(9), &["post"]).expect("post");
+    book.open_scenario(
+        other,
+        fa_journal::RECEIVERSHIP,
+        fa_journal::ScenarioFork::default(),
+        day,
+        "a scenario that took the name",
+    )
+    .expect("kernel")
+    .expect("opened");
+    let head = book.head().expect("head");
+    let cap = Capability::embedded(receiver, &["receivership", "hold", "post"]).expect("receiver");
+    let r = book
+        .fork_receivership(cap, order.oid, None, day, "receivership")
+        .expect("kernel")
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-032", 6), "{r}");
+    assert_eq!(book.head().expect("head"), head, "nothing written");
+    assert!(
+        book.legal_holds_on(ledger.vid).unwrap().is_empty(),
+        "no hold"
+    );
+}
+
 #[test]
 fn a_bank_statement_through_the_facade_reads_redacted_until_privileged() {
     let book_id = Id128([0x49; 16]);
