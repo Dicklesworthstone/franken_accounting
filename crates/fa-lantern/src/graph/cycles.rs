@@ -29,10 +29,12 @@ impl Edge {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Error {
+pub(crate) enum Error<E> {
     Parameters,
     NonPositiveAmount,
     SearchLimit,
+    /// The caller's meter refused a step (its budget or cancellation).
+    Meter(E),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,12 +42,11 @@ pub(crate) struct Cycles {
     /// Paths refer to positions in the caller's `edges`. Every edge is used
     /// in at most one path; rotations are not additional findings.
     pub paths: Vec<Vec<usize>>,
-    pub steps: u64,
 }
 
 type Adjacency = BTreeMap<(Option<u128>, u32, i128, u128), Vec<usize>>;
 
-struct Search<'a> {
+struct Search<'a, E> {
     edges: &'a [Edge],
     adjacent: &'a Adjacency,
     used: &'a [bool],
@@ -57,10 +58,11 @@ struct Search<'a> {
     window_days: i64,
     steps: &'a mut u64,
     max_steps: u64,
+    meter: &'a mut dyn FnMut() -> Result<(), E>,
 }
 
-impl Search<'_> {
-    fn extend(&mut self) -> Result<Option<Vec<usize>>, Error> {
+impl<E> Search<'_, E> {
+    fn extend(&mut self) -> Result<Option<Vec<usize>>, Error<E>> {
         let last = self.edges[*self.path.last().ok_or(Error::Parameters)?];
         let key = self.origin.key(last.to);
         let Some(adjacent) = self.adjacent.get(&key) else {
@@ -71,7 +73,7 @@ impl Search<'_> {
         let start = adjacent.partition_point(|i| self.edges[*i].time() <= last.time());
         let end = adjacent.len();
         for cursor in start..end {
-            charge(self.steps, self.max_steps)?;
+            charge(self.steps, self.max_steps, self.meter)?;
             let index = self.adjacent[&key][cursor];
             let edge = self.edges[index];
             // Widen BEFORE subtracting: valid DateDay values can span i32.
@@ -103,12 +105,19 @@ impl Search<'_> {
     }
 }
 
-fn charge(steps: &mut u64, limit: u64) -> Result<(), Error> {
+/// One search step: refused past the procedure's own bound, then charged to
+/// the caller's meter, so a run's budget and cancellation stop the search
+/// mid-way rather than after it returns.
+fn charge<E>(
+    steps: &mut u64,
+    limit: u64,
+    meter: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<(), Error<E>> {
     if *steps >= limit {
         return Err(Error::SearchLimit);
     }
     *steps += 1;
-    Ok(())
+    meter().map_err(Error::Meter)
 }
 
 /// Canonical, greedy, edge-disjoint simple cycles of 2..=max_hops transfers.
@@ -118,12 +127,14 @@ fn charge(steps: &mut u64, limit: u64) -> Result<(), Error> {
 /// Every transfer must have the same amount, unit and legal entity. An entry
 /// cannot serve as two hops. Reaching the work bound refuses the WHOLE run;
 /// partial results must not masquerade as a complete successful report.
-pub(crate) fn find(
+/// `meter` is charged once per step; its refusal ends the search.
+pub(crate) fn find<E>(
     edges: &[Edge],
     max_hops: usize,
     window_days: i32,
     max_steps: u64,
-) -> Result<Cycles, Error> {
+    meter: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<Cycles, Error<E>> {
     if !(2..=8).contains(&max_hops) || window_days < 0 || max_steps == 0 {
         return Err(Error::Parameters);
     }
@@ -146,7 +157,7 @@ pub(crate) fn find(
     let mut paths = Vec::new();
     let mut steps = 0;
     for start in order {
-        charge(&mut steps, max_steps)?;
+        charge(&mut steps, max_steps, meter)?;
         let origin = edges[start];
         if used[start] || origin.from == origin.to {
             continue;
@@ -163,6 +174,7 @@ pub(crate) fn find(
             window_days: i64::from(window_days),
             steps: &mut steps,
             max_steps,
+            meter: &mut *meter,
         }
         .extend()?;
         if let Some(path) = path {
@@ -172,12 +184,17 @@ pub(crate) fn find(
             paths.push(path);
         }
     }
-    Ok(Cycles { paths, steps })
+    Ok(Cycles { paths })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The search with a meter that never refuses.
+    fn find(edges: &[Edge], hops: usize, window: i32, steps: u64) -> Result<Cycles, Error<()>> {
+        super::find(edges, hops, window, steps, &mut || Ok(()))
+    }
 
     fn edge(entry: u128, from: u128, to: u128, day: i32) -> Edge {
         Edge {
@@ -281,6 +298,45 @@ mod tests {
         assert!(find(&edges, 2, i32::MAX, 1000).unwrap().paths.is_empty());
         edges[1].day = i32::MIN + 1;
         assert_eq!(find(&edges, 2, 1, 1000).unwrap().paths.len(), 1);
+    }
+
+    /// fa-1tvm: every step is charged to the caller's meter as it is taken,
+    /// so a meter that refuses at its third charge ends the search there,
+    /// mid-way, with the meter's own refusal and no partial result.
+    #[test]
+    fn the_meter_is_charged_per_step_and_its_refusal_stops_the_search() {
+        let edges = [
+            edge(1, 10, 20, 1),
+            edge(2, 20, 30, 2),
+            edge(3, 30, 10, 3),
+            edge(4, 10, 40, 4),
+            edge(5, 40, 50, 5),
+            edge(6, 50, 60, 6),
+            edge(7, 60, 10, 7),
+        ];
+        let mut taken = 0u64;
+        let found = super::find(&edges, 4, 10, 1000, &mut || {
+            taken += 1;
+            Ok::<(), &str>(())
+        })
+        .unwrap();
+        assert_eq!(found.paths.len(), 2);
+        assert!(taken > 3, "the search took {taken} steps");
+        let mut charged = 0u64;
+        let stopped = super::find(&edges, 4, 10, 1000, &mut || {
+            charged += 1;
+            if charged == 3 { Err("budget") } else { Ok(()) }
+        });
+        assert_eq!(stopped, Err(Error::Meter("budget")));
+        assert_eq!(charged, 3);
+        // The procedure's own bound refuses before the meter is charged again.
+        let mut bounded = 0u64;
+        let limited = super::find(&edges, 4, 10, 2, &mut || {
+            bounded += 1;
+            Ok::<(), &str>(())
+        });
+        assert_eq!(limited, Err(Error::SearchLimit));
+        assert_eq!(bounded, 2);
     }
 
     #[test]
