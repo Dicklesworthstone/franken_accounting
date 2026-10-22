@@ -699,14 +699,14 @@ example = "fa export ads --period FY2026-P03 --out ./ads-2026-03 --book ./books/
 
 [[verb]]
 name = "verify"
-summary = "Verify derived state against the journal: leg projections, refolded registers, cumulative daily usage, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, complete native period history, accumulator states, or a replay of the whole history (exit 8 on drift)."
+summary = "Verify derived state against the journal: leg projections, refolded registers, cumulative daily usage, open-item applied mirrors, limited accounts' availability cells, scheduled reversals, complete native period history, accumulator states, FX valuations recomputed from their Rate documents, or a replay of the whole history (exit 8 on drift)."
 writes = false
-subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "replay", "close"]
+subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "fx-conversion", "replay", "close"]
 flags = ["--period", "--fiscal-year", "--as-known-at"]
 switches = []
-events = ["registers_verified", "entities_verified", "open_items_verified", "availability_verified", "usage_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "replay_verified", "close_verified", "book_verification"]
+events = ["registers_verified", "entities_verified", "open_items_verified", "availability_verified", "usage_verified", "accumulator_verified", "projections_verified", "schedules_verified", "periods_verified", "fx_conversion_verified", "replay_verified", "close_verified", "book_verification"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["verify book   (every target below except close, cheapest first: projections, periods, schedules, accumulator, open-items, availability, usage, entities and registers over every period, replay; each emits its own event, then book_verification names each verdict: pass, fail, error or skipped. Exit 8 when any target fails; otherwise the first other failure is returned as itself after the remaining targets ran)", "verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)   (also verifies cumulative daily usage at current head before checking the selected period folds)", "verify usage [--as-known-at HEAD|<seq>|<RFC3339>]   (refold every native daily charge and UsageCell from retained history at the selected prefix, including original issuance, gross-debit source entries and committed time witnesses; requires current whole-book read and verify authority; no period filter, no writes or implicit repair; FA-REF-167, exit 8 on drift)", "verify replay   (replays every accounting commit's recorded rows into a fresh scratch book and checks it against the source pair by pair: the same entries with the same digests, and the same period folds. It proves the retained history reproduces the book's accounting state, not that the posting laws hold: rows are copied, not re-posted, and both sides fold with the same code. No period filter; exit 8 on any difference; history the scratch replay cannot reproduce, a divergence included, is FA-REF-134, exit 5)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)", "verify entities (--period <code>)... | --fiscal-year N   (FA-INV-01 per-entity: refold each period's per-legal-entity register and prove it against the journal: per account and unit the entity cells sum to the plain fold, every entry balances per unit and legal entity, and in a multi-entity book every leg names a declared entity; exit 8 on any finding)"]
+usage = ["verify book   (every target below except close, cheapest first: projections, periods, schedules, accumulator, open-items, availability, usage, fx-conversion, entities and registers over every period, replay; each emits its own event, then book_verification names each verdict: pass, fail, error or skipped. Exit 8 when any target fails; otherwise the first other failure is returned as itself after the remaining targets ran)", "verify close FY2026 [--as-known-at <sequence>] (check nominal-zero at the last Closing and later deltas at that recorded prefix; exit 8 when a close or reclose is needed)", "verify registers ((--period <code>)... | --fiscal-year N)   (also verifies cumulative daily usage at current head before checking the selected period folds)", "verify usage [--as-known-at HEAD|<seq>|<RFC3339>]   (refold every native daily charge and UsageCell from retained history at the selected prefix, including original issuance, gross-debit source entries and committed time witnesses; requires current whole-book read and verify authority; no period filter, no writes or implicit repair; FA-REF-167, exit 8 on drift)", "verify replay   (replays every accounting commit's recorded rows into a fresh scratch book and checks it against the source pair by pair: the same entries with the same digests, and the same period folds. It proves the retained history reproduces the book's accounting state, not that the posting laws hold: rows are copied, not re-posted, and both sides fold with the same code. No period filter; exit 8 on any difference; history the scratch replay cannot reproduce, a divergence included, is FA-REF-134, exit 5)", "verify open-items", "verify availability", "verify accumulator (every recorded checkpoint; no period filter)", "verify projections (all entry payloads and leg topology at current head; no period filter)", "verify schedules (every Schedule vertex and SCHEDULED_BY mirror; no period filter)", "verify periods [--as-known-at HEAD|<seq>|<RFC3339>] (loads the complete native journal history through one selected prefix, verifies immutable Entry births, then checks every Period against its birth baseline and PeriodControl transitions; current read and verify authority required; no period filter; missing history or deleted declarations never produce a successful verification)", "verify fx-conversion [--as-known-at HEAD|<seq>|<RFC3339>]   (FA-INV-01 base: every FX-valued entry recorded at the selected prefix recomputed from the Rate documents it cites under the FX law it names, the law's registered row whatever its status now; a valued Reversal must be the exact side-swap of the entry it reverses; current whole-book read and verify authority; no period filter; exit 8 on any entry that does not recompute)", "verify entities (--period <code>)... | --fiscal-year N   (FA-INV-01 per-entity: refold each period's per-legal-entity register and prove it against the journal: per account and unit the entity cells sum to the plain fold, every entry balances per unit and legal entity, and in a multi-entity book every leg names a declared entity; exit 8 on any finding)"]
 example = "fa verify registers --period FY2026-P03 --book ./books/myco"
 
 [[verb]]
@@ -1962,6 +1962,12 @@ name = "schedules_verified"
 book = true
 doc = "Every Schedule vertex and SCHEDULED_BY mirror agrees with the journal fold (plan §7.6): schedules_checked counts Schedule vertices examined; executed and cancelled count their derived statuses; drift lists any corrupt or mismatched mirrors."
 fields = ["schedules_checked:int", "executed:int", "cancelled:int", "drift:[string]"]
+
+[[event]]
+name = "fx_conversion_verified"
+book = true
+doc = "Every FX-valued entry recorded at `known_at` recomputes (FA-INV-01 `base`, `base-residual`, `realized-fx`): `valued_entries` were checked, counted per FX law in `by_law`, each recomputed from the Rate documents it cites under the law row it names; a valued Reversal is the exact side-swap of the entry it reverses. `drift` is empty here; on drift the command exits 8 and the error's detail carries the same fields."
+fields = ["known_at:seq", "valued_entries:int", "by_law:object", "drift:[fx_conversion_drift]"]
 
 [[event]]
 name = "periods_verified"
@@ -3375,7 +3381,7 @@ mistakes = ["Trying to self-issue witness permission: caller grants are forbidde
 name = "verify"
 cluster = "fa.book"
 verb = "verify"
-subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "replay"]
+subcommands = ["book", "registers", "entities", "open-items", "availability", "usage", "accumulator", "projections", "schedules", "periods", "fx-conversion", "replay"]
 selector = "target"
 positionals = []
 required = []
@@ -4604,6 +4610,11 @@ fields = ["account:string", "lines:[string]"]
 name = "statement_lint_mapping"
 doc = "A covered leaf and the one definition line that maps it."
 fields = ["account:string", "line:string"]
+
+[[shape]]
+name = "fx_conversion_drift"
+doc = "One FX-valued entry whose recorded valuation does not recompute: its vid, recording sequence, the FX law its base totals name and why."
+fields = ["entry:hex", "recorded_at:seq", "law:string", "problem:string"]
 
 [[shape]]
 name = "production_file"

@@ -4008,7 +4008,7 @@ fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
 /// The exact monetary negation includes the inherited functional valuation.
 /// Every rate used by that valuation retains its original evidence commitment;
 /// additional supporting evidence may be cited without changing the quote.
-fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) -> bool {
+pub(crate) fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) -> bool {
     !original.legs.is_empty()
         && original.base_totals == reversal.base_totals
         && original.base_totals.as_ref().is_none_or(|totals| {
