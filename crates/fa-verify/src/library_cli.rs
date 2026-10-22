@@ -22,12 +22,13 @@ use fa_verify::cli::{EXIT_IO, MAX_INPUT_BYTES};
 const PLACEHOLDER: &str = "\u{0}non-UTF-8 argument #";
 
 /// Commands only the library verifies.
-const LIBRARY_COMMANDS: [&str; 6] = [
+const LIBRARY_COMMANDS: [&str; 7] = [
     "state",
     "checkpoint",
     "scope",
     "doc-commit",
     "bundle",
+    "ads",
     "witness",
 ];
 /// Commands both grammars verify; the raw grammar always names `--proof`.
