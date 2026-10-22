@@ -3935,6 +3935,16 @@ impl Book {
         with_store!(&self.store, core => core.verify_schedules(&self.purposes()))
     }
 
+    /// Recompute every FX-valued entry recorded at or before `known_at` (the
+    /// head when `None`) from the Rate documents it cites, under the law it
+    /// names (plan §6.4, §15.3 `fa verify fx-conversion`; FA-INV-01 `base`).
+    pub fn verify_fx_conversions(
+        &self,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::FxConversionVerification, BookError> {
+        with_store!(&self.store, core => core.verify_fx_conversions(&self.purposes(), known_at))
+    }
+
     /// Compare period projections with retained birth declarations and
     /// transitions (plan §7.3, FA-INV-02). Complete journal integrity additionally
     /// requires [`Self::verify_periods_with_history`]; this projection check alone

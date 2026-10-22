@@ -3868,6 +3868,7 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
         "open_items_verified",
         "availability_verified",
         "usage_verified",
+        "fx_conversion_verified",
         "entities_verified",
         "registers_verified",
         "replay_verified",
@@ -3881,7 +3882,7 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
     let verdict = doc(&out);
     assert_eq!(verdict.get("green"), Some(&Json::Bool(true)), "{out}");
     let targets = arr(&verdict, "targets");
-    assert_eq!(targets.len(), 10, "{out}");
+    assert_eq!(targets.len(), 11, "{out}");
     assert!(
         targets.iter().all(|t| text(t, "verdict") == "pass"),
         "{out}"
@@ -7367,6 +7368,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
             "open-items",
             "availability",
             "usage",
+            "fx-conversion",
             "entities",
             "registers",
             "replay"

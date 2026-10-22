@@ -12771,7 +12771,7 @@ fn verify_usage_at(
 /// The targets `fa verify book` runs, cheapest first (plan §15.3 Proofs;
 /// fa-waow). `verify close` is not one: it asks whether a fiscal year needs a
 /// close, which is not a question about the book's integrity.
-const BOOK_VERIFY_TARGETS: [&str; 10] = [
+const BOOK_VERIFY_TARGETS: [&str; 11] = [
     "projections",
     "periods",
     "schedules",
@@ -12779,6 +12779,7 @@ const BOOK_VERIFY_TARGETS: [&str; 10] = [
     "open-items",
     "availability",
     "usage",
+    "fx-conversion",
     "entities",
     "registers",
     "replay",
@@ -12875,19 +12876,123 @@ fn verify_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     first_error.map_or(Ok(()), Err)
 }
 
+/// `fa verify fx-conversion [--as-known-at HEAD|<seq>|<RFC3339>]` (plan §6.4,
+/// §15.3; FA-INV-01 `base`, `base-residual`, `realized-fx`): every FX-valued
+/// entry recorded at the selected prefix, recomputed from the Rate documents
+/// it cites under the law it names. Current whole-book read and verify are
+/// admitted before the book is read; exit 8 on any drift.
+fn verify_fx_conversion(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str =
+        "fa verify fx-conversion --book <dir> [--as-known-at HEAD|<seq>|<RFC3339>] [--json]";
+    if args.positional.len() > 2 {
+        return Err(usage(
+            "verify fx-conversion takes no extra positional arguments",
+            EXAMPLE,
+        ));
+    }
+    if args.flag("--period").is_some() || args.flag("--fiscal-year").is_some() {
+        return Err(usage(
+            "verify fx-conversion checks every valued entry at the selected prefix; it takes no period filter",
+            EXAMPLE,
+        ));
+    }
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        fa_policy::admit_read(&capability, principal, book.context().book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    &capability,
+                    fa_policy::Op::Verify,
+                    "verifying FX conversions",
+                )
+            })
+            .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        book.read_scope(principal, &capability)??;
+        Ok(())
+    })?;
+    let out = &ctx.out;
+    let (known_at, _) = known_at_flag(args, &book, out)?;
+    let v = book.verify_fx_conversions(known_at)?;
+    out.known_at(v.known_at);
+    let valued: u64 = v.checked.values().sum();
+    let fields = vec![
+        ("known_at", Json::Int(i128::from(v.known_at.0))),
+        ("valued_entries", Json::Int(i128::from(valued))),
+        (
+            "by_law",
+            Json::Obj(
+                v.checked
+                    .iter()
+                    .map(|(law, n)| (law.clone(), Json::Int(i128::from(*n))))
+                    .collect(),
+            ),
+        ),
+        (
+            "drift",
+            Json::Arr(
+                v.drift
+                    .iter()
+                    .map(|d| {
+                        obj(vec![
+                            ("entry", s(format!("{:032x}", d.entry.0))),
+                            ("recorded_at", Json::Int(i128::from(d.recorded_at.0))),
+                            ("law", s(&d.law)),
+                            ("problem", s(&d.problem)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ];
+    if v.is_green() {
+        out.event(
+            "fx_conversion_verified",
+            fields,
+            &format!(
+                "{valued} FX-valued entr{} recompute from their Rate documents at sequence {}",
+                if valued == 1 { "y" } else { "ies" },
+                v.known_at.0
+            ),
+        );
+        Ok(())
+    } else {
+        Err(Fail::Verification {
+            message: format!(
+                "{} of {valued} FX-valued entries do not recompute: {}",
+                v.drift.len(),
+                v.drift
+                    .iter()
+                    .map(|d| format!("{:032x} ({}): {}", d.entry.0, d.law, d.problem))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            detail: obj(fields),
+            cite: Some(
+                "FA-INV-01 (`base`, `base-residual`, `realized-fx`: functional valuations recompute from the cited Rate documents under the named law)".into(),
+            ),
+            fix: Some(
+                "retain this finding with fa verify fx-conversion --json and the same --book and --as-known-at; correct a mis-valued entry with a Reversal and a Replacement, never in place".into(),
+            ),
+        })
+    }
+}
+
 fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let target = args.positional.get(1).map(String::as_str);
     if args.flag("--as-known-at").is_some()
-        && !matches!(target, Some("periods" | "close" | "usage"))
+        && !matches!(target, Some("periods" | "close" | "usage" | "fx-conversion"))
     {
         return Err(usage(
-            "--as-known-at is supported only by verify periods, verify close and verify usage",
-            "select periods, close or usage for historical verification, or omit --as-known-at",
+            "--as-known-at is supported only by verify periods, verify close, verify usage and verify fx-conversion",
+            "select periods, close, usage or fx-conversion for historical verification, or omit --as-known-at",
         ));
     }
     match target {
         Some("book") => verify_book(ctx, args),
+        Some("fx-conversion") => verify_fx_conversion(ctx, args),
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
         Some("usage") => {

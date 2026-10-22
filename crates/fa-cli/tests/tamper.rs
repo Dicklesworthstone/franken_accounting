@@ -452,7 +452,7 @@ fn tamper_evidence_red_team_matrix() {
             Some(Json::Arr(targets)) => targets.clone(),
             other => panic!("targets: {other:?}"),
         };
-        assert_eq!(targets.len(), 10, "{book_out}");
+        assert_eq!(targets.len(), 11, "{book_out}");
         assert!(
             targets
                 .iter()

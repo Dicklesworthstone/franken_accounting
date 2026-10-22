@@ -3289,6 +3289,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| Ok(fa_journal::verify_schedules(db, book)?))
     }
 
+    /// Recompute every FX-valued entry recorded at or before `known_at`
+    /// (the head when `None`) from the Rate documents it cites (plan §15.3
+    /// `fa verify fx-conversion`). Read-only.
+    pub fn verify_fx_conversions(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+    ) -> Result<fa_journal::FxConversionVerification, BookError> {
+        self.query(cx, |db, book| {
+            let at = match known_at {
+                Some(at) => at,
+                None => db.frontier().map_err(KernelError::from)?,
+            };
+            Ok(fa_journal::verify_fx_conversions(db, &book.units, at)?)
+        })
+    }
+
     /// Compare period projections with retained declarations and transitions.
     /// This does not load or validate complete native Entry history; use
     /// [`Self::verify_periods_with_history`] for complete history verification.
