@@ -7,9 +7,11 @@
 use std::collections::BTreeMap;
 
 use fa_journal::KernelError;
+use fa_journal::attestation::{AttestationClaim, Subject};
 use fa_journal::genesis::BookContext;
-use fa_model::EntryOrigin;
 use fa_model::limits::{MAX_DESCRIPTION_BYTES, MAX_EXTERNAL_ID_BYTES};
+use fa_model::{EntryOrigin, Oid};
+use fa_registry::evidence_policy::EvidencePolicy;
 use fa_time::{PeriodState, Weekday};
 use fgdb_types::VId;
 
@@ -403,6 +405,115 @@ impl Procedure for SelfApproved {
                     cites,
                     format!(
                         "{total_own} of {total} recorded approval(s) were made by the preparing principal"
+                    ),
+                )
+            })
+            .collect())
+    }
+}
+
+/// `jet.self_sourced_evidence` (plan §9.3): entries whose only evidence,
+/// the documents they cite and every supplement known at the coordinate,
+/// carries a self-sourced grade (`AgentUpload`, `Generated`: the grades
+/// registries/evidence_policy.toml marks `self_sourced`). A Reviewed
+/// attestation by a principal other than the uploader is reported, never
+/// exempted: it is what promotion needs, and the documents are still the
+/// book's own. An entry citing no document is outside the population.
+pub struct SelfSourcedEvidence {
+    params: Params,
+}
+procedure_boilerplate!(SelfSourcedEvidence, "jet.self_sourced_evidence");
+
+impl Procedure for SelfSourcedEvidence {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        _book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let policy = EvidencePolicy::embedded()?;
+        // Who reviewed each document, from the snapshot's attestations.
+        let mut reviewers: BTreeMap<Oid, Vec<VId>> = BTreeMap::new();
+        for stored in snapshot.attestations.values() {
+            work.compare(1)?;
+            let a = &stored.attestation;
+            if let (AttestationClaim::Reviewed { .. }, Subject::Document(oid)) =
+                (&a.claim, &a.subject)
+            {
+                reviewers.entry(*oid).or_default().push(a.principal);
+            }
+        }
+        let mut population = 0u64;
+        let mut hits: Vec<(VId, Vec<Oid>, usize)> = Vec::new();
+        for e in snapshot.live_postings()? {
+            let mut oids: Vec<Oid> = e
+                .entry
+                .proposal
+                .evidence
+                .iter()
+                .map(|r| r.document_oid)
+                .collect();
+            for s in snapshot.supplements.get(&e.vid).into_iter().flatten() {
+                oids.extend(s.documents.iter().map(|r| r.document_oid));
+            }
+            oids.sort_unstable();
+            oids.dedup();
+            if oids.is_empty() {
+                continue;
+            }
+            work.entry()?;
+            population += 1;
+            work.compare(oids.len() as u64)?;
+            let mut reviewed = 0usize;
+            let mut self_sourced = true;
+            for oid in &oids {
+                let Some(doc) = snapshot.documents.get(oid) else {
+                    return Err(KernelError::Corrupt(format!(
+                        "entry {:032x} cites a document the book does not hold at the snapshot",
+                        e.vid.0
+                    ))
+                    .into());
+                };
+                if !fa_journal::evidence::self_sourced(&policy, doc.grade) {
+                    self_sourced = false;
+                    break;
+                }
+                let independent = reviewers
+                    .get(oid)
+                    .is_some_and(|who| who.iter().any(|p| *p != doc.uploader));
+                reviewed += usize::from(independent);
+            }
+            if self_sourced {
+                hits.push((e.vid, oids, reviewed));
+            }
+        }
+        Ok(hits
+            .into_iter()
+            .map(|(vid, oids, reviewed)| {
+                let n = oids.len();
+                let mut cites = vec![Cite::Entry(vid)];
+                cites.extend(oids.into_iter().take(MAX_CITES - 1).map(Cite::Document));
+                let severity = if reviewed == n {
+                    Severity::Medium
+                } else {
+                    Severity::High
+                };
+                finding(
+                    Self::ID,
+                    severity,
+                    Statistic::count("self_sourced_documents", n as u64, population),
+                    cites,
+                    format!(
+                        "all {n} document(s) supporting the entry are self-sourced (AgentUpload or Generated); {reviewed} of them carry a Reviewed attestation by a principal other than their uploader"
                     ),
                 )
             })
