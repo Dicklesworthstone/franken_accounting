@@ -224,6 +224,22 @@ cite = "FG-LAW-FCW-01 (first committer wins)"
 fix = "re-plan and retry; if a close won, the period law refusal will say so"
 
 [[refusal]]
+code = "FA-REF-189"
+name = "QUERY_AMOUNT_LAW"
+owners = ["fa"]
+exit = "refusal"
+cite = "plan §15.5 (the profile refuses sum, avg and comparison over amounts of different units at rewrite time) · doctrine 4 (no float in any amount path; bead fa-5c1)"
+fix = "aggregate per unit (RETURN u.code, SUM(l.amount) with (l)-[:IN_UNIT]->(u:Unit)) or pin one unit ((u:Unit {code: 'USD'}) or WHERE l.unit_id = <id>); compare an amount only with an amount of that unit; the exact fold is CALL fa.trial_balance FOR PERIOD '<code>'"
+
+[[refusal]]
+code = "FA-REF-188"
+name = "QUERY_PROFILE"
+owners = ["fa"]
+exit = "refusal"
+cite = "plan §15.5 (the profile is a rewriter onto native reads; a clause it does not compile is refused, never ignored; bead fa-5c1)"
+fix = "write native GQL beginning with MATCH and select with AS KNOWN AT <seq> | HEAD, FOR PERIOD '<code>', EFFECTIVE BETWEEN '<date>' AND '<date>' or AT BRANCH trunk, or run CALL fa.trial_balance alone; fa query --help lists the profile"
+
+[[refusal]]
 code = "FA-REF-187"
 name = "REVISION_SHAPE"
 owners = ["fa-journal"]

@@ -529,6 +529,18 @@ usage = ["search <query> [--as-known-at HEAD|<seq>|<RFC3339>] [--limit N]   (quo
 example = "fa search \"office rent\" --book ./books/myco --json"
 
 [[verb]]
+name = "query"
+summary = "Run a GQL statement in the FrankenAccounting profile (plan §15.5): native GQL plus AS KNOWN AT, FOR PERIOD, EFFECTIVE BETWEEN and AT BRANCH, compiled onto one certified native read at one recorded sequence; CALL fa.trial_balance is fa tb itself."
+writes = false
+subcommands = []
+flags = []
+switches = []
+events = ["query_rows", "trial_balance"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["query \"<statement>\"   (quote the whole statement; at most 16 KiB)", "A statement is native GQL beginning with MATCH (MATCH, OPTIONAL MATCH, WHERE, WITH, RETURN, ORDER BY, SKIP, LIMIT, UNION) over the book's graph: Entry, Leg, Account, Unit, Period, Party, Document and the other registered labels, with HAS_LEG, POSTS_TO, IN_UNIT, IN_PERIOD, SUPERSEDES and the other registered relations. A leg carries side (0 debit, 1 credit), unit_id, ordinal, _fa_effective_day and amount, a positive decimal at its unit's scale; reach its account through POSTS_TO.", "Selectors, anywhere at the statement's top level: AS KNOWN AT <commit sequence> | HEAD | '<RFC3339 instant>' (default HEAD, always reported as a sequence) or AS CURRENTLY STATED; FOR PERIOD '<code>' (the period each entry posted to, through its IN_PERIOD edge: bind exactly one (l:Leg), or one (e:Entry) with no leg); EFFECTIVE BETWEEN '<date>' AND '<date>' (a leg's effective day, both included); AT BRANCH trunk. CALL fa.trial_balance [FOR PERIOD '<code>'] [AS KNOWN AT <seq>] runs fa tb with that selection and emits its trial_balance.", "The amount law is checked before anything runs (FA-REF-189): an aggregate over amounts is grouped by unit (RETURN u.code, SUM(l.amount) with (l)-[:IN_UNIT]->(u:Unit)) or pinned to one ((u:Unit {code: 'USD'}) or WHERE l.unit_id = <id>); an amount compares or orders only with amounts pinned to the same unit and never with a literal; no float literal is admitted. The profile computes an amount aggregate itself, exactly, in the statement's one final RETURN: its items are group keys and COUNT(*), COUNT, SUM, MIN, MAX or AVG of one binding or property, followed only by ORDER BY its output columns, SKIP and LIMIT. AVG is an exact decimal or fraction, a null mirror or an overflow is refused, and at most 1000000 native rows are folded. Other profile clauses, EXPLAIN (CERTIFICATE), parameters, writes, a CALL inside a pipeline and the Register caches are refused naming the admissible form (FA-REF-188).", "Rows are the graph as recorded at that sequence, pending holds and staged migration chunks included; a balance is a fold, read with CALL fa.trial_balance or the report verbs. A result is at most 10000 rows (a larger one is refused, never cut; add LIMIT). A whole-book read: a token carrying any scope caveat is refused."]
+example = "fa query \"MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, l.side, SUM(l.amount) AS total FOR PERIOD 'FY2026-P03'\" --book ./books/myco --json"
+
+[[verb]]
 name = "procedure"
 summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for a procedure that takes one (its effective_through in procedure list), through an effective date; a date given to any other procedure is refused. A finding is a statistic with typed citations, never an accusation."
 writes = false
@@ -1697,6 +1709,12 @@ name = "search_results"
 book = true
 doc = "A full-text search at known_at (fa search): records is how many entries carried searchable text, index_digest names the index rebuilt from that journal prefix (the same prefix rebuilds the same index), total counts every hit and hits holds the first --limit of them, best first. A hit's snippet is the matched text; its score is exact fixed-point BM25 (micro-units), a ranking and never a finding."
 fields = ["query:string", "known_at:seq", "records:int", "index_digest:hex", "total:int", "hits:[search_hit]"]
+
+[[event]]
+name = "query_rows"
+book = true
+doc = "A profile query's result (fa query): the statement as written, the native statement it compiled to and ran, the recorded sequence it read (an omitted or HEAD known-at resolved before the read), the FOR PERIOD code when given, the column names and each row's values in the native read's order. A vertex or edge is its 32-hex id, a decimal (an amount mirror or an exact sum of them) is exact text without trailing zeros (1000, 0.5), an exact average is {numerator, denominator}, bytes are hex. result_digest is the substrate's digest of the native read's ordered result under its plan (for an amount aggregate, the rows the profile aggregated): the same statement at the same sequence gives the same digest."
+fields = ["statement:string", "native:string", "known_at:seq", "period:string?", "columns:[string]", "row_count:int", "rows:[any]", "result_digest:hex"]
 
 [[event]]
 name = "statement_issuance_plan"
@@ -3430,6 +3448,11 @@ on_demand = true
 doc = "Full-text search over entry descriptions and leg memos at a recorded frontier, ranked by exact fixed-point BM25 from an index rebuilt from the journal per query. A pure read. On demand (fa-mcp --cluster fa.search): the default surface is at its 40-tool limit."
 
 [[mcp.cluster]]
+name = "fa.query"
+on_demand = true
+doc = "GQL over the book's graph in the FrankenAccounting profile (plan §15.5): native reads plus AS KNOWN AT, FOR PERIOD, EFFECTIVE BETWEEN and CALL fa.trial_balance, with the amount law checked before anything runs. A pure read. On demand (fa-mcp --cluster fa.query): the default surface is at its 40-tool limit."
+
+[[mcp.cluster]]
 name = "fa.correct"
 on_demand = true
 doc = "Corrections beyond an exact reversal (plan §8.2): a Reclassification moves part of an entry's leg to another account, citing it with Reclassifies and a registered reason. Exact reversals and paired replacements are the reverse tool in fa.post. On demand (fa-mcp --cluster fa.correct): the default surface is at its 40-tool budget."
@@ -4505,6 +4528,17 @@ dont = ["Don't read a high score as evidence of anything: BM25 ranks text, it st
 mistakes = ["Expecting documents or findings among the hits: this build indexes entry descriptions and leg memos only.", "Expecting erased or subject-sealed text to match: it is never indexed."]
 
 [[mcp.tool]]
+cluster = "fa.query"
+name = "gql"
+verb = "query"
+subcommands = []
+positionals = ["statement"]
+flags = []
+required = ["statement"]
+dont = ["Don't read a SUM of legs as a balance: rows are the graph as recorded, pending holds and staged migration chunks included. A balance is CALL fa.trial_balance FOR PERIOD '<code>' or the report tools.", "Don't aggregate amounts across units: group by the unit (RETURN u.code, SUM(l.amount) with (l)-[:IN_UNIT]->(u:Unit)) or pin one; the statement is refused otherwise (FA-REF-189).", "Don't write FOR SYSTEM_TIME yourself: select the coordinate with AS KNOWN AT <seq> | HEAD."]
+mistakes = ["Comparing an amount with a number (l.amount > 100) or a float literal: an amount compares only with an amount pinned to the same unit.", "Summing l.amount without grouping by l.side: a leg's amount is a positive magnitude and side is 0 (debit) or 1 (credit).", "Using FOR PERIOD with two legs bound, or with no leg and no entry: it selects the period one entry posted to."]
+
+[[mcp.tool]]
 cluster = "fa.case"
 name = "read"
 verb = "case"
@@ -5024,6 +5058,11 @@ ops = ["read"]
 # A search reads every entry: the whole book.
 [[bound]]
 verbs = ["search"]
+ops = ["read"]
+
+# A query reads the whole graph.
+[[bound]]
+verbs = ["query"]
 ops = ["read"]
 
 [[bound]]

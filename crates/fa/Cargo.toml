@@ -22,6 +22,7 @@ fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-notary = { path = "../fa-notary", version = "=0.0.1" }
 fa-palimpsest = { path = "../fa-palimpsest", version = "=0.0.1" }
 fa-policy = { path = "../fa-policy", version = "=0.0.1" }
+fa-query = { path = "../fa-query", version = "=0.0.1" }
 fa-registers = { path = "../fa-registers", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fa-statements = { path = "../fa-statements", version = "=0.0.1" }

@@ -1,0 +1,1 @@
+MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) WHERE l.side = 1 /* credits */ RETURN l.amount, l.ordinal ORDER BY l.amount DESC LIMIT 5 EFFECTIVE BETWEEN '2026-03-01' AND '2026-03-31' AS KNOWN AT '2026-04-01T00:00:00Z'

@@ -7563,6 +7563,17 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["search", "rent"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &[
+                "query",
+                "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs FOR PERIOD 'FY2026-P03'"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(
         run(
@@ -18322,6 +18333,145 @@ fn explaining_a_summary_account_points_at_its_roll_up_which_runs() -> std::io::R
     let argv: Vec<&str> = suggested.split(' ').skip(1).collect();
     let (code, out, _) = fa(Some(&book), &argv);
     assert_eq!(code, 0, "{out}");
+    Ok(())
+}
+
+/// fa-5c1: `fa query` runs a profile statement over the book's graph.
+/// - Sums are grouped per unit and side; FOR PERIOD selects the period
+///   each entry posted to, EFFECTIVE BETWEEN the legs' effective days.
+/// - AS KNOWN AT reads an earlier sequence: an entry recorded later is
+///   absent there, and the same statement at the same sequence gives the
+///   same result digest.
+/// - CALL fa.trial_balance is `fa tb` itself.
+/// - Refused before anything runs: a sum across units (FA-REF-189), a
+///   write, a period the book does not hold and a malformed native
+///   statement (FA-REF-188), all exit 3.
+#[test]
+fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
+    let dir = tmp("query")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Query Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"},{"code":"1200","name":"EUR receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR revenue","type":"Revenue","unit":"EUR"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let post = |name: &str, intent: &str| {
+        let path = write(&dir, name, intent);
+        let out = ok(&["post", "--intent", &path, "--evidence", &evidence, "--json"]);
+        int(&doc(&out), "recorded_at").expect("recorded_at")
+    };
+    post(
+        "march-rent.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"march-rent","legs":[{"side":"debit","account":"6000","amount":"1000.00 USD"},{"side":"credit","account":"1000","amount":"1000.00 USD"}]}"#,
+    );
+    let rate = write(
+        &dir,
+        "rate.json",
+        r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"11","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-05","retrieved_at_ns":1772668800000000000,"purpose":"spot_close","source":"query fixture quote"}"#,
+    );
+    let rate = doc(&ok(&["fx", "rate", "add", "--from-json", &rate, "--json"]));
+    let march = post(
+        "march-invoice.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"march-invoice","legs":[{{"side":"debit","account":"1200","amount":"100.00 EUR"}},{{"side":"credit","account":"4000","amount":"100.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+            text(&rate, "oid")
+        ),
+    );
+    post(
+        "april-rent.json",
+        r#"{"effective_date":"2026-04-10","idempotency_key":"april-rent","legs":[{"side":"debit","account":"6000","amount":"250.00 USD"},{"side":"credit","account":"1000","amount":"250.00 USD"}]}"#,
+    );
+    let query = |statement: &str| doc(&ok(&["query", statement, "--json"]));
+    let rows = |data: &Json| Json::Arr(arr(data, "rows").to_vec()).render();
+
+    let grouped = "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side FOR PERIOD 'FY2026-P03'";
+    let march_totals = query(grouped);
+    assert_eq!(
+        rows(&march_totals),
+        r#"[["EUR",0,"100"],["EUR",1,"100"],["USD",0,"1000"],["USD",1,"1000"]]"#,
+        "{march_totals:?}"
+    );
+    assert_eq!(text(&march_totals, "period"), "FY2026-P03");
+    assert!(
+        text(&march_totals, "native").contains("FOR SYSTEM_TIME AS OF SEQ"),
+        "{march_totals:?}"
+    );
+    let april = query(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, COUNT(*) AS legs ORDER BY account EFFECTIVE BETWEEN '2026-04-01' AND '2026-04-30'",
+    );
+    assert_eq!(rows(&april), r#"[["1000",1],["6000",1]]"#, "{april:?}");
+
+    // At the invoice's sequence the April rent is not yet recorded.
+    let counted = format!("MATCH (l:Leg) RETURN COUNT(*) AS legs AS KNOWN AT {march}");
+    let then = query(&counted);
+    assert_eq!(rows(&then), "[[4]]", "{then:?}");
+    assert_eq!(int(&then, "known_at"), Some(march));
+    assert_eq!(
+        rows(&query("MATCH (l:Leg) RETURN COUNT(*) AS legs")),
+        "[[6]]"
+    );
+    assert_eq!(
+        text(&query(&counted), "result_digest"),
+        text(&then, "result_digest"),
+        "the same statement at the same sequence"
+    );
+
+    // CALL fa.trial_balance is fa tb.
+    let tb = doc(&ok(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &march.to_string(),
+        "--json",
+    ]));
+    let called = query(&format!(
+        "CALL fa.trial_balance FOR PERIOD 'FY2026-P03' AS KNOWN AT {march}"
+    ));
+    assert_eq!(called.render(), tb.render());
+
+    for (statement, code) in [
+        ("MATCH (l:Leg) RETURN SUM(l.amount) AS total", "FA-REF-189"),
+        (
+            "MATCH (l:Leg) WHERE l.unit_id = 1 AND l.amount > 100 RETURN l",
+            "FA-REF-189",
+        ),
+        ("MATCH (a:Account) SET a.name = 'x' RETURN a", "FA-REF-188"),
+        (
+            "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2031-P01'",
+            "FA-REF-188",
+        ),
+        ("MATCH (l:Leg RETURN l", "FA-REF-188"),
+        (
+            "MATCH (l:Leg) RETURN l AS ORIGINALLY REPORTED",
+            "FA-REF-188",
+        ),
+    ] {
+        let (exit, out) = run(&["query", statement, "--json"]);
+        assert_eq!(exit, 3, "{statement}: {out}");
+        assert!(out.contains(code), "{statement}: {out}");
+    }
+    let (exit, out) = run(&["query", "--json"]);
+    assert_eq!(exit, 2, "{out}");
+    // Human mode is a plain table.
+    let (exit, out) = run(&["query", grouped]);
+    assert_eq!(exit, 0, "{out}");
+    assert!(out.starts_with("unit  side  total\nEUR  0  100"), "{out}");
     Ok(())
 }
 

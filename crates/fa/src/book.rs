@@ -4291,6 +4291,18 @@ impl Book {
         with_store!(&self.store, core => core.search_entries(&self.purposes(), query, known_at))
     }
 
+    /// Run a compiled profile query at `known_at` (`fa query`; see
+    /// [`crate::query`]): one certified native read of the graph as recorded
+    /// at that sequence. With `period`, the period must exist there.
+    pub fn query_native(
+        &self,
+        native: &crate::NativeQuery,
+        known_at: CommitSeq,
+        period: Option<&str>,
+    ) -> Outcome<crate::QueryRows> {
+        with_store!(&self.store, core => core.query_native(&self.purposes(), native, known_at, period))
+    }
+
     /// Run a registered Lantern procedure over the trunk as known at
     /// `known_at` (the head when `None`) and, for the historical folds,
     /// through `effective_through`: a pure read (plan §11).

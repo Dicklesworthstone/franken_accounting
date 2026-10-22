@@ -97,6 +97,11 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
         description: "Legacy GL export readers (QuickBooks IIF/CSV, Xero CSV, NetSuite CSV, Generic GL CSV) and column-map parser without panic",
         run: fuzz_legacy_gl_formats,
     },
+    FuzzTarget {
+        name: "gql_profile",
+        description: "The FrankenAccounting GQL profile rewriter (lexer, selectors, amount law, aggregation planner) on arbitrary UTF-8 without panic",
+        run: fuzz_gql_profile,
+    },
 ];
 
 /// Dormant fuzz targets registered per `fa-tre` with their activating beads.
@@ -556,6 +561,41 @@ pub fn fuzz_legacy_gl_formats(bytes: &[u8]) {
         let _ = fa_formats::bank::parse_ofx_qbo(&text, &units);
         let _ = fa_formats::bank::parse_bank_csv(&text, &units);
         let _ = fa_formats::bank::parse_mt940(&text, &units);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Target 9: gql_profile
+// ---------------------------------------------------------------------------
+
+/// Target 9 (`fa-5c1`): `fa query`'s profile rewriter on arbitrary text. The
+/// rewrite is deterministic, a refusal's offset lies inside the statement,
+/// and a compiled native read carries the resolved sequence.
+pub fn fuzz_gql_profile(bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    let compiled = fa::compile_query(&text);
+    assert_eq!(
+        compiled,
+        fa::compile_query(&text),
+        "the profile rewrite is deterministic"
+    );
+    match compiled {
+        Ok(profiled) => {
+            if let fa::QuerySelection::Native(native) = &profiled.selection {
+                let statement = native.statement(u64::MAX);
+                assert!(
+                    statement.contains(" FOR SYSTEM_TIME AS OF SEQ 18446744073709551615 "),
+                    "the resolved sequence is written into the native read: {statement}"
+                );
+            }
+        }
+        Err(refusal) => {
+            assert!(
+                refusal.at <= text.len(),
+                "a refusal's offset lies inside the statement"
+            );
+            let _ = fa::profile_refusal(&refusal);
+        }
     }
 }
 
@@ -1036,6 +1076,15 @@ pub fn seeds_for_target(target_name: &str) -> Vec<Vec<u8>> {
         "chart_import_json" => {
             seeds.push(
                 br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"base"}]}"#
+                    .to_vec(),
+            );
+        }
+        "gql_profile" => {
+            seeds.push(
+                b"MATCH (l:Leg) RETURN l.unit_id, SUM(l.amount) AS total ORDER BY total".to_vec(),
+            );
+            seeds.push(
+                b"MATCH (a:Account {name: 'O''Brien \"x\"'}) // note\nRETURN a.code AS `c``d` AS KNOWN AT 3"
                     .to_vec(),
             );
         }

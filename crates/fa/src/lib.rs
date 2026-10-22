@@ -79,6 +79,7 @@ pub mod procedure_certificate;
 pub mod production;
 pub mod projections;
 pub mod proof;
+pub mod query;
 pub mod report_artifact;
 pub mod roll_forward;
 pub mod scenario;
@@ -169,6 +170,11 @@ pub use fa_policy::{
     Profile, amounts_preserved, decide_lantern_threshold, decide_register_checkpoint_cadence,
     evaluate_decision,
 };
+pub use fa_query::{
+    KnownAt as QueryKnownAt, Law as QueryLaw, MAX_STATEMENT_BYTES as MAX_QUERY_STATEMENT_BYTES,
+    Native as NativeQuery, PROCEDURES as QUERY_PROCEDURES, Profiled as ProfiledQuery,
+    Refusal as QueryProfileRefusal, Selection as QuerySelection, rewrite as compile_query,
+};
 pub use fa_registers::open_items::OpenItemsReport;
 pub use fa_registers::{
     Advance, EntityCell, EntityCellKey, EntityFold, EntityVerification, LotDisposalPlan,
@@ -225,6 +231,7 @@ pub use production::{
 };
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
+pub use query::{MAX_QUERY_ROWS, QueryCell, QueryRows, profile_refusal};
 pub use report_artifact::{
     MAX_REPORT_ARTIFACT_BYTES, ReplayedReportArtifact, ReportArtifact, ReportArtifactExpectation,
     ReportArtifactFamily,

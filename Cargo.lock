@@ -800,6 +800,7 @@ dependencies = [
  "fa-notary",
  "fa-palimpsest",
  "fa-policy",
+ "fa-query",
  "fa-reference",
  "fa-registers",
  "fa-registry",
@@ -1102,6 +1103,13 @@ dependencies = [
  "fa-registry",
  "fa-time",
  "fgdb-types",
+]
+
+[[package]]
+name = "fa-query"
+version = "0.0.1"
+dependencies = [
+ "fa-time",
 ]
 
 [[package]]
