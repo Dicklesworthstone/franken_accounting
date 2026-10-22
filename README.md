@@ -656,6 +656,12 @@ An audit's mechanics are journaled; the judgments stay the auditor's.
   report release date (AS 1215.15). Nothing is withdrawn afterwards: every
   workpaper, proposal and decision journaled after it is marked
   `added_after_completion` in `fa engagement show`.
+- **Confirm and represent.** `fa document attest confirmed` records what a
+  party confirmed (a balance as of a date) over a Confirmation document,
+  under `produce`. `fa document attest represented` records management's
+  representations over a Representation letter, under `approve`, each claim
+  sealed. In the workpaper index a confirmation is audit-grade only when the
+  engagement's firm principal received the document (AS 2310).
 
 ```bash
 fa engagement open FY26-audit --kind audit --period FY2026-P12 --overall "50000.00 USD" --performance "37500.00 USD" --clearly-trivial "2500.00 USD" --book ./books/acme --json
@@ -666,6 +672,8 @@ fa engagement sud FY26-audit --json
 fa engagement sud FY26-audit --definition us_gaap_small_company_balance_sheet --json
 fa engagement file FY26-audit --document <oid> --json
 fa engagement complete FY26-audit --report-release 2027-02-15 --completion-date 2027-03-20 --json
+fa document attest confirmed <oid> --party C-1 --balance "1200.00 USD" --as-of 2026-12-31 --json
+fa document attest represented <oid> --claim "All transactions are recorded" --as-of 2027-02-15 --json
 ```
 
 Writes need `produce`, which the Auditor profile holds, and an
@@ -680,7 +688,8 @@ What the summary does not do yet:
 - **No foreign-currency conversion.** Legs in other units are listed, never
   converted.
 
-Representations and confirmations are not wired yet (`fa-zgn`).
+Prior-year carry-forward and reason-coded prior-period corrections in the
+summary are not wired yet (`fa-zgn`).
 
 ### Exact arithmetic available now
 

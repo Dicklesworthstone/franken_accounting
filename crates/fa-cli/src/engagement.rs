@@ -596,7 +596,27 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .workpapers
         .iter()
         .map(|w| {
-            obj(vec![
+            let confirmation = match &w.confirmation {
+                None => Json::Null,
+                Some(c) => obj(vec![
+                    ("attestation", vid_hex(c.attestation)),
+                    ("by_party", vid_hex(c.by_party)),
+                    ("balance", s(render_amount(c.balance, &units)?)),
+                    ("as_of", s(c.as_of.render())),
+                    ("attested_by", vid_hex(c.attested_by)),
+                    ("received_by", c.received_by.map_or(Json::Null, vid_hex)),
+                    ("audit_grade", Json::Bool(c.audit_grade)),
+                ]),
+            };
+            let representation = w.representation.as_ref().map_or(Json::Null, |r| {
+                obj(vec![
+                    ("attestation", vid_hex(r.attestation)),
+                    ("claims", Json::Int(r.claims as i128)),
+                    ("as_of", s(r.as_of.render())),
+                    ("attested_by", vid_hex(r.attested_by)),
+                ])
+            });
+            Ok(obj(vec![
                 ("document", s(hex(&w.document.0))),
                 ("record", vid_hex(w.record)),
                 ("filed_at", seq(w.filed_at)),
@@ -605,9 +625,11 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "added_after_completion",
                     Json::Bool(w.added_after_completion),
                 ),
-            ])
+                ("confirmation", confirmation),
+                ("representation", representation),
+            ]))
         })
-        .collect();
+        .collect::<Result<Vec<_>, Fail>>()?;
     let documentation = view.documentation.as_ref().map_or(Json::Null, |c| {
         completion_json(&c.completion, c.record, c.recorded_at, c.completed_by)
     });

@@ -400,11 +400,11 @@ name = "document"
 summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, record legal holds and attestations, or attach documents that support a committed entry."
 writes = true
 subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list"]
-flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant"]
+flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant", "--party", "--balance", "--as-of", "--claim"]
 switches = ["--dry-run"]
 events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "evidence_attached", "import_recorded", "import_receipt", "documents"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> --subject <vid|oid>... [--effective YYYY-MM-DD] [--description <text>] [--key K]", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest confirmed <oid> --party <code> --balance \"<amount> <UNIT>\" --as-of YYYY-MM-DD   (plan §11.12, AS 2310: the auditor's Confirmed attestation over a Confirmation document, what the party confirmed; needs produce; one per document. An engagement judges it audit-grade only when its firm principal received the document)", "document attest represented <oid> --claim <text>... --as-of YYYY-MM-DD   (plan §11.12, AS 2805: management's Represented attestation over a Representation letter, each claim sealed under the book key; needs approve, which no Agent holds; one per letter)", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
@@ -2141,7 +2141,7 @@ fields = ["subject:hex", "holds:[hex]"]
 [[event]]
 name = "attestation_recorded"
 book = true
-doc = "A journaled attestation vertex (`Reviewed`, `ManualAssertion`, or `RegisterEquals`, plan §9.3–§9.4) or its live holds evaluation."
+doc = "A journaled attestation vertex (`Reviewed`, `ManualAssertion`, `RegisterEquals`, `Confirmed` or `Represented`, plan §9.3–§9.4, §11.12) or its live holds evaluation."
 fields = ["attestation_vid:hex", "claim:string", "subject:hex", "signed_digest:hex?", "recorded_at:seq", "already_recorded:bool", "holds:bool?"]
 
 [[event]]
@@ -2427,8 +2427,18 @@ fields = ["engagement:string", "number:int", "vid:hex", "effective_date:date", "
 
 [[shape]]
 name = "engagement_workpaper"
-doc = "One document in an engagement's workpaper index: its oid, the File record, its sequence and principal, and whether it was filed after the documentation completion (AS 1215.16)."
-fields = ["document:hex", "record:hex", "filed_at:seq", "filed_by:hex", "added_after_completion:bool"]
+doc = "One document in an engagement's workpaper index: its oid, the File record, its sequence and principal, whether it was filed after the documentation completion (AS 1215.16), and the Confirmed or Represented attestation over it, if any."
+fields = ["document:hex", "record:hex", "filed_at:seq", "filed_by:hex", "added_after_completion:bool", "confirmation:workpaper_confirmation?", "representation:workpaper_representation?"]
+
+[[shape]]
+name = "workpaper_confirmation"
+doc = "A confirmation in the workpaper index (AS 2310): the Confirmed attestation, the confirming party, the balance and date it confirmed, who attested it, who received the confirmation document (its custody receipt), and whether it is audit-grade for this engagement: true only when the engagement's firm principal received it."
+fields = ["attestation:hex", "by_party:hex", "balance:amount", "as_of:date", "attested_by:hex", "received_by:hex?", "audit_grade:bool"]
+
+[[shape]]
+name = "workpaper_representation"
+doc = "A management representation letter in the workpaper index (AS 2805): the Represented attestation, how many claims it represents (each sealed under the book key), as of when, and who attested it."
+fields = ["attestation:hex", "claims:int", "as_of:date", "attested_by:hex"]
 
 [[shape]]
 name = "documentation_completion"
@@ -3172,7 +3182,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth"]
 
@@ -4406,7 +4416,7 @@ verb = "document"
 subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list"]
 selector = "action"
 positionals = ["target?", "arg?"]
-flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind"]
+flags = ["--chunk", "--to", "--authority", "--subject", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind", "--party", "--balance", "--as-of", "--claim"]
 switches = ["--dry-run"]
 stdin_property = "plan"
 stdin_kind = "string"
@@ -5199,6 +5209,20 @@ verbs = ["document"]
 subcommands = ["attest"]
 args = ["manual"]
 ops = ["post"]
+
+# A confirmation is the auditor's statement (produce); a representation is
+# management's (approve, which no Agent holds) (fa-zgn).
+[[bound]]
+verbs = ["document"]
+subcommands = ["attest"]
+args = ["confirmed"]
+ops = ["produce"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["attest"]
+args = ["represented"]
+ops = ["approve"]
 
 [[bound]]
 verbs = ["document"]

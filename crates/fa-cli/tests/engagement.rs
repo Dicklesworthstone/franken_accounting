@@ -1035,3 +1035,117 @@ fn documentation_completes_once_within_45_days_and_marks_every_later_addition() 
         Some(&Json::Bool(true))
     );
 }
+
+/// AS 2310 / AS 2805: the auditor attests what a party confirmed, management
+/// attests its representations, and the engagement's workpaper index grades
+/// a confirmation audit-grade only when its firm principal received it.
+#[test]
+fn confirmations_and_representations_are_attested_and_graded_in_the_workpaper_index() {
+    let f = Fixture::new();
+    f.ok(OPEN);
+    f.write(
+        "customer.json",
+        r#"{"code":"C-1","kind":"Customer","name":"Big Customer"}"#,
+    );
+    f.ok(&["party", "add", "customer.json"]);
+    let document = |name: &str, kind: &str, by: Option<&str>| {
+        f.write(name, &format!("{kind} document {name}"));
+        let mut args = vec![
+            "document",
+            "add",
+            name,
+            "--kind",
+            kind,
+            "--grade",
+            "HumanUpload",
+        ];
+        if let Some(principal) = by {
+            args.extend(["--as", principal]);
+        }
+        text(data(&f.ok(&args)), "oid").to_string()
+    };
+    // One confirmation came straight to the auditor; one was routed
+    // through the client's controller.
+    let direct = document("direct.txt", "Confirmation", None);
+    let routed = document("routed.txt", "Confirmation", Some("client-controller"));
+    let letter = document("letter.txt", "Representation", None);
+    let confirm = |oid: &str, balance: &str| {
+        vec![
+            "document".to_string(),
+            "attest".into(),
+            "confirmed".into(),
+            oid.to_string(),
+            "--party".into(),
+            "C-1".into(),
+            "--balance".into(),
+            balance.to_string(),
+            "--as-of".into(),
+            "2026-03-31".into(),
+        ]
+    };
+    fn strs(v: &[String]) -> Vec<&str> {
+        v.iter().map(String::as_str).collect()
+    }
+    let confirmed = f.ok(&strs(&confirm(&direct, "1200.00 USD")));
+    assert_eq!(text(data(&confirmed), "claim"), "Confirmed");
+    assert_eq!(
+        data(&f.ok(&strs(&confirm(&direct, "1200.00 USD")))).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    f.ok(&strs(&confirm(&routed, "800.00 USD")));
+    // A receipt is not a confirmation, and the party must be one the book has.
+    f.refused(&strs(&confirm(&f.evidence, "1.00 USD")), 3, "FA-REF-110");
+    let mut unknown_party = confirm(&routed, "800.00 USD");
+    unknown_party[5] = "NO-SUCH".into();
+    f.refused(&strs(&unknown_party), 3, "FA-REF-110");
+    let represented = f.ok(&[
+        "document",
+        "attest",
+        "represented",
+        &letter,
+        "--claim",
+        "All transactions are recorded",
+        "--claim",
+        "No fraud involving management is known",
+        "--as-of",
+        "2026-04-15",
+    ]);
+    assert_eq!(text(data(&represented), "claim"), "Represented");
+    let (status, _) = f.run(&[
+        "document",
+        "attest",
+        "represented",
+        &letter,
+        "--as-of",
+        "2026-04-15",
+    ]);
+    assert_eq!(status, 2, "a representation states at least one claim");
+
+    for oid in [&direct, &routed, &letter] {
+        f.ok(&["engagement", "file", "FY26-audit", "--document", oid]);
+    }
+    let shown = f.ok(&["engagement", "show", "FY26-audit"]);
+    let workpapers = rows(data(&shown), "workpapers");
+    assert_eq!(workpapers.len(), 3);
+    let confirmation = |i: usize| workpapers[i].get("confirmation").expect("confirmation");
+    assert_eq!(text(confirmation(0), "balance"), "1200.00 USD");
+    assert_eq!(
+        confirmation(0).get("audit_grade"),
+        Some(&Json::Bool(true)),
+        "received by the engagement's firm principal"
+    );
+    assert_eq!(text(confirmation(1), "balance"), "800.00 USD");
+    assert_eq!(
+        confirmation(1).get("audit_grade"),
+        Some(&Json::Bool(false)),
+        "received by the client's controller, not the auditor"
+    );
+    assert_ne!(
+        text(confirmation(1), "received_by"),
+        text(confirmation(0), "received_by")
+    );
+    assert_eq!(workpapers[2].get("confirmation"), Some(&Json::Null));
+    let representation = workpapers[2].get("representation").unwrap();
+    assert_eq!(int(representation, "claims"), 2);
+    assert_eq!(text(representation, "as_of"), "2026-04-15");
+}

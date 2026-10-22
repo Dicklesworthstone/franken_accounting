@@ -741,6 +741,36 @@ pub struct WorkpaperView {
     pub filed_at: CommitSeq,
     pub filed_by: VId,
     pub added_after_completion: bool,
+    /// The Confirmed attestation over the document, if it is a confirmation.
+    pub confirmation: Option<WorkpaperConfirmation>,
+    /// The Represented attestation over the document, if it is a
+    /// representation letter.
+    pub representation: Option<WorkpaperRepresentation>,
+}
+
+/// A confirmation in the workpaper index (AS 2310): what the party
+/// confirmed, and whether it is audit-grade for this engagement — its firm
+/// principal received the confirmation document, so the auditor
+/// controlled it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkpaperConfirmation {
+    pub attestation: VId,
+    pub by_party: VId,
+    pub balance: Amount,
+    pub as_of: DateDay,
+    pub attested_by: VId,
+    pub received_by: Option<VId>,
+    pub audit_grade: bool,
+}
+
+/// A management representation letter in the workpaper index (AS 2805):
+/// how many claims it represents (each sealed) and as of when.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkpaperRepresentation {
+    pub attestation: VId,
+    pub claims: usize,
+    pub as_of: DateDay,
+    pub attested_by: VId,
 }
 
 /// The documentation completion as the journal states it.
@@ -2425,6 +2455,8 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     filed_at: recorded_at,
                     filed_by: entry.proposal.principal_ref,
                     added_after_completion: f == complete,
+                    confirmation: workpaper_confirmation(db, &profile, document)?,
+                    representation: workpaper_representation(db, &profile, document)?,
                 });
             }
             (f, t) if f == t && (f == open || f == complete) => {
@@ -2532,6 +2564,67 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         workpapers,
         documentation,
     })
+}
+
+/// The Confirmed attestation over `document`, judged for this engagement.
+fn workpaper_confirmation<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    profile: &EngagementProfile,
+    document: &Oid,
+) -> Result<Option<WorkpaperConfirmation>, KernelError> {
+    let vid = crate::attestation::confirmed_vid(profile.book_id, document);
+    let Some((stored, _)) = crate::attestation::read_attestation(db, vid)? else {
+        return Ok(None);
+    };
+    let crate::attestation::AttestationClaim::Confirmed {
+        by_party,
+        balance,
+        as_of,
+    } = stored.attestation.claim
+    else {
+        return Err(KernelError::Corrupt(format!(
+            "confirmation identity {:032x} holds a {} attestation",
+            vid.0,
+            stored.attestation.claim.name()
+        )));
+    };
+    let received_by = crate::attestation::confirmation_received_by(db, document)?;
+    Ok(Some(WorkpaperConfirmation {
+        attestation: vid,
+        by_party,
+        balance,
+        as_of,
+        attested_by: stored.attestation.principal,
+        received_by,
+        audit_grade: received_by == Some(profile.firm_principal),
+    }))
+}
+
+/// The Represented attestation over `document`, if any.
+fn workpaper_representation<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    profile: &EngagementProfile,
+    document: &Oid,
+) -> Result<Option<WorkpaperRepresentation>, KernelError> {
+    let vid = crate::attestation::represented_vid(profile.book_id, document);
+    let Some((stored, _)) = crate::attestation::read_attestation(db, vid)? else {
+        return Ok(None);
+    };
+    let crate::attestation::AttestationClaim::Represented { claims, as_of } =
+        stored.attestation.claim
+    else {
+        return Err(KernelError::Corrupt(format!(
+            "representation identity {:032x} holds a {} attestation",
+            vid.0,
+            stored.attestation.claim.name()
+        )));
+    };
+    Ok(Some(WorkpaperRepresentation {
+        attestation: vid,
+        claims: claims.len(),
+        as_of,
+        attested_by: stored.attestation.principal,
+    }))
 }
 
 /// A proposal's one decision, if any; two decisions are corruption.

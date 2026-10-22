@@ -64,7 +64,9 @@ pub mod usage;
 
 pub use allocation::AllocationPosting;
 pub use attestation::{
-    AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
+    AttestationClaim, Attested, confirmation_received_by, confirmed_vid, read_attestation,
+    record_confirmation, record_manual_assertion, record_representation, record_review,
+    represented_vid,
 };
 pub use batch::{
     BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
@@ -93,9 +95,10 @@ pub use engagement::{
     DocumentationCompleted, DocumentationCompletion, EngagementKind, EngagementOpened,
     EngagementProfile, EngagementRequest, EngagementState, EngagementView, Materiality,
     ProposalLeg, ProposalView, ProposedAdjustment, RecordedDecision, StatementEffect, Uncorrected,
-    UncorrectedItem, UncorrectedSummary, WorkpaperFiled, WorkpaperView, complete_documentation,
-    decide_adjustment, file_workpaper, list_engagements, open_engagement, propose_adjustment,
-    read_engagement, uncorrected_misstatements,
+    UncorrectedItem, UncorrectedSummary, WorkpaperConfirmation, WorkpaperFiled,
+    WorkpaperRepresentation, WorkpaperView, complete_documentation, decide_adjustment,
+    file_workpaper, list_engagements, open_engagement, propose_adjustment, read_engagement,
+    uncorrected_misstatements,
 };
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{
