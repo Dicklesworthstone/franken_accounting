@@ -758,7 +758,7 @@ mod tests {
         // then refuses before lifting either coefficient with a zero budget.
         let n = fsym_bigint::MAX_DECODER_MAGNITUDE_BYTES + 1;
         let mut frame = b"FAR\x01".to_vec();
-        frame.extend_from_slice(&(n as u32).to_le_bytes());
+        frame.extend_from_slice(&u32::try_from(n).expect("a frame length").to_le_bytes());
         frame.extend_from_slice(&1u32.to_le_bytes());
         frame.resize(12 + n, 1);
         frame.push(1);
