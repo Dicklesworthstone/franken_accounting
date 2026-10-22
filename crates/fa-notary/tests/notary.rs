@@ -540,7 +540,7 @@ fn a_later_state_extends_the_earlier_and_consistency_verifies() {
         Err(VerifyError::Consistency)
     );
 
-    let states = chain(&h.db).unwrap();
+    let states = chain(&h.db, None).unwrap();
     assert_eq!(
         states.iter().map(|s| s.oid).collect::<Vec<_>>(),
         vec![c.oid, b.oid, a.oid]
@@ -1057,7 +1057,7 @@ fn a_rewritten_state_or_dangling_head_is_a_finding_and_blocks_checkpoints() {
     assert_eq!(found.states[0].oid, b.oid);
     assert!(found.states[0].finding.is_none());
     assert!(
-        chain(&h.db).is_err(),
+        chain(&h.db, None).is_err(),
         "the strict listing refuses a broken chain"
     );
 
