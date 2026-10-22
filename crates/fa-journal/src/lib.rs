@@ -76,7 +76,7 @@ pub use attestation::{
 };
 pub use batch::{
     BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
-    post_batch, read_outcome, request_digest,
+    post_batch, post_batch_with_crash, read_outcome, request_digest,
 };
 pub use blob::BlobStore;
 pub use case::{

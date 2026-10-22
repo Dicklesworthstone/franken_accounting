@@ -1052,6 +1052,121 @@ fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
     }
 }
 
+/// fa-0fl, the crash-point matrix for an atomic batch (plan §5.8): three
+/// rent members in one PostBatch, one publication, crashed at each of the
+/// substrate's seven commit crash points; the fault VFS then loses every
+/// unsynced byte and the book reopens. All three members are journaled or
+/// none is, never a partial batch; the period's cells fold exactly what
+/// survived and verify; and the retried batch is the recorded outcome
+/// exactly when the crash kept it, leaving three entries either way. A
+/// crash before the commit marker keeps nothing; the control keeps all.
+#[test]
+fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
+    use fgdb::CrashPoint;
+    let cases = [
+        (Some(CrashPoint::BeforeCapsule), Some(false)),
+        (Some(CrashPoint::AfterCapsuleBeforeD1), Some(false)),
+        (
+            Some(CrashPoint::AfterCapsuleFileSyncBeforeDirectorySync),
+            Some(false),
+        ),
+        (
+            Some(CrashPoint::AfterCapsuleDirectorySyncBeforeParentDirectorySync),
+            Some(false),
+        ),
+        (Some(CrashPoint::AfterD1), Some(false)),
+        (Some(CrashPoint::AfterMarkerBeforeD2), None),
+        (
+            Some(CrashPoint::AfterMarkerFileSyncBeforeDirectorySync),
+            None,
+        ),
+        (None, Some(true)),
+    ];
+    for (i, (point, expected)) in cases.into_iter().enumerate() {
+        let seed = 900 + i as u64;
+        under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let PreparedFixture {
+                mut book,
+                vfs,
+                request,
+                march,
+                ..
+            } = prepared_fixture(&root, seed).await;
+            let members = (0..3)
+                .map(|i| {
+                    let mut proposal = request.proposal.clone();
+                    proposal.idempotency_key = format!("crash-batch-{i}").into_bytes();
+                    fa_intents::PostIntent::new(proposal, Vec::new()).unwrap()
+                })
+                .collect();
+            let batch = fa_intents::PostBatch::new(b"crash-batch".to_vec(), members).unwrap();
+            let before = journal_entries(&book, &cx);
+            let context = book.context().clone();
+            let outcome = fa_journal::post_batch_with_crash(
+                &mut book.db,
+                &cx,
+                &context,
+                request.capability.clone(),
+                batch.clone(),
+                point,
+            )
+            .await;
+            assert_eq!(
+                matches!(outcome, Ok(Ok(_))),
+                point.is_none(),
+                "{point:?}: the publication fails iff a crash is injected: {outcome:?}"
+            );
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let after = journal_entries(&book, &cx);
+            assert!(
+                before.iter().all(|e| after.contains(e)),
+                "{point:?}: the earlier journal changed"
+            );
+            let kept = match after.len().checked_sub(before.len()) {
+                Some(0) => false,
+                Some(3) => true,
+                other => panic!("{point:?}: {other:?} of the batch's 3 members survived"),
+            };
+            if let Some(expected) = expected {
+                assert_eq!(kept, expected, "{point:?}");
+            }
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(fold.entries, if kept { 3 } else { 0 }, "{point:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            let retried = book
+                .post_batch(&cx, batch, &request.capability)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retried.already_recorded, kept, "{point:?}");
+            assert_eq!(journal_entries(&book, &cx).len(), before.len() + 3);
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(fold.entries, 3, "{point:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+        });
+    }
+}
+
 /// The state of `code` in `book`'s period table.
 fn period_state(book: &LabBook, cx: &PurposeContexts, code: &str) -> fa_time::PeriodState {
     book.periods(cx)
