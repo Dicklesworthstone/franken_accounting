@@ -756,6 +756,14 @@ impl Work {
                         <= n.saturating_mul(u64::from(n.saturating_add(1).ilog2().max(1)))
                             .saturating_mul(8)
             }
+            // recon.assertion_drift: one comparison per attestation, plus
+            // one per leg it refolds for that attestation's cell.
+            "O(attestations × legs)" => {
+                let attestations = snapshot.attestations.len() as u64;
+                self.entries == 0
+                    && self.legs == 0
+                    && self.comparisons <= attestations.saturating_mul(legs.saturating_add(1))
+            }
             "O(entries)" => self.entries <= entries && self.legs == 0 && self.comparisons == 0,
             "O(legs)" => self.entries <= entries && self.legs <= legs && self.comparisons == 0,
             "O(entries + transitions)" => {

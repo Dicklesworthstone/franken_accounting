@@ -2901,6 +2901,54 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                 );
             }
         }
+
+        // fa-1tvm: every registered procedure's counted work stays inside
+        // its registered complexity class on every scenario corpus (plan
+        // §11.1, "complexity bound witness-locked"). A procedure this corpus
+        // cannot run (a declared input it lacks, or native bank states only
+        // the bank-aware entry point supplies) is refused before it reports
+        // and is listed here, never passed silently.
+        let mut witnessed = Vec::new();
+        let mut not_run = Vec::new();
+        for row in fa_lantern::catalog::registered().unwrap() {
+            let built = match fa_lantern::catalog::build(
+                &row.id,
+                Params::defaults(&row.id).unwrap(),
+                fa_lantern::catalog::Inputs::default(),
+            ) {
+                Ok(built) => built,
+                Err(LanternError::Parameter { name, .. }) => {
+                    not_run.push(format!("{}: {name}", row.id));
+                    continue;
+                }
+                Err(error) => panic!("{scenario}/{}: {error}", row.id),
+            };
+            match run_over(&snapshot, &book, built.as_ref()) {
+                Ok(run) => {
+                    assert!(
+                        run.work.within_registered_bound(&row.complexity, &snapshot),
+                        "{scenario}/{}: work {:?} exceeds its registered class {}",
+                        row.id,
+                        run.work,
+                        row.complexity
+                    );
+                    witnessed.push(row.id.clone());
+                }
+                Err(LanternError::Parameter { name, .. }) => {
+                    not_run.push(format!("{}: {name}", row.id));
+                }
+                Err(error) => panic!("{scenario}/{}: {error}", row.id),
+            }
+        }
+        println!(
+            "complexity witnesses {scenario}: {} witnessed; not run: {not_run:?}",
+            witnessed.len()
+        );
+        assert!(
+            witnessed.len() >= 30,
+            "{scenario}: only {} procedures witnessed; not run: {not_run:?}",
+            witnessed.len()
+        );
     }
 }
 
