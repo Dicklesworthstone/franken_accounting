@@ -164,7 +164,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     let journal = selected.ok_or_else(|| Fail::Internal("export selection is missing".into()))?;
-    let files = render(format, &journal)?;
+    let files = render_files(format, &journal)?;
     let total: usize = files.iter().map(|f| f.content.len()).sum();
     let max_inline = crate::verbs::registry()
         .map_err(|e| Fail::Internal(e.into()))?
