@@ -38,8 +38,9 @@ pub(crate) fn engagement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
         Some("sud") => sud(ctx, args),
         Some("file") => file(ctx, args),
         Some("complete") => complete(ctx, args),
+        Some("carry-forward") => carry_forward(ctx, args),
         _ => Err(usage(
-            "engagement has the subcommands open, list, show, sud, file and complete",
+            "engagement has the subcommands open, list, show, sud, file, complete and carry-forward",
             OPEN_EXAMPLE,
         )),
     }
@@ -47,6 +48,112 @@ pub(crate) fn engagement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
 
 const FILE_EXAMPLE: &str = "fa engagement file <id> --document <oid> [--key K] --json";
 const COMPLETE_EXAMPLE: &str = "fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD] [--key K] --json";
+const CARRY_FORWARD_EXAMPLE: &str = "fa engagement carry-forward <id> --from <prior engagement> [--turned-around <n>]... [--corrected <n>]... [--key K] --json";
+
+/// `fa engagement carry-forward <id> --from <prior>`: journal that the prior
+/// engagement's uncorrected misstatements carry into this one, and which of
+/// them turned around through this period's income (`--turned-around`) or
+/// an out-of-period correction here corrected (`--corrected`); the others
+/// are still uncorrected at this period's end (plan §11.12, SAB 108). The
+/// latest carry-forward governs the summary.
+fn carry_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let engagement = engagement_arg(args, "carry-forward", CARRY_FORWARD_EXAMPLE)?;
+    let prior = require_one(args, "--from", CARRY_FORWARD_EXAMPLE)?.to_string();
+    let ordinals = |flag: &str| -> Result<Vec<u32>, Fail> {
+        let mut numbers = args
+            .flag_all(flag)
+            .iter()
+            .map(|text| {
+                text.parse::<u32>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                    usage(
+                        format!("{flag} `{text}` is not a proposal number"),
+                        CARRY_FORWARD_EXAMPLE,
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, Fail>>()?;
+        numbers.sort_unstable();
+        if numbers.windows(2).any(|w| w[0] == w[1]) {
+            return Err(usage(
+                format!("{flag} names a proposal twice"),
+                CARRY_FORWARD_EXAMPLE,
+            ));
+        }
+        Ok(numbers)
+    };
+    let turned_around = ordinals("--turned-around")?;
+    let corrected = ordinals("--corrected")?;
+    let key = one_flag(args, "--key", CARRY_FORWARD_EXAMPLE)?
+        .unwrap_or("carry-forward")
+        .to_string();
+    let capability = ctx.capability(args, &["produce"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_writer(
+            book,
+            &capability,
+            "carrying an engagement's misstatements forward",
+        )
+    })?;
+    let date = control_date(args, &book)?;
+    let carried = book.carry_forward(
+        capability,
+        &engagement,
+        &prior,
+        turned_around,
+        corrected,
+        date,
+        key.as_bytes(),
+    )??;
+    ctx.out.at_book(&book)?;
+    let c = &carried.carry_forward;
+    let human = format!(
+        "engagement {engagement}: carries forward {prior}'s uncorrected misstatements ({} turned around, {} corrected){}{}",
+        c.turned_around.len(),
+        c.corrected.len(),
+        if carried.added_after_completion {
+            ", added after documentation completion"
+        } else {
+            ""
+        },
+        if carried.already_recorded {
+            ", already recorded"
+        } else {
+            ""
+        }
+    );
+    ctx.out.event(
+        "engagement_carry_forward_recorded",
+        vec![
+            ("engagement", s(&engagement)),
+            ("prior", s(&prior)),
+            ("turned_around", ordinals_json(&c.turned_around)),
+            ("corrected", ordinals_json(&c.corrected)),
+            ("control_entry", vid_hex(carried.control_entry)),
+            ("recorded_at", seq(carried.recorded_at)),
+            (
+                "added_after_completion",
+                Json::Bool(carried.added_after_completion),
+            ),
+            ("already_recorded", Json::Bool(carried.already_recorded)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
+fn ordinals_json(ordinals: &[u32]) -> Json {
+    Json::Arr(ordinals.iter().map(|n| Json::Int(i128::from(*n))).collect())
+}
+
+/// The engagement codes of the book, by vertex: a carry-forward names its
+/// prior engagement by vertex.
+fn engagement_codes(book: &fa::Book) -> Result<BTreeMap<u128, String>, Fail> {
+    Ok(book
+        .engagements()?
+        .into_iter()
+        .map(|e| (e.vid.0, e.profile.engagement))
+        .collect())
+}
 
 /// The one engagement id a file or complete takes.
 fn engagement_arg(args: &Args, sub: &str, example: &str) -> Result<String, Fail> {
@@ -633,6 +740,46 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let documentation = view.documentation.as_ref().map_or(Json::Null, |c| {
         completion_json(&c.completion, c.record, c.recorded_at, c.completed_by)
     });
+    let engagements = if view.carry_forwards.is_empty() {
+        BTreeMap::new()
+    } else {
+        engagement_codes(&book)?
+    };
+    let carry_forwards = view
+        .carry_forwards
+        .iter()
+        .map(|c| {
+            let prior = engagements
+                .get(&c.carry_forward.prior.0)
+                .cloned()
+                .ok_or_else(|| unknown(&format!("{:032x}", c.carry_forward.prior.0)))?;
+            human.push(format!(
+                "  carries forward {prior} ({} turned around, {} corrected){}",
+                c.carry_forward.turned_around.len(),
+                c.carry_forward.corrected.len(),
+                if c.added_after_completion {
+                    " (added after documentation completion)"
+                } else {
+                    ""
+                }
+            ));
+            Ok(obj(vec![
+                ("prior", s(prior)),
+                (
+                    "turned_around",
+                    ordinals_json(&c.carry_forward.turned_around),
+                ),
+                ("corrected", ordinals_json(&c.carry_forward.corrected)),
+                ("record", vid_hex(c.record)),
+                ("recorded_at", seq(c.recorded_at)),
+                ("recorded_by", vid_hex(c.recorded_by)),
+                (
+                    "added_after_completion",
+                    Json::Bool(c.added_after_completion),
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
     ctx.out.event(
         "engagement_detail",
         vec![
@@ -640,6 +787,7 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("proposals", Json::Arr(proposals)),
             ("workpapers", Json::Arr(workpapers)),
             ("documentation", documentation),
+            ("carry_forwards", Json::Arr(carry_forwards)),
         ],
         &human.join("\n"),
     );
@@ -798,6 +946,36 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let carried_from = match summary.carried_from {
+        None => None,
+        Some(prior) => Some(
+            engagement_codes(&book)?
+                .remove(&prior.0)
+                .ok_or_else(|| unknown(&format!("{:032x}", prior.0)))?,
+        ),
+    };
+    let carried = summary
+        .carried
+        .iter()
+        .map(|item| {
+            Ok(obj(vec![
+                ("prior_number", Json::Int(i128::from(item.prior_ordinal))),
+                ("effective_date", s(item.effective_date.render())),
+                ("carried", s(item.carried.name())),
+                ("effect", effect_json(item.effect, summary.unit, &units)?),
+                ("clearly_trivial", Json::Bool(item.clearly_trivial)),
+                (
+                    "other_units",
+                    Json::Arr(
+                        item.other_units
+                            .iter()
+                            .map(|u| registered_unit_code(*u, &units).map(s))
+                            .collect::<Result<Vec<_>, Fail>>()?,
+                    ),
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
     let rollover = render_amount(Amount::new(summary.unit, summary.rollover_income), &units)?;
     ctx.out.at_book(&book)?;
     ctx.out.event(
@@ -807,12 +985,17 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("unit", s(registered_unit_code(summary.unit, &units)?)),
             ("items", Json::Arr(items)),
             ("out_of_period", Json::Arr(out_of_period)),
+            ("carried_from", carried_from.clone().map_or(Json::Null, s)),
+            ("carried", Json::Arr(carried)),
             ("rollover_income", s(rollover.as_str())),
             (
                 "iron_curtain",
                 effect_json(summary.iron_curtain, summary.unit, &units)?,
             ),
-            ("prior_period_carry_forward", Json::Bool(false)),
+            (
+                "prior_period_carry_forward",
+                Json::Bool(carried_from.is_some()),
+            ),
             (
                 "exceeds_performance",
                 Json::Bool(summary.exceeds_performance),
@@ -828,9 +1011,14 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
         ],
         &format!(
-            "engagement {engagement}: {} uncorrected misstatement(s), {} out-of-period correction(s); rollover income effect {rollover}; {} performance materiality, {} overall (mechanical comparisons; materiality is the auditor's judgment)",
+            "engagement {engagement}: {} uncorrected misstatement(s), {} out-of-period correction(s), {} carried forward{}; rollover income effect {rollover}; {} performance materiality, {} overall (mechanical comparisons; materiality is the auditor's judgment)",
             summary.items.len(),
             summary.out_of_period.len(),
+            summary.carried.len(),
+            carried_from
+                .as_deref()
+                .map(|prior| format!(" from {prior}"))
+                .unwrap_or_default(),
             if summary.exceeds_performance {
                 "exceeds"
             } else {

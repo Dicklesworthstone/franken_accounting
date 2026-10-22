@@ -184,6 +184,14 @@ pub const DOCUMENTATION_COMPLETION_EXTENSION: u16 = 26;
 /// proposal digest covers it; the summary of uncorrected misstatements
 /// counts the entry's effect on current-period income (SAB 108 rollover).
 pub const PRIOR_PERIOD_ERROR_EXTENSION: u16 = 27;
+/// Extension tag 28, `fa:engagement-carry-forward:v1` (plan §11.12, SAB 108,
+/// bead fa-zgn): on an `EngagementControl` CarryForward record, the prior
+/// engagement whose uncorrected misstatements carry into this one, and the
+/// auditor's statement of which of them reversed through this period's
+/// income and which an out-of-period correction here corrected — `u16
+/// version ‖ u128 prior engagement ‖ list(u32 turned-around ordinal) ‖
+/// list(u32 corrected ordinal)`, each list strictly ascending, disjoint.
+pub const ENGAGEMENT_CARRY_FORWARD_EXTENSION: u16 = 28;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -214,6 +222,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     CASE_DISCLOSURE_EXTENSION,
     DOCUMENTATION_COMPLETION_EXTENSION,
     PRIOR_PERIOD_ERROR_EXTENSION,
+    ENGAGEMENT_CARRY_FORWARD_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------

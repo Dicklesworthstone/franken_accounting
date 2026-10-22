@@ -1267,3 +1267,157 @@ fn an_out_of_period_correction_misstates_rollover_income_until_it_is_reversed() 
     assert!(rows(sud, "out_of_period").is_empty(), "{}", sud.render());
     assert_eq!(text(sud, "rollover_income"), "0.00 USD");
 }
+
+/// SAB 108 carry-forward: the auditor states which of the prior
+/// engagement's uncorrected misstatements turned around in this period and
+/// which an out-of-period correction here corrected; the rest are still
+/// uncorrected at this period's end. The summary counts each under the
+/// method its fate decides, and the latest carry-forward governs.
+#[test]
+fn a_carry_forward_brings_the_prior_engagements_misstatements_under_both_methods() {
+    let f = Fixture::new();
+    let open = |id: &str, period: &str| {
+        f.ok(&[
+            "engagement",
+            "open",
+            id,
+            "--kind",
+            "audit",
+            "--period",
+            period,
+            "--overall",
+            "500.00 USD",
+            "--performance",
+            "375.00 USD",
+            "--clearly-trivial",
+            "25.00 USD",
+        ]);
+    };
+    open("march", "FY2026-P03");
+    open("april", "FY2026-P04");
+    // March left three fee accruals uncorrected: 10.00, 20.00 and 40.00.
+    for (number, amount) in [("1", "10.00"), ("2", "20.00"), ("3", "40.00")] {
+        let name = format!("accrual-{number}.json");
+        f.intent(
+            &name,
+            "2026-03-31",
+            &[("debit", "6000", amount), ("credit", "2100", amount)],
+        );
+        f.ok(&[
+            "adjustment",
+            "propose",
+            "--engagement",
+            "march",
+            "--intent",
+            &name,
+            "--key",
+            &name,
+        ]);
+        f.ok(&[
+            "adjustment",
+            "pass",
+            "--engagement",
+            "march",
+            "--proposal",
+            number,
+            "--reason",
+            "ClearlyTrivial",
+        ]);
+    }
+
+    // Planted negatives, nothing journaled: itself, a prior that does not
+    // precede, a proposal that is not an uncorrected one, an unknown prior,
+    // and a proposal stated both turned around and corrected.
+    let carry = |extra: &[&'static str]| -> Vec<&'static str> {
+        let mut args = vec!["engagement", "carry-forward"];
+        args.extend_from_slice(extra);
+        args
+    };
+    f.refused(&carry(&["april", "--from", "april"]), 3, "FA-REF-191");
+    f.refused(&carry(&["march", "--from", "april"]), 3, "FA-REF-191");
+    f.refused(
+        &carry(&["april", "--from", "march", "--turned-around", "9"]),
+        3,
+        "FA-REF-191",
+    );
+    f.refused(&carry(&["april", "--from", "no-such"]), 3, "FA-REF-180");
+    f.refused(
+        &carry(&[
+            "april",
+            "--from",
+            "march",
+            "--turned-around",
+            "2",
+            "--corrected",
+            "2",
+        ]),
+        2,
+        "FA-REF-100",
+    );
+
+    let carried = f.ok(&carry(&[
+        "april",
+        "--from",
+        "march",
+        "--turned-around",
+        "2",
+        "--corrected",
+        "3",
+    ]));
+    assert_eq!(text(&carried, "event"), "engagement_carry_forward_recorded");
+    assert_eq!(text(data(&carried), "prior"), "march");
+    let sud = f.ok(&["engagement", "sud", "april"]);
+    let sud = data(&sud);
+    assert!(rows(sud, "items").is_empty(), "{}", sud.render());
+    assert_eq!(text(sud, "carried_from"), "march");
+    assert_eq!(
+        sud.get("prior_period_carry_forward"),
+        Some(&Json::Bool(true))
+    );
+    let carried = rows(sud, "carried");
+    assert_eq!(
+        carried
+            .iter()
+            .map(|c| (int(c, "prior_number"), text(c, "carried")))
+            .collect::<Vec<_>>(),
+        [(1, "Uncorrected"), (2, "TurnedAround"), (3, "Corrected")]
+    );
+    let effect = |i: usize, line: &str| text(carried[i].get("effect").unwrap(), line).to_string();
+    // Still uncorrected: accrued liabilities 10.00 short at April's end,
+    // March's expense now in opening retained earnings.
+    assert_eq!(effect(0, "liabilities"), "10.00 USD");
+    assert_eq!(effect(0, "equity"), "-10.00 USD");
+    assert_eq!(effect(0, "income"), "0.00 USD");
+    // Turned around: April's income took March's 20.00 of fees.
+    assert_eq!(effect(1, "income"), "20.00 USD");
+    assert_eq!(effect(1, "equity"), "-20.00 USD");
+    assert_eq!(effect(2, "income"), "0.00 USD");
+    assert_eq!(effect(2, "liabilities"), "0.00 USD");
+    assert_eq!(text(sud, "rollover_income"), "20.00 USD");
+    let iron_curtain = sud.get("iron_curtain").unwrap();
+    assert_eq!(text(iron_curtain, "liabilities"), "10.00 USD");
+    assert_eq!(text(iron_curtain, "equity"), "-10.00 USD");
+    assert_eq!(text(iron_curtain, "income"), "0.00 USD");
+
+    // A later carry-forward governs; the first stays on the record.
+    f.ok(&carry(&["april", "--from", "march", "--key", "restated"]));
+    let sud = f.ok(&["engagement", "sud", "april"]);
+    let sud = data(&sud);
+    assert_eq!(text(sud, "rollover_income"), "0.00 USD");
+    assert_eq!(
+        text(sud.get("iron_curtain").unwrap(), "liabilities"),
+        "70.00 USD"
+    );
+    let shown = f.ok(&["engagement", "show", "april"]);
+    let history = rows(data(&shown), "carry_forwards");
+    assert_eq!(history.len(), 2, "{}", shown.render());
+    assert_eq!(text(&history[0], "prior"), "march");
+    assert_eq!(
+        history[0].get("turned_around"),
+        Some(&Json::Arr(vec![Json::Int(2)]))
+    );
+    assert_eq!(
+        history[1].get("turned_around"),
+        Some(&Json::Arr(Vec::new()))
+    );
+}

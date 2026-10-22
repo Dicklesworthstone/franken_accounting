@@ -85,7 +85,13 @@ pub const COMPLETION_VERSION: u16 = 1;
 /// AS 1215.15: documentation is complete within 45 days after the report
 /// release date.
 pub const DOCUMENTATION_WINDOW_DAYS: i32 = 45;
+/// Canonical bytes of a carry-forward (extension 28): `u16 version ‖ u128
+/// prior engagement ‖ list(u32 turned-around) ‖ list(u32 corrected)`.
+pub const CARRY_FORWARD_VERSION: u16 = 1;
+/// The ordinals one carry-forward list may name.
+pub const MAX_CARRIED_ORDINALS: usize = 4096;
 const PROFILE_DOMAIN: &[u8] = b"fa:engagement:v1";
+const CARRY_FORWARD_DOMAIN: &[u8] = b"fa:engagement-carry-forward:v1";
 const PROPOSAL_DOMAIN: &[u8] = b"fa:proposed-adjustment:v1";
 const COMPLETION_DOMAIN: &[u8] = b"fa:documentation-completion:v1";
 const WORKPAPER_DOMAIN: &[u8] = b"fa:engagement-workpaper:v1";
@@ -708,6 +714,8 @@ pub struct EngagementView {
     pub workpapers: Vec<WorkpaperView>,
     /// The journaled documentation completion, once there is one.
     pub documentation: Option<CompletionView>,
+    /// Every carry-forward, in journal order; the last governs.
+    pub carry_forwards: Vec<CarryForwardView>,
 }
 
 /// A recorded File: a document of the book in the engagement's workpaper
@@ -783,6 +791,128 @@ pub struct CompletionView {
     pub completed_by: VId,
 }
 
+/// An engagement's carry-forward of a prior engagement's uncorrected
+/// misstatements (plan §11.12, SAB 108), as the auditor states it: which
+/// prior items reversed through this period's income (turned around) and
+/// which an out-of-period correction in this period corrected. Every other
+/// uncorrected item of the prior engagement is still uncorrected at this
+/// period's end. The prior engagement's own carry-forward is not chained.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CarryForward {
+    /// The prior engagement's vertex.
+    pub prior: VId,
+    /// Strictly ascending ordinals of the prior engagement's proposals.
+    pub turned_around: Vec<u32>,
+    /// Strictly ascending, disjoint from `turned_around`.
+    pub corrected: Vec<u32>,
+}
+
+impl CarryForward {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, KernelError> {
+        let mut w =
+            Writer::with_capacity(30 + 4 * (self.turned_around.len() + self.corrected.len()));
+        w.u16(CARRY_FORWARD_VERSION).u128(self.prior.0);
+        for list in [&self.turned_around, &self.corrected] {
+            w.list(list, |w, ordinal| {
+                w.u32(*ordinal);
+            });
+        }
+        Ok(w.finish()?)
+    }
+
+    pub fn decode(raw: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(raw);
+        if r.u16("carry_forward.version").map_err(decode)? != CARRY_FORWARD_VERSION {
+            return Err(KernelError::Corrupt(
+                "unsupported carry-forward version".into(),
+            ));
+        }
+        let prior = VId(r.u128("carry_forward.prior").map_err(decode)?);
+        let mut lists = [Vec::new(), Vec::new()];
+        for (list, field) in lists
+            .iter_mut()
+            .zip(["carry_forward.turned_around", "carry_forward.corrected"])
+        {
+            *list = r
+                .list(MAX_CARRIED_ORDINALS, field, |r| r.u32(field))
+                .map_err(decode)?;
+        }
+        r.finish().map_err(decode)?;
+        let [turned_around, corrected] = lists;
+        let carry_forward = Self {
+            prior,
+            turned_around,
+            corrected,
+        };
+        carry_forward
+            .check()
+            .map_err(|why| KernelError::Corrupt(format!("carry-forward: {why}")))?;
+        Ok(carry_forward)
+    }
+
+    /// Each list strictly ascending, within its bound, ordinals from 1, and
+    /// no ordinal in both.
+    pub fn check(&self) -> Result<(), String> {
+        for (name, list) in [
+            ("turned-around", &self.turned_around),
+            ("corrected", &self.corrected),
+        ] {
+            if list.len() > MAX_CARRIED_ORDINALS {
+                return Err(format!(
+                    "{name} names {} proposals; at most {MAX_CARRIED_ORDINALS}",
+                    list.len()
+                ));
+            }
+            if list.first() == Some(&0) || list.windows(2).any(|w| w[0] >= w[1]) {
+                return Err(format!(
+                    "{name} proposals are numbered from 1, each named once"
+                ));
+            }
+        }
+        if let Some(both) = self
+            .turned_around
+            .iter()
+            .find(|o| self.corrected.binary_search(o).is_ok())
+        {
+            return Err(format!(
+                "prior proposal {both} is named both turned around and corrected"
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], KernelError> {
+        Ok(domain_digest(
+            CARRY_FORWARD_DOMAIN,
+            &[&self.canonical_bytes()?],
+        ))
+    }
+}
+
+/// A recorded CarryForward.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CarriedForward {
+    pub engagement: VId,
+    pub carry_forward: CarryForward,
+    pub control_entry: VId,
+    pub recorded_at: CommitSeq,
+    /// Recorded after the documentation completion (AS 1215.16).
+    pub added_after_completion: bool,
+    /// The same carry-forward was already journaled: nothing written.
+    pub already_recorded: bool,
+}
+
+/// A carry-forward as the journal states it. The latest one governs the
+/// summary; earlier ones stay on the record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CarryForwardView {
+    pub carry_forward: CarryForward,
+    pub record: VId,
+    pub recorded_at: CommitSeq,
+    pub recorded_by: VId,
+    pub added_after_completion: bool,
+}
+
 #[derive(Clone, Copy)]
 enum Kind {
     Open,
@@ -791,6 +921,7 @@ enum Kind {
     Pass,
     File,
     Complete,
+    CarryForward,
 }
 
 impl Kind {
@@ -802,6 +933,7 @@ impl Kind {
             Self::Pass => "Pass",
             Self::File => "File",
             Self::Complete => "Complete",
+            Self::CarryForward => "CarryForward",
         }
     }
 
@@ -813,20 +945,21 @@ impl Kind {
             Self::Pass => 3,
             Self::File => 4,
             Self::Complete => 5,
+            Self::CarryForward => 6,
         }
     }
 
     /// `(from, to)` on the record's object: the Engagement for Open,
-    /// Propose, File and Complete, the ProposedAdjustment for Book and Pass.
-    /// Propose and File keep the engagement's state (`state`), so a record
-    /// journaled after documentation completion says so; Complete moves it
-    /// from Open to DocumentationComplete, once.
+    /// Propose, File, Complete and CarryForward, the ProposedAdjustment for
+    /// Book and Pass. Propose, File and CarryForward keep the engagement's
+    /// state (`state`), so a record journaled after documentation completion
+    /// says so; Complete moves it from Open to DocumentationComplete, once.
     fn states(self, state: EngagementState) -> (u8, u8) {
         let open = EngagementState::Open.tag();
         let proposed = AdjustmentState::Proposed.tag();
         match self {
             Self::Open => (0, open),
-            Self::Propose | Self::File => (state.tag(), state.tag()),
+            Self::Propose | Self::File | Self::CarryForward => (state.tag(), state.tag()),
             Self::Complete => (open, EngagementState::DocumentationComplete.tag()),
             Self::Book => (proposed, AdjustmentState::Booked.tag()),
             Self::Pass => (proposed, AdjustmentState::Passed.tag()),
@@ -2289,6 +2422,238 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+fn carry_forward_refused(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::CARRY_FORWARD,
+        exit::REFUSAL,
+        message.into(),
+        "plan §11.12 (audit.sud under both SAB 108 methods with prior-year carry-forward)",
+        "carry forward another engagement of this book in the same unit, whose scope periods all end before this one's begin, naming only its uncorrected proposals (`fa engagement sud <prior> --json` lists them)",
+    )
+}
+
+/// The earliest start and the latest end of `profile`'s scope periods, or
+/// `None` when the calendar has no period one of them names.
+fn scope_bounds(book: &BookContext, profile: &EngagementProfile) -> Option<(DateDay, DateDay)> {
+    let mut bounds: Option<(DateDay, DateDay)> = None;
+    for code in &profile.scope_periods {
+        let period = crate::policy::calendar_period(book, code)?;
+        bounds = Some(match bounds {
+            None => (period.start, period.end),
+            Some((start, end)) => (start.min(period.start), end.max(period.end)),
+        });
+    }
+    bounds
+}
+
+/// Journal `engagement`'s carry-forward of `prior`'s uncorrected
+/// misstatements (plan §11.12, SAB 108): one CarryForward record (extension
+/// 28) naming the prior engagement and which of its uncorrected proposals
+/// turned around through this period's income or an out-of-period
+/// correction here corrected. The prior engagement is another of this book,
+/// in the same unit, whose scope periods all end by the day this one's
+/// first begins; each named ordinal is one of its uncorrected proposals at
+/// the head. A later carry-forward governs the summary; every one stays on
+/// the record.
+#[allow(clippy::too_many_arguments)]
+pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    engagement: &str,
+    prior: &str,
+    turned_around: Vec<u32>,
+    corrected: Vec<u32>,
+    req: EngagementRequest,
+) -> Outcome<CarriedForward> {
+    const FIX: &str = "fa engagement carry-forward <id> --from <prior engagement> [--turned-around N]... [--corrected N]...";
+    for code in [engagement, prior] {
+        if let Err(why) = check_engagement(code) {
+            return Ok(Err(usage(why, FIX)));
+        }
+    }
+    let vid = engagement_vid(book.book_id, engagement);
+    let prior_vid = engagement_vid(book.book_id, prior);
+    let carried = CarryForward {
+        prior: prior_vid,
+        turned_around,
+        corrected,
+    };
+    if let Err(why) = carried.check() {
+        return Ok(Err(usage(why, FIX)));
+    }
+    if let Err(r) = admit(db, book, &req.capability, Kind::CarryForward)? {
+        return Ok(Err(r));
+    }
+    if vid == prior_vid {
+        return Ok(Err(carry_forward_refused(format!(
+            "engagement `{engagement}` cannot carry forward its own misstatements"
+        ))));
+    }
+    let key = record_key(Kind::CarryForward, vid, &req.idempotency_key);
+    let evid = entry_vid(book.book_id, &req.capability.holder().0.to_le_bytes(), &key);
+    let extension = Some((
+        fa_model::entry::ENGAGEMENT_CARRY_FORWARD_EXTENSION,
+        carried.canonical_bytes()?,
+    ));
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let Some((_, profile)) = engagement_row(&txn, db, vid)? else {
+        txn.abort();
+        return Ok(Err(unknown(engagement)));
+    };
+    let Some((prior_row, prior_profile)) = engagement_row(&txn, db, prior_vid)? else {
+        txn.abort();
+        return Ok(Err(unknown(prior)));
+    };
+    // A point read of the state, as for File: a completion that commits
+    // first makes this a first-committer conflict.
+    let read_state = txn.vertex_property(db, vid, property::STATE)?;
+    let Some(state) = EngagementState::from_scalar(read_state.as_ref()) else {
+        txn.abort();
+        return Err(KernelError::Corrupt(format!(
+            "engagement {:032x} state mirror",
+            vid.0
+        )));
+    };
+    if let Some(stored) = txn.vertex(db, evid)? {
+        txn.abort();
+        let (entry, _) = crate::post::entry_of(&stored)?;
+        let stored_state = match &entry.proposal.control {
+            Some(ControlPayload::LifecycleTransition { from, .. }) => {
+                EngagementState::from_tag(*from)
+            }
+            _ => None,
+        };
+        let Some(stored_state) = stored_state else {
+            return Ok(Err(conflict_with(&stored)));
+        };
+        let record = record_proposal(
+            book,
+            Kind::CarryForward,
+            stored_state,
+            vid,
+            carried.digest()?,
+            &req,
+            vec![TypedRef::Vertex(prior_vid)],
+            0,
+            extension,
+        );
+        return Ok(
+            recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| CarriedForward {
+                engagement: vid,
+                carry_forward: carried,
+                control_entry: evid,
+                recorded_at,
+                added_after_completion: stored_state == EngagementState::DocumentationComplete,
+                already_recorded: true,
+            }),
+        );
+    }
+    if prior_profile.unit != profile.unit {
+        txn.abort();
+        return Ok(Err(carry_forward_refused(format!(
+            "engagement `{prior}` states its misstatements in unit {}, `{engagement}` in unit {}",
+            prior_profile.unit.0, profile.unit.0
+        ))));
+    }
+    match (
+        scope_bounds(book, &prior_profile),
+        scope_bounds(book, &profile),
+    ) {
+        (Some((_, prior_end)), Some((start, _))) if prior_end <= start => {}
+        (Some(_), Some(_)) => {
+            txn.abort();
+            return Ok(Err(carry_forward_refused(format!(
+                "engagement `{prior}`'s scope periods do not all end before `{engagement}`'s begin"
+            ))));
+        }
+        _ => {
+            txn.abort();
+            return Err(KernelError::Corrupt(format!(
+                "engagement `{prior}` or `{engagement}` names a scope period the calendar does not have"
+            )));
+        }
+    }
+    let prior_view = view_of(db, &prior_row)?;
+    if let Some(ordinal) = carried
+        .turned_around
+        .iter()
+        .chain(&carried.corrected)
+        .find(|ordinal| {
+            !prior_view
+                .proposals
+                .iter()
+                .any(|p| p.proposal.ordinal == **ordinal && uncorrected_basis(p).is_some())
+        })
+    {
+        txn.abort();
+        return Ok(Err(carry_forward_refused(format!(
+            "engagement `{prior}` has no uncorrected proposal {ordinal}"
+        ))));
+    }
+    let record = record_proposal(
+        book,
+        Kind::CarryForward,
+        state,
+        vid,
+        carried.digest()?,
+        &req,
+        vec![TypedRef::Vertex(prior_vid)],
+        0,
+        extension,
+    );
+    if record.validate().is_err() {
+        txn.abort();
+        return Ok(Err(usage(
+            "the CarryForward record is not a valid EngagementControl entry",
+            FIX,
+        )));
+    }
+    let entry = record.clone().seal(Vec::new(), None)?;
+    let mut batch = WriteBatch::new(relation::IN_CASE);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
+    if let Err(e) = txn.write(db, batch) {
+        txn.abort();
+        return Err(e.into());
+    }
+    let added_after_completion = state == EngagementState::DocumentationComplete;
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(seq) => Ok(Ok(CarriedForward {
+            engagement: vid,
+            carry_forward: carried,
+            control_entry: evid,
+            recorded_at: seq,
+            added_after_completion,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(fcw(&detail)))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => match db.vertex(evid)? {
+            Some(stored) => Ok(
+                recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| CarriedForward {
+                    engagement: vid,
+                    carry_forward: carried,
+                    control_entry: evid,
+                    recorded_at,
+                    added_after_completion,
+                    already_recorded: true,
+                }),
+            ),
+            None => Ok(Err(fcw("the carry-forward was journaled concurrently"))),
+        },
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn differs(engagement: &str, ordinal: u32, why: &str) -> Refusal {
     Refusal::new(
         code::BOOKED_ENTRY_DIFFERS,
@@ -2400,6 +2765,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut opened = None;
     let mut proposals = Vec::new();
     let mut workpapers = Vec::new();
+    let mut carry_forwards = Vec::new();
     let mut documentation: Option<CompletionView> = None;
     for (record, entry, recorded_at, from, to) in records_into(db, vid, seq)? {
         let Some(ControlPayload::LifecycleTransition {
@@ -2458,6 +2824,34 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     added_after_completion: f == complete,
                     confirmation: workpaper_confirmation(db, &profile, document)?,
                     representation: workpaper_representation(db, &profile, document)?,
+                });
+            }
+            (f, t)
+                if f == t
+                    && (f == open || f == complete)
+                    && entry.proposal.extensions.iter().any(|(tag, _)| {
+                        *tag == fa_model::entry::ENGAGEMENT_CARRY_FORWARD_EXTENSION
+                    }) =>
+            {
+                let [(_, body)] = entry.proposal.extensions.as_slice() else {
+                    return Err(KernelError::Corrupt(format!(
+                        "CarryForward record {:032x} carries other extensions",
+                        record.0
+                    )));
+                };
+                let carry_forward = CarryForward::decode(body)?;
+                if proof_refs.as_slice() != [TypedRef::Vertex(carry_forward.prior)] {
+                    return Err(KernelError::Corrupt(format!(
+                        "CarryForward record {:032x} does not name its prior engagement",
+                        record.0
+                    )));
+                }
+                carry_forwards.push(CarryForwardView {
+                    carry_forward,
+                    record,
+                    recorded_at,
+                    recorded_by: entry.proposal.principal_ref,
+                    added_after_completion: f == complete,
                 });
             }
             (f, t) if f == t && (f == open || f == complete) => {
@@ -2530,6 +2924,11 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     .iter()
                     .map(|w| (w.filed_at, w.added_after_completion)),
             )
+            .chain(
+                carry_forwards
+                    .iter()
+                    .map(|c: &CarryForwardView| (c.recorded_at, c.added_after_completion)),
+            )
             .any(|(at, after)| completed_at.is_some_and(|c| at > c) != after)
     {
         return Err(KernelError::Corrupt(format!(
@@ -2564,6 +2963,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         proposals,
         workpapers,
         documentation,
+        carry_forwards,
     })
 }
 
@@ -2801,6 +3201,47 @@ pub struct OutOfPeriodItem {
     pub other_units: Vec<UnitId>,
 }
 
+/// What became of a prior engagement's uncorrected misstatement in this
+/// period, as the latest carry-forward states it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Carried {
+    /// Still uncorrected at this period's end: the iron curtain counts it.
+    Uncorrected,
+    /// Reversed through this period's income: the rollover counts it.
+    TurnedAround,
+    /// Corrected in this period by an out-of-period correction, which the
+    /// summary counts itself: neither method counts the item again.
+    Corrected,
+}
+
+impl Carried {
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Uncorrected => "Uncorrected",
+            Self::TurnedAround => "TurnedAround",
+            Self::Corrected => "Corrected",
+        }
+    }
+}
+
+/// A prior engagement's uncorrected misstatement carried into this summary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CarriedItem {
+    /// Its number in the prior engagement.
+    pub prior_ordinal: u32,
+    pub effective_date: DateDay,
+    pub carried: Carried,
+    /// What correcting it would change now, in the engagement's unit: for an
+    /// uncorrected item, the period-end balance sheet (its prior income is
+    /// in opening retained earnings by now); for a turned-around item, this
+    /// period's income against opening retained earnings; nothing for a
+    /// corrected one.
+    pub effect: StatementEffect,
+    pub clearly_trivial: bool,
+    pub other_units: Vec<UnitId>,
+}
+
 /// The summary of uncorrected misstatements (plan §11.12, `audit.sud`):
 /// the effect of every passed proposal, and of every booked one whose entry
 /// has since been reversed or replaced, had it been booked and stood, in
@@ -2808,18 +3249,22 @@ pub struct OutOfPeriodItem {
 /// parameters, under both SAB 108 methods. The proposals count under both;
 /// an out-of-period correction misstates this period's income (rollover)
 /// but leaves the period-end balance sheet corrected, so the iron curtain
-/// does not count it. With no prior-period engagement linked there is no
-/// carry-forward.
+/// does not count it. With a carry-forward, a prior engagement's
+/// uncorrected misstatements count too: those still uncorrected under the
+/// iron curtain, those that turned around under the rollover.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UncorrectedSummary {
     pub unit: UnitId,
     pub items: Vec<UncorrectedItem>,
     pub out_of_period: Vec<OutOfPeriodItem>,
-    /// Rollover: the uncorrected proposals' and the out-of-period
-    /// corrections' effect on the period's income.
+    /// The prior engagement the latest carry-forward names.
+    pub carried_from: Option<VId>,
+    pub carried: Vec<CarriedItem>,
+    /// Rollover: the uncorrected proposals', the out-of-period corrections'
+    /// and the turned-around carried items' effect on the period's income.
     pub rollover_income: i128,
-    /// Iron curtain: the uncorrected proposals' cumulative effect at period
-    /// end.
+    /// Iron curtain: the uncorrected proposals' and the still-uncorrected
+    /// carried items' cumulative effect at period end.
     pub iron_curtain: StatementEffect,
     /// Under either method, the largest absolute total exceeds the stated
     /// performance materiality.
@@ -2827,6 +3272,28 @@ pub struct UncorrectedSummary {
     /// Under either method, the largest absolute total exceeds the stated
     /// overall materiality.
     pub exceeds_overall: bool,
+}
+
+/// Why `p` is an uncorrected misstatement, if it is one: passed, or booked
+/// with an entry since reversed or replaced.
+fn uncorrected_basis(p: &ProposalView) -> Option<Uncorrected> {
+    match &p.decision {
+        Some(RecordedDecision {
+            decision: AdjustmentDecision::Pass { reason_code },
+            ..
+        }) => Some(Uncorrected::Passed {
+            reason_code: *reason_code,
+        }),
+        Some(RecordedDecision {
+            decision: AdjustmentDecision::Book { entry },
+            superseded_by: Some(by),
+            ..
+        }) => Some(Uncorrected::Superseded {
+            entry: *entry,
+            by: *by,
+        }),
+        _ => None,
+    }
 }
 
 /// The effect of booking `legs`, in `unit`, and the other units they name.
@@ -2890,12 +3357,15 @@ fn effect_of(
 }
 
 /// The summary of uncorrected misstatements for `view`'s uncorrected
-/// proposals and the out-of-period `corrections` in its scope.
-/// `account_type` names each leg account's type (from the chart); memo legs
-/// are outside the statements and are not summarized.
+/// proposals, the out-of-period `corrections` in its scope and, when it
+/// carries one forward, the `prior` engagement's summary (its own items;
+/// its carry-forward is not chained). `account_type` names each leg
+/// account's type (from the chart); memo legs are outside the statements
+/// and are not summarized.
 pub fn uncorrected_misstatements(
     view: &EngagementView,
     corrections: &[OutOfPeriodCorrection],
+    prior: Option<&UncorrectedSummary>,
     account_type: impl Fn(VId) -> Option<fa_model::AccountType>,
 ) -> Result<UncorrectedSummary, KernelError> {
     let unit = view.profile.unit;
@@ -2903,22 +3373,8 @@ pub fn uncorrected_misstatements(
     let mut items = Vec::new();
     let mut total = StatementEffect::default();
     for p in &view.proposals {
-        let basis = match &p.decision {
-            Some(RecordedDecision {
-                decision: AdjustmentDecision::Pass { reason_code },
-                ..
-            }) => Uncorrected::Passed {
-                reason_code: *reason_code,
-            },
-            Some(RecordedDecision {
-                decision: AdjustmentDecision::Book { entry },
-                superseded_by: Some(by),
-                ..
-            }) => Uncorrected::Superseded {
-                entry: *entry,
-                by: *by,
-            },
-            _ => continue,
+        let Some(basis) = uncorrected_basis(p) else {
+            continue;
         };
         let ordinal = p.proposal.ordinal;
         let (effect, other_units) = effect_of(&p.proposal.legs, unit, &account_type, &|| {
@@ -2964,12 +3420,80 @@ pub fn uncorrected_misstatements(
             other_units,
         });
     }
+    let overflow = || KernelError::Corrupt("uncorrected misstatements overflow".into());
+    let carry_forward = view.carry_forwards.last().map(|c| &c.carry_forward);
+    let mut carried = Vec::new();
+    match (carry_forward, prior) {
+        (None, _) => {}
+        (Some(_), None) => {
+            return Err(KernelError::Corrupt(format!(
+                "engagement `{}` carries a prior engagement forward, but its summary was not supplied",
+                view.profile.engagement
+            )));
+        }
+        (Some(_), Some(prior)) if prior.unit != unit => {
+            return Err(KernelError::Corrupt(format!(
+                "engagement `{}` carries forward a summary in another unit",
+                view.profile.engagement
+            )));
+        }
+        (Some(carry_forward), Some(prior)) => {
+            for item in &prior.items {
+                let e = item.effect;
+                let ordinal = item.ordinal;
+                let disposition = if carry_forward.turned_around.binary_search(&ordinal).is_ok() {
+                    Carried::TurnedAround
+                } else if carry_forward.corrected.binary_search(&ordinal).is_ok() {
+                    Carried::Corrected
+                } else {
+                    Carried::Uncorrected
+                };
+                let effect = match disposition {
+                    // At this period's end the prior period's income effect
+                    // sits in opening retained earnings.
+                    Carried::Uncorrected => StatementEffect {
+                        income: 0,
+                        assets: e.assets,
+                        liabilities: e.liabilities,
+                        equity: e.equity.checked_add(e.income).ok_or_else(overflow)?,
+                    },
+                    // The reversal went through this period's income; taking
+                    // it back out moves it to opening retained earnings.
+                    Carried::TurnedAround => StatementEffect {
+                        income: e.income.checked_neg().ok_or_else(overflow)?,
+                        equity: e.income,
+                        ..StatementEffect::default()
+                    },
+                    Carried::Corrected => StatementEffect::default(),
+                };
+                match disposition {
+                    Carried::Uncorrected => total = total.add(effect)?,
+                    Carried::TurnedAround => {
+                        rollover_income = rollover_income
+                            .checked_add(effect.income)
+                            .ok_or_else(overflow)?;
+                    }
+                    Carried::Corrected => {}
+                }
+                carried.push(CarriedItem {
+                    prior_ordinal: ordinal,
+                    effective_date: item.effective_date,
+                    carried: disposition,
+                    effect,
+                    clearly_trivial: effect.largest() <= trivial,
+                    other_units: item.other_units.clone(),
+                });
+            }
+        }
+    }
     let m = view.profile.materiality;
     let largest = total.largest().max(rollover_income.unsigned_abs());
     Ok(UncorrectedSummary {
         unit,
         items,
         out_of_period,
+        carried_from: carry_forward.map(|c| c.prior),
+        carried,
         rollover_income,
         iron_curtain: total,
         exceeds_performance: largest > m.performance.unsigned_abs(),
@@ -3236,11 +3760,14 @@ mod tests {
         assert_eq!(Kind::Book.states(open), (1, 2));
         assert_eq!(Kind::Pass.states(open), (1, 3));
         assert_eq!(Kind::File.states(open), (1, 1));
+        assert_eq!(Kind::CarryForward.states(open), (1, 1));
         assert_eq!(Kind::Complete.states(open), (1, 2));
-        // After completion, Propose and File keep the completed state, so
-        // their records say they are additions after completion.
+        // After completion, Propose, File and CarryForward keep the
+        // completed state, so their records say they are additions after
+        // completion.
         assert_eq!(Kind::Propose.states(complete), (2, 2));
         assert_eq!(Kind::File.states(complete), (2, 2));
+        assert_eq!(Kind::CarryForward.states(complete), (2, 2));
         assert_eq!(Kind::Complete.states(complete), (1, 2));
         for state in [open, complete] {
             assert_eq!(EngagementState::from_tag(state.tag()), Some(state));
@@ -3335,6 +3862,7 @@ mod tests {
             proposals,
             workpapers: Vec::new(),
             documentation: None,
+            carry_forwards: Vec::new(),
         }
     }
 
@@ -3416,7 +3944,7 @@ mod tests {
                 VId(79),
             ),
         ]);
-        let summary = uncorrected_misstatements(&view, &[], chart).unwrap();
+        let summary = uncorrected_misstatements(&view, &[], None, chart).unwrap();
         assert_eq!(summary.unit, usd());
         assert_eq!(
             summary
@@ -3484,7 +4012,7 @@ mod tests {
                 ),
                 pass(3),
             )]);
-            let summary = uncorrected_misstatements(&view, &[], chart).unwrap();
+            let summary = uncorrected_misstatements(&view, &[], None, chart).unwrap();
             assert_eq!(summary.exceeds_performance, performance, "{amount}");
             assert_eq!(summary.exceeds_overall, overall, "{amount}");
             assert!(!summary.items[0].clearly_trivial);
@@ -3495,7 +4023,7 @@ mod tests {
             proposal_view(1, vec![leg(Side::Debit, 99, 5), leg(Side::Credit, 2, 5)]),
             pass(4),
         )]);
-        assert!(uncorrected_misstatements(&view, &[], chart).is_err());
+        assert!(uncorrected_misstatements(&view, &[], None, chart).is_err());
     }
 
     /// SAB 108: an out-of-period correction misstates this period's income,
@@ -3525,7 +4053,8 @@ mod tests {
             ],
         };
         let summary =
-            uncorrected_misstatements(&view, std::slice::from_ref(&correction), chart).unwrap();
+            uncorrected_misstatements(&view, std::slice::from_ref(&correction), None, chart)
+                .unwrap();
         let [item] = summary.out_of_period.as_slice() else {
             panic!("one out-of-period item: {:?}", summary.out_of_period)
         };
@@ -3560,9 +4089,137 @@ mod tests {
             leg(Side::Debit, 5, 4_000_000),
             leg(Side::Credit, 2, 4_000_000),
         ];
-        let summary = uncorrected_misstatements(&view, &[larger], chart).unwrap();
+        let summary = uncorrected_misstatements(&view, &[larger], None, chart).unwrap();
         assert_eq!(summary.rollover_income, 3_996_000);
         assert_eq!(summary.iron_curtain.largest(), 4_000);
         assert!(summary.exceeds_performance && !summary.exceeds_overall);
+    }
+
+    /// SAB 108 carry-forward: a prior engagement's item still uncorrected
+    /// counts at this period's end under the iron curtain, its prior income
+    /// now in opening retained earnings; a turned-around one counts in this
+    /// period's income under the rollover; a corrected one counts under
+    /// neither, since its out-of-period correction is counted itself. The
+    /// latest carry-forward governs.
+    #[test]
+    fn a_carry_forward_counts_each_prior_item_under_the_method_its_fate_decides() {
+        // The prior engagement passed three fee accruals: 10.00, 20.00, 40.00.
+        let accrual = |ordinal, amount| {
+            decided(
+                proposal_view(
+                    ordinal,
+                    vec![leg(Side::Debit, 5, amount), leg(Side::Credit, 2, amount)],
+                ),
+                AdjustmentDecision::Pass { reason_code: 3 },
+            )
+        };
+        let prior_view = engagement_view(vec![
+            accrual(1, 1_000),
+            accrual(2, 2_000),
+            accrual(3, 4_000),
+        ]);
+        let prior = uncorrected_misstatements(&prior_view, &[], None, chart).unwrap();
+        let carry = |record: u128, turned_around: Vec<u32>, corrected: Vec<u32>| CarryForwardView {
+            carry_forward: CarryForward {
+                prior: VId(51),
+                turned_around,
+                corrected,
+            },
+            record: VId(record),
+            recorded_at: CommitSeq(9),
+            recorded_by: VId(9),
+            added_after_completion: false,
+        };
+        let mut view = engagement_view(Vec::new());
+        view.carry_forwards.push(carry(400, vec![2], vec![3]));
+        assert!(
+            uncorrected_misstatements(&view, &[], None, chart).is_err(),
+            "a carry-forward without the prior summary"
+        );
+        let summary = uncorrected_misstatements(&view, &[], Some(&prior), chart).unwrap();
+        assert_eq!(summary.carried_from, Some(VId(51)));
+        assert_eq!(
+            summary
+                .carried
+                .iter()
+                .map(|c| (c.prior_ordinal, c.carried, c.effect))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    1,
+                    Carried::Uncorrected,
+                    StatementEffect {
+                        liabilities: 1_000,
+                        equity: -1_000,
+                        ..StatementEffect::default()
+                    }
+                ),
+                (
+                    2,
+                    Carried::TurnedAround,
+                    StatementEffect {
+                        income: 2_000,
+                        equity: -2_000,
+                        ..StatementEffect::default()
+                    }
+                ),
+                (3, Carried::Corrected, StatementEffect::default()),
+            ]
+        );
+        assert_eq!(summary.rollover_income, 2_000);
+        assert_eq!(
+            summary.iron_curtain,
+            StatementEffect {
+                liabilities: 1_000,
+                equity: -1_000,
+                ..StatementEffect::default()
+            }
+        );
+
+        // A later carry-forward states that nothing turned around or was
+        // corrected: every prior item is uncorrected at this period's end.
+        view.carry_forwards.push(carry(401, Vec::new(), Vec::new()));
+        let summary = uncorrected_misstatements(&view, &[], Some(&prior), chart).unwrap();
+        assert_eq!(summary.rollover_income, 0);
+        assert_eq!(
+            summary.iron_curtain,
+            StatementEffect {
+                liabilities: 7_000,
+                equity: -7_000,
+                ..StatementEffect::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_carry_forward_round_trips_and_refuses_unordered_or_overlapping_ordinals() {
+        let carried = CarryForward {
+            prior: VId(51),
+            turned_around: vec![1, 4],
+            corrected: vec![2],
+        };
+        assert_eq!(
+            CarryForward::decode(&carried.canonical_bytes().unwrap()).unwrap(),
+            carried
+        );
+        for (turned_around, corrected) in [
+            (vec![4, 1], Vec::new()),
+            (vec![1, 1], Vec::new()),
+            (vec![0], Vec::new()),
+            (vec![2], vec![2]),
+        ] {
+            let bad = CarryForward {
+                prior: VId(51),
+                turned_around,
+                corrected,
+            };
+            assert!(bad.check().is_err(), "{bad:?}");
+            assert!(CarryForward::decode(&bad.canonical_bytes().unwrap()).is_err());
+        }
+        let fewer = CarryForward {
+            corrected: Vec::new(),
+            ..carried.clone()
+        };
+        assert_ne!(carried.digest().unwrap(), fewer.digest().unwrap());
     }
 }
