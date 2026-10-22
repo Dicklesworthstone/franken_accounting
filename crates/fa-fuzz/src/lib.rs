@@ -103,6 +103,11 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
         run: fuzz_ads_extract,
     },
     FuzzTarget {
+        name: "interop_readers",
+        description: "Interop readers on untrusted text: ADS package (each file), SAF-T, CSV GL, Beancount, hledger, NDJSON GL stream, XBRL instance/schema/linkbase and Concordance DAT, without panic",
+        run: fuzz_interop_readers,
+    },
+    FuzzTarget {
         name: "gql_profile",
         description: "The FrankenAccounting GQL profile rewriter (lexer, selectors, amount law, aggregation planner) on arbitrary UTF-8 without panic",
         run: fuzz_gql_profile,
@@ -467,9 +472,44 @@ pub fn fuzz_ads_extract(bytes: &[u8]) {
     let judge = |certificate: &str, gl: &str, tb: &str| {
         let _ = fa_verify::ads::verify_ads(certificate, gl, tb, &g.bundle_bytes, &keys, receipt);
     };
-    judge(&g.ads_certificate, &text, &g.ads_trial_balance);
-    judge(&g.ads_certificate, &g.ads_gl_detail, &text);
-    judge(&text, &g.ads_gl_detail, &g.ads_trial_balance);
+    let ads = &g.ads_package;
+    judge(&ads.certificate_toml, &text, &ads.trial_balance);
+    judge(&ads.certificate_toml, &ads.gl_detail, &text);
+    judge(&text, &ads.gl_detail, &ads.trial_balance);
+}
+
+/// fa-yrhb: the interop readers an importer or an export's recipient feeds
+/// untrusted text (plan §16.8): the ADS package (the text in place of each
+/// of its four files), SAF-T, CSV GL, Beancount, hledger, the NDJSON GL
+/// stream, the XBRL instance, taxonomy schema and calculation linkbase, and
+/// Concordance DAT load files, without panic.
+pub fn fuzz_interop_readers(bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.as_ref();
+    if let Ok(units) = fa_formats::UnitCatalog::embedded() {
+        let golden = &golden_seeds().ads_package;
+        for slot in 0..4 {
+            let mut package = golden.clone();
+            let file = match slot {
+                0 => &mut package.chart_of_accounts,
+                1 => &mut package.gl_detail,
+                2 => &mut package.trial_balance,
+                _ => &mut package.certificate_toml,
+            };
+            text.clone_into(file);
+            let _ = fa_formats::ads::read_ads_package(&package, &units);
+        }
+        let _ = fa_formats::saft::read_saft_xml(text, &units);
+        let _ = fa_formats::csv_gl::read_csv_gl(text, &units);
+        let _ = fa_formats::beancount::read_beancount(text, &units);
+        let _ = fa_formats::beancount::read_hledger(text, &units);
+    }
+    let _ = fa_formats::csv_gl::verify_ndjson_gl_stream(text);
+    let _ = fa_formats::xbrl::read_xbrl_instance_xml(text);
+    let _ = fa_formats::xbrl::parse_xbrl_taxonomy_schema_xml(text);
+    let _ = fa_formats::xbrl::parse_xbrl_calculation_linkbase_xml(text);
+    let _ = fa_formats::xbrl::verify_format_journal_xbrl_xml(text);
+    let _ = fa_formats::load_file::parse_concordance_dat(text);
 }
 
 // ---------------------------------------------------------------------------
@@ -650,9 +690,10 @@ struct GoldenSeeds {
     bundle_bytes: Vec<u8>,
     /// The ADS package `fa export ads --with-proofs` writes beside
     /// `bundle_bytes`: the same book at the bundle's state.
-    ads_certificate: String,
-    ads_gl_detail: String,
-    ads_trial_balance: String,
+    ads_package: fa_formats::ads::AdsPackage,
+    /// The same journal in every other interop format the book exports
+    /// (SAF-T, CSV GL, Beancount, hledger, NDJSON GL stream, XBRL).
+    interop_exports: Vec<Vec<u8>>,
 }
 
 fn golden_seeds() -> &'static GoldenSeeds {
@@ -1019,12 +1060,21 @@ fn build_golden_seeds() -> GoldenSeeds {
         .body
         .statement
         .through_seq;
-    let ads = fa_formats::ads::write_ads_package(
-        &book
-            .format_journal(date, Some(through))
-            .expect("golden ADS selection"),
-    )
-    .expect("golden ADS package");
+    let journal = book
+        .format_journal(date, Some(through))
+        .expect("golden interop selection");
+    let ads_package = fa_formats::ads::write_ads_package(&journal).expect("golden ADS package");
+    let interop_exports = vec![
+        fa_formats::saft::write_saft_xml(&journal).expect("golden SAF-T"),
+        fa_formats::csv_gl::write_csv_gl(&journal),
+        fa_formats::beancount::write_beancount(&journal),
+        fa_formats::beancount::write_hledger(&journal),
+        fa_formats::csv_gl::write_ndjson_gl_stream(&journal).expect("golden NDJSON stream"),
+        fa_formats::xbrl::write_format_journal_xbrl_xml(&journal).expect("golden XBRL"),
+    ]
+    .into_iter()
+    .map(String::into_bytes)
+    .collect();
     let bundle_bytes = produced_bundle.bundle.bytes;
     let receipt_bytes = produced_bundle.receipt;
 
@@ -1047,9 +1097,8 @@ fn build_golden_seeds() -> GoldenSeeds {
         prefix_proof,
         balance_proof,
         bundle_bytes,
-        ads_certificate: ads.certificate_toml,
-        ads_gl_detail: ads.gl_detail,
-        ads_trial_balance: ads.trial_balance,
+        ads_package,
+        interop_exports,
     }
 }
 
@@ -1108,9 +1157,14 @@ pub fn seeds_for_target(target_name: &str) -> Vec<Vec<u8>> {
             seeds.push(g.bundle_bytes.clone());
         }
         "ads_extract" => {
-            seeds.push(g.ads_gl_detail.clone().into_bytes());
-            seeds.push(g.ads_trial_balance.clone().into_bytes());
-            seeds.push(g.ads_certificate.clone().into_bytes());
+            seeds.push(g.ads_package.gl_detail.clone().into_bytes());
+            seeds.push(g.ads_package.trial_balance.clone().into_bytes());
+            seeds.push(g.ads_package.certificate_toml.clone().into_bytes());
+        }
+        "interop_readers" => {
+            seeds.push(g.ads_package.chart_of_accounts.clone().into_bytes());
+            seeds.push(g.ads_package.gl_detail.clone().into_bytes());
+            seeds.extend(g.interop_exports.iter().cloned());
         }
         "registry_toml" => {
             seeds.push(include_bytes!("../../../registries/units.toml").to_vec());
@@ -1276,10 +1330,11 @@ mod tests {
     #[test]
     fn the_golden_ads_package_verifies_against_the_golden_bundle() {
         let g = golden_seeds();
+        let ads = &g.ads_package;
         let report = fa_verify::ads::verify_ads(
-            &g.ads_certificate,
-            &g.ads_gl_detail,
-            &g.ads_trial_balance,
+            &ads.certificate_toml,
+            &ads.gl_detail,
+            &ads.trial_balance,
             &g.bundle_bytes,
             &[g.public_key],
             Some(&g.receipt_bytes),
@@ -1287,7 +1342,18 @@ mod tests {
         .expect("a well-formed bundle");
         assert!(report.verified(), "{:?}", report.failures);
         assert!(report.entries >= 1 && report.tb_rows >= 1, "{report:?}");
-        assert!(seeds_for_target("ads_extract").contains(&g.ads_gl_detail.clone().into_bytes()));
+        assert!(seeds_for_target("ads_extract").contains(&ads.gl_detail.clone().into_bytes()));
+        // Every interop seed is the golden journal itself, read back.
+        let units = fa_formats::UnitCatalog::embedded().expect("units");
+        fa_formats::ads::read_ads_package(ads, &units).expect("the golden ADS package reads");
+        let text = |i: usize| std::str::from_utf8(&g.interop_exports[i]).expect("UTF-8 export");
+        fa_formats::saft::read_saft_xml(text(0), &units).expect("golden SAF-T reads");
+        fa_formats::csv_gl::read_csv_gl(text(1), &units).expect("golden CSV GL reads");
+        fa_formats::beancount::read_beancount(text(2), &units).expect("golden Beancount reads");
+        fa_formats::beancount::read_hledger(text(3), &units).expect("golden hledger reads");
+        fa_formats::csv_gl::verify_ndjson_gl_stream(text(4)).expect("golden NDJSON verifies");
+        fa_formats::xbrl::verify_format_journal_xbrl_xml(text(5)).expect("golden XBRL verifies");
+        assert_eq!(g.interop_exports.len(), 6);
     }
 
     #[test]
