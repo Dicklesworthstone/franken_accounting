@@ -362,10 +362,64 @@ publication, fresh-plan success and later exact retry. The direct substrate
 test also includes both publication orders and an actually published
 guard-bypassed control.
 
-Execution is incomplete: the admitted five-package Rust run was cancelled
-by RCH's stuck detector during pinned `fgdb` compilation (job
-`30075807208571128`, daemon history exit 130, local shell 143), before any
-test result or remote completion marker. The separate frozen native
-negative has not obtained an idle worker. Formatting and bounded static
-scans are not runtime proof. Per-intent dependency classification and the
-remaining original acceptance stay in the same open bead.
+The first five-package Rust run was cancelled by RCH's stuck detector during
+pinned `fgdb` compilation (job `30075807208571128`, daemon history exit 130,
+local shell 143), before any test result or remote completion marker. Later
+strict development runs establish the following narrower results:
+
+- At exact `95c6239d`, all 13 substrate and 146 journal `genesis` tests pass,
+  including metadata invalidation, point-plan/exact-retry controls, both
+  aggregate publication orders and a guard-bypassed stale native publication.
+- At exact original `522f2979`, the one metadata regression fails because
+  the stale Closing actually commits at sequence 12. Its expected-failure
+  run exits 101; it is not a normal green test run.
+- The registered dependency-class slice and foundation-probe registration
+  pass 75 registry/validator tests and scoped clippy at `ae2f8622` plus the
+  recorded foundation-ledger overlay. The hash-checked prebuilt substrate
+  inversion runs its actual selected test and fails as expected.
+
+Logs are retained under
+`/Volumes/trj-data/projects/franken_accounting-verification-output/` as
+`aggregate-native-positive-95c6239d.log`,
+`portable-negative-warm-522f2979.log`,
+`aggregate-registry-ae2f8622.log`, and
+`aggregate-inversion-artifact-one-thread-95c6239d.log`. These are distinct
+source cuts and development evidence, not one composed canonical verdict.
+The CLI request at `95c6239d` timed out in admission with exit 103 and ran
+zero tests; the later export call repair at `1f98e137` still needs its CLI
+run. Full original acceptance and the canonical complete gate remain open.
+
+## 2026-10-22 — Circular-flow search charged only after completion (`fa-1tvm`, open)
+
+At `1f98e137`, the ordinary procedure meter already enforces runtime work
+budgets and cancellation during charges. However, `graph.round_trips` with
+`max_hops > 2` calls `cycles::find` to completion and only then charges its
+search steps. The recursive search enforces its separate maximum-search
+bound, but cannot observe the caller's smaller work budget or cancellation
+while traversing a root's continuations. This is a source-observed breach
+of doctrine 3, not a newly executed runtime result.
+
+The repair passes a fallible checkpoint callback into each actual root and
+recursive-edge charge. The adapter supplies the existing procedure meter
+and propagates its original refusal; it no longer charges the same work
+again afterward. The search receives no time, entropy, filesystem or
+network handle. Existing motif and independent exhaustive-subset oracle
+cases remain, with new actual-meter recursion interruption tests and a
+native three-transfer corpus. A real CLI regression requires budget seven
+to refuse at the eighth charge, no partial findings or head change, and
+identical complete findings/work under sufficient and unrestricted budgets.
+These new tests are drafted and runtime verification is still UNRUN. No
+claim is made about every procedure, snapshot-acquisition cancellation,
+full stripped-context acceptance, or the complete canonical gate.
+
+The same source also lacks a cancellation check at run entry and completion:
+an empty native procedure never charges the meter, and cancellation arriving
+after the last periodic check can leave a short procedure returning findings.
+The runner now checks those boundaries without inventing charged work. A
+retained first refusal still wins if the procedure swallowed an earlier
+budget error. Additional regressions require an already-cancelled empty
+native `jet.weekend` run to refuse at zero work, an uncancelled empty run to
+complete at zero work, and late cancellation to withhold the result while
+preserving any preceding budget refusal. These are source changes and
+unexecuted regression requirements; the original-code request on this
+resume timed out in RCH admission with exit 103 and executed zero tests.
