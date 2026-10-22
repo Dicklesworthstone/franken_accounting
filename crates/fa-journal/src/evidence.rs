@@ -431,10 +431,7 @@ fn intake_refusal(message: impl Into<String>, fix: impl Into<String>) -> Refusal
 /// read (`_fa_digest`, `code`, `book_id`, the label) equals what the payload
 /// says. The payload is the authority; a mirror is never more authoritative
 /// than it (FA-INV-04), so any disagreement is drift, named here.
-pub(crate) fn verify_row(
-    row: &VertexRow,
-    policy: &EvidencePolicy,
-) -> Result<DocumentRecord, String> {
+pub fn verify_row(row: &VertexRow, policy: &EvidencePolicy) -> Result<DocumentRecord, String> {
     if !row.labels.contains(&label::DOCUMENT) {
         return Err("the vertex is not labeled Document".into());
     }
@@ -1693,7 +1690,7 @@ pub async fn attach_evidence<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// A stored supplement row, verified: label, payload digest, identity.
-fn stored_supplement(
+pub fn stored_supplement(
     row: &VertexRow,
     book: Option<Id128>,
 ) -> Result<SupplementalEvidence, KernelError> {
