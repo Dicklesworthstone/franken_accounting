@@ -192,3 +192,58 @@ fn cancellation_is_observed_inside_run() {
     .expect("an uncancelled run completes");
     assert_eq!(run.findings.len(), 1);
 }
+
+#[test]
+fn round_trip_search_obeys_the_runtime_budget_before_finishing_its_search() {
+    let mut h = harness();
+    h.post(&Spec::simple(day(2026, 1, 5), "1010", "1000", 100));
+    h.post(&Spec::simple(day(2026, 1, 6), "1020", "1010", 100));
+    h.post(&Spec::simple(day(2026, 1, 7), "1000", "1020", 100));
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let procedure = RoundTrips::with(
+        Params::defaults(RoundTrips::ID)
+            .unwrap()
+            .set("max_hops", 3)
+            .unwrap(),
+    );
+    let complete = run_over_metered(&snapshot, &h.book, &procedure, None, None).unwrap();
+    assert_eq!(complete.findings.len(), 1);
+    assert_eq!(complete.work.legs, 3);
+    assert!(complete.work.total() > 8);
+
+    // Three flow legs and the three-unit sort estimate consume six units;
+    // the first root consumes seven. The recursive continuation's eighth
+    // charge must refuse immediately. Charging the complete search afterward
+    // reports a larger count and fails this assertion.
+    let error = run_over_metered(&snapshot, &h.book, &procedure, Some(7), None)
+        .expect_err("the caller's budget interrupts the native corpus search");
+    assert!(
+        matches!(
+            error,
+            LanternError::BudgetExhausted {
+                used: 8,
+                budget: 7,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        before,
+        "no partial finding is journaled"
+    );
+
+    let bounded = run_over_metered(
+        &snapshot,
+        &h.book,
+        &procedure,
+        Some(complete.work.total()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(bounded.findings_digest, complete.findings_digest);
+    assert_eq!(bounded.work, complete.work);
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
