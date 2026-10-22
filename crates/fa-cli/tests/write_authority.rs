@@ -837,6 +837,11 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Succeeds,
         ),
         row(
+            &["document", "extract", document],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        row(
             &["document", "import", "run", "junk.json"],
             &[Op::Post],
             Reaches,

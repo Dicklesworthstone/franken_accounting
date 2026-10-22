@@ -1174,6 +1174,15 @@ exit = "refusal"
 cite = "plan §11.12 (audit.sud under both SAB 108 methods with prior-year carry-forward)"
 fix = "carry forward another engagement of this book in the same unit whose scope periods all end before this one's begin, naming with --turned-around and --corrected only its uncorrected proposals (fa engagement sud <prior> --json lists them)"
 
+# ---- Evidence extraction (193) ---------------------------------------------
+[[refusal]]
+code = "FA-REF-193"
+name = "EXTRACTION_FAILED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.1–§9.3 (evidence intake pipeline: derived text Documents); fa-docket intake"
+fix = "extract a PDF that carries a text layer (fa document extract); an image or a scan has none and needs OCR; a password-protected PDF needs its owner to remove the password; the source document itself stays the evidence"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-192"
