@@ -455,7 +455,25 @@ pub(crate) fn witness<V: Vfs + Clone>(
         .map_err(|e| KernelError::Corrupt(format!("stored checkpoint: {e:?}")))?;
     let base = match onto {
         None => decoded,
-        Some(onto) if onto.body == decoded.body => onto,
+        // The book's own signatures come from the book, never from the
+        // file: whatever `onto` claims under the book's key ids is replaced,
+        // so a stripped or altered copy still carries the book's signature.
+        Some(mut onto) if onto.body == decoded.body => {
+            onto.signatures.retain(|o| {
+                !decoded
+                    .signatures
+                    .iter()
+                    .any(|d| (d.signer_key_id, d.scheme) == (o.signer_key_id, o.scheme))
+            });
+            onto.signatures.extend(decoded.signatures);
+            onto.signatures.sort_by_key(|s| (s.signer_key_id, s.scheme));
+            if onto.signatures.len() > fa_notary::checkpoint::MAX_SIGNATURES {
+                return Ok(Err(structure(
+                    "--onto with the book's signature holds more signatures than a verifier decodes",
+                )));
+            }
+            onto
+        }
         Some(_) => {
             return Ok(Err(structure(
                 "--onto's body is not the one this book signed for that state",
