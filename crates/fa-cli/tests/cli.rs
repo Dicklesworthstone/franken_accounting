@@ -20193,7 +20193,7 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
     for (name, chart, expected) in [
         (
             "unregistered.json",
-            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","roles":["cash"]}]}"#,
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","roles":["revenue"]}]}"#,
             "not a registered account role",
         ),
         (
@@ -20266,7 +20266,7 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
             "admits Asset or Liability",
         ),
         (
-            vec!["chart", "role", "1000", "cash"],
+            vec!["chart", "role", "1000", "revenue"],
             "not a registered account role",
         ),
         (

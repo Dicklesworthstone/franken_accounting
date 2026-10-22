@@ -1364,6 +1364,8 @@ fn a_procedure_total_beyond_i128_is_a_typed_refusal() {
 #[test]
 fn an_effective_date_is_refused_where_a_procedure_would_ignore_it() {
     let f = Fixture::new();
+    // lookback.preferences reads the cash role (fa-kxc4).
+    ok(&f.book, &["chart", "role", "1000", "cash"]);
     for argv in [
         &[
             "procedure",

@@ -31,7 +31,7 @@ consumers = ["jet.intercompany_unmatched", "recon.intercompany"]
 name = "receivable"
 account_types = ["Asset"]
 meaning = "A trade or other receivable: amounts parties owe the book, settled by their receipts."
-consumers = ["recon.lapping"]
+consumers = ["recon.lapping", "confirm.coverage"]
 
 [[role]]
 name = "payable"
@@ -56,3 +56,21 @@ name = "inventory"
 account_types = ["Asset"]
 meaning = "Inventory held for sale or for production (raw materials, work in process, finished goods), relieved to cost of sales."
 consumers = ["aging.inventory"]
+
+[[role]]
+name = "cash"
+account_types = ["Asset"]
+meaning = "Cash on hand and demand deposits at banks: the liquid balances solvency, preference, Ponzi and distribution analyses trace, and that external confirmations cover."
+consumers = ["confirm.coverage", "solvency.cash_flow_test", "lookback.preferences", "ponzi.net_investment", "distribution.rising_tide", "distribution.pro_rata"]
+
+[[role]]
+name = "investor_capital"
+account_types = ["Liability"]
+meaning = "Investor deposits or capital carried as a liability (Equity accounts count as investor capital by type): a cash movement against it is an investor's contribution or withdrawal."
+consumers = ["ponzi.net_investment", "distribution.rising_tide", "distribution.pro_rata"]
+
+[[role]]
+name = "payroll"
+account_types = ["Asset", "Liability", "Expense"]
+meaning = "Payroll: wage and salary expense, payroll liabilities, or a payroll clearing account; an entry with a leg on one is a payroll posting."
+consumers = ["payroll.ghost"]

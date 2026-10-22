@@ -98,6 +98,13 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         ("recon.lapping", "receivable or payable"),
         ("expense.capitalization", "fixed_asset"),
         ("aging.inventory", "inventory"),
+        ("payroll.ghost", "payroll"),
+        ("confirm.coverage", "cash or receivable"),
+        ("solvency.cash_flow_test", "cash"),
+        ("lookback.preferences", "cash"),
+        ("ponzi.net_investment", "cash"),
+        ("distribution.rising_tide", "cash"),
+        ("distribution.pro_rata", "cash"),
     ];
     for (id, role) in selected {
         let refused = f.book.certify_procedure(
@@ -277,6 +284,8 @@ fn nonempty_party_identity_graph_survives_later_population_changes_and_reopen() 
 #[test]
 fn missing_reordered_rebound_and_cross_snapshot_witnesses_cannot_be_rehashed_away() {
     let mut f = Fixture::new(94);
+    // confirm.coverage reads the cash and receivable roles (fa-kxc4).
+    f.assign_procedure_roles();
     let (source, _) = f.post(1, "3000", "1000", 100, false);
     let c = f
         .certify(&f.request("confirm.coverage", source))
@@ -312,6 +321,8 @@ fn missing_reordered_rebound_and_cross_snapshot_witnesses_cannot_be_rehashed_awa
 #[test]
 fn attestation_rewrites_and_restoration_refuse_replay_and_fresh_certification() {
     let mut f = Fixture::new(95);
+    // confirm.coverage reads the cash and receivable roles (fa-kxc4).
+    f.assign_procedure_roles();
     let (source, _) = f.post(1, "3000", "1000", 100, false);
     let reviewed = review(&mut f);
     let c = f
@@ -400,6 +411,8 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
 #[test]
 fn extended_input_reads_never_inherit_attester_or_saved_producer_authority() {
     let mut f = Fixture::new(97);
+    // confirm.coverage reads the cash and receivable roles (fa-kxc4).
+    f.assign_procedure_roles();
     let (source, _) = f.post(1, "3000", "1000", 100, false);
     let attested = review(&mut f);
     let request = f.request("confirm.coverage", source);

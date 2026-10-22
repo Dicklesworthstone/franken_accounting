@@ -291,6 +291,10 @@ pub struct GenAccount {
     pub name: String,
     pub account_type: u8,
     pub normal_balance: u8,
+    /// The account roles (registries/account_roles.toml) the generator knows
+    /// the account has: ground truth a book journals with `fa chart role`,
+    /// which Lantern's role-selected procedures read (fa-kxc4).
+    pub roles: Vec<String>,
 }
 
 impl GenAccount {
@@ -301,7 +305,15 @@ impl GenAccount {
             name: name.to_string(),
             account_type: account_type.0,
             normal_balance,
+            roles: Vec::new(),
         }
+    }
+
+    /// The same account holding `roles`.
+    #[must_use]
+    pub fn with_roles(mut self, roles: &[&str]) -> Self {
+        self.roles = roles.iter().map(|r| (*r).to_string()).collect();
+        self
     }
 }
 
@@ -489,6 +501,11 @@ impl GeneratedCorpus {
             h.update(&[0]);
             h.update(a.name.as_bytes());
             h.update(&[a.account_type, a.normal_balance]);
+            h.update(&(a.roles.len() as u64).to_le_bytes());
+            for role in &a.roles {
+                h.update(&(role.len() as u64).to_le_bytes());
+                h.update(role.as_bytes());
+            }
         }
         h.update(&(self.parties.len() as u64).to_le_bytes());
         for p in &self.parties {
@@ -730,30 +747,42 @@ const BENFORD_TEMPLATE_18: [u8; 18] = [1, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5,
 #[must_use]
 pub fn standard_chart() -> Vec<GenAccount> {
     vec![
-        GenAccount::new("1000", "Operating Cash", AccountType::ASSET, 0),
-        GenAccount::new("1010", "Concentration Bank B", AccountType::ASSET, 0),
-        GenAccount::new("1020", "Investor Trust & Clearing C", AccountType::ASSET, 0),
-        GenAccount::new("1030", "Intermediary Clearing A", AccountType::ASSET, 0),
-        GenAccount::new("1040", "Intermediary Clearing B", AccountType::ASSET, 0),
-        GenAccount::new("1050", "Payroll Clearing", AccountType::ASSET, 0),
-        GenAccount::new("1200", "Accounts Receivable", AccountType::ASSET, 0),
-        GenAccount::new("1300", "Merchandise Inventory", AccountType::ASSET, 0),
-        GenAccount::new("1500", "Network Property & CapEx", AccountType::ASSET, 0),
-        GenAccount::new("2000", "Accounts Payable", AccountType::LIABILITY, 1),
-        GenAccount::new("2100", "Accrued Line Costs", AccountType::LIABILITY, 1),
-        GenAccount::new("2200", "Accrued Wages Payable", AccountType::LIABILITY, 1),
+        GenAccount::new("1000", "Operating Cash", AccountType::ASSET, 0).with_roles(&["cash"]),
+        GenAccount::new("1010", "Concentration Bank B", AccountType::ASSET, 0)
+            .with_roles(&["cash"]),
+        GenAccount::new("1020", "Investor Trust & Clearing C", AccountType::ASSET, 0)
+            .with_roles(&["cash"]),
+        GenAccount::new("1030", "Intermediary Clearing A", AccountType::ASSET, 0)
+            .with_roles(&["cash"]),
+        GenAccount::new("1040", "Intermediary Clearing B", AccountType::ASSET, 0)
+            .with_roles(&["cash"]),
+        GenAccount::new("1050", "Payroll Clearing", AccountType::ASSET, 0).with_roles(&["payroll"]),
+        GenAccount::new("1200", "Accounts Receivable", AccountType::ASSET, 0)
+            .with_roles(&["receivable"]),
+        GenAccount::new("1300", "Merchandise Inventory", AccountType::ASSET, 0)
+            .with_roles(&["inventory"]),
+        GenAccount::new("1500", "Network Property & CapEx", AccountType::ASSET, 0)
+            .with_roles(&["fixed_asset"]),
+        GenAccount::new("2000", "Accounts Payable", AccountType::LIABILITY, 1)
+            .with_roles(&["payable"]),
+        GenAccount::new("2100", "Accrued Line Costs", AccountType::LIABILITY, 1)
+            .with_roles(&["accrued_expense"]),
+        GenAccount::new("2200", "Accrued Wages Payable", AccountType::LIABILITY, 1)
+            .with_roles(&["payroll"]),
         GenAccount::new(
             "2400",
             "Investor Capital Cohort A",
             AccountType::LIABILITY,
             1,
-        ),
+        )
+        .with_roles(&["investor_capital"]),
         GenAccount::new(
             "2410",
             "Investor Capital Cohort B",
             AccountType::LIABILITY,
             1,
-        ),
+        )
+        .with_roles(&["investor_capital"]),
         GenAccount::new("3000", "Contributed Capital", AccountType::EQUITY, 1),
         GenAccount::new(
             "4000",
@@ -776,7 +805,8 @@ pub fn standard_chart() -> Vec<GenAccount> {
             AccountType::EXPENSE,
             0,
         ),
-        GenAccount::new("6300", "Wages & Salaries Expense", AccountType::EXPENSE, 0),
+        GenAccount::new("6300", "Wages & Salaries Expense", AccountType::EXPENSE, 0)
+            .with_roles(&["payroll"]),
         GenAccount::new(
             "6500",
             "Investor Redemption Distributions",

@@ -162,6 +162,10 @@ impl Fixture {
             ("1000", "receivable"),
             ("1020", "fixed_asset"),
             ("1010", "inventory"),
+            ("1000", "cash"),
+            ("1010", "cash"),
+            ("1020", "cash"),
+            ("6000", "payroll"),
         ] {
             self.assign_role(code, role);
         }
