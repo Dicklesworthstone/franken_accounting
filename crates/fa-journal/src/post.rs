@@ -2778,6 +2778,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             .because(Why::Law("FA-INV-01.unit-policy".to_string()))
             .or_field_change(format!("legs[{i}].account"), accounts)));
         }
+        if let Some(refusal) = crate::subledger::validate_leg(&txn, db, book, &row, leg, i)? {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
         for (dim_id, dim_val_vid) in &leg.dimension_set {
             if *dim_id == fa_model::PARTY_DIMENSION {
                 let valid_party_dim = txn.vertex(db, *dim_val_vid)?.is_some_and(|drow| {

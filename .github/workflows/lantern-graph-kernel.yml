@@ -98,6 +98,12 @@ on:
       - 'crates/fa-journal/src/fx.rs'
       - 'crates/fa-journal/src/rea.rs'
       - 'crates/fa-journal/src/chart.rs'
+      - 'crates/fa-journal/src/subledger.rs'
+      - 'crates/fa-journal/tests/genesis/subledger.rs'
+      - 'crates/fa/src/subledger.rs'
+      - 'crates/fa/tests/native_subledger.rs'
+      - 'crates/fa-cli/src/subledger.rs'
+      - 'crates/fa-cli/tests/subledger.rs'
       - 'crates/fa-journal/src/genesis.rs'
       - 'crates/fa-journal/src/period.rs'
       - 'crates/fa-journal/src/period_creation.rs'
@@ -248,6 +254,7 @@ jobs:
           set -euo pipefail
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-registers --test registers --jobs 2
           cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-journal --test genesis --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa --test native_subledger --jobs 2
       - name: Test retained FX valuation and cumulative functional balances
         if: ${{ !cancelled() }}
         shell: bash
@@ -351,7 +358,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test gl_certificates --test closing --test bank --test findings --test retained_report_storage --test robot_schema --test network --test authority_cli --test read_scope --test daily_usage --test legacy_migration --no-fail-fast --jobs 2
+          cargo +nightly-2026-08-31 test --locked -Z bindeps -Z git=shallow-deps -p fa-cli --test procedure_replay --test statements --test gl_certificates --test closing --test bank --test subledger --test findings --test retained_report_storage --test robot_schema --test network --test authority_cli --test read_scope --test daily_usage --test legacy_migration --no-fail-fast --jobs 2
       - name: Regress MCP report schemas and capability refusal parity
         if: ${{ !cancelled() }}
         shell: bash

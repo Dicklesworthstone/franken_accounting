@@ -121,6 +121,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("bundle", crate::proof::bundle_cmd),
     ("production", crate::production::production_cmd),
     ("produce", crate::production::produce_cmd),
+    ("subledger", crate::subledger::subledger_cmd),
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
