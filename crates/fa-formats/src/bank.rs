@@ -10,6 +10,9 @@ use fgdb_crypto::Hasher;
 
 use crate::{FormatError, UnitCatalog, parse_date_iso, parse_exact_decimal};
 
+mod csv_layout;
+pub use csv_layout::parse_bank_csv_with_layout;
+
 /// One parsed bank statement line (`BankLine` projection, plan §9.5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedBankLine {
@@ -1650,9 +1653,18 @@ pub fn parse_bank_csv(csv: &str, units: &UnitCatalog) -> Result<BankStatementExt
 /// reference, or embedded newline into a different column or transaction.
 /// Malformed quotes and extra columns are refused rather than losing input.
 fn bank_csv_records(csv: &str) -> Result<Vec<Vec<String>>, FormatError> {
-    const FMT: &str = "bank_csv_v1";
+    bank_csv_records_with(csv, ',', 12, usize::MAX, "bank_csv_v1")
+}
+
+fn bank_csv_records_with(
+    csv: &str,
+    delimiter: char,
+    max_columns: usize,
+    max_records: usize,
+    format: &'static str,
+) -> Result<Vec<Vec<String>>, FormatError> {
     let invalid = |detail: &str| FormatError::Parse {
-        format: FMT,
+        format,
         detail: detail.to_owned(),
     };
     let mut records = Vec::new();
@@ -1682,10 +1694,12 @@ fn bank_csv_records(csv: &str) -> Result<Vec<Vec<String>>, FormatError> {
         }
         match ch {
             '"' if field.is_empty() && !closed_quote => quoted = true,
-            ',' => {
+            ch if ch == delimiter => {
                 record.push(core::mem::take(&mut field));
-                if record.len() >= 12 {
-                    return Err(invalid("bank CSV record has more than 12 columns"));
+                if record.len() >= max_columns {
+                    return Err(invalid(
+                        "bank CSV record has more columns than its declared header",
+                    ));
                 }
                 closed_quote = false;
             }
@@ -1696,6 +1710,9 @@ fn bank_csv_records(csv: &str) -> Result<Vec<Vec<String>>, FormatError> {
                 if !record.is_empty() || !field.trim().is_empty() || closed_quote {
                     record.push(core::mem::take(&mut field));
                     records.push(core::mem::take(&mut record));
+                    if records.len() > max_records {
+                        return Err(invalid("bank CSV exceeds the bounded statement line count"));
+                    }
                 } else {
                     field.clear();
                 }
@@ -1714,6 +1731,9 @@ fn bank_csv_records(csv: &str) -> Result<Vec<Vec<String>>, FormatError> {
     if !record.is_empty() || !field.trim().is_empty() || closed_quote {
         record.push(field);
         records.push(record);
+        if records.len() > max_records {
+            return Err(invalid("bank CSV exceeds the bounded statement line count"));
+        }
     }
     Ok(records)
 }

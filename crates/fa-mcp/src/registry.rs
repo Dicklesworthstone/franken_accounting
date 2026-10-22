@@ -1821,6 +1821,12 @@ impl ToolSpec {
                     argv.push(n.to_string());
                 }
                 Some(JsonValue::String(v)) => {
+                    if self.verb == "bank" && f == "--layout" && !v.trim_start().starts_with('{') {
+                        return Err(ArgError {
+                            message: format!("{wire}: layout must contain an inline JSON object"),
+                            fix: "supply the complete declared CSV layout as a JSON string; host layout paths and stdin aliases are not accepted".into(),
+                        });
+                    }
                     argv.push(f.clone());
                     argv.push(v.clone());
                 }
@@ -3150,6 +3156,35 @@ mod tests {
             Some(vec!["read", "reconcile"]),
         );
         assert!(invocation.stdin.is_none());
+    }
+
+    #[test]
+    fn bank_csv_layout_is_inline_only_even_when_statement_files_are_enabled() {
+        let (mcp, reg) = embedded();
+        let import = mcp.tool_by_wire("fa_bank_import").expect("bank import");
+        let schema = import.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["layout"]["type"], json!("string"));
+        let layout = r#"{"version":1,"name":"declared"}"#;
+        let invocation = import
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "text":"Date,Amount\\n2026-03-31,1.00\\n",
+                    "bank_format":"csv", "account":"1000", "layout":layout,
+                }),
+            )
+            .expect("inline layout passes unchanged for CLI validation");
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.flag("--layout"), Some(layout));
+        for layout in ["/etc/passwd", "layout.json", "-", "[{}]", ""] {
+            for allow_files in [false, true] {
+                assert!(import.invocation_with_files(&mcp, reg, &json!({
+                    "text":"source", "bank_format":"csv", "account":"1000", "layout":layout,
+                }), allow_files).is_err(), "{layout}");
+            }
+        }
     }
 
     #[test]

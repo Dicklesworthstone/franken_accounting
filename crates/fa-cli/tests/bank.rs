@@ -3707,3 +3707,6 @@ fn the_same_statement_under_another_cash_mapping_remains_occupied_until_release(
         assert_eq!(data(&money_after).get(key), data(&money_before).get(key));
     }
 }
+
+#[path = "bank/csv_layout.rs"]
+mod csv_layout;

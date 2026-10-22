@@ -1078,7 +1078,7 @@ mod tests {
         })
     }
 
-    fn reconciled() -> Record {
+    fn reconciled(declared_csv: bool) -> Record {
         let account = VId(19);
         let unit = fa_money::UnitId(1);
         let closing = fa_time::DateDay::from_ymd(2026, 3, 31).expect("statement date");
@@ -1096,6 +1096,27 @@ mod tests {
             opening_balance: 0,
             closing_balance: 0,
             line_oids: Vec::new(),
+            csv_layout: declared_csv.then(|| fa_model::bank_csv::BankCsvLayout {
+                name: "notary-declared-v1".into(),
+                headers: vec!["Date".into(), "Amount".into()],
+                delimiter: b',',
+                decimal_separator: b'.',
+                date_format: fa_model::bank_csv::BankCsvDateFormat::Iso,
+                booking_date: "Date".into(),
+                value_date: None,
+                counterparty: None,
+                reference: None,
+                amounts: fa_model::bank_csv::BankCsvAmounts::Signed {
+                    column: "Amount".into(),
+                    positive_is_credit: true,
+                },
+                instrument_id: "BANK-123".into(),
+                sequence_number: 1,
+                currency: "USD".into(),
+                statement_date: closing,
+                opening_balance: "0.00".into(),
+                closing_balance: "0.00".into(),
+            }),
             predecessor: None,
         };
         let manifest_oid = manifest.document_oid().expect("manifest identity");
@@ -1143,7 +1164,8 @@ mod tests {
     fn every_evidence_kind_matches_the_verifier_byte_for_byte() {
         for (record, kind, class) in [
             (review(), KIND_ATTESTATION, 2),
-            (reconciled(), KIND_ATTESTATION, 3),
+            (reconciled(false), KIND_ATTESTATION, 3),
+            (reconciled(true), KIND_ATTESTATION, 3),
             (confirmed(), KIND_ATTESTATION, 5),
             (represented(), KIND_ATTESTATION, 9),
             (receipt(1, 7), KIND_IMPORT_RECEIPT, 3),

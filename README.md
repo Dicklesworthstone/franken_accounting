@@ -224,6 +224,22 @@ in the on-demand `fa.subledger` MCP cluster, with launch authority enforced.
 This native reconciliation does not retain a report certificate or validate
 external summary-feed detail digests; those remain open work under `fa-03s`.
 
+### Bank CSV downloads
+
+Bank downloads can use an explicit column, date and amount declaration:
+
+```bash
+fa bank import download.csv --bank-format csv --account 1000 \
+  --layout layout.json --book ./books/acme --json
+```
+
+The import retains the original CSV bytes and the canonical layout, checks the
+exact header and opening-to-closing balance, and uses that same mapping for
+later matching and reconciliation. Layouts support signed amounts or separate
+debit/credit columns, explicit date formats, and dot or comma decimals. See
+[declared CSV layouts](docs/bank_csv_layouts.md) for a complete example and the
+inline MCP form. Omitting `--layout` keeps the canonical twelve-column parser.
+
 ### Certified reports and replay
 
 Retain the exact selector, known-at sequence, accounting journal prefix, registry
