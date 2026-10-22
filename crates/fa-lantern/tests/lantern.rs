@@ -59,6 +59,9 @@ mod graph_unit_tests;
 #[path = "lantern/meter.rs"]
 mod meter_tests;
 
+#[path = "lantern/roles.rs"]
+mod roles;
+
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 
@@ -2558,373 +2561,384 @@ fn complexity_witness_holds_across_100_1000_and_10000_entries() {
     }
 }
 
+/// A fa-gen corpus journaled into a fresh in-memory book the way the CLI
+/// journals one: the chart, the corpus's ground-truth account roles, the
+/// periods, the entries around the corpus's period transitions. It is read
+/// back as a Lantern snapshot at the corpus cutoff, with each self-approved
+/// entry relabelled as a legacy migration (native self-approval is refused
+/// at commit). Returns the book, the snapshot and each corpus entry's posted
+/// vid, in corpus order.
+fn corpus_snapshot(corpus: &fa_gen::GeneratedCorpus) -> (BookContext, Snapshot, Vec<VId>) {
+    let runtime = RuntimeBuilder::new().build().expect("runtime");
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let ctx = PurposeContexts::narrow_runtime_root(&root);
+    let keys = DatabaseKeys::new(
+        [0x61; 32],
+        DatabaseSecurityNamespaceId([0x62; 32]),
+        [0x63; 32],
+    );
+    let mut db = runtime
+        .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+        .expect("open_memory");
+    let units = UnitRegistry::with_defaults();
+    let usd = units.lookup("USD").unwrap();
+    let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
+    let mut book_id_bytes = [0u8; 16];
+    book_id_bytes[0] = corpus.scenario.tag();
+    let book_id = Id128(book_id_bytes);
+    let spec = BookSpec {
+        book_id,
+        name: corpus.book_name.clone(),
+        base_unit: usd,
+        calendar: calendar.clone(),
+        time_zone_policy: None,
+        entities: Vec::new(),
+        opening_date: None,
+    };
+    let symbols = SymbolTable::compiled();
+    runtime
+        .block_on(async { create_book(&mut db, &ctx, &spec, &units, &symbols).await })
+        .expect("create_book");
+    let book = BookContext {
+        book_id,
+        calendar,
+        units,
+        seal_key: SealKey([0x33; 32]),
+        symbols,
+    };
+    let chart: Vec<AccountSpec> = corpus
+        .accounts
+        .iter()
+        .map(|a| AccountSpec {
+            code: a.code.clone(),
+            name: a.name.clone(),
+            account_type: a.account_type,
+            normal_balance: a.normal_balance,
+            is_leaf: true,
+            unit_policy: UnitPolicy::Single(usd),
+            parent_code: None,
+            limit: None,
+        })
+        .collect();
+    let jan1 = day(corpus.fiscal_year, 1, 1);
+    let chart_desc = Erasable::seal(
+        &"gen-chart".to_string(),
+        None,
+        &book.seal_key,
+        [9; 32],
+        [9; 24],
+    );
+    runtime
+        .block_on(async {
+            install_chart(
+                &mut db,
+                &ctx,
+                &book,
+                &chart,
+                PREPARER,
+                jan1,
+                b"gen-chart",
+                chart_desc,
+                &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("install_chart")
+        .expect("chart admitted");
+    // fa-kxc4: the corpus's ground-truth account roles, journaled as
+    // `fa chart role` journals them.
+    for a in &corpus.accounts {
+        for role in &a.roles {
+            let spec = AccountRoleSpec {
+                account: account_vid(book.book_id, &a.code),
+                role: role.clone(),
+                assigned: true,
+            };
+            let key = format!("role:{}:{role}", a.code);
+            let description = Erasable::seal(
+                &"gen-role".to_string(),
+                None,
+                &book.seal_key,
+                [8; 32],
+                [8; 24],
+            );
+            runtime
+                .block_on(async {
+                    record_account_role(
+                        &mut db,
+                        &ctx,
+                        &book,
+                        &spec,
+                        PREPARER,
+                        key.as_bytes(),
+                        description,
+                        &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+                    )
+                    .await
+                })
+                .expect("record_account_role")
+                .expect("role admitted");
+        }
+    }
+    let (_, periods) = runtime
+        .block_on(async {
+            create_periods(
+                &mut db,
+                &ctx,
+                &book,
+                corpus.fiscal_year,
+                fgdb_types::VId(1),
+                fa_model::Erasable::seal(
+                    &"periods".to_string(),
+                    None,
+                    &book.seal_key,
+                    [1; 32],
+                    [2; 24],
+                ),
+                &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"]).unwrap(),
+            )
+            .await
+        })
+        .expect("create_periods")
+        .expect("admitted");
+    for (idx, p) in periods
+        .iter()
+        .filter(|p| p.kind == fa_time::PeriodKind::Normal)
+        .enumerate()
+    {
+        let desc = Erasable::seal(
+            &"open".to_string(),
+            None,
+            &book.seal_key,
+            [idx as u8; 32],
+            [idx as u8; 24],
+        );
+        runtime
+            .block_on(async {
+                transition_period(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    &p.code,
+                    PeriodTransition::Open,
+                    PREPARER,
+                    1,
+                    format!("open-{}", p.code).as_bytes(),
+                    desc,
+                    &Capability::embedded(PREPARER, &["close"]).unwrap(),
+                    &[],
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+    }
+    let doc = Document {
+        book_id: book.book_id,
+        kind: 1,
+        mime: "text/plain".to_string(),
+        grade: 3,
+        retrieved_by: PREPARER,
+        bytes: b"fa-gen voucher".to_vec(),
+    };
+    runtime
+        .block_on(async { add_document(&mut db, &ctx, &book, &doc).await })
+        .unwrap()
+        .unwrap();
+    let evidence = vec![doc.evidence_ref(1)];
+
+    let mut posted_vids = vec![VId(0); corpus.entries.len()];
+    let mut salt = 1u8;
+    let mut post_idx = |idx: usize, db: &mut Database<MemVfs>| {
+        let e = &corpus.entries[idx];
+        salt = salt.wrapping_add(1);
+        let description =
+            Erasable::seal(&e.description, None, &book.seal_key, [salt; 32], [salt; 24]);
+        let mut external_ids = Vec::new();
+        for (sys, id) in &e.external_ids {
+            salt = salt.wrapping_add(1);
+            external_ids.push(ExternalId {
+                system: sys.clone(),
+                id: Erasable::seal(id, None, &book.seal_key, [salt; 32], [salt; 24]),
+            });
+        }
+        let legs: Vec<LegPayload> = e
+            .legs
+            .iter()
+            .map(|l| {
+                LegPayload::simple(
+                    l.side,
+                    account_vid(book.book_id, &l.account_code),
+                    Amount::new(usd, l.cents),
+                )
+            })
+            .collect();
+        let proposal = EntryPayload {
+            schema_minor: 0,
+            book_id: book.book_id,
+            branch_id: Id128::TRUNK,
+            class: e.class,
+            effective_date: e.effective_date,
+            document_date: e.document_date,
+            description,
+            effective_period: None,
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: None,
+            idempotency_key: e.key.as_bytes().to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([1; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: PREPARER,
+            session_ref: None,
+            evidence: evidence.clone(),
+            supersession: Vec::new(),
+            pending: None,
+            external_ids,
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        let digest = proposal.proposal_digest().unwrap();
+        let ops: &[&str] = if e.post_after_soft_close {
+            &["post", "post_softclosed"]
+        } else {
+            &["post"]
+        };
+        if e.self_approve {
+            let req = ApprovalRequest {
+                capability: Capability::embedded(PREPARER, &["approve"]).unwrap(),
+                approved_proposal_digest: digest,
+                role: 0,
+            };
+            let (Approved::Recorded { approval, .. } | Approved::AlreadyRecorded { approval, .. }) =
+                runtime
+                    .block_on(async { record_approval(db, &ctx, &book, req).await })
+                    .unwrap()
+                    .unwrap();
+            let refused_req = PostRequest {
+                proposal: proposal.clone(),
+                approvals: vec![approval],
+                plan_certificate: None,
+                capability: Capability::embedded(PREPARER, ops).unwrap(),
+            };
+            let refusal = runtime
+                .block_on(async { post(db, &ctx, &book, refused_req).await })
+                .unwrap()
+                .expect_err("FA-INV-06 must refuse native self-approval");
+            assert_eq!(refusal.code, "FA-REF-008");
+        }
+        let mut approvals = Vec::new();
+        if e.review {
+            let req = ApprovalRequest {
+                capability: Capability::embedded(REVIEWER, &["approve"]).unwrap(),
+                approved_proposal_digest: digest,
+                role: 0,
+            };
+            let (Approved::Recorded { approval, .. } | Approved::AlreadyRecorded { approval, .. }) =
+                runtime
+                    .block_on(async { record_approval(db, &ctx, &book, req).await })
+                    .unwrap()
+                    .unwrap();
+            approvals.push(approval);
+        }
+        let req = PostRequest {
+            proposal,
+            approvals,
+            plan_certificate: None,
+            capability: Capability::embedded(PREPARER, ops).unwrap(),
+        };
+        if let Posted::Committed { entry_ref, .. } = runtime
+            .block_on(async { post(db, &ctx, &book, req).await })
+            .unwrap()
+            .unwrap()
+        {
+            posted_vids[idx] = entry_ref.vid;
+        }
+    };
+
+    for (idx, ge) in corpus.entries.iter().enumerate() {
+        if !ge.post_after_soft_close {
+            post_idx(idx, &mut db);
+        }
+    }
+    for (t_idx, t) in corpus.transitions.iter().enumerate() {
+        let desc = Erasable::seal(
+            &t.description,
+            None,
+            &book.seal_key,
+            [(220 + t_idx) as u8; 32],
+            [(220 + t_idx) as u8; 24],
+        );
+        runtime
+            .block_on(async {
+                transition_period(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    &t.period_code,
+                    t.transition,
+                    PREPARER,
+                    1,
+                    format!("trans-{t_idx}").as_bytes(),
+                    desc,
+                    &Capability::embedded(PREPARER, &["close"]).unwrap(),
+                    &[],
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+    }
+    for (idx, ge) in corpus.entries.iter().enumerate() {
+        if ge.post_after_soft_close {
+            post_idx(idx, &mut db);
+        }
+    }
+
+    let mut snapshot = Snapshot::read(&db, &book, None, Some(corpus.snapshot_cutoff)).unwrap();
+    for (idx, ge) in corpus.entries.iter().enumerate() {
+        if ge.self_approve {
+            let target_vid = posted_vids[idx];
+            if let Some(se) = snapshot.entries.iter_mut().find(|e| e.vid == target_vid) {
+                let entered = Erasable::seal(
+                    &"preparer@legacy.example".to_string(),
+                    None,
+                    &book.seal_key,
+                    [77; 32],
+                    [77; 24],
+                );
+                let approved = Erasable::seal(
+                    &"preparer@legacy.example".to_string(),
+                    None,
+                    &book.seal_key,
+                    [78; 32],
+                    [78; 24],
+                );
+                let mig_id = Erasable::seal(&ge.key, None, &book.seal_key, [79; 32], [79; 24]);
+                se.entry.proposal.origin = EntryOrigin::Migration {
+                    run_ref: VId(900),
+                    source_system: "legacy_erp".into(),
+                    source_id: mig_id,
+                    source_recorded_at_ns: None,
+                    source_entered_by: Some(entered),
+                    source_approved_by: Some(approved),
+                    batch_oid: Oid([9; 32]),
+                };
+            }
+        }
+    }
+    (book, snapshot, posted_vids)
+}
+
 #[test]
 fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
     use fa_gen::{GenConfig, ScenarioKind, generate};
 
     for scenario in ScenarioKind::ALL {
         let corpus = generate(GenConfig::new(scenario, 7));
-        let runtime = RuntimeBuilder::new().build().expect("runtime");
-        let root = runtime.request_cx_with_budget(Budget::INFINITE);
-        let ctx = PurposeContexts::narrow_runtime_root(&root);
-        let keys = DatabaseKeys::new(
-            [0x61; 32],
-            DatabaseSecurityNamespaceId([0x62; 32]),
-            [0x63; 32],
-        );
-        let mut db = runtime
-            .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
-            .expect("open_memory");
-        let units = UnitRegistry::with_defaults();
-        let usd = units.lookup("USD").unwrap();
-        let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
-        let mut book_id_bytes = [0u8; 16];
-        book_id_bytes[0] = scenario.tag();
-        let book_id = Id128(book_id_bytes);
-        let spec = BookSpec {
-            book_id,
-            name: corpus.book_name.clone(),
-            base_unit: usd,
-            calendar: calendar.clone(),
-            time_zone_policy: None,
-            entities: Vec::new(),
-            opening_date: None,
-        };
-        let symbols = SymbolTable::compiled();
-        runtime
-            .block_on(async { create_book(&mut db, &ctx, &spec, &units, &symbols).await })
-            .expect("create_book");
-        let book = BookContext {
-            book_id,
-            calendar,
-            units,
-            seal_key: SealKey([0x33; 32]),
-            symbols,
-        };
-        let chart: Vec<AccountSpec> = corpus
-            .accounts
-            .iter()
-            .map(|a| AccountSpec {
-                code: a.code.clone(),
-                name: a.name.clone(),
-                account_type: a.account_type,
-                normal_balance: a.normal_balance,
-                is_leaf: true,
-                unit_policy: UnitPolicy::Single(usd),
-                parent_code: None,
-                limit: None,
-            })
-            .collect();
-        let jan1 = day(corpus.fiscal_year, 1, 1);
-        let chart_desc = Erasable::seal(
-            &"gen-chart".to_string(),
-            None,
-            &book.seal_key,
-            [9; 32],
-            [9; 24],
-        );
-        runtime
-            .block_on(async {
-                install_chart(
-                    &mut db,
-                    &ctx,
-                    &book,
-                    &chart,
-                    PREPARER,
-                    jan1,
-                    b"gen-chart",
-                    chart_desc,
-                    &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
-                )
-                .await
-            })
-            .expect("install_chart")
-            .expect("chart admitted");
-        // fa-kxc4: the corpus's ground-truth account roles, journaled as
-        // `fa chart role` journals them.
-        for a in &corpus.accounts {
-            for role in &a.roles {
-                let spec = AccountRoleSpec {
-                    account: account_vid(book.book_id, &a.code),
-                    role: role.clone(),
-                    assigned: true,
-                };
-                let key = format!("role:{}:{role}", a.code);
-                let description = Erasable::seal(
-                    &"gen-role".to_string(),
-                    None,
-                    &book.seal_key,
-                    [8; 32],
-                    [8; 24],
-                );
-                runtime
-                    .block_on(async {
-                        record_account_role(
-                            &mut db,
-                            &ctx,
-                            &book,
-                            &spec,
-                            PREPARER,
-                            key.as_bytes(),
-                            description,
-                            &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
-                        )
-                        .await
-                    })
-                    .expect("record_account_role")
-                    .expect("role admitted");
-            }
-        }
-        let (_, periods) = runtime
-            .block_on(async {
-                create_periods(
-                    &mut db,
-                    &ctx,
-                    &book,
-                    corpus.fiscal_year,
-                    fgdb_types::VId(1),
-                    fa_model::Erasable::seal(
-                        &"periods".to_string(),
-                        None,
-                        &book.seal_key,
-                        [1; 32],
-                        [2; 24],
-                    ),
-                    &fa_journal::Capability::embedded(fgdb_types::VId(1), &["schema_change"])
-                        .unwrap(),
-                )
-                .await
-            })
-            .expect("create_periods")
-            .expect("admitted");
-        for (idx, p) in periods
-            .iter()
-            .filter(|p| p.kind == fa_time::PeriodKind::Normal)
-            .enumerate()
-        {
-            let desc = Erasable::seal(
-                &"open".to_string(),
-                None,
-                &book.seal_key,
-                [idx as u8; 32],
-                [idx as u8; 24],
-            );
-            runtime
-                .block_on(async {
-                    transition_period(
-                        &mut db,
-                        &ctx,
-                        &book,
-                        &p.code,
-                        PeriodTransition::Open,
-                        PREPARER,
-                        1,
-                        format!("open-{}", p.code).as_bytes(),
-                        desc,
-                        &Capability::embedded(PREPARER, &["close"]).unwrap(),
-                        &[],
-                    )
-                    .await
-                })
-                .unwrap()
-                .unwrap();
-        }
-        let doc = Document {
-            book_id: book.book_id,
-            kind: 1,
-            mime: "text/plain".to_string(),
-            grade: 3,
-            retrieved_by: PREPARER,
-            bytes: b"fa-gen voucher".to_vec(),
-        };
-        runtime
-            .block_on(async { add_document(&mut db, &ctx, &book, &doc).await })
-            .unwrap()
-            .unwrap();
-        let evidence = vec![doc.evidence_ref(1)];
-
-        let mut posted_vids = vec![VId(0); corpus.entries.len()];
-        let mut salt = 1u8;
-        let mut post_idx = |idx: usize, db: &mut Database<MemVfs>| {
-            let e = &corpus.entries[idx];
-            salt = salt.wrapping_add(1);
-            let description =
-                Erasable::seal(&e.description, None, &book.seal_key, [salt; 32], [salt; 24]);
-            let mut external_ids = Vec::new();
-            for (sys, id) in &e.external_ids {
-                salt = salt.wrapping_add(1);
-                external_ids.push(ExternalId {
-                    system: sys.clone(),
-                    id: Erasable::seal(id, None, &book.seal_key, [salt; 32], [salt; 24]),
-                });
-            }
-            let legs: Vec<LegPayload> = e
-                .legs
-                .iter()
-                .map(|l| {
-                    LegPayload::simple(
-                        l.side,
-                        account_vid(book.book_id, &l.account_code),
-                        Amount::new(usd, l.cents),
-                    )
-                })
-                .collect();
-            let proposal = EntryPayload {
-                schema_minor: 0,
-                book_id: book.book_id,
-                branch_id: Id128::TRUNK,
-                class: e.class,
-                effective_date: e.effective_date,
-                document_date: e.document_date,
-                description,
-                effective_period: None,
-                unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
-                legs,
-                control: None,
-                base_totals: None,
-                idempotency_key: e.key.as_bytes().to_vec(),
-                origin: EntryOrigin::Intent {
-                    intent_oid: Oid([1; 32]),
-                    intent_kind: 1,
-                },
-                principal_ref: PREPARER,
-                session_ref: None,
-                evidence: evidence.clone(),
-                supersession: Vec::new(),
-                pending: None,
-                external_ids,
-                extensions: Vec::new(),
-                tags: Vec::new(),
-            };
-            let digest = proposal.proposal_digest().unwrap();
-            let ops: &[&str] = if e.post_after_soft_close {
-                &["post", "post_softclosed"]
-            } else {
-                &["post"]
-            };
-            if e.self_approve {
-                let req = ApprovalRequest {
-                    capability: Capability::embedded(PREPARER, &["approve"]).unwrap(),
-                    approved_proposal_digest: digest,
-                    role: 0,
-                };
-                let (Approved::Recorded { approval, .. }
-                | Approved::AlreadyRecorded { approval, .. }) = runtime
-                    .block_on(async { record_approval(db, &ctx, &book, req).await })
-                    .unwrap()
-                    .unwrap();
-                let refused_req = PostRequest {
-                    proposal: proposal.clone(),
-                    approvals: vec![approval],
-                    plan_certificate: None,
-                    capability: Capability::embedded(PREPARER, ops).unwrap(),
-                };
-                let refusal = runtime
-                    .block_on(async { post(db, &ctx, &book, refused_req).await })
-                    .unwrap()
-                    .expect_err("FA-INV-06 must refuse native self-approval");
-                assert_eq!(refusal.code, "FA-REF-008");
-            }
-            let mut approvals = Vec::new();
-            if e.review {
-                let req = ApprovalRequest {
-                    capability: Capability::embedded(REVIEWER, &["approve"]).unwrap(),
-                    approved_proposal_digest: digest,
-                    role: 0,
-                };
-                let (Approved::Recorded { approval, .. }
-                | Approved::AlreadyRecorded { approval, .. }) = runtime
-                    .block_on(async { record_approval(db, &ctx, &book, req).await })
-                    .unwrap()
-                    .unwrap();
-                approvals.push(approval);
-            }
-            let req = PostRequest {
-                proposal,
-                approvals,
-                plan_certificate: None,
-                capability: Capability::embedded(PREPARER, ops).unwrap(),
-            };
-            if let Posted::Committed { entry_ref, .. } = runtime
-                .block_on(async { post(db, &ctx, &book, req).await })
-                .unwrap()
-                .unwrap()
-            {
-                posted_vids[idx] = entry_ref.vid;
-            }
-        };
-
-        for (idx, ge) in corpus.entries.iter().enumerate() {
-            if !ge.post_after_soft_close {
-                post_idx(idx, &mut db);
-            }
-        }
-        for (t_idx, t) in corpus.transitions.iter().enumerate() {
-            let desc = Erasable::seal(
-                &t.description,
-                None,
-                &book.seal_key,
-                [(220 + t_idx) as u8; 32],
-                [(220 + t_idx) as u8; 24],
-            );
-            runtime
-                .block_on(async {
-                    transition_period(
-                        &mut db,
-                        &ctx,
-                        &book,
-                        &t.period_code,
-                        t.transition,
-                        PREPARER,
-                        1,
-                        format!("trans-{t_idx}").as_bytes(),
-                        desc,
-                        &Capability::embedded(PREPARER, &["close"]).unwrap(),
-                        &[],
-                    )
-                    .await
-                })
-                .unwrap()
-                .unwrap();
-        }
-        for (idx, ge) in corpus.entries.iter().enumerate() {
-            if ge.post_after_soft_close {
-                post_idx(idx, &mut db);
-            }
-        }
-
-        let mut snapshot = Snapshot::read(&db, &book, None, Some(corpus.snapshot_cutoff)).unwrap();
-        for (idx, ge) in corpus.entries.iter().enumerate() {
-            if ge.self_approve {
-                let target_vid = posted_vids[idx];
-                if let Some(se) = snapshot.entries.iter_mut().find(|e| e.vid == target_vid) {
-                    let entered = Erasable::seal(
-                        &"preparer@legacy.example".to_string(),
-                        None,
-                        &book.seal_key,
-                        [77; 32],
-                        [77; 24],
-                    );
-                    let approved = Erasable::seal(
-                        &"preparer@legacy.example".to_string(),
-                        None,
-                        &book.seal_key,
-                        [78; 32],
-                        [78; 24],
-                    );
-                    let mig_id = Erasable::seal(&ge.key, None, &book.seal_key, [79; 32], [79; 24]);
-                    se.entry.proposal.origin = EntryOrigin::Migration {
-                        run_ref: VId(900),
-                        source_system: "legacy_erp".into(),
-                        source_id: mig_id,
-                        source_recorded_at_ns: None,
-                        source_entered_by: Some(entered),
-                        source_approved_by: Some(approved),
-                        batch_oid: Oid([9; 32]),
-                    };
-                }
-            }
-        }
+        let (book, snapshot, posted_vids) = corpus_snapshot(&corpus);
 
         let procedures: Vec<Box<dyn Procedure>> = vec![
             Box::new(RoundAmounts::new().unwrap()),
