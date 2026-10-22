@@ -29,10 +29,11 @@ impl Edge {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Error {
+pub(crate) enum Error<E> {
     Parameters,
     NonPositiveAmount,
     SearchLimit,
+    Interrupted(E),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,7 +46,7 @@ pub(crate) struct Cycles {
 
 type Adjacency = BTreeMap<(Option<u128>, u32, i128, u128), Vec<usize>>;
 
-struct Search<'a> {
+struct Search<'a, E> {
     edges: &'a [Edge],
     adjacent: &'a Adjacency,
     used: &'a [bool],
@@ -57,10 +58,11 @@ struct Search<'a> {
     window_days: i64,
     steps: &'a mut u64,
     max_steps: u64,
+    checkpoint: &'a mut dyn FnMut() -> Result<(), E>,
 }
 
-impl Search<'_> {
-    fn extend(&mut self) -> Result<Option<Vec<usize>>, Error> {
+impl<E> Search<'_, E> {
+    fn extend(&mut self) -> Result<Option<Vec<usize>>, Error<E>> {
         let last = self.edges[*self.path.last().ok_or(Error::Parameters)?];
         let key = self.origin.key(last.to);
         let Some(adjacent) = self.adjacent.get(&key) else {
@@ -71,7 +73,7 @@ impl Search<'_> {
         let start = adjacent.partition_point(|i| self.edges[*i].time() <= last.time());
         let end = adjacent.len();
         for cursor in start..end {
-            charge(self.steps, self.max_steps)?;
+            charge(self.steps, self.max_steps, self.checkpoint)?;
             let index = self.adjacent[&key][cursor];
             let edge = self.edges[index];
             // Widen BEFORE subtracting: valid DateDay values can span i32.
@@ -103,10 +105,15 @@ impl Search<'_> {
     }
 }
 
-fn charge(steps: &mut u64, limit: u64) -> Result<(), Error> {
+fn charge<E>(
+    steps: &mut u64,
+    limit: u64,
+    checkpoint: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<(), Error<E>> {
     if *steps >= limit {
         return Err(Error::SearchLimit);
     }
+    checkpoint().map_err(Error::Interrupted)?;
     *steps += 1;
     Ok(())
 }
@@ -118,12 +125,13 @@ fn charge(steps: &mut u64, limit: u64) -> Result<(), Error> {
 /// Every transfer must have the same amount, unit and legal entity. An entry
 /// cannot serve as two hops. Reaching the work bound refuses the WHOLE run;
 /// partial results must not masquerade as a complete successful report.
-pub(crate) fn find(
+pub(crate) fn find<E>(
     edges: &[Edge],
     max_hops: usize,
     window_days: i32,
     max_steps: u64,
-) -> Result<Cycles, Error> {
+    checkpoint: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<Cycles, Error<E>> {
     if !(2..=8).contains(&max_hops) || window_days < 0 || max_steps == 0 {
         return Err(Error::Parameters);
     }
@@ -146,7 +154,7 @@ pub(crate) fn find(
     let mut paths = Vec::new();
     let mut steps = 0;
     for start in order {
-        charge(&mut steps, max_steps)?;
+        charge(&mut steps, max_steps, checkpoint)?;
         let origin = edges[start];
         if used[start] || origin.from == origin.to {
             continue;
@@ -163,6 +171,7 @@ pub(crate) fn find(
             window_days: i64::from(window_days),
             steps: &mut steps,
             max_steps,
+            checkpoint,
         }
         .extend()?;
         if let Some(path) = path {
@@ -178,6 +187,18 @@ pub(crate) fn find(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The independent motif/oracle cases do not constrain runtime work.
+    // Production supplies the caller's meter; the interruption cases below
+    // exercise that same entry point with an actual bounded/cancellable meter.
+    fn find(
+        edges: &[Edge],
+        max_hops: usize,
+        window_days: i32,
+        max_steps: u64,
+    ) -> Result<Cycles, Error<core::convert::Infallible>> {
+        super::find(edges, max_hops, window_days, max_steps, &mut || Ok(()))
+    }
 
     fn edge(entry: u128, from: u128, to: u128, day: i32) -> Edge {
         Edge {
@@ -295,6 +316,80 @@ mod tests {
         let mut bad = edges;
         bad[0].amount = 0;
         assert_eq!(find(&bad, 2, 10, 100), Err(Error::NonPositiveAmount));
+    }
+
+    #[test]
+    fn runtime_budget_interrupts_recursion_and_discards_already_found_cycles() {
+        let edges = [
+            edge(1, 10, 20, 1),
+            edge(2, 20, 10, 2),
+            edge(3, 30, 40, 3),
+            edge(4, 40, 50, 4),
+            edge(5, 50, 30, 5),
+        ];
+        let complete = find(&edges, 3, 10, 100).unwrap();
+        assert_eq!(complete.paths, vec![vec![0, 1], vec![2, 3, 4]]);
+
+        // Four steps have already found the first cycle and entered the
+        // second. The fifth charge must stop the recursive extension, not
+        // return that first motif as an apparently complete result.
+        let mut meter = crate::Meter::new("graph.round_trips", Some(4), None);
+        let result = super::find(&edges, 3, 10, 100, &mut || meter.compare(1));
+        assert!(matches!(
+            result,
+            Err(Error::Interrupted(crate::LanternError::BudgetExhausted {
+                used: 5,
+                budget: 4,
+                ..
+            }))
+        ));
+        assert_eq!(meter.work().comparisons, 5);
+        assert!(complete.steps > meter.work().comparisons);
+
+        // No lost or duplicated work charge on a successful search.
+        let mut meter = crate::Meter::new("graph.round_trips", Some(complete.steps), None);
+        let metered = super::find(&edges, 3, 10, 100, &mut || meter.compare(1)).unwrap();
+        assert_eq!(metered, complete);
+        assert_eq!(meter.work().comparisons, complete.steps);
+    }
+
+    #[test]
+    fn runtime_cancellation_is_observed_within_recursive_search_interval() {
+        use std::cell::Cell;
+
+        struct Flag<'a>(&'a Cell<bool>);
+        impl crate::Cancellation for Flag<'_> {
+            fn cancelled(&self) -> bool {
+                self.0.get()
+            }
+        }
+
+        // One root has many chronological continuations, with no completing
+        // cycle. Cancellation therefore has to be consulted within extend(),
+        // before this root's entire search returns to the outer loop.
+        let mut edges = vec![edge(1, 10, 20, 1)];
+        edges.extend((2..2_100).map(|id| edge(id, 20, 30, 2)));
+        let complete = find(&edges, 3, 10, 10_000).unwrap();
+        assert!(complete.paths.is_empty());
+        let cancel = Cell::new(false);
+        let flag = Flag(&cancel);
+        let mut meter = crate::Meter::new("graph.round_trips", None, Some(&flag));
+        let mut visited = 0u64;
+        let result = super::find(&edges, 3, 10, 10_000, &mut || {
+            visited += 1;
+            if visited == 5 {
+                cancel.set(true);
+            }
+            meter.compare(1)
+        });
+        let Err(Error::Interrupted(crate::LanternError::Cancelled { used, .. })) = result else {
+            panic!("the recursive search did not propagate cancellation: {result:?}");
+        };
+        assert!(used >= 5 && used <= 5 + crate::CANCELLATION_INTERVAL);
+        assert_eq!(visited, used);
+        assert_eq!(meter.work().comparisons, used);
+        assert!(used < 2_099, "the first root was still being searched");
+        assert!(used < complete.steps);
     }
 
     /// Independent tiny-graph oracle: enumerate chronological subsets, check
