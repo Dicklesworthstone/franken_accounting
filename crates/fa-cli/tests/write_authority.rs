@@ -343,10 +343,10 @@ fn names(ops: &[Op]) -> BTreeSet<&'static str> {
 /// The bound-route table's ops for `argv`, as the CLI parses it.
 fn table_ops(row_argv: &[String]) -> Option<BTreeSet<&'static str>> {
     let reg = registry().expect("verbs.toml");
-    let verb = reg.verb(&row_argv[0]).expect("a registered verb");
-    let flags: Vec<&str> = verb.flags.iter().map(String::as_str).collect();
-    let switches: Vec<&str> = verb.switches.iter().map(String::as_str).collect();
-    let args = fa_cli::args::parse(row_argv, &flags, &switches).expect("row argv parses");
+    assert!(reg.verb(&row_argv[0]).is_some(), "a registered verb");
+    // The binary's own sets, global switches such as --yes included.
+    let args = fa_cli::args::parse(row_argv, &reg.value_flags(), &reg.switches())
+        .expect("row argv parses");
     bound_command_ops(&row_argv[0], &args).map(names)
 }
 
@@ -912,6 +912,21 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],
+            Reaches,
+        ),
+        // The fixture's sale debits 1200 with no party, so the designation
+        // reaches its own refusal and the book is unchanged.
+        row(
+            &[
+                "subledger",
+                "add",
+                "AR",
+                "--control",
+                "1200",
+                "--kind",
+                "receivables",
+            ],
+            &[Op::Read, Op::SchemaChange],
             Reaches,
         ),
         row(

@@ -4436,6 +4436,141 @@ fn the_correct_cluster_reclassifies_like_the_cli() {
     log("fa_correct_reclass: a partial move posts, an exceeding one is FA-REF-185, lineage agrees");
 }
 
+/// fa-i7e: the fa.correct cluster's replace tool commits the Reversal and
+/// its Replacement as one pair, like `fa replace`; without the corrected
+/// entry it is refused and nothing is written; a retry is the recorded pair,
+/// and the CLI's `fa reverse --replace-with` finds it too.
+#[test]
+fn the_correct_cluster_replaces_like_the_cli() {
+    let dir = tmp("replace");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Replace Co",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let intent = dir.join("expense.json");
+    std::fs::write(
+        &intent,
+        r#"{"idempotency_key":"expense","effective_date":"2026-03-15","legs":[{"side":"debit","account":"6100","amount":"1000.00 USD"},{"side":"credit","account":"1000","amount":"1000.00 USD"}]}"#,
+    )
+    .unwrap();
+    let intent = intent.display().to_string();
+    let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
+    let posted = parse(&cli_data(&[
+        "post",
+        "--intent",
+        &intent,
+        "--evidence",
+        &oid,
+        "--book",
+        &b,
+        "--json",
+    ]));
+    let target = posted["vid"].as_str().unwrap().to_string();
+    let corrected = json!({
+        "description": "Office expense, corrected",
+        "legs": [
+            {"side": "debit", "account": "6100", "amount": "1200.00 USD"},
+            {"side": "credit", "account": "1000", "amount": "1200.00 USD"},
+        ],
+    });
+    let before = cli_data(&["book", "info", "--book", &b, "--json"]);
+
+    let mut mcp = Mcp::start_with(
+        &book,
+        &[
+            "--profile",
+            "preparer",
+            "--principal",
+            "operator",
+            "--cluster",
+            "fa.correct",
+        ],
+    );
+    mcp.discover();
+    // Planted: no corrected entry is refused before anything is written.
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_correct_replace",
+        json!({"vid": target, "reason": "WrongAmount", "evidence": oid}),
+    );
+    assert!(is_error, "a replacement needs its corrected entry: {text}");
+    assert!(text.contains("intent"), "{text}");
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before,
+        "a refused replacement writes nothing"
+    );
+
+    let arguments =
+        json!({"vid": target, "reason": "WrongAmount", "intent": corrected, "evidence": oid});
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_correct_replace", arguments.clone());
+    assert!(!is_error, "{text}");
+    let pair = parse(&text);
+    assert_eq!(pair["target"], json!(target), "{text}");
+    assert_eq!(pair["already_recorded"], json!(false), "{text}");
+    let reversal = pair["reversal"].as_str().unwrap().to_string();
+    let replacement = pair["replacement"].as_str().unwrap().to_string();
+    for (entry, kind) in [(&reversal, "Reverses"), (&replacement, "Replaces")] {
+        let shown = parse(&cli_data(&["entry", "show", entry, "--book", &b, "--json"]));
+        let lineage = shown["supersedes"].as_array().unwrap();
+        assert_eq!(lineage.len(), 1, "{shown}");
+        assert_eq!(lineage[0]["entry"], json!(target), "{shown}");
+        assert_eq!(lineage[0]["kind"], json!(kind), "{shown}");
+    }
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_correct_replace", arguments);
+    assert!(!is_error, "{text}");
+    let retried = parse(&text);
+    assert_eq!(retried["already_recorded"], json!(true), "{text}");
+    assert_eq!(retried["replacement"], json!(replacement), "{text}");
+    assert_eq!(mcp.finish(), 0);
+
+    let corrected_file = dir.join("corrected.json");
+    std::fs::write(&corrected_file, corrected.to_string()).unwrap();
+    let corrected_file = corrected_file.display().to_string();
+    let again = parse(&cli_data(&[
+        "reverse",
+        &target,
+        "--reason",
+        "WrongAmount",
+        "--replace-with",
+        &corrected_file,
+        "--evidence",
+        &oid,
+        "--book",
+        &b,
+        "--json",
+    ]));
+    assert_eq!(again["already_recorded"], json!(true));
+    assert_eq!(again["reversal"], json!(reversal));
+    log("fa_correct_replace: the pair commits once, a missing intent is refused, the CLI finds it");
+}
+
 /// fa-81lu: the steward tool's attach action records the same
 /// SupplementalEvidence as `fa document attach`; the CLI's explain evidence
 /// lists it; an Agent session, which never writes trunk, is refused.

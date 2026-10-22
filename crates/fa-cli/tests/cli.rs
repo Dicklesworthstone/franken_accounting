@@ -10899,7 +10899,13 @@ const DANGEROUS: &[(&str, Option<&str>, &str)] = &[
     ("post", None, "grant:post_closed"),
     ("reverse", None, "grant:post_closed"),
     ("reclass", None, "grant:post_closed"),
+    ("replace", None, "grant:post_closed"),
     // Every verb that posts to trunk is dangerous under a post_closed grant.
+    ("accrue", None, "grant:post_closed"),
+    ("defer", None, "grant:post_closed"),
+    ("batch", None, "grant:post_closed"),
+    ("post-reserve", None, "grant:post_closed"),
+    ("void-reserve", None, "grant:post_closed"),
     ("invoice", None, "grant:post_closed"),
     ("bill", None, "grant:post_closed"),
     ("receipt", None, "grant:post_closed"),
