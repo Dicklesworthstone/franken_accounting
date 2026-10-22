@@ -2973,6 +2973,7 @@ fn hex_of(bytes: &[u8; 32]) -> String {
 /// - a tampered amount;
 /// - a byte the reader tolerates (an appended blank line);
 /// - another book's export.
+///
 /// Malformed calls are usage errors.
 #[test]
 fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std::io::Result<()> {

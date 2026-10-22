@@ -190,9 +190,17 @@ mod tests {
 
     const LAYOUT: &str = r#"{"version":1,"name":"download","headers":["Date","Amount"],"booking_date":"Date","amount":{"column":"Amount","positive":"credit"},"statement":{"instrument_id":"OPERATING","sequence_number":1,"currency":"USD","statement_date":"2026-03-31","opening_balance":"0.00","closing_balance":"12.34"}}"#;
 
+    /// `parse`'s layout; `Fail` carries no `Debug`, so `unwrap` cannot name it.
+    fn parsed(text: &str) -> BankCsvLayout {
+        match parse(text) {
+            Ok(layout) => layout,
+            Err(_) => panic!("the layout declaration parses"),
+        }
+    }
+
     #[test]
     fn exact_layout_json_rejects_unknown_duplicate_and_coercible_fields() {
-        let layout = parse(LAYOUT).unwrap();
+        let layout = parsed(LAYOUT);
         assert_eq!(layout.delimiter, b',');
         assert_eq!(layout.date_format, BankCsvDateFormat::Iso);
         assert_eq!(layout.currency, "USD");
@@ -233,7 +241,7 @@ mod tests {
                 "{\"debit\":\"Debit\",\"credit\":\"Credit\"}",
             );
         assert_eq!(
-            parse(&text).unwrap().amounts,
+            parsed(&text).amounts,
             BankCsvAmounts::DebitCredit {
                 debit: "Debit".into(),
                 credit: "Credit".into(),
