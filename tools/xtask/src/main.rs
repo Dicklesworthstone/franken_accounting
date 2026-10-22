@@ -183,7 +183,7 @@ mod tests {
 
         let j = render_summary(true).expect("json summary");
         assert!(j.contains("\"gate_g1_live\":18,\"gate_g1_total\":18"));
-        assert!(j.contains("\"mutants\":34"));
+        assert!(j.contains("\"mutants\":35"));
     }
 
     #[test]
@@ -193,8 +193,8 @@ mod tests {
         let m2 = evaluate_workspace_mutants(&root).expect("mutants lane");
         assert_eq!(m1, m2);
         assert!(m1.is_green());
-        assert_eq!(m1.total, 34);
-        assert_eq!(m1.killed, 34);
+        assert_eq!(m1.total, 35);
+        assert_eq!(m1.killed, 35);
         assert!(m1.survivors.is_empty());
         assert_eq!(m1.to_json(), m2.to_json());
     }
