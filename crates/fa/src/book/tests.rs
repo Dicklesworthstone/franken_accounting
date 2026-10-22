@@ -1035,6 +1035,7 @@ fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
                 book.verify_registers(&cx, &march).unwrap().is_green(),
                 "{point:?}"
             );
+            assert_journal_verifies(&book, &cx, point);
             let retried = book.post(&cx, request).await.unwrap().unwrap();
             assert_eq!(
                 matches!(retried, Posted::AlreadyRecorded { .. }),
@@ -1048,6 +1049,7 @@ fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
                 book.verify_registers(&cx, &march).unwrap().is_green(),
                 "{point:?}"
             );
+            assert_journal_verifies(&book, &cx, point);
         });
     }
 }
@@ -1150,6 +1152,7 @@ fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
                 book.verify_registers(&cx, &march).unwrap().is_green(),
                 "{point:?}"
             );
+            assert_journal_verifies(&book, &cx, point);
             let retried = book
                 .post_batch(&cx, batch, &request.capability)
                 .await
@@ -1163,8 +1166,23 @@ fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
                 book.verify_registers(&cx, &march).unwrap().is_green(),
                 "{point:?}"
             );
+            assert_journal_verifies(&book, &cx, point);
         });
     }
+}
+
+/// The journal's own verifiers after a crash and reopen (fa-0fl in-sim
+/// oracles): every leg projection equals its entry's payload, and every
+/// period's state equals the fold of its journaled transitions.
+fn assert_journal_verifies(book: &LabBook, cx: &PurposeContexts, point: Option<fgdb::CrashPoint>) {
+    assert!(
+        book.verify_projections(cx, None).unwrap().is_green(),
+        "{point:?}: projections"
+    );
+    assert!(
+        book.verify_periods(cx, None).unwrap().is_green(),
+        "{point:?}: periods"
+    );
 }
 
 /// The state of `code` in `book`'s period table.
@@ -1271,6 +1289,7 @@ fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() 
                 },
                 "{point:?}: the period state and its journaled transitions disagree"
             );
+            assert_journal_verifies(&book, &cx, point);
             let retried = prepare_fixture_transition(
                 &mut book,
                 &cx,
@@ -1293,6 +1312,7 @@ fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() 
             );
             let refusal = book.post(&cx, request).await.unwrap().unwrap_err();
             assert_eq!((refusal.code, refusal.exit), ("FA-REF-010", 7), "{point:?}");
+            assert_journal_verifies(&book, &cx, point);
         });
     }
 }
