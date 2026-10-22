@@ -342,3 +342,14 @@ replace = "} if *source > 2 => Err(invalid("
 law = "FA-INV-07.core"
 killed_by = ["fa-model::lib::entry::tests::structural_rules_are_enforced"]
 description = "Remove MAX_TICK_UTC_NS upper bound check on TimeTick control payloads (fa-psz)."
+
+# ---- 11. Period law under the model-generated differential (fa-2ihd) --------
+
+[[mutant]]
+id = "MUT-035"
+file = "crates/fa-journal/src/post.rs"
+find = "            if !req.capability.holds(needed) {"
+replace = "            if false && !req.capability.holds(needed) {"
+law = "FA-INV-03.core"
+killed_by = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_generated_histories_across_seeds"]
+description = "Skip the capability op an admissibility cell requires (post_closed in a Closed period), so the period law admits a class without its op. The generated-history differential catches it within 2 seeds: the reference refuses FA-REF-011 where the mutated kernel goes on to another check (fa-2ihd planted negative)."
