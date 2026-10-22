@@ -1145,6 +1145,34 @@ fn fcw(detail: &str) -> Refusal {
 
 /// The identical record's sequence, or the conflict (plan §4.9: exact bytes,
 /// else a seal-aware semantic comparison under the book key).
+/// A File record's identity is its subject's, not the caller's key, so a
+/// different filing of the same document or finding is that subject already
+/// in the index: say so, instead of suggesting a new key that cannot help.
+fn already_filed(
+    outcome: Result<CommitSeq, Refusal>,
+    engagement: &str,
+    subject: &str,
+    row: &VertexRow,
+) -> Result<CommitSeq, Refusal> {
+    outcome.map_err(|r| {
+        if r.code != code::IDEMPOTENCY_CONFLICT {
+            return r;
+        }
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "{subject} is already in engagement `{engagement}`'s index (record {:032x}); each is filed once",
+                row.vid.0
+            ),
+            "plan §11.12 (the index lists each document and finding once; a File record's identity is its subject's)",
+            format!(
+                "`fa engagement show {engagement} --json` lists the filing; the original request, retried, returns it"
+            ),
+        )
+    })
+}
+
 fn recorded_or_conflict(
     book: &BookContext,
     row: &VertexRow,
@@ -2193,16 +2221,21 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
             0,
             None,
         );
-        return Ok(
-            recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| WorkpaperFiled {
-                engagement: vid,
-                document,
-                control_entry: evid,
-                recorded_at,
-                added_after_completion: stored_state == EngagementState::DocumentationComplete,
-                already_recorded: true,
-            }),
-        );
+        let subject = format!("document {}", crate::evidence::hex(&document.0));
+        return Ok(already_filed(
+            recorded_or_conflict(book, &stored, &record)?,
+            engagement,
+            &subject,
+            &stored,
+        )
+        .map(|recorded_at| WorkpaperFiled {
+            engagement: vid,
+            document,
+            control_entry: evid,
+            recorded_at,
+            added_after_completion: stored_state == EngagementState::DocumentationComplete,
+            already_recorded: true,
+        }));
     }
     if let Err(r) = witness_workpaper(&txn, db, &document)? {
         txn.abort();
@@ -2269,16 +2302,20 @@ pub async fn file_workpaper<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
-            Some(stored) => Ok(
-                recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| WorkpaperFiled {
-                    engagement: vid,
-                    document,
-                    control_entry: evid,
-                    recorded_at,
-                    added_after_completion,
-                    already_recorded: true,
-                }),
-            ),
+            Some(stored) => Ok(already_filed(
+                recorded_or_conflict(book, &stored, &record)?,
+                engagement,
+                &format!("document {}", crate::evidence::hex(&document.0)),
+                &stored,
+            )
+            .map(|recorded_at| WorkpaperFiled {
+                engagement: vid,
+                document,
+                control_entry: evid,
+                recorded_at,
+                added_after_completion,
+                already_recorded: true,
+            })),
             None => Ok(Err(fcw("the workpaper was filed concurrently"))),
         },
         Err(e) => Err(e.into()),
@@ -2358,18 +2395,20 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
         let Some(stored_state) = stored_state else {
             return Ok(Err(conflict_with(&stored)));
         };
-        return Ok(
-            recorded_or_conflict(book, &stored, &record_in(stored_state))?.map(|recorded_at| {
-                FindingFiled {
-                    engagement: vid,
-                    finding,
-                    control_entry: evid,
-                    recorded_at,
-                    added_after_completion: stored_state == EngagementState::DocumentationComplete,
-                    already_recorded: true,
-                }
-            }),
-        );
+        return Ok(already_filed(
+            recorded_or_conflict(book, &stored, &record_in(stored_state))?,
+            engagement,
+            &format!("finding {:032x}", finding.0),
+            &stored,
+        )
+        .map(|recorded_at| FindingFiled {
+            engagement: vid,
+            finding,
+            control_entry: evid,
+            recorded_at,
+            added_after_completion: stored_state == EngagementState::DocumentationComplete,
+            already_recorded: true,
+        }));
     }
     let is_finding = txn
         .vertex(db, finding)?
@@ -2430,16 +2469,20 @@ pub async fn file_finding<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
-            Some(stored) => Ok(
-                recorded_or_conflict(book, &stored, &record)?.map(|recorded_at| FindingFiled {
-                    engagement: vid,
-                    finding,
-                    control_entry: evid,
-                    recorded_at,
-                    added_after_completion,
-                    already_recorded: true,
-                }),
-            ),
+            Some(stored) => Ok(already_filed(
+                recorded_or_conflict(book, &stored, &record)?,
+                engagement,
+                &format!("finding {:032x}", finding.0),
+                &stored,
+            )
+            .map(|recorded_at| FindingFiled {
+                engagement: vid,
+                finding,
+                control_entry: evid,
+                recorded_at,
+                added_after_completion,
+                already_recorded: true,
+            })),
             None => Ok(Err(fcw("the finding was filed concurrently"))),
         },
         Err(e) => Err(e.into()),
