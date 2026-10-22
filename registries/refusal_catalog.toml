@@ -59,8 +59,8 @@ code = "FA-REF-005"
 name = "DIMENSION_MISSING"
 owners = ["fa-journal"]
 exit = "refusal"
-cite = "plan §4.1, §5.2 (legal_entity is a mandatory balancing dimension in a multi-entity book; FA-INV-01 per-entity)"
-fix = "add the legal-entity dimension to leg {i}: one of {entities}"
+cite = "plan §4.1, §5.2, §5.6 (legal_entity is a mandatory balancing dimension in a multi-entity book; native subledger control legs require a valid party dimension)"
+fix = "add the required dimension to leg {i}: legal_entity for a multi-entity book, or a registered party for a native subledger control account"
 
 # Folio, later code: a library or MCP caller can name a raw unit id that no
 # registered unit version carries; an AnyUnit account would otherwise admit

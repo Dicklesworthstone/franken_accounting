@@ -46,3 +46,11 @@ appendix_a = "Registered Valuation and unrealized FX routes (plan §5.2, §12.4)
 code_type = "fa-journal::chart::FxRevaluationRoutes; SchemaChange subkind 14"
 rationale = "Canonical version-1 FA-FX-ROUTES bytes retain effective date, the book base-unit id and a complete sorted source/valuation/unrealized map. Foreign Single-unit Asset/Liability sources have distinct same-type Single-base valuation leaves and Single-base Revenue/Expense destinations; leaves have no balance limits. Updates may add sources but cannot remove or reassign an established triple. A valuation leaf is exclusive to one source and must have no earlier posting history when first assigned. Current whole-book Read plus SchemaChange authority and a complete-frontier commit guard protect the configuration. Fixed-prefix chart replay checks declaration order and historical selection."
 tracking_bead = "fa-3ock"
+
+
+[[decision]]
+field = "SchemaChange.kind=15"
+appendix_a = "Native receivable/payable subledgers (plan §5.6)"
+code_type = "fa-journal::subledger::NativeSubledgerSpec; SchemaChange subkind 15"
+rationale = "One immutable canonical version-1 definition designates a party-qualified Asset or Liability control leaf. Its Subledger identity is derived from the book and control account; code and control assignments are unique. The declaration, root, CONTROLS edge and account control pointer publish atomically. Every historical control leg, including staged migration history, must already name a valid party. New control postings witness the designation and require party attribution. Recorded-prefix chart replay advances the account projection version without turning the leaf into a summary. Party detail and control balances are independently folded at the same recorded/effective coordinate; no second posting or mutable subledger balance is introduced. External summary-feed digest attestation remains separate."
+tracking_bead = "fa-03s"

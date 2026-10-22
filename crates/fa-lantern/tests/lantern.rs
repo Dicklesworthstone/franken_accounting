@@ -4640,13 +4640,8 @@ fn statistical_audit_lane_oracles_numpy_sampling_and_propcheck_suites() {
 }
 
 #[test]
-fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions() {
-    use fa_journal::attestation::{
-        Attestation, AttestationClaim, CapabilityBinding, RegisterEqualsClaim, StoredAttestation,
-        Subject,
-    };
+fn solvency_balance_sheet_preserves_signed_basis_and_temporal_selection() {
     use fa_lantern::cutoff::SolvencyBalanceSheetTest;
-    use fa_policy::Profile;
 
     let mut h = harness();
     let mut funding = Spec::simple(day(2026, 4, 1), "1000", "2000", 10_000);
@@ -4687,43 +4682,6 @@ fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions
     );
     snapshot.coordinate.effective_through = Some(day(2026, 4, 30));
 
-    // An ordinary reconciliation assertion is not a valuation instruction.
-    // Its valid historical balance must not replace the present signed fold.
-    for (account, mantissa) in [(h.account("1000"), 100_000), (h.account("2000"), 0)] {
-        let claim = RegisterEqualsClaim {
-            account,
-            unit_id: h.usd.0,
-            period: "FY2026-P04".into(),
-            entity: None,
-            mantissa,
-            as_of_effective: day(2026, 4, 1),
-            evaluated_known_at: before_deduction,
-            fold_digest: [0xAB; 32],
-        };
-        let subject = Subject::Cell(claim.cell_digest());
-        snapshot.attestations.insert(
-            VId(account.0 ^ 0xA551),
-            StoredAttestation {
-                attestation: Attestation {
-                    book_id: h.book.book_id,
-                    claim: AttestationClaim::RegisterEquals(claim),
-                    subject,
-                    principal: REVIEWER,
-                    evidence_refs: Vec::new(),
-                },
-                signed_digest: [0xCD; 32],
-                binding: CapabilityBinding {
-                    profile: Profile::Human,
-                    capability_commitment: [0xEF; 32],
-                },
-            },
-        );
-    }
-    assert_eq!(
-        run_over(&snapshot, &h.book, &procedure).unwrap().findings,
-        actual.findings,
-        "register assertions cannot change the solvency method"
-    );
     let haircut = SolvencyBalanceSheetTest::with(
         Params::defaults(SolvencyBalanceSheetTest::ID)
             .unwrap()
@@ -4748,6 +4706,65 @@ fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions
     assert!(
         h.run(&procedure).findings.is_empty(),
         "assets 20 exceed net debt 10"
+    );
+}
+
+#[test]
+fn solvency_historical_register_assertion_is_not_current_fair_value() {
+    use fa_lantern::cutoff::SolvencyBalanceSheetTest;
+
+    let mut h = harness();
+    let mut funding = Spec::simple(day(2026, 4, 1), "1000", "2000", 10_000);
+    funding.legs = vec![
+        ("1000", Side::Debit, 10_000),
+        ("2000", Side::Credit, 5_000),
+        ("4000", Side::Credit, 5_000),
+    ];
+    h.post(&funding);
+    let before_spending = h.db.frontier().unwrap();
+    let procedure = SolvencyBalanceSheetTest::new().unwrap();
+    assert!(h.run(&procedure).findings.is_empty());
+
+    // Evaluate a true historical assertion through the register fold, then
+    // record it through the authenticated native recorder after cash moves.
+    // It stays true at its original coordinate without valuing today's cash.
+    let key = fa_registers::EntityCellKey {
+        account: h.account("1000"),
+        unit_id: h.usd.0,
+        period: "FY2026-P04".into(),
+        entity: None,
+    };
+    let claim = fa_registers::register_equals(&h.db, &h.book, &key, Some(before_spending)).unwrap();
+    assert_eq!(claim.amount.mantissa, 10_000);
+    assert_eq!(claim.evaluated_known_at, before_spending);
+    assert_eq!(claim.as_of_effective, day(2026, 4, 30));
+    h.post(&Spec::simple(day(2026, 4, 22), "6000", "1000", 8_000));
+    let before_assertion = h.run(&procedure);
+    assert_eq!(before_assertion.findings.len(), 1);
+    assert_eq!(before_assertion.findings[0].statistic.value, 3_000);
+    let ctx = h.ctx();
+    let evidence = h.evidence.iter().map(|e| e.document_oid).collect();
+    let attested = h
+        .runtime
+        .block_on(fa_registers::assertion::record_register_equals(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &Capability::embedded(REVIEWER, &["reconcile"]).unwrap(),
+            &claim,
+            evidence,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fa_registers::assertion::assertion_holds(&h.db, &h.book, attested.vid).unwrap(),
+        Some(true)
+    );
+    assert!(h.snapshot().attestations.contains_key(&attested.vid));
+    assert_eq!(
+        h.run(&procedure).findings,
+        before_assertion.findings,
+        "a valid historical reconciliation assertion cannot value the present balance"
     );
 }
 

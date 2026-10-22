@@ -92,6 +92,7 @@ pub mod statement_diff;
 pub mod statement_diff_workpaper;
 pub mod statement_trace;
 pub mod statements;
+pub mod subledger;
 pub mod summary;
 pub mod summary_certificate;
 pub mod upload;
@@ -277,6 +278,10 @@ pub use statement_trace::{
 pub use statements::{
     CertifiedStatement, StatementSelection, UncorrectedLine, UncorrectedStatement,
     statement_definition_kind,
+};
+pub use subledger::{
+    NativeSubledger, NativeSubledgerKind, NativeSubledgerReconciliation, NativeSubledgerRecorded,
+    NativeSubledgerRow, NativeSubledgerSpec, NativeSubledgerTotal,
 };
 pub use summary::{SummaryGroup, SummaryRequest, SummaryScope, SummaryTrialBalance};
 pub use summary_certificate::{

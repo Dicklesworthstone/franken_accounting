@@ -9660,6 +9660,45 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(text(&noop, "current_carrying_net"), "110.00 USD");
     assert_eq!(text(&noop, "target_base_net"), "110.00 USD");
 
+    // Native controls expose definition and reconciliation events through
+    // the same registry-checked binary. Populated histories are covered by
+    // the dedicated subledger integration tests.
+    let subledger_book = dir.join("native-subledger-events-book");
+    let mut run_subledger = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&subledger_book), &argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run_subledger(&["book", "create", "--name", "Native subledger events"]);
+    let subledger_chart = write(
+        &dir,
+        "native-subledger-chart.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"}]}"#,
+    );
+    run_subledger(&["chart", "import", &subledger_chart]);
+    run_subledger(&[
+        "subledger",
+        "add",
+        "AR",
+        "--control",
+        "1200",
+        "--kind",
+        "receivables",
+    ]);
+    run_subledger(&["subledger", "list"]);
+    run_subledger(&["subledger", "show", "AR"]);
+    let reconciled = doc(&run_subledger(&[
+        "subledger",
+        "verify",
+        "AR",
+        "--as-of",
+        "2026-03-31",
+    ]));
+    assert_eq!(reconciled.get("reconciled"), Some(&Json::Bool(true)));
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
@@ -12586,6 +12625,162 @@ fn solvency_contra_assets_have_a_certified_replayable_deficit() -> std::io::Resu
     assert_eq!(int(&doc(&ok(&procedure)), "finding_count"), Some(0));
     let replayed = ok(&["replay", &format!("C:{retained}")]);
     assert_eq!(replayed, saved);
+    Ok(())
+}
+
+#[test]
+fn solvency_historical_cash_assertion_does_not_erase_a_current_deficit() -> std::io::Result<()> {
+    let dir = tmp("solvency-historical-assertion")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Synthetic historical cash assertion fixture",
+    ]);
+    ok(&["chart", "import", "--template", "us-gaap-smb"]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    let funding = write(
+        &dir,
+        "funding.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"funding","legs":[{"side":"debit","account":"1010","amount":"100.00 USD"},{"side":"credit","account":"2000","amount":"50.00 USD"},{"side":"credit","account":"3000","amount":"50.00 USD"}]}"#,
+    );
+    let funded = doc(&ok(&[
+        "post",
+        "--intent",
+        &funding,
+        "--evidence",
+        &evidence,
+    ]));
+    let before_spending = int(&funded, "recorded_at").unwrap().to_string();
+    let procedure = [
+        "procedure",
+        "run",
+        "solvency.balance_sheet_test",
+        "--effective-through",
+        "2026-03-31",
+    ];
+    assert_eq!(int(&doc(&ok(&procedure)), "finding_count"), Some(0));
+    let spending = write(
+        &dir,
+        "spending.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"spending","legs":[{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1010","amount":"80.00 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &spending, "--evidence", &evidence]);
+    let before = doc(&ok(&procedure));
+    assert_eq!(int(&before, "finding_count"), Some(1));
+    assert_eq!(
+        int(
+            arr(&before, "findings")[0].get("statistic").unwrap(),
+            "value"
+        ),
+        Some(3_000)
+    );
+
+    let attested = doc(&ok(&[
+        "attest",
+        "register-equals",
+        "--account",
+        "1010",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &before_spending,
+        "--evidence",
+        &evidence,
+    ]));
+    assert_eq!(attested.get("holds"), Some(&Json::Bool(true)));
+    let checked = doc(&ok(&[
+        "attest",
+        "register-equals",
+        text(&attested, "attestation_vid"),
+    ]));
+    assert_eq!(checked.get("holds"), Some(&Json::Bool(true)));
+    let after = doc(&ok(&procedure));
+    assert_eq!(int(&after, "version"), Some(2));
+    assert_eq!(int(&after, "finding_count"), Some(1));
+    assert_eq!(after.get("findings"), before.get("findings"));
+    Ok(())
+}
+
+#[test]
+fn concentration_refuses_overflow_from_individually_valid_posts() -> std::io::Result<()> {
+    let dir = tmp("concentration-overflow")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Synthetic amount boundary fixture",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash A","type":"Asset","unit":"USD"},{"code":"1010","name":"Cash B","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    let at_limit = write(
+        &dir,
+        "at-limit.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"at-limit","legs":[{"side":"debit","account":"1010","amount":"1701411834604692317316873037158841057.27 USD"},{"side":"credit","account":"1000","amount":"1701411834604692317316873037158841057.27 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &at_limit, "--evidence", &evidence]);
+    let at_limit_head = field(&ok(&["book", "info"]), "known_at")
+        .unwrap()
+        .to_owned();
+    let positive = doc(&ok(&["procedure", "run", "graph.concentration"]));
+    assert_eq!(int(&positive, "finding_count"), Some(2));
+    assert!(arr(&positive, "findings").iter().all(|finding| {
+        let statistic = finding.get("statistic").unwrap();
+        text(statistic, "name") == "flow_share_bps" && int(statistic, "value") == Some(10_000)
+    }));
+    assert_eq!(
+        field(&ok(&["book", "info"]), "known_at"),
+        Some(at_limit_head.as_str())
+    );
+
+    // Disjoint accounts keep both entries and every account within range.
+    // Only the procedure's combined unit volume exceeds i128::MAX.
+    let extra = write(
+        &dir,
+        "extra.json",
+        r#"{"effective_date":"2026-03-02","idempotency_key":"extra","legs":[{"side":"debit","account":"6000","amount":"0.01 USD"},{"side":"credit","account":"4000","amount":"0.01 USD"}]}"#,
+    );
+    ok(&["post", "--intent", &extra, "--evidence", &evidence]);
+    let before_refusal = field(&ok(&["book", "info"]), "known_at")
+        .unwrap()
+        .to_owned();
+    let (code, out, err) = fa(
+        Some(&book),
+        &["procedure", "run", "graph.concentration", "--json"],
+    );
+    assert_eq!(code, 3, "{out}\n{err}");
+    assert_eq!(field(&out, "event"), Some("error"));
+    assert!(out.contains("graph.concentration unit volume"), "{out}");
+    assert!(doc(&out).get("findings").is_none(), "{out}");
+    assert_eq!(
+        field(&ok(&["book", "info"]), "known_at"),
+        Some(before_refusal.as_str())
+    );
     Ok(())
 }
 

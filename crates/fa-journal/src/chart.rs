@@ -215,6 +215,7 @@ enum ChartOp {
     Install(Vec<AccountSpec>),
     ClosingRoutes(closing::ClosingRoutesSpec),
     FxRevaluationRoutes(fx::FxRevaluationRoutesSpec),
+    NativeSubledger(crate::subledger::NativeSubledgerSpec),
     OpenAccount {
         spec: AccountSpec,
         opened: DateDay,
@@ -350,6 +351,12 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                 ChartOp::FxRevaluationRoutes(spec)
             }
             Some(ControlPayload::SchemaChange {
+                kind: crate::subledger::SCHEMA_CHANGE_NATIVE_SUBLEDGER,
+                canonical_bytes,
+            }) => ChartOp::NativeSubledger(crate::subledger::NativeSubledgerSpec::decode(
+                canonical_bytes,
+            )?),
+            Some(ControlPayload::SchemaChange {
                 kind,
                 canonical_bytes,
             }) if fa_model::ReaControlOp::is_rea_schema_change_kind(*kind) => {
@@ -466,13 +473,34 @@ fn replay_controls(
     known_at: CommitSeq,
     controls: Vec<(CommitSeq, VId, ChartOp)>,
 ) -> Result<ChartSnapshot, KernelError> {
-    let mut accounts = BTreeMap::new();
+    let mut accounts: BTreeMap<VId, AccountRow> = BTreeMap::new();
     let mut effectivity: BTreeMap<VId, AccountEffectivity> = BTreeMap::new();
     let mut parents = BTreeMap::new();
     let mut closing_routes = Vec::new();
     let mut fx_revaluation_routes = Vec::new();
+    let mut native_control_accounts = BTreeSet::new();
+    let mut native_codes = BTreeSet::new();
     for (created_at, control_entry, op) in controls {
         match op {
+            ChartOp::NativeSubledger(spec) => {
+                if created_at > known_at
+                    || !native_control_accounts.insert(spec.control_account)
+                    || !native_codes.insert(spec.code.clone())
+                {
+                    return Err(corrupt("duplicate or future native subledger registration"));
+                }
+                let account = accounts
+                    .get_mut(&spec.control_account)
+                    .ok_or_else(|| corrupt("native subledger control account is absent"))?;
+                if !account.is_leaf || AccountType(account.account_type) != spec.kind.account_type()
+                {
+                    return Err(corrupt(
+                        "native subledger requires a correctly typed posting leaf",
+                    ));
+                }
+                // control_of is a journaled account-row version change.
+                account.created_at = created_at;
+            }
             ChartOp::FxRevaluationRoutes(spec) => {
                 if created_at > known_at {
                     return Err(corrupt("an FX route map lies after the selected frontier"));
@@ -593,7 +621,10 @@ fn replay_controls(
                         "promote_to_summary references absent account `{code}`"
                     ))
                 })?;
-                if !account.is_leaf || account.limit.is_some() {
+                if !account.is_leaf
+                    || account.limit.is_some()
+                    || native_control_accounts.contains(&vid)
+                {
                     return Err(corrupt(format!(
                         "promote_to_summary on non-leaf or limit-bearing account `{code}`"
                     )));
@@ -1689,6 +1720,16 @@ pub async fn promote_to_summary<V: asupersync::fs::Vfs + Clone>(
             format!("account `{code_str}` is already a summary account"),
             "plan §5.6 (promote_to_summary applies only to a leaf account)",
             "account is already a summary",
+        )));
+    }
+    if crate::subledger::account_binding(&txn, db, book, &row)?.is_some() {
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::NOT_A_LEAF,
+            exit::REFUSAL,
+            format!("native subledger control account '{code_str}' must remain a posting leaf"),
+            "plan §5.6 (native subledger detail belongs to one control leaf)",
+            "keep this control leaf and create a separate summary parent",
         )));
     }
     if account.limit.is_some() {

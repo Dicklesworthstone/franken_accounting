@@ -296,6 +296,18 @@ contra-assets. Debit contra-liabilities were likewise discarded. Ordinary
 historical `RegisterEquals` claims could also replace the current balance,
 although they are reconciliation assertions without valuation authority.
 
+A second older-binary probe independently reproduced that substitution.
+Funding cash 100 against debt 50 and equity 50, then spending cash 80,
+produced the correct 30 deficit. Recording a genuine `RegisterEquals` for
+cash at the funding sequence made the finding disappear, while the trial
+balance still showed cash 20 and debt 50. Both the recording and subsequent
+native assertion check returned `holds=true`. The binary SHA256 is
+`5da52e3660586a140482405a9fa99e6267fb3c23477e5fcf691a1d3e50786078`;
+commands, outputs and the synthetic book are retained under
+`/Users/jemanuel/.codex/artifacts/fa-solvency-20261021/historical-assertion-x8q6s1mb`.
+The initial attempt correctly refused summary account 1000; the completed
+probe uses template leaf 1010 and preserves the refusal transcript.
+
 Method version 2 folds signed native assets and credit-minus-debit
 liabilities per unit, then applies the declared haircut once to a positive
 net asset basis with exact truncation. Negative assets stay negative.
@@ -306,7 +318,8 @@ contributing account and entry or refuse an oversized scope, and their
 population counts only the reported unit's asset/liability legs.
 
 Regressions cover the literal 30 deficit, historical/effective selection,
-ordinary assertions, haircut netting, currency isolation, negative bases,
+ordinary assertions through separate native and CLI cases, haircut netting,
+currency isolation, negative bases,
 overflow, citation capacity, the template chart through the real CLI, and
 versioned certification/replay. At the time of this entry, execution is
 UNRUN: strict remote admission timed out behind an occupied worker; no

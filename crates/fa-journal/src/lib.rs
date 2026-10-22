@@ -57,6 +57,7 @@ pub mod rows;
 pub mod scenario;
 pub mod schedule;
 pub mod scratch;
+pub mod subledger;
 pub mod sweep;
 pub mod temporal;
 pub mod upload;
@@ -198,6 +199,10 @@ pub use schedule::{
     sweep_reversals_batch, verify_schedules, with_auto_reverse,
 };
 pub use scratch::{SeqMap, SeqPair, replay_into};
+pub use subledger::{
+    NativeSubledger, NativeSubledgerKind, NativeSubledgerRecorded, NativeSubledgerSpec,
+    create_native_subledger, native_subledger_vid, native_subledgers_at,
+};
 pub use sweep::{
     DueHold, Op, Profile, SweepBatch, SweepRequest, Swept, Tick, TickRequest, Ticked, due_holds,
     latest_tick, record_tick, sweep, sweep_batch,
