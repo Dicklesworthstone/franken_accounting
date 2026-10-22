@@ -252,11 +252,11 @@ name = "post"
 summary = "Post an entry intent under balance, period and idempotency laws, with optional functional-currency valuation from retained Rate evidence (fa fx rate add)."
 writes = true
 subcommands = []
-flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--draft", "--scenario"]
+flags = ["--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--prior-period-error", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "batch_posted", "batch_plan", "draft_planned", "scenario_run"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["A leg may name its legal entity (\"entity\": code; in a multi-entity book every leg names one) and its counterparty (\"party\": code from fa party list); the kernel refuses an undeclared entity or an unknown party.", "post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the complete sealed PostEntry or PostBatch plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; planning does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.", "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). A member refusal names its index and nothing is posted.", "PostBatch --dry-run [--plan-out <new-file>] rehearses the complete carried transaction, including same-batch applications, and previews every member's exact amounts, dimensions and settlement targets. fa commit --plan publishes the reviewed batch, outcome and retaining certificate atomically. Exact retries verify and return the original publication. Agent-profile plans remain rehearsal only. Batch drafts, scenarios, saturating balancing and per-batch posting flags remain unsupported; put member options in each intent.", "post --intent <file.json|-> --draft <name>   (plan §15.2: rehearses a single intent under every posting law and journals it into the open draft; nothing reaches trunk until a principal holding approve who is not the draft's owner runs fa draft promote <name>)", "post --intent <file.json|-> --scenario <name>   (fa-k07b: rehearses a single intent on the scenario's materialization under every posting law and journals it into the open scenario; trunk never moves; fa scenario diff shows the effect)"]
+usage = ["A leg may name its legal entity (\"entity\": code; in a multi-entity book every leg names one) and its counterparty (\"party\": code from fa party list); the kernel refuses an undeclared entity or an unknown party.", "post --intent <file.json|-> [--grant <op>]... [--evidence <oid>]... [--event <code|vid>] [--balancing 0|1] [--as <principal>]   (--balancing: that leg moves at most what its account's limit admits; the event says what was requested and what moved)", "post --intent <file.json|-> --dry-run [--plan-out <new-file>]   (runs the actual admission pipeline and aborts its staged transaction; emits the complete sealed PostEntry or PostBatch plan, commits nothing)", "Commit the reviewed plan with fa commit --plan <file|-> using the same --as and --grant. Any intervening book publication requires a new dry run; planning does not assemble new approvals or rehearse --balancing. --plan-out requires --dry-run and never overwrites a file.", "Pending accepts timeout_ns as an unsigned JSON integer, or --timeout-ns N. Its deadline is anchored to committed TimeEvidence. Adjusting accepts reverse_on as YYYY-MM-DD, or --reverse-on YYYY-MM-DD; the book must declare --time-zone UTC at creation. An Adjusting entry that corrects an immaterial prior-period error in the current period, without a case (plan §8.2), names the earlier period with prior_period_error as a period code, or --prior-period-error FY2025-P12; the kernel refuses it on any other class or a period that does not end before the effective date, and fa engagement sud counts it under the rollover method. Supply each value once. Only the daemon records production clock observations and runs timed effects.", "A Reversal intent names reverses and a registered reason (for example, \"reason\": \"WrongAccount\"); its legs come from the target.", "A PostBatch intent {\"idempotency_key\": K, \"intents\": [<entry intent>, ...]} commits every member atomically, in order, in one transaction: all or none, each member seeing the earlier members' effects (an application may settle an invoice earlier in the same batch by its derived vid). Members are Original, Adjusting, Reversal, Pending or Resolution entries of one principal with distinct keys. The batch key names its IntentOutcome: an identical retry returns the recorded outcome; the same key with different members is refused (exit 6). A member refusal names its index and nothing is posted.", "PostBatch --dry-run [--plan-out <new-file>] rehearses the complete carried transaction, including same-batch applications, and previews every member's exact amounts, dimensions and settlement targets. fa commit --plan publishes the reviewed batch, outcome and retaining certificate atomically. Exact retries verify and return the original publication. Agent-profile plans remain rehearsal only. Batch drafts, scenarios, saturating balancing and per-batch posting flags remain unsupported; put member options in each intent.", "post --intent <file.json|-> --draft <name>   (plan §15.2: rehearses a single intent under every posting law and journals it into the open draft; nothing reaches trunk until a principal holding approve who is not the draft's owner runs fa draft promote <name>)", "post --intent <file.json|-> --scenario <name>   (fa-k07b: rehearses a single intent on the scenario's materialization under every posting law and journals it into the open scenario; trunk never moves; fa scenario diff shows the effect)"]
 example = "fa post --intent entry.json --book ./books/myco --json"
 
 [[verb]]
@@ -400,11 +400,11 @@ name = "document"
 summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, record legal holds and attestations, or attach documents that support a committed entry."
 writes = true
 subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list"]
-flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--through", "--scope", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant"]
+flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--through", "--scope", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant", "--party", "--balance", "--as-of", "--claim"]
 switches = ["--dry-run"]
 events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "evidence_attached", "import_recorded", "import_receipt", "documents"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> (--subject <vid|oid>... | --through HEAD|<seq>) [--effective YYYY-MM-DD] [--description <text>] [--key K]   (--through holds every entry, document and party recorded at or before that sequence, a book-scope hold (plan §15.6); --scope book is --through HEAD; repeating it is the recorded hold)", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> (--subject <vid|oid>... | --through HEAD|<seq>) [--effective YYYY-MM-DD] [--description <text>] [--key K]   (--through holds every entry, document and party recorded at or before that sequence, a book-scope hold (plan §15.6); --scope book is --through HEAD; repeating it is the recorded hold)", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest confirmed <oid> --party <code> --balance \"<amount> <UNIT>\" --as-of YYYY-MM-DD   (plan §11.12, AS 2310: the auditor's Confirmed attestation over a Confirmation document, what the party confirmed; needs produce; one per document. An engagement judges it audit-grade only when its firm principal received the document)", "document attest represented <oid> --claim <text>... --as-of YYYY-MM-DD   (plan §11.12, AS 2805: management's Represented attestation over a Representation letter, each claim sealed under the book key; needs approve, which no Agent holds; one per letter)", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
@@ -448,11 +448,11 @@ name = "statement"
 summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives, retained replay certificates, and frontier diff/trace bridges."
 writes = true
 subcommands = []
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--certificate", "--issued-to", "--document", "--key", "--date", "--plan", "--approval", "--as-issued-to", "--as-reported-in", "--render", "--out", "--present-in", "--rounding"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--certificate-out", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--certificate", "--issued-to", "--document", "--key", "--date", "--plan", "--approval", "--as-issued-to", "--as-reported-in", "--render", "--out", "--present-in", "--rounding", "--from", "--to", "--issuance", "--distribution", "--unit", "--label"]
 switches = ["--certify", "--as-originally-reported", "--dry-run"]
-events = ["statement", "statement_presented", "statement_diff", "statement_trace", "report_certificate", "statement_issuance_plan", "statement_issued", "statement_issuances", "statement_lint", "rendered"]
+events = ["statement", "statement_presented", "statement_diff", "statement_trace", "report_certificate", "statement_issuance_plan", "statement_issued", "statement_issuances", "statement_lint", "rendered", "equity_roll_forward"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement balance-sheet|income-statement --for <period> --present-in units|thousands|millions [--rounding HalfEven|<law>]   (plan §12.1: after the exact statement, a statement_presented event divides every line by 10^(unit scale + 0|3|6) under the registered rounding law (default HalfEven) and inserts an explicit Presentation rounding line before any total whose rounded parts do not sum to its rounded value, so the presented statement foots; the exact statement and its certificate are unchanged; not with diff, trace, certificate comparisons or --render)", "statement balance-sheet|income-statement --for <period> [--compare <period>] --as-originally-reported [--certify]   (plan §7.4: the statement as it stood when its --for period was first reported: at the known-at of the certificate the period's first StatementIssuance issued, else at its first Lock transition; never its first Close, never HEAD. A --compare column is read at that same snapshot. A period with neither is refused with FA-REF-161. Cannot be combined with a known-at selector, diff, trace or certificate inputs.)", "statement balance-sheet|income-statement --for <period> [--compare <period>] (--as-issued-to <audience> | --as-reported-in C:<oid>) [--certify]   (plan §7.4: the statement as its --for period was issued to that audience (FA-REF-173 when it never was), or as reported in that retained trunk statement certificate, which must report the period (FA-REF-174 otherwise). The --compare column is read at the same snapshot.)", "statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "statement diff --before-certificate <C:oid|file|-> --after-certificate <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--certify]   (bridge two retained certificates of the same trunk statement selection at ordered frontiers; both replay in full first, and a certified comparison keeps those exact source certificates)", "statement trace --from-diff <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--max-publications 1..=256] --certify   (attribute a saved statement comparison to every intermediate publication; its original endpoint certificates are kept and the trace must reproduce the saved bridge)", "With certificate inputs, the certificates fix both frontiers: --before, --after and known-at selectors are refused. A stated --for, --compare or --definition is checked against the certificates (exit 8 when they answer a different statement), never used to re-select.", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "statement issue --certificate C:<oid> [--for <period>] --issued-to board|auditor|lender|regulator|sec|tax-authority|other [--document <oid>] [--key K] [--date YYYY-MM-DD] --dry-run   (plan §12.5, IssueStatements: plans the StatementIssuance of a retained trunk statement certificate for the period it reports (--for may be omitted when it reports one) at the period's next ordinal; needs close and read; writes nothing. An approver who is not the planner runs fa approve --proposal <proposal_digest>.)", "statement issue --plan <file|-> --approval <vid>...   (journals exactly the planned issuance under close and read with one independent Human approval; the plan's ordinal must still be the period's next (exit 6 otherwise: plan again). The period's first issuance is what --as-originally-reported reads from then on; a later issuance never moves it. The same plan committed again returns the recorded issuance.)", "statement issuances [--for <period>]   (every journaled issuance of the period, by ordinal, or of the book)", "statement lint --definition balance-sheet|income-statement|us_gaap_small_company_balance_sheet|us_gaap_small_company_income_statement [--as-known-at HEAD|<seq>]   (plan §12.1, FA-INV-04: whether the definition partitions the chart a statement folds at that frontier: covered leaves no line maps or several lines map, and codes a line names that are unknown, summary or outside its account types; clean=true iff it partitions. Reads the whole chart under current read authority; findings are data, exit 0.)", "Add --render md|html|svg|pdf|pdfa to also render the statement as a document (not diff, trace or certificate-sourced statements) (fa-cet): md returns the Markdown inline unless --out <new-file> names a file; html, svg, pdf and pdfa write --out <new-file> (never overwriting) and are dated by the latest corroborated TimeEvidence tick known at the report's frontier, never the wall clock, so the same report renders to the same bytes whenever it is rendered; a book with no such tick renders md only (exit 4 otherwise). pdfa is checked by the built-in PDF/A-2b validator before it is written. The rendered event names the IR digest, the file digest and the tick."]
+usage = ["statement balance-sheet|income-statement --for <period> [--compare <period>] [--known-at HEAD|<seq>|<RFC3339>]", "statement balance-sheet|income-statement --for <period> --present-in units|thousands|millions [--rounding HalfEven|<law>]   (plan §12.1: after the exact statement, a statement_presented event divides every line by 10^(unit scale + 0|3|6) under the registered rounding law (default HalfEven) and inserts an explicit Presentation rounding line before any total whose rounded parts do not sum to its rounded value, so the presented statement foots; the exact statement and its certificate are unchanged; not with diff, trace, certificate comparisons or --render)", "statement balance-sheet|income-statement --for <period> [--compare <period>] --as-originally-reported [--certify]   (plan §7.4: the statement as it stood when its --for period was first reported: at the known-at of the certificate the period's first StatementIssuance issued, else at its first Lock transition; never its first Close, never HEAD. A --compare column is read at that same snapshot. A period with neither is refused with FA-REF-161. Cannot be combined with a known-at selector, diff, trace or certificate inputs.)", "statement balance-sheet|income-statement --for <period> [--compare <period>] (--as-issued-to <audience> | --as-reported-in C:<oid>) [--certify]   (plan §7.4: the statement as its --for period was issued to that audience (FA-REF-173 when it never was), or as reported in that retained trunk statement certificate, which must report the period (FA-REF-174 otherwise). The --compare column is read at the same snapshot.)", "statement diff --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>]", "statement trace --definition balance-sheet|income-statement --for <period> [--compare <period>] --before <seq> [--after HEAD|<seq>] [--max-publications 1..=256]", "statement diff --before-certificate <C:oid|file|-> --after-certificate <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--certify]   (bridge two retained certificates of the same trunk statement selection at ordered frontiers; both replay in full first, and a certified comparison keeps those exact source certificates)", "statement trace --from-diff <C:oid|file|-> [--for <period> [--compare <period>]] [--definition <name>] [--max-publications 1..=256] --certify   (attribute a saved statement comparison to every intermediate publication; its original endpoint certificates are kept and the trace must reproduce the saved bridge)", "With certificate inputs, the certificates fix both frontiers: --before, --after and known-at selectors are refused. A stated --for, --compare or --definition is checked against the certificates (exit 8 when they answer a different statement), never used to re-select.", "Both columns use the same known-at snapshot and the registered definition. Balance sheets carry opening history through each selected period; income statements show that period's activity. Native units remain separate; there is no implicit FX conversion or presentation rounding.", "--as-known-at is an alias for --known-at; supply only one. Add --certify to retain an immutable certificate and emit its complete bytes inline. --certificate-out <new-file> also saves a binary copy without replacing a file. Uncertified statements do not publish metadata. Certificates prove replay and arithmetic over the journal, not GAAP conformity.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk: uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "statement issue --certificate C:<oid> [--for <period>] --issued-to board|auditor|lender|regulator|sec|tax-authority|other [--document <oid>] [--key K] [--date YYYY-MM-DD] --dry-run   (plan §12.5, IssueStatements: plans the StatementIssuance of a retained trunk statement certificate for the period it reports (--for may be omitted when it reports one) at the period's next ordinal; needs close and read; writes nothing. An approver who is not the planner runs fa approve --proposal <proposal_digest>.)", "statement issue --plan <file|-> --approval <vid>...   (journals exactly the planned issuance under close and read with one independent Human approval; the plan's ordinal must still be the period's next (exit 6 otherwise: plan again). The period's first issuance is what --as-originally-reported reads from then on; a later issuance never moves it. The same plan committed again returns the recorded issuance.)", "statement issuances [--for <period>]   (every journaled issuance of the period, by ordinal, or of the book)", "statement lint --definition balance-sheet|income-statement|us_gaap_small_company_balance_sheet|us_gaap_small_company_income_statement [--as-known-at HEAD|<seq>]   (plan §12.1, FA-INV-04: whether the definition partitions the chart a statement folds at that frontier: covered leaves no line maps or several lines map, and codes a line names that are unknown, summary or outside its account types; clean=true iff it partitions. Reads the whole chart under current read authority; findings are data, exit 0.)", "statement equity-roll-forward --from YYYY-MM-DD --to YYYY-MM-DD [--issuance <code[,code...]>] [--distribution <code[,code...]>] [--unit <CODE[,CODE...]>] [--label <text>] [--known-at HEAD|<seq>|<RFC3339>]   (plan §12.1, the statement of changes in equity, from the roll-forward lead schedule of every equity, revenue and expense leaf at one recorded prefix. Per unit, opening equity (posted equity plus unclosed earnings) + net income (revenue and expense activity outside Closing entries) + issuances (legs on the --issuance equity accounts) + distributions (legs on the --distribution accounts) + other equity movements (every other equity leg) = closing equity, which is the balance sheet's total_equity at --to; a Closing entry's legs, the closing transfer, net to zero; it is refused when they do not tie. No account's role is inferred from its name or code: an unnamed equity account's legs are other equity movements. Not certifiable yet, and none of --for, --compare, --definition, --certify, --render or --present-in applies)", "Add --render md|html|svg|pdf|pdfa to also render the statement as a document (not diff, trace or certificate-sourced statements) (fa-cet): md returns the Markdown inline unless --out <new-file> names a file; html, svg, pdf and pdfa write --out <new-file> (never overwriting) and are dated by the latest corroborated TimeEvidence tick known at the report's frontier, never the wall clock, so the same report renders to the same bytes whenever it is rendered; a book with no such tick renders md only (exit 4 otherwise). pdfa is checked by the built-in PDF/A-2b validator before it is written. The rendered event names the IR digest, the file digest and the tick."]
 example = "fa statement balance-sheet --for FY2026-P03 --compare FY2026-P02 --certify --book ./books/myco --json"
 
 [[verb]]
@@ -542,15 +542,39 @@ example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
 name = "sample"
-summary = "Audit sampling (plan §11.7): a reproducible uniform or monetary-unit (MUS) sample of one account's open items at one recorded coordinate, from a declared seed, and the Stringer evaluation of an MUS sample's audited values. Nothing is written."
+summary = "Audit sampling (plan §11.7): a reproducible uniform, monetary-unit (MUS) or stratified sample of one account's open items at one recorded coordinate, from a declared seed, and the Stringer evaluation of an MUS sample's audited values. A stratified sample's strata are book-value bands the auditor declares. Nothing is written."
 writes = false
-subcommands = ["uniform", "mus", "evaluate"]
-flags = ["--account", "--seed", "--size", "--interval", "--tolerable", "--expected", "--as-of", "--as-known-at", "--audited", "--confidence"]
+subcommands = ["uniform", "mus", "stratified", "evaluate"]
+flags = ["--account", "--seed", "--size", "--interval", "--tolerable", "--expected", "--as-of", "--as-known-at", "--audited", "--confidence", "--band"]
 switches = []
 events = ["sample_drawn", "sample_evaluated"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample mus --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\" --confidence 90|95|99) [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample evaluate --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\") --as-known-at <seq> [--as-of YYYY-MM-DD] --audited <audited.json|-> --confidence 90|95|99", "plan §11.12: instead of stating --interval, an MUS sample can be planned from the auditor's tolerable and expected misstatement at a confidence: interval = (tolerable - expected x expansion factor) / reliability factor, rounded down to the unit, with the AICPA expansion factors 1.5, 1.6, 1.9 and the zero-misstatement Poisson factors 2.31, 3.00, 4.61 at 90, 95, 99%. --expected is always explicit (\"0.00 <UNIT>\" when none is expected). The draw reports tolerable, expected and confidence_percent, and its replay_command restates them; evaluate plans the same interval at its --confidence. Tolerable misstatement is a parameter the auditor states, never a judgment made here.", "evaluate re-draws the MUS sample from the same --account, --seed, --interval, --as-of and a numeric --as-known-at, then takes {\"items\":[{\"item_id\",\"audited\":\"<amount> <UNIT>\"}]} with exactly one audited value for every selected item and none for any other (exit 8 otherwise, naming the missing and unexpected ids). Book values come from the sample, never from the file. The Stringer upper misstatement limit is the basic precision (interval times the Poisson factor at zero errors) plus the most likely error (top-stratum overstatement in full, and interval times each tainting) plus the incremental allowance for ranked taintings; each component is exact and rounded up to the unit, and upper_misstatement_limit_exact keeps the exact value in minor units. Overstatements are bounded; understatements are counted. The limit is a statistic for the auditor's conclusion, not the conclusion.","The population is the account's open items (fa open-items) on its normal-balance side with a positive open amount, in one unit, at --as-known-at (and, with --as-of, through that effective date). Items are <entry vid hex>:<five-digit ordinal> valued at their open amount, canonically ordered and digested (population_digest). Open items on the other side cannot carry a positive book value: they are listed in excluded, to be tested separately, never silently dropped. Fully applied items are not open. Read authority is required.", "uniform selects --size items without replacement; mus selects every item whose open amount is at least --interval (top stratum) and a systematic dollar hit every --interval from a seeded random start. Selection is a pure function of the population digest, the declared --seed and the parameters over PCG64DXSM, reproducible in Python with numpy.random.PCG64DXSM(seed) and the snippet documented on fa_lantern::sample::Pcg64Dxsm. The seed is never drawn from entropy.", "sample_digest binds the method, population digest, seed, parameters and selected item ids; it is recomputed, not a retained report certificate. replay_command repeats the draw at the same recorded sequence. Stratified (Neyman) selection is not on the CLI yet."]
+usage = ["sample uniform --account <code> --seed <u64> --size <n> [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample stratified --account <code> --seed <u64> --size <n> --band \"<amount> <UNIT>\"... [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]   (the bands are ascending upper bounds in the population's unit: b01 holds the items at most the first, each later stratum the items above the previous bound, and the last every item above the last bound; allocation is proportional, the decision card's pinned fallback, until a sampling policy is activated)", "sample mus --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\" --confidence 90|95|99) [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>]", "sample evaluate --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\") --as-known-at <seq> [--as-of YYYY-MM-DD] --audited <audited.json|-> --confidence 90|95|99", "plan §11.12: instead of stating --interval, an MUS sample can be planned from the auditor's tolerable and expected misstatement at a confidence: interval = (tolerable - expected x expansion factor) / reliability factor, rounded down to the unit, with the AICPA expansion factors 1.5, 1.6, 1.9 and the zero-misstatement Poisson factors 2.31, 3.00, 4.61 at 90, 95, 99%. --expected is always explicit (\"0.00 <UNIT>\" when none is expected). The draw reports tolerable, expected and confidence_percent, and its replay_command restates them; evaluate plans the same interval at its --confidence. Tolerable misstatement is a parameter the auditor states, never a judgment made here.", "evaluate re-draws the MUS sample from the same --account, --seed, --interval, --as-of and a numeric --as-known-at, then takes {\"items\":[{\"item_id\",\"audited\":\"<amount> <UNIT>\"}]} with exactly one audited value for every selected item and none for any other (exit 8 otherwise, naming the missing and unexpected ids). Book values come from the sample, never from the file. The Stringer upper misstatement limit is the basic precision (interval times the Poisson factor at zero errors) plus the most likely error (top-stratum overstatement in full, and interval times each tainting) plus the incremental allowance for ranked taintings; each component is exact and rounded up to the unit, and upper_misstatement_limit_exact keeps the exact value in minor units. Overstatements are bounded; understatements are counted. The limit is a statistic for the auditor's conclusion, not the conclusion.","The population is the account's open items (fa open-items) on its normal-balance side with a positive open amount, in one unit, at --as-known-at (and, with --as-of, through that effective date). Items are <entry vid hex>:<five-digit ordinal> valued at their open amount, canonically ordered and digested (population_digest). Open items on the other side cannot carry a positive book value: they are listed in excluded, to be tested separately, never silently dropped. Fully applied items are not open. Read authority is required.", "uniform selects --size items without replacement; mus selects every item whose open amount is at least --interval (top stratum) and a systematic dollar hit every --interval from a seeded random start. Selection is a pure function of the population digest, the declared --seed and the parameters over PCG64DXSM, reproducible in Python with numpy.random.PCG64DXSM(seed) and the snippet documented on fa_lantern::sample::Pcg64Dxsm. The seed is never drawn from entropy.", "sample_digest binds the method, population digest, seed, parameters and selected item ids; it is recomputed, not a retained report certificate. replay_command repeats the draw at the same recorded sequence. Stratified (Neyman) selection is not on the CLI yet."]
 example = "fa sample uniform --account 1200 --seed 20260115 --size 25 --book ./books/myco --json"
+
+[[verb]]
+name = "engagement"
+summary = "Audit engagements (plan §11.12, §0.4 decision 3): open an engagement (its kind, scope periods and the materiality parameters the auditor states, journaled once by an EngagementControl record under produce authority), list the book's engagements, or show one with every proposed adjustment and its decision."
+writes = true
+subcommands = ["open", "list", "show", "sud", "file", "complete", "carry-forward"]
+flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--grant", "--definition", "--document", "--completion-date", "--from", "--turned-around", "--corrected", "--finding"]
+switches = []
+events = ["engagement_opened", "engagements", "engagement_detail", "engagement_sud", "engagement_workpaper_filed", "engagement_documentation_completed", "engagement_carry_forward_recorded", "engagement_finding_filed"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["engagement open <id> --kind audit|review|examination|investigation|litigation --period <code>... --overall \"<amount> <UNIT>\" --performance \"<amount> <UNIT>\" --clearly-trivial \"<amount> <UNIT>\" [--report-release YYYY-MM-DD] [--key K] [--date YYYY-MM-DD]   (journals the engagement once, under produce authority; the parameters are in the book's base unit with 0 <= clearly trivial <= performance <= overall, and are stated, never judged; every scope period must exist)", "engagement list   (every engagement of the book, under read authority)", "engagement show <id>   (the engagement and each proposed adjustment: its legs, its state proposed|booked|passed, and its decision)", "engagement sud <id> [--definition <income statement>] [--definition <balance sheet>]   (plan §11.12 audit.sud, the summary of uncorrected misstatements: every passed proposal's effect had it been booked, on income, assets, liabilities and equity in the engagement's unit, legs in other units listed and never converted; the rollover (period income) and iron-curtain (period-end balance sheet) totals, which sum the same items while no prior-period engagement is carried forward; per statement line, rollover_lines over an income statement definition and iron_curtain_lines over a balance sheet definition, each one a name fa statement lint takes (income-statement and balance-sheet by default, us_gaap_small_company_* for the classified presets), refused when an account maps to no line or to several; and mechanical comparisons with the stated clearly trivial, performance and overall parameters. Materiality is the auditor's judgment, not this report's)", "engagement file <id> --finding <vid> [--key K]   (plan §11.12: puts a Lantern finding of the book (its vid from fa finding list or fa finding record) in the engagement's index, once per finding, by an EngagementControl File record under produce; after the documentation completion it is marked added_after_completion; fa engagement show lists the findings)", "engagement file <id> --document <oid> [--key K]   (plan §11.12: puts a document the book holds in the engagement's workpaper index, once per document, journaled by an EngagementControl File record under produce; after the documentation completion the filing is marked added_after_completion, and nothing filed is withdrawn)", "engagement carry-forward <id> --from <prior engagement> [--turned-around <n>]... [--corrected <n>]... [--key K]   (plan §11.12, SAB 108: journals under produce that the prior engagement's uncorrected misstatements carry into this one; the auditor states which of them turned around through this period's income and which an out-of-period correction here corrected, and the rest are still uncorrected at this period's end. The prior engagement is another of this book in the same unit whose scope periods all end before this one's begin, and each number is one of its uncorrected proposals (FA-REF-191 otherwise). The latest carry-forward governs fa engagement sud: still-uncorrected items count under the iron curtain, turned-around ones under the rollover, corrected ones under neither; carried items are in the totals and listed under carried, not attributed to statement lines)", "engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD] [--key K]   (AS 1215.15: journals the documentation completion once, at most 45 days after the report release date; the release date is the engagement's own when it was opened with one, else --report-release names it (FA-REF-190 otherwise, or when the date is outside the window or the completion is already journaled). Every proposal, decision and workpaper journaled after it is marked added_after_completion in engagement show)"]
+example = "fa engagement open FY2026-audit --kind audit --period FY2026-P01 --period FY2026-P02 --overall \"50000.00 USD\" --performance \"37500.00 USD\" --clearly-trivial \"2500.00 USD\" --book ./books/myco --json"
+
+[[verb]]
+name = "adjustment"
+summary = "Proposed audit adjustments (plan §11.12): propose a draft correcting entry in an engagement (balanced per unit on posting leaves, dated inside a scope period; it never posts), book it by naming the committed entry that makes the correction, or pass it with a registered reason. A proposal is decided once."
+writes = true
+subcommands = ["propose", "book", "pass"]
+flags = ["--engagement", "--intent", "--proposal", "--entry", "--reason", "--key", "--date", "--grant"]
+switches = []
+events = ["adjustment_proposed", "adjustment_decided"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["adjustment propose --engagement <id> --intent <entry.json|-> [--key K]   (the intent is {\"effective_date\": \"YYYY-MM-DD\", \"description\": \"...\", \"legs\": [{\"side\": \"debit|credit\", \"account\": \"<code>\", \"amount\": \"<amount> <UNIT>\"}, ...]}; proposals are numbered from 1 per engagement; the default key is the proposal's content, so the identical proposal retries exactly and different proposals never collide)", "adjustment book --engagement <id> --proposal <n> --entry E:<vid>   (needs read and produce; the standing trunk posting, recorded after the proposal and effective in its period, whose legs equal the proposal's and that books no other proposal; FA-REF-182 otherwise)", "adjustment pass --engagement <id> --proposal <n> --reason ClearlyTrivial|BelowPerformanceMateriality|ManagementDeclined|Other   (reason_codes.toml scope adjustment_pass; a decided proposal is FA-REF-181)"]
+example = "fa adjustment propose --engagement FY2026-audit --intent accrual.json --book ./books/myco --json"
 
 [[verb]]
 name = "checkpoint"
@@ -1741,6 +1765,12 @@ doc = "Account roll-forward lead schedule (plan §12.1) at one recorded frontier
 fields = ["label:string", "known_at:seq", "effective_from:date", "effective_through:date", "buckets:[roll_forward_bucket]", "rows:[roll_forward_row]", "movement_count:int"]
 
 [[event]]
+name = "equity_roll_forward"
+book = true
+doc = "The statement of changes in equity (plan §12.1, EquityRollForward) at one recorded frontier over `[effective_from, effective_through]`, from the roll-forward lead schedule of every equity, revenue and expense leaf: per unit, opening equity plus net income, issuances, distributions and other equity movements equals closing equity (tie_out_residual is zero), and the closing transfer nets to zero. Every classified equity leg it folded is listed; revenue and expense legs outside Closing entries are net income and are not."
+fields = ["label:string", "known_at:seq", "effective_from:date", "effective_through:date", "units:[equity_roll_forward_unit]", "movement_count:int", "movements:[equity_movement]"]
+
+[[event]]
 name = "aging"
 book = true
 doc = "Effective-date open-item aging (plan §5.7/§7.5) through `effective_through` at `known_at`: open items bucketed by civil days since their effective date, with separate debit and credit totals per native unit."
@@ -2123,7 +2153,7 @@ fields = ["subject:hex", "holds:[hex]"]
 [[event]]
 name = "attestation_recorded"
 book = true
-doc = "A journaled attestation vertex (`Reviewed`, `ManualAssertion`, or `RegisterEquals`, plan §9.3–§9.4) or its live holds evaluation."
+doc = "A journaled attestation vertex (`Reviewed`, `ManualAssertion`, `RegisterEquals`, `Confirmed` or `Represented`, plan §9.3–§9.4, §11.12) or its live holds evaluation."
 fields = ["attestation_vid:hex", "claim:string", "subject:hex", "signed_digest:hex?", "recorded_at:seq", "already_recorded:bool", "holds:bool?"]
 
 [[event]]
@@ -2295,13 +2325,78 @@ fields = ["procedure:string", "version:int", "claim:string", "evidence:string", 
 [[event]]
 name = "sample_drawn"
 book = true
-doc = "One reproducible audit sample (uniform or MUS) of an account's open items at `known_at` (and through `as_of` when given): the population's count, total and digest, the declared seed and parameters, the selected items in population order, the excluded opposite-side items, and the sample_digest over method, population digest, seed, parameters and selected ids. MUS rows carry their basis (top_stratum or systematic) and, for a systematic hit, the cumulative dollar it landed on. Nothing is written to the book."
-fields = ["method:string", "account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:int", "population_count:int", "population_total:amount", "population_digest:hex", "parameters:string", "size:int?", "interval:amount?", "start:amount?", "top_stratum_count:int?", "systematic_count:int?", "tolerable:amount?", "expected:amount?", "confidence_percent:int?", "selected_count:int", "selected:[sample_item]", "excluded:[sample_excluded]", "sample_digest:hex", "replay_command:string"]
+doc = "One reproducible audit sample (uniform, MUS or stratified) of an account's open items at `known_at` (and through `as_of` when given): the population's count, total and digest, the declared seed and parameters, the selected items in population order, the excluded opposite-side items, and the sample_digest over method, population digest, seed, parameters and selected ids. MUS rows carry their basis (top_stratum or systematic) and, for a systematic hit, the cumulative dollar it landed on. A stratified sample's population digest binds each item's declared band; it lists every declared stratum (empty ones included) with its bounds, population, standard deviation and allocated size, the allocation used (neyman, or proportional when the decision card took its pinned fallback), the card's reason, and the canonical decision card and its digest; its parameters bind the bands, the allocation and every stratum's counts. Nothing is written to the book."
+fields = ["method:string", "account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:int", "population_count:int", "population_total:amount", "population_digest:hex", "parameters:string", "size:int?", "interval:amount?", "start:amount?", "top_stratum_count:int?", "systematic_count:int?", "tolerable:amount?", "expected:amount?", "confidence_percent:int?", "selected_count:int", "selected:[sample_item]", "excluded:[sample_excluded]", "sample_digest:hex", "replay_command:string", "allocation:string?", "strata:[sample_stratum]?", "decision_reason:string?", "decision_card:hex?", "decision_card_digest:hex?"]
 
 [[shape]]
 name = "sample_item"
-doc = "One selected population item: its id (entry vid hex and five-digit leg ordinal), entry and ordinal, open amount as book value, and for MUS its selection basis and the cumulative dollar hit (null for top-stratum items and uniform samples)."
-fields = ["item_id:string", "entry:hex", "ordinal:int", "book_value:amount", "basis:string?", "hit:amount?"]
+doc = "One selected population item: its id (entry vid hex and five-digit leg ordinal), entry and ordinal, open amount as book value, for MUS its selection basis and the cumulative dollar hit (null for top-stratum items and uniform samples), and for a stratified sample its declared stratum."
+fields = ["item_id:string", "entry:hex", "ordinal:int", "book_value:amount", "basis:string?", "hit:amount?", "stratum:string?"]
+
+[[shape]]
+name = "sample_stratum"
+doc = "One declared stratum of a stratified sample: its name (b01 upward, in band order), the bound it lies above (null for b01) and at most (null for the last), its population count, the standard deviation of its book values (integer square root of the exact population variance; null when empty), and the sample size allocated to it."
+fields = ["stratum:string", "above:amount?", "at_most:amount?", "population_count:int", "std_dev:amount?", "allocated:int"]
+
+[[event]]
+name = "engagement_opened"
+book = true
+doc = "An engagement was journaled by an EngagementControl Open record (or the identical engagement was already open: then nothing was written). Its materiality parameters are stated by the auditor, never judged by the system."
+fields = ["engagement:engagement_summary", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "engagements"
+book = true
+doc = "Every engagement of the book, by opening sequence."
+fields = ["engagements:[engagement_summary]"]
+
+[[event]]
+name = "engagement_detail"
+book = true
+doc = "One engagement and every proposed adjustment it journaled, by number, each with its legs, state and decision; its workpaper index in filing order; its documentation completion (null until journaled); every carry-forward of a prior engagement's misstatements in journal order (the last governs the summary); and the Lantern findings filed in its index in filing order. Every proposal, decision, workpaper, carry-forward and finding journaled after the completion is marked added_after_completion (AS 1215.16)."
+fields = ["engagement:engagement_summary", "proposals:[proposal_row]", "workpapers:[engagement_workpaper]", "documentation:documentation_completion?", "carry_forwards:[engagement_carry_forward]", "findings:[engagement_finding]"]
+
+[[event]]
+name = "engagement_workpaper_filed"
+book = true
+doc = "A document the book holds was filed in the engagement's workpaper index by an EngagementControl File record (or the same filing was already recorded: then nothing was written). A document is filed once; after the documentation completion the filing is an addition after completion and says so."
+fields = ["engagement:string", "document:hex", "control_entry:hex", "recorded_at:seq", "added_after_completion:bool", "already_recorded:bool"]
+
+[[event]]
+name = "engagement_documentation_completed"
+book = true
+doc = "The engagement's documentation completion was journaled by an EngagementControl Complete record, once, within 45 days after the report release date (AS 1215.15), or the identical completion was already recorded. Every later record of the engagement is an addition after completion."
+fields = ["engagement:string", "documentation:documentation_completion", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "engagement_finding_filed"
+book = true
+doc = "A Lantern finding of the book was filed in the engagement's index by an EngagementControl File record (plan §11.12), or the same filing was already recorded; filed after the documentation completion, it is marked added_after_completion (AS 1215.16)."
+fields = ["engagement:string", "finding:hex", "control_entry:hex", "recorded_at:seq", "added_after_completion:bool", "already_recorded:bool"]
+
+[[event]]
+name = "engagement_carry_forward_recorded"
+book = true
+doc = "An EngagementControl CarryForward record journaled that the prior engagement's uncorrected misstatements carry into this one (plan §11.12, SAB 108), with the prior proposals the auditor states turned around through this period's income and those an out-of-period correction here corrected; or the identical carry-forward was already recorded. The latest carry-forward governs fa engagement sud."
+fields = ["engagement:string", "prior:string", "turned_around:[int]", "corrected:[int]", "control_entry:hex", "recorded_at:seq", "added_after_completion:bool", "already_recorded:bool"]
+
+[[event]]
+name = "engagement_sud"
+book = true
+doc = "The summary of uncorrected misstatements of one engagement (plan §11.12 audit.sud): the effect of each passed proposal, and of each booked one whose entry was since reversed or replaced, had it been booked and stood, each out-of-period correction in scope (out_of_period: a standing Adjusting entry posted with prior_period_error, plan §8.2, which misstates this period's income), each prior engagement item the latest carry-forward brings (carried_from names the prior engagement, null without one, and prior_period_carry_forward says whether there is one; carried lists its uncorrected proposals with what became of them: Uncorrected at this period's end, TurnedAround through this period's income, or Corrected here by an out-of-period correction), the rollover total (the proposals, the out-of-period corrections and the turned-around items) and the iron-curtain total (the proposals and the still-uncorrected carried items: an out-of-period correction leaves the period-end balance sheet corrected), and mechanical comparisons with the stated parameters under either method. The materiality judgment is the auditor's, not this report's. rollover_lines attributes the uncorrected proposals and the out-of-period corrections, reversed, to the lines of an income statement definition and iron_curtain_lines the uncorrected proposals to those of a balance sheet definition (--definition; the registered income-statement and balance-sheet by default), each line under its own sign and every formula line computed as the statement computes it; carried items are in the totals, not on the lines."
+fields = ["engagement:engagement_summary", "unit:string", "items:[sud_item]", "out_of_period:[sud_out_of_period]", "carried_from:string?", "carried:[sud_carried]", "rollover_income:amount", "iron_curtain:statement_effect", "prior_period_carry_forward:bool", "exceeds_performance:bool", "exceeds_overall:bool", "rollover_lines:sud_statement", "iron_curtain_lines:sud_statement"]
+
+[[event]]
+name = "adjustment_proposed"
+book = true
+doc = "A draft correcting entry was journaled in an engagement by an EngagementControl Propose record (or the identical proposal was already recorded). It never posts; it is booked or passed later, once."
+fields = ["proposal:proposal_row", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "adjustment_decided"
+book = true
+doc = "A proposed adjustment was booked (the committed entry that made the correction, compared leg for leg) or passed (with its registered reason) by an EngagementControl record, or the identical decision was already recorded."
+fields = ["proposal:proposal_row", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
 name = "sample_evaluated"
@@ -2313,6 +2408,86 @@ fields = ["account:string", "unit:string", "as_of:date?", "known_at:seq", "seed:
 name = "sample_misstatement"
 doc = "One overstated sample item: book and audited values, the overstatement, whether it is in the top stratum, and for the other items the exact tainting (overstatement over book value, as numerator/denominator) and its rank among the taintings (1 is the largest)."
 fields = ["item_id:string", "book_value:amount", "audited_value:amount", "overstatement:amount", "top_stratum:bool", "tainting:string?", "rank:int?"]
+
+[[shape]]
+name = "engagement_summary"
+doc = "One engagement: its id and vertex, kind, firm principal, scope periods, the stated materiality parameters in its unit, the report release day, state, who opened it and when, its next proposal number, and how many proposals are proposed, booked and passed."
+fields = ["engagement:string", "vid:hex", "kind:string", "firm_principal:hex", "scope_periods:[string]", "unit:string", "overall:amount", "performance:amount", "clearly_trivial:amount", "report_release:date?", "state:string", "opened_at:seq", "opened_by:hex", "next_proposal:int", "proposed:int", "booked:int", "passed:int"]
+
+[[shape]]
+name = "statement_effect"
+doc = "What booking a correction would change, in one unit: net income (positive raises it), assets (debits less credits), liabilities and equity (credits less debits)."
+fields = ["income:amount", "assets:amount", "liabilities:amount", "equity:amount"]
+
+[[shape]]
+name = "sud_carried"
+doc = "One prior engagement's uncorrected proposal carried into the summary (SAB 108): its number in the prior engagement and its date; what became of it as the latest carry-forward states (Uncorrected, TurnedAround or Corrected); what correcting it would change now in the engagement's unit (an uncorrected item at this period's end, its prior income in opening retained earnings; a turned-around one in this period's income against opening retained earnings; a corrected one nothing); whether every line is within the stated clearly trivial threshold; and the other units its legs carry."
+fields = ["prior_number:int", "effective_date:date", "carried:string", "effect:statement_effect", "clearly_trivial:bool", "other_units:[string]"]
+
+[[shape]]
+name = "engagement_finding"
+doc = "One Lantern finding in an engagement's index: the finding's vid, its File record, sequence and principal, and whether it was filed after the documentation completion (AS 1215.16)."
+fields = ["finding:hex", "record:hex", "filed_at:seq", "filed_by:hex", "added_after_completion:bool"]
+
+[[shape]]
+name = "engagement_carry_forward"
+doc = "One journaled carry-forward of an engagement: the prior engagement, the prior proposals stated turned around and corrected, its record, sequence and principal, and whether it was recorded after the documentation completion."
+fields = ["prior:string", "turned_around:[int]", "corrected:[int]", "record:hex", "recorded_at:seq", "recorded_by:hex", "added_after_completion:bool"]
+
+[[shape]]
+name = "sud_out_of_period"
+doc = "One out-of-period correction in the summary of uncorrected misstatements (plan §8.2, SAB 108): the standing Adjusting entry that corrected an earlier period's error in this period, its date, the period the error belongs to, what moving it out of this period's income would change (its income effect reversed, against opening retained earnings in equity), whether every line is within the stated clearly trivial threshold, and the other units its legs carry (listed, never converted)."
+fields = ["entry:hex", "effective_date:date", "relates_to:string", "effect:statement_effect", "clearly_trivial:bool", "other_units:[string]"]
+
+[[shape]]
+name = "sud_item"
+doc = "One uncorrected proposal in the summary of uncorrected misstatements: its number and date; why it is uncorrected, either the registered reason it was passed or, for a booking whose entry was since reversed or replaced, the booked entry and the entry that superseded it; its statement effect in the engagement's unit; whether every line is within the stated clearly trivial threshold; and the other units its legs carry (listed, never converted)."
+fields = ["number:int", "effective_date:date", "reason:string?", "booked_entry:hex?", "superseded_by:hex?", "effect:statement_effect", "clearly_trivial:bool", "other_units:[string]"]
+
+[[shape]]
+name = "sud_statement"
+doc = "The summary of uncorrected misstatements over one statement definition's lines (plan §11.12, per statement line): the definition and its title, and every line in order with the amount it would change by had every uncorrected proposal been booked, in the engagement's unit."
+fields = ["definition:string", "title:string", "lines:[sud_line]"]
+
+[[shape]]
+name = "sud_line"
+doc = "One statement line's share of the uncorrected misstatements, under the line's own sign (a debit line rises with debits, a credit line with credits); a formula line adds and subtracts the lines it names."
+fields = ["code:string", "label:string", "amount:amount"]
+
+[[shape]]
+name = "proposal_leg"
+doc = "One leg of a proposed correcting entry: side, the account's code and vertex, and the amount."
+fields = ["side:string", "account:string?", "account_vid:hex", "amount:amount"]
+
+[[shape]]
+name = "proposal_decision"
+doc = "How a proposal was decided: book (the committed entry that made the correction) or pass (the registered reason it was left uncorrected), with the record, its sequence and who decided. superseded_by names the entry that has since reversed or replaced a booked entry: the decision stays on the record, and the proposal is uncorrected again."
+fields = ["kind:string", "entry:hex?", "reason:string?", "record:hex", "recorded_at:seq", "decided_by:hex", "superseded_by:hex?", "added_after_completion:bool"]
+
+[[shape]]
+name = "proposal_row"
+doc = "One proposed adjustment: its engagement and number, vertex, the effective date and legs of the draft correcting entry (which never posts), the Propose record, its sequence and principal, its state (proposed, booked or passed), and its decision."
+fields = ["engagement:string", "number:int", "vid:hex", "effective_date:date", "legs:[proposal_leg]", "record:hex", "proposed_at:seq", "proposed_by:hex", "state:string", "decision:proposal_decision?", "added_after_completion:bool"]
+
+[[shape]]
+name = "engagement_workpaper"
+doc = "One document in an engagement's workpaper index: its oid, the File record, its sequence and principal, whether it was filed after the documentation completion (AS 1215.16), and the Confirmed or Represented attestation over it, if any."
+fields = ["document:hex", "record:hex", "filed_at:seq", "filed_by:hex", "added_after_completion:bool", "confirmation:workpaper_confirmation?", "representation:workpaper_representation?"]
+
+[[shape]]
+name = "workpaper_confirmation"
+doc = "A confirmation in the workpaper index (AS 2310): the Confirmed attestation, the confirming party, the balance and date it confirmed, who attested it, who received the confirmation document (its custody receipt), and whether it is audit-grade for this engagement: true only when the engagement's firm principal received it."
+fields = ["attestation:hex", "by_party:hex", "balance:amount", "as_of:date", "attested_by:hex", "received_by:hex?", "audit_grade:bool"]
+
+[[shape]]
+name = "workpaper_representation"
+doc = "A management representation letter in the workpaper index (AS 2805): the Represented attestation, how many claims it represents (each sealed under the book key), as of when, and who attested it."
+fields = ["attestation:hex", "claims:int", "as_of:date", "attested_by:hex"]
+
+[[shape]]
+name = "documentation_completion"
+doc = "An engagement's journaled documentation completion (AS 1215.15): the report release date, the completion date at most 45 days after it, and its Complete record, sequence and principal."
+fields = ["report_release:date", "completion_date:date", "record:hex", "recorded_at:seq", "completed_by:hex"]
 
 [[shape]]
 name = "sample_excluded"
@@ -2605,6 +2780,16 @@ fields = ["class:string", "reason_code:string", "rule_digest:hex?"]
 name = "roll_forward_row"
 doc = "One account/unit row in a roll-forward lead schedule: `opening` plus `activity` aligned with `buckets` equals `closing`."
 fields = ["account:string", "account_vid:hex", "name:string", "type:string", "unit:string", "opening:amount", "activity:[amount]", "net_change:amount", "closing:amount"]
+
+[[shape]]
+name = "equity_roll_forward_unit"
+doc = "One unit's statement of changes in equity, credit-normal (credits minus debits): opening contributed equity (equity accounts) and unclosed earnings (revenue and expense not yet closed), their total, net income, issuances, distributions, other equity movements, the closing transfer's net (zero), the net change and the closing stocks; tie_out_residual = opening total + net change - closing total, which is zero."
+fields = ["unit:string", "opening_contributed_equity:amount", "opening_unclosed_earnings:amount", "opening_total_equity:amount", "net_income:amount", "issuances:amount", "distributions:amount", "other_equity_movements:amount", "closing_transfers_net:amount", "net_equity_change:amount", "closing_contributed_equity:amount", "closing_unclosed_earnings:amount", "closing_total_equity:amount", "tie_out_residual:amount"]
+
+[[shape]]
+name = "equity_movement"
+doc = "One classified equity leg of a statement of changes in equity: its entry digest and leg index, recorded sequence, effective date, entry class, kind (issuance or distribution from the named accounts, other_equity for any other equity leg, closing_transfer for every leg of a Closing entry), account, side and amount."
+fields = ["entry_digest:hex", "leg_index:int", "recorded_at:seq", "effective_date:date", "class:string", "kind:string", "account:string", "side:string", "amount:amount"]
 
 [[shape]]
 name = "aging_band"
@@ -3041,7 +3226,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--budget"]
 
@@ -3543,7 +3728,7 @@ name = "post"
 verb = "post"
 subcommands = []
 positionals = []
-flags = ["--intent", "--evidence", "--event", "--balancing", "--timeout-ns", "--reverse-on", "--draft", "--scenario"]
+flags = ["--intent", "--evidence", "--event", "--balancing", "--timeout-ns", "--reverse-on", "--prior-period-error", "--draft", "--scenario"]
 stdin_property = "intent"
 stdin_kind = "object"
 stdin_via = "--intent"
@@ -4102,10 +4287,10 @@ name = "statement"
 verb = "statement"
 subcommands = []
 positionals = ["name"]
-flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--as-issued-to", "--as-reported-in", "--render"]
+flags = ["--for", "--compare", "--definition", "--before", "--after", "--max-publications", "--known-at", "--as-known-at", "--branch", "--before-certificate", "--after-certificate", "--from-diff", "--as-issued-to", "--as-reported-in", "--render", "--from", "--to", "--issuance", "--distribution", "--unit", "--label"]
 switches = ["--certify", "--as-originally-reported"]
 required = ["name"]
-dont = ["Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Use name lint with definition (balance-sheet, income-statement, us_gaap_small_company_balance_sheet or us_gaap_small_company_income_statement) and optionally as_known_at to check whether the definition partitions the chart (FA-INV-04): clean, unmapped and multiply mapped leaves. Lint takes no for; findings are data, not an error.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate, including diff and trace, and replay it with fa_read_replay. Certified comparisons and traces require read and produce on the launch capability. certificate_out is forbidden; certificate bytes and oid are returned inline.", "To compare two statements already certified (for example as reported then and as stated now), use name diff with before_certificate and after_certificate set to their C:<oid> values and for (plus compare) naming the statement they certify; the certificates fix both frontiers, so omit before, after and known_at, and a for, compare or definition they do not answer is refused. To attribute a saved comparison to each intermediate publication, use name trace with from_diff set to its C:<oid>, the same for, and certify: true.", "Use render: md to also receive the statement as Markdown inline (a rendered item after the report; not for diff or trace). html, svg, pdf and pdfa write files and are host-only: MCP exposes no out host-file write."]
+dont = ["name equity-roll-forward is the statement of changes in equity over inclusive from and to dates, not a period code: name the equity accounts that carry owner issuances and distributions in issuance and distribution (every other equity leg is another equity movement; nothing is inferred from names). It takes none of for, compare, definition or certify.", "Use name balance-sheet or income-statement (or diff|trace with definition and before), for a fiscal period code, and optionally compare for another period. Both columns share one known-at snapshot.", "Use name lint with definition (balance-sheet, income-statement, us_gaap_small_company_balance_sheet or us_gaap_small_company_income_statement) and optionally as_known_at to check whether the definition partitions the chart (FA-INV-04): clean, unmapped and multiply mapped leaves. Lint takes no for; findings are data, not an error.", "Keep native units separate: no implicit FX, consolidation or GAAP conformity is claimed. A balance sheet includes opening history; an income statement shows selected-period activity.", "Use certify: true for a retained certificate, including diff and trace, and replay it with fa_read_replay. Certified comparisons and traces require read and produce on the launch capability. certificate_out is forbidden; certificate bytes and oid are returned inline.", "To compare two statements already certified (for example as reported then and as stated now), use name diff with before_certificate and after_certificate set to their C:<oid> values and for (plus compare) naming the statement they certify; the certificates fix both frontiers, so omit before, after and known_at, and a for, compare or definition they do not answer is refused. To attribute a saved comparison to each intermediate publication, use name trace with from_diff set to its C:<oid>, the same for, and certify: true.", "Use render: md to also receive the statement as Markdown inline (a rendered item after the report; not for diff or trace). html, svg, pdf and pdfa write files and are host-only: MCP exposes no out host-file write."]
 mistakes = ["Omitting for on a statement (every name except lint), passing multiple for or compare periods, or using a date where a period code is required.", "Supplying known_at and as_known_at together: they name the same selector.", "Treating a later-period comparative as a different known-at snapshot; use a separate statement call for that question.", "Passing a file path as a certificate input: MCP accepts retained C:<oid> values only."]
 
 [[mcp.tool]]
@@ -4280,7 +4465,7 @@ verb = "document"
 subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list"]
 selector = "action"
 positionals = ["target?", "arg?"]
-flags = ["--chunk", "--to", "--authority", "--subject", "--through", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind"]
+flags = ["--chunk", "--to", "--authority", "--subject", "--through", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind", "--party", "--balance", "--as-of", "--claim"]
 switches = ["--dry-run"]
 stdin_property = "plan"
 stdin_kind = "string"
@@ -4391,7 +4576,7 @@ mistakes = ["Passing a date as fiscal_year: it is a year such as 2026, numbered 
 cluster = "fa.audit"
 name = "sample"
 verb = "sample"
-subcommands = ["uniform", "mus", "evaluate"]
+subcommands = ["uniform", "mus", "stratified", "evaluate"]
 selector = "method"
 positionals = []
 stdin_property = "audited"
@@ -4399,7 +4584,36 @@ stdin_kind = "object"
 stdin_via = "--audited"
 required = ["--account", "--seed"]
 dont = ["Don't pick or change a seed to get a different sample: the seed is declared before drawing and recorded with the sample, and an examiner reproduces the draw from it.", "Don't treat excluded items as tested: they are the account's opposite-side open items, outside the positive-value population, and need their own procedure.", "Don't present upper_misstatement_limit as a conclusion: it is the Stringer statistic; comparing it with tolerable misstatement is the auditor's judgment.", "Don't supply book values to evaluate: they come from the re-drawn sample; audited carries only item_id and audited for every selected item."]
-mistakes = ["Passing --interval as a bare number: it is an amount with its unit, \"500.00 USD\", in the population's unit.", "Planning with tolerable but without an explicit expected (\"0.00 USD\" when none is expected) and confidence, or passing interval together with tolerable.", "Asking for a uniform size larger than population_count, or passing size to mus or interval to uniform.", "Evaluating without the sample's numeric as_known_at, or with audited values for only some selected items (exit 8 names the missing and unexpected ids)."]
+mistakes = ["Passing --interval as a bare number: it is an amount with its unit, \"500.00 USD\", in the population's unit.", "Planning with tolerable but without an explicit expected (\"0.00 USD\" when none is expected) and confidence, or passing interval together with tolerable.", "Asking for a uniform size larger than population_count, or passing size to mus or interval to uniform.", "Evaluating without the sample's numeric as_known_at, or with audited values for only some selected items (exit 8 names the missing and unexpected ids).", "Passing a stratified sample's bands as one comma-joined string, unsorted, or as bare numbers: band is a list of amounts with their unit, strictly ascending upper bounds (\"1000.00 USD\", \"10000.00 USD\").", "Asking a stratified sample for fewer items than non-empty strata: every non-empty stratum takes at least one."]
+
+[[mcp.tool]]
+cluster = "fa.audit"
+name = "engagement"
+verb = "engagement"
+subcommands = ["open", "list", "show", "sud", "file", "complete", "carry-forward"]
+selector = "action"
+positionals = ["engagement?"]
+flags = ["--kind", "--period", "--overall", "--performance", "--clearly-trivial", "--report-release", "--key", "--date", "--definition", "--document", "--completion-date", "--from", "--turned-around", "--corrected", "--finding"]
+switches = []
+required = []
+dont = ["Opening an engagement needs produce and a Human launch profile: an Agent-profile session journals no trunk record (FA-REF-013). Reads need read.", "Don't treat the materiality parameters as conclusions: overall, performance and clearly trivial are the auditor's stated parameters; the system compares against them mechanically and never judges materiality.", "Don't reopen an engagement to change its parameters: its profile is immutable; open a new engagement under another id."]
+mistakes = ["Giving a parameter as a bare number: amounts carry their unit (\"50000.00 USD\") in the book's base unit.", "Stating clearly trivial above performance, or performance above overall (refused, exit 2).", "Naming a scope period the book does not have: create the fiscal year's periods first."]
+
+[[mcp.tool]]
+cluster = "fa.audit"
+name = "adjustment"
+verb = "adjustment"
+subcommands = ["propose", "book", "pass"]
+selector = "action"
+positionals = []
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+flags = ["--engagement", "--intent", "--proposal", "--entry", "--reason", "--key", "--date"]
+switches = []
+required = ["--engagement"]
+dont = ["Don't expect a proposal to post: it is a draft correcting entry journaled in the engagement; the client books it with its own posting, and booking then names that committed entry.", "Don't decide a proposal twice: booked or passed is final (FA-REF-181); propose a new adjustment if the correction must change.", "Don't present passed adjustments as immaterial by themselves: the reason records the stated basis; the evaluation against materiality is the auditor's."]
+mistakes = ["Booking with an entry whose legs differ from the proposal's (FA-REF-182): book exactly the correction that was proposed, or pass it.", "Proposing outside the engagement's scope periods (FA-REF-183).", "Passing a reason name over MCP: reason is the adjustment_pass code (1 ClearlyTrivial, 2 BelowPerformanceMateriality, 3 ManagementDeclined, 4 Other)."]
 
 # Intrinsic fiscal-year closing (fa-4o0).
 [[event]]
@@ -4948,6 +5162,29 @@ ops = ["read"]
 verbs = ["produce"]
 ops = ["read", "produce"]
 
+# An engagement's records are the auditor's work product (fa-zgn).
+[[bound]]
+verbs = ["engagement"]
+subcommands = ["open", "file", "complete", "carry-forward"]
+ops = ["produce"]
+
+[[bound]]
+verbs = ["engagement"]
+subcommands = ["list", "show", "sud"]
+ops = ["read"]
+
+# Booking reads the entry it names (legs, date, class, supersession), so it
+# needs read as well as produce; propose and pass read nothing they do not own.
+[[bound]]
+verbs = ["adjustment"]
+subcommands = ["book"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["adjustment"]
+subcommands = ["propose", "pass"]
+ops = ["produce"]
+
 [[bound]]
 verbs = ["bank"]
 subcommands = ["import"]
@@ -5034,6 +5271,20 @@ verbs = ["document"]
 subcommands = ["attest"]
 args = ["manual"]
 ops = ["post"]
+
+# A confirmation is the auditor's statement (produce); a representation is
+# management's (approve, which no Agent holds) (fa-zgn).
+[[bound]]
+verbs = ["document"]
+subcommands = ["attest"]
+args = ["confirmed"]
+ops = ["produce"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["attest"]
+args = ["represented"]
+ops = ["approve"]
 
 [[bound]]
 verbs = ["document"]

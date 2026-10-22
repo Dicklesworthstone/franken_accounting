@@ -283,6 +283,25 @@ pub mod code {
     /// A case's disclosure is not a reviewed Disclosure document of this
     /// book (plan §8.3, §9.3).
     pub const CASE_DISCLOSURE: &str = "FA-REF-179";
+    /// No engagement with this id in the book.
+    pub const ENGAGEMENT_UNKNOWN: &str = "FA-REF-180";
+    /// A proposed adjustment already booked or passed is decided again.
+    pub const ADJUSTMENT_DECIDED: &str = "FA-REF-181";
+    /// The entry named as booking a proposal does not post its legs.
+    pub const BOOKED_ENTRY_DIFFERS: &str = "FA-REF-182";
+    /// A proposed adjustment dated outside the engagement's scope periods.
+    pub const ADJUSTMENT_OUT_OF_SCOPE: &str = "FA-REF-183";
+    /// No proposal with this number in the engagement.
+    pub const ADJUSTMENT_UNKNOWN: &str = "FA-REF-184";
+    /// An engagement's documentation completion is not admissible: already
+    /// journaled, no report release date, or a completion date outside the
+    /// 45 days after it (AS 1215.15; bead fa-zgn).
+    pub const DOCUMENTATION_COMPLETION: &str = "FA-REF-190";
+    /// A carry-forward names no admissible prior engagement: itself, another
+    /// unit, a scope that does not end before this one begins, or a proposal
+    /// that is not one of its uncorrected misstatements (SAB 108; bead
+    /// fa-zgn).
+    pub const CARRY_FORWARD: &str = "FA-REF-191";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

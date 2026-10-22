@@ -4967,6 +4967,263 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
     Ok(())
 }
 
+/// fa-k1ts: a stratified sample over book-value bands the auditor declares.
+/// Every declared stratum is listed (an empty one included), allocation is
+/// the decision card's pinned fallback (proportional) with its reason, the
+/// population digest binds the bands, the parameters bind the allocation
+/// and every stratum's counts, and the draw is reproducible from its replay
+/// command. Malformed bands are usage errors.
+#[test]
+fn a_stratified_sample_draws_over_declared_bands_with_its_allocation_bound() -> std::io::Result<()>
+{
+    let dir = tmp("stratified")?;
+    let book = dir.join("book");
+    assert_eq!(
+        fa(Some(&book), &["book", "create", "--name", "Strata Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"}]}"#,
+    );
+    assert_eq!(fa(Some(&book), &["chart", "import", &chart]).0, 0);
+    assert_eq!(
+        fa(Some(&book), &["period", "create", "--fiscal-year", "2026"]).0,
+        0
+    );
+    assert_eq!(fa(Some(&book), &["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    for (key, amount) in [
+        ("inv-1", "100.00"),
+        ("inv-2", "250.00"),
+        ("inv-3", "50.00"),
+        ("inv-4", "700.00"),
+    ] {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","description":"{key}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"1200","amount":"{amount} USD"}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        let (code, out, err) = fa(
+            Some(&book),
+            &["post", "--intent", &intent, "--evidence", &ev, "--json"],
+        );
+        assert_eq!(code, 0, "{out}\n{err}");
+    }
+    let run = |args: &[&str]| {
+        let mut argv = vec!["sample"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    // b01: at most 100.00 (100.00 and 50.00); b02: above 100.00, at most
+    // 500.00 (250.00); b03: above 500.00 (700.00).
+    let stratified = [
+        "stratified",
+        "--account",
+        "1200",
+        "--seed",
+        "11",
+        "--size",
+        "4",
+        "--band",
+        "100.00 USD",
+        "--band",
+        "500.00 USD",
+    ];
+    let (code, out, err) = run(&stratified);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let data = doc(&out);
+    assert_eq!(text(&data, "method"), "stratified");
+    assert_eq!(text(&data, "allocation"), "proportional");
+    assert_eq!(text(&data, "decision_reason"), "policy_absent");
+    assert_eq!(data.get("population_count"), Some(&Json::Int(4)), "{out}");
+    let strata: Vec<(String, Json, Json, Json, Json)> = arr(&data, "strata")
+        .iter()
+        .map(|row| {
+            (
+                text(row, "stratum").to_string(),
+                row.get("above").cloned().unwrap_or(Json::Null),
+                row.get("at_most").cloned().unwrap_or(Json::Null),
+                row.get("population_count").cloned().unwrap_or(Json::Null),
+                row.get("allocated").cloned().unwrap_or(Json::Null),
+            )
+        })
+        .collect();
+    let usd = |amount: &str| Json::Str(format!("{amount} USD"));
+    assert_eq!(
+        strata,
+        [
+            (
+                "b01".to_string(),
+                Json::Null,
+                usd("100.00"),
+                Json::Int(2),
+                Json::Int(2)
+            ),
+            (
+                "b02".to_string(),
+                usd("100.00"),
+                usd("500.00"),
+                Json::Int(1),
+                Json::Int(1)
+            ),
+            (
+                "b03".to_string(),
+                usd("500.00"),
+                Json::Null,
+                Json::Int(1),
+                Json::Int(1)
+            ),
+        ],
+        "{out}"
+    );
+    // Each selected item carries its stratum, and each stratum's count is
+    // its allocation.
+    let selected = arr(&data, "selected");
+    assert_eq!(selected.len(), 4, "{out}");
+    let mut per: std::collections::BTreeMap<String, i128> = std::collections::BTreeMap::new();
+    for item in selected {
+        *per.entry(text(item, "stratum").to_string()).or_default() += 1;
+    }
+    assert_eq!(
+        per.into_iter().collect::<Vec<_>>(),
+        [
+            ("b01".to_string(), 2),
+            ("b02".to_string(), 1),
+            ("b03".to_string(), 1)
+        ]
+    );
+    assert_eq!(
+        text(&data, "parameters"),
+        "total_sample_size=4;basis=book_value_bands:100.00 USD,500.00 USD;allocation=proportional;policy_epoch=none;stratum=b01:2:2;stratum=b02:1:1;stratum=b03:1:1"
+    );
+    assert_eq!(text(&data, "decision_card_digest").len(), 64);
+    // Reproducible, and replayed by its own command at its sequence.
+    assert_eq!(run(&stratified).1, out);
+    let known_at = data.get("known_at").cloned().unwrap_or(Json::Null);
+    let Json::Int(known_at) = known_at else {
+        panic!("{out}");
+    };
+    assert_eq!(
+        text(&data, "replay_command"),
+        format!(
+            "fa sample stratified --account 1200 --seed 11 --size 4 --band \"100.00 USD\" --band \"500.00 USD\" --as-known-at {known_at}"
+        )
+    );
+    let known_at = known_at.to_string();
+    let mut replay = stratified.to_vec();
+    replay.extend(["--as-known-at", known_at.as_str()]);
+    assert_eq!(run(&replay).1, out);
+    // The population digest binds the bands: the uniform population over
+    // the same items digests differently.
+    let (_, uniform, _) = run(&[
+        "uniform",
+        "--account",
+        "1200",
+        "--seed",
+        "11",
+        "--size",
+        "4",
+    ]);
+    assert_ne!(
+        text(&doc(&uniform), "population_digest"),
+        text(&data, "population_digest")
+    );
+    // An empty declared stratum is listed with nothing to allocate.
+    let (code, out, err) = run(&[
+        "stratified",
+        "--account",
+        "1200",
+        "--seed",
+        "11",
+        "--size",
+        "3",
+        "--band",
+        "100.00 USD",
+        "--band",
+        "500.00 USD",
+        "--band",
+        "600.00 USD",
+    ]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let data = doc(&out);
+    let empty = &arr(&data, "strata")[2];
+    assert_eq!(text(empty, "stratum"), "b03");
+    assert_eq!(empty.get("population_count"), Some(&Json::Int(0)), "{out}");
+    assert_eq!(empty.get("allocated"), Some(&Json::Int(0)), "{out}");
+    assert_eq!(empty.get("std_dev"), Some(&Json::Null), "{out}");
+    // Usage errors: no band, bands not ascending, a band in another unit, a
+    // band on a uniform sample, and fewer items than non-empty strata.
+    for args in [
+        vec![
+            "stratified",
+            "--account",
+            "1200",
+            "--seed",
+            "1",
+            "--size",
+            "3",
+        ],
+        vec![
+            "stratified",
+            "--account",
+            "1200",
+            "--seed",
+            "1",
+            "--size",
+            "3",
+            "--band",
+            "500.00 USD",
+            "--band",
+            "100.00 USD",
+        ],
+        vec![
+            "stratified",
+            "--account",
+            "1200",
+            "--seed",
+            "1",
+            "--size",
+            "3",
+            "--band",
+            "100.00 EUR",
+        ],
+        vec![
+            "uniform",
+            "--account",
+            "1200",
+            "--seed",
+            "1",
+            "--size",
+            "3",
+            "--band",
+            "100.00 USD",
+        ],
+        vec![
+            "stratified",
+            "--account",
+            "1200",
+            "--seed",
+            "1",
+            "--size",
+            "2",
+            "--band",
+            "100.00 USD",
+            "--band",
+            "500.00 USD",
+        ],
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+        assert_eq!(text(&doc(&out), "class"), "usage", "{args:?}: {out}");
+    }
+    Ok(())
+}
+
 #[test]
 fn reversals_by_target_and_idempotency_conflicts_follow_the_contract() -> std::io::Result<()> {
     let dir = tmp("reversal")?;
@@ -7178,6 +7435,129 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "list"]).0, 0);
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
+    // Audit engagements (fa-zgn): open, propose, pass, list and show.
+    assert_eq!(
+        run(
+            true,
+            &[
+                "engagement",
+                "open",
+                "events-engagement",
+                "--kind",
+                "audit",
+                "--period",
+                "FY2026-P03",
+                "--overall",
+                "100.00 USD",
+                "--performance",
+                "75.00 USD",
+                "--clearly-trivial",
+                "5.00 USD"
+            ]
+        )
+        .0,
+        0
+    );
+    let adjustment = write(
+        &dir,
+        "adjustment.json",
+        r#"{"effective_date":"2026-03-20","description":"Unrecorded rent","legs":[{"side":"debit","account":"6000","amount":"5.00 USD"},{"side":"credit","account":"1000","amount":"5.00 USD"}]}"#,
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "adjustment",
+                "propose",
+                "--engagement",
+                "events-engagement",
+                "--intent",
+                &adjustment
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "adjustment",
+                "pass",
+                "--engagement",
+                "events-engagement",
+                "--proposal",
+                "1",
+                "--reason",
+                "ClearlyTrivial"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["engagement", "list"]).0, 0);
+    assert_eq!(run(true, &["engagement", "show", "events-engagement"]).0, 0);
+    assert_eq!(run(true, &["engagement", "sud", "events-engagement"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &["engagement", "file", "events-engagement", "--document", &ev]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "engagement",
+                "complete",
+                "events-engagement",
+                "--report-release",
+                "2026-04-15",
+                "--completion-date",
+                "2026-04-30"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "engagement",
+                "open",
+                "events-next",
+                "--kind",
+                "audit",
+                "--period",
+                "FY2026-P04",
+                "--overall",
+                "100.00 USD",
+                "--performance",
+                "75.00 USD",
+                "--clearly-trivial",
+                "5.00 USD"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "engagement",
+                "carry-forward",
+                "events-next",
+                "--from",
+                "events-engagement"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(
         run(true, &["tb", "--period", "FY2026-P03", "--render", "md"]).0,
@@ -7275,6 +7655,14 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["finding", "show", &selected]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &["engagement", "file", "events-next", "--finding", &selected]
+        )
+        .0,
+        0
+    );
     let (code, out) = run(
         true,
         &[
@@ -8233,6 +8621,16 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "2026-03-01",
         "--to",
         "2026-03-31",
+    ]);
+    run2(&[
+        "statement",
+        "equity-roll-forward",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-03-31",
+        "--issuance",
+        "3000",
     ]);
     run2(&["gl", "aging", "--as-of", "2026-03-25", "--account", "1000"]);
     run2(&[

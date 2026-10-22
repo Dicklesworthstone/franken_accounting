@@ -246,6 +246,12 @@ why = "an IssuanceControl record is the fact that a statement package left the e
 corrective_route = "correct the books with a lawfully classified adjustment or a restatement case, certify the restated statements and issue them with `fa statement issue`: the later issuance is recorded beside the first"
 
 [[target_class]]
+class = "EngagementControl"
+reversible = "no"
+why = "EngagementControl records are an engagement's history with no legs; a proposal, once booked or passed, stays decided on the record"
+corrective_route = "propose a new adjustment in the engagement with `fa adjustment propose`; the earlier proposal and its decision stay on record"
+
+[[target_class]]
 class = "CaseControl"
 reversible = "no"
 why = "CaseControl records are a restatement case's journaled life cycle, with no legs; a transition is never withdrawn"

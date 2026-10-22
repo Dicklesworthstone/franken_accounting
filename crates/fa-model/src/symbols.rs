@@ -78,6 +78,7 @@ symbols!(
         (PRODUCTION_PROFILE, "ProductionProfile", 50),
         (BATES_RANGE, "BatesRange", 51),
         (ACCESS_EVENT, "AccessEvent", 52),
+        (PROPOSED_ADJUSTMENT, "ProposedAdjustment", 53),
     ]
 );
 

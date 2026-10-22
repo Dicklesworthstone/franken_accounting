@@ -47,10 +47,10 @@ pub const REGISTER_CELL_DOMAIN: &[u8] = b"fa:register-cell:v1";
 /// The entry classes that are book-scoped and undated (`SchemaControl`,
 /// `PolicyControl`, `TimeControl`, `SweepControl`, `ScheduleControl`,
 /// `ImportControl`, `HoldControl`, `DraftControl`, `ScenarioControl`,
-/// `ProductionControl`, `IssuanceControl`, `CaseControl`;
-/// `registries/entry_classes.toml`): their envelopes carry no effective day.
-/// Every other class is period-scoped and carries one.
-pub const UNDATED_CLASSES: [u16; 12] = [17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 30];
+/// `ProductionControl`, `IssuanceControl`, `EngagementControl`,
+/// `CaseControl`; `registries/entry_classes.toml`): their envelopes carry no
+/// effective day. Every other class is period-scoped and carries one.
+pub const UNDATED_CLASSES: [u16; 13] = [17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30];
 
 /// Bounds for the selection lists (`max_legs_per_entry` bounds both).
 pub const MAX_ENVELOPE_LIST: usize = 4096;
@@ -688,6 +688,24 @@ fn attestation_record(
                 r.u16("attestation.reason_code")?;
                 skip_erasable(&mut r, "attestation.statement")?;
             }
+            // Confirmed: by_party, the balance's unit and mantissa, as_of.
+            5 => {
+                r.u128("confirmed.by_party")?;
+                amount(&mut r, "confirmed.balance")?;
+                r.i32("confirmed.as_of")?;
+            }
+            // Represented: 1..=64 sealed claims (32-byte digest, presence,
+            // 24-byte nonce, length: at least 61 bytes each), then as_of.
+            9 => {
+                let claims = r.count(64, 61, "represented.claims")?;
+                if claims == 0 {
+                    return Err(r.error("represented.claims", Reason::BadTag(0)));
+                }
+                for _ in 0..claims {
+                    skip_erasable(&mut r, "represented.claim")?;
+                }
+                r.i32("represented.as_of")?;
+            }
             4 => {
                 let account = r.u128("register_equals.account")?;
                 let unit_id = r.u32("register_equals.unit_id")?;
@@ -718,7 +736,7 @@ fn attestation_record(
         let subject_tag = r.u8("attestation.subject")?;
         let subject_bytes = r.fixed::<32>("attestation.subject")?;
         let valid_subject = match (claim_tag, subject_tag) {
-            (2, 1) | (8, 2) => true,
+            (2, 1) | (8, 2) | (5, 1) | (9, 1) => true,
             (4, 3) => expected_cell == Some(subject_bytes),
             (3, 1) => expected_source
                 .as_ref()

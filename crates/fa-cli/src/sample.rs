@@ -16,6 +16,14 @@
 //! `fa_lantern::sample::Pcg64Dxsm`). The seed is a declared input; nothing
 //! draws entropy. The `sample_digest` binds the method, population digest,
 //! seed, parameters and selected item ids; it is recomputed, not retained.
+//!
+//! `fa sample stratified` (bead fa-k1ts) stratifies the same population by
+//! book-value bands the auditor declares (`--band`, ascending upper bounds):
+//! the basis is a stated input, never inferred. Allocation is Neyman under
+//! an active sampling policy epoch; this build activates none, so the
+//! decision card takes its pinned fallback, proportional allocation, and
+//! says so. The certificate binds the bands, the allocation used and every
+//! stratum's counts.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -35,19 +43,35 @@ const EXAMPLE: &str = "fa sample uniform --account <code> --seed <u64> --size <n
 
 const EVALUATE_EXAMPLE: &str = "fa sample evaluate --account <code> --seed <u64> (--interval \"<amount> <UNIT>\" | --tolerable \"<amount> <UNIT>\" --expected \"<amount> <UNIT>\") --as-known-at <seq> [--as-of YYYY-MM-DD] --audited <audited.json|-> --confidence 90|95|99 --json";
 
+const STRATIFIED_EXAMPLE: &str = "fa sample stratified --account <code> --seed <u64> --size <n> --band \"1000.00 USD\" --band \"10000.00 USD\" [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] --json (ascending upper bounds in the population's unit; the last stratum holds every item above the last band)";
+
+/// At most this many declared bands, so stratum names `b01`..`b99` sort in
+/// band order.
+const MAX_BANDS: usize = 98;
+
 pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let method = match args.positional.get(1).map(String::as_str) {
-        Some(method @ ("uniform" | "mus" | "evaluate")) if args.positional.len() == 2 => method,
+        Some(method @ ("uniform" | "mus" | "stratified" | "evaluate"))
+            if args.positional.len() == 2 =>
+        {
+            method
+        }
         Some(other) if args.positional.len() == 2 => {
             return Err(usage(format!("unknown sampling method `{other}`"), EXAMPLE));
         }
         _ => {
             return Err(usage(
-                "sample needs exactly one of uniform, mus or evaluate",
+                "sample needs exactly one of uniform, mus, stratified or evaluate",
                 EXAMPLE,
             ));
         }
     };
+    if method != "stratified" && args.flag("--band").is_some() {
+        return Err(usage(
+            "--band declares a stratified sample's strata",
+            STRATIFIED_EXAMPLE,
+        ));
+    }
     for flag in [
         "--account",
         "--seed",
@@ -94,16 +118,22 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })
         .transpose()?;
     let (size, interval) = match method {
-        "uniform" => {
+        "uniform" | "stratified" => {
             if let Some(flag) = ["--interval", "--tolerable", "--expected", "--confidence"]
                 .into_iter()
                 .find(|flag| args.flag(flag).is_some())
             {
                 return Err(usage(
                     format!(
-                        "{flag} plans or evaluates an MUS sample; a uniform sample takes --size"
+                        "{flag} plans or evaluates an MUS sample; a {method} sample takes --size"
                     ),
                     EXAMPLE,
+                ));
+            }
+            if method == "stratified" && args.flag("--band").is_none() {
+                return Err(usage(
+                    "a stratified sample declares its strata: --band \"<amount> <UNIT>\", one or more ascending upper bounds",
+                    STRATIFIED_EXAMPLE,
                 ));
             }
             let size = args
@@ -221,13 +251,85 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let units = &book.context().units;
     let (population, excluded) = population(code, &items, account, normal, as_of, units)?;
+    // A stratified sample's population carries each item's declared band,
+    // so its digest binds the stratification.
+    let (population, bounds) = if method == "stratified" {
+        let bounds = band_bounds(args, &population, units)?;
+        (stratify(&population, &bounds)?, bounds)
+    } else {
+        (population, Vec::new())
+    };
     let unit_code = registered_unit_code(population.unit, units)?;
     let render = |amount: Amount| render_amount(amount, units);
 
     let mut fields: Vec<(&str, Json)> = Vec::new();
     // The MUS planning inputs, when the interval was planned from them.
     let mut planning: Option<Planning> = None;
+    // A stratified sample's strata, allocation and decision card.
+    let mut stratified: Vec<(&str, Json)> = Vec::new();
     let (parameters, digest, selected) = match (size, interval) {
+        (Some(size), _) if method == "stratified" => {
+            let basis = format!(
+                "book_value_bands:{}",
+                bounds
+                    .iter()
+                    .map(|bound| render(*bound))
+                    .collect::<Result<Vec<_>, Fail>>()?
+                    .join(",")
+            );
+            // No sampling policy is activated in this build, so the card
+            // takes its pinned fallback (proportional allocation) and says
+            // why; the enforced epoch is the book's own.
+            let enforced = fa_model::domain_digest(
+                b"fa:sampling-policy:v1",
+                &[book.context().book_id.0.as_slice()],
+            );
+            let plan = sample::sample_stratified_neyman(
+                &population,
+                seed,
+                size,
+                &basis,
+                None,
+                enforced,
+                account,
+            )
+            .map_err(sample_error)?;
+            let rows = plan
+                .selected
+                .iter()
+                .map(|item| selected_row(item, None, None, &render))
+                .collect::<Result<Vec<_>, Fail>>()?;
+            let card = plan
+                .decision_card
+                .canonical_bytes()
+                .map_err(|e| Fail::Internal(format!("sampling decision card: {e}")))?;
+            let card_digest = plan
+                .decision_card
+                .digest()
+                .map_err(|e| Fail::Internal(format!("sampling decision card: {e}")))?;
+            stratified.extend([
+                ("allocation", s(plan.allocation)),
+                ("strata", Json::Arr(stratum_rows(&bounds, &plan, &render)?)),
+                ("decision_reason", s(plan.decision_card.reason.code())),
+                ("decision_card", s(hex(&card))),
+                ("decision_card_digest", s(hex(&card_digest))),
+            ]);
+            fields.extend([
+                ("size", Json::Int(size as i128)),
+                ("interval", Json::Null),
+                ("start", Json::Null),
+                ("top_stratum_count", Json::Null),
+                ("systematic_count", Json::Null),
+                ("tolerable", Json::Null),
+                ("expected", Json::Null),
+                ("confidence_percent", Json::Null),
+            ]);
+            (
+                plan.certificate.parameters_summary,
+                plan.certificate.certificate_oid,
+                rows,
+            )
+        }
         (Some(size), _) => {
             let plan = sample::sample_uniform(&population, seed, size).map_err(sample_error)?;
             let rows = plan
@@ -359,7 +461,13 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let replay = format!(
         "fa sample {method} --account {code} --seed {seed} {} --as-known-at {}{}",
         match (size, interval, planning) {
-            (Some(size), _, _) => format!("--size {size}"),
+            (Some(size), _, _) => {
+                let mut flags = format!("--size {size}");
+                for bound in &bounds {
+                    flags.push_str(&format!(" --band \"{}\"", render(*bound)?));
+                }
+                flags
+            }
             (_, _, Some(planned)) => format!(
                 "--tolerable \"{}\" --expected \"{}\" --confidence {}",
                 render(planned.tolerable)?,
@@ -403,6 +511,16 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("replay_command", s(replay)),
     ];
     event.extend(fields);
+    if stratified.is_empty() {
+        stratified.extend([
+            ("allocation", Json::Null),
+            ("strata", Json::Null),
+            ("decision_reason", Json::Null),
+            ("decision_card", Json::Null),
+            ("decision_card_digest", Json::Null),
+        ]);
+    }
+    event.extend(stratified);
     ctx.out.event("sample_drawn", event, &human);
     Ok(())
 }
@@ -627,6 +745,128 @@ fn population<'a>(
     Ok((population, excluded))
 }
 
+/// The declared book-value bands: one or more strictly ascending, positive
+/// upper bounds in the population's unit. They are the auditor's stated
+/// basis, never inferred from the data.
+fn band_bounds(
+    args: &Args,
+    population: &SamplePopulation,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<Amount>, Fail> {
+    let unit_code = registered_unit_code(population.unit, units)?;
+    let texts = args.flag_all("--band");
+    if texts.len() > MAX_BANDS {
+        return Err(usage(
+            format!("at most {MAX_BANDS} --band bounds"),
+            STRATIFIED_EXAMPLE,
+        ));
+    }
+    let mut bounds: Vec<Amount> = Vec::with_capacity(texts.len());
+    for text in texts {
+        let bound = Amount::parse(text, units).map_err(|e| {
+            usage(
+                format!("--band `{text}`: {e}"),
+                format!("--band \"1000.00 {unit_code}\", in the population's unit"),
+            )
+        })?;
+        if bound.unit != population.unit {
+            return Err(usage(
+                format!("--band `{text}` is not in the population's unit {unit_code}"),
+                format!("--band \"1000.00 {unit_code}\""),
+            ));
+        }
+        if bound.mantissa <= 0
+            || bounds
+                .last()
+                .is_some_and(|last| bound.mantissa <= last.mantissa)
+        {
+            return Err(usage(
+                format!(
+                    "--band `{text}`: bands are positive upper bounds in strictly ascending order"
+                ),
+                STRATIFIED_EXAMPLE,
+            ));
+        }
+        bounds.push(bound);
+    }
+    Ok(bounds)
+}
+
+/// Stratum `bNN` (from `b01`): the items above the previous band's bound and
+/// at most its own; the last stratum holds every item above the last bound.
+fn stratum_name(index: usize) -> String {
+    format!("b{:02}", index + 1)
+}
+
+fn stratum_index(value: i128, bounds: &[Amount]) -> usize {
+    bounds
+        .iter()
+        .position(|bound| value <= bound.mantissa)
+        .unwrap_or(bounds.len())
+}
+
+/// The population with each item in its declared band; its digest binds
+/// every item's stratum.
+fn stratify(population: &SamplePopulation, bounds: &[Amount]) -> Result<SamplePopulation, Fail> {
+    let items = population
+        .items
+        .iter()
+        .map(|item| PopulationItem {
+            stratum: Some(stratum_name(stratum_index(
+                item.book_value.mantissa,
+                bounds,
+            ))),
+            ..item.clone()
+        })
+        .collect();
+    SamplePopulation::new(population.name.clone(), population.unit, items).map_err(sample_error)
+}
+
+/// Every declared stratum, empty ones included: its bounds, population,
+/// standard deviation and allocated size.
+fn stratum_rows(
+    bounds: &[Amount],
+    plan: &sample::StratifiedSamplePlan,
+    render: &dyn Fn(Amount) -> Result<String, Fail>,
+) -> Result<Vec<Json>, Fail> {
+    let unit = bounds
+        .first()
+        .map(|bound| bound.unit)
+        .ok_or_else(|| Fail::Internal("a stratified sample without bands".into()))?;
+    (0..=bounds.len())
+        .map(|index| {
+            let name = stratum_name(index);
+            let drawn = plan.strata.iter().find(|row| row.stratum == name);
+            let bound = |at: Option<usize>| {
+                at.and_then(|at| bounds.get(at))
+                    .map(|b| render(*b).map(s))
+                    .transpose()
+                    .map(|b| b.unwrap_or(Json::Null))
+            };
+            Ok(obj(vec![
+                ("stratum", s(name.as_str())),
+                ("above", bound(index.checked_sub(1))?),
+                ("at_most", bound(Some(index))?),
+                (
+                    "population_count",
+                    Json::Int(drawn.map_or(0, |row| row.population_count) as i128),
+                ),
+                (
+                    "std_dev",
+                    drawn
+                        .map(|row| render(Amount::new(unit, row.std_dev_mantissa)).map(s))
+                        .transpose()?
+                        .unwrap_or(Json::Null),
+                ),
+                (
+                    "allocated",
+                    Json::Int(drawn.map_or(0, |row| row.allocated_sample_size) as i128),
+                ),
+            ]))
+        })
+        .collect()
+}
+
 fn selected_row(
     item: &PopulationItem,
     basis: Option<&str>,
@@ -647,6 +887,7 @@ fn selected_row(
         ("book_value", s(render(item.book_value)?)),
         ("basis", basis.map_or(Json::Null, s)),
         ("hit", hit.map(render).transpose()?.map_or(Json::Null, s)),
+        ("stratum", item.stratum.as_deref().map_or(Json::Null, s)),
     ]))
 }
 

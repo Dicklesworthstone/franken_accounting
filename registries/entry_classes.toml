@@ -234,6 +234,21 @@ name = "IssuanceControl"
 kind = "control"
 supersession = "none"
 
+# An audit engagement's mechanics (plan §11.12, Appendix A `Engagement` and
+# `ProposedAdjustment`; fa-zgn): book-scoped and undated;
+# ControlPayload::LifecycleTransition — Open on the Engagement (its profile in
+# extension 17 `fa:engagement:v1`: kind, firm principal, scope periods and the
+# stated materiality parameters), Propose on the Engagement (the draft
+# correcting entry in extension 18 `fa:proposed-adjustment:v1`, which never
+# posts), and Book or Pass on the ProposedAdjustment (Book's proof ref is the
+# committed entry whose legs equal the proposal's; Pass carries an
+# `adjustment_pass` reason code). Nothing in it alters a committed amount.
+[[class]]
+tag = 29
+name = "EngagementControl"
+kind = "control"
+supersession = "none"
+
 # A RestatementCase's life cycle (plan §8.3, Appendix A `RestatementCase`;
 # fa-75j4): book-scoped and undated; ControlPayload::LifecycleTransition on
 # the case's RestatementCase vertex — Open (the body in extension 19
@@ -359,10 +374,11 @@ name = "statement_issuance"
 class = "IssuanceControl"
 minted_by = "fa-journal issuance::issue_statements"
 
-[[reserved_control_kind]]
+[[control_kind]]
 id = 16
 name = "engagement_transition"
-holder = "fa-zgn (EngagementControl, in flight); its row replaces this reservation"
+class = "EngagementControl"
+minted_by = "fa-journal engagement::open_engagement, engagement::propose_adjustment, engagement::decide_adjustment"
 
 [[control_kind]]
 id = 17

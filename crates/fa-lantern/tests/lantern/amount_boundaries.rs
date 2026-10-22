@@ -77,11 +77,46 @@ fn population(scale: i128) -> SamplePopulation {
     SamplePopulation::new("strata", usd, items).unwrap()
 }
 
+/// A population whose book values sum past `i128` is refused, never
+/// saturated: every sampling method (stratified included) is drawn over a
+/// population that holds its exact total (fa-k1ts).
+#[test]
+fn a_population_whose_total_exceeds_i128_is_refused_not_saturated() {
+    let usd = UnitId(1);
+    let item = |n: u128| PopulationItem {
+        item_id: format!("wide-{n}"),
+        reference_vid: VId(n),
+        stratum: Some("wide".into()),
+        book_value: Amount::new(usd, i128::MAX / 2 + 1),
+    };
+    let refused = SamplePopulation::new("overflow", usd, vec![item(1), item(2)]);
+    assert!(
+        matches!(
+            refused,
+            Err(fa_lantern::LanternError::Overflow(
+                "population total book value"
+            ))
+        ),
+        "{refused:?}"
+    );
+    // One item fewer is exact.
+    assert!(SamplePopulation::new("exact", usd, vec![item(1)]).is_ok());
+}
+
 #[test]
 fn stratified_neyman_allocation_is_scale_invariant_for_wide_mantissas() {
     let epoch = [0x55; 32];
     let plan = |scale| -> StratifiedSamplePlan {
-        sample_stratified_neyman(&population(scale), 7, 6, Some(epoch), epoch, VId(99)).unwrap()
+        sample_stratified_neyman(
+            &population(scale),
+            7,
+            6,
+            "fixture",
+            Some(epoch),
+            epoch,
+            VId(99),
+        )
+        .unwrap()
     };
     let allocation = |plan: &StratifiedSamplePlan| {
         plan.strata

@@ -1101,6 +1101,63 @@ exit = "refusal"
 cite = "plan §8.3 (Disclosed: the disclosure document is attested), §9.3 (a Reviewed attestation by a principal other than the uploader; bead fa-75j4)"
 fix = "record the disclosure with fa document add <file> --kind Disclosure, have a principal other than its uploader attest it with fa attest review <oid>, then fa case disclose <case> --document <oid>"
 
+# ---- Engagements (180–184, 190–191; fa-zgn; 185–189 are other beads') ---
+[[refusal]]
+code = "FA-REF-180"
+name = "ENGAGEMENT_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12 (an Engagement is the unit an audit's mechanics attach to; bead fa-zgn)"
+fix = "list the book's engagements with fa engagement list --json, or open one with fa engagement open <id> --kind audit --period <code> --overall <amount> --performance <amount> --clearly-trivial <amount>"
+
+[[refusal]]
+code = "FA-REF-181"
+name = "ADJUSTMENT_DECIDED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12, Appendix A ProposedAdjustment (status Proposed, then Booked or Passed once)"
+fix = "a booked or passed proposal stays on the record as decided; propose a new adjustment with fa adjustment propose if the correction must change"
+
+[[refusal]]
+code = "FA-REF-182"
+name = "BOOKED_ENTRY_DIFFERS"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12 (Booked names the committed entry that makes the proposed correction: a standing trunk posting, recorded after the proposal, effective in its period, with exactly its legs, booking no other proposal)"
+fix = "book the proposal with the standing trunk entry, recorded after the proposal and effective in its period, that posts exactly its legs (fa engagement show <engagement> --json lists them), or pass it with fa adjustment pass"
+
+[[refusal]]
+code = "FA-REF-183"
+name = "ADJUSTMENT_OUT_OF_SCOPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12 (an Engagement's scope_periods bound what its adjustments correct)"
+fix = "date the proposed adjustment inside one of the engagement's scope periods (fa engagement show <id> --json lists them)"
+
+[[refusal]]
+code = "FA-REF-184"
+name = "ADJUSTMENT_UNKNOWN"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12, Appendix A ProposedAdjustment (numbered from 1 per engagement)"
+fix = "list the engagement's proposals with fa engagement show <id> --json"
+
+[[refusal]]
+code = "FA-REF-190"
+name = "DOCUMENTATION_COMPLETION"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12, AS 1215.15 (documentation is complete within 45 days after the report release date, journaled once; later additions are marked added_after_completion)"
+fix = "complete it once with fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD], the completion date within 45 days after the report release date; fa engagement show <id> --json shows its state"
+
+[[refusal]]
+code = "FA-REF-191"
+name = "CARRY_FORWARD"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12 (audit.sud under both SAB 108 methods with prior-year carry-forward)"
+fix = "carry forward another engagement of this book in the same unit whose scope periods all end before this one's begin, naming with --turned-around and --corrected only its uncorrected proposals (fa engagement sud <prior> --json lists them)"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-145"

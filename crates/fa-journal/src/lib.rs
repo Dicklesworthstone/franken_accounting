@@ -27,6 +27,7 @@ pub mod chart;
 pub mod closing;
 pub mod custody;
 pub mod draft;
+pub mod engagement;
 pub mod entity;
 pub mod entry_history;
 pub mod evidence;
@@ -63,7 +64,9 @@ pub mod usage;
 
 pub use allocation::AllocationPosting;
 pub use attestation::{
-    AttestationClaim, Attested, read_attestation, record_manual_assertion, record_review,
+    AttestationClaim, Attested, confirmation_received_by, confirmed_vid, read_attestation,
+    record_confirmation, record_manual_assertion, record_representation, record_review,
+    represented_vid,
 };
 pub use batch::{
     BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
@@ -86,6 +89,18 @@ pub use draft::{
     DraftRehearsalRequest, DraftRehearsalSource, DraftRequest, DraftSourceRecord, DraftState,
     DraftView, PlannedIntent, discard_draft, list_drafts, open_draft, plan_into_draft,
     promote_draft, read_draft, rehearse_draft_into,
+};
+pub use engagement::{
+    AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, Carried,
+    CarriedForward, CarriedItem, CarryForward, CarryForwardView, CompletionView,
+    DocumentationCompleted, DocumentationCompletion, EngagementKind, EngagementOpened,
+    EngagementProfile, EngagementRequest, EngagementState, EngagementView, FindingFiled,
+    FindingInIndex, Materiality, OutOfPeriodCorrection, OutOfPeriodItem, ProposalLeg, ProposalView,
+    ProposedAdjustment, RecordedDecision, StatementEffect, Uncorrected, UncorrectedItem,
+    UncorrectedSummary, WorkpaperConfirmation, WorkpaperFiled, WorkpaperRepresentation,
+    WorkpaperView, carry_forward, complete_documentation, decide_adjustment, file_finding,
+    file_workpaper, list_engagements, open_engagement, prior_period_error, propose_adjustment,
+    read_engagement, superseder_at, uncorrected_misstatements, with_prior_period_error,
 };
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{

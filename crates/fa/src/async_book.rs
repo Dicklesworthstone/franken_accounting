@@ -1559,6 +1559,303 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    fn engagement_request(
+        &self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        effective_date: DateDay,
+        description: &str,
+        idempotency_key: &[u8],
+    ) -> Result<fa_journal::EngagementRequest, BookError> {
+        Ok(fa_journal::EngagementRequest {
+            capability,
+            effective_date,
+            description: self.seal_text(cx, description)?,
+            idempotency_key: idempotency_key.to_vec(),
+        })
+    }
+
+    /// Open the engagement `profile.engagement` (plan §11.12, bead fa-zgn):
+    /// its kind, scope periods and stated materiality parameters, journaled
+    /// once per engagement id.
+    pub async fn open_engagement(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        profile: fa_journal::EngagementProfile,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::EngagementOpened> {
+        let description = format!("open engagement {}", profile.engagement);
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::open_engagement(&mut self.db, cx, &self.context, profile, req).await?)
+    }
+
+    /// Propose a draft correcting entry in `engagement`; it never posts.
+    /// `description` is sealed like an entry's.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn propose_adjustment(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        effective_date: DateDay,
+        legs: Vec<fa_journal::ProposalLeg>,
+        description: &str,
+        record_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::AdjustmentProposed> {
+        let req =
+            self.engagement_request(cx, capability, record_date, description, idempotency_key)?;
+        Ok(fa_journal::propose_adjustment(
+            &mut self.db,
+            cx,
+            &self.context,
+            engagement,
+            effective_date,
+            legs,
+            req,
+        )
+        .await?)
+    }
+
+    /// Book or pass proposal `ordinal` of `engagement`, once.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn decide_adjustment(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        ordinal: u32,
+        decision: fa_journal::AdjustmentDecision,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::AdjustmentDecided> {
+        let description = match decision {
+            fa_journal::AdjustmentDecision::Book { .. } => {
+                format!("book engagement {engagement} proposal {ordinal}")
+            }
+            fa_journal::AdjustmentDecision::Pass { .. } => {
+                format!("pass engagement {engagement} proposal {ordinal}")
+            }
+        };
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::decide_adjustment(
+            &mut self.db,
+            cx,
+            &self.context,
+            engagement,
+            ordinal,
+            decision,
+            req,
+        )
+        .await?)
+    }
+
+    /// File `document` in `engagement`'s workpaper index, once; after the
+    /// documentation completion the filing is an addition after completion.
+    pub async fn file_workpaper(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        document: fa_model::Oid,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::WorkpaperFiled> {
+        let description = format!("file a workpaper in engagement {engagement}");
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::file_workpaper(&mut self.db, cx, &self.context, engagement, document, req)
+                .await?,
+        )
+    }
+
+    /// File the Lantern finding `finding` in `engagement`'s index, once;
+    /// after the documentation completion the filing is an addition after
+    /// completion.
+    pub async fn file_finding(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        finding: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::FindingFiled> {
+        let description = format!("file a finding in engagement {engagement}");
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(
+            fa_journal::file_finding(&mut self.db, cx, &self.context, engagement, finding, req)
+                .await?,
+        )
+    }
+
+    /// Journal `engagement`'s documentation completion, once (AS 1215.15).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_documentation(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        report_release: Option<DateDay>,
+        completion_day: DateDay,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::DocumentationCompleted> {
+        let description = format!("complete the documentation of engagement {engagement}");
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::complete_documentation(
+            &mut self.db,
+            cx,
+            &self.context,
+            engagement,
+            report_release,
+            completion_day,
+            req,
+        )
+        .await?)
+    }
+
+    /// Journal `engagement`'s carry-forward of `prior`'s uncorrected
+    /// misstatements (plan §11.12, SAB 108).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn carry_forward(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        prior: &str,
+        turned_around: Vec<u32>,
+        corrected: Vec<u32>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CarriedForward> {
+        let description =
+            format!("carry engagement {prior}'s uncorrected misstatements into {engagement}");
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::carry_forward(
+            &mut self.db,
+            cx,
+            &self.context,
+            engagement,
+            prior,
+            turned_around,
+            corrected,
+            req,
+        )
+        .await?)
+    }
+
+    /// The engagement `engagement` and every proposal it journaled.
+    pub fn engagement(
+        &self,
+        cx: &PurposeContexts,
+        engagement: &str,
+    ) -> Result<Option<fa_journal::EngagementView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_engagement(db, context, engagement)?)
+        })
+    }
+
+    /// The standing out-of-period corrections effective in `scope_periods`
+    /// (plan §8.2, §11.12): `Adjusting` entries carrying
+    /// `fa:prior-period-error:v1` that no reversal or replacement has
+    /// superseded, at the head, in journal order.
+    pub fn out_of_period_corrections(
+        &self,
+        cx: &PurposeContexts,
+        scope_periods: &[String],
+    ) -> Result<Vec<fa_journal::OutOfPeriodCorrection>, BookError> {
+        self.query(cx, |db, book| {
+            let seq = fa_registers::resolve_known_at(db, None)?;
+            let mut corrections = Vec::new();
+            for (vid, entry, _) in fa_registers::entries_at(db, book, seq)? {
+                let p = &entry.proposal;
+                let relates_to = match fa_journal::prior_period_error(p) {
+                    Ok(Some(relates_to)) => relates_to,
+                    Ok(None) => continue,
+                    Err(why) => {
+                        return Err(fa_journal::KernelError::Corrupt(format!(
+                            "entry {:032x}: {why}",
+                            vid.0
+                        ))
+                        .into());
+                    }
+                };
+                // The period its date resolves to: a posting names its
+                // period only when the intent declared one.
+                if !scope_periods.contains(&fa_registers::entry_period(book, &entry)?) {
+                    continue;
+                }
+                if fa_journal::superseder_at(db, vid, seq)?.is_some() {
+                    continue;
+                }
+                corrections.push(fa_journal::OutOfPeriodCorrection {
+                    entry: vid,
+                    effective_date: p.effective_date,
+                    relates_to,
+                    legs: p
+                        .legs
+                        .iter()
+                        .map(|leg| fa_journal::ProposalLeg {
+                            side: leg.side,
+                            account: leg.account_ref,
+                            amount: leg.amount,
+                        })
+                        .collect(),
+                });
+            }
+            Ok(corrections)
+        })
+    }
+
+    /// Every engagement of the book.
+    pub fn engagements(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<Vec<fa_journal::EngagementView>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::list_engagements(db, context)?)
+        })
+    }
+
     fn scenario_request(
         &self,
         cx: &PurposeContexts,
@@ -2660,6 +2957,60 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             capability.holder(),
             *document,
             against,
+        )
+        .await?)
+    }
+
+    /// Record a `Confirmed` attestation over the confirmation response
+    /// `document` by the capability's holder (plan §11.12, AS 2310).
+    pub async fn record_confirmation(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        by_party: VId,
+        balance: fa_money::Amount,
+        as_of: DateDay,
+    ) -> Outcome<fa_journal::Attested> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::record_confirmation(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            capability.holder(),
+            *document,
+            by_party,
+            balance,
+            as_of,
+        )
+        .await?)
+    }
+
+    /// Record management's `Represented` attestation over the representation
+    /// letter `document` by the capability's holder (plan §11.12, AS 2805);
+    /// each claim is sealed under the book key with fresh entropy.
+    pub async fn record_representation(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        claims: &[String],
+        as_of: DateDay,
+    ) -> Outcome<fa_journal::Attested> {
+        let claims = claims
+            .iter()
+            .map(|claim| self.seal_text(cx, claim))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(fa_journal::record_representation(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            capability.holder(),
+            *document,
+            claims,
+            as_of,
         )
         .await?)
     }

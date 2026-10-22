@@ -88,6 +88,8 @@ fa registers materialize --book ./books/acme --period FY2026-P03 --json
 # General-ledger lines, lead schedules, open-item aging and cash flow at one recorded snapshot.
 fa gl detail --account 1000 --from 2026-03-01 --to 2026-03-31 --book ./books/acme --json
 fa gl roll-forward --account 1000,1200 --from 2026-03-01 --to 2026-03-31 --book ./books/acme --json
+# The statement of changes in equity: opening + net income + issuances + distributions + other = closing.
+fa statement equity-roll-forward --from 2026-01-01 --to 2026-12-31 --issuance 3100 --distribution 3200 --book ./books/acme --json
 # Tie open items to the control balance: one leaf, a list, or every posting leaf.
 fa gl aging --account 1200 --as-of 2026-03-31 --reconcile --book ./books/acme --json
 fa gl aging --all-posting --as-of 2026-03-31 --reconcile --book ./books/acme --json
@@ -620,6 +622,91 @@ fa produce --matter Doe-v-Acme --bundle --account 1000 --from 2026-03-01 --to 20
 The FRE 902 package states technical predicates; admissibility is counsel's
 call. `fa exhibit mark` is not wired yet (`fa-6l9`).
 
+### Audit engagements
+
+An audit's mechanics are journaled; the judgments stay the auditor's.
+
+- **Open.** `fa engagement open` records the engagement once, with its kind,
+  scope periods and the materiality parameters the auditor states: overall,
+  performance and clearly trivial, in the book's base unit.
+- **Propose.** `fa adjustment propose` journals a draft correcting entry. It
+  must balance in every unit, use posting leaves, and be dated inside a scope
+  period. It never posts.
+- **Book or pass, once.**
+  - `fa adjustment book` names the committed entry that makes the correction.
+    That entry must post exactly the proposal's legs, be recorded after the
+    proposal, be effective in the proposal's period, and stand (not be
+    reversed or replaced); one entry books one proposal. Booking reads the
+    entry, so it needs `read` as well as `produce`.
+  - `fa adjustment pass` records why the proposal was left uncorrected, from
+    the registered `adjustment_pass` reasons.
+- **Summarize.** `fa engagement sud` is the summary of uncorrected
+  misstatements. For each passed proposal, and each booked one whose entry
+  was later reversed or replaced, it gives the effect on income, assets,
+  liabilities and equity had the correction been booked and stood. It
+  totals them under rollover and iron curtain, and compares them with the
+  stated parameters. Per statement line, it attributes the same items to an
+  income statement's lines (rollover) and a balance sheet's (iron curtain):
+  the registered definitions by default, or the classified presets with
+  `--definition us_gaap_small_company_income_statement` and
+  `--definition us_gaap_small_company_balance_sheet`.
+- **Out-of-period corrections.** An immaterial prior-period error fixed in
+  the current period without a case is an `Adjusting` entry posted with
+  `"prior_period_error": "FY2025-P12"` (or `--prior-period-error`); the
+  kernel refuses the marker on any other class or on a period that does not
+  end before the entry's date. While it stands, the summary lists it under
+  `out_of_period` and counts it under rollover: it misstates this period's
+  income. The iron curtain does not count it, because the period-end
+  balance sheet is already corrected (SAB 108).
+- **Carry forward.** `fa engagement carry-forward <id> --from <prior>`
+  brings an earlier engagement's uncorrected misstatements into this one.
+  The auditor states which turned around through this period's income
+  (`--turned-around N`) and which an out-of-period correction here
+  corrected (`--corrected N`); the rest are still uncorrected at this
+  period's end. The summary counts them under the iron curtain (still
+  uncorrected) or the rollover (turned around), and reports
+  `prior_period_carry_forward: true`. A later carry-forward governs.
+- **File and complete.** `fa engagement file` puts a document the book holds
+  in the engagement's workpaper index, once. `fa engagement complete`
+  journals the documentation completion once, at most 45 days after the
+  report release date (AS 1215.15). Nothing is withdrawn afterwards: every
+  workpaper, proposal and decision journaled after it is marked
+  `added_after_completion` in `fa engagement show`.
+- **Confirm and represent.** `fa document attest confirmed` records what a
+  party confirmed (a balance as of a date) over a Confirmation document,
+  under `produce`. `fa document attest represented` records management's
+  representations over a Representation letter, under `approve`, each claim
+  sealed. In the workpaper index a confirmation is audit-grade only when the
+  engagement's firm principal received the document (AS 2310).
+
+```bash
+fa engagement open FY26-audit --kind audit --period FY2026-P12 --overall "50000.00 USD" --performance "37500.00 USD" --clearly-trivial "2500.00 USD" --book ./books/acme --json
+fa adjustment propose --engagement FY26-audit --intent accrual.json --book ./books/acme --json
+fa adjustment book --engagement FY26-audit --proposal 1 --entry E:<vid> --json
+fa adjustment pass --engagement FY26-audit --proposal 2 --reason ClearlyTrivial --json
+fa engagement sud FY26-audit --json
+fa engagement sud FY26-audit --definition us_gaap_small_company_balance_sheet --json
+fa engagement file FY26-audit --document <oid> --json
+fa engagement complete FY26-audit --report-release 2027-02-15 --completion-date 2027-03-20 --json
+fa engagement carry-forward FY27-audit --from FY26-audit --turned-around 2 --corrected 3 --json
+fa document attest confirmed <oid> --party C-1 --balance "1200.00 USD" --as-of 2026-12-31 --json
+fa document attest represented <oid> --claim "All transactions are recorded" --as-of 2027-02-15 --json
+```
+
+Writes need `produce`, which the Auditor profile holds, and an
+Agent-profile capability makes none of them. The summary's comparisons are
+mechanical; whether a misstatement is material is the auditor's call.
+
+What the summary does not do yet:
+
+- **Carried items are not on statement lines.** A carry-forward's items
+  count in the rollover and iron-curtain totals and are listed under
+  `carried`, but the per-line attribution covers this engagement's own
+  items and its out-of-period corrections only. A carry-forward is not
+  chained: the prior engagement's own carry-forward does not come along.
+- **No foreign-currency conversion.** Legs in other units are listed, never
+  converted.
+
 ### Exact arithmetic available now
 
 `fa-money` supports the full signed `i128` amount range, including parsing,
@@ -738,6 +825,8 @@ fa procedure run graph.layering --budget 5000000 --book acme.fabook --json
 
 # Audit samples reproducible from a declared seed, over an account's open items at one recorded coordinate, and the Stringer bound over the audited values (available today).
 fa sample mus --account 1200 --seed 20260115 --interval "5000.00 USD" --as-of 2025-12-31 --book acme.fabook --json
+# Stratified over book-value bands the auditor declares; allocation is proportional (the decision card's pinned fallback) until a sampling policy is activated.
+fa sample stratified --account 1200 --seed 20260115 --size 40 --band "1000.00 USD" --band "10000.00 USD" --book acme.fabook --json
 fa sample evaluate --account 1200 --seed 20260115 --interval "5000.00 USD" --as-of 2025-12-31 --as-known-at <seq> --audited audited.json --confidence 95 --book acme.fabook --json
 
 # Proofs an outsider can check without the book (`fa bundle produce` and `fa-verify bundle` available today).

@@ -1446,6 +1446,288 @@ impl Book {
         with_store!(&self.store, core => core.document_bates_ranges(&self.purposes(), document))
     }
 
+    /// Open the engagement `profile.engagement` (plan §11.12, bead fa-zgn):
+    /// its kind, scope periods and stated materiality parameters.
+    pub fn open_engagement(
+        &mut self,
+        capability: fa_journal::Capability,
+        profile: fa_journal::EngagementProfile,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::EngagementOpened> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.open_engagement(
+            &purposes, capability, profile, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Propose a draft correcting entry in `engagement`; it never posts.
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_adjustment(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        effective_date: DateDay,
+        legs: Vec<fa_journal::ProposalLeg>,
+        description: &str,
+        record_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::AdjustmentProposed> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.propose_adjustment(
+            &purposes, capability, engagement, effective_date, legs, description, record_date,
+            idempotency_key,
+        )))
+    }
+
+    /// Book or pass proposal `ordinal` of `engagement`, once.
+    pub fn decide_adjustment(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        ordinal: u32,
+        decision: fa_journal::AdjustmentDecision,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::AdjustmentDecided> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.decide_adjustment(
+            &purposes, capability, engagement, ordinal, decision, effective_date, idempotency_key,
+        )))
+    }
+
+    /// File `document` in `engagement`'s workpaper index, once.
+    pub fn file_workpaper(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        document: fa_model::Oid,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::WorkpaperFiled> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.file_workpaper(
+            &purposes, capability, engagement, document, effective_date, idempotency_key,
+        )))
+    }
+
+    /// File the Lantern finding `finding` in `engagement`'s index, once.
+    pub fn file_finding(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        finding: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::FindingFiled> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.file_finding(
+            &purposes, capability, engagement, finding, effective_date, idempotency_key,
+        )))
+    }
+
+    /// Journal `engagement`'s documentation completion, once (AS 1215.15).
+    pub fn complete_documentation(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        report_release: Option<DateDay>,
+        completion_day: DateDay,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::DocumentationCompleted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.complete_documentation(
+            &purposes, capability, engagement, report_release, completion_day, effective_date,
+            idempotency_key,
+        )))
+    }
+
+    /// Journal `engagement`'s carry-forward of `prior`'s uncorrected
+    /// misstatements (plan §11.12, SAB 108).
+    #[allow(clippy::too_many_arguments)]
+    pub fn carry_forward(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        prior: &str,
+        turned_around: Vec<u32>,
+        corrected: Vec<u32>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CarriedForward> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.carry_forward(
+            &purposes, capability, engagement, prior, turned_around, corrected, effective_date,
+            idempotency_key,
+        )))
+    }
+
+    /// The engagement `engagement` and every proposal it journaled.
+    pub fn engagement(
+        &self,
+        engagement: &str,
+    ) -> Result<Option<fa_journal::EngagementView>, BookError> {
+        with_store!(&self.store, core => core.engagement(&self.purposes(), engagement))
+    }
+
+    /// Every engagement of the book.
+    pub fn engagements(&self) -> Result<Vec<fa_journal::EngagementView>, BookError> {
+        with_store!(&self.store, core => core.engagements(&self.purposes()))
+    }
+
+    /// The summary of uncorrected misstatements of `engagement` (plan
+    /// §11.12): its uncorrected proposals' and the out-of-period corrections'
+    /// effects by line, in the engagement's unit, against the stated
+    /// parameters. `None` when there is no such engagement.
+    pub fn uncorrected_misstatements(
+        &self,
+        engagement: &str,
+    ) -> Result<Option<fa_journal::UncorrectedSummary>, BookError> {
+        Ok(self
+            .uncorrected_inputs(engagement)?
+            .map(|(_, _, summary)| summary))
+    }
+
+    /// The engagement, the out-of-period corrections in its scope, and its
+    /// summary of uncorrected misstatements.
+    #[allow(clippy::type_complexity)]
+    fn uncorrected_inputs(
+        &self,
+        engagement: &str,
+    ) -> Result<
+        Option<(
+            fa_journal::EngagementView,
+            Vec<fa_journal::OutOfPeriodCorrection>,
+            fa_journal::UncorrectedSummary,
+        )>,
+        BookError,
+    > {
+        let Some(view) = self.engagement(engagement)? else {
+            return Ok(None);
+        };
+        let corrections = with_store!(&self.store, core => core.out_of_period_corrections(
+            &self.purposes(),
+            &view.profile.scope_periods,
+        ))?;
+        let types: std::collections::BTreeMap<u128, fa_model::AccountType> = self
+            .accounts()?
+            .into_iter()
+            .map(|row| (row.vid.0, fa_model::AccountType(row.account_type)))
+            .collect();
+        let account_type = |vid: VId| types.get(&vid.0).copied();
+        // A carry-forward brings the prior engagement's own uncorrected
+        // proposals (its carry-forward is not chained).
+        let prior = match view.carry_forwards.last() {
+            None => None,
+            Some(carried) => {
+                let prior_view = self
+                    .engagements()?
+                    .into_iter()
+                    .find(|e| e.vid == carried.carry_forward.prior)
+                    .ok_or_else(|| {
+                        BookError::Kernel(fa_journal::KernelError::Corrupt(format!(
+                            "engagement `{engagement}` carries forward {:032x}, which is no engagement",
+                            carried.carry_forward.prior.0
+                        )))
+                    })?;
+                Some(fa_journal::uncorrected_misstatements(
+                    &prior_view,
+                    &[],
+                    None,
+                    account_type,
+                )?)
+            }
+        };
+        let summary = fa_journal::uncorrected_misstatements(
+            &view,
+            &corrections,
+            prior.as_ref(),
+            account_type,
+        )?;
+        Ok(Some((view, corrections, summary)))
+    }
+
+    /// The summary of uncorrected misstatements per statement line (plan
+    /// §11.12, SAB 108): the uncorrected proposals' legs in the engagement's
+    /// unit attributed to the lines of `income_statement` (the rollover
+    /// method) and of `balance_sheet` (the iron curtain method), each a
+    /// definition name `fa statement lint` takes. A covered account that
+    /// maps to no line, or to several, is refused with the lint to run.
+    pub fn uncorrected_by_line(
+        &self,
+        engagement: &str,
+        income_statement: &str,
+        balance_sheet: &str,
+    ) -> Outcome<Option<(crate::UncorrectedStatement, crate::UncorrectedStatement)>> {
+        use fa_statements::StatementKind;
+        let Some((view, corrections, summary)) = self.uncorrected_inputs(engagement)? else {
+            return Ok(Ok(None));
+        };
+        let resolve = |name: &str, kind: StatementKind| {
+            let definition = crate::statements::mapping_definition(name)?;
+            if definition.kind == kind {
+                Ok(definition)
+            } else {
+                Err(crate::statements::invalid(format!(
+                    "`{name}` is a {} definition, not a {}",
+                    definition.kind.name(),
+                    kind.name()
+                )))
+            }
+        };
+        let income_definition = match resolve(income_statement, StatementKind::IncomeStatement) {
+            Ok(definition) => definition,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let balance_definition = match resolve(balance_sheet, StatementKind::BalanceSheet) {
+            Ok(definition) => definition,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let accounts: std::collections::BTreeMap<u128, fa_statements::Account> = self
+            .accounts()?
+            .into_iter()
+            .map(|row| {
+                (
+                    row.vid.0,
+                    fa_statements::Account {
+                        id: row.vid.0,
+                        code: row.code,
+                        name: row.name,
+                        account_type: row.account_type,
+                        is_leaf: row.is_leaf,
+                    },
+                )
+            })
+            .collect();
+        let uncorrected: std::collections::BTreeSet<u32> =
+            summary.items.iter().map(|item| item.ordinal).collect();
+        let legs: Vec<(u128, fa_money::Side, i128)> = view
+            .proposals
+            .iter()
+            .filter(|p| uncorrected.contains(&p.proposal.ordinal))
+            .flat_map(|p| p.proposal.legs.iter())
+            .filter(|leg| leg.amount.unit == view.profile.unit)
+            .map(|leg| (leg.account.0, leg.side, leg.amount.mantissa))
+            .collect();
+        // An out-of-period correction misstates this period's income: the
+        // rollover lines take its legs reversed. The period-end balance
+        // sheet it corrected carries nothing for it.
+        let rollover_legs: Vec<(u128, fa_money::Side, i128)> = corrections
+            .iter()
+            .flat_map(|c| c.legs.iter())
+            .filter(|leg| leg.amount.unit == view.profile.unit)
+            .map(|leg| (leg.account.0, leg.side.flipped(), leg.amount.mantissa))
+            .chain(legs.iter().copied())
+            .collect();
+        let income =
+            crate::statements::uncorrected_statement(&income_definition, &accounts, &rollover_legs);
+        Ok(income.and_then(|income| {
+            crate::statements::uncorrected_statement(&balance_definition, &accounts, &legs)
+                .map(|balance| Some((income, balance)))
+        }))
+    }
+
     /// Fork the scenario `name` over the trunk prefix at `fork.at` (the head
     /// when absent): plan §15.2, Appendix B `ForkScenario`, fa-k07b.
     pub fn open_scenario(
@@ -2431,6 +2713,39 @@ impl Book {
         )))
     }
 
+    /// Record a `Confirmed` attestation over the confirmation response at
+    /// `document` (plan §11.12, AS 2310): what `by_party` confirmed, as the
+    /// capability's holder (holding `produce`) states it.
+    pub fn record_confirmation(
+        &mut self,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        by_party: VId,
+        balance: fa_money::Amount,
+        as_of: DateDay,
+    ) -> Outcome<fa_journal::Attested> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_confirmation(
+            &purposes, capability, document, by_party, balance, as_of,
+        )))
+    }
+
+    /// Record management's `Represented` attestation over the representation
+    /// letter at `document` (plan §11.12, AS 2805) by the capability's holder,
+    /// who holds `approve`.
+    pub fn record_representation(
+        &mut self,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        claims: &[String],
+        as_of: DateDay,
+    ) -> Outcome<fa_journal::Attested> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_representation(
+            &purposes, capability, document, claims, as_of,
+        )))
+    }
+
     /// Record the preparer's `ManualAssertion` over `proposal` (plan §9.2):
     /// no document exists, for a registered `reason_code`, as `statement`
     /// says (sealed under the book key with fresh entropy). Posting that
@@ -3281,6 +3596,18 @@ impl Book {
         request: &crate::RollForwardRequest,
     ) -> Outcome<crate::RollForward> {
         with_store!(&self.store, core => core.roll_forward(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// The Statement of Changes in Equity over the equity, revenue and expense lead schedule at one recorded prefix.
+    pub fn equity_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::EquityRollForwardRequest,
+    ) -> Outcome<crate::EquityRollForwardReport> {
+        with_store!(&self.store, core => core.equity_roll_forward(
             &self.purposes(), principal, capability, request
         ))
     }
