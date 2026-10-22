@@ -916,14 +916,15 @@ pub struct RegulatoryEditReport {
 
 impl RegulatoryEditReport {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let count = |n: usize| u32::try_from(n).map_err(|_| EncodeError::LengthOverflow);
         let mut w = Writer::new();
         w.fixed(REGULATORY_EDIT_REPORT_FORMAT)
             .str(&self.form_at_quarter)
             .fixed(&self.schedule_digest.0)
-            .u32(self.validity_passed as u32)
-            .u32(self.validity_failed as u32)
-            .u32(self.quality_passed as u32)
-            .u32(self.quality_failed as u32)
+            .u32(count(self.validity_passed)?)
+            .u32(count(self.validity_failed)?)
+            .u32(count(self.quality_passed)?)
+            .u32(count(self.quality_failed)?)
             .list(&self.rows, |w, row| {
                 w.str(&row.edit_id)
                     .u8(row.kind.tag())
