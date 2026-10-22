@@ -2858,6 +2858,7 @@ mod tests {
                 "checkpoint",
                 "inclusion",
                 "consistency",
+                "suffix",
                 "prefix",
                 "balance",
                 "evidence-disclosure"
@@ -2865,7 +2866,11 @@ mod tests {
         );
         assert_eq!(
             tool.events(reg),
-            vec!["proof_exported", "evidence_disclosure_exported"]
+            vec![
+                "proof_exported",
+                "proof_suffix_exported",
+                "evidence_disclosure_exported"
+            ]
         );
         assert!(!reg.verb("proof").unwrap().writes);
         let state = "a".repeat(64);
@@ -2899,6 +2904,18 @@ mod tests {
                 vec![
                     "proof",
                     "consistency",
+                    "--state",
+                    &state,
+                    "--next-state",
+                    &next,
+                    "--json",
+                ],
+            ),
+            (
+                json!({"kind": "suffix", "state": state, "next_state": next}),
+                vec![
+                    "proof",
+                    "suffix",
                     "--state",
                     &state,
                     "--next-state",
