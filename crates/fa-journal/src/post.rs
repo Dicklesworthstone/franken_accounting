@@ -343,11 +343,14 @@ impl PreparedPost {
         self,
         planning: bool,
     ) -> Result<(WriteTxn, BatchMember), KernelError> {
-        if self.planning != planning
-            || self.paired_reversal.is_some()
-            || self.request.proposal.class == EntryClass::CLOSING
-            || crate::revaluation::is_source_bound(&self.request.proposal)
-        {
+        let aggregate = match requires_aggregate_basis(&self.request.proposal) {
+            Ok(aggregate) => aggregate,
+            Err(error) => {
+                self.txn.abort();
+                return Err(error);
+            }
+        };
+        if self.planning != planning || self.paired_reversal.is_some() || aggregate {
             self.txn.abort();
             return Err(KernelError::Corrupt(
                 "a preparation joins only a matching batch execution mode; replacement pairs and fold-derived entries have separate protocols".into(),
