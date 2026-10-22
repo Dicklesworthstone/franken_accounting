@@ -668,99 +668,6 @@ fn capitalized(word: &str) -> String {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lines_extend_and_sum_exactly_or_refuse() {
-        // Exact, with trailing fractional zeros dropped: the kernel pads an
-        // amount to its unit's scale and refuses any digit beyond it.
-        assert_eq!(extend("10", "125.00 USD").unwrap(), "1250 USD");
-        assert_eq!(extend("3", "0.05 USD").unwrap(), "0.15 USD");
-        assert_eq!(extend("7", "100 JPY").unwrap(), "700 JPY");
-        assert_eq!(extend("2", "0.125 KWD").unwrap(), "0.25 KWD");
-        assert_eq!(
-            extend("8", "0.125 USD").unwrap(),
-            "1 USD",
-            "an exact product within the unit's scale is never refused"
-        );
-        assert_eq!(extend("3", "0.125 USD").unwrap(), "0.375 USD");
-        for (qty, price) in [
-            ("0", "1.00 USD"),
-            ("-1", "1.00 USD"),
-            ("1.5", "1.00 USD"),
-            ("2", "1.5e2 USD"),
-            ("2", "-1.00 USD"),
-            ("2", "1.00"),
-            ("2", "1.00 "),
-            ("2", ". USD"),
-        ] {
-            assert!(extend(qty, price).is_err(), "{qty} x {price}");
-        }
-        assert_eq!(
-            sum(&["1250.00 USD".into(), "0.15 USD".into()]).unwrap(),
-            "1250.15 USD"
-        );
-        assert_eq!(
-            sum(&["31.5 USD".into(), "2.25 USD".into()]).unwrap(),
-            "33.75 USD",
-            "lines with different decimal places are aligned exactly"
-        );
-        assert_eq!(
-            sum(&["1.00 USD".into(), "1.0 USD".into()]).unwrap(),
-            "2 USD"
-        );
-        assert!(sum(&["1.00 USD".into(), "1.00 EUR".into()]).is_err());
-        assert!(sum(&[]).is_err());
-        assert!(sum(&[format!("{} USD", i128::MAX), "1 USD".into()]).is_err());
-        assert!(is_zero("0 USD") && is_zero("0.00 USD") && !is_zero("0.01 USD"));
-        assert_eq!(
-            line_words(r#"qty=10 unit_price="125.00 USD" item=SKU-9 product=Widgets"#).unwrap(),
-            vec![
-                ("qty".to_string(), "10".to_string()),
-                ("unit_price".to_string(), "125.00 USD".to_string()),
-                ("item".to_string(), "SKU-9".to_string()),
-                ("product".to_string(), "Widgets".to_string()),
-            ]
-        );
-        assert!(line_words("qty=1 qty=2").is_err());
-        assert!(line_words(r#"unit_price="1.00 USD"#).is_err());
-        assert!(line_words("lonely").is_err());
-        assert!(line_words("account= amount=1").is_err(), "an empty value");
-        assert!(line_words(r#"item="""#).is_err(), "an empty quoted value");
-    }
-
-    #[test]
-    fn default_keys_scope_a_number_to_whoever_assigned_it() {
-        // The book numbers its invoices and payments; a vendor numbers its
-        // bills and a customer its payment references.
-        assert_eq!(default_key("invoice", None, None, "10442"), "invoice:10442");
-        assert_eq!(
-            default_key("bill", None, Some("V-17"), "B-77"),
-            "bill:V-17:B-77"
-        );
-        assert_ne!(
-            default_key("bill", None, Some("V-17"), "B-77"),
-            default_key("bill", None, Some("V-18"), "B-77"),
-            "two vendors' bill B-77 are two documents"
-        );
-        assert_eq!(
-            default_key("receipt", Some("ACME-DE"), Some("C-17"), "W-1"),
-            "receipt:ACME-DE:C-17:W-1"
-        );
-        assert_ne!(
-            default_key("invoice", Some("ACME-US"), None, "1"),
-            default_key("invoice", Some("ACME-DE"), None, "1"),
-            "each legal entity numbers its own invoices"
-        );
-        assert_ne!(
-            default_key("invoice", None, None, "1"),
-            default_key("payment", None, None, "1")
-        );
-    }
-}
-
 /// `fa accrue` and `fa defer` (plan §15.3, Appendix B `Accrue`/`Defer`:
 /// effective_date, legs, auto_reverse_on?): an Adjusting entry, with its
 /// scheduled reversal when `--reverse-on` (or `reverse_on` in the intent)
@@ -996,4 +903,97 @@ pub(crate) fn replace_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         pair.flags.insert("--replace-with".to_string(), intent);
     }
     crate::cli::reverse_cmd(ctx, &pair)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lines_extend_and_sum_exactly_or_refuse() {
+        // Exact, with trailing fractional zeros dropped: the kernel pads an
+        // amount to its unit's scale and refuses any digit beyond it.
+        assert_eq!(extend("10", "125.00 USD").unwrap(), "1250 USD");
+        assert_eq!(extend("3", "0.05 USD").unwrap(), "0.15 USD");
+        assert_eq!(extend("7", "100 JPY").unwrap(), "700 JPY");
+        assert_eq!(extend("2", "0.125 KWD").unwrap(), "0.25 KWD");
+        assert_eq!(
+            extend("8", "0.125 USD").unwrap(),
+            "1 USD",
+            "an exact product within the unit's scale is never refused"
+        );
+        assert_eq!(extend("3", "0.125 USD").unwrap(), "0.375 USD");
+        for (qty, price) in [
+            ("0", "1.00 USD"),
+            ("-1", "1.00 USD"),
+            ("1.5", "1.00 USD"),
+            ("2", "1.5e2 USD"),
+            ("2", "-1.00 USD"),
+            ("2", "1.00"),
+            ("2", "1.00 "),
+            ("2", ". USD"),
+        ] {
+            assert!(extend(qty, price).is_err(), "{qty} x {price}");
+        }
+        assert_eq!(
+            sum(&["1250.00 USD".into(), "0.15 USD".into()]).unwrap(),
+            "1250.15 USD"
+        );
+        assert_eq!(
+            sum(&["31.5 USD".into(), "2.25 USD".into()]).unwrap(),
+            "33.75 USD",
+            "lines with different decimal places are aligned exactly"
+        );
+        assert_eq!(
+            sum(&["1.00 USD".into(), "1.0 USD".into()]).unwrap(),
+            "2 USD"
+        );
+        assert!(sum(&["1.00 USD".into(), "1.00 EUR".into()]).is_err());
+        assert!(sum(&[]).is_err());
+        assert!(sum(&[format!("{} USD", i128::MAX), "1 USD".into()]).is_err());
+        assert!(is_zero("0 USD") && is_zero("0.00 USD") && !is_zero("0.01 USD"));
+        assert_eq!(
+            line_words(r#"qty=10 unit_price="125.00 USD" item=SKU-9 product=Widgets"#).unwrap(),
+            vec![
+                ("qty".to_string(), "10".to_string()),
+                ("unit_price".to_string(), "125.00 USD".to_string()),
+                ("item".to_string(), "SKU-9".to_string()),
+                ("product".to_string(), "Widgets".to_string()),
+            ]
+        );
+        assert!(line_words("qty=1 qty=2").is_err());
+        assert!(line_words(r#"unit_price="1.00 USD"#).is_err());
+        assert!(line_words("lonely").is_err());
+        assert!(line_words("account= amount=1").is_err(), "an empty value");
+        assert!(line_words(r#"item="""#).is_err(), "an empty quoted value");
+    }
+
+    #[test]
+    fn default_keys_scope_a_number_to_whoever_assigned_it() {
+        // The book numbers its invoices and payments; a vendor numbers its
+        // bills and a customer its payment references.
+        assert_eq!(default_key("invoice", None, None, "10442"), "invoice:10442");
+        assert_eq!(
+            default_key("bill", None, Some("V-17"), "B-77"),
+            "bill:V-17:B-77"
+        );
+        assert_ne!(
+            default_key("bill", None, Some("V-17"), "B-77"),
+            default_key("bill", None, Some("V-18"), "B-77"),
+            "two vendors' bill B-77 are two documents"
+        );
+        assert_eq!(
+            default_key("receipt", Some("ACME-DE"), Some("C-17"), "W-1"),
+            "receipt:ACME-DE:C-17:W-1"
+        );
+        assert_ne!(
+            default_key("invoice", Some("ACME-US"), None, "1"),
+            default_key("invoice", Some("ACME-DE"), None, "1"),
+            "each legal entity numbers its own invoices"
+        );
+        assert_ne!(
+            default_key("invoice", None, None, "1"),
+            default_key("payment", None, None, "1")
+        );
+    }
 }
