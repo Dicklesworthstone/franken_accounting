@@ -4600,12 +4600,7 @@ fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions
     ];
     h.post(&funding);
     let before_deduction = h.db.frontier().unwrap();
-    let deduction = h.post(&Spec::simple(
-        day(2026, 4, 20),
-        "6000",
-        "1010",
-        8_000,
-    ));
+    let deduction = h.post(&Spec::simple(day(2026, 4, 20), "6000", "1010", 8_000));
     let procedure = SolvencyBalanceSheetTest::new().unwrap();
     let mut snapshot = h.snapshot();
     let actual = run_over(&snapshot, &h.book, &procedure).unwrap();
@@ -4613,15 +4608,26 @@ fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions
     assert_eq!(actual.findings[0].statistic.value, 3_000);
     assert!(actual.findings[0].cites.contains(&Cite::Entry(deduction)));
     assert_eq!(
-        run(&h.db, &h.book, Some(before_deduction), Some(day(2026, 4, 30)), &procedure)
-            .unwrap()
-            .findings
-            .len(),
+        run(
+            &h.db,
+            &h.book,
+            Some(before_deduction),
+            Some(day(2026, 4, 30)),
+            &procedure
+        )
+        .unwrap()
+        .findings
+        .len(),
         0,
         "a later-recorded deduction cannot change the earlier snapshot"
     );
     snapshot.coordinate.effective_through = Some(day(2026, 4, 15));
-    assert!(run_over(&snapshot, &h.book, &procedure).unwrap().findings.is_empty());
+    assert!(
+        run_over(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
     snapshot.coordinate.effective_through = Some(day(2026, 4, 30));
 
     // An ordinary reconciliation assertion is not a valuation instruction.
@@ -4668,15 +4674,24 @@ fn solvency_balance_sheet_preserves_signed_basis_and_ignores_register_assertions
             .unwrap(),
     );
     assert_eq!(
-        run_over(&snapshot, &h.book, &haircut).unwrap().findings[0].statistic.value,
+        run_over(&snapshot, &h.book, &haircut).unwrap().findings[0]
+            .statistic
+            .value,
         4_000,
         "a 50% haircut applies to the net asset basis of 20, leaving 10 against 50"
     );
-    assert!(witness::determinism(&snapshot, &h.book, &procedure).unwrap().deterministic());
+    assert!(
+        witness::determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
 
     // A debit contra-liability reduces the same signed liability basis.
     h.post(&Spec::simple(day(2026, 4, 21), "2000", "4000", 4_000));
-    assert!(h.run(&procedure).findings.is_empty(), "assets 20 exceed net debt 10");
+    assert!(
+        h.run(&procedure).findings.is_empty(),
+        "assets 20 exceed net debt 10"
+    );
 }
 
 #[test]
