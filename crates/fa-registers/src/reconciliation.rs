@@ -250,8 +250,14 @@ pub fn fold_reconciliation_register(
         .i128(adjusted_book_balance.mantissa)
         .bool(is_reconciled)
         .u64(evaluated_known_at.0)
-        .u32(unmatched_bank_lines.len() as u32)
-        .u32(outstanding_book_entries.len() as u32);
+        .u32(
+            u32::try_from(unmatched_bank_lines.len())
+                .map_err(|_| ReconciliationError::Overflow("unmatched bank line count"))?,
+        )
+        .u32(
+            u32::try_from(outstanding_book_entries.len())
+                .map_err(|_| ReconciliationError::Overflow("outstanding book entry count"))?,
+        );
     let fold_bytes = w.finish()?;
     let fold_digest = domain_digest(RECON_FOLD_DOMAIN, &[&fold_bytes]);
 
