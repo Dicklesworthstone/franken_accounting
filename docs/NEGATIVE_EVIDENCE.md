@@ -281,3 +281,36 @@ in `registries/threat_model.toml` and `docs/THREAT_AND_TRUST_MODEL.md`:
   are computed from the actual self round-trip; the three conformance
   documents, the format summaries and the crate description say what ran.
   The real differentials are `fa-sa4w`, `fa-w3n6` and `fa-ipom`.
+
+## 2026-10-21 — Signed solvency basis (`fa-8j3g`, partial)
+
+The retained binary probe in
+`/private/tmp/fa-reality-check-20261021.d9HmEI` posted equipment 100 against
+payables 50 and equity 50, followed by expense 80 against accumulated
+depreciation 80, using the shipped US GAAP chart. The trial balance showed
+signed assets 20 and liabilities 50; `solvency.balance_sheet_test` returned
+zero findings. This is evidence about the identified older binary, not an
+exact-tree gate. Source inspection found the same defect: clamping each
+asset account's debit-minus-credit net at zero discarded credit
+contra-assets. Debit contra-liabilities were likewise discarded. Ordinary
+historical `RegisterEquals` claims could also replace the current balance,
+although they are reconciliation assertions without valuation authority.
+
+Method version 2 folds signed native assets and credit-minus-debit
+liabilities per unit, then applies the declared haircut once to a positive
+net asset basis with exact truncation. Negative assets stay negative.
+Reconciliation assertions do not override either side. The certificate
+allowlist moves with the method version; unsupported v1 methods refuse
+rather than silently replaying with v2 semantics. Findings cite every
+contributing account and entry or refuse an oversized scope, and their
+population counts only the reported unit's asset/liability legs.
+
+Regressions cover the literal 30 deficit, historical/effective selection,
+ordinary assertions, haircut netting, currency isolation, negative bases,
+overflow, citation capacity, the template chart through the real CLI, and
+versioned certification/replay. At the time of this entry, execution is
+UNRUN: strict remote admission timed out behind an occupied worker; no
+local fallback ran. Test results and exact source identity belong in the
+bead when execution completes. Typed, evidenced valuation adjustments
+remain unimplemented in this same open bead; this repair is a book-basis
+screen and does not establish fair value or a legal solvency conclusion.

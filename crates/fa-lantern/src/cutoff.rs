@@ -1476,8 +1476,7 @@ impl Procedure for SolvencyBalanceSheetTest {
 
         // Accumulate posted net debit-minus-credit per (account_vid, unit_id)
         let mut acct_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
-        let mut unit_entries: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
-        let mut population = 0u64;
+        let mut unit_inputs: BTreeMap<u32, (BTreeSet<VId>, u64)> = BTreeMap::new();
 
         for e in &live {
             work.entry();
@@ -1490,7 +1489,6 @@ impl Procedure for SolvencyBalanceSheetTest {
                 if !matches!(at, AccountType::ASSET | AccountType::LIABILITY) {
                     continue;
                 }
-                population += 1;
                 let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let cell = acct_net
                     .entry((leg.account_ref, leg.amount.unit.0))
@@ -1498,10 +1496,9 @@ impl Procedure for SolvencyBalanceSheetTest {
                 *cell = cell
                     .checked_add(signed)
                     .ok_or(LanternError::Overflow("solvency balance sheet fold"))?;
-                unit_entries
-                    .entry(leg.amount.unit.0)
-                    .or_default()
-                    .insert(e.vid);
+                let inputs = unit_inputs.entry(leg.amount.unit.0).or_default();
+                inputs.0.insert(e.vid);
+                inputs.1 += 1;
             }
         }
 
@@ -1551,7 +1548,9 @@ impl Procedure for SolvencyBalanceSheetTest {
                 .checked_sub(adjusted_assets)
                 .ok_or(LanternError::Overflow("solvency deficit"))?;
             let mut cites: Vec<Cite> = accts.into_iter().map(Cite::Account).collect();
-            if let Some(entries) = unit_entries.get(&unit_id) {
+            let mut population = 0;
+            if let Some((entries, count)) = unit_inputs.get(&unit_id) {
+                population = *count;
                 if cites.len() > MAX_CITES || entries.len() > MAX_CITES - cites.len() {
                     return Err(LanternError::Parameter {
                         procedure: Self::ID.into(),
