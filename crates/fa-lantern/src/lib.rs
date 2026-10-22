@@ -120,7 +120,7 @@ impl LanternError {
             // Every procedure reads its snapshot at --known-at; only the
             // historical folds also honor --effective-through.
             Self::Overflow(_) => Some(
-                "narrow the snapshot with --known-at <an earlier seq> (--effective-through YYYY-MM-DD narrows only the historical folds)"
+                "narrow the snapshot with --known-at <an earlier seq> (--effective-through YYYY-MM-DD applies only where fa procedure list shows effective_through optional or required)"
                     .into(),
             ),
             Self::BudgetExhausted { fix, .. } => Some(fix.clone()),
@@ -813,7 +813,7 @@ pub fn run_over_with_budget(
             procedure: row.id,
             used: work.total(),
             budget: limit,
-            fix: "narrow the snapshot with --known-at <an earlier seq> (--effective-through YYYY-MM-DD narrows only the historical folds) or increase the work budget".into(),
+            fix: "narrow the snapshot with --known-at <an earlier seq> (--effective-through YYYY-MM-DD applies only where fa procedure list shows effective_through optional or required) or increase the work budget".into(),
         });
     }
     for f in &findings {

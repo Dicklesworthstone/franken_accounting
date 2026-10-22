@@ -406,6 +406,9 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })
         })
         .transpose()?;
+    if let Some(id) = request_id {
+        crate::cli::refuse_untaken_date(id, effective)?;
+    }
     let mut parameters = request_id
         .map(|id| {
             fa_lantern::Params::defaults(id)

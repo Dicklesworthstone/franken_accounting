@@ -777,6 +777,55 @@ fn benford_claims_nothing_below_the_minimum_population_and_scores_above_it() {
     );
 }
 
+/// Every procedure whose registry row omits `effective_through` folds every
+/// posting regardless of effective date (fa-9pjp), which is why the CLI
+/// refuses a date for it. Over the posted corpus (January to April) its
+/// findings must be the same at a January date as with none: a procedure
+/// that starts reading the date without declaring it fails here.
+#[test]
+fn undeclared_procedures_ignore_the_effective_date() {
+    use fa_registry::procedures::EffectiveThrough;
+    let (h, _) = posted_corpus();
+    let dated = Snapshot::read(&h.db, &h.book, None, Some(day(2026, 1, 31))).unwrap();
+    let undated = Snapshot::read(&h.db, &h.book, None, None).unwrap();
+    let outcome = |id: &str, snapshot: &Snapshot| {
+        fa_lantern::catalog::build(id, Params::defaults(id).unwrap(), Default::default())
+            .and_then(|p| run_over(snapshot, &h.book, p.as_ref()))
+            // The findings digest binds the coordinate, date included, so the
+            // findings themselves are compared.
+            .map(|run| run.findings)
+            .map_err(|e| e.to_string())
+    };
+    let (mut undeclared, mut declared, mut moved) = (0, 0, Vec::new());
+    for row in fa_lantern::catalog::registered().unwrap() {
+        match row.effective_through {
+            EffectiveThrough::NotTaken => {
+                undeclared += 1;
+                assert_eq!(
+                    outcome(&row.id, &dated),
+                    outcome(&row.id, &undated),
+                    "{} moves with the effective date: declare effective_through in procedures.toml",
+                    row.id
+                );
+            }
+            EffectiveThrough::Optional => {
+                declared += 1;
+                if outcome(&row.id, &dated) != outcome(&row.id, &undated) {
+                    moved.push(row.id.clone());
+                }
+            }
+            EffectiveThrough::Required => declared += 1,
+        }
+    }
+    println!(
+        "{undeclared} undeclared procedures ignore the date; {declared} declare it; optional ones that move on this corpus: {moved:?}"
+    );
+    assert_eq!(declared, 21);
+    assert!(undeclared >= 40, "{undeclared}");
+    // The comparison can see a date: declared procedures do move with it here.
+    assert!(!moved.is_empty(), "the corpus exercises no effective date");
+}
+
 #[test]
 fn aging_buckets_open_items_to_the_declared_date() {
     let (h, c) = posted_corpus();

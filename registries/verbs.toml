@@ -530,7 +530,7 @@ example = "fa search \"office rent\" --book ./books/myco --json"
 
 [[verb]]
 name = "procedure"
-summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for the historical folds, through an effective date. A finding is a statistic with typed citations, never an accusation."
+summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for a procedure that takes one (its effective_through in procedure list), through an effective date; a date given to any other procedure is refused. A finding is a statistic with typed citations, never an accusation."
 writes = false
 subcommands = ["list", "run"]
 flags = ["--known-at", "--effective-through", "--param", "--account", "--source", "--grant"]
@@ -2271,7 +2271,7 @@ fields = ["entries:int", "attestations:int", "import_receipts:int", "custody_tra
 [[event]]
 name = "procedure_list"
 book = false
-doc = "Every registered Lantern procedure (procedures.toml): id, version, claim class, evidence row, tie-break policy, complexity bound, calibration status, declared inputs and parameters with their pinned defaults."
+doc = "Every registered Lantern procedure (procedures.toml): id, version, claim class, evidence row, tie-break policy, complexity bound, calibration status, how it uses the run's effective date (effective_through: required, optional, or not_taken, which refuses --effective-through), declared inputs and parameters with their pinned defaults."
 fields = ["procedures:[procedure_row]", "count:int"]
 
 [[event]]
@@ -2310,7 +2310,7 @@ fields = ["item_id:string", "entry:hex", "ordinal:int", "side:string", "open:amo
 [[shape]]
 name = "procedure_row"
 doc = "One procedures.toml row."
-fields = ["id:string", "version:int", "claim:string", "evidence:string", "tie_break:string", "complexity:string", "calibration:string", "summary:string", "inputs:[procedure_input_decl]", "parameters:[procedure_parameter_decl]"]
+fields = ["id:string", "version:int", "claim:string", "evidence:string", "tie_break:string", "complexity:string", "calibration:string", "summary:string", "effective_through:string", "inputs:[procedure_input_decl]", "parameters:[procedure_parameter_decl]"]
 
 [[shape]]
 name = "procedure_claim"

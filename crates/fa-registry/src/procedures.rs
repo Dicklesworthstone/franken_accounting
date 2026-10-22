@@ -80,6 +80,39 @@ impl Calibration {
     }
 }
 
+/// How a procedure uses the run's effective date (`fa procedure run
+/// --effective-through`; bead fa-9pjp). A procedure that does not take one
+/// folds every posting regardless of effective date, so a date given to it
+/// is refused rather than silently ignored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectiveThrough {
+    /// The date is ignored; giving one is a usage error.
+    NotTaken,
+    /// Without a date the procedure covers every effective date.
+    Optional,
+    /// The procedure is defined at a date (an as-of aging, a trace).
+    Required,
+}
+
+impl EffectiveThrough {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "optional" => Some(Self::Optional),
+            "required" => Some(Self::Required),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NotTaken => "not_taken",
+            Self::Optional => "optional",
+            Self::Required => "required",
+        }
+    }
+}
+
 /// A registered parameter with its pinned default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Parameter {
@@ -107,6 +140,7 @@ pub struct Procedure {
     pub complexity: String,
     pub calibration: Calibration,
     pub summary: String,
+    pub effective_through: EffectiveThrough,
     pub inputs: Vec<Input>,
     pub parameters: Vec<Parameter>,
 }
@@ -206,6 +240,15 @@ impl Procedures {
                     format!("{id}: complexity and summary are required"),
                 ));
             }
+            let effective_through = match t.get("effective_through") {
+                None => EffectiveThrough::NotTaken,
+                Some(v) => v.as_str().and_then(EffectiveThrough::parse).ok_or_else(|| {
+                    invalid(
+                        R,
+                        format!("{id}: effective_through must be \"optional\" or \"required\" (omit it when the date is not taken)"),
+                    )
+                })?,
+            };
             rows.push(Procedure {
                 id,
                 version,
@@ -215,6 +258,7 @@ impl Procedures {
                 complexity,
                 calibration,
                 summary,
+                effective_through,
                 inputs: Vec::new(),
                 parameters: Vec::new(),
             });
@@ -364,6 +408,17 @@ meaning = "power of ten"
     }
 
     #[test]
+    fn each_procedure_declares_how_it_uses_the_effective_date() {
+        let p = Procedures::embedded().unwrap();
+        let date = |id: &str| p.get(id).unwrap().effective_through;
+        assert_eq!(date("aging.open_items"), EffectiveThrough::Required);
+        assert_eq!(date("trace.libr"), EffectiveThrough::Required);
+        assert_eq!(date("lookback.preferences"), EffectiveThrough::Optional);
+        assert_eq!(date("jet.round_amounts"), EffectiveThrough::NotTaken);
+        assert_eq!(date("graph.concentration"), EffectiveThrough::NotTaken);
+    }
+
+    #[test]
     fn a_minimal_registry_loads() {
         let p = Procedures::from_text(MINIMAL).unwrap();
         assert_eq!(p.rows.len(), 1);
@@ -413,6 +468,14 @@ meaning = "power of ten"
                 "{MINIMAL}\n[[parameter]]\nprocedure = \"jet.round_amounts\"\nname = \"round_power\"\ndefault = 2\nmeaning = \"again\"\n"
             ),
             "listed twice",
+        );
+        // An effective-date use outside the vocabulary (fa-9pjp).
+        refused(
+            &MINIMAL.replace(
+                "summary = ",
+                "effective_through = \"sometimes\"\nsummary = ",
+            ),
+            "effective_through must be",
         );
         // An input of an unknown kind.
         refused(

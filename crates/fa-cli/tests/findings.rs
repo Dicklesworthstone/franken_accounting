@@ -231,20 +231,16 @@ fn recorded_run_discovery_pages_a_fixed_inventory_across_processes_and_new_publi
         args.extend_from_slice(extra);
         ok(&f.book, &args)
     };
-    // Weekend v1 scans live postings at known-at. Effective-through fixes
-    // historical folds such as aging; it does not filter this JET population.
+    // Weekend v1 scans live postings at known-at and takes no effective date
+    // (fa-9pjp refuses one; a dated recorded run is in
+    // an_effective_date_is_refused_where_a_procedure_would_ignore_it).
     let before_first_post = f.before_first_post.to_string();
-    let empty_run = record(&[
-        "--known-at",
-        &before_first_post,
-        "--effective-through",
-        "2026-01-09",
-    ]);
+    let empty_run = record(&["--known-at", &before_first_post]);
     assert_eq!(
         number(data(&empty_run), "source_known_at"),
         i128::from(f.before_first_post),
     );
-    let populated = record(&["--effective-through", "2026-01-09"]);
+    let populated = record(&[]);
     f.post("second-saturday", "2026-01-17", "25.00 USD");
     let third = record(&[]);
     let records = [empty_run, populated, third];
@@ -1359,4 +1355,85 @@ fn a_procedure_total_beyond_i128_is_a_typed_refusal() {
         ],
     );
     assert_eq!(text(&narrowed, "event"), "procedure_run");
+}
+
+/// A date reaches only procedures that use one (fa-9pjp): one given to a
+/// procedure that folds every posting regardless of effective date is a
+/// usage error on run and on record, never silently ignored, and the
+/// registry's effective_through for each procedure is visible in the list.
+#[test]
+fn an_effective_date_is_refused_where_a_procedure_would_ignore_it() {
+    let f = Fixture::new();
+    for argv in [
+        &[
+            "procedure",
+            "run",
+            "jet.round_amounts",
+            "--effective-through",
+            "2026-01-31",
+        ][..],
+        &[
+            "finding",
+            "record",
+            "jet.round_amounts",
+            "--effective-through",
+            "2026-01-31",
+        ][..],
+    ] {
+        let before = f.head();
+        let (exit, events) = call(&f.book, argv, None);
+        assert_eq!(exit, 2, "{argv:?}: {events:?}");
+        assert!(
+            text(data(&events[0]), "message").contains("does not take --effective-through"),
+            "{events:?}"
+        );
+        assert!(
+            text(data(&events[0]), "fix").contains("--known-at"),
+            "{events:?}"
+        );
+        assert_eq!(f.head(), before, "{argv:?} wrote nothing");
+    }
+    let run = ok(
+        &f.book,
+        &[
+            "procedure",
+            "run",
+            "lookback.preferences",
+            "--effective-through",
+            "2026-01-31",
+        ],
+    );
+    assert_eq!(text(&run, "event"), "procedure_run");
+    // A recorded run keeps the date it was given; the inventory reports it.
+    let recorded = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            "lookback.preferences",
+            "--effective-through",
+            "2026-01-31",
+        ],
+    );
+    let runs = ok(&f.book, &["finding", "runs"]);
+    let row = data(&runs)
+        .get("runs")
+        .and_then(Json::as_arr)
+        .unwrap()
+        .iter()
+        .find(|r| r.get("run_vid") == data(&recorded).get("run_vid"))
+        .expect("the recorded run is listed");
+    assert_eq!(text(row, "effective_through"), "2026-01-31");
+    let list = ok(&f.book, &["procedure", "list"]);
+    let rows = data(&list)
+        .get("procedures")
+        .and_then(Json::as_arr)
+        .unwrap();
+    let declared = |id: &str| {
+        let row = rows.iter().find(|r| text(r, "id") == id).expect(id);
+        text(row, "effective_through").to_string()
+    };
+    assert_eq!(declared("jet.round_amounts"), "not_taken");
+    assert_eq!(declared("lookback.preferences"), "optional");
+    assert_eq!(declared("aging.open_items"), "required");
 }

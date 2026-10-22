@@ -18664,6 +18664,29 @@ fn calibration_name(c: &fa_registry::procedures::Calibration) -> &'static str {
     }
 }
 
+/// A date given to a procedure that folds every posting regardless of
+/// effective date is refused, never silently ignored (fa-9pjp): the
+/// registry row's `effective_through` says which procedures take one.
+pub(crate) fn refuse_untaken_date(
+    id: &str,
+    effective_through: Option<DateDay>,
+) -> Result<(), Fail> {
+    if effective_through.is_none() {
+        return Ok(());
+    }
+    let procedures = fa_registry::procedures::Procedures::embedded()
+        .map_err(|e| usage(e.to_string(), "fa procedure list --json"))?;
+    match procedures.get(id).map(|row| row.effective_through) {
+        Some(fa_registry::procedures::EffectiveThrough::NotTaken) => Err(usage(
+            format!(
+                "{id} folds every posting regardless of effective date; it does not take --effective-through"
+            ),
+            "omit --effective-through, or narrow the snapshot with --known-at <seq>; `fa procedure list --json` shows each procedure's effective_through",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn procedure_row_json(row: &fa_registry::procedures::Procedure) -> Json {
     obj(vec![
         ("id", s(&row.id)),
@@ -18674,6 +18697,7 @@ fn procedure_row_json(row: &fa_registry::procedures::Procedure) -> Json {
         ("complexity", s(&row.complexity)),
         ("calibration", s(calibration_name(&row.calibration))),
         ("summary", s(&row.summary)),
+        ("effective_through", s(row.effective_through.name())),
         (
             "inputs",
             Json::Arr(
@@ -18845,6 +18869,7 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     )
                 })?),
             };
+            refuse_untaken_date(id, effective_through)?;
             let who = ctx.principal(args);
             let bank_cap = if id == "recon.bank_statement_drift" {
                 let cap = ctx.capability(args, &["read"])?;
