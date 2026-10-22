@@ -422,6 +422,46 @@ fn attach_creates_supplemental_evidence() -> std::io::Result<()> {
             && listed.contains(&format!("\"document_oid\":\"{lease}\"")),
         "{explained}"
     );
+    // fa-ge0y: the provenance closure names the invoice the entry was
+    // posted with and its principal; the supplement and the lease joined
+    // it later, so the closure as posted has its own digest.
+    let line = fa_cli::json::parse(explained.trim()).expect("one robot line");
+    let closure = line
+        .get("data")
+        .and_then(|data| data.get("closure"))
+        .expect("a closure");
+    let members: Vec<(String, String, String)> = closure
+        .get("members")
+        .and_then(fa_cli::json::Json::as_arr)
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let text = |key: &str| {
+                m.get(key)
+                    .and_then(fa_cli::json::Json::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            (text("kind"), text("vid"), text("digest"))
+        })
+        .collect();
+    let has = |kind: &str, check: &dyn Fn(&(String, String, String)) -> bool| {
+        members.iter().any(|m| m.0 == kind && check(m))
+    };
+    assert!(has("document", &|m| m.2 == invoice), "{explained}");
+    assert!(has("principal", &|_| true), "{explained}");
+    assert!(has("origin", &|_| true), "{explained}");
+    assert!(has("supplement", &|m| m.1 == supplement), "{explained}");
+    assert!(has("supplement_document", &|m| m.2 == lease), "{explained}");
+    let digest = |key: &str| {
+        closure
+            .get(key)
+            .and_then(fa_cli::json::Json::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(digest("digest").len(), 64, "{explained}");
+    assert_ne!(digest("original_digest"), digest("digest"), "{explained}");
 
     // An unknown document is the kernel's refusal; nothing is written.
     let unknown = "ab".repeat(32);

@@ -17515,14 +17515,51 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ])
         })
         .collect();
+    // Plan §9.2 (fa-ge0y): every member of the provenance closure, in
+    // canonical order, with the original and current closure digests.
+    let closure_members: Vec<Json> = ex
+        .closure
+        .members
+        .iter()
+        .map(|m| {
+            obj(vec![
+                ("kind", s(m.kind.name())),
+                (
+                    "vid",
+                    m.vid.map_or(Json::Null, |vid| s(format!("{:032x}", vid.0))),
+                ),
+                (
+                    "digest",
+                    m.digest.as_ref().map_or(Json::Null, |d| s(hex(d))),
+                ),
+                (
+                    "role",
+                    m.role.map_or(Json::Null, |tag| {
+                        s(policy
+                            .roles
+                            .iter()
+                            .find(|r| r.tag == tag)
+                            .map_or_else(|| tag.to_string(), |r| r.name.clone()))
+                    }),
+                ),
+                (
+                    "recorded_at",
+                    m.recorded_at
+                        .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+                ),
+            ])
+        })
+        .collect();
     let human = format!(
-        "evidence of entry {:032x} ({}) · minimum {} document(s) · satisfied={} · {} cited document(s) · {} supplement(s)",
+        "evidence of entry {:032x} ({}) · minimum {} document(s) · satisfied={} · {} cited document(s) · {} supplement(s) · closure of {} member(s) {}",
         ex.entry_vid.0,
         ex.class,
         ex.min_documents,
         ex.minimum_satisfied,
         ex.documents.len(),
-        ex.supplements.len()
+        ex.supplements.len(),
+        ex.closure.members.len(),
+        hex(&ex.closure.digest)
     );
     out.event(
         "evidence_explained",
@@ -17543,6 +17580,14 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("documents", Json::Arr(docs_json)),
             ("supplements", Json::Arr(supplements)),
             ("manual_assertions", Json::Arr(manual_assertions)),
+            (
+                "closure",
+                obj(vec![
+                    ("digest", s(hex(&ex.closure.digest))),
+                    ("original_digest", s(hex(&ex.closure.original_digest))),
+                    ("members", Json::Arr(closure_members)),
+                ]),
+            ),
         ],
         &human,
     );

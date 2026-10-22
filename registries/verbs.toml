@@ -2056,8 +2056,8 @@ fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", 
 [[event]]
 name = "evidence_explained"
 book = true
-doc = "An entry's complete evidence closure (`fa explain evidence <entry-vid>`): the class's registered evidence policy minimum (`evidence_policy.toml`), every cited document with its commitment, intake grade, self-sourced status, Reviewed attestations, and SupplementalEvidence links, plus any ManualAssertion attestations over the entry's proposal digest, and whether the closure satisfies the class minimum."
-fields = ["entry:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "recorded_at:seq", "min_documents:int", "accepted_kinds:[string]", "accepts_self_sourced:bool", "accepts_manual_assertion:bool", "satisfied:bool", "documents:[explained_document]", "supplements:[evidence_supplement]", "manual_assertions:[explained_manual_assertion]"]
+doc = "An entry's complete evidence closure (`fa explain evidence <entry-vid>`): the class's registered evidence policy minimum (`evidence_policy.toml`), every cited document with its commitment, intake grade, self-sourced status, Reviewed attestations, and SupplementalEvidence links, plus any ManualAssertion attestations over the entry's proposal digest, and whether the closure satisfies the class minimum. closure is the entry's provenance closure (plan §9.2): every member in canonical order (document, review, derivation, manual_assertion, approval, event, supersedes, principal, session, origin, plan_certificate, supplement, supplement_document) with its vertex, content digest, citation role and recording sequence (null for a bare reference), and two fa:closure:v1 digests: original_digest over the members the entry had as posted (recorded no later than it, no supplement), digest over all of them."
+fields = ["entry:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "recorded_at:seq", "min_documents:int", "accepted_kinds:[string]", "accepts_self_sourced:bool", "accepts_manual_assertion:bool", "satisfied:bool", "documents:[explained_document]", "supplements:[evidence_supplement]", "manual_assertions:[explained_manual_assertion]", "closure:provenance_closure"]
 
 [[event]]
 name = "refusal_explained"
@@ -3106,6 +3106,16 @@ fields = ["supplement_vid:hex", "attached_by:hex", "body_digest:hex", "recorded_
 name = "explained_manual_assertion"
 doc = "A ManualAssertion attestation bound to an entry's proposal digest."
 fields = ["attestation_vid:hex", "asserter:hex", "reason_code:int", "reason:string?", "recorded_at:seq"]
+
+[[shape]]
+name = "provenance_closure"
+doc = "An entry's provenance closure (plan §9.2, bead fa-ge0y): its members in canonical order and two fa:closure:v1 digests over (entry vid, entry digest, recorded_at, members): original_digest over the members recorded no later than the entry and not supplementary, digest over every member."
+fields = ["digest:hex", "original_digest:hex", "members:[closure_member]"]
+
+[[shape]]
+name = "closure_member"
+doc = "One provenance-closure member: its kind, its vertex (null for a reference such as an intent oid), its content digest (a document oid, an approval's, event's or superseded entry's digest, an origin's oid or digest), the citation role for a document, and the sequence that recorded it (null for a bare reference: the principal, the session, an origin without a vertex)."
+fields = ["kind:string", "vid:hex?", "digest:hex?", "role:string?", "recorded_at:seq?"]
 
 [[shape]]
 name = "explained_admissibility_cell"

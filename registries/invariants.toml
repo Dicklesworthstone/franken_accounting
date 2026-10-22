@@ -501,7 +501,7 @@ evidence_class = "invariant"
 checker_strength = "differential"
 first_gate = "G2"
 owner = "fa-txf"
-checkers = ["fa-registers::tests/evidence_oracle.rs::custody_and_import_receipts_on_the_real_kernel_agree_with_the_oracle", "fa-registers::tests/evidence_oracle.rs::legal_holds_on_the_real_kernel_agree_with_a_literal_model"]
+checkers = ["fa-registers::tests/evidence_oracle.rs::custody_and_import_receipts_on_the_real_kernel_agree_with_the_oracle", "fa-registers::tests/evidence_oracle.rs::legal_holds_on_the_real_kernel_agree_with_a_literal_model", "fa-journal::tests/policy.rs::the_provenance_closure_holds_documents_approvals_and_later_supplements", "fa-journal::lib::evidence::tests::closure_enumerates_all_members"]
 negatives = ["fa-journal::lib::import::tests::a_receipt_verifies_only_against_its_exact_oid_list", "fa-journal::tests/genesis.rs::a_document_without_a_complete_custody_chain_cannot_be_cited"]
 waiver = "forbidden"
 

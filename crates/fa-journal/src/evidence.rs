@@ -1995,6 +1995,384 @@ pub struct ManualAssertionSummary {
     pub recorded_at: CommitSeq,
 }
 
+/// What a provenance-closure member is (plan §9.2, bead fa-ge0y). The
+/// declaration order is the canonical order, and [`ClosureKind::tag`] is
+/// part of the closure digest: both are durable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ClosureKind {
+    /// A document the entry cites; the role is the citation's.
+    Document,
+    /// The Reviewed attestation of a cited document.
+    Review,
+    /// A document a cited one was derived from (`DERIVED_FROM`).
+    Derivation,
+    /// The ManualAssertion over the entry's proposal.
+    ManualAssertion,
+    /// An approval in the entry's envelope.
+    Approval,
+    /// The REA event the entry cites.
+    Event,
+    /// An entry this one supersedes or resolves.
+    Supersedes,
+    /// The principal the entry was posted for: a reference, not a vertex.
+    Principal,
+    /// The session it was posted in: a reference.
+    Session,
+    /// What produced it: the intent, the migration run and batch, the
+    /// control spec, the sweep's tick evidence, the schedule, or a rule
+    /// version and its inputs.
+    Origin,
+    /// The dry-run plan certificate it was committed under.
+    PlanCertificate,
+    /// A supplement attached after the entry.
+    Supplement,
+    /// A document a supplement cites.
+    SupplementDocument,
+}
+
+impl ClosureKind {
+    #[must_use]
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::Document => 1,
+            Self::Review => 2,
+            Self::Derivation => 3,
+            Self::ManualAssertion => 4,
+            Self::Approval => 5,
+            Self::Event => 6,
+            Self::Supersedes => 7,
+            Self::Principal => 8,
+            Self::Session => 9,
+            Self::Origin => 10,
+            Self::PlanCertificate => 11,
+            Self::Supplement => 12,
+            Self::SupplementDocument => 13,
+        }
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Review => "review",
+            Self::Derivation => "derivation",
+            Self::ManualAssertion => "manual_assertion",
+            Self::Approval => "approval",
+            Self::Event => "event",
+            Self::Supersedes => "supersedes",
+            Self::Principal => "principal",
+            Self::Session => "session",
+            Self::Origin => "origin",
+            Self::PlanCertificate => "plan_certificate",
+            Self::Supplement => "supplement",
+            Self::SupplementDocument => "supplement_document",
+        }
+    }
+
+    /// Members that join the closure after posting, whatever their own
+    /// sequence: a supplement and every document it cites.
+    fn supplementary(self) -> bool {
+        matches!(self, Self::Supplement | Self::SupplementDocument)
+    }
+}
+
+/// One member of an entry's provenance closure.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ClosureMember {
+    pub kind: ClosureKind,
+    /// Its vertex, when it has one.
+    pub vid: Option<VId>,
+    /// Its content identity: a document oid, an approval's, event's or
+    /// superseded entry's digest, an origin's oid or digest.
+    pub digest: Option<[u8; 32]>,
+    /// A citation's role.
+    pub role: Option<u8>,
+    /// The sequence that recorded it; none for a bare reference.
+    pub recorded_at: Option<CommitSeq>,
+}
+
+/// An entry's provenance closure (plan §9.2): every member, in canonical
+/// order, and two digests under `fa:closure:v1`. `original_digest` covers
+/// the members the entry had as posted: recorded no later than it, and not
+/// supplementary. `digest` covers every member, later reviews and
+/// supplements included.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProvenanceClosure {
+    pub members: Vec<ClosureMember>,
+    pub original_digest: [u8; 32],
+    pub digest: [u8; 32],
+}
+
+/// The closure digest's domain.
+pub const CLOSURE_DOMAIN: &[u8] = b"fa:closure:v1";
+
+impl ProvenanceClosure {
+    /// The closure of the entry `entry_vid` (`entry_digest`, recorded at
+    /// `recorded_at`) over `members`, in canonical order without
+    /// duplicates.
+    pub fn new(
+        entry_vid: VId,
+        entry_digest: [u8; 32],
+        recorded_at: CommitSeq,
+        mut members: Vec<ClosureMember>,
+    ) -> Result<Self, KernelError> {
+        members.sort();
+        members.dedup();
+        let digest = |list: &[&ClosureMember]| -> Result<[u8; 32], KernelError> {
+            let mut w = Writer::new();
+            w.u128(entry_vid.0)
+                .fixed(&entry_digest)
+                .u64(recorded_at.0)
+                .list(list, |w, member| {
+                    w.u8(member.kind.tag())
+                        .opt(member.vid.as_ref(), |w, vid| {
+                            w.u128(vid.0);
+                        })
+                        .opt(member.digest.as_ref(), |w, digest| {
+                            w.fixed(digest);
+                        })
+                        .opt(member.role.as_ref(), |w, role| {
+                            w.u8(*role);
+                        })
+                        .opt(member.recorded_at.as_ref(), |w, seq| {
+                            w.u64(seq.0);
+                        });
+                });
+            let bytes = w
+                .finish()
+                .map_err(|e| KernelError::Corrupt(format!("provenance closure: {e}")))?;
+            Ok(domain_digest(CLOSURE_DOMAIN, &[&bytes]))
+        };
+        let all: Vec<&ClosureMember> = members.iter().collect();
+        let original: Vec<&ClosureMember> = members
+            .iter()
+            .filter(|m| {
+                !m.kind.supplementary() && m.recorded_at.is_none_or(|seq| seq <= recorded_at)
+            })
+            .collect();
+        Ok(Self {
+            original_digest: digest(&original)?,
+            digest: digest(&all)?,
+            members,
+        })
+    }
+}
+
+/// The members of `entry`'s closure beyond what `explain_entry_evidence`
+/// already read: its documents, reviews, derivations, manual assertion and
+/// supplements are passed in.
+fn closure_of<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    entry: &fa_model::Entry,
+    entry_vid: VId,
+    recorded_at: CommitSeq,
+    documents: &[DocumentEvidenceSummary],
+    supplements: &[SupplementSummary],
+    manual_assertion: Option<&ManualAssertionSummary>,
+) -> Result<ProvenanceClosure, KernelError> {
+    let member = |kind, vid, digest, role, recorded_at| ClosureMember {
+        kind,
+        vid,
+        digest,
+        role,
+        recorded_at,
+    };
+    let missing = |what: &str, vid: VId| {
+        KernelError::Corrupt(format!(
+            "entry {:032x} cites a missing {what} {:032x}",
+            entry_vid.0, vid.0
+        ))
+    };
+    let created = |vid: VId, what: &str| -> Result<CommitSeq, KernelError> {
+        Ok(db
+            .vertex(vid)?
+            .ok_or_else(|| missing(what, vid))?
+            .created_at)
+    };
+    let mut members = Vec::new();
+    for document in documents {
+        members.push(member(
+            ClosureKind::Document,
+            Some(document_vid(&document.document_oid)),
+            Some(document.document_oid.0),
+            Some(document.role),
+            Some(document.recorded_at),
+        ));
+        if let Some(review) = &document.review {
+            members.push(member(
+                ClosureKind::Review,
+                Some(review.attestation_vid),
+                None,
+                None,
+                Some(review.recorded_at),
+            ));
+        }
+        for source in &document.derived_from {
+            members.push(member(
+                ClosureKind::Derivation,
+                Some(document_vid(&source.document_oid)),
+                Some(source.document_oid.0),
+                None,
+                Some(source.recorded_at),
+            ));
+        }
+    }
+    if let Some(assertion) = manual_assertion {
+        members.push(member(
+            ClosureKind::ManualAssertion,
+            Some(assertion.attestation_vid),
+            None,
+            None,
+            Some(assertion.recorded_at),
+        ));
+    }
+    for approval in &entry.approvals {
+        let row = db
+            .vertex(approval.approval_vid)?
+            .ok_or_else(|| missing("approval", approval.approval_vid))?;
+        let digest: [u8; 32] =
+            crate::rows::bytes(&row, property::FA_DIGEST, "approval._fa_digest")?
+                .try_into()
+                .map_err(|_| KernelError::Corrupt("approval._fa_digest is not 32 bytes".into()))?;
+        members.push(member(
+            ClosureKind::Approval,
+            Some(approval.approval_vid),
+            Some(digest),
+            None,
+            Some(row.created_at),
+        ));
+    }
+    if let Some((event, digest)) = entry.proposal.cited_event() {
+        members.push(member(
+            ClosureKind::Event,
+            Some(event),
+            digest,
+            None,
+            Some(created(event, "event")?),
+        ));
+    }
+    for supersession in &entry.proposal.supersession {
+        let target = supersession.target.vid;
+        let (_, seq) =
+            crate::post::read_entry(db, target)?.ok_or_else(|| missing("entry", target))?;
+        members.push(member(
+            ClosureKind::Supersedes,
+            Some(target),
+            Some(supersession.target.entry_digest),
+            None,
+            Some(seq),
+        ));
+    }
+    members.push(member(
+        ClosureKind::Principal,
+        Some(entry.proposal.principal_ref),
+        None,
+        None,
+        None,
+    ));
+    if let Some(session) = entry.proposal.session_ref {
+        members.push(member(
+            ClosureKind::Session,
+            Some(session),
+            None,
+            None,
+            None,
+        ));
+    }
+    match &entry.proposal.origin {
+        fa_model::EntryOrigin::Intent { intent_oid, .. } => {
+            members.push(member(
+                ClosureKind::Origin,
+                None,
+                Some(intent_oid.0),
+                None,
+                None,
+            ));
+        }
+        fa_model::EntryOrigin::Rule {
+            rule_version_oid,
+            inputs_digest,
+            ..
+        } => {
+            // Its event is the cited event above.
+            for digest in [rule_version_oid.0, *inputs_digest] {
+                members.push(member(ClosureKind::Origin, None, Some(digest), None, None));
+            }
+        }
+        fa_model::EntryOrigin::Migration {
+            run_ref, batch_oid, ..
+        } => {
+            members.push(member(
+                ClosureKind::Origin,
+                Some(*run_ref),
+                Some(batch_oid.0),
+                None,
+                Some(created(*run_ref, "migration run")?),
+            ));
+        }
+        fa_model::EntryOrigin::Control {
+            spec_body_digest, ..
+        } => {
+            members.push(member(
+                ClosureKind::Origin,
+                None,
+                Some(*spec_body_digest),
+                None,
+                None,
+            ));
+        }
+        fa_model::EntryOrigin::Sweep {
+            tick_evidence_oid, ..
+        } => {
+            members.push(member(
+                ClosureKind::Origin,
+                None,
+                Some(tick_evidence_oid.0),
+                None,
+                None,
+            ));
+        }
+        fa_model::EntryOrigin::Schedule { schedule_ref, .. } => {
+            members.push(member(
+                ClosureKind::Origin,
+                Some(*schedule_ref),
+                None,
+                None,
+                Some(created(*schedule_ref, "schedule")?),
+            ));
+        }
+    }
+    if let Some(plan) = &entry.plan_certificate {
+        members.push(member(
+            ClosureKind::PlanCertificate,
+            None,
+            Some(plan.0),
+            None,
+            None,
+        ));
+    }
+    for supplement in supplements {
+        members.push(member(
+            ClosureKind::Supplement,
+            Some(supplement.vid),
+            Some(supplement.body_digest),
+            None,
+            Some(supplement.recorded_at),
+        ));
+        for cited in &supplement.documents {
+            let vid = document_vid(&cited.document_oid);
+            members.push(member(
+                ClosureKind::SupplementDocument,
+                Some(vid),
+                Some(cited.document_oid.0),
+                Some(cited.role),
+                Some(created(vid, "document")?),
+            ));
+        }
+    }
+    ProvenanceClosure::new(entry_vid, entry.entry_digest, recorded_at, members)
+}
+
 /// Metadata-only explanation of a committed entry's evidence closure (`fa explain evidence`,
 /// bead `fa-rbo0`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2011,6 +2389,8 @@ pub struct EvidenceExplanation {
     pub documents: Vec<DocumentEvidenceSummary>,
     pub supplements: Vec<SupplementSummary>,
     pub manual_assertion: Option<ManualAssertionSummary>,
+    /// Every member of the entry's provenance closure, with its digests.
+    pub closure: ProvenanceClosure,
 }
 
 /// Explain the evidence closure of `entry_vid` from verified metadata without
@@ -2156,6 +2536,15 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
         manual_assertion.as_ref().map(|m| m.reason_code),
     )
     .is_ok();
+    let closure = closure_of(
+        db,
+        &entry,
+        entry_vid,
+        recorded_at,
+        &documents,
+        &supplements,
+        manual_assertion.as_ref(),
+    )?;
 
     Ok(Some(EvidenceExplanation {
         entry_vid,
@@ -2170,12 +2559,120 @@ pub fn explain_entry_evidence<V: asupersync::fs::Vfs + Clone>(
         documents,
         supplements,
         manual_assertion,
+        closure,
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fa-ge0y: the closure is canonical (order, duplicates), the original
+    /// digest is the closure as posted, and every member field is bound.
+    #[test]
+    fn closure_enumerates_all_members() {
+        let entry = VId(0xe);
+        let digest = [7; 32];
+        let at = CommitSeq(10);
+        let m = |kind, vid: u128, digest: Option<u8>, role, seq: Option<u64>| ClosureMember {
+            kind,
+            vid: Some(VId(vid)),
+            digest: digest.map(|b| [b; 32]),
+            role,
+            recorded_at: seq.map(CommitSeq),
+        };
+        let posted = vec![
+            m(ClosureKind::Approval, 5, Some(5), None, Some(9)),
+            m(ClosureKind::Document, 2, Some(2), Some(3), Some(4)),
+            m(ClosureKind::Principal, 1, None, None, None),
+            m(ClosureKind::Document, 3, Some(3), Some(1), Some(3)),
+            m(ClosureKind::Document, 2, Some(2), Some(3), Some(4)),
+        ];
+        let closure = ProvenanceClosure::new(entry, digest, at, posted.clone()).expect("closure");
+        let kinds: Vec<_> = closure.members.iter().map(|m| (m.kind, m.vid)).collect();
+        assert_eq!(
+            kinds,
+            [
+                (ClosureKind::Document, Some(VId(2))),
+                (ClosureKind::Document, Some(VId(3))),
+                (ClosureKind::Approval, Some(VId(5))),
+                (ClosureKind::Principal, Some(VId(1))),
+            ],
+            "canonical order, one copy of a member"
+        );
+        assert_eq!(closure.original_digest, closure.digest);
+        let mut reordered = posted.clone();
+        reordered.reverse();
+        assert_eq!(
+            ProvenanceClosure::new(entry, digest, at, reordered).expect("closure"),
+            closure
+        );
+        // A supplement, and a document it cites that was recorded before the
+        // entry, join the closure but not the closure as posted; so does a
+        // review recorded after the entry.
+        for later in [
+            m(ClosureKind::Supplement, 8, Some(8), None, Some(12)),
+            m(
+                ClosureKind::SupplementDocument,
+                4,
+                Some(4),
+                Some(1),
+                Some(2),
+            ),
+            m(ClosureKind::Review, 6, None, None, Some(11)),
+        ] {
+            let mut grown = posted.clone();
+            grown.push(later.clone());
+            let grown = ProvenanceClosure::new(entry, digest, at, grown).expect("closure");
+            assert_eq!(grown.original_digest, closure.original_digest, "{later:?}");
+            assert_ne!(grown.digest, closure.digest, "{later:?}");
+            assert_eq!(grown.members.len(), 5);
+        }
+        // Every field of a member, and the entry itself, is bound.
+        let changed = [
+            m(ClosureKind::Review, 2, Some(2), Some(3), Some(4)),
+            m(ClosureKind::Document, 9, Some(2), Some(3), Some(4)),
+            m(ClosureKind::Document, 2, Some(9), Some(3), Some(4)),
+            m(ClosureKind::Document, 2, None, Some(3), Some(4)),
+            m(ClosureKind::Document, 2, Some(2), Some(1), Some(4)),
+            m(ClosureKind::Document, 2, Some(2), Some(3), Some(5)),
+        ];
+        for other in changed {
+            let mut members = posted.clone();
+            members[1] = other.clone();
+            members[4] = other.clone();
+            let moved = ProvenanceClosure::new(entry, digest, at, members).expect("closure");
+            assert_ne!(moved.original_digest, closure.original_digest, "{other:?}");
+        }
+        for (vid, entry_digest, seq) in [
+            (VId(0xf), digest, at),
+            (entry, [8; 32], at),
+            (entry, digest, CommitSeq(11)),
+        ] {
+            let moved =
+                ProvenanceClosure::new(vid, entry_digest, seq, posted.clone()).expect("closure");
+            assert_ne!(moved.digest, closure.digest);
+        }
+        let tags: std::collections::BTreeSet<u8> = [
+            ClosureKind::Document,
+            ClosureKind::Review,
+            ClosureKind::Derivation,
+            ClosureKind::ManualAssertion,
+            ClosureKind::Approval,
+            ClosureKind::Event,
+            ClosureKind::Supersedes,
+            ClosureKind::Principal,
+            ClosureKind::Session,
+            ClosureKind::Origin,
+            ClosureKind::PlanCertificate,
+            ClosureKind::Supplement,
+            ClosureKind::SupplementDocument,
+        ]
+        .into_iter()
+        .map(ClosureKind::tag)
+        .collect();
+        assert_eq!(tags.len(), 13, "every kind has its own tag");
+    }
 
     #[test]
     fn commitment_binds_kind_length_and_every_chunk() {
