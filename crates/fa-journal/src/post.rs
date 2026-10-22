@@ -1622,6 +1622,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         Ok(s) => s,
         Err(r) => return Ok(Err(r)),
     };
+    // 1g. An out-of-period correction (plan §8.2): an Adjusting entry's
+    //     `fa:prior-period-error:v1` names an earlier period of the calendar.
+    if let Err(r) = crate::engagement::admit_prior_period_error(book, proposal) {
+        return Ok(Err(r));
+    }
     let is_release = matches!(resolution, Some((_, Disposition::Voids)));
     let reversal_target = if is_reversal {
         match proposal.supersession.as_slice() {

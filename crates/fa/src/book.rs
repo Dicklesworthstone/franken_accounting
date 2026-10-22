@@ -1542,24 +1542,48 @@ impl Book {
     }
 
     /// The summary of uncorrected misstatements of `engagement` (plan
-    /// §11.12): its passed proposals' effects by line, in the engagement's
-    /// unit, against the stated parameters. `None` when there is no such
-    /// engagement.
+    /// §11.12): its uncorrected proposals' and the out-of-period corrections'
+    /// effects by line, in the engagement's unit, against the stated
+    /// parameters. `None` when there is no such engagement.
     pub fn uncorrected_misstatements(
         &self,
         engagement: &str,
     ) -> Result<Option<fa_journal::UncorrectedSummary>, BookError> {
+        Ok(self
+            .uncorrected_inputs(engagement)?
+            .map(|(_, _, summary)| summary))
+    }
+
+    /// The engagement, the out-of-period corrections in its scope, and its
+    /// summary of uncorrected misstatements.
+    #[allow(clippy::type_complexity)]
+    fn uncorrected_inputs(
+        &self,
+        engagement: &str,
+    ) -> Result<
+        Option<(
+            fa_journal::EngagementView,
+            Vec<fa_journal::OutOfPeriodCorrection>,
+            fa_journal::UncorrectedSummary,
+        )>,
+        BookError,
+    > {
         let Some(view) = self.engagement(engagement)? else {
             return Ok(None);
         };
+        let corrections = with_store!(&self.store, core => core.out_of_period_corrections(
+            &self.purposes(),
+            &view.profile.scope_periods,
+        ))?;
         let types: std::collections::BTreeMap<u128, fa_model::AccountType> = self
             .accounts()?
             .into_iter()
             .map(|row| (row.vid.0, fa_model::AccountType(row.account_type)))
             .collect();
-        Ok(Some(fa_journal::uncorrected_misstatements(&view, |vid| {
+        let summary = fa_journal::uncorrected_misstatements(&view, &corrections, |vid| {
             types.get(&vid.0).copied()
-        })?))
+        })?;
+        Ok(Some((view, corrections, summary)))
     }
 
     /// The summary of uncorrected misstatements per statement line (plan
@@ -1575,10 +1599,7 @@ impl Book {
         balance_sheet: &str,
     ) -> Outcome<Option<(crate::UncorrectedStatement, crate::UncorrectedStatement)>> {
         use fa_statements::StatementKind;
-        let (Some(view), Some(summary)) = (
-            self.engagement(engagement)?,
-            self.uncorrected_misstatements(engagement)?,
-        ) else {
+        let Some((view, corrections, summary)) = self.uncorrected_inputs(engagement)? else {
             return Ok(Ok(None));
         };
         let resolve = |name: &str, kind: StatementKind| {
@@ -1627,11 +1648,21 @@ impl Book {
             .filter(|leg| leg.amount.unit == view.profile.unit)
             .map(|leg| (leg.account.0, leg.side, leg.amount.mantissa))
             .collect();
-        let attribute = |definition: &fa_statements::custom::CustomStatementDefinition| {
-            crate::statements::uncorrected_statement(definition, &accounts, &legs)
-        };
-        Ok(attribute(&income_definition).and_then(|income| {
-            attribute(&balance_definition).map(|balance| Some((income, balance)))
+        // An out-of-period correction misstates this period's income: the
+        // rollover lines take its legs reversed. The period-end balance
+        // sheet it corrected carries nothing for it.
+        let rollover_legs: Vec<(u128, fa_money::Side, i128)> = corrections
+            .iter()
+            .flat_map(|c| c.legs.iter())
+            .filter(|leg| leg.amount.unit == view.profile.unit)
+            .map(|leg| (leg.account.0, leg.side.flipped(), leg.amount.mantissa))
+            .chain(legs.iter().copied())
+            .collect();
+        let income =
+            crate::statements::uncorrected_statement(&income_definition, &accounts, &rollover_legs);
+        Ok(income.and_then(|income| {
+            crate::statements::uncorrected_statement(&balance_definition, &accounts, &legs)
+                .map(|balance| Some((income, balance)))
         }))
     }
 
