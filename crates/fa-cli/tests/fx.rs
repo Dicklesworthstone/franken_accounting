@@ -102,6 +102,13 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// `development_keys`: create the book in process with
+    /// `BookKeys::for_development(seed)`, so a test can reopen its store
+    /// directly (a planted defect); otherwise `fa book create` makes it.
+    fn build(development_keys: Option<u8>) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let dir = std::env::temp_dir().join(format!(
@@ -116,7 +123,32 @@ impl Fixture {
             }
         };
         let book = dir.join("book");
-        ok(&book, &["book", "create", "--name", "Exact FX"]);
+        match development_keys {
+            None => {
+                ok(&book, &["book", "create", "--name", "Exact FX"]);
+            }
+            Some(seed) => {
+                let units = fa_money::UnitRegistry::embedded().unwrap();
+                let keys = BookKeys::for_development(seed);
+                let created = Book::create_dir(
+                    &book,
+                    keys.clone(),
+                    fa_journal::BookSpec {
+                        book_id: fa_model::Id128([seed; 16]),
+                        name: "Exact FX".into(),
+                        base_unit: units.lookup("USD").unwrap(),
+                        calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
+                        time_zone_policy: None,
+                        entities: Vec::new(),
+                        opening_date: None,
+                    },
+                    Entropy::deterministic(u64::from(seed)),
+                )
+                .unwrap();
+                keys.save(&book.join("book.keys")).unwrap();
+                drop(created);
+            }
+        }
         let chart = dir.join("chart.json");
         std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"EUR Cash","type":"Asset","unit":"EUR"},{"code":"1200","name":"EUR Receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR Revenue","type":"Revenue","unit":"EUR"},{"code":"1100","name":"USD Cash","type":"Asset","unit":"USD"},{"code":"4100","name":"USD Revenue","type":"Revenue","unit":"USD"}]}"#).unwrap();
         ok(&book, &["chart", "import", chart.to_str().unwrap()]);
@@ -957,4 +989,128 @@ fn authenticated_upload_grade_and_file_confinement_survive_fx_intake() {
     assert_eq!(denied.get("book"), Some(&Json::Null));
     assert_eq!(denied.get("coordinate"), Some(&Json::Null));
     assert_eq!(head(&f.book), before);
+}
+
+/// Rewrite the committed entry `target`'s payload through the substrate,
+/// sealing `edit`'s proposal so its digests match (a planted defect only
+/// recomputation can find), in a book created with development keys `seed`.
+fn rewrite_entry(
+    book: &Path,
+    seed: u8,
+    target: VId,
+    edit: impl FnOnce(&mut fa_model::EntryPayload),
+) {
+    use fa_model::symbols::{property, relation};
+    use fgdb_types::CanonicalScalar;
+    let runtime = asupersync::runtime::RuntimeBuilder::new()
+        .build()
+        .expect("runtime");
+    let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+    let ctx = fgdb_types::context::PurposeContexts::narrow_runtime_root(&root);
+    let keys = fgdb::DatabaseKeys::new(
+        [seed; 32],
+        fgdb_types::ids::DatabaseSecurityNamespaceId([seed.wrapping_add(1); 32]),
+        [seed.wrapping_add(2); 32],
+    );
+    let mut db = runtime
+        .block_on(async { fgdb::Database::open(&ctx.commit(), &book.join("store"), keys).await })
+        .expect("reopen the store through the substrate");
+    let row = db.vertex(target).expect("read").expect("the entry");
+    let raw = match row
+        .props
+        .iter()
+        .find(|(k, _)| *k == property::FA_PAYLOAD)
+        .map(|(_, v)| v)
+    {
+        Some(CanonicalScalar::Bytes(b)) => b.as_slice().to_vec(),
+        other => panic!("unexpected payload property: {other:?}"),
+    };
+    let entry = Entry::decode(&raw).expect("decode entry");
+    let mut proposal = entry.proposal;
+    edit(&mut proposal);
+    let forged = proposal
+        .seal(entry.approvals, entry.plan_certificate)
+        .expect("seal the rewritten entry");
+    let mut batch = fgdb::WriteBatch::new(relation::DERIVED_FROM);
+    for (property, bytes) in [
+        (property::FA_PAYLOAD, forged.encode().expect("encode entry")),
+        (property::FA_DIGEST, forged.entry_digest.to_vec()),
+        (property::PROPOSAL_DIGEST, forged.proposal_digest.to_vec()),
+    ] {
+        batch.set_vertex_property(
+            target,
+            property,
+            Some(CanonicalScalar::bytes(bytes).expect("scalar")),
+        );
+    }
+    runtime
+        .block_on(async { db.write(&ctx.commit(), batch).await })
+        .expect("commit the planted rewrite");
+}
+
+/// fa-3ock (plan §6.4, §15.3; FA-INV-01 `base`): `fa verify fx-conversion`
+/// recomputes every FX-valued entry from the Rate documents it cites under
+/// the law it names, at the head or at an earlier prefix, and a valued
+/// Reversal as the exact side-swap of its target. A valuation rewritten
+/// in place, still balanced and with matching digests, is caught (exit 8)
+/// naming the entry.
+#[test]
+fn fx_conversion_verification_recomputes_valued_entries_and_catches_a_rewritten_valuation() {
+    const SEED: u8 = 0x5f;
+    let f = Fixture::build(Some(SEED));
+    let none = ok(&f.book, &["verify", "fx-conversion"]);
+    assert_eq!(integer(data(&none), "valued_entries"), 0);
+
+    let rate = f.rate("spot", "spot_close", "2026-03-05", "1", "2", "HalfEven");
+    let oid = text(data(&rate), "oid").to_string();
+    let first = f.post(&f.intent("valued-1", &oid, "SpotClose"));
+    let first_vid = text(data(&first), "vid").to_string();
+    let prefix = integer(data(&first), "recorded_at").to_string();
+    let split = f.file("verify-split.json", &format!(r#"{{"effective_date":"2026-03-05","idempotency_key":"verify-split","legs":[{{"side":"debit","account":"1000","amount":"0.03 EUR"}},{{"side":"debit","account":"1200","amount":"0.03 EUR"}},{{"side":"credit","account":"4000","amount":"0.06 EUR"}}],"fx":{{"law":"SpotClose","rates":["{oid}"]}}}}"#));
+    let second = f.post(&split);
+    ok(
+        &f.book,
+        &[
+            "reverse",
+            text(data(&second), "vid"),
+            "--reason",
+            "WrongAccount",
+        ],
+    );
+
+    let verified = ok(&f.book, &["verify", "fx-conversion"]);
+    let v = data(&verified);
+    assert_eq!(integer(v, "valued_entries"), 3, "{}", verified.render());
+    assert_eq!(integer(v.get("by_law").unwrap(), "SpotClose"), 3);
+    assert!(rows(v, "drift").is_empty());
+    let historical = ok(
+        &f.book,
+        &["verify", "fx-conversion", "--as-known-at", &prefix],
+    );
+    assert_eq!(integer(data(&historical), "valued_entries"), 1);
+    let (status, refused) = run(
+        &f.book,
+        &["verify", "fx-conversion", "--period", "FY2026-P03"],
+        None,
+    );
+    assert_eq!(status, 2, "{}", refused.render());
+
+    // Planted: one base cent moved onto both sides of the first entry (it
+    // still balances, its digests are recomputed), so only recomputation
+    // from the Rate document can see it.
+    let target = VId(u128::from_str_radix(&first_vid, 16).unwrap());
+    rewrite_entry(&f.book, SEED, target, |proposal| {
+        for leg in &mut proposal.legs {
+            let base = leg.base_amount.as_mut().expect("a valued leg");
+            base.mantissa += 1;
+        }
+        let totals = proposal.base_totals.as_mut().expect("valued totals");
+        totals.debits += 1;
+        totals.credits += 1;
+    });
+    let (status, drift) = run(&f.book, &["verify", "fx-conversion"], None);
+    assert_eq!(status, 8, "{}", drift.render());
+    let rendered = drift.render();
+    assert!(rendered.contains(&first_vid), "{rendered}");
+    assert!(rendered.contains("SpotClose"), "{rendered}");
 }

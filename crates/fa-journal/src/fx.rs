@@ -24,15 +24,15 @@ use asupersync::Cx;
 use fa_model::symbols::label;
 use fa_model::{
     BaseTotals, EntryClass, EntryPayload, EvidenceRef, Id128, LegPayload, Oid, Reader, Residual,
-    Writer, domain_digest,
+    SupersessionKind, Writer, domain_digest,
 };
 use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fa_money::valuation::{LegValue, ValuationError, value_legs};
 use fa_money::{Amount, Rate, RoundingLaw, Side, UnitId, UnitRegistry};
 use fa_registry::FxLaws;
 use fa_time::{DateDay, PeriodDef};
-use fgdb::{Database, WriteTxn};
-use fgdb_types::VId;
+use fgdb::{Database, VertexRow, WriteTxn};
+use fgdb_types::{CommitSeq, VId};
 
 use crate::evidence::{Document, DocumentRecord, Storage, doc_commit, document_oid, document_vid};
 use crate::genesis::BookSpec;
@@ -924,6 +924,38 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
     // Only fresh postings reach this transaction check: prepare_post returns
     // exact recorded outcomes first. Keep current law admission here, outside
     // pure valuation and historical folds, so immutable history is unchanged.
+    verify_claim(
+        &mut |vid: VId| -> Result<Option<VertexRow>, crate::KernelError> {
+            Ok(txn.vertex(db, vid)?)
+        },
+        spec,
+        period,
+        units,
+        leg_entities,
+        proposal,
+        claim,
+        inherited_origin,
+        true,
+    )
+}
+
+/// The FX claim of `proposal` against its cited `Rate` documents, each read
+/// through `read`: a point read of the posting transaction, or of a recorded
+/// snapshot when history is verified. `live` admits the law as a new posting
+/// would (its registry row live and admitting the class); history is judged
+/// under the row its entry named, whatever its status now.
+#[allow(clippy::too_many_arguments)]
+fn verify_claim(
+    read: &mut dyn FnMut(VId) -> Result<Option<VertexRow>, crate::KernelError>,
+    spec: &BookSpec,
+    period: &PeriodDef,
+    units: &UnitRegistry,
+    leg_entities: &[Option<String>],
+    proposal: &EntryPayload,
+    claim: &FxClaim,
+    inherited_origin: Option<(&EntryPayload, &PeriodDef)>,
+    live: bool,
+) -> Outcome<()> {
     // A Reversal's context is supplied only by post.rs after it has witnessed
     // and verified every exact side-swap back to the original valued entry.
     // Replay that original calculation, including its date, period, sides and
@@ -939,16 +971,21 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
             let Some(law) = registry.laws.iter().find(|law| {
                 law.id == claim.law.id()
                     && law.version == claim.law.version()
-                    && law.status == "live"
+                    && (!live || law.status == "live")
             }) else {
                 return Ok(Err(fx_structure(format!(
-                    "FX law {} version {} is not live for a new posting",
+                    "FX law {} version {} is not {}",
                     claim.law.name(),
-                    claim.law.version()
+                    claim.law.version(),
+                    if live {
+                        "live for a new posting"
+                    } else {
+                        "registered"
+                    }
                 ))));
             };
             let class = proposal.class.name().unwrap_or("unregistered");
-            if !law.admitted_classes.iter().any(|allowed| allowed == class) {
+            if live && !law.admitted_classes.iter().any(|allowed| allowed == class) {
                 return Ok(Err(fx_structure(format!(
                     "FX law {} version {} does not admit entry class {class} for a new posting",
                     claim.law.name(),
@@ -969,7 +1006,7 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
     let mut rate_docs = Vec::with_capacity(claim.rate_doc_oids.len());
     for oid in &claim.rate_doc_oids {
         let vid = document_vid(oid);
-        let Some(row) = txn.vertex(db, vid)? else {
+        let Some(row) = read(vid)? else {
             return Ok(Err(Refusal::new(
                 code::EVIDENCE_UNKNOWN,
                 exit::REFUSAL,
@@ -1187,6 +1224,179 @@ pub(crate) fn verify_in_txn<V: asupersync::fs::Vfs + Clone>(
     }
 
     Ok(Ok(()))
+}
+
+/// One FX-valued entry whose recorded valuation does not recompute.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FxConversionDrift {
+    pub entry: VId,
+    pub recorded_at: CommitSeq,
+    /// The FX law its base_totals name (`unregistered` when none does).
+    pub law: String,
+    pub problem: String,
+}
+
+/// `fa verify fx-conversion`: every FX-valued entry recorded at or before
+/// `known_at`, recomputed (plan §6.4, §15.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FxConversionVerification {
+    pub known_at: CommitSeq,
+    /// Valued entries checked, by FX law name.
+    pub checked: BTreeMap<String, u64>,
+    /// Entries whose valuation does not recompute, in recording order.
+    pub drift: Vec<FxConversionDrift>,
+}
+
+impl FxConversionVerification {
+    #[must_use]
+    pub fn is_green(&self) -> bool {
+        self.drift.is_empty()
+    }
+}
+
+/// Recompute the functional valuation of every FX-valued entry recorded at
+/// or before `at` (FA-INV-01 `base`, `base-residual`, `realized-fx`): its
+/// structure and per-entity balance, then its legs, totals and residual from
+/// the Rate documents it cites, read at `at`, under the registered law row it
+/// names (live or not now: history keeps the law it was posted under). A
+/// Reversal of a SpotClose or PeriodAverage valuation must be the exact
+/// side-swap of the entry it reverses, which is checked on its own row.
+/// Read-only.
+pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    units: &UnitRegistry,
+    at: CommitSeq,
+) -> Result<FxConversionVerification, crate::KernelError> {
+    let spec = crate::genesis::read_book_spec(db)?
+        .ok_or_else(|| crate::KernelError::Corrupt("the book has no genesis".into()))?;
+    let mut out = FxConversionVerification {
+        known_at: at,
+        checked: BTreeMap::new(),
+        drift: Vec::new(),
+    };
+    for row in db.vertices_at(at)? {
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let entry = crate::sweep::decode_entry(&row)?;
+        let proposal = &entry.proposal;
+        if proposal.base_totals.is_none() && proposal.legs.iter().all(|l| l.base_amount.is_none())
+        {
+            continue;
+        }
+        let law = proposal
+            .base_totals
+            .as_ref()
+            .and_then(|bt| FxLawId::from_oid(&bt.fx_law_oid))
+            .map_or("unregistered", FxLawId::name)
+            .to_string();
+        *out.checked.entry(law.clone()).or_default() += 1;
+        if let Err(problem) = verify_recorded(db, &spec, units, at, proposal)? {
+            out.drift.push(FxConversionDrift {
+                entry: row.vid,
+                recorded_at: row.created_at,
+                law,
+                problem,
+            });
+        }
+    }
+    out.drift.sort_by_key(|d| (d.recorded_at, d.entry.0));
+    Ok(out)
+}
+
+/// One recorded valued entry: `Err` names why its valuation does not
+/// recompute.
+fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    spec: &BookSpec,
+    units: &UnitRegistry,
+    at: CommitSeq,
+    proposal: &EntryPayload,
+) -> Result<Result<(), String>, crate::KernelError> {
+    let leg_entities = match crate::entity::leg_entities(spec, &proposal.legs) {
+        Ok(entities) => entities,
+        Err(crate::entity::LegEntityError::Refused(r)) => return Ok(Err(r.message)),
+        Err(crate::entity::LegEntityError::OtherDimension) => {
+            return Ok(Err(
+                "a leg carries a dimension other than the legal entity".into()
+            ));
+        }
+    };
+    let claim = match admit_structure(proposal, spec, &leg_entities, units) {
+        Ok(Some(claim)) => claim,
+        Ok(None) => return Ok(Err("base amounts without a registered FX claim".into())),
+        Err(r) => return Ok(Err(r.message)),
+    };
+    let mut read = |vid: VId| -> Result<Option<VertexRow>, crate::KernelError> {
+        Ok(db.vertex_at(vid, at)?)
+    };
+    if proposal.class == EntryClass::REVERSAL
+        && matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage)
+    {
+        let Some(target) = proposal
+            .supersession
+            .iter()
+            .find(|s| s.kind == SupersessionKind::Reverses)
+            .map(|s| s.target)
+        else {
+            return Ok(Err("a valued Reversal names no entry it reverses".into()));
+        };
+        let Some(row) = read(target.vid)? else {
+            return Ok(Err(format!(
+                "the reversed entry {:032x} is not recorded",
+                target.vid.0
+            )));
+        };
+        let original = crate::sweep::decode_entry(&row)?;
+        return Ok(
+            if crate::post::exact_side_swap(&original.proposal, proposal) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "not the exact side-swap of entry {:032x}: a reversal preserves the original valuation",
+                    target.vid.0
+                ))
+            },
+        );
+    }
+    let period = match entry_period(spec, proposal) {
+        Ok(period) => period,
+        Err(why) => return Ok(Err(why)),
+    };
+    Ok(
+        match verify_claim(
+            &mut read,
+            spec,
+            &period,
+            units,
+            &leg_entities,
+            proposal,
+            &claim,
+            None,
+            false,
+        )? {
+            Ok(()) => Ok(()),
+            Err(r) => Err(r.message),
+        },
+    )
+}
+
+/// The period an entry was posted in, from the calendar declared at genesis
+/// and its `effective_period` discriminator.
+fn entry_period(spec: &BookSpec, proposal: &EntryPayload) -> Result<PeriodDef, String> {
+    let date = proposal.effective_date;
+    let periods = spec
+        .calendar
+        .fiscal_year_of(date)
+        .and_then(|fy| spec.calendar.periods_for_year(fy))
+        .map_err(|e| format!("effective date {}: {e}", date.render()))?;
+    fa_time::resolve_period(
+        &periods,
+        date,
+        proposal.effective_period.as_ref().map(|p| p.code.as_str()),
+    )
+    .cloned()
+    .map_err(|e| format!("effective date {}: {e:?}", date.render()))
 }
 
 struct ComputedValuation {
