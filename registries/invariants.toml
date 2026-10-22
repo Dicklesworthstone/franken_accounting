@@ -41,6 +41,7 @@ reverse = ["FA-INV-08.reversal", "FA-INV-08.reversed-once", "FA-INV-08.unsettle"
 period = ["FA-INV-02.control-record", "FA-INV-02.lifecycle-by-transition", "FA-INV-03.transition-journaled", "FA-INV-03.transition-approvals"]
 approve = ["FA-INV-10.approval-binds-proposal", "FA-INV-10.sod"]
 draft = ["FA-INV-10.self-promotion"]
+close = ["FA-INV-03.nominal-zero"]
 case = ["FA-INV-10.self-promotion", "FA-INV-10.sod"]
 registers = ["FA-INV-04.core"]
 tb = ["FA-INV-04.core", "FA-INV-07.core"]
@@ -392,11 +393,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-03"
 id = "nominal-zero"
-status = "dormant"
+status = "live"
 statement = "After the latest Closing entry of a fiscal year the nominal accounts fold to zero at that known-at."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-4o0"]
+owner = "fa-4o0"
+checkers = ["fa-journal::tests/genesis.rs::year_end_close_first_delta_zero_and_historical_verification", "fa-cli::tests/closing.rs::closing_binary_first_close_delta_reclose_zero_noop_and_exact_plan_retry"]
+negatives = ["fa-journal::tests/genesis.rs::year_end_close_balanced_forgery_and_raw_closing_are_refused", "fa-journal::tests/genesis.rs::year_end_close_native_preparation_cannot_miss_an_appended_contribution"]
 waiver = "forbidden"
 
 [[clause]]
