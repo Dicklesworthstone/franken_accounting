@@ -7525,6 +7525,14 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["recover", "projections", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["recover", "outcomes", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
+    // The suffix from the only state to the latest (itself): an explicit
+    // consistency proof and no records.
+    let state_oid = states[0]
+        .get("oid")
+        .and_then(Json::as_str)
+        .expect("a state oid")
+        .to_string();
+    assert_eq!(run(true, &["proof", "suffix", "--state", &state_oid]).0, 0);
     assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
         &dir,
