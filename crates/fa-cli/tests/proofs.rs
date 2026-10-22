@@ -1011,14 +1011,31 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
     let certificate = read("ADS_Coordinate_Certificate.toml");
     let bundle = std::fs::read(dir.join("ADS_Proof.fab")).expect("bundle");
     let receipt = std::fs::read(dir.join("ADS_Proof.receipt")).expect("receipt");
-    let verify = |gl: &str| {
-        fa_verify::ads::verify_ads(&certificate, gl, &bundle, &[key], Some(&receipt))
+    let tb = read("Trial_Balance.txt");
+    let verify_with = |gl: &str, tb: &str| {
+        fa_verify::ads::verify_ads(&certificate, gl, tb, &bundle, &[key], Some(&receipt))
             .expect("a well-formed bundle")
     };
+    let verify = |gl: &str| verify_with(gl, &tb);
     let gl = read("GL_Detail.txt");
     let report = verify(&gl);
     assert!(report.verified(), "{:?}", report.failures);
     assert_eq!((report.entries, report.rows), (2, 4));
+    // The trial balance is the refold of the two proven entries, and so is
+    // proven too; an altered balance is not.
+    assert_eq!(report.tb_rows, 2);
+    assert!(tb.contains("1000|2026-03-31|D|14.34|USD|2\n"), "{tb}");
+    assert!(tb.contains("4000|2026-03-31|C|14.34|USD|2\n"), "{tb}");
+    let altered = verify_with(&gl, &tb.replace("C|14.34", "C|14.35"));
+    assert!(!altered.verified());
+    assert!(
+        altered
+            .failures
+            .iter()
+            .any(|f| f.contains("is not the refold")),
+        "{:?}",
+        altered.failures
+    );
     let usd = fa_money::UnitRegistry::embedded()
         .unwrap()
         .lookup("USD")
