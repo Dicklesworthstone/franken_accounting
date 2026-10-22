@@ -2723,3 +2723,293 @@ fn recomputed_package_and_entry_hashes_do_not_authorize_changed_amounts_or_priva
     assert_eq!(integer(data(&fixture.show(original)), "recorded_count"), 0);
     assert_eq!(fixture.cash(None), "0.00 USD");
 }
+
+/// A stock trial balance's non-zero rows as `(code, net without the unit)`.
+fn stock_lines(book: &Path, period: &str) -> Vec<(String, String)> {
+    let result = ok(book, &["tb", "--period", period]);
+    rows(data(&result), "rows")
+        .iter()
+        .filter_map(|row| {
+            let net = text(row, "net").strip_suffix(" USD").expect("a USD net");
+            (net != "0.00").then(|| (text(row, "code").to_owned(), net.to_owned()))
+        })
+        .collect()
+}
+
+/// fa-eid6, export→import identity (plan §16): a book's own Beancount export,
+/// imported into a new book as the sole full-detail history before its
+/// opening date, folds to the source book's stock balance in every period,
+/// with the source's trial balances as the run's independent tie-outs. A
+/// tampered export (one sale moved by 1.00 on both legs, still balanced) no
+/// longer ties to its period's trial balance and publishes nothing.
+#[test]
+fn a_books_beancount_export_imports_as_history_with_identical_period_balances() {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = loop {
+        let path = std::env::temp_dir().join(format!(
+            "fa-export-import-identity-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create retained fixture {}: {error}", path.display()),
+        }
+    };
+    let chart_json = r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Owner equity","type":"Equity","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#;
+
+    // The source book posts across FY2025.
+    let source = dir.join("source-book");
+    ok(
+        &source,
+        &[
+            "book",
+            "create",
+            "--name",
+            "Export source",
+            "--base-unit",
+            "USD",
+        ],
+    );
+    let chart = dir.join("chart.json");
+    std::fs::write(&chart, chart_json).unwrap();
+    let chart = chart.display().to_string();
+    ok(&source, &["chart", "import", &chart]);
+    ok(&source, &["period", "create", "--fiscal-year", "2025"]);
+    for period in ["FY2025-P01", "FY2025-P03", "FY2025-P12"] {
+        ok(&source, &["period", "open", period]);
+    }
+    let receipt = dir.join("receipt.txt");
+    std::fs::write(&receipt, "RECEIPT (export identity fixture)").unwrap();
+    let receipt = receipt.display().to_string();
+    let added = ok(
+        &source,
+        &[
+            "document",
+            "add",
+            &receipt,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let evidence = text(data(&added), "oid").to_owned();
+    for (key, date, debit, credit, amount, memo) in [
+        (
+            "capital",
+            "2025-01-05",
+            "1000",
+            "3000",
+            "1000.00",
+            "Owner capital",
+        ),
+        (
+            "march-sale",
+            "2025-03-10",
+            "1000",
+            "4000",
+            "250.00",
+            "March sale",
+        ),
+        (
+            "march-rent",
+            "2025-03-20",
+            "6000",
+            "1000",
+            "75.25",
+            "March rent",
+        ),
+        (
+            "december-sale",
+            "2025-12-15",
+            "1000",
+            "4000",
+            "40.00",
+            "December sale",
+        ),
+    ] {
+        let intent = dir.join(format!("{key}.json"));
+        std::fs::write(
+            &intent,
+            format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} USD"}},{{"side":"credit","account":"{credit}","amount":"{amount} USD"}}],"description":"{memo}"}}"#
+            ),
+        )
+        .unwrap();
+        let intent = intent.display().to_string();
+        ok(
+            &source,
+            &["post", "--intent", &intent, "--evidence", &evidence],
+        );
+    }
+    let periods: Vec<String> = (1..=12).map(|m| format!("FY2025-P{m:02}")).collect();
+    let expected: Vec<Vec<(String, String)>> =
+        periods.iter().map(|p| stock_lines(&source, p)).collect();
+    assert_eq!(
+        expected[11],
+        [
+            ("1000".to_owned(), "1214.75".to_owned()),
+            ("3000".to_owned(), "-1000.00".to_owned()),
+            ("4000".to_owned(), "-290.00".to_owned()),
+            ("6000".to_owned(), "75.25".to_owned()),
+        ],
+        "the source's year-end balances"
+    );
+
+    // Its Beancount export.
+    let exported = dir.join("export.beancount");
+    let exported_path = exported.display().to_string();
+    let written = ok(
+        &source,
+        &[
+            "export",
+            "beancount",
+            "--as-of",
+            "2025-12-31",
+            "--out",
+            &exported_path,
+        ],
+    );
+    assert_eq!(integer(data(&written), "entries"), 4);
+    let ledger = std::fs::read_to_string(&exported).unwrap();
+
+    // The importing book opens on 2026-01-01; FY2025 is its history.
+    let book = dir.join("import-book");
+    ok(
+        &book,
+        &[
+            "book",
+            "create",
+            "--name",
+            "Imported history",
+            "--base-unit",
+            "USD",
+            "--opening-date",
+            "2026-01-01",
+        ],
+    );
+    let fixture = Fixture {
+        dir: dir.clone(),
+        book,
+        unit: "USD".into(),
+        source: String::new(),
+        trial_balance: String::new(),
+        run_vid: String::new(),
+        format: "beancount".into(),
+        opening_entries: None,
+        entry_periods: None,
+        period_trial_balances: Vec::new(),
+    };
+    ok(&fixture.book, &["chart", "import", &chart]);
+    ok(
+        &fixture.book,
+        &["period", "create", "--fiscal-year", "2025"],
+    );
+    let opening = fixture.document(
+        "separate-opening-tb.csv",
+        &tb_document("separate-opening", &[]),
+        "Spreadsheet",
+    );
+    let mut period_rows = Vec::new();
+    for (period, lines) in periods.iter().zip(&expected) {
+        let lines: Vec<(&str, &str)> = lines
+            .iter()
+            .map(|(code, net)| (code.as_str(), net.as_str()))
+            .collect();
+        let document = fixture.document(
+            &format!("source-tb-{period}.csv"),
+            &tb_document(period, &lines),
+            "Spreadsheet",
+        );
+        period_rows.push(obj(vec![
+            ("period", s(period)),
+            ("trial_balance", s(&document)),
+            ("lines", tb_lines(&lines)),
+        ]));
+    }
+    let run_body = obj(vec![
+        ("run_key", s("export-identity")),
+        ("source_system", s("beancount")),
+        ("mode", s("FullDetail")),
+        ("trial_balance", s(&opening)),
+        ("opening_date", s("2026-01-01")),
+        ("lines", tb_lines(&[])),
+        ("periods", Json::Arr(period_rows)),
+        ("detail_base", tb_lines(&[])),
+        ("sole_opening_source", Json::Bool(true)),
+    ]);
+    let run_path = fixture.file("export-identity-run.json", &run_body.render());
+    let opened = ok(&fixture.book, &["migrate", "open", "--intent", &run_path]);
+    let run_vid = text(data(&opened), "run_vid").to_owned();
+    let import = |source_oid: &str| {
+        obj(vec![
+            ("run", s(format!("MR:{run_vid}"))),
+            ("source", s(format!("D:{source_oid}"))),
+            ("format", s("beancount")),
+            (
+                "account_map",
+                obj(vec![
+                    ("Assets:A1000", s("1000")),
+                    ("Equity:A3000", s("3000")),
+                    ("Income:A4000", s("4000")),
+                    ("Expenses:A6000", s("6000")),
+                ]),
+            ),
+        ])
+    };
+
+    // Planted: the March sale moved by 1.00 on both legs still balances, but
+    // no longer ties to March's trial balance; nothing is published.
+    let tampered = ledger
+        .replace("  250.00 USD\n", "  251.00 USD\n")
+        .replace("  -250.00 USD\n", "  -251.00 USD\n");
+    assert_ne!(tampered, ledger, "the planted edit applies");
+    let tampered_oid = fixture.document("tampered.beancount", &tampered, "Other");
+    let tampered_intent = fixture.file("tampered-import.json", &import(&tampered_oid).render());
+    let before = head(&fixture.book);
+    let (status, refused) = run(
+        &fixture.book,
+        &[
+            "migrate",
+            "import",
+            "--action",
+            "prepare",
+            "--intent",
+            &tampered_intent,
+        ],
+    );
+    assert_eq!(status, 2, "{}", refused.render());
+    assert_eq!(text(&refused, "event"), "error");
+    assert_eq!(
+        head(&fixture.book),
+        before,
+        "a refused preparation publishes nothing"
+    );
+
+    // The true export imports and folds to the source in every period.
+    let source_oid = fixture.document("export.beancount", &ledger, "Other");
+    let intent = fixture.file("import.json", &import(&source_oid).render());
+    let prepared = ok(
+        &fixture.book,
+        &[
+            "migrate", "import", "--action", "prepare", "--intent", &intent,
+        ],
+    );
+    assert_eq!(text(data(&prepared), "mode"), "FullDetail");
+    assert_eq!(rows(data(&prepared), "chunks").len(), 4);
+    let fixture = Fixture { run_vid, ..fixture };
+    stage_full_detail(&fixture, &prepared, "FY2025-P12");
+    assert_eq!(
+        text(data(&fixture.finalize("export-identity.plan")), "to"),
+        "Finalized"
+    );
+    for (period, lines) in periods.iter().zip(&expected) {
+        assert_eq!(
+            &stock_lines(&fixture.book, period),
+            lines,
+            "{period}: the imported history folds to the source's balances"
+        );
+    }
+}
