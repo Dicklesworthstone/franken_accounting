@@ -592,3 +592,115 @@ fn bare_fa_prints_triage_and_exits_zero() {
     let run = fa(None, &["--json"]);
     assert_eq!(events(&run.stdout), ["triage"], "{}", run.stdout);
 }
+
+/// fa-waow: every `fa …` and `fad …` leaf of plan §15.3's verb taxonomy runs
+/// as a registered verb, subcommand or alias, or is listed in `PENDING` with
+/// the bead that owns it. A listed leaf that now resolves must leave the
+/// list, so the list is exactly the plan surface still missing.
+#[test]
+fn every_plan_leaf_present_or_registered() {
+    const PENDING: &[(&str, &str)] = &[
+        (
+            "fa assert-balance",
+            "fa-waow: document attest register-equals; an alias cannot carry the attestation kind",
+        ),
+        ("fa benford", "fa-waow: today fa procedure run benford.*"),
+        (
+            "fa book open",
+            "fa-waow: the plan gives it no meaning beyond fa book info",
+        ),
+        (
+            "fa bundle show",
+            "fa-waow: the standalone fa-verify reads a .fab",
+        ),
+        ("fa case diff", "fa-waow"),
+        ("fa close run", "fa-4o0: the CloseRun task DAG"),
+        ("fa close status", "fa-4o0: the CloseRun task DAG"),
+        ("fa diff", "fa-k07b: today fa scenario diff"),
+        (
+            "fa doc show",
+            "fa-waow: document list shows each document's metadata",
+        ),
+        ("fa exhibit mark", "fa-6l9"),
+        (
+            "fa finding dismiss",
+            "fa-waow: today fa finding review --action dismiss",
+        ),
+        ("fa gen book", "fa-ykbp"),
+        ("fa jet", "fa-waow: today fa procedure run jet.*"),
+        (
+            "fa recon book-to-book",
+            "fa-259c: today fa procedure run recon.book_to_book",
+        ),
+        ("fa rule backtest", "fa-c34"),
+        ("fa rule propose", "fa-c34"),
+        ("fa trace", "fa-waow: today fa procedure run trace.<law>"),
+        ("fa unit add", "fa-waow"),
+        (
+            "fa verify bundle",
+            "fa-waow: the standalone fa-verify verifies a bundle",
+        ),
+        (
+            "fa verify certificate",
+            "fa-waow: today fa certificate status and fa replay",
+        ),
+        ("fa workpaper export", "fa-waow"),
+    ];
+    let plan = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md"
+    ))
+    .expect("the plan");
+    let start = plan.find("**Verb taxonomy (1.0).**").expect("the taxonomy");
+    let end = start + plan[start..].find("**Robot mode.**").expect("its end");
+    let reg = fa_cli::verbs::registry().expect("verbs.toml");
+    let mut unresolved = std::collections::BTreeSet::new();
+    let mut leaves = 0;
+    for span in plan[start..end].split('`').skip(1).step_by(2) {
+        let words: Vec<&str> = span.split_whitespace().collect();
+        let [binary @ ("fa" | "fad"), first, rest @ ..] = words.as_slice() else {
+            continue;
+        };
+        let second = rest
+            .first()
+            .filter(|w| !w.starts_with(['-', '<', '"', '…']));
+        for verb in first.split('|') {
+            let subs: Vec<Option<&str>> = match second {
+                Some(s) => s.split('|').map(Some).collect(),
+                None => vec![None],
+            };
+            for sub in subs {
+                leaves += 1;
+                let leaf = [Some(*binary), Some(verb), sub]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let resolved = if *binary == "fad" {
+                    reg.daemon.verbs.iter().any(|v| v == verb)
+                } else {
+                    let mut argv = vec![verb];
+                    argv.extend(sub);
+                    let expanded = reg.expand_alias(&argv);
+                    reg.verb(&expanded[0])
+                        .is_some_and(|v| match expanded.get(1) {
+                            Some(sub) if !v.subcommands.is_empty() => v.subcommands.contains(sub),
+                            _ => true,
+                        })
+                };
+                if !resolved {
+                    unresolved.insert(leaf);
+                }
+            }
+        }
+    }
+    assert!(leaves >= 140, "{leaves}: the taxonomy's leaves parsed");
+    let pending: std::collections::BTreeSet<String> = PENDING
+        .iter()
+        .map(|(leaf, _)| (*leaf).to_string())
+        .collect();
+    assert_eq!(
+        unresolved, pending,
+        "a plan leaf the binary lacks is listed with its bead, and a listed leaf that now resolves leaves the list"
+    );
+}

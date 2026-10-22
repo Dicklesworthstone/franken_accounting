@@ -4180,6 +4180,19 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &rehearsal,
         "--json",
     ]);
+    // fa-g8em: triage counts the rehearsed case among pending approvals and
+    // points at it.
+    let triage = ok(&["triage", "--json"]);
+    assert_eq!(
+        int(&doc(&triage), "cases_awaiting_approval"),
+        Some(1),
+        "{triage}"
+    );
+    assert!(
+        int(&doc(&triage), "pending_approvals").is_some_and(|n| n >= 1),
+        "{triage}"
+    );
+    assert!(triage.contains("fa case show 1 --json"), "{triage}");
     let digest = text(
         &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
         "digest",
@@ -4210,6 +4223,13 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &auditor,
         "--json",
     ]);
+    // Approved, the case no longer awaits approval.
+    let triage = ok(&["triage", "--json"]);
+    assert_eq!(
+        int(&doc(&triage), "cases_awaiting_approval"),
+        Some(0),
+        "{triage}"
+    );
     let out = ok(&["case", "post", "1", "--json"]);
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&case, "state"), "Posted", "{out}");
@@ -20389,5 +20409,115 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
         vec!["1600"],
         "{then:?}"
     );
+    Ok(())
+}
+
+/// fa-waow / fa-kxc4: `fa aging ar|ap` (plan §15.3) ages the one account
+/// holding the receivable or payable role, the same aging as naming it with
+/// --account. Planted: an explicit account or a reconciliation beside the
+/// role, an unknown word, a second account holding the role (both named), and
+/// a book where no account holds it are each refused with the way out.
+#[test]
+fn aging_ar_and_ap_age_the_account_holding_the_role() -> std::io::Result<()> {
+    let dir = tmp("aging-roles")?;
+    let book = dir.join("book");
+    let run = |book: &Path, args: &[&str]| -> (i32, String, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(book), &argv)
+    };
+    let ok = |book: &Path, args: &[&str]| -> String {
+        let (code, out, err) = run(book, args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&book, &["book", "create", "--name", "Aging Roles Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"1200","name":"Trade debtors","type":"Asset","unit":"USD","roles":["receivable"]},
+            {"code":"2000","name":"Trade creditors","type":"Liability","unit":"USD","roles":["payable"]},
+            {"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},
+            {"code":"6000","name":"Rent","type":"Expense","unit":"USD"}
+        ]}"#,
+    );
+    ok(&book, &["chart", "import", &chart]);
+    ok(&book, &["period", "create", "--fiscal-year", "2026"]);
+    ok(&book, &["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    for (key, debit, credit) in [("sale", "1200", "4000"), ("bill", "6000", "2000")] {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-02","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"40.00 USD"}},{{"side":"credit","account":"{credit}","amount":"40.00 USD"}}]}}"#
+            ),
+        );
+        ok(
+            &book,
+            &["post", "--intent", &intent, "--evidence", &evidence],
+        );
+    }
+
+    for (kind, code) in [("ar", "1200"), ("ap", "2000")] {
+        let by_role = doc(&ok(&book, &["aging", kind, "--as-of", "2026-03-31"]));
+        assert_eq!(text(&by_role, "account"), code, "{kind}: {by_role:?}");
+        assert!(!arr(&by_role, "items").is_empty(), "{kind}: {by_role:?}");
+        let by_code = doc(&ok(
+            &book,
+            &["gl", "aging", "--account", code, "--as-of", "2026-03-31"],
+        ));
+        assert_eq!(by_role, by_code, "{kind} is the aging of {code}");
+    }
+
+    // Planted refusals.
+    for (args, says) in [
+        (
+            vec!["aging", "ar", "--account", "1200", "--as-of", "2026-03-31"],
+            "names its account by role",
+        ),
+        (
+            vec!["aging", "ar", "--reconcile", "--as-of", "2026-03-31"],
+            "names its account by role",
+        ),
+        (
+            vec!["aging", "receivables", "--as-of", "2026-03-31"],
+            "unexpected gl aging argument",
+        ),
+    ] {
+        let (code, out, err) = run(&book, &args);
+        assert_eq!(code, 2, "{args:?}: {out}\n{err}");
+        assert!(out.contains(says), "{args:?}: {out}");
+    }
+    let second = write(
+        &dir,
+        "second.json",
+        r#"{"code":"1210","name":"Other debtors","type":"Asset","unit":"USD","roles":["receivable"]}"#,
+    );
+    ok(&book, &["chart", "open", &second, "--opened", "2026-01-01"]);
+    let (code, out, err) = run(&book, &["aging", "ar", "--as-of", "2026-03-31"]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(
+        out.contains("1200, 1210") && out.contains("--reconcile"),
+        "{out}"
+    );
+
+    let bare = dir.join("bare");
+    ok(&bare, &["book", "create", "--name", "No Roles Co"]);
+    let plain = write(
+        &dir,
+        "plain.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"}]}"#,
+    );
+    ok(&bare, &["chart", "import", &plain]);
+    let (code, out, err) = run(&bare, &["aging", "ar", "--as-of", "2026-03-31"]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(
+        out.contains("no account holds the receivable role"),
+        "{out}"
+    );
+    assert!(out.contains("fa chart role"), "{out}");
     Ok(())
 }
