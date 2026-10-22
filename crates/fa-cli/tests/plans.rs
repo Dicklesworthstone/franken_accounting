@@ -714,7 +714,7 @@ fn stale_correction_and_batch_plans_carry_their_fresh_plans() {
         );
         head(&f.book)
     };
-    let stale_then_fresh = |stale: &str, advanced: i128| {
+    let stale_then_fresh = |stale: &str, advanced: i128, expected: &[&str]| {
         let (code, error) = run(&f.book, &["commit", "--plan", "-"], Some(stale.as_bytes()));
         assert_eq!(code, 6, "{}", error.render());
         assert_eq!(text(&error, "refusal_id"), "FA-REF-034");
@@ -724,13 +724,7 @@ fn stale_correction_and_batch_plans_carry_their_fresh_plans() {
             "nothing is committed for the caller"
         );
         let detail = get(&error, "detail");
-        // Only the basis moved; a correction's effects digest moves with it
-        // (observed), so `effects` is not asserted here.
-        let changed = names(get(detail, "changed"));
-        assert!(changed.contains(&"basis"), "{changed:?}");
-        for same in ["capability", "entry", "period", "security_policy_epoch"] {
-            assert!(!changed.contains(&same), "{same}: {changed:?}");
-        }
+        assert_eq!(names(get(detail, "changed")), expected);
         let fresh = get(detail, "fresh_plan");
         assert_eq!(integer(fresh, "snapshot_seq"), advanced);
         assert_eq!(get(fresh, "period"), &Json::Null);
@@ -772,7 +766,7 @@ fn stale_correction_and_batch_plans_carry_their_fresh_plans() {
     assert_eq!(text(&planned, "event"), "replacement_plan");
     let stale = text(&planned, "bytes").to_string();
     let advanced = publish();
-    let committed = stale_then_fresh(&stale, advanced);
+    let committed = stale_then_fresh(&stale, advanced, &["basis"]);
     assert_eq!(text(&committed, "event"), "replacement_plan_committed");
 
     let batch = write(
@@ -787,7 +781,7 @@ fn stale_correction_and_batch_plans_carry_their_fresh_plans() {
     assert_eq!(text(&planned, "event"), "batch_plan");
     let stale = text(&planned, "bytes").to_string();
     let advanced = publish();
-    let committed = stale_then_fresh(&stale, advanced);
+    let committed = stale_then_fresh(&stale, advanced, &["basis", "effects"]);
     assert_eq!(text(&committed, "event"), "batch_plan_committed");
 }
 
