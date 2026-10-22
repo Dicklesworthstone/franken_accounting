@@ -421,5 +421,6 @@ budget error. Additional regressions require an already-cancelled empty
 native `jet.weekend` run to refuse at zero work, an uncancelled empty run to
 complete at zero work, and late cancellation to withhold the result while
 preserving any preceding budget refusal. These are source changes and
-unexecuted regression requirements; the original-code request on this
-resume timed out in RCH admission with exit 103 and executed zero tests.
+unexecuted regression requirements; both the original-code request and the
+complete selected positive request on this resume timed out in RCH admission
+with exit 103 and executed zero tests. No runtime gate passed in this block.
