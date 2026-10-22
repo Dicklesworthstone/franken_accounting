@@ -7678,6 +7678,17 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["search", "rent"]).0, 0);
+    assert_eq!(
+        run(
+            true,
+            &[
+                "query",
+                "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs FOR PERIOD 'FY2026-P03'"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["open-items"]).0, 0);
     assert_eq!(
         run(
@@ -17901,6 +17912,47 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
             .all(|r| text(r, "credits") == "0.00 USD"),
         "trunk never sees the scenario's revenue: {trunk_out}"
     );
+    // A query reads the scenario's replay too, named in the statement or
+    // with --branch; trunk has no revenue legs at all.
+    let revenue = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code: '4000'}), (l)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side";
+    let on_scenario = format!("{revenue} AT BRANCH 'scenario:but-for'");
+    for argv in [
+        vec!["query", on_scenario.as_str()],
+        vec!["query", revenue, "--branch", "scenario:but-for"],
+    ] {
+        let (code, out, err) = run(&argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+        assert_eq!(
+            line.get("coordinate")
+                .and_then(|c| c.get("branch"))
+                .and_then(Json::as_str),
+            Some("scenario:but-for"),
+            "{out}"
+        );
+        assert_eq!(
+            Json::Arr(arr(&doc(&out), "rows").to_vec()).render(),
+            r#"[["USD",1,"500"]]"#,
+            "{out}"
+        );
+    }
+    let (code, out, err) = run(&["query", revenue]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(arr(&doc(&out), "rows").is_empty(), "{out}");
+    for refused in [
+        vec!["query", on_scenario.as_str(), "--certify"],
+        vec!["query", on_scenario.as_str(), "--branch", "scenario:other"],
+        vec![
+            "query",
+            revenue,
+            "--branch",
+            "scenario:but-for",
+            "--certify",
+        ],
+    ] {
+        let (code, out, _) = run(&refused);
+        assert_eq!(code, 2, "{refused:?}: {out}");
+    }
     let (code, out, err) = run(&[
         &["statement", "income-statement", "--for", "FY2026-P03"][..],
         &branch,
@@ -18654,6 +18706,360 @@ fn explaining_a_summary_account_points_at_its_roll_up_which_runs() -> std::io::R
     let argv: Vec<&str> = suggested.split(' ').skip(1).collect();
     let (code, out, _) = fa(Some(&book), &argv);
     assert_eq!(code, 0, "{out}");
+    Ok(())
+}
+
+/// fa-5c1: `fa query` runs a profile statement over the book's graph.
+/// - Sums are grouped per unit and side; FOR PERIOD selects the period
+///   each entry posted to, EFFECTIVE BETWEEN the legs' effective days.
+/// - AS KNOWN AT reads an earlier sequence: an entry recorded later is
+///   absent there, and the same statement at the same sequence gives the
+///   same result digest.
+/// - CALL fa.trial_balance is `fa tb` itself.
+/// - Refused before anything runs: a sum across units (FA-REF-189), a
+///   write, a period the book does not hold and a malformed native
+///   statement (FA-REF-188), all exit 3.
+#[test]
+fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
+    let dir = tmp("query")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Query Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"},{"code":"1200","name":"EUR receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR revenue","type":"Revenue","unit":"EUR"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let post = |name: &str, intent: &str| {
+        let path = write(&dir, name, intent);
+        let out = ok(&["post", "--intent", &path, "--evidence", &evidence, "--json"]);
+        int(&doc(&out), "recorded_at").expect("recorded_at")
+    };
+    post(
+        "march-rent.json",
+        r#"{"effective_date":"2026-03-10","idempotency_key":"march-rent","legs":[{"side":"debit","account":"6000","amount":"1000.00 USD"},{"side":"credit","account":"1000","amount":"1000.00 USD"}]}"#,
+    );
+    let rate = write(
+        &dir,
+        "rate.json",
+        r#"{"base_unit":"USD","quote_unit":"EUR","rate_num":"11","rate_den":"10","rounding":"HalfEven","as_of":"2026-03-05","retrieved_at_ns":1772668800000000000,"purpose":"spot_close","source":"query fixture quote"}"#,
+    );
+    let rate = doc(&ok(&["fx", "rate", "add", "--from-json", &rate, "--json"]));
+    let march = post(
+        "march-invoice.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"march-invoice","legs":[{{"side":"debit","account":"1200","amount":"100.00 EUR"}},{{"side":"credit","account":"4000","amount":"100.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+            text(&rate, "oid")
+        ),
+    );
+    post(
+        "april-rent.json",
+        r#"{"effective_date":"2026-04-10","idempotency_key":"april-rent","legs":[{"side":"debit","account":"6000","amount":"250.00 USD"},{"side":"credit","account":"1000","amount":"250.00 USD"}]}"#,
+    );
+    let query = |statement: &str| doc(&ok(&["query", statement, "--json"]));
+    let rows = |data: &Json| Json::Arr(arr(data, "rows").to_vec()).render();
+
+    let grouped = "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side FOR PERIOD 'FY2026-P03'";
+    let march_totals = query(grouped);
+    assert_eq!(
+        rows(&march_totals),
+        r#"[["EUR",0,"100"],["EUR",1,"100"],["USD",0,"1000"],["USD",1,"1000"]]"#,
+        "{march_totals:?}"
+    );
+    assert_eq!(text(&march_totals, "period"), "FY2026-P03");
+    assert!(
+        text(&march_totals, "native").contains("FOR SYSTEM_TIME AS OF SEQ"),
+        "{march_totals:?}"
+    );
+    let april = query(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, COUNT(*) AS legs ORDER BY account EFFECTIVE BETWEEN '2026-04-01' AND '2026-04-30'",
+    );
+    assert_eq!(rows(&april), r#"[["1000",1],["6000",1]]"#, "{april:?}");
+
+    // At the invoice's sequence the April rent is not yet recorded.
+    let counted = format!("MATCH (l:Leg) RETURN COUNT(*) AS legs AS KNOWN AT {march}");
+    let then = query(&counted);
+    assert_eq!(rows(&then), "[[4]]", "{then:?}");
+    assert_eq!(int(&then, "known_at"), Some(march));
+    assert_eq!(
+        rows(&query("MATCH (l:Leg) RETURN COUNT(*) AS legs")),
+        "[[6]]"
+    );
+    assert_eq!(
+        text(&query(&counted), "result_digest"),
+        text(&then, "result_digest"),
+        "the same statement at the same sequence"
+    );
+
+    // CALL fa.trial_balance is fa tb.
+    let tb = doc(&ok(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &march.to_string(),
+        "--json",
+    ]));
+    let called = query(&format!(
+        "CALL fa.trial_balance FOR PERIOD 'FY2026-P03' AS KNOWN AT {march}"
+    ));
+    assert_eq!(called.render(), tb.render());
+
+    for (statement, code) in [
+        ("MATCH (l:Leg) RETURN SUM(l.amount) AS total", "FA-REF-189"),
+        (
+            "MATCH (l:Leg) WHERE l.unit_id = 1 AND l.amount > 100 RETURN l",
+            "FA-REF-189",
+        ),
+        ("MATCH (a:Account) SET a.name = 'x' RETURN a", "FA-REF-188"),
+        (
+            "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2031-P01'",
+            "FA-REF-188",
+        ),
+        ("MATCH (l:Leg RETURN l", "FA-REF-188"),
+        (
+            "MATCH (l:Leg) RETURN l AS ORIGINALLY REPORTED",
+            "FA-REF-188",
+        ),
+    ] {
+        let (exit, out) = run(&["query", statement, "--json"]);
+        assert_eq!(exit, 3, "{statement}: {out}");
+        assert!(out.contains(code), "{statement}: {out}");
+    }
+    let (exit, out) = run(&["query", "--json"]);
+    assert_eq!(exit, 2, "{out}");
+    // Human mode is a plain table.
+    let (exit, out) = run(&["query", grouped]);
+    assert_eq!(exit, 0, "{out}");
+    assert!(out.starts_with("unit  side  total\nEUR  0  100"), "{out}");
+    Ok(())
+}
+
+/// fa-5c1 slice 2: `fa query --certify` retains the result's certificate.
+/// `fa replay` replays the native read and reproduces the rows byte for byte
+/// after later postings, from the store and from the saved file; `fa
+/// certificate status` is Current while the statement answers the same at
+/// HEAD and Changed after; an altered certificate is exit 8.
+#[test]
+fn a_certified_query_replays_its_rows_byte_for_byte() -> std::io::Result<()> {
+    let dir = tmp("query-certificate")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Certified Query Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let post = |key: &str, amount: &str| {
+        let path = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-10","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"{amount} USD"}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        ok(&["post", "--intent", &path, "--evidence", &evidence, "--json"]);
+    };
+    post("rent", "1000.00");
+    let statement = "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side FOR PERIOD 'FY2026-P03'";
+    let file = dir.join("query.cert").display().to_string();
+    let out = ok(&[
+        "query",
+        statement,
+        "--certify",
+        "--certificate-out",
+        &file,
+        "--json",
+    ]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert_eq!(field(lines[0], "event"), Some("query_rows"));
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let certified = doc(lines[0]);
+    let certificate = doc(lines[1]);
+    let oid = text(&certificate, "oid").to_string();
+    assert_eq!(oid.len(), 64, "{out}");
+    assert_eq!(field(lines[0], "certificate"), Some(oid.as_str()));
+    assert_eq!(text(&certificate, "output_format"), "fa:query-result:v1");
+    assert_eq!(
+        int(&certificate, "known_at"),
+        int(&certified, "known_at"),
+        "the source trial balance is at the query's sequence"
+    );
+    assert_eq!(
+        Json::Arr(arr(&certified, "rows").to_vec()).render(),
+        r#"[["USD",0,"1000"],["USD",1,"1000"]]"#,
+        "{out}"
+    );
+    let status = |oid: &str| {
+        let out = ok(&["certificate", "status", &format!("C:{oid}"), "--json"]);
+        text(&doc(&out), "status").to_string()
+    };
+    // Retaining the certificate wrote metadata, not legs.
+    assert_eq!(status(&oid), "Current");
+
+    post("rent-2", "250.00");
+    for source in [format!("C:{oid}"), file.clone()] {
+        let out = ok(&["replay", &source, "--json"]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 1, "{out}");
+        assert_eq!(field(lines[0], "event"), Some("query_rows"), "{out}");
+        assert_eq!(field(lines[0], "certificate"), Some(oid.as_str()));
+        assert_eq!(
+            doc(lines[0]).render(),
+            certified.render(),
+            "a later posting never moves the certified rows: {source}"
+        );
+    }
+    assert_eq!(status(&oid), "Changed");
+    let now = doc(&ok(&["query", statement, "--json"]));
+    assert_eq!(
+        Json::Arr(arr(&now, "rows").to_vec()).render(),
+        r#"[["USD",0,"1250"],["USD",1,"1250"]]"#
+    );
+
+    // One altered byte of the certified result is refused, never replayed.
+    let mut bytes = std::fs::read(&file)?;
+    let at = bytes.len() - 40;
+    bytes[at] ^= 1;
+    let altered = dir.join("altered.cert");
+    std::fs::write(&altered, &bytes)?;
+    let (exit, out) = run(&["replay", &altered.display().to_string(), "--json"]);
+    assert_eq!(exit, 8, "{out}");
+    // A certificate binds a sequence; a CALL is certified as the trial
+    // balance it is.
+    let (exit, out) = run(&[
+        "query",
+        "CALL fa.trial_balance FOR PERIOD 'FY2026-P03'",
+        "--certify",
+        "--json",
+    ]);
+    assert_eq!(exit, 0, "{out}");
+    assert!(out.contains("\"event\":\"report_certificate\""), "{out}");
+    // EXPLAIN (CERTIFICATE) is --certify written in the statement.
+    let explained = ok(&[
+        "query",
+        &format!("EXPLAIN (CERTIFICATE) {statement}"),
+        "--json",
+    ]);
+    let lines: Vec<&str> = explained.lines().collect();
+    assert_eq!(lines.len(), 2, "{explained}");
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let explained_oid = text(&doc(lines[1]), "oid").to_string();
+    assert_ne!(explained_oid, oid, "a later sequence, another certificate");
+    let replayed = doc(&ok(&["replay", &format!("C:{explained_oid}"), "--json"]));
+    assert_eq!(replayed.render(), doc(lines[0]).render());
+    assert_eq!(
+        Json::Arr(arr(&replayed, "rows").to_vec()).render(),
+        r#"[["USD",0,"1250"],["USD",1,"1250"]]"#
+    );
+    Ok(())
+}
+
+/// fa-5c1: the profile's exact sums are a differential against the register
+/// fold. Each account's debits and credits in a period, summed by a query
+/// over its legs, equal `fa tb --activity` for that period, and a posting in
+/// the next period counts in neither.
+#[test]
+fn query_sums_per_account_equal_the_trial_balance_activity() -> std::io::Result<()> {
+    let dir = tmp("query-differential")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Differential Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    for (key, date, debit, credit, amount) in [
+        ("rent", "2026-03-01", "6000", "1000", "1000.00"),
+        ("sale", "2026-03-12", "1000", "4000", "400.00"),
+        ("fee", "2026-03-20", "6000", "1000", "75.50"),
+        ("april", "2026-04-02", "6000", "1000", "30.00"),
+    ] {
+        let path = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} USD"}},{{"side":"credit","account":"{credit}","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        ok(&["post", "--intent", &path, "--evidence", &evidence, "--json"]);
+    }
+    // An amount column as the query writes a decimal: no unit, no
+    // trailing zeros.
+    let exact = |amount: &str| -> String {
+        let number = amount.strip_suffix(" USD").unwrap_or(amount);
+        match number.split_once('.') {
+            Some((whole, fraction)) => match fraction.trim_end_matches('0') {
+                "" => whole.to_string(),
+                fraction => format!("{whole}.{fraction}"),
+            },
+            None => number.to_string(),
+        }
+    };
+    let tb = doc(&ok(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--activity",
+        "--json",
+    ]));
+    let mut folded = Vec::new();
+    for row in arr(&tb, "rows") {
+        for (side, column) in [(0, "debits"), (1, "credits")] {
+            let total = exact(text(row, column));
+            if total != "0" {
+                folded.push(format!(r#"["{}",{side},"{total}"]"#, text(row, "code")));
+            }
+        }
+    }
+    let queried = doc(&ok(&[
+        "query",
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account), (l)-[:IN_UNIT]->(u:Unit {code: 'USD'}) RETURN a.code AS account, l.side AS side, SUM(l.amount) AS total ORDER BY account, side FOR PERIOD 'FY2026-P03'",
+        "--json",
+    ]));
+    let summed = Json::Arr(arr(&queried, "rows").to_vec()).render();
+    assert_eq!(summed, format!("[{}]", folded.join(",")), "{tb:?}");
+    assert_eq!(
+        summed,
+        r#"[["1000",0,"400"],["1000",1,"1075.5"],["4000",1,"400"],["6000",0,"1075.5"]]"#
+    );
     Ok(())
 }
 

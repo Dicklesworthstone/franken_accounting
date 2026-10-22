@@ -586,6 +586,115 @@ fn self_approval_is_refused_and_a_distinct_human_approval_admits() {
     assert_eq!(entry.proposal_digest, digest);
 }
 
+/// fa-ge0y: an entry's provenance closure holds what it was posted with
+/// (its cited document, the approval in its envelope, its principal and its
+/// intent origin), each with the sequence that recorded it. A supplement
+/// attached later joins the closure but leaves the closure as posted, and
+/// its digest, unchanged.
+#[test]
+fn the_provenance_closure_holds_documents_approvals_and_later_supplements() {
+    use fa_journal::evidence::{ClosureKind, explain_entry_evidence};
+    let mut h = harness();
+    h.close_march();
+    let adj = h.proposal(PREPARER, 7_500, b"adj-closure", EntryClass::ADJUSTING);
+    let digest = adj.proposal_digest().unwrap();
+    let alice = h.approve(ALICE, digest).expect("recorded").approval();
+    let posted = h
+        .post(adj, human(PREPARER, &["post", "post_closed"]), vec![alice])
+        .expect("admitted with a distinct approver");
+    let entry_ref = posted.entry_ref();
+    let explain = |h: &Harness| {
+        explain_entry_evidence(&h.db, &h.book, entry_ref.vid)
+            .expect("kernel")
+            .expect("a committed entry")
+    };
+    let before = explain(&h);
+    let closure = &before.closure;
+    let of = |kind| {
+        closure
+            .members
+            .iter()
+            .filter(|m| m.kind == kind)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let documents = of(ClosureKind::Document);
+    assert_eq!(documents.len(), h.evidence.len(), "{closure:?}");
+    for (member, cited) in documents.iter().zip(&h.evidence) {
+        assert_eq!(member.digest, Some(cited.document_oid.0));
+        assert_eq!(member.role, Some(cited.role));
+        assert!(
+            member
+                .recorded_at
+                .is_some_and(|seq| seq <= before.recorded_at)
+        );
+    }
+    let approvals = of(ClosureKind::Approval);
+    assert_eq!(approvals.len(), 1, "{closure:?}");
+    assert_eq!(approvals[0].vid, Some(alice.approval_vid));
+    assert!(approvals[0].digest.is_some());
+    assert!(
+        approvals[0]
+            .recorded_at
+            .is_some_and(|seq| seq < before.recorded_at)
+    );
+    let principal = of(ClosureKind::Principal);
+    assert_eq!(principal.len(), 1);
+    assert_eq!(
+        (principal[0].vid, principal[0].recorded_at),
+        (Some(PREPARER), None)
+    );
+    assert_eq!(of(ClosureKind::Origin).len(), 1, "{closure:?}");
+    assert!(of(ClosureKind::Supplement).is_empty());
+    assert_eq!(
+        closure.original_digest, closure.digest,
+        "nothing joined after posting"
+    );
+
+    let receipt = Document {
+        book_id: h.book.book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PREPARER,
+        bytes: b"RECEIPT 2026-0330 Policy Co: the adjustment's memo (closure fixture)".to_vec(),
+    };
+    let supplement = SupplementalEvidence {
+        book_id: h.book.book_id,
+        entry_ref,
+        documents: vec![receipt.evidence_ref(1)],
+        attached_by: PREPARER,
+    };
+    {
+        let ctx = h.ctx();
+        let db = &mut h.db;
+        let book = &h.book;
+        h.runtime
+            .block_on(async move { add_document(db, &ctx, book, &receipt).await })
+            .expect("kernel")
+            .expect("document admitted");
+    }
+    h.attach(human(PREPARER, &["post", "read"]), &supplement)
+        .expect("attached");
+    let after = explain(&h).closure;
+    assert_eq!(
+        after.original_digest, closure.original_digest,
+        "the closure as posted does not move"
+    );
+    assert_ne!(after.digest, closure.digest);
+    let kinds: Vec<ClosureKind> = after.members.iter().map(|m| m.kind).collect();
+    assert!(kinds.contains(&ClosureKind::Supplement), "{after:?}");
+    assert!(
+        after
+            .members
+            .iter()
+            .any(|m| m.kind == ClosureKind::SupplementDocument
+                && m.digest == Some(supplement.documents[0].document_oid.0)),
+        "{after:?}"
+    );
+    assert_eq!(after.members.len(), closure.members.len() + 2);
+}
+
 #[test]
 fn balancing_approvals_bind_resolved_effects_and_preserve_request_identity() {
     let mut h = harness();

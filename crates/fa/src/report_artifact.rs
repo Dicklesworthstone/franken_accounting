@@ -56,6 +56,9 @@ pub enum ReportArtifactFamily {
     ScenarioDiff,
     /// Existing-draft atomic rehearsal, replayed in full by the sync facade.
     DraftDiff,
+    /// A profile query (fa-5c1): its native read replayed and its exact
+    /// result recomputed ([`crate::QueryCertificate`]).
+    Query,
 }
 
 impl ReportArtifactFamily {
@@ -77,6 +80,7 @@ impl ReportArtifactFamily {
             Self::PolicyCashFlow => "policy-cash-flow",
             Self::ScenarioDiff => "scenario-diff",
             Self::DraftDiff => "draft-diff",
+            Self::Query => "query",
         }
     }
 }
@@ -124,6 +128,7 @@ enum Artifact {
     PolicyCashFlow(Box<PolicyArtifact>),
     ScenarioDiff(Box<crate::ScenarioDiffCertificate>),
     DraftDiff(Box<crate::DraftDiffCertificate>),
+    Query(Box<crate::QueryCertificate>),
 }
 
 // Policy certificates retain their exact financial source and derivation inputs.
@@ -227,6 +232,8 @@ impl ReportArtifact {
             Artifact::ScenarioDiff(Box::new(crate::ScenarioDiffCertificate::decode(bytes)?))
         } else if format == crate::DRAFT_DIFF_CERTIFICATE_FORMAT {
             Artifact::DraftDiff(Box::new(crate::DraftDiffCertificate::decode(bytes)?))
+        } else if format == crate::QUERY_CERTIFICATE_FORMAT {
+            Artifact::Query(Box::new(crate::QueryCertificate::decode(bytes)?))
         } else if format == crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT {
             let certificate = CashFlowPolicyCertificate::decode(bytes)?;
             let output = certificate.output()?;
@@ -258,6 +265,7 @@ impl ReportArtifact {
             Artifact::PolicyCashFlow(_) => ReportArtifactFamily::PolicyCashFlow,
             Artifact::ScenarioDiff(_) => ReportArtifactFamily::ScenarioDiff,
             Artifact::DraftDiff(_) => ReportArtifactFamily::DraftDiff,
+            Artifact::Query(_) => ReportArtifactFamily::Query,
         }
     }
 
@@ -293,6 +301,8 @@ impl ReportArtifact {
             // The trunk side; the scenario side has no native certificate.
             Artifact::ScenarioDiff(c) => c.trunk(),
             Artifact::DraftDiff(c) => c.trunk(),
+            // The whole-book stock trial balance at the query's sequence.
+            Artifact::Query(c) => c.source_certificate(),
         }
     }
 
@@ -343,6 +353,7 @@ impl ReportArtifact {
             Artifact::PolicyCashFlow(c) => c.certificate.digest(),
             Artifact::ScenarioDiff(c) => c.digest(),
             Artifact::DraftDiff(c) => c.digest(),
+            Artifact::Query(c) => c.digest(),
         }
     }
 
@@ -365,6 +376,7 @@ impl ReportArtifact {
             Artifact::PolicyCashFlow(c) => &c.output,
             Artifact::ScenarioDiff(c) => c.output(),
             Artifact::DraftDiff(c) => c.output(),
+            Artifact::Query(c) => c.output(),
         }
     }
 
@@ -395,6 +407,7 @@ impl ReportArtifact {
             Artifact::PolicyCashFlow(c) => c.certificate.canonical_bytes(),
             Artifact::ScenarioDiff(c) => c.canonical_bytes(),
             Artifact::DraftDiff(c) => c.canonical_bytes(),
+            Artifact::Query(c) => c.canonical_bytes(),
         }
     }
 }
@@ -428,6 +441,7 @@ from_certificate!(
     CashFlowPolicyCertificate,
     crate::ScenarioDiffCertificate,
     crate::DraftDiffCertificate,
+    crate::QueryCertificate,
 );
 
 fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
@@ -620,6 +634,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             (Artifact::StatementTrace(c), ReportArtifactExpectation::AsSupplied) => self
                 .replay_statement_trace(cx, principal, capability, c)?
                 .map(|_| ()),
+            (Artifact::Query(c), ReportArtifactExpectation::AsSupplied) => {
+                self.replay_query(cx, principal, capability, c)?.map(|_| ())
+            }
             (
                 Artifact::CashFlow(c),
                 ReportArtifactExpectation::CashFlow {

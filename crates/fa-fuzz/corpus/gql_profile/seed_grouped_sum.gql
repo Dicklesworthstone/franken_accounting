@@ -1,0 +1,1 @@
+MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side FOR PERIOD 'FY2026-P03' AS KNOWN AT 7

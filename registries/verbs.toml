@@ -462,7 +462,7 @@ writes = false
 subcommands = []
 flags = ["--output", "--workpaper-out", "--expect", "--view", "--account", "--unit", "--from", "--to", "--label", "--as-known-at", "--grant"]
 switches = ["--workpaper"]
-events = ["trial_balance", "statement", "balance_explained", "open_items", "summary_trial_balance", "general_ledger", "roll_forward", "aging", "statement_diff", "statement_trace", "scenario_diff", "draft_diff", "procedure_run", "report_replayed", "workpaper_exported"]
+events = ["trial_balance", "statement", "balance_explained", "open_items", "summary_trial_balance", "general_ledger", "roll_forward", "aging", "statement_diff", "statement_trace", "scenario_diff", "draft_diff", "procedure_run", "query_rows", "report_replayed", "workpaper_exported"]
 exits = [0, 2, 3, 4, 5, 7, 8]
 usage = ["replay <C:oid|oid|certificate-file|-> [--output <new-file>] [--workpaper-out <new-file> | --workpaper] [--expect <json>]","--workpaper-out writes the family's recipient-bound JSONL workpaper (every amount and count a decimal string, except the integer unit ids, day numbers and counts of the statement-diff package) to a new file and emits workpaper_exported; --workpaper returns the same text inline in that event's text field instead (the form MCP uses, since it accepts no host paths). It needs read and produce, and the export replays the certificate again against the same independent request, so it is written only after both replays succeed. Families: ledger detail and the roll-forward lead schedule (a roll-forward source replayed with --view detail or --view roll-forward), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff (the JSONL of the library's review package) and statement-trace; any other family is refused before replay. A workpaper is a readable deliverable, not an outsider proof, and never contains the source certificates or protected text.","A 64-hex oid resolves the complete immutable artifact retained in this book, including its outer family. A file holds canonical binary certificate bytes; stdin also accepts the oid or complete bytes hex string from a report_certificate event. Prefix a 64-hex filename with ./ to read it as a file. The certificate fixes the selector and known-at; replay never substitutes today's frontier.","--output writes the original canonical report bytes only after the complete artifact replays, then emits report_replayed with its family, length and output digest. Existing files are never replaced. Summary, effective-date aging and roll-forward replay their original report events and preserve the report_replayed receipt even without a file. Cash-flow, policy cash-flow, indirect cash-flow, aging reconciliation and the aging portfolio require --expect with the recipient-selected original request as an inline JSON object: kind (cash-flow, policy-cash-flow, indirect-cash-flow, aging-reconciliation or aging-portfolio), explicit integer known_at, original account/date/unit selectors, and the original policy or bucket law. Cash-flow expectations use accounts, units, from, through, label and policy; a policy cash-flow's policy carries name, cash_accounts, account_rules and overrides; indirect expectations also use income_periods. Aging reconciliation uses account, through and buckets. The aging portfolio uses scope (all-posting, or selected with accounts), through and buckets. Effective-date aging also accepts an optional kind aging expectation (account, omitted for the whole book, through, known_at and buckets): replay then refuses a certificate that answers a different question, and --workpaper-out needs it. Retain these expectations independently of the delivered certificate; a replay_command is a convenience, not independent evidence of the intended request. These five families return report_replayed and can reproduce the exact original canonical output with --output. Omitted, mismatched or malformed expectations refuse before any output file is created.","To reproduce general-ledger lines, add --view detail with independently reviewed --account, --unit, --from, --to, --label and numeric --as-known-at expectations. All are required; HEAD and implicit base units are refused. Do not combine --view detail with --expect. The original detail report supplies a complete replay_command. A mismatch refuses before any success event or file write. The retained certificate, output_digest, --output bytes and report_replayed receipt still identify the original roll-forward source.","--view roll-forward takes the same required expectations and binds the replay of a roll-forward certificate's lead schedule to them (exit 8 when the certificate answers a different account, unit, date, label or recorded-sequence question); without a view a roll-forward replays as supplied."]
 example = "fa replay trial-balance.cert --book ./books/myco --json"
@@ -527,6 +527,18 @@ events = ["search_results"]
 exits = [0, 2, 3, 4, 5, 7]
 usage = ["search <query> [--as-known-at HEAD|<seq>|<RFC3339>] [--limit N]   (quote a phrase; terms match whole tokens; hits are best first, at most --limit of them, default 20, 1..=200)", "The index is rebuilt from the journal at the frontier for this query alone (never stored, so it cannot drift from the journal; index_digest names it). Each committed entry's description and leg memos are indexed, opened with the book's key: erased text, or text sealed under a subject's own key, is never indexed and never appears in a snippet. Documents and findings are not indexed yet. A whole-book read: a token carrying any scope caveat is refused. No amount is parsed from a hit; fa entry show <id> reads the entry itself."]
 example = "fa search \"office rent\" --book ./books/myco --json"
+
+[[verb]]
+name = "query"
+summary = "Run a GQL statement in the FrankenAccounting profile (plan §15.5): native GQL plus AS KNOWN AT, FOR PERIOD, EFFECTIVE BETWEEN and AT BRANCH, compiled onto one certified native read at one recorded sequence; CALL fa.trial_balance is fa tb itself."
+writes = false
+subcommands = []
+flags = ["--certificate-out", "--branch"]
+switches = ["--certify"]
+events = ["query_rows", "trial_balance", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["query \"<statement>\" [--certify] [--certificate-out <new-file>] [--branch scenario:<name>]   (quote the whole statement; at most 16 KiB)", "A statement is native GQL beginning with MATCH (MATCH, OPTIONAL MATCH, WHERE, WITH, RETURN, ORDER BY, SKIP, LIMIT, UNION) over the book's graph: Entry, Leg, Account, Unit, Period, Party, Document and the other registered labels, with HAS_LEG, POSTS_TO, IN_UNIT, IN_PERIOD, SUPERSEDES and the other registered relations. A leg carries side (0 debit, 1 credit), unit_id, ordinal, _fa_effective_day and amount, a positive decimal at its unit's scale; reach its account through POSTS_TO.", "Selectors, anywhere at the statement's top level: AS KNOWN AT <commit sequence> | HEAD | '<RFC3339 instant>' (default HEAD, always reported as a sequence) or AS CURRENTLY STATED; FOR PERIOD '<code>' (the period each entry posted to, through its IN_PERIOD edge: bind exactly one (l:Leg), or one (e:Entry) with no leg); EFFECTIVE BETWEEN '<date>' AND '<date>' (a leg's effective day, both included); AT BRANCH trunk, or AT BRANCH 'scenario:<name>' (the same as --branch scenario:<name>) for the scenario's replay: trunk at its fork plus its intents, read at the replay's head, uncertified, with the branch in the envelope's coordinate (no AS KNOWN AT and no certification beside it). CALL fa.trial_balance [FOR PERIOD '<code>'] [AS KNOWN AT <seq>] runs fa tb with that selection and emits its trial_balance.", "The amount law is checked before anything runs (FA-REF-189): an aggregate over amounts is grouped by unit (RETURN u.code, SUM(l.amount) with (l)-[:IN_UNIT]->(u:Unit)) or pinned to one ((u:Unit {code: 'USD'}) or WHERE l.unit_id = <id>); an amount compares or orders only with amounts pinned to the same unit and never with a literal; no float literal is admitted. The profile computes an amount aggregate itself, exactly, in the statement's one final RETURN: its items are group keys and COUNT(*), COUNT, SUM, MIN, MAX or AVG of one binding or property, followed only by ORDER BY its output columns, SKIP and LIMIT. AVG is an exact decimal or fraction, a null mirror or an overflow is refused, and at most 1000000 native rows are folded. Other profile clauses, parameters, writes, a CALL inside a pipeline and the Register caches are refused naming the admissible form (FA-REF-188).", "Rows are the graph as recorded at that sequence, pending holds and staged migration chunks included; a balance is a fold, read with CALL fa.trial_balance or the report verbs. A result is at most 10000 rows (a larger one is refused, never cut; add LIMIT). A whole-book read: a token carrying any scope caveat is refused.", "--certify retains the result's certificate in the book (it needs produce as well as read) and emits report_certificate after query_rows; --certificate-out <new-file> implies it and also saves the canonical bytes without replacing a file. The certificate binds the statement, the substrate's certificate of the native read, the whole-book stock trial balance at the same sequence and the exact rows. fa replay C:<oid> replays the native read against retained history and reproduces the rows byte for byte (exit 8 otherwise); fa certificate status C:<oid> is Current while the statement still answers the same at HEAD, else Changed. A certificate binds a sequence: certify an instant-selected statement AS KNOWN AT the sequence it resolves to. CALL fa.trial_balance --certify is fa tb --certify. A leading EXPLAIN (CERTIFICATE), as in EXPLAIN (CERTIFICATE) MATCH ... AS KNOWN AT 12, is --certify written in the statement."]
+example = "fa query \"MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, l.side, SUM(l.amount) AS total FOR PERIOD 'FY2026-P03'\" --book ./books/myco --json"
 
 [[verb]]
 name = "procedure"
@@ -1710,6 +1722,12 @@ doc = "A full-text search at known_at (fa search): records is how many entries c
 fields = ["query:string", "known_at:seq", "records:int", "index_digest:hex", "total:int", "hits:[search_hit]"]
 
 [[event]]
+name = "query_rows"
+book = true
+doc = "A profile query's result (fa query): the statement as written, the native statement it compiled to and ran, the recorded sequence it read (an omitted or HEAD known-at resolved before the read), the FOR PERIOD code when given, the column names and each row's values in the native read's order. A vertex or edge is its 32-hex id, a decimal (an amount mirror or an exact sum of them) is exact text without trailing zeros (1000, 0.5), an exact average is {numerator, denominator}, bytes are hex. result_digest is the substrate's digest of the native read's ordered result under its plan (for an amount aggregate, the rows the profile aggregated): the same statement at the same sequence gives the same digest. Under fa query --certify, or replayed by fa replay, the envelope's certificate is the query certificate's oid."
+fields = ["statement:string", "native:string", "known_at:seq", "period:string?", "columns:[string]", "row_count:int", "rows:[any]", "result_digest:hex"]
+
+[[event]]
 name = "statement_issuance_plan"
 book = true
 doc = "A statement issuance was planned (plan §12.5, IssueStatements); nothing was written. The issuance names the retained statement certificate, the period it reports, its known-at (certified_at) and the audience, at the period's next ordinal. bytes is the complete canonical IssuancePlan in hex, with its description sealed once; approvals bind proposal_digest. Scope is statement-issuance-proposal: commit checks authority, approvals, the certificate and the ordinal again."
@@ -1844,7 +1862,7 @@ fields = ["family:string", "file:string?", "bytes:int", "lines:int", "text:strin
 [[event]]
 name = "certificate_status"
 book = true
-doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. For a scenario diff those are the Plan records its scenario gained after the certified prefix, and known_at is the fork. A summary trial balance is Current when its root and effective selector reproduces the certified report exactly at checked_at (amounts, posted and pending columns, group membership, empty roots and uncovered leaves), otherwise Changed with empty later_entries: that law compares the report, not entries. Its original known_at remains replayable in every case. checked_at is the frontier at which status was evaluated."
+doc = "A verified certificate is Current when no later entry affects its selector, otherwise SupersededBy with the later entry identities. For a scenario diff those are the Plan records its scenario gained after the certified prefix, and known_at is the fork. A summary trial balance is Current when its root and effective selector reproduces the certified report exactly at checked_at (amounts, posted and pending columns, group membership, empty roots and uncovered leaves), otherwise Changed with empty later_entries: that law compares the report, not entries. A query is Current when its statement returns the certified columns and rows at checked_at, otherwise Changed with empty later_entries: a query reads more than entries. Its original known_at remains replayable in every case. checked_at is the frontier at which status was evaluated."
 fields = ["oid:hex", "status:string", "known_at:seq", "checked_at:seq", "later_entries:[hex]", "replay_scope:string", "authority:string"]
 
 [[event]]
@@ -2055,8 +2073,8 @@ fields = ["vid:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", 
 [[event]]
 name = "evidence_explained"
 book = true
-doc = "An entry's complete evidence closure (`fa explain evidence <entry-vid>`): the class's registered evidence policy minimum (`evidence_policy.toml`), every cited document with its commitment, intake grade, self-sourced status, Reviewed attestations, and SupplementalEvidence links, plus any ManualAssertion attestations over the entry's proposal digest, and whether the closure satisfies the class minimum."
-fields = ["entry:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "recorded_at:seq", "min_documents:int", "accepted_kinds:[string]", "accepts_self_sourced:bool", "accepts_manual_assertion:bool", "satisfied:bool", "documents:[explained_document]", "supplements:[evidence_supplement]", "manual_assertions:[explained_manual_assertion]"]
+doc = "An entry's complete evidence closure (`fa explain evidence <entry-vid>`): the class's registered evidence policy minimum (`evidence_policy.toml`), every cited document with its commitment, intake grade, self-sourced status, Reviewed attestations, and SupplementalEvidence links, plus any ManualAssertion attestations over the entry's proposal digest, and whether the closure satisfies the class minimum. closure is the entry's provenance closure (plan §9.2): every member in canonical order (document, review, derivation, manual_assertion, approval, event, supersedes, principal, session, origin, plan_certificate, supplement, supplement_document) with its vertex, content digest, citation role and recording sequence (null for a bare reference), and two fa:closure:v1 digests: original_digest over the members the entry had as posted (recorded no later than it, no supplement), digest over all of them."
+fields = ["entry:hex", "entry_digest:hex", "proposal_digest:hex", "class:string", "recorded_at:seq", "min_documents:int", "accepted_kinds:[string]", "accepts_self_sourced:bool", "accepts_manual_assertion:bool", "satisfied:bool", "documents:[explained_document]", "supplements:[evidence_supplement]", "manual_assertions:[explained_manual_assertion]", "closure:provenance_closure"]
 
 [[event]]
 name = "refusal_explained"
@@ -3107,6 +3125,16 @@ doc = "A ManualAssertion attestation bound to an entry's proposal digest."
 fields = ["attestation_vid:hex", "asserter:hex", "reason_code:int", "reason:string?", "recorded_at:seq"]
 
 [[shape]]
+name = "provenance_closure"
+doc = "An entry's provenance closure (plan §9.2, bead fa-ge0y): its members in canonical order and two fa:closure:v1 digests over (entry vid, entry digest, recorded_at, members): original_digest over the members recorded no later than the entry and not supplementary, digest over every member."
+fields = ["digest:hex", "original_digest:hex", "members:[closure_member]"]
+
+[[shape]]
+name = "closure_member"
+doc = "One provenance-closure member: its kind, its vertex (null for a reference such as an intent oid), its content digest (a document oid, an approval's, event's or superseded entry's digest, an origin's oid or digest), the citation role for a document, and the sequence that recorded it (null for a bare reference: the principal, the session, an origin without a vertex)."
+fields = ["kind:string", "vid:hex?", "digest:hex?", "role:string?", "recorded_at:seq?"]
+
+[[shape]]
 name = "explained_admissibility_cell"
 doc = "One cell of the Appendix C admissibility matrix (`admissibility.toml`)."
 fields = ["entry_class:string", "period_state:string", "admitted:bool", "required_capability:string?", "requires_case_id:bool", "requires_reason_code:bool", "min_approvers:int"]
@@ -3450,6 +3478,11 @@ doc = "Lantern: the registered forensic and audit procedures (journal-entry test
 name = "fa.search"
 on_demand = true
 doc = "Full-text search over entry descriptions and leg memos at a recorded frontier, ranked by exact fixed-point BM25 from an index rebuilt from the journal per query. A pure read. On demand (fa-mcp --cluster fa.search): the default surface is at its 40-tool limit."
+
+[[mcp.cluster]]
+name = "fa.query"
+on_demand = true
+doc = "GQL over the book's graph in the FrankenAccounting profile (plan §15.5): native reads plus AS KNOWN AT, FOR PERIOD, EFFECTIVE BETWEEN and CALL fa.trial_balance, with the amount law checked before anything runs. A pure read. On demand (fa-mcp --cluster fa.query): the default surface is at its 40-tool limit."
 
 [[mcp.cluster]]
 name = "fa.correct"
@@ -4527,6 +4560,18 @@ dont = ["Don't read a high score as evidence of anything: BM25 ranks text, it st
 mistakes = ["Expecting documents or findings among the hits: this build indexes entry descriptions and leg memos only.", "Expecting erased or subject-sealed text to match: it is never indexed."]
 
 [[mcp.tool]]
+cluster = "fa.query"
+name = "gql"
+verb = "query"
+subcommands = []
+positionals = ["statement"]
+flags = []
+switches = ["--certify"]
+required = ["statement"]
+dont = ["Use certify: true to retain the result as a certificate (it needs produce); the replay tool (fa_read_replay) reproduces the rows byte for byte from it.", "Don't read a SUM of legs as a balance: rows are the graph as recorded, pending holds and staged migration chunks included. A balance is CALL fa.trial_balance FOR PERIOD '<code>' or the report tools.", "Don't aggregate amounts across units: group by the unit (RETURN u.code, SUM(l.amount) with (l)-[:IN_UNIT]->(u:Unit)) or pin one; the statement is refused otherwise (FA-REF-189).", "Don't write FOR SYSTEM_TIME yourself: select the coordinate with AS KNOWN AT <seq> | HEAD."]
+mistakes = ["Comparing an amount with a number (l.amount > 100) or a float literal: an amount compares only with an amount pinned to the same unit.", "Summing l.amount without grouping by l.side: a leg's amount is a positive magnitude and side is 0 (debit) or 1 (credit).", "Using FOR PERIOD with two legs bound, or with no leg and no entry: it selects the period one entry posted to."]
+
+[[mcp.tool]]
 cluster = "fa.case"
 name = "read"
 verb = "case"
@@ -5059,6 +5104,11 @@ ops = ["read"]
 # A search reads every entry: the whole book.
 [[bound]]
 verbs = ["search"]
+ops = ["read"]
+
+# A query reads the whole graph.
+[[bound]]
+verbs = ["query"]
 ops = ["read"]
 
 [[bound]]

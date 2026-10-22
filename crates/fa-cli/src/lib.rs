@@ -40,6 +40,7 @@ pub(crate) mod notary;
 pub mod panic;
 mod production;
 mod proof;
+mod query;
 mod rea;
 mod refusal_object;
 mod sample;

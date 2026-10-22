@@ -4679,6 +4679,100 @@ fn the_audit_cluster_draws_and_evaluates_the_clis_sample() {
     assert_eq!(mcp.finish(), 0);
 }
 
+/// fa-5c1: the query cluster runs the CLI's `fa query`. The same statement
+/// at the same sequence returns the same rows, native statement and result
+/// digest; the amount law refuses before anything runs.
+#[test]
+fn the_query_cluster_runs_the_clis_profile_statement() {
+    let dir = tmp("query-gql");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book", "create", "--book", &b, "--name", "Query Co", "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","leaf":true,"unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","leaf":true,"unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    for (key, amount) in [("a", "100.00"), ("b", "250.00")] {
+        let intent = dir.join(format!("{key}.json"));
+        std::fs::write(
+            &intent,
+            format!(
+                r#"{{"idempotency_key":"sale-{key}","effective_date":"2026-03-15","legs":[{{"side":"debit","account":"1200","amount":"{amount} USD"}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}]}}"#
+            ),
+        )
+        .unwrap();
+        let intent = intent.display().to_string();
+        cli_data(&[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &oid,
+            "--book",
+            &b,
+            "--json",
+        ]);
+    }
+    let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
+    let statement = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, l.side AS side, COUNT(*) AS legs ORDER BY account FOR PERIOD 'FY2026-P03'";
+    let summed = "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side";
+    let expected = parse(&cli_data(&["query", statement, "--book", &b, "--json"]));
+    let expected_sum = parse(&cli_data(&["query", summed, "--book", &b, "--json"]));
+
+    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.query"]);
+    mcp.discover();
+    let (error, text, _) = call_tool(&mut mcp, "fa_query_gql", json!({"statement": statement}));
+    assert!(
+        !error,
+        "a read-only Agent session queries the graph: {text}"
+    );
+    let rows = parse(&text);
+    for key in ["known_at", "native", "columns", "rows", "result_digest"] {
+        assert_eq!(rows[key], expected[key], "{key}: {text}");
+    }
+    assert_eq!(
+        rows["rows"],
+        json!([["1200", 0, 2], ["4000", 1, 2]]),
+        "{text}"
+    );
+    let (error, text, _) = call_tool(&mut mcp, "fa_query_gql", json!({"statement": summed}));
+    assert!(!error, "{text}");
+    let totals = parse(&text);
+    assert_eq!(
+        totals["rows"],
+        json!([["USD", 0, "350"], ["USD", 1, "350"]]),
+        "{text}"
+    );
+    assert_eq!(totals["rows"], expected_sum["rows"], "{text}");
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_query_gql",
+        json!({"statement": "MATCH (l:Leg) RETURN SUM(l.amount) AS total"}),
+    );
+    assert!(error, "a sum across units is refused: {text}");
+    let refused = structured_error(&text);
+    assert_eq!(refused["refusal_id"], json!("FA-REF-189"), "{text}");
+    assert_eq!(refused["exit"], json!(3), "{text}");
+    assert_eq!(mcp.finish(), 0);
+}
+
 /// fa-6his, plan Appendix D: a tool error carries `data: {fix_hint,
 /// suggested_tool_calls, available_options, refusal_id, refusal}`. For a
 /// kernel refusal the object is the one the CLI emits for the same failing

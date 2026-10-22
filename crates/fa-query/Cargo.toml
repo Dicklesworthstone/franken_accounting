@@ -1,0 +1,14 @@
+[package]
+name = "fa-query"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "The FrankenAccounting GQL profile (plan §15.5): a pure rewriter from profile text (AS KNOWN AT, FOR PERIOD, EFFECTIVE BETWEEN, AT BRANCH, CALL fa.trial_balance) onto the substrate's native reads, with the amount law checked at rewrite time. No storage, no authority. Bead fa-5c1."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-time = { path = "../fa-time", version = "=0.0.1" }

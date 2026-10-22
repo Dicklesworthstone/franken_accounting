@@ -2450,6 +2450,11 @@ mod tests {
                 json!({"name": "but-for", "period": "P", "certify": true}),
                 "scenario",
             ),
+            (
+                "fa_query_gql",
+                json!({"statement": "MATCH (a:Account) RETURN a.code", "certify": true}),
+                "query",
+            ),
         ] {
             let tool = mcp.tool_by_wire(wire).expect("certifiable report");
             let schema = tool.input_schema(&mcp, reg);

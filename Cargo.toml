@@ -39,6 +39,7 @@ members = [
     "crates/fa-notary",
     "crates/fa-policy",
     "crates/fa-intents",
+    "crates/fa-query",
     "crates/fad",
     "crates/fa-mcp",
     "tools/registry-check",

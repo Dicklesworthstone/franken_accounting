@@ -1030,11 +1030,40 @@ mod tests {
     }
 
     fn review() -> Record {
+        attested(AttestationClaim::Reviewed {
+            against: Vec::new(),
+        })
+    }
+
+    /// AS 2310: what a party confirmed (fa-zgn).
+    fn confirmed() -> Record {
+        attested(AttestationClaim::Confirmed {
+            by_party: VId(23),
+            balance: fa_money::Amount::new(fa_money::UnitId(1), 120_000),
+            as_of: fa_time::DateDay::from_ymd(2026, 3, 31).expect("as of"),
+        })
+    }
+
+    /// AS 2805: management's representations, each claim sealed (fa-zgn).
+    fn represented() -> Record {
+        let key = fa_model::SealKey([0x33; 32]);
+        let claim = |text: &str, salt: u8| {
+            fa_model::Erasable::seal(&text.to_string(), None, &key, [salt; 32], [salt; 24])
+        };
+        attested(AttestationClaim::Represented {
+            claims: vec![
+                claim("All transactions are recorded", 1),
+                claim("No fraud involving management is known", 2),
+            ],
+            as_of: fa_time::DateDay::from_ymd(2026, 4, 15).expect("as of"),
+        })
+    }
+
+    /// A Human attestation of `claim` over one document.
+    fn attested(claim: AttestationClaim) -> Record {
         let attestation = Attestation {
             book_id: BOOK,
-            claim: AttestationClaim::Reviewed {
-                against: Vec::new(),
-            },
+            claim,
             subject: Subject::Document(Oid([1; 32])),
             principal: VId(11),
             evidence_refs: Vec::new(),
@@ -1115,6 +1144,8 @@ mod tests {
         for (record, kind, class) in [
             (review(), KIND_ATTESTATION, 2),
             (reconciled(), KIND_ATTESTATION, 3),
+            (confirmed(), KIND_ATTESTATION, 5),
+            (represented(), KIND_ATTESTATION, 9),
             (receipt(1, 7), KIND_IMPORT_RECEIPT, 3),
             (transfer(), KIND_CUSTODY_TRANSFER, 2),
             (supplement(), KIND_SUPPLEMENTAL_EVIDENCE, 1),
