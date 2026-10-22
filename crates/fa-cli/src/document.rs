@@ -1230,6 +1230,78 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             );
             Ok(())
         }
+        Some(kind @ ("confirmed" | "represented")) => {
+            let example = if kind == "confirmed" {
+                "fa document attest confirmed <oid> --party <code> --balance \"<amount> <UNIT>\" --as-of YYYY-MM-DD --book <dir> --json"
+            } else {
+                "fa document attest represented <oid> --claim <text>... --as-of YYYY-MM-DD --book <dir> --json"
+            };
+            let oid_text = args
+                .positional
+                .get(3)
+                .map(String::as_str)
+                .or_else(|| args.flag("--document"))
+                .ok_or_else(|| {
+                    usage(
+                        format!("`fa document attest {kind}` needs a document oid"),
+                        example,
+                    )
+                })?;
+            let document = Oid(hex32(oid_text, "document oid")?);
+            let as_of_text = args.require("--as-of", "YYYY-MM-DD")?;
+            let as_of = fa_time::DateDay::parse(as_of_text)
+                .map_err(|e| usage(format!("--as-of `{as_of_text}`: {e}"), example))?;
+            let (attested, claim) = if kind == "confirmed" {
+                let capability = ctx.capability(args, &["produce"])?;
+                let mut book = ctx.books.open(args)?;
+                let party = args.require("--party", "the confirming party's code")?;
+                let balance_text = args.require("--balance", "\"<amount> <UNIT>\"")?;
+                let balance = fa_money::Amount::parse(balance_text, &book.context().units)
+                    .map_err(|e| usage(format!("--balance `{balance_text}`: {e}"), example))?;
+                let by_party = fa_model::party_vid(book.context().book_id, party);
+                let attested =
+                    book.record_confirmation(&capability, &document, by_party, balance, as_of)??;
+                ctx.out.at_book(&book)?;
+                (attested, "Confirmed")
+            } else {
+                let claims: Vec<String> = args
+                    .flag_all("--claim")
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+                if claims.is_empty() {
+                    return Err(usage(
+                        "a representation states at least one --claim <text>",
+                        example,
+                    ));
+                }
+                let capability = ctx.capability(args, &["approve"])?;
+                let mut book = ctx.books.open(args)?;
+                let attested =
+                    book.record_representation(&capability, &document, &claims, as_of)??;
+                ctx.out.at_book(&book)?;
+                (attested, "Represented")
+            };
+            let vid_hex = format!("{:032x}", attested.vid.0);
+            let subj_hex = hex(&document.0);
+            ctx.out.event(
+                "attestation_recorded",
+                vec![
+                    ("attestation_vid", s(&vid_hex)),
+                    ("claim", s(claim)),
+                    ("subject", s(&subj_hex)),
+                    ("signed_digest", s(hex(&attested.signed_digest))),
+                    ("recorded_at", Json::Int(i128::from(attested.recorded_at.0))),
+                    ("already_recorded", Json::Bool(attested.already_recorded)),
+                    ("holds", Json::Null),
+                ],
+                &format!(
+                    "recorded {claim} attestation {vid_hex} for document {subj_hex} at {}",
+                    attested.recorded_at.0
+                ),
+            );
+            Ok(())
+        }
         Some("manual") => {
             let intent_path = args.require("--intent", "entry.json (or - for stdin)")?;
             let reason_text = args.require("--reason", "NoDocumentIssued")?;

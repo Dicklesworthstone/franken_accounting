@@ -2598,6 +2598,39 @@ impl Book {
         )))
     }
 
+    /// Record a `Confirmed` attestation over the confirmation response at
+    /// `document` (plan §11.12, AS 2310): what `by_party` confirmed, as the
+    /// capability's holder (holding `produce`) states it.
+    pub fn record_confirmation(
+        &mut self,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        by_party: VId,
+        balance: fa_money::Amount,
+        as_of: DateDay,
+    ) -> Outcome<fa_journal::Attested> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_confirmation(
+            &purposes, capability, document, by_party, balance, as_of,
+        )))
+    }
+
+    /// Record management's `Represented` attestation over the representation
+    /// letter at `document` (plan §11.12, AS 2805) by the capability's holder,
+    /// who holds `approve`.
+    pub fn record_representation(
+        &mut self,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        claims: &[String],
+        as_of: DateDay,
+    ) -> Outcome<fa_journal::Attested> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_representation(
+            &purposes, capability, document, claims, as_of,
+        )))
+    }
+
     /// Record the preparer's `ManualAssertion` over `proposal` (plan §9.2):
     /// no document exists, for a registered `reason_code`, as `statement`
     /// says (sealed under the book key with fresh entropy). Posting that
