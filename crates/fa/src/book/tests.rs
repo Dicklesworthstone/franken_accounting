@@ -2349,6 +2349,139 @@ fn bundles_require_produce_and_verify_with_the_book_key() {
     );
 }
 
+/// A bundle's reach is judged against the scope caveats before the journal
+/// is read (doctrine 8; plan §13.1; fa-0x0, fa-2q91). A complete prefix
+/// discloses every account, period and effective day, so those caveats
+/// refuse it; an effective bound admits an account interval (and balances)
+/// ending within it; a pinned capability is served the newest state
+/// recorded at or before its pin, and a later state it names is out of
+/// scope.
+#[test]
+fn bundles_judge_scope_caveats_and_serve_a_pin_its_own_state() {
+    let (mut book, usd, day, _) = certified_fixture();
+    let principal = VId(1);
+    let producer = Capability::embedded(principal, &["produce", "read"]).unwrap();
+    let witness = Capability::embedded(principal, &["witness"]).unwrap();
+    let first = book.checkpoint(principal, &witness).unwrap().unwrap();
+    post_rent(
+        &mut book,
+        usd,
+        principal,
+        DateDay(day.0 + 20),
+        b"later-rent",
+        150_000,
+    )
+    .unwrap()
+    .unwrap();
+    let second = book.checkpoint(principal, &witness).unwrap().unwrap();
+    let prefix = fa_notary::BundleRequest {
+        scope: fa_notary::BundleScope::Prefix,
+        balances: Vec::new(),
+        inline_documents: false,
+    };
+    let cash = account_vid(book.context().book_id, "1000");
+    let interval = |to: i32, balance: Option<Option<i32>>| fa_notary::BundleRequest {
+        scope: fa_notary::BundleScope::Index(fa_notary::ScopeRequest::Account {
+            account: cash,
+            from: day.0 - 14,
+            to,
+        }),
+        balances: balance
+            .map(|effective_through| fa_notary::BalanceRequest {
+                account: cash,
+                unit: usd.0,
+                effective_through,
+            })
+            .into_iter()
+            .collect(),
+        inline_documents: false,
+    };
+    let state_of =
+        |produced: &crate::book::ProducedBundle| produced.checkpoint.checkpoint.body.state_oid;
+    let refused = |book: &mut Book, cap: &Capability, state, request, caveat: &str| {
+        let refusal = book
+            .produce_bundle(principal, cap, state, request)
+            .unwrap()
+            .expect_err("out of scope");
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+        assert!(
+            refusal.message.contains(&format!("`{caveat}`")),
+            "{}",
+            refusal.message
+        );
+    };
+
+    let latest = book
+        .produce_bundle(principal, &producer, None, &prefix)
+        .unwrap()
+        .unwrap()
+        .expect("the latest state");
+    assert_eq!(state_of(&latest), second.stored.oid);
+
+    // Whole-book caveats refuse a complete prefix.
+    let bounded = producer.clone().effective_through(day);
+    refused(&mut book, &bounded, None, &prefix, "effective");
+    let march = producer.clone().for_periods(&["FY2026-P03"]).unwrap();
+    refused(&mut book, &march, None, &prefix, "periods");
+    let march_cash = interval(day.0, None);
+    let cash_only = producer.clone().for_accounts(&["1000"]).unwrap();
+    refused(&mut book, &cash_only, None, &march_cash, "accounts");
+    // An effective bound admits the account interval ending within it, and
+    // a balance cut off within it; not one past it, nor one over every day.
+    let within = interval(day.0, Some(Some(day.0)));
+    book.produce_bundle(principal, &bounded, None, &within)
+        .unwrap()
+        .unwrap()
+        .expect("within the bound");
+    let past = interval(day.0 + 20, None);
+    refused(&mut book, &bounded, None, &past, "effective");
+    let every_day = interval(day.0, Some(None));
+    refused(&mut book, &bounded, None, &every_day, "effective");
+
+    // A pin is served the newest state recorded at or before it.
+    let pinned = producer.clone().known_at_most(first.stored.recorded_at);
+    let at_pin = book
+        .produce_bundle(principal, &pinned, None, &prefix)
+        .unwrap()
+        .unwrap()
+        .expect("the state at the pin");
+    assert_eq!(state_of(&at_pin), first.stored.oid);
+    let report = fa_verify::verify_bundle(
+        &at_pin.bundle.bytes,
+        &[book.checkpoint_public_key()],
+        Some(&at_pin.receipt),
+    )
+    .unwrap();
+    assert!(report.verified(), "{:#?}", report.checks);
+    assert_eq!(
+        report.manifest.through_seq, first.stored.state.through_seq.0,
+        "the bundle proves the pinned state's prefix, not the head's"
+    );
+    let named = book
+        .produce_bundle(principal, &pinned, Some(first.stored.oid), &prefix)
+        .unwrap()
+        .unwrap()
+        .expect("named at the pin");
+    assert_eq!(named.bundle, at_pin.bundle);
+    refused(
+        &mut book,
+        &pinned,
+        Some(second.stored.oid),
+        &prefix,
+        "known_at",
+    );
+    let before_any = producer
+        .clone()
+        .known_at_most(CommitSeq(first.stored.recorded_at.0 - 1));
+    assert_eq!(
+        book.produce_bundle(principal, &before_any, None, &prefix)
+            .unwrap()
+            .unwrap(),
+        None,
+        "no state is recorded at or before the pin"
+    );
+}
+
 fn spec(book_id: Id128) -> (BookSpec, fa_money::UnitId) {
     let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
     let units = fa_money::UnitRegistry::embedded().unwrap();
