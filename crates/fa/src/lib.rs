@@ -117,7 +117,10 @@ pub use bank::{
     BankMatchHistory, BankMatchLineage, BankMatchRecorded, BankStatusRequest, BankUnmatchRecorded,
     BankUnmatchRequest,
 };
-pub use book::{Book, BookError, BookKeys, Entropy, Outcome, ProducedBundle, ReadScope};
+pub use book::{
+    Book, BookError, BookKeys, Entropy, Outcome, PLAN_BINDINGS, ProducedBundle, ReadScope,
+    Replanned,
+};
 pub use cash_flow_certificate::{
     CASH_FLOW_CERTIFICATE_FORMAT, CashFlowCertificate, CertifiedCashFlow,
     MAX_CASH_FLOW_CERTIFICATE_BYTES,
