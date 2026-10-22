@@ -3764,6 +3764,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Export the complete record-bearing suffix between two recorded
+    /// states (plan §13.2); [`crate::Book::export_suffix`] states the contract.
+    pub fn export_suffix(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: crate::SuffixRequest,
+    ) -> Outcome<crate::SuffixArtifact> {
+        self.query(cx, |db, book| {
+            crate::proof::export_suffix(db, cx, book, &self.signer, principal, capability, request)
+        })
+    }
+
     /// Cosign a recorded state's signed checkpoint with `witness` (plan
     /// §13.5); [`crate::Book::witness_checkpoint`] states the contract.
     pub fn witness_checkpoint(
