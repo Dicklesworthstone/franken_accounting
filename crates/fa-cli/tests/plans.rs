@@ -687,6 +687,110 @@ fn tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key() {
     assert_eq!(get(&committed, "already_recorded"), &Json::Bool(false));
 }
 
+/// fa-we7: a stale correction (Reversal and Replacement) or atomic batch
+/// plan is refused the same way, with its fresh plan, which commits.
+#[test]
+fn stale_correction_and_batch_plans_carry_their_fresh_plans() {
+    let f = Fixture::new();
+    let mut documents = 0;
+    let mut publish = || {
+        documents += 1;
+        let source = write(
+            &f.dir,
+            &format!("between-{documents}.txt"),
+            &format!("Independent source document {documents}."),
+        );
+        ok(
+            &f.book,
+            &[
+                "document",
+                "add",
+                &source,
+                "--kind",
+                "Receipt",
+                "--grade",
+                "HumanUpload",
+            ],
+        );
+        head(&f.book)
+    };
+    let stale_then_fresh = |stale: &str, advanced: i128| {
+        let (code, error) = run(&f.book, &["commit", "--plan", "-"], Some(stale.as_bytes()));
+        assert_eq!(code, 6, "{}", error.render());
+        assert_eq!(text(&error, "refusal_id"), "FA-REF-034");
+        assert_eq!(
+            head(&f.book),
+            advanced,
+            "nothing is committed for the caller"
+        );
+        let detail = get(&error, "detail");
+        // Only the basis moved; a correction's effects digest moves with it
+        // (observed), so `effects` is not asserted here.
+        let changed = names(get(detail, "changed"));
+        assert!(changed.contains(&"basis"), "{changed:?}");
+        for same in ["capability", "entry", "period", "security_policy_epoch"] {
+            assert!(!changed.contains(&same), "{same}: {changed:?}");
+        }
+        let fresh = get(detail, "fresh_plan");
+        assert_eq!(integer(fresh, "snapshot_seq"), advanced);
+        assert_eq!(get(fresh, "period"), &Json::Null);
+        let (code, committed) = run(
+            &f.book,
+            &["commit", "--plan", "-"],
+            Some(text(fresh, "bytes").as_bytes()),
+        );
+        assert_eq!(code, 0, "{}", committed.render());
+        assert_eq!(text(&committed, "plan_digest"), text(fresh, "plan_digest"));
+        committed
+    };
+
+    let original = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("stale-original", "10.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let corrected = f.intent("stale-corrected", "12.00");
+    let planned = ok(
+        &f.book,
+        &[
+            "reverse",
+            text(&original, "vid"),
+            "--reason",
+            "WrongAmount",
+            "--replace-with",
+            &corrected,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+        ],
+    );
+    assert_eq!(text(&planned, "event"), "replacement_plan");
+    let stale = text(&planned, "bytes").to_string();
+    let advanced = publish();
+    let committed = stale_then_fresh(&stale, advanced);
+    assert_eq!(text(&committed, "event"), "replacement_plan_committed");
+
+    let batch = write(
+        &f.dir,
+        "stale-batch.json",
+        &format!(
+            r#"{{"idempotency_key":"stale-batch","intents":[{{"effective_date":"2026-03-12","idempotency_key":"stale-batch-1","evidence":["{ev}"],"legs":[{{"side":"debit","account":"1000","amount":"1.00 USD"}},{{"side":"credit","account":"4000","amount":"1.00 USD"}}]}},{{"effective_date":"2026-03-13","idempotency_key":"stale-batch-2","evidence":["{ev}"],"legs":[{{"side":"debit","account":"1000","amount":"2.00 USD"}},{{"side":"credit","account":"4000","amount":"2.00 USD"}}]}}]}}"#,
+            ev = f.evidence
+        ),
+    );
+    let planned = ok(&f.book, &["post", "--intent", &batch, "--dry-run"]);
+    assert_eq!(text(&planned, "event"), "batch_plan");
+    let stale = text(&planned, "bytes").to_string();
+    let advanced = publish();
+    let committed = stale_then_fresh(&stale, advanced);
+    assert_eq!(text(&committed, "event"), "batch_plan_committed");
+}
+
 fn names(value: &Json) -> Vec<&str> {
     match value {
         Json::Arr(items) => items.iter().map(|i| i.as_str().expect("name")).collect(),

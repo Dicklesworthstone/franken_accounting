@@ -8644,7 +8644,17 @@ fn commit_replacement_cmd(
     let certificate_digest = hex(&plan.certificate_digest().map_err(encode)?);
     let capability = ctx.capability(args, &["post"])?;
     let mut book = ctx.books.open(args)?;
-    let (reversal, replacement) = book.commit_replacement_plan(plan, &capability)??;
+    let (reversal, replacement) = match book.commit_replacement_plan(plan.clone(), &capability)? {
+        Ok(pair) => pair,
+        Err(refusal) if refusal.code == fa_journal::refusal::code::PLAN_INVALIDATED => {
+            let replanned = match book.replan_replacement(&plan, &capability)? {
+                Ok(replanned) => Ok(fresh_replacement(replanned)?),
+                Err(replan) => Err(replan),
+            };
+            return Err(stale_plan(refusal, replanned, ctx.out.is_bound()));
+        }
+        Err(refusal) => return Err(refusal.into()),
+    };
     ctx.out.at_book(&book)?;
     let already = matches!(replacement, Posted::AlreadyRecorded { .. });
     ctx.out.event("replacement_plan_committed", vec![
@@ -8720,13 +8730,11 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let posted = match book.commit_plan(plan.clone(), &capability)? {
         Ok(posted) => posted,
         Err(refusal) if refusal.code == fa_journal::refusal::code::PLAN_INVALIDATED => {
-            return Err(stale_plan(
-                &mut book,
-                &plan,
-                &capability,
-                refusal,
-                ctx.out.is_bound(),
-            )?);
+            let replanned = match book.replan(&plan, &capability)? {
+                Ok(replanned) => Ok(fresh_post(replanned)?),
+                Err(replan) => Err(replan),
+            };
+            return Err(stale_plan(refusal, replanned, ctx.out.is_bound()));
         }
         Err(refusal) => return Err(refusal.into()),
     };
@@ -8764,22 +8772,90 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// A fresh plan in a stale plan's refusal detail (fa-we7).
+struct FreshPlan {
+    plan_digest: [u8; 32],
+    certificate_digest: [u8; 32],
+    snapshot_seq: CommitSeq,
+    security_policy_epoch: u64,
+    /// A PostEntry plan's period; null for a correction or a batch.
+    period: Option<String>,
+    /// For a correction, its replacement member's, as its dry run shows.
+    effects_digest: [u8; 32],
+    bytes: Vec<u8>,
+}
+
+fn fresh_error(error: fa::IntentError) -> Fail {
+    Fail::Internal(format!("fresh plan: {error}"))
+}
+
+fn fresh_post(replanned: fa::Replanned) -> Result<(Vec<&'static str>, FreshPlan), Fail> {
+    let plan = &replanned.plan;
+    let certificate = plan.certificate();
+    Ok((
+        replanned.changed,
+        FreshPlan {
+            plan_digest: plan.digest().map_err(fresh_error)?,
+            certificate_digest: certificate.digest().map_err(fresh_error)?,
+            snapshot_seq: certificate.snapshot_seq,
+            security_policy_epoch: certificate.security_policy_epoch,
+            period: Some(certificate.period.clone()),
+            effects_digest: certificate.effects_digest,
+            bytes: plan.canonical_bytes().map_err(fresh_error)?,
+        },
+    ))
+}
+
+fn fresh_replacement(
+    replanned: fa::Replanned<ReplacementPlan>,
+) -> Result<(Vec<&'static str>, FreshPlan), Fail> {
+    let plan = &replanned.plan;
+    let certificate = plan.replacement().certificate();
+    Ok((
+        replanned.changed,
+        FreshPlan {
+            plan_digest: plan.digest().map_err(fresh_error)?,
+            certificate_digest: plan.certificate_digest().map_err(fresh_error)?,
+            snapshot_seq: certificate.snapshot_seq,
+            security_policy_epoch: certificate.security_policy_epoch,
+            period: None,
+            effects_digest: certificate.effects_digest,
+            bytes: plan.canonical_bytes().map_err(fresh_error)?,
+        },
+    ))
+}
+
+fn fresh_batch(
+    replanned: fa::Replanned<fa::BatchPlan>,
+) -> Result<(Vec<&'static str>, FreshPlan), Fail> {
+    let plan = &replanned.plan;
+    let certificate = plan.certificate();
+    Ok((
+        replanned.changed,
+        FreshPlan {
+            plan_digest: plan.digest().map_err(fresh_error)?,
+            certificate_digest: plan.certificate_digest().map_err(fresh_error)?,
+            snapshot_seq: certificate.snapshot_seq,
+            security_policy_epoch: certificate.security_policy_epoch,
+            period: None,
+            effects_digest: certificate.effects_digest,
+            bytes: plan.canonical_bytes().map_err(fresh_error)?,
+        },
+    ))
+}
+
 /// A stale plan's PlanInvalidated (plan §10.4, fa-we7): the refusal names
 /// what changed and carries a fresh plan of the same intent at the current
 /// head in its `detail`, never committed here. When the intent can no
 /// longer be planned (the period closed, its key recorded meanwhile), the
 /// detail carries that refusal instead.
 fn stale_plan(
-    book: &mut Book,
-    stale: &PostPlan,
-    capability: &fa_journal::Capability,
     mut refusal: Refusal,
+    replanned: Result<(Vec<&'static str>, FreshPlan), Refusal>,
     bound: bool,
-) -> Result<Fail, Fail> {
-    let identify = |e: fa::IntentError| Fail::Internal(format!("fresh plan: {e}"));
-    let detail = match book.replan(stale, capability)? {
-        Ok(fa::Replanned { plan, changed }) => {
-            let certificate = plan.certificate();
+) -> Fail {
+    let detail = match replanned {
+        Ok((changed, fresh)) => {
             refusal.fix = if bound {
                 "review detail.fresh_plan (detail.changed names what differs from the refused plan); to commit it unchanged, call fa_post_commit_plan with plan set to detail.fresh_plan.bytes"
             } else {
@@ -8791,22 +8867,16 @@ fn stale_plan(
                 (
                     "fresh_plan",
                     obj(vec![
-                        ("plan_digest", s(hex(&plan.digest().map_err(identify)?))),
-                        (
-                            "certificate_digest",
-                            s(hex(&certificate.digest().map_err(identify)?)),
-                        ),
-                        (
-                            "snapshot_seq",
-                            Json::Int(i128::from(certificate.snapshot_seq.0)),
-                        ),
+                        ("plan_digest", s(hex(&fresh.plan_digest))),
+                        ("certificate_digest", s(hex(&fresh.certificate_digest))),
+                        ("snapshot_seq", Json::Int(i128::from(fresh.snapshot_seq.0))),
                         (
                             "security_policy_epoch",
-                            Json::Int(i128::from(certificate.security_policy_epoch)),
+                            Json::Int(i128::from(fresh.security_policy_epoch)),
                         ),
-                        ("period", s(&certificate.period)),
-                        ("effects_digest", s(hex(&certificate.effects_digest))),
-                        ("bytes", s(hex(&plan.canonical_bytes().map_err(identify)?))),
+                        ("period", fresh.period.map_or(Json::Null, s)),
+                        ("effects_digest", s(hex(&fresh.effects_digest))),
+                        ("bytes", s(hex(&fresh.bytes))),
                     ]),
                 ),
                 ("replan_refusal", Json::Null),
@@ -8826,7 +8896,7 @@ fn stale_plan(
             ),
         ]),
     };
-    Ok(Fail::RefusalDetail(refusal, detail))
+    Fail::RefusalDetail(refusal, detail)
 }
 
 pub(crate) fn emit_posted(
