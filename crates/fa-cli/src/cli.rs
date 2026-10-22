@@ -828,24 +828,38 @@ fn leased_on_open_held(error: &crate::lease::LeaseError, dir: &Path) -> Refusal 
 /// event without one.
 /// `--branch scenario:<name>` (plan §15.2, bead fa-k07b): the command reads
 /// the scenario's materialization (a scratch replay of the trunk prefix at
-/// its fork plus its intents) instead of trunk. Only read verbs register
-/// `--branch`, so no write reaches a replay. A scenario read is not yet
-/// certified, and trunk known-at selectors do not apply to it.
+/// its fork plus its intents) instead of trunk. `--branch draft:<name>`
+/// (plan §15.2, bead fa-s7x) reads the draft's rehearsal: trunk at the head
+/// with every planned intent posted together, exactly as promotion would,
+/// under the reader's current whole-book read authority (`bound`, else the
+/// embedded owner's read). Only read verbs register `--branch`, so no write
+/// reaches a replay. A branch read is not yet certified, and trunk known-at
+/// selectors do not apply to it.
 fn select_branch<'b>(
     args: &Args,
     mut book: BookRef<'b>,
     said: &RefCell<Said>,
+    bound: Option<&Capability>,
 ) -> Result<BookRef<'b>, Fail> {
     let selector = match args.flag("--branch") {
         None | Some("trunk") => return Ok(book),
         Some(selector) => selector,
     };
-    let Some(name) = selector.strip_prefix("scenario:") else {
-        return Err(usage(
-            format!("--branch `{selector}` is neither trunk nor scenario:<name>"),
-            "--branch scenario:<name> (fa scenario list --json), or omit --branch to read trunk",
-        ));
+    let unknown = || {
+        usage(
+            format!("--branch `{selector}` is neither trunk, scenario:<name> nor draft:<name>"),
+            "--branch scenario:<name> (fa scenario list --json) or draft:<name> (fa draft list --json), or omit --branch to read trunk",
+        )
     };
+    let scenario = selector
+        .strip_prefix("scenario:")
+        .filter(|name| !name.is_empty());
+    let draft = selector
+        .strip_prefix("draft:")
+        .filter(|name| !name.is_empty());
+    if scenario.is_none() && draft.is_none() {
+        return Err(unknown());
+    }
     let trunk_selector = ["--as-known-at", "--known-at", "--before", "--after"]
         .iter()
         .any(|flag| args.flag(flag).is_some());
@@ -855,13 +869,34 @@ fn select_branch<'b>(
         || crate::issuance::view_flag(args).is_some()
     {
         return Err(usage(
-            "a scenario read is not certified yet, and trunk known-at selectors do not apply to its replay",
+            "a branch read (a scenario or a draft) is not certified yet, and trunk known-at selectors do not apply to its replay",
             "drop --certify, --certificate-out, --as-originally-reported, --as-issued-to, --as-reported-in and any known-at, --before or --after selector, or read trunk without --branch",
         ));
     }
-    let scenario = book.materialize_scenario(name)??;
+    let replay = if let Some(name) = draft {
+        let reader = match bound {
+            Some(capability) => capability.clone(),
+            None => {
+                let mut ops = vec!["read"];
+                ops.extend(args.flag_all("--grant"));
+                Capability::embedded(principal(args), &ops).map_err(|e| {
+                    usage(
+                        e.to_string(),
+                        "--grant takes a registered op name; `fa capabilities --json` lists them",
+                    )
+                })?
+            }
+        };
+        let head = book.head()?;
+        book.rehearse_draft_at(reader.holder(), &reader, name, head)??
+            .0
+    } else if let Some(name) = scenario {
+        book.materialize_scenario(name)??.book
+    } else {
+        return Err(unknown());
+    };
     said.borrow_mut().branch = Some(selector.to_string());
-    Ok(BookRef::Owned(Box::new(scenario.book)))
+    Ok(BookRef::Owned(Box::new(replay)))
 }
 
 pub(crate) struct BookSource<'a> {
@@ -911,7 +946,7 @@ impl BookSource<'_> {
         if let Some(record) = self.access.take() {
             book.record_access(&record)??;
         }
-        let book = select_branch(args, book, &self.said)?;
+        let book = select_branch(args, book, &self.said, self.bound.as_ref())?;
         stamp(&self.said, &book)?;
         Ok(book)
     }
@@ -948,7 +983,7 @@ impl BookSource<'_> {
         if let Some(record) = self.access.take() {
             book.record_access(&record)??;
         }
-        let book = select_branch(args, book, &self.said)?;
+        let book = select_branch(args, book, &self.said, self.bound.as_ref())?;
         stamp(&self.said, &book)?;
         Ok(book)
     }
@@ -3378,7 +3413,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`, `fa party identifiers <code> --identifier bank_account=<value>... --key <change-id>` (replaces the party's identifier set under a named change; values sealed, never echoed; host-only over MCP). Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
 19. Read a period as it was first reported: `fa tb --period FY2026-P03 --as-originally-reported --json` pins known-at to the certificate its first StatementIssuance issued, else to its first Lock (never its first Close, never HEAD); a period neither issued nor locked is refused with FA-REF-161. `--as-issued-to <audience>` reads it as issued to that audience (FA-REF-173 when it never was) and `--as-reported-in C:<oid>` as reported in that retained statement certificate (FA-REF-174 when the certificate does not report the period). Record an issuance with `fa statement issue`.\n\
 20. Typed documents: `fa invoice --party C-17 --number 10442 --date 2026-03-14 --receivable 1200 --revenue 4000 --line 'qty=10 unit_price=\"125.00 USD\" item=SKU-9' --evidence <oid> --dry-run --json` (and `fa bill ... --payable 2000 --expense 6000`) builds the entry from its lines and posts through fa post's path (--dry-run, --plan-out, --draft, --scenario); `fa receipt --party C-17 --number WIRE-IN-1 --date 2026-03-20 --cash 1000 --receivable 1200 --amount \"1290.00 USD\" --applies <invoice vid>` (and `fa payment`) settles it, its number becoming the cash leg's memo that fa bank match compares with a statement line's reference. You name every account; there is no tax or posting rule yet. An intent leg may name `entity` and `party` codes; in a multi-entity book every leg names its entity. `fa document list [--kind BankStatement]` lists held documents as metadata.\n\
-21. Ask what-if or but-for (plan §15.2, §15.6.5): `fa scenario fork but-for-breach --from 2025-07-01 [--at HEAD|<seq>] --evidence <assumption oid>` forks a counterfactual over the trunk prefix at that sequence; `fa scenario run but-for-breach --intent receipt.json` (or fa post, invoice, bill, receipt or payment with --scenario but-for-breach) rehearses each intent on the scenario and journals it there, never on trunk; `fa scenario diff but-for-breach --period FY2025-P12 --json` is the exact change per account and unit against trunk as known at the fork (the damages schedule). Each run and diff replays the trunk prefix into a scratch book and posts every intent again under every posting law. `fa tb|statement|explain|open-items|gl ... --branch scenario:but-for-breach` runs the same read on the scenario's replay (uncertified; the coordinate names the branch). `fa scenario diff ... --certify` retains the diff as a certificate bound to trunk at the fork and the intents it covers: `fa replay C:<oid>` reproduces it byte for byte, and `fa certificate status C:<oid>` names the intents run since.\n\
+21. Ask what-if or but-for (plan §15.2, §15.6.5): `fa scenario fork but-for-breach --from 2025-07-01 [--at HEAD|<seq>] --evidence <assumption oid>` forks a counterfactual over the trunk prefix at that sequence; `fa scenario run but-for-breach --intent receipt.json` (or fa post, invoice, bill, receipt or payment with --scenario but-for-breach) rehearses each intent on the scenario and journals it there, never on trunk; `fa scenario diff but-for-breach --period FY2025-P12 --json` is the exact change per account and unit against trunk as known at the fork (the damages schedule). Each run and diff replays the trunk prefix into a scratch book and posts every intent again under every posting law. `fa tb|statement|explain|open-items|gl|query ... --branch scenario:but-for-breach` runs the same read on the scenario's replay, and `--branch draft:<name>` on a draft's rehearsal (trunk with its planned intents posted, as promotion would), both uncertified with the branch in the coordinate. `fa scenario diff ... --certify` retains the diff as a certificate bound to trunk at the fork and the intents it covers: `fa replay C:<oid>` reproduces it byte for byte, and `fa certificate status C:<oid>` names the intents run since.\n\
 22. Ask the graph anything (plan §15.5): `fa query \"MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, l.side, SUM(l.amount) AS total FOR PERIOD 'FY2026-P03' AS KNOWN AT 120\" --json` runs native GQL over entries, legs, accounts, units, periods, parties and documents at one recorded sequence (query_rows: the native statement it ran, columns, rows, result_digest). Select with AS KNOWN AT <seq>|HEAD|'<instant>', FOR PERIOD '<code>' (the period an entry posted to), EFFECTIVE BETWEEN '<date>' AND '<date>' and AT BRANCH trunk | 'scenario:<name>' (a scenario's replay, as --branch reads it). Amounts aggregate only per unit and compare only within one pinned unit (FA-REF-189); other clauses are refused naming the admissible form (FA-REF-188). Rows are the graph as recorded, pending holds included: a balance is `fa query \"CALL fa.trial_balance FOR PERIOD 'FY2026-P03'\"`, which is `fa tb` itself. Add --certify to retain the result's certificate (read and produce): `fa replay C:<oid>` replays the native read and reproduces the rows byte for byte, and `fa certificate status C:<oid>` says whether the statement still answers the same at HEAD.\n";
 
 const EXAMPLES: &str = "fa robot-docs examples\n\

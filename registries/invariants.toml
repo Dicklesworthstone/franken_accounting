@@ -44,8 +44,9 @@ draft = ["FA-INV-10.self-promotion"]
 close = ["FA-INV-03.nominal-zero"]
 case = ["FA-INV-10.self-promotion", "FA-INV-10.sod"]
 registers = ["FA-INV-04.core"]
-tb = ["FA-INV-04.core", "FA-INV-07.core"]
-statement = ["FA-INV-04.core", "FA-INV-07.core"]
+tb = ["FA-INV-04.core", "FA-INV-07.core", "FA-INV-07.branch"]
+statement = ["FA-INV-04.core", "FA-INV-07.core", "FA-INV-07.branch"]
+query = ["FA-INV-07.core", "FA-INV-07.branch"]
 open_items = ["FA-INV-04.open-amount"]
 checkpoint = ["FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-14.signed"]
 proof = ["FA-INV-04.outsider-recomputation", "FA-INV-14.inclusion", "FA-INV-14.seq-range-complete", "FA-INV-14.scope-index-complete"]
@@ -654,11 +655,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-07"
 id = "branch"
-status = "dormant"
+status = "live"
 statement = "Branch predicates select drafts and scenarios without aliasing trunk."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-s7x"]
+owner = "fa-s7x"
+checkers = ["fa-cli::tests/cli.rs::a_draft_reaches_trunk_only_through_another_principals_promotion"]
+negatives = ["fa-cli::tests/cli.rs::a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk"]
 waiver = "forbidden"
 
 [[clause]]

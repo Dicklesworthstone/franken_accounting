@@ -5,8 +5,9 @@
 //!
 //! A query reads the whole graph, so it is admitted as a whole-book read
 //! before anything is observed: a token carrying any scope caveat is
-//! refused, never filtered. `AT BRANCH 'scenario:<name>'` (or `--branch
-//! scenario:<name>`) reads the scenario's replay, admitted on trunk.
+//! refused, never filtered. `AT BRANCH 'scenario:<name>'` or
+//! `'draft:<name>'` (or the same `--branch`) reads that replay, admitted on
+//! trunk.
 //!
 //! `--certify`, `--certificate-out <new-file>` or a leading `EXPLAIN
 //! (CERTIFICATE)` also retains the result's certificate, which needs
@@ -36,20 +37,20 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     };
     let profiled = fa::compile_query(text).map_err(|r| Fail::Refusal(fa::profile_refusal(&r)))?;
-    // AT BRANCH 'scenario:<name>' is --branch scenario:<name>: the book
-    // source admits authority on trunk, then reads the scenario's replay.
+    // AT BRANCH 'scenario:<name>' or 'draft:<name>' is the same --branch:
+    // the book source admits authority on trunk, then reads the replay.
     let branched;
-    let args = match &profiled.scenario {
-        Some(name) => {
-            let selector = format!("scenario:{name}");
+    let args = match &profiled.branch {
+        Some(selector) => {
             if args.flag("--branch").is_some_and(|given| given != selector) {
                 return Err(usage(
                     "AT BRANCH and --branch name different branches",
-                    "name the branch once: AT BRANCH 'scenario:<name>' in the statement, or --branch scenario:<name>",
+                    "name the branch once: AT BRANCH 'scenario:<name>' (or 'draft:<name>') in the statement, or --branch",
                 ));
             }
             let mut with = args.clone();
-            with.flags.insert("--branch".to_string(), vec![selector]);
+            with.flags
+                .insert("--branch".to_string(), vec![selector.clone()]);
             branched = with;
             &branched
         }
@@ -61,7 +62,7 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         && (profiled.certify || !matches!(profiled.known_at, QueryKnownAt::Head))
     {
         return Err(usage(
-            "a scenario read is its replay at its head: it is not certified, and AS KNOWN AT selects trunk's history",
+            "a scenario or draft read is its replay at its head: it is not certified, and AS KNOWN AT selects trunk's history",
             "drop EXPLAIN (CERTIFICATE) and AS KNOWN AT, or read trunk without --branch",
         ));
     }
