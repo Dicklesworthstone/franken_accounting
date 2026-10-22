@@ -385,6 +385,93 @@ fn next_respects_caller_capability() {
     assert!(after_first_needing, "runnable steps come first: {line:?}");
 }
 
+/// fa-g8em: a write a draft can take is offered to an Agent as that draft
+/// (plan §15.2): outstanding holds are resolved by a Human with `fa
+/// resolve`, and by an Agent through `fa draft new` and `fa draft plan`, for
+/// a Human approver to promote. The Agent is still never offered `fa
+/// resolve` itself.
+#[test]
+fn an_agent_is_offered_a_draft_for_the_holds_it_cannot_resolve() {
+    let f = Fixture::new("holds");
+    std::fs::write(
+        f.root.join("hold.json"),
+        r#"{"class":"Pending","effective_date":"2026-01-12","idempotency_key":"hold-1","legs":[{"side":"debit","account":"1000","amount":"20.00 USD"},{"side":"credit","account":"3000","amount":"20.00 USD"}]}"#,
+    )
+    .unwrap();
+    f.ok(&["post", "--intent", "hold.json", "--evidence", &f.evidence]);
+    let commands = |line: &Json| -> Vec<(String, String)> {
+        let mut all: Vec<(String, String)> = Vec::new();
+        if let Some(command) = data(line).get("command").and_then(Json::as_str) {
+            all.push((command.to_string(), text(data(line), "why").to_string()));
+        }
+        for action in rows(line, "next_actions") {
+            all.push((
+                text(action, "command").to_string(),
+                text(action, "why").to_string(),
+            ));
+        }
+        all
+    };
+    let owner = commands(&f.ok(&["next"]));
+    assert!(
+        owner.iter().any(|(c, _)| c.starts_with("fa resolve")),
+        "{owner:?}"
+    );
+    assert!(
+        !owner.iter().any(|(c, _)| c.starts_with("fa draft new")),
+        "{owner:?}"
+    );
+
+    let issue = |holder: &str, profile: &str, ops: &[&str]| -> String {
+        let token = format!("{holder}.token");
+        let mut args = vec![
+            "capability",
+            "issue",
+            "--holder",
+            holder,
+            "--profile",
+            profile,
+            "--out",
+            &token,
+            "--grant",
+            "issue_capability",
+        ];
+        for op in ops {
+            args.extend(["--op", *op, "--grant", *op]);
+        }
+        f.ok(&args);
+        token
+    };
+    let agent = issue("agent", "agent", &["read", "post"]);
+    let offered = commands(&f.ok(&["--token", &agent, "next"]));
+    assert!(
+        !offered.iter().any(|(c, _)| c.starts_with("fa resolve")),
+        "an Agent is offered a trunk write: {offered:?}"
+    );
+    let (_, why) = offered
+        .iter()
+        .find(|(c, _)| c == "fa draft new resolve-holds --json")
+        .unwrap_or_else(|| panic!("the draft replaces the resolution: {offered:?}"));
+    assert!(why.contains("reserved amounts"), "{why}");
+    assert!(
+        why.contains("fa draft plan resolve-holds --intent"),
+        "{why}"
+    );
+    assert!(why.contains("Human approver"), "{why}");
+
+    // A Human holding post resolves on trunk itself: no draft is offered.
+    let human = issue("preparer", "human", &["read", "post"]);
+    let offered = commands(&f.ok(&["--token", &human, "next"]));
+    assert!(
+        offered.iter().any(|(c, _)| c.starts_with("fa resolve")),
+        "{offered:?}"
+    );
+    assert!(
+        !offered.iter().any(|(c, _)| c.starts_with("fa draft new")),
+        "{offered:?}"
+    );
+}
+
 #[test]
 fn bare_fa_detects_book_and_daemon() {
     let f = Fixture::new("bare");

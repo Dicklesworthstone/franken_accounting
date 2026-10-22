@@ -33,6 +33,10 @@ struct NextStep {
     why: String,
     /// The command writes the book: never offered to an Agent profile.
     writes: bool,
+    /// For an Agent, the draft that takes this write instead (plan §15.2:
+    /// an agent works on a draft a Human promotes): its name and the
+    /// `fa draft plan` the agent runs into it.
+    draft: Option<(&'static str, &'static str)>,
 }
 
 /// A check's outcome.
@@ -667,6 +671,7 @@ fn step(command: impl Into<String>, why: impl Into<String>) -> NextStep {
         command: command.into(),
         why: why.into(),
         writes: false,
+        draft: None,
     }
 }
 
@@ -841,12 +846,20 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         ));
     }
     if pending_cells > 0 {
-        steps.push(write_step(
-            "fa resolve --intent <resolution.json> --json",
-            format!(
-                "{pending_cells} register cell(s) carry reserved amounts: resolve the holds that are done"
-            ),
-        ));
+        steps.push(NextStep {
+            // Resolutions are batchable intents: an Agent plans them into a
+            // draft instead.
+            draft: Some((
+                "resolve-holds",
+                "fa draft plan resolve-holds --intent <resolution.json> --json",
+            )),
+            ..write_step(
+                "fa resolve --intent <resolution.json> --json",
+                format!(
+                    "{pending_cells} register cell(s) carry reserved amounts: resolve the holds that are done"
+                ),
+            )
+        });
     }
     if let Some(latest) = open.last() {
         steps.push(step(
@@ -891,7 +904,22 @@ fn rank_for(
         return steps;
     }
     let agent = capability.profile() == fa_policy::Profile::Agent;
-    let steps = steps.into_iter().filter(|st| !(agent && st.writes));
+    // An Agent never writes the book: a write a draft can take becomes that
+    // draft's opening, naming the plan to run into it and who promotes it;
+    // any other write is not offered.
+    let steps = steps.into_iter().filter_map(|st| match (agent && st.writes, st.draft) {
+        (false, _) => Some(st),
+        (true, Some((name, plan))) => Some(NextStep {
+            command: format!("fa draft new {name} --json"),
+            why: format!(
+                "{}; this Agent capability never writes trunk: open the draft, plan each intent into it with `{plan}`, and a Human approver who is not you promotes it (plan §15.2)",
+                st.why
+            ),
+            writes: true,
+            draft: None,
+        }),
+        (true, None) => None,
+    });
     let Ok(reg) = verbs::registry() else {
         return steps.collect();
     };
