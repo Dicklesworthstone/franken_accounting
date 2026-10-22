@@ -22,7 +22,7 @@ use fgdb_types::VId;
 use crate::jet::finding;
 use crate::projection::{entity, entity_scope, scoped_entity};
 use crate::{
-    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
 
 #[cfg(test)]
@@ -163,7 +163,7 @@ impl Trace {
         snapshot: &Snapshot,
         claim: DateDay,
         intraday: i128,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Stream, LanternError> {
         let account = snapshot
             .accounts
@@ -214,7 +214,7 @@ impl Trace {
         // Net only this account, unit AND entity, retaining recorded order.
         let mut per_entry: BTreeMap<VId, (DateDay, u64, i128, bool)> = BTreeMap::new();
         for e in live {
-            work.entry();
+            work.entry()?;
             let replenishes = e.vid != self.source
                 && ((!source_docs.is_empty()
                     && e.entry
@@ -273,7 +273,7 @@ impl Trace {
         // Same-day movements follow the statement (recorded) order; the
         // entry identity only breaks ties inside one commit, deterministically.
         let move_count = moves.len() as u64;
-        work.compare(move_count.saturating_mul(move_count.max(1).ilog2().into()));
+        work.compare(move_count.saturating_mul(move_count.max(1).ilog2().into()))?;
         moves.sort_by(|a, b| {
             (a.date, rank(a), a.recorded, a.entry, a.inflow).cmp(&(
                 b.date,
@@ -320,7 +320,7 @@ fn sub(a: i128, b: i128, what: &'static str) -> Result<i128, LanternError> {
 }
 
 #[cfg(test)]
-fn run_law(law: Law, stream: &Stream, work: &mut Work) -> Result<Traced, LanternError> {
+fn run_law(law: Law, stream: &Stream, work: &mut Meter<'_>) -> Result<Traced, LanternError> {
     run_law_with_replenishment(law, stream, false, work)
 }
 
@@ -328,12 +328,12 @@ fn run_law_with_replenishment(
     law: Law,
     stream: &Stream,
     replenish_on_evidence: bool,
-    work: &mut Work,
+    work: &mut Meter<'_>,
 ) -> Result<Traced, LanternError> {
     // The opening balance before the deposit is clean money.
     let mut opening = 0i128;
     for m in &stream.moves[..stream.source_at] {
-        work.leg();
+        work.leg()?;
         opening = if m.inflow {
             add(opening, m.magnitude, "opening balance")?
         } else {
@@ -371,7 +371,7 @@ fn run_law_with_replenishment(
         0
     };
     for m in &stream.moves[stream.source_at + 1..] {
-        work.leg();
+        work.leg()?;
         if m.inflow {
             let before = balance.max(0);
             balance = add(balance, m.magnitude, "balance")?;
@@ -473,7 +473,7 @@ impl Trace {
         version: u16,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let refuse = |name: &str, message: &str| LanternError::Parameter {
             procedure: procedure_id.into(),
@@ -596,7 +596,7 @@ impl Procedure for Trace {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         self.run_as(self.id(), self.version(), snapshot, book, work)
     }

@@ -15,7 +15,7 @@ use fgdb_types::VId;
 
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{
-    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
 use fa_model::AccountType;
 use fa_time::DateDay;
@@ -71,7 +71,7 @@ impl Procedure for OpenItemsAging {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let edges = [
             self.params.get_u32("bucket_1")?,
@@ -100,7 +100,7 @@ impl Procedure for OpenItemsAging {
         // Keyed by (account, unit, side tag) so the two sides never meet.
         let mut columns: BTreeMap<(u128, u32, u8), Column> = BTreeMap::new();
         for row in &aged.items {
-            work.leg();
+            work.leg()?;
             let tag = match row.item.side {
                 Side::Debit => 0u8,
                 Side::Credit => 1u8,
@@ -216,7 +216,7 @@ impl Procedure for InventoryAging {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let stale_days = self.params.get_u32("stale_days")?;
         if stale_days == 0 {
@@ -240,13 +240,13 @@ impl Procedure for InventoryAging {
         let mut positions: BTreeMap<(VId, u32), InventoryPosition> = BTreeMap::new();
         let mut population = 0u64;
         for e in &live {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             if eff > as_of {
                 continue;
             }
             for (ordinal, leg) in e.entry.proposal.legs.iter().enumerate() {
-                work.leg();
+                work.leg()?;
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
@@ -288,7 +288,7 @@ impl Procedure for InventoryAging {
 
         let mut out = Vec::new();
         for ((acct_vid, unit_id), mut pos) in positions {
-            work.compare(1);
+            work.compare(1)?;
             if pos.net_debit <= 0 {
                 continue;
             }

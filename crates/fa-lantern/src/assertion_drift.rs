@@ -20,7 +20,7 @@ use fgdb_types::VId;
 
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{
-    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
 
 pub struct AssertionDrift {
@@ -43,7 +43,7 @@ impl Procedure for AssertionDrift {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
@@ -64,7 +64,7 @@ impl Procedure for AssertionDrift {
         let population = u64::try_from(claims.len()).unwrap_or(u64::MAX).max(1);
         let mut out = Vec::new();
         for (attestation, claim) in claims {
-            work.compare(1);
+            work.compare(1)?;
             let entity = match &claim.entity {
                 Some(code) => Some(entity_value.get(code.as_str()).copied().ok_or_else(|| {
                     LanternError::Parameter {
@@ -88,7 +88,7 @@ impl Procedure for AssertionDrift {
                 }
                 let mut moved = false;
                 for leg in &e.entry.proposal.legs {
-                    work.compare(1);
+                    work.compare(1)?;
                     if leg.account_ref != claim.account
                         || leg.amount.unit.0 != claim.unit_id
                         || entity.is_some_and(|d| !leg.dimension_set.iter().any(|(_, v)| *v == d))

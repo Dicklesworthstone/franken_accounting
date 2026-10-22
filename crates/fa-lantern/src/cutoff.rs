@@ -19,7 +19,7 @@ use crate::amount::{
 };
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{
-    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
 
 /// `cutoff.period_boundary`.
@@ -42,12 +42,12 @@ impl Procedure for PeriodBoundary {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut population = 0u64;
         let mut hits = Vec::new();
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             let Some(document_date) = e.entry.proposal.document_date else {
                 continue;
             };
@@ -121,7 +121,7 @@ impl Procedure for ReconIntercompany {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
@@ -132,9 +132,9 @@ impl Procedure for ReconIntercompany {
         let mut population = 0u64;
 
         for e in &live {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
@@ -156,7 +156,7 @@ impl Procedure for ReconIntercompany {
 
         let mut out = Vec::new();
         for ((period, unit_id), (net, accts, entries)) in buckets {
-            work.compare(1);
+            work.compare(1)?;
             if net == 0 {
                 continue;
             }
@@ -225,7 +225,7 @@ impl Procedure for ReconLapping {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_days = self.params.get_u32("window_days")?;
         if window_days == 0 {
@@ -258,10 +258,10 @@ impl Procedure for ReconLapping {
         let mut population = 0u64;
 
         for e in &live {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
@@ -297,7 +297,7 @@ impl Procedure for ReconLapping {
             // 2) Party B (B != A) credit (cash receipt) at index j > i within window_days
             // 3) Party A credit (delayed settlement of A's invoice) at index k > j within window_days of j
             for i in 0..movs.len() {
-                work.compare(1);
+                work.compare(1)?;
                 if movs[i].side != Side::Debit {
                     continue;
                 }
@@ -375,7 +375,7 @@ impl Procedure for ReconBookToBook {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
@@ -391,7 +391,7 @@ impl Procedure for ReconBookToBook {
 
         // 1. Check every stored RegisterEquals attestation against the posted journal fold
         for att in snapshot.attestations.values() {
-            work.compare(1);
+            work.compare(1)?;
             let AttestationClaim::RegisterEquals(claim) = &att.attestation.claim else {
                 continue;
             };
@@ -460,7 +460,7 @@ impl Procedure for ReconBookToBook {
 
         // 2. Check every Instrument vertex mirroring an account for unit consistency
         for inst in snapshot.rea.instruments.values() {
-            work.compare(1);
+            work.compare(1)?;
             let mut mismatched_entries = Vec::new();
             for e in &live {
                 for leg in &e.entry.proposal.legs {
@@ -516,7 +516,7 @@ impl Procedure for UnrecordedLiabilities {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_days = self.params.get_u32("window_days")?;
         if window_days == 0 {
@@ -532,7 +532,7 @@ impl Procedure for UnrecordedLiabilities {
         let mut out = Vec::new();
 
         for e in &live {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             let Some(doc_date) = e.entry.proposal.document_date else {
                 continue;
@@ -559,7 +559,7 @@ impl Procedure for UnrecordedLiabilities {
             // Must touch an expense or liability account (or credit cash for an obligation)
             let mut max_expense_or_liab: Option<(u32, i128, VId)> = None;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
@@ -628,7 +628,7 @@ impl Procedure for SubsequentEvents {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_days = self.params.get_u32("window_days")?;
         if window_days == 0 {
@@ -671,11 +671,11 @@ impl Procedure for SubsequentEvents {
         let mut out = Vec::new();
 
         for e in &postings {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             let mut max_leg: Option<(u32, i128)> = None;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let mag = leg.amount.mantissa.unsigned_abs() as i128;
                 if max_leg.is_none_or(|(_, m)| mag > m) {
                     max_leg = Some((leg.amount.unit.0, mag));
@@ -776,7 +776,7 @@ impl Procedure for PartyMasterChanges {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_commits = self.params.get_u32("window_commits")?;
         if window_commits == 0 {
@@ -790,7 +790,7 @@ impl Procedure for PartyMasterChanges {
         // Collect all UpdatePartyIdentifiers schema controls
         let mut updates: Vec<(VId, u64, String, VId, VId)> = Vec::new();
         for e in &snapshot.entries {
-            work.entry();
+            work.entry()?;
             if let Some(ControlPayload::SchemaChange {
                 kind: SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS,
                 canonical_bytes,
@@ -818,9 +818,9 @@ impl Procedure for PartyMasterChanges {
 
         for e in &live {
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 for (ctrl_vid, ctrl_seq, code, pvid, pval_vid) in &updates {
-                    work.compare(1);
+                    work.compare(1)?;
                     if leg
                         .dimension_set
                         .iter()
@@ -887,7 +887,7 @@ impl Procedure for PayrollGhost {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         // Identify parties that share an opened identifier (e.g. bank_account, tax_id)
         let mut id_to_parties: BTreeMap<(String, String), BTreeSet<VId>> = BTreeMap::new();
@@ -929,7 +929,7 @@ impl Procedure for PayrollGhost {
 
         let mut payroll_entries: Vec<PayrollEntryInfo> = Vec::new();
         for e in &live {
-            work.entry();
+            work.entry()?;
             let mut is_payroll = e
                 .entry
                 .proposal
@@ -939,7 +939,7 @@ impl Procedure for PayrollGhost {
             let mut max_leg: Option<(u32, i128)> = None;
             let mut party: Option<VId> = None;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if let Some(acct) = snapshot.accounts.get(&leg.account_ref)
                     && is_payroll_account(&acct.code, &acct.name)
                 {
@@ -997,7 +997,7 @@ impl Procedure for PayrollGhost {
         let mut out = Vec::new();
 
         for ((period, unit_id, mag), group) in &by_amount {
-            work.compare(1);
+            work.compare(1)?;
             if group.len() >= 2 {
                 let mut cites: Vec<Cite> = group.iter().map(|pe| Cite::Entry(pe.vid)).collect();
                 for pe in group {
@@ -1029,7 +1029,7 @@ impl Procedure for PayrollGhost {
         }
 
         for pe in &payroll_entries {
-            work.compare(1);
+            work.compare(1)?;
             let has_shared_id = pe.party.is_some_and(|p| shared_id_parties.contains(&p));
             if (has_shared_id || pe.weekend_or_self_approved) && flagged.insert(pe.vid) {
                 let mut cites = vec![Cite::Entry(pe.vid)];
@@ -1118,7 +1118,7 @@ impl Procedure for ExpenseCapitalization {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
@@ -1126,11 +1126,11 @@ impl Procedure for ExpenseCapitalization {
         let mut out = Vec::new();
 
         for e in &live {
-            work.entry();
+            work.entry()?;
             let mut capex_debits: Vec<(VId, u32, i128)> = Vec::new();
             let mut cost_credits: Vec<VId> = Vec::new();
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
@@ -1209,7 +1209,7 @@ impl Procedure for ReversalPatterns {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut by_vid: BTreeMap<VId, &crate::SnapshotEntry> = BTreeMap::new();
         let mut superseded_by_map: BTreeMap<VId, VId> = BTreeMap::new();
@@ -1224,12 +1224,12 @@ impl Procedure for ReversalPatterns {
         let mut out = Vec::new();
 
         for e in &snapshot.entries {
-            work.entry();
+            work.entry()?;
             let Some(s) = e.entry.proposal.supersession.first() else {
                 continue;
             };
             let target_vid = s.target.vid;
-            work.compare(1);
+            work.compare(1)?;
             let Some(orig) = by_vid.get(&target_vid).copied() else {
                 continue;
             };
@@ -1302,7 +1302,7 @@ impl Procedure for ConfirmCoverage {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_coverage_bps = self.params.get("min_coverage_bps")?;
         if !(0..=10_000).contains(&min_coverage_bps) {
@@ -1329,13 +1329,13 @@ impl Procedure for ConfirmCoverage {
         let mut population = 0u64;
 
         for e in &live {
-            work.entry();
+            work.entry()?;
             let entry_reviewed = e.entry.proposal.evidence.iter().any(|ev| {
                 let rvid = review_vid(book.book_id, &ev.document_oid);
                 snapshot.attestations.contains_key(&rvid)
             });
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if leg.side != Side::Debit {
                     continue;
                 }
@@ -1372,7 +1372,7 @@ impl Procedure for ConfirmCoverage {
 
         let mut out = Vec::new();
         for ((acct_vid, unit_id), (total, corroborated, mut uncorroborated)) in coverage {
-            work.compare(1);
+            work.compare(1)?;
             if total <= 0 {
                 continue;
             }
@@ -1459,7 +1459,7 @@ impl Procedure for SolvencyBalanceSheetTest {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let haircut_bps = self.params.get("fair_value_haircut_bps")?;
         if !(0..=10_000).contains(&haircut_bps) {
@@ -1479,9 +1479,9 @@ impl Procedure for SolvencyBalanceSheetTest {
         let mut unit_inputs: BTreeMap<u32, (BTreeSet<VId>, u64)> = BTreeMap::new();
 
         for e in &live {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
@@ -1508,7 +1508,7 @@ impl Procedure for SolvencyBalanceSheetTest {
         type UnitSolvency = (i128, i128, BTreeSet<VId>);
         let mut by_unit: BTreeMap<u32, UnitSolvency> = BTreeMap::new();
         for ((acct_vid, unit_id), posted_net) in acct_net {
-            work.compare(1);
+            work.compare(1)?;
             let Some(acct) = snapshot.accounts.get(&acct_vid) else {
                 continue;
             };
@@ -1606,7 +1606,7 @@ impl Procedure for SolvencyCashFlowTest {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let horizon_days = self.params.get_u32("horizon_days")?;
         if horizon_days == 0 {
@@ -1635,13 +1635,13 @@ impl Procedure for SolvencyCashFlowTest {
         let mut population = 0u64;
 
         for e in &all_live {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             if eff > horizon_end {
                 continue;
             }
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
@@ -1690,7 +1690,7 @@ impl Procedure for SolvencyCashFlowTest {
 
         let mut out = Vec::new();
         for unit_id in units {
-            work.compare(1);
+            work.compare(1)?;
             let mut liquid_cash = 0i128;
             for (&(_, u), &net) in &cash_net {
                 if u == unit_id && net > 0 {
@@ -1810,7 +1810,7 @@ impl Procedure for LookbackPreferences {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_days = self.params.get_u32("window_days")?;
         let insider_window_days = self.params.get_u32("insider_window_days")?;
@@ -1900,7 +1900,7 @@ impl Procedure for LookbackPreferences {
         let mut population = 0u64;
 
         for e in &live {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             let mut parties_in_entry: BTreeSet<VId> = BTreeSet::new();
             let mut cash_credit_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
@@ -1909,7 +1909,7 @@ impl Procedure for LookbackPreferences {
             let mut accts_by_unit: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
 
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 for &(_, d) in &leg.dimension_set {
                     if let Some(&pvid) = pval_to_party.get(&d) {
                         parties_in_entry.insert(pvid);
@@ -2010,7 +2010,7 @@ impl Procedure for LookbackPreferences {
 
         let mut out = Vec::new();
         for ((party_vid, unit_id), evs) in events_by_creditor {
-            work.compare(1);
+            work.compare(1)?;
             let insider = evs
                 .iter()
                 .any(|ev| is_insider_at(snapshot, party_vid, ev.date))
@@ -2161,7 +2161,7 @@ impl Procedure for LookbackFraudulentTransfer {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let s548_days = self.params.get_u32("section_548_days")?;
         let uvta_days = self.params.get_u32("uvta_days")?;
@@ -2203,7 +2203,7 @@ impl Procedure for LookbackFraudulentTransfer {
         let mut out = Vec::new();
 
         for e in &live {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             let mut asset_cr: BTreeMap<u32, i128> = BTreeMap::new();
             let mut asset_dr: BTreeMap<u32, i128> = BTreeMap::new();
@@ -2213,7 +2213,7 @@ impl Procedure for LookbackFraudulentTransfer {
             let mut parties: BTreeSet<VId> = BTreeSet::new();
 
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 for &(_, d) in &leg.dimension_set {
                     if let Some(&pvid) = pval_to_party.get(&d) {
                         parties.insert(pvid);
@@ -2268,7 +2268,7 @@ impl Procedure for LookbackFraudulentTransfer {
             let thin_desc = opened_desc.trim().len() < 12;
 
             for (&unit_id, &cr) in &asset_cr {
-                work.compare(1);
+                work.compare(1)?;
                 let dr = asset_dr.get(&unit_id).copied().unwrap_or(0);
                 let l_dr = liab_dr.get(&unit_id).copied().unwrap_or(0);
                 // Net value leaving the estate without commensurate asset receipt or
@@ -2381,7 +2381,7 @@ type InvestorPopulation = (Vec<InvestorPosition>, BTreeMap<u32, i128>, u64);
 fn collect_investor_positions(
     snapshot: &Snapshot,
     book: &BookContext,
-    work: &mut Work,
+    work: &mut Meter<'_>,
 ) -> Result<InvestorPopulation, LanternError> {
     let through = snapshot.coordinate.effective_through;
     let mut live = snapshot.live_postings_through(through)?;
@@ -2394,7 +2394,7 @@ fn collect_investor_positions(
     let mut population = 0u64;
 
     for e in &live {
-        work.entry();
+        work.entry()?;
         let eff = e.entry.proposal.effective_date;
         let desc_lower = e
             .entry
@@ -2416,7 +2416,7 @@ fn collect_investor_positions(
         let mut accts_by_unit: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
 
         for leg in &e.entry.proposal.legs {
-            work.leg();
+            work.leg()?;
             for &(_, d) in &leg.dimension_set {
                 let pvid = pval_to_party.get(&d).copied().unwrap_or(d);
                 parties_in_entry.insert(pvid);
@@ -2554,7 +2554,7 @@ impl Procedure for PonziNetInvestment {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let cohort_window_days = self.params.get_u32("cohort_window_days")?;
         if cohort_window_days == 0 {
@@ -2578,7 +2578,7 @@ impl Procedure for PonziNetInvestment {
 
         let mut out = Vec::new();
         for pos in investors {
-            work.compare(1);
+            work.compare(1)?;
             let cohort = pos.first_inflow_date.map_or(1, |d| {
                 ((d.0 - earliest_inflow.0).max(0) as u32 / cohort_window_days) + 1
             });
@@ -2653,7 +2653,7 @@ impl Procedure for DistributionRisingTide {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let explicit_pool = self.params.get("distributable_pool")?;
         if explicit_pool < 0 {
@@ -2675,7 +2675,7 @@ impl Procedure for DistributionRisingTide {
 
         let mut out = Vec::new();
         for (unit_id, mut losers) in by_unit {
-            work.compare(1);
+            work.compare(1)?;
             if losers.is_empty() {
                 continue;
             }
@@ -2805,7 +2805,7 @@ impl Procedure for DistributionProRata {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let explicit_pool = self.params.get("distributable_pool")?;
         if explicit_pool < 0 {
@@ -2827,7 +2827,7 @@ impl Procedure for DistributionProRata {
 
         let mut out = Vec::new();
         for (unit_id, mut losers) in by_unit {
-            work.compare(1);
+            work.compare(1)?;
             if losers.is_empty() {
                 continue;
             }
@@ -2908,7 +2908,7 @@ impl Procedure for DamagesButFor {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let through = snapshot.coordinate.effective_through;
         let mut live = snapshot.live_postings_through(through)?;
@@ -2918,9 +2918,9 @@ impl Procedure for DamagesButFor {
         type CellKey = (VId, String, u32);
         let mut actual_fold: BTreeMap<CellKey, (i128, BTreeSet<VId>)> = BTreeMap::new();
         for e in &live {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                 let cell = actual_fold
                     .entry((leg.account_ref, e.period.clone(), leg.amount.unit.0))
@@ -2987,7 +2987,7 @@ impl Procedure for DamagesButFor {
         let population = (live.len() + snapshot.attestations.len()).max(1) as u64;
         let mut out = Vec::new();
         for ((acct_vid, period, unit_id), (but_for_net, mut cites_set)) in but_for_cells {
-            work.compare(1);
+            work.compare(1)?;
             let actual_net = actual_fold
                 .get(&(acct_vid, period.clone(), unit_id))
                 .map_or(0, |(v, _)| *v);

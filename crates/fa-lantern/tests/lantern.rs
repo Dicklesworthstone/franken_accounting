@@ -29,8 +29,8 @@ use fa_lantern::trace::{Law, Trace};
 use fa_lantern::witness;
 use fa_lantern::witness::determinism;
 use fa_lantern::{
-    Cite, Finding, LanternError, Params, Procedure, ProcedureRun, Severity, Snapshot, Statistic,
-    Work, run, run_over,
+    Cite, Finding, LanternError, Meter, Params, Procedure, ProcedureRun, Severity, Snapshot,
+    Statistic, run, run_over,
 };
 use fa_model::{
     AccountType, ApprovalRef, EntryClass, EntryOrigin, EntryPayload, Erasable, EvidenceRef,
@@ -55,6 +55,9 @@ mod amount_boundary_tests;
 
 #[path = "lantern/graph_units.rs"]
 mod graph_unit_tests;
+
+#[path = "lantern/meter.rs"]
+mod meter_tests;
 
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
@@ -932,9 +935,9 @@ impl Procedure for OrderDependent {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        work.entry();
+        work.entry()?;
         let first = snapshot
             .entries
             .iter()
@@ -1035,7 +1038,7 @@ fn registry_binding_refuses_unregistered_misversioned_or_foreign_parameters() {
             &self,
             _: &Snapshot,
             _: &BookContext,
-            _: &mut Work,
+            _: &mut Meter<'_>,
         ) -> Result<Vec<Finding>, LanternError> {
             Ok(Vec::new())
         }
@@ -2987,8 +2990,9 @@ fn large_duplicate_group_truncates_cites_to_max_cites_and_unreadable_description
 /// - `benford.first_digit` falls back to MAD-only when the eligible leg
 ///   population exceeds `MAX_POPULATION` (1,000,000), succeeding instead of
 ///   failing with an overflow error.
-/// - `run_over_with_budget` refuses with `LanternError::BudgetExhausted` and an
-///   actionable `fix_hint` when the work counter exceeds the caller's budget.
+/// - `run_over_metered` refuses with `LanternError::BudgetExhausted` and an
+///   actionable `fix_hint` at the first charge past the caller's budget
+///   (fa-1tvm: mid-run, so `used` is exactly the budget plus one).
 #[test]
 fn benford_mad_fallback_above_one_million_legs_and_budget_exhaustion_refusal() {
     let mut h = harness();
@@ -3041,9 +3045,14 @@ fn benford_mad_fallback_above_one_million_legs_and_budget_exhaustion_refusal() {
     );
 
     // Budget exhaustion returns LanternError::BudgetExhausted with a fix hint.
-    let err =
-        fa_lantern::run_over_with_budget(&snapshot, &h.book, &FirstDigit::new().unwrap(), Some(10))
-            .expect_err("work > budget must be refused");
+    let err = fa_lantern::run_over_metered(
+        &snapshot,
+        &h.book,
+        &FirstDigit::new().unwrap(),
+        Some(10),
+        None,
+    )
+    .expect_err("work > budget must be refused");
     assert!(matches!(
         err,
         LanternError::BudgetExhausted {
@@ -3051,7 +3060,7 @@ fn benford_mad_fallback_above_one_million_legs_and_budget_exhaustion_refusal() {
             used,
             budget: 10,
             ..
-        } if procedure == "benford.first_digit" && used > 10
+        } if procedure == "benford.first_digit" && used == 11
     ));
     assert!(
         err.fix_hint()

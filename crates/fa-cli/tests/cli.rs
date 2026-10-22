@@ -12186,6 +12186,29 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
         Some(500_000),
         "{traced}"
     );
+    // fa-1tvm: --budget caps the run's work. Within it the run reports what
+    // the unbudgeted run does; one unit is too few, and the run is refused
+    // mid-run with exit 3 and no finding; a zero budget is a usage error.
+    let unbudgeted = ok(&["procedure", "run", "jet.round_amounts"]);
+    let budgeted = ok(&[
+        "procedure",
+        "run",
+        "jet.round_amounts",
+        "--budget",
+        "1000000",
+    ]);
+    assert_eq!(
+        arr(&doc(&budgeted), "findings"),
+        arr(&doc(&unbudgeted), "findings"),
+        "{budgeted}"
+    );
+    let (code, out) = refused(&["procedure", "run", "jet.round_amounts", "--budget", "1"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("work budget"), "{out}");
+    assert!(!out.contains("\"findings\""), "no partial finding: {out}");
+    let (code, out) = refused(&["procedure", "run", "jet.round_amounts", "--budget", "0"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("--budget"), "{out}");
     // Planted negatives, each naming the fix.
     let (code, out) = refused(&["procedure", "run", "aging.open_items"]);
     assert_eq!(code, 2, "{out}");

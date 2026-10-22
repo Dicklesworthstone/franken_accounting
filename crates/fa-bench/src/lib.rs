@@ -961,7 +961,12 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
         "query_procedure" => {
             let proc = RoundAmounts::new().map_err(|e| BenchError::Execution(e.to_string()))?;
             let _out = book
-                .run_procedure(&proc, None, Some(DateDay::from_ymd(2026, 1, 31).unwrap()))
+                .run_procedure(
+                    &proc,
+                    None,
+                    Some(DateDay::from_ymd(2026, 1, 31).unwrap()),
+                    None,
+                )
                 .map_err(|e| BenchError::Execution(e.to_string()))?;
             Ok(OpCount {
                 point_reads: 1,

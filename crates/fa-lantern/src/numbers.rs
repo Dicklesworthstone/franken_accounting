@@ -10,7 +10,7 @@ use fgdb_types::VId;
 
 use crate::amount::amount_share_bps;
 use crate::jet::{finding, procedure_boilerplate};
-use crate::{Cite, Finding, LanternError, Params, Procedure, Severity, Snapshot, Statistic, Work};
+use crate::{Cite, Finding, LanternError, Meter, Params, Procedure, Severity, Snapshot, Statistic};
 
 /// The most bytes an external id is opened to.
 pub const MAX_EXTERNAL_ID_BYTES: usize = 256;
@@ -53,12 +53,12 @@ impl Procedure for SequenceGaps {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut sequences: BTreeMap<(String, String), Vec<(u64, VId)>> = BTreeMap::new();
         let mut population = 0u64;
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             for ext in &e.entry.proposal.external_ids {
                 let Ok(id) = ext.id.open(&book.seal_key, MAX_EXTERNAL_ID_BYTES) else {
                     continue;
@@ -76,7 +76,7 @@ impl Procedure for SequenceGaps {
         let mut out = Vec::new();
         for ((system, _), list) in sequences.iter_mut() {
             list.sort_unstable();
-            work.compare(list.len() as u64);
+            work.compare(list.len() as u64)?;
             for pair in list.windows(2) {
                 let (prev, next) = (pair[0], pair[1]);
                 let missing = next.0.saturating_sub(prev.0).saturating_sub(1);
@@ -126,7 +126,7 @@ impl Procedure for RelativeSizeFactor {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_rsf_bps = i128::from(self.params.get_u32("min_rsf_bps")?);
         let min_subset_size = self.params.get_u32("min_subset_size")? as usize;
@@ -142,9 +142,9 @@ impl Procedure for RelativeSizeFactor {
         let mut groups: BTreeMap<(u8, u128, fa_money::UnitId), Vec<(i128, VId)>> = BTreeMap::new();
         let mut population = 0u64;
         for e in &live {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if leg.side != fa_money::Side::Debit || leg.amount.mantissa <= 0 {
                     continue;
                 }
@@ -166,7 +166,7 @@ impl Procedure for RelativeSizeFactor {
         }
         let mut out = Vec::new();
         for ((kind, id_raw, _unit), mut list) in groups {
-            work.compare(list.len() as u64);
+            work.compare(list.len() as u64)?;
             if list.len() < min_subset_size {
                 continue;
             }
@@ -235,7 +235,7 @@ impl Procedure for ThresholdSplitting {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let threshold = self.params.get("threshold")?;
         let floor = self.params.get("floor")?;
@@ -277,13 +277,13 @@ impl Procedure for ThresholdSplitting {
         type Series = Vec<(fa_time::DateDay, i128, VId)>;
         let mut by_key: BTreeMap<Key, Series> = BTreeMap::new();
         for e in &live {
-            work.entry();
+            work.entry()?;
             let mut total_debit = 0i128;
             let mut scale = 2u8;
             let mut party_dim: Option<u128> = None;
             let mut accts: Vec<u128> = Vec::new();
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(unit) = book.units.get(leg.amount.unit) else {
                     continue;
                 };
@@ -326,7 +326,7 @@ impl Procedure for ThresholdSplitting {
         }
         let mut out = Vec::new();
         for ((_kind, _k0, _k1, scale), list) in by_key {
-            work.compare(list.len() as u64);
+            work.compare(list.len() as u64)?;
             if list.len() < min_count {
                 continue;
             }

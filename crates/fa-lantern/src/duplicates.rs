@@ -12,20 +12,22 @@ use fgdb_types::VId;
 
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{
-    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, SnapshotEntry,
-    Statistic, Work,
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot,
+    SnapshotEntry, Statistic,
 };
 
 type Signature = Vec<(u128, u8, u32, i128)>;
 
-fn signature(e: &SnapshotEntry, work: &mut Work) -> Signature {
+fn signature(e: &SnapshotEntry, work: &mut Meter<'_>) -> Result<Signature, LanternError> {
+    for _ in &e.entry.proposal.legs {
+        work.leg()?;
+    }
     let mut s: Signature = e
         .entry
         .proposal
         .legs
         .iter()
         .map(|l| {
-            work.leg();
             (
                 l.account_ref.0,
                 match l.side {
@@ -38,7 +40,7 @@ fn signature(e: &SnapshotEntry, work: &mut Work) -> Signature {
         })
         .collect();
     s.sort_unstable();
-    s
+    Ok(s)
 }
 
 /// `duplicates.same_same_same`: same legs, same effective date.
@@ -61,7 +63,7 @@ impl Procedure for SameSameSame {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut groups: BTreeMap<(Signature, i32), Vec<VId>> = BTreeMap::new();
         let mut population = 0u64;
@@ -70,10 +72,10 @@ impl Procedure for SameSameSame {
             .iter()
             .any(|e| !e.entry.proposal.supersession.is_empty());
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             population += 1;
             let list = groups
-                .entry((signature(e, work), e.entry.proposal.effective_date.0))
+                .entry((signature(e, work)?, e.entry.proposal.effective_date.0))
                 .or_default();
             if !has_supersession
                 || list
@@ -83,7 +85,7 @@ impl Procedure for SameSameSame {
                 list.push(e.vid);
             }
         }
-        work.compare(population.saturating_mul(population.max(1).ilog2().into()));
+        work.compare(population.saturating_mul(population.max(1).ilog2().into()))?;
         Ok(groups
             .into_values()
             .filter(|g| g.len() >= 2)
@@ -134,7 +136,7 @@ impl Procedure for SameSameDifferent {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window = i32::try_from(self.params.get_u32("window_days")?)
             .map_err(|_| LanternError::Overflow("window_days"))?;
@@ -142,9 +144,9 @@ impl Procedure for SameSameDifferent {
         let mut groups: BTreeMap<Signature, Vec<(i32, u64, VId)>> = BTreeMap::new();
         let mut population = 0u64;
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             population += 1;
-            groups.entry(signature(e, work)).or_default().push((
+            groups.entry(signature(e, work)?).or_default().push((
                 e.entry.proposal.effective_date.0,
                 e.recorded_at.0,
                 e.vid,
@@ -159,20 +161,20 @@ impl Procedure for SameSameDifferent {
             for i in 0..list.len() {
                 next = next.max(i + 1);
                 while next < list.len() && list[next].0 == list[i].0 {
-                    work.compare(1);
+                    work.compare(1)?;
                     next += 1;
                 }
                 let mut cand = next;
                 while cand < list.len()
                     && snapshot.shares_supersession_lineage(list[i].2, list[cand].2)
                 {
-                    work.compare(1);
+                    work.compare(1)?;
                     cand += 1;
                 }
                 let Some(&(day, _, later)) = list.get(cand) else {
                     continue;
                 };
-                work.compare(1);
+                work.compare(1)?;
                 let apart = day - list[i].0;
                 if apart > window {
                     continue;

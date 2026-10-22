@@ -11,7 +11,7 @@ use fa_journal::genesis::BookContext;
 
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{
-    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
 
 pub const MAX_BANK_DRIFT_FINDINGS: usize = 100_000;
@@ -41,11 +41,14 @@ fn base_cites(state: &BankReconciliationState) -> Vec<Cite> {
     ]
 }
 
-fn cash_cites(state: &BankReconciliationState, work: &mut Work) -> Result<Vec<Cite>, LanternError> {
+fn cash_cites(
+    state: &BankReconciliationState,
+    work: &mut Meter<'_>,
+) -> Result<Vec<Cite>, LanternError> {
     let mut cites = base_cites(state);
     let mut entries = BTreeSet::new();
     for reference in state.changed_entries.iter().chain(&state.citing_entries) {
-        work.compare(1);
+        work.compare(1)?;
         entries.insert(reference.vid);
         if entries.len() > MAX_CITES - cites.len() {
             return Err(invalid(format!(
@@ -59,7 +62,7 @@ fn cash_cites(state: &BankReconciliationState, work: &mut Work) -> Result<Vec<Ci
 
 fn match_cites(
     state: &BankReconciliationState,
-    work: &mut Work,
+    work: &mut Meter<'_>,
 ) -> Result<Vec<Cite>, LanternError> {
     let mut cites = base_cites(state);
     if state.recorded.claim.manifest.line_oids.len() > MAX_CITES - cites.len() {
@@ -68,28 +71,27 @@ fn match_cites(
         )));
     }
     for oid in &state.recorded.claim.manifest.line_oids {
-        work.compare(1);
+        work.compare(1)?;
         cites.push(Cite::Document(*oid));
     }
     Ok(cites)
 }
 
-fn changed_matches(state: &BankReconciliationState, work: &mut Work) -> usize {
-    let original: BTreeSet<BankDecisionRef> = state
-        .recorded
-        .claim
-        .matches
-        .iter()
-        .copied()
-        .inspect(|_| work.compare(1))
-        .collect();
-    let current: BTreeSet<BankDecisionRef> = state
-        .active_matches
-        .iter()
-        .copied()
-        .inspect(|_| work.compare(1))
-        .collect();
-    original.symmetric_difference(&current).count()
+fn changed_matches(
+    state: &BankReconciliationState,
+    work: &mut Meter<'_>,
+) -> Result<usize, LanternError> {
+    let mut original: BTreeSet<BankDecisionRef> = BTreeSet::new();
+    for decision in &state.recorded.claim.matches {
+        work.compare(1)?;
+        original.insert(*decision);
+    }
+    let mut current: BTreeSet<BankDecisionRef> = BTreeSet::new();
+    for decision in &state.active_matches {
+        work.compare(1)?;
+        current.insert(*decision);
+    }
+    Ok(original.symmetric_difference(&current).count())
 }
 
 fn push(
@@ -132,7 +134,7 @@ impl Procedure for BankStatementDrift {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         if snapshot.coordinate.book_id != book.book_id {
             return Err(invalid(
@@ -146,7 +148,7 @@ impl Procedure for BankStatementDrift {
         };
         let mut by_attestation = BTreeMap::new();
         for state in states {
-            work.entry();
+            work.entry()?;
             let recorded = &state.recorded;
             if by_attestation
                 .insert(recorded.attestation_vid, state)
@@ -165,12 +167,12 @@ impl Procedure for BankStatementDrift {
                     "native bank states repeat, disagree with their original claims or fall outside the selected snapshot",
                 ));
             }
-            work.compare(1);
+            work.compare(1)?;
         }
         let mut population = 0_u64;
         let mut original_count = 0_usize;
         for (vid, stored) in &snapshot.attestations {
-            work.compare(1);
+            work.compare(1)?;
             let AttestationClaim::Reconciled(claim) = &stored.attestation.claim else {
                 continue;
             };
@@ -274,7 +276,7 @@ impl Procedure for BankStatementDrift {
                 )?;
             }
             if state.match_drift {
-                let changed = changed_matches(state, work);
+                let changed = changed_matches(state, work)?;
                 if changed == 0 {
                     return Err(invalid(
                         "match drift was reported without a changed immutable confirmation reference",

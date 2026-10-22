@@ -20,4 +20,33 @@ disallowed-methods = [
     { path = "u128::wrapping_add", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
     { path = "u128::wrapping_sub", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
     { path = "u128::wrapping_mul", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    # Doctrine 3 (fa-1tvm): a procedure runs under its Meter alone, with no
+    # clock, entropy, network, filesystem, environment, process or thread.
+    # "Today" and every other input are declared parameters.
+    { path = "std::time::SystemTime::now", reason = "a procedure reads no clock; a date is a declared input (doctrine 3)" },
+    { path = "std::time::Instant::now", reason = "a procedure reads no clock; work is metered, not timed (doctrine 3)" },
+    { path = "std::fs::read", reason = "a procedure reads only its snapshot (doctrine 3)" },
+    { path = "std::fs::read_to_string", reason = "a procedure reads only its snapshot (doctrine 3)" },
+    { path = "std::fs::read_dir", reason = "a procedure reads only its snapshot (doctrine 3)" },
+    { path = "std::fs::metadata", reason = "a procedure reads only its snapshot (doctrine 3)" },
+    { path = "std::fs::write", reason = "a procedure writes nothing (doctrine 3)" },
+    { path = "std::fs::create_dir_all", reason = "a procedure writes nothing (doctrine 3)" },
+    { path = "std::fs::remove_file", reason = "a procedure writes nothing (doctrine 3)" },
+    { path = "std::env::var", reason = "a procedure's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::env::var_os", reason = "a procedure's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::env::vars", reason = "a procedure's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::env::args", reason = "a procedure's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::env::current_dir", reason = "a procedure's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::thread::spawn", reason = "no detached thread; a procedure runs inside its caller's region (doctrine 3, 9)" },
+]
+disallowed-types = [
+    { path = "std::time::SystemTime", reason = "a procedure reads no clock; a date is a declared input (doctrine 3)" },
+    { path = "std::time::Instant", reason = "a procedure reads no clock; work is metered, not timed (doctrine 3)" },
+    { path = "std::fs::File", reason = "a procedure reads only its snapshot and writes nothing (doctrine 3)" },
+    { path = "std::fs::OpenOptions", reason = "a procedure reads only its snapshot and writes nothing (doctrine 3)" },
+    { path = "std::net::TcpStream", reason = "a procedure has no network (doctrine 3)" },
+    { path = "std::net::TcpListener", reason = "a procedure has no network (doctrine 3)" },
+    { path = "std::net::UdpSocket", reason = "a procedure has no network (doctrine 3)" },
+    { path = "std::process::Command", reason = "a procedure runs no process (doctrine 3)" },
+    { path = "std::thread::Builder", reason = "no detached thread; a procedure runs inside its caller's region (doctrine 3, 9)" },
 ]

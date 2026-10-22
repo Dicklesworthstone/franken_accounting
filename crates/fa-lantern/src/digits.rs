@@ -12,7 +12,7 @@ use fa_journal::genesis::BookContext;
 use fa_money::{Side, UnitKind};
 
 use crate::jet::{finding, procedure_boilerplate};
-use crate::{Finding, LanternError, Params, Procedure, Severity, Snapshot, Statistic, Work};
+use crate::{Finding, LanternError, Meter, Params, Procedure, Severity, Snapshot, Statistic};
 
 /// `log10(1 + 1/d)` for d = 1..=9 at nine decimal places. The nine rounded
 /// values sum to 1 000 000 001; the last is lowered by one unit so the table
@@ -213,7 +213,7 @@ impl Procedure for FirstDigit {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_population = u64::from(self.params.get_u32("min_population")?);
         let close = i128::from(u64::from(self.params.get_u32("mad_close")?) * 1_000_000);
@@ -246,9 +246,9 @@ impl Procedure for FirstDigit {
         };
         let mut counts = [0u64; 9];
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(unit) = book.units.get(leg.amount.unit) else {
                     return Err(
                         KernelError::Corrupt("a leg names an unregistered unit".into()).into(),
@@ -482,7 +482,7 @@ impl Procedure for SecondDigit {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_population = u64::from(self.params.get_u32("min_population")?);
         let close = i128::from(u64::from(self.params.get_u32("mad_close")?) * 1_000_000);
@@ -515,9 +515,9 @@ impl Procedure for SecondDigit {
         };
         let mut counts = [0u64; 10];
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(unit) = book.units.get(leg.amount.unit) else {
                     return Err(
                         KernelError::Corrupt("a leg names an unregistered unit".into()).into(),
@@ -612,7 +612,7 @@ impl Procedure for FirstTwoDigits {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_population = u64::from(self.params.get_u32("min_population")?);
         let close = i128::from(u64::from(self.params.get_u32("mad_close")?) * 100_000);
@@ -645,9 +645,9 @@ impl Procedure for FirstTwoDigits {
         };
         let mut counts = [0u64; 90];
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let Some(unit) = book.units.get(leg.amount.unit) else {
                     return Err(
                         KernelError::Corrupt("a leg names an unregistered unit".into()).into(),

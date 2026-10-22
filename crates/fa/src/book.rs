@@ -3966,14 +3966,16 @@ impl Book {
 
     /// Run a registered Lantern procedure over the trunk as known at
     /// `known_at` (the head when `None`) and, for the historical folds,
-    /// through `effective_through`: a pure read (plan §11).
+    /// through `effective_through`: a pure read (plan §11), refused at the
+    /// first charge past `budget` (fa-1tvm).
     pub fn run_procedure(
         &self,
         procedure: &dyn fa_lantern::Procedure,
         known_at: Option<CommitSeq>,
         effective_through: Option<fa_time::DateDay>,
+        budget: Option<u64>,
     ) -> Result<fa_lantern::ProcedureRun, BookError> {
-        with_store!(&self.store, core => core.run_procedure(&self.purposes(), procedure, known_at, effective_through))
+        with_store!(&self.store, core => core.run_procedure(&self.purposes(), procedure, known_at, effective_through, budget))
     }
 
     /// Admit explicit current procedure scope before loading its native history.

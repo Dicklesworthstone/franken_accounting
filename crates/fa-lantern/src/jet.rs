@@ -15,7 +15,7 @@ use fgdb_types::VId;
 
 use crate::amount::{amount_share_bps, signed_leg};
 use crate::{
-    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
 
 pub(crate) fn finding(
@@ -82,7 +82,7 @@ impl Procedure for RoundAmounts {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let power = self.params.get_u32("round_power")?;
         if power > 30 {
@@ -98,10 +98,10 @@ impl Procedure for RoundAmounts {
         let mut population = 0u64;
         let mut hits = Vec::new();
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             let mut round = Vec::new();
             for (i, leg) in e.entry.proposal.legs.iter().enumerate() {
-                work.leg();
+                work.leg()?;
                 population += 1;
                 let Some(unit) = book.units.get(leg.amount.unit) else {
                     return Err(
@@ -170,14 +170,14 @@ impl Procedure for PeriodEndTiming {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window = i32::try_from(self.params.get_u32("window_days")?)
             .map_err(|_| LanternError::Overflow("window_days"))?;
         let mut population = 0u64;
         let mut hits = Vec::new();
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             let Some(period) = snapshot.period_of(e) else {
                 continue;
             };
@@ -227,12 +227,12 @@ impl Procedure for PostClosing {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut first_close = BTreeMap::new();
         for (period, transitions) in &snapshot.transitions {
             for t in transitions {
-                work.compare(1);
+                work.compare(1)?;
                 if matches!(
                     t.to,
                     PeriodState::SoftClosed | PeriodState::Closed | PeriodState::Locked
@@ -245,7 +245,7 @@ impl Procedure for PostClosing {
         let mut population = 0u64;
         let mut hits = Vec::new();
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             population += 1;
             if let Some(t) = first_close.get(e.period.as_str())
                 && e.recorded_at > t.recorded_at
@@ -297,12 +297,12 @@ impl Procedure for Weekend {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut population = 0u64;
         let mut hits = Vec::new();
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             population += 1;
             let date = e
                 .entry
@@ -351,7 +351,7 @@ impl Procedure for SelfApproved {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let mut population = 0u64;
         let mut hits: Vec<(VId, Vec<VId>, usize, usize)> = Vec::new();
@@ -371,9 +371,9 @@ impl Procedure for SelfApproved {
             if e.approvals.is_empty() && legacy_pair.is_none() {
                 continue;
             }
-            work.entry();
+            work.entry()?;
             population += 1;
-            work.compare(e.approvals.len() as u64 + u64::from(legacy_pair.is_some()));
+            work.compare(e.approvals.len() as u64 + u64::from(legacy_pair.is_some()))?;
             let own: Vec<VId> = e
                 .approvals
                 .iter()
@@ -431,14 +431,14 @@ impl Procedure for ThinDescriptions {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min = self.params.get_u32("min_chars")? as usize;
         let mut population = 0u64;
         let mut hits = Vec::new();
         let mut unreadable: Vec<VId> = Vec::new();
         for e in snapshot.live_postings()? {
-            work.entry();
+            work.entry()?;
             let Ok(text) = e
                 .entry
                 .proposal
@@ -507,7 +507,7 @@ impl Procedure for UnusualAccounts {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let max_pair_count = u64::from(self.params.get_u32("max_pair_count")?);
         let min_population = u64::from(self.params.get_u32("min_population")?);
@@ -517,10 +517,10 @@ impl Procedure for UnusualAccounts {
         let mut freq: BTreeMap<Vec<VId>, u64> = BTreeMap::new();
         let mut entry_keys: Vec<(VId, Vec<VId>)> = Vec::with_capacity(live.len());
         for e in &live {
-            work.entry();
+            work.entry()?;
             let mut accts: Vec<VId> = Vec::with_capacity(e.entry.proposal.legs.len());
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if snapshot.accounts.contains_key(&leg.account_ref) {
                     accts.push(leg.account_ref);
                 }
@@ -537,7 +537,7 @@ impl Procedure for UnusualAccounts {
         }
         let mut out = Vec::new();
         for (vid, accts) in entry_keys {
-            work.compare(1);
+            work.compare(1)?;
             if accts.len() < 2 {
                 continue;
             }
@@ -582,7 +582,7 @@ impl Procedure for UnusualPreparers {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let max_prep_count = u64::from(self.params.get_u32("max_preparer_count")?);
         let min_acct_entries = u64::from(self.params.get_u32("min_account_entries")?);
@@ -593,11 +593,11 @@ impl Procedure for UnusualPreparers {
         let mut acct_preps: BTreeMap<VId, std::collections::BTreeSet<VId>> = BTreeMap::new();
         let mut entry_accts: Vec<(VId, VId, Vec<VId>)> = Vec::with_capacity(live.len());
         for e in &live {
-            work.entry();
+            work.entry()?;
             let prep = e.entry.proposal.principal_ref;
             let mut accts: Vec<VId> = Vec::new();
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if snapshot.accounts.contains_key(&leg.account_ref) {
                     accts.push(leg.account_ref);
                 }
@@ -613,7 +613,7 @@ impl Procedure for UnusualPreparers {
         }
         let mut out = Vec::new();
         for (vid, prep, accts) in entry_accts {
-            work.compare(1);
+            work.compare(1)?;
             for acct in accts {
                 let total = acct_totals.get(&acct).copied().unwrap_or(0);
                 let distinct_preps = acct_preps.get(&acct).map_or(0, |s| s.len());
@@ -657,7 +657,7 @@ impl Procedure for ManualVsRule {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_rule_bps = i128::from(self.params.get_u32("min_rule_share_bps")?);
         let min_acct_entries = u64::from(self.params.get_u32("min_account_entries")?);
@@ -667,12 +667,12 @@ impl Procedure for ManualVsRule {
         let mut acct_rules: BTreeMap<VId, u64> = BTreeMap::new();
         let mut manual_entries: Vec<(VId, Vec<VId>)> = Vec::new();
         for e in &live {
-            work.entry();
+            work.entry()?;
             let is_rule = matches!(e.entry.proposal.origin, EntryOrigin::Rule { .. });
             let is_manual = matches!(e.entry.proposal.origin, EntryOrigin::Intent { .. });
             let mut accts: Vec<VId> = Vec::new();
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if snapshot.accounts.contains_key(&leg.account_ref) {
                     accts.push(leg.account_ref);
                 }
@@ -691,7 +691,7 @@ impl Procedure for ManualVsRule {
         }
         let mut out = Vec::new();
         for (vid, accts) in manual_entries {
-            work.compare(1);
+            work.compare(1)?;
             for acct in accts {
                 let total = acct_totals.get(&acct).copied().unwrap_or(0);
                 if total < min_acct_entries {
@@ -744,7 +744,7 @@ impl Procedure for LargeRoundReversals {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let power = self.params.get_u32("round_power")?;
         if power > 30 {
@@ -761,7 +761,7 @@ impl Procedure for LargeRoundReversals {
             .map_err(|_| LanternError::Overflow("window_days"))?;
         let mut by_vid: BTreeMap<VId, &crate::snapshot::SnapshotEntry> = BTreeMap::new();
         for e in &snapshot.entries {
-            work.entry();
+            work.entry()?;
             by_vid.insert(e.vid, e);
         }
         let population = snapshot.entries.len() as u64;
@@ -777,7 +777,7 @@ impl Procedure for LargeRoundReversals {
                 let Some(&orig) = by_vid.get(&sup.target.vid) else {
                     continue;
                 };
-                work.compare(1);
+                work.compare(1)?;
                 if orig.period.is_empty() || rev.period.is_empty() || orig.period == rev.period {
                     continue;
                 }
@@ -788,7 +788,7 @@ impl Procedure for LargeRoundReversals {
                 }
                 let mut has_round = false;
                 for leg in &orig.entry.proposal.legs {
-                    work.leg();
+                    work.leg()?;
                     let Some(unit) = book.units.get(leg.amount.unit) else {
                         return Err(KernelError::Corrupt(
                             "a leg names an unregistered unit".into(),
@@ -862,7 +862,7 @@ impl Procedure for SuspenseAging {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let max_age = i32::try_from(self.params.get_u32("max_age_days")?)
             .map_err(|_| LanternError::Overflow("max_age_days"))?;
@@ -888,10 +888,10 @@ impl Procedure for SuspenseAging {
         let mut balances: BTreeMap<(VId, fa_money::UnitId), (i128, fa_time::DateDay, Vec<VId>)> =
             BTreeMap::new();
         for e in &live {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if !suspense_vids.contains(&leg.account_ref) {
                     continue;
                 }
@@ -913,7 +913,7 @@ impl Procedure for SuspenseAging {
         }
         let mut out = Vec::new();
         for ((acct_vid, _unit), (net, oldest, mut entry_vids)) in balances {
-            work.compare(1);
+            work.compare(1)?;
             if net == 0 {
                 continue;
             }
@@ -977,7 +977,7 @@ impl Procedure for IntercompanyUnmatched {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let ic_vids: std::collections::BTreeSet<VId> = snapshot
             .accounts
@@ -994,9 +994,9 @@ impl Procedure for IntercompanyUnmatched {
         type Tally = (i128, Vec<VId>, Vec<VId>);
         let mut by_period_unit: BTreeMap<(String, fa_money::UnitId), Tally> = BTreeMap::new();
         for e in &live {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if !ic_vids.contains(&leg.account_ref) {
                     continue;
                 }
@@ -1014,7 +1014,7 @@ impl Procedure for IntercompanyUnmatched {
         }
         let mut out = Vec::new();
         for ((period, unit_id), (net, mut entry_vids, mut acct_vids)) in by_period_unit {
-            work.compare(1);
+            work.compare(1)?;
             if net == 0 {
                 continue;
             }

@@ -15,8 +15,8 @@ use fgdb_types::VId;
 
 use crate::projection::{entity, entity_scope, scoped_entity};
 use crate::{
-    Cite, Finding, LanternError, Params, Procedure, Severity, Snapshot, SnapshotEntry, Statistic,
-    Work,
+    Cite, Finding, LanternError, Meter, Params, Procedure, Severity, Snapshot, SnapshotEntry,
+    Statistic,
 };
 
 /// A selected source deposit followed through every asset-account transfer in
@@ -75,7 +75,7 @@ impl Procedure for RestitutionOrder {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let law_code = self.params.get("law")?;
         let (single_law, net_law) = match law_code {
@@ -214,15 +214,15 @@ fn transfers(
     legal_entity: Option<VId>,
     max_transfers: usize,
     max_steps: u64,
-    work: &mut Work,
+    work: &mut Meter<'_>,
 ) -> Result<(Vec<engine::Transfer>, u64), LanternError> {
     let mut out = Vec::new();
     let mut steps = 0u64;
     for entry in live {
-        work.entry();
+        work.entry()?;
         let mut nets: BTreeMap<VId, (U256, U256)> = BTreeMap::new();
         for leg in &entry.entry.proposal.legs {
-            work.leg();
+            work.leg()?;
             if leg.amount.unit != unit || scoped_entity(scope, leg)? != legal_entity {
                 continue;
             }
@@ -325,7 +325,7 @@ fn transfers(
             return Err(LanternError::Overflow("network debit margin"));
         }
     }
-    work.compare(steps);
+    work.compare(steps)?;
     Ok((out, steps))
 }
 
@@ -338,7 +338,7 @@ impl NetworkTrace {
         has_replenishment_param: bool,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let claim = snapshot.coordinate.effective_through.ok_or_else(|| {
             Self::refuse_for(
@@ -510,7 +510,9 @@ impl NetworkTrace {
             |amount, weights| allocation(unit, amount, weights),
         )
         .map_err(|e| Self::engine_error_for(procedure_id, e))?;
-        work.compare(report.steps);
+        // The engine bounds itself by `max_steps`; its steps are charged
+        // when it returns (it is not metered mid-search).
+        work.compare(report.steps)?;
         let scale = crate::unit_scale(book, unit.0)?;
         let entity_name =
             legal_entity.map_or_else(|| "implicit-book".into(), |v| format!("{v:032x}"));
@@ -561,7 +563,7 @@ impl Procedure for NetworkTrace {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let has_intraday = matches!(self.law, engine::Law::Libr | engine::Law::ProRata);
         let has_replenish = matches!(self.law, engine::Law::Libr);

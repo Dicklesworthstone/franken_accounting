@@ -3308,22 +3308,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 
     /// A registered Lantern procedure over the trunk under the query
-    /// context: the snapshot is read once, then the procedure folds it with
-    /// no clock, entropy, network or filesystem capability.
+    /// context: the snapshot is read once, then the procedure folds it under
+    /// its meter alone, with no clock, entropy, network or filesystem
+    /// capability. It stops at the first charge past `budget`, or once the
+    /// query context is cancelled, and returns no finding (fa-1tvm).
     pub fn run_procedure(
         &self,
         cx: &PurposeContexts,
         procedure: &dyn fa_lantern::Procedure,
         known_at: Option<CommitSeq>,
         effective_through: Option<fa_time::DateDay>,
+        budget: Option<u64>,
     ) -> Result<fa_lantern::ProcedureRun, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_lantern::run(
-                db,
+            let snapshot = fa_lantern::Snapshot::read(db, book, known_at, effective_through)?;
+            Ok(fa_lantern::run_over_metered(
+                &snapshot,
                 book,
-                known_at,
-                effective_through,
                 procedure,
+                budget,
+                Some(&cx.query()),
             )?)
         })
     }

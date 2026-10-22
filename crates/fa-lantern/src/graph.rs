@@ -17,7 +17,7 @@ use fgdb_types::VId;
 use crate::amount::{amount_share_bps, amount_sum};
 use crate::projection::{FlowLeg, scoped_flow_legs};
 use crate::{
-    Cite, Finding, LanternError, MAX_CITES, Params, Procedure, Severity, Snapshot, Statistic, Work,
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
 
 /// Use the implementation's version, not the legacy JET constructor's v1.
@@ -145,7 +145,7 @@ impl Procedure for RoundTrips {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_days = days(&self.params, "window_days")?;
         let period_end_days = days(&self.params, "period_end_days")?;
@@ -176,7 +176,7 @@ impl Procedure for RoundTrips {
         let mut candidates = 0u64;
         for scoped in &legs {
             let l = &scoped.leg;
-            work.leg();
+            work.leg()?;
             if l.class == EntryClass::REVERSAL
                 || l.mantissa == 0
                 || l.from == l.to
@@ -199,7 +199,7 @@ impl Procedure for RoundTrips {
         let mut out = Vec::new();
         for ((entity, p0, p1, unit_id, _), mut bucket) in by_bucket {
             let n = bucket.len() as u64;
-            work.compare(n.saturating_mul(n.max(1).ilog2().into()));
+            work.compare(n.saturating_mul(n.max(1).ilog2().into()))?;
             bucket.sort_by_key(|l| (l.effective_date, l.recorded, l.entry, l.from, l.to));
             let dir = |l: &FlowLeg| usize::from(l.from != p0 || l.to != p1);
             let mut used = vec![false; bucket.len()];
@@ -214,20 +214,20 @@ impl Procedure for RoundTrips {
                 while cursor[opp] < bucket.len()
                     && (used[cursor[opp]] || dir(bucket[cursor[opp]]) != opp)
                 {
-                    work.compare(1);
+                    work.compare(1)?;
                     cursor[opp] += 1;
                 }
                 let mut r_idx = cursor[opp];
                 while r_idx < bucket.len()
                     && (used[r_idx] || dir(bucket[r_idx]) != opp || bucket[r_idx].entry == o.entry)
                 {
-                    work.compare(1);
+                    work.compare(1)?;
                     r_idx += 1;
                 }
                 let Some(&r) = bucket.get(r_idx) else {
                     continue;
                 };
-                work.compare(1);
+                work.compare(1)?;
                 let gap = i64::from(r.effective_date.0) - i64::from(o.effective_date.0);
                 if !(0..=i64::from(window_days)).contains(&gap) {
                     continue;
@@ -275,7 +275,7 @@ impl Procedure for RoundTrips {
 fn multi_round_trips(
     snapshot: &Snapshot,
     book: &BookContext,
-    work: &mut Work,
+    work: &mut Meter<'_>,
     window_days: i32,
     period_end_days: i32,
     max_hops: usize,
@@ -285,7 +285,7 @@ fn multi_round_trips(
     let mut sources = Vec::new();
     let mut edges = Vec::new();
     for flow in &scoped {
-        work.leg();
+        work.leg()?;
         let leg = &flow.leg;
         if leg.class == EntryClass::REVERSAL
             || leg.from == leg.to
@@ -307,7 +307,7 @@ fn multi_round_trips(
         });
     }
     let n = edges.len() as u64;
-    work.compare(n.saturating_mul(n.max(1).ilog2().into()));
+    work.compare(n.saturating_mul(n.max(1).ilog2().into()))?;
     let found = cycles::find(&edges, max_hops, window_days, max_steps).map_err(|error| {
         match error {
             cycles::Error::NonPositiveAmount => LanternError::Overflow("nonpositive circular-flow edge"),
@@ -323,7 +323,7 @@ fn multi_round_trips(
             },
         }
     })?;
-    work.compare(found.steps);
+    work.compare(found.steps)?;
     let mut out = Vec::new();
     for path in found.paths {
         let first_index = path
@@ -513,7 +513,7 @@ impl Procedure for Structuring {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let rule = Rule::from(&self.params)?;
         let legs = scoped_flow_legs(snapshot)?;
@@ -521,7 +521,7 @@ impl Procedure for Structuring {
         let mut candidates = 0u64;
         for scoped in &legs {
             let l = &scoped.leg;
-            work.leg();
+            work.leg()?;
             let in_currency = matches!(
                 book.units.get(UnitId(l.unit_id)).map(|u| u.kind),
                 Some(UnitKind::Currency { iso4217 }) if iso4217 == rule.currency
@@ -544,7 +544,7 @@ impl Procedure for Structuring {
         for (key, mut group) in groups {
             let scale = crate::unit_scale(book, key.3)?;
             group.sort_by_key(|l| (l.effective_date, l.recorded, l.entry));
-            work.compare(group.len() as u64);
+            work.compare(group.len() as u64)?;
             let mut chain: Vec<&FlowLeg> = Vec::new();
             for l in group {
                 if let Some(last) = chain.last()
@@ -616,7 +616,7 @@ impl Procedure for CircularFlows {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let window_days = days(&self.params, "window_days")?;
         let max_hops = self.params.get_u32("max_hops")? as usize;
@@ -631,7 +631,7 @@ impl Procedure for CircularFlows {
         let scoped = scoped_flow_legs(snapshot)?;
         let mut by_partition: BTreeMap<(Option<VId>, u32), Vec<&FlowLeg>> = BTreeMap::new();
         for flow in &scoped {
-            work.leg();
+            work.leg()?;
             let l = &flow.leg;
             if l.class == EntryClass::REVERSAL || l.mantissa <= 0 || l.from == l.to {
                 continue;
@@ -645,7 +645,7 @@ impl Procedure for CircularFlows {
         let mut out = Vec::new();
         for ((_entity, unit_id), mut legs) in by_partition {
             legs.sort_by_key(|l| (l.effective_date, l.recorded, l.entry, l.from, l.to));
-            work.compare(legs.len() as u64);
+            work.compare(legs.len() as u64)?;
             let mut dg = fnx_classes::digraph::DiGraph::strict();
             let mut nodes = std::collections::BTreeSet::new();
             let mut edge_pairs = std::collections::BTreeSet::new();
@@ -689,7 +689,7 @@ impl Procedure for CircularFlows {
                     let mut min_flow = first.mantissa;
                     let mut closed = false;
                     while path_indices.len() < max_hops {
-                        work.compare(1);
+                        work.compare(1)?;
                         if let Some((close_idx, close_leg)) = scc_legs
                             .iter()
                             .enumerate()
@@ -820,7 +820,7 @@ impl Procedure for Layering {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_hops = self.params.get_u32("min_hops")? as usize;
         let window_days = days(&self.params, "window_days")?;
@@ -835,7 +835,7 @@ impl Procedure for Layering {
         let scoped = scoped_flow_legs(snapshot)?;
         let mut by_partition: BTreeMap<(Option<VId>, u32), Vec<&FlowLeg>> = BTreeMap::new();
         for flow in &scoped {
-            work.leg();
+            work.leg()?;
             let l = &flow.leg;
             if l.class == EntryClass::REVERSAL || l.mantissa <= 0 || l.from == l.to {
                 continue;
@@ -849,7 +849,7 @@ impl Procedure for Layering {
         let mut out = Vec::new();
         for ((_entity, unit_id), mut legs) in by_partition {
             legs.sort_by_key(|l| (l.effective_date, l.recorded, l.entry, l.from, l.to));
-            work.compare(legs.len() as u64);
+            work.compare(legs.len() as u64)?;
             let mut dg = fnx_classes::digraph::DiGraph::strict();
             for l in &legs {
                 let u = vid_node(l.from);
@@ -880,7 +880,7 @@ impl Procedure for Layering {
                 let mut prev_amt = first.mantissa;
                 let mut min_amt = first.mantissa;
                 while chain.len() < 8 {
-                    work.compare(1);
+                    work.compare(1)?;
                     let mut next_opt = None;
                     for (idx, l) in legs.iter().enumerate().skip(start_idx + 1) {
                         if !used[idx]
@@ -983,7 +983,7 @@ impl Procedure for Communities {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_size = self.params.get_u32("min_community_size")? as usize;
         let min_share_bps = i128::from(self.params.get_u32("min_internal_share_bps")?);
@@ -991,7 +991,7 @@ impl Procedure for Communities {
         // deliberately collapses entities and cannot serve a path analysis.
         let mut partitions: BTreeMap<MonetaryScope, BTreeMap<(VId, VId), i128>> = BTreeMap::new();
         for scoped in scoped_flow_legs(snapshot)? {
-            work.leg();
+            work.leg()?;
             let e = &scoped.leg;
             if e.from == e.to || e.mantissa <= 0 {
                 continue;
@@ -1034,7 +1034,7 @@ impl Procedure for Communities {
             comms.sort();
             comms.dedup();
             for comm in comms {
-                work.compare(comm.len() as u64);
+                work.compare(comm.len() as u64)?;
                 let member_vids: BTreeSet<VId> = comm
                     .iter()
                     .filter_map(|s| parse_vid_node(s))
@@ -1131,7 +1131,7 @@ impl Procedure for RelatedPartyExposure {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let max_depth = self.params.get_u32("max_depth")? as usize;
         if max_depth == 0 || snapshot.rea.relationships.is_empty() {
@@ -1163,7 +1163,7 @@ impl Procedure for RelatedPartyExposure {
         }
         let mut out = Vec::new();
         for e in &live {
-            work.entry();
+            work.entry()?;
             let eff = e.entry.proposal.effective_date;
             let mut exposures: BTreeMap<MonetaryScope, i128> = BTreeMap::new();
             let mut hits_by_scope: BTreeMap<
@@ -1171,7 +1171,7 @@ impl Procedure for RelatedPartyExposure {
                 Vec<(VId, fa_journal::rea::RelatedPartyHit)>,
             > = BTreeMap::new();
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 let coordinate = (
                     crate::projection::scoped_entity(&entities, leg)?,
                     leg.amount.unit.0,
@@ -1218,7 +1218,7 @@ impl Procedure for RelatedPartyExposure {
                 let scope_text = monetary_scope_text(book, coordinate)?;
                 let scale = crate::unit_scale(book, coordinate.1)?;
                 let population = populations.get(&coordinate).copied().unwrap_or(0);
-                work.compare(related_hits.len() as u64);
+                work.compare(related_hits.len() as u64)?;
                 related_hits.sort_by_key(|(r, h)| (h.depth, h.vid, *r));
                 let (root_vid, best) = &related_hits[0];
                 let root_node = vid_node(*root_vid);
@@ -1288,7 +1288,7 @@ impl Procedure for ShellSignature {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_pass_bps = i128::from(self.params.get_u32("min_passthrough_bps")?);
         let mut live = snapshot.live_postings()?;
@@ -1299,9 +1299,9 @@ impl Procedure for ShellSignature {
         let populations = monetary_populations(&live, &entities)?;
         let mut partitions: BTreeMap<MonetaryScope, BTreeMap<VId, ConduitFlows>> = BTreeMap::new();
         for e in &live {
-            work.entry();
+            work.entry()?;
             for leg in &e.entry.proposal.legs {
-                work.leg();
+                work.leg()?;
                 if !is_asset(snapshot, leg.account_ref) {
                     continue;
                 }
@@ -1339,7 +1339,7 @@ impl Procedure for ShellSignature {
             let scope_text = monetary_scope_text(book, coordinate)?;
             let population = populations.get(&coordinate).copied().unwrap_or(0);
             for (&acct_vid, flows) in &accounts {
-                work.compare(1);
+                work.compare(1)?;
                 if flows.inflow <= 0
                     || flows.outflow <= 0
                     || flows.documented
@@ -1412,7 +1412,7 @@ impl Procedure for Concentration {
         &self,
         snapshot: &Snapshot,
         _book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let min_share_bps = i128::from(self.params.get_u32("min_share_bps")?);
         let flow = crate::projection::money_flow(snapshot)?;
@@ -1451,7 +1451,7 @@ impl Procedure for Concentration {
         let population = dg.node_count() as u64;
         let mut out = Vec::new();
         for ((acct_vid, unit_id), acct_vol) in by_acct_unit {
-            work.compare(1);
+            work.compare(1)?;
             if !snapshot.accounts.contains_key(&acct_vid) {
                 continue;
             }
@@ -1515,16 +1515,16 @@ impl Procedure for IdentityResolution {
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         if snapshot.rea.parties.len() < 2 {
             return Ok(Vec::new());
         }
         let mut by_ident: BTreeMap<(String, String), Vec<VId>> = BTreeMap::new();
         for (&vid, party) in &snapshot.rea.parties {
-            work.entry();
+            work.entry()?;
             for (k, sealed_v) in &party.identifiers {
-                work.compare(1);
+                work.compare(1)?;
                 if let Ok(plain) = sealed_v.open(&book.seal_key, 256) {
                     let norm_k = k.trim().to_ascii_lowercase();
                     let norm_v: String = plain
@@ -1566,7 +1566,7 @@ impl Procedure for IdentityResolution {
                 continue;
             }
             comp.sort();
-            work.compare(comp.len() as u64);
+            work.compare(comp.len() as u64)?;
             let vids: Vec<VId> = comp.iter().filter_map(|s| parse_vid_node(s)).collect();
             let mut keys = std::collections::BTreeSet::new();
             let mut decisions = Vec::new();

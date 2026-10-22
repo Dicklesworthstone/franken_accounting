@@ -20,8 +20,14 @@
 //! slices of fa-nlu.
 
 #![forbid(unsafe_code)]
-// 128-bit arithmetic only: clippy.toml exempts the narrower integers.
-#![deny(clippy::arithmetic_side_effects, clippy::disallowed_methods)]
+// 128-bit arithmetic only: clippy.toml exempts the narrower integers. It also
+// disallows the clock, filesystem, network, environment, process and thread
+// APIs a procedure must never reach (doctrine 3, fa-1tvm).
+#![deny(
+    clippy::arithmetic_side_effects,
+    clippy::disallowed_methods,
+    clippy::disallowed_types
+)]
 
 pub mod aging;
 mod amount;
@@ -103,6 +109,12 @@ pub enum LanternError {
         budget: u64,
         fix: String,
     },
+    /// The caller's context was cancelled while the procedure ran; `used`
+    /// work units were counted when the meter observed it.
+    Cancelled {
+        procedure: String,
+        used: u64,
+    },
 }
 
 impl LanternError {
@@ -167,6 +179,10 @@ impl fmt::Display for LanternError {
             } => write!(
                 f,
                 "procedure `{procedure}` exhausted its work budget ({used} > {budget} work units); fix: {fix}"
+            ),
+            Self::Cancelled { procedure, used } => write!(
+                f,
+                "procedure `{procedure}` was cancelled after {used} work units; nothing was reported"
             ),
         }
     }
@@ -535,7 +551,8 @@ impl Params {
 }
 
 /// Work counted while a procedure runs: the complexity witness the tests
-/// check against the registry's declared bound.
+/// check against the registry's declared bound. A procedure counts it
+/// through its [`Meter`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Work {
     pub entries: u64,
@@ -543,17 +560,136 @@ pub struct Work {
     pub comparisons: u64,
 }
 
-impl Work {
-    pub fn entry(&mut self) {
-        self.entries = self.entries.saturating_add(1);
+/// How often, in work units, a metered run consults its cancellation source.
+pub const CANCELLATION_INTERVAL: u64 = 1024;
+
+/// The fix a budget refusal names.
+const BUDGET_FIX: &str = "narrow the snapshot with --known-at <an earlier seq> (--effective-through YYYY-MM-DD applies only where fa procedure list shows effective_through optional or required) or increase the work budget";
+
+/// Where a metered run observes cancellation (fa-1tvm): the caller's query
+/// context. A procedure never holds it; its [`Meter`] consults it as work is
+/// charged.
+pub trait Cancellation {
+    /// `true` once the run's context is cancelled or its runtime budget is
+    /// spent: the run stops at its next checkpoint.
+    fn cancelled(&self) -> bool;
+}
+
+impl Cancellation for fgdb_types::context::QueryCx {
+    fn cancelled(&self) -> bool {
+        self.checkpoint().is_err()
     }
-    pub fn leg(&mut self) {
-        self.legs = self.legs.saturating_add(1);
-    }
-    pub fn compare(&mut self, n: u64) {
-        self.comparisons = self.comparisons.saturating_add(n);
+}
+
+/// What a procedure runs under (doctrine 3; fa-1tvm): a work meter, never a
+/// `Cx`. It grants no clock, entropy, network or filesystem capability. It
+/// counts the procedure's work, refuses the charge that passes the run's
+/// budget, and consults the caller's cancellation every
+/// [`CANCELLATION_INTERVAL`] work units, starting with the first charge. A
+/// refused charge ends the run: its error propagates and no finding is
+/// returned.
+pub struct Meter<'a> {
+    procedure: &'static str,
+    work: Work,
+    budget: Option<u64>,
+    cancellation: Option<&'a dyn Cancellation>,
+    next_check: u64,
+    /// The first refused charge. The run returns it even if the procedure
+    /// discarded the error, so a stopped run never yields findings.
+    stopped: Option<Stop>,
+}
+
+#[derive(Clone, Copy)]
+enum Stop {
+    Budget { used: u64, budget: u64 },
+    Cancelled { used: u64 },
+}
+
+impl<'a> Meter<'a> {
+    #[must_use]
+    pub fn new(
+        procedure: &'static str,
+        budget: Option<u64>,
+        cancellation: Option<&'a dyn Cancellation>,
+    ) -> Self {
+        Self {
+            procedure,
+            work: Work::default(),
+            budget,
+            cancellation,
+            next_check: 0,
+            stopped: None,
+        }
     }
 
+    /// One entry visited.
+    pub fn entry(&mut self) -> Result<(), LanternError> {
+        self.work.entries = self.work.entries.saturating_add(1);
+        self.charge()
+    }
+
+    /// One leg visited.
+    pub fn leg(&mut self) -> Result<(), LanternError> {
+        self.work.legs = self.work.legs.saturating_add(1);
+        self.charge()
+    }
+
+    /// `n` comparisons made.
+    pub fn compare(&mut self, n: u64) -> Result<(), LanternError> {
+        self.work.comparisons = self.work.comparisons.saturating_add(n);
+        self.charge()
+    }
+
+    /// The work counted so far.
+    #[must_use]
+    pub fn work(&self) -> Work {
+        self.work
+    }
+
+    fn charge(&mut self) -> Result<(), LanternError> {
+        if let Some(stop) = self.stopped {
+            return Err(self.refusal(stop));
+        }
+        let used = self.work.total();
+        if let Some(budget) = self.budget
+            && used > budget
+        {
+            return Err(self.stop(Stop::Budget { used, budget }));
+        }
+        if used >= self.next_check {
+            self.next_check = used.saturating_add(CANCELLATION_INTERVAL);
+            if self.cancellation.is_some_and(|source| source.cancelled()) {
+                return Err(self.stop(Stop::Cancelled { used }));
+            }
+        }
+        Ok(())
+    }
+
+    fn stop(&mut self, stop: Stop) -> LanternError {
+        self.stopped = Some(stop);
+        self.refusal(stop)
+    }
+
+    fn refusal(&self, stop: Stop) -> LanternError {
+        let procedure = self.procedure.to_string();
+        match stop {
+            Stop::Budget { used, budget } => LanternError::BudgetExhausted {
+                procedure,
+                used,
+                budget,
+                fix: BUDGET_FIX.into(),
+            },
+            Stop::Cancelled { used } => LanternError::Cancelled { procedure, used },
+        }
+    }
+
+    /// The refusal of a charge the procedure discarded, if any.
+    fn discarded_refusal(&self) -> Option<LanternError> {
+        self.stopped.map(|stop| self.refusal(stop))
+    }
+}
+
+impl Work {
     /// Total work units counted (`entries + legs + comparisons`).
     #[must_use]
     pub fn total(&self) -> u64 {
@@ -666,12 +802,13 @@ pub trait Procedure {
         Vec::new()
     }
     /// Emit findings over the snapshot. Order is irrelevant: the run sorts
-    /// them canonically.
+    /// them canonically. Every unit of work is charged to `work` with `?`,
+    /// so a run past its budget or cancelled stops at that charge.
     fn run(
         &self,
         snapshot: &Snapshot,
         book: &BookContext,
-        work: &mut Work,
+        work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError>;
 }
 
@@ -750,21 +887,24 @@ pub fn run<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Run `procedure` over an already-read snapshot (the witness re-runs over a
-/// permuted one).
+/// permuted one), with no budget and no cancellation source.
 pub fn run_over(
     snapshot: &Snapshot,
     book: &BookContext,
     procedure: &dyn Procedure,
 ) -> Result<ProcedureRun, LanternError> {
-    run_over_with_budget(snapshot, book, procedure, None)
+    run_over_metered(snapshot, book, procedure, None, None)
 }
 
-/// Run `procedure` over an already-read snapshot with an explicit work budget.
-pub fn run_over_with_budget(
+/// Run `procedure` over an already-read snapshot under a [`Meter`]: the run
+/// stops at the first charge past `budget` (`BudgetExhausted`) or after
+/// `cancellation` reports cancelled (`Cancelled`), and returns no finding.
+pub fn run_over_metered(
     snapshot: &Snapshot,
     book: &BookContext,
     procedure: &dyn Procedure,
     budget: Option<u64>,
+    cancellation: Option<&dyn Cancellation>,
 ) -> Result<ProcedureRun, LanternError> {
     let row = bind(procedure.id())?;
     if row.version != procedure.version() {
@@ -804,18 +944,12 @@ pub fn run_over_with_budget(
         });
         digest(PARAMETERS_DIGEST_DOMAIN, &w.finish()?)
     };
-    let mut work = Work::default();
-    let mut findings = procedure.run(snapshot, book, &mut work)?;
-    if let Some(limit) = budget
-        && work.total() > limit
-    {
-        return Err(LanternError::BudgetExhausted {
-            procedure: row.id,
-            used: work.total(),
-            budget: limit,
-            fix: "narrow the snapshot with --known-at <an earlier seq> (--effective-through YYYY-MM-DD applies only where fa procedure list shows effective_through optional or required) or increase the work budget".into(),
-        });
+    let mut meter = Meter::new(procedure.id(), budget, cancellation);
+    let mut findings = procedure.run(snapshot, book, &mut meter)?;
+    if let Some(refusal) = meter.discarded_refusal() {
+        return Err(refusal);
     }
+    let work = meter.work();
     for f in &findings {
         f.check(&row.id, row.version)?;
     }

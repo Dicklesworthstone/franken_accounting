@@ -82,6 +82,9 @@ pub struct ProcedureRequest {
     pub inputs: catalog::Inputs,
     pub known_at: Option<CommitSeq>,
     pub effective_through: Option<DateDay>,
+    /// The run's work budget (fa-1tvm): the procedure stops at the first
+    /// charge past it and the run is refused. `None` runs unbudgeted.
+    pub budget: Option<u64>,
 }
 
 impl ProcedureRequest {
@@ -92,6 +95,7 @@ impl ProcedureRequest {
             inputs,
             known_at: None,
             effective_through: None,
+            budget: None,
         })
     }
 }
@@ -862,7 +866,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             {
                 return Ok(Err(refusal));
             }
-            Ok(Ok(fa_lantern::run_over(&snapshot, book, built.as_ref())?))
+            Ok(Ok(fa_lantern::run_over_metered(
+                &snapshot,
+                book,
+                built.as_ref(),
+                request.budget,
+                Some(&cx.query()),
+            )?))
         })?;
         if let Err(refusal) = authorize(self, cx, principal, capability, false, reconcile)? {
             return Ok(Err(refusal));
@@ -1006,7 +1016,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(r) = unchanged_approvals(db, &snapshot)? {
                 return Ok(Err(r));
             }
-            let report = fa_lantern::run_over(&snapshot, book, built.as_ref())?;
+            let report = fa_lantern::run_over_metered(
+                &snapshot,
+                book,
+                built.as_ref(),
+                request.budget,
+                Some(&cx.query()),
+            )?;
             let output = match encode_run(&report) {
                 Ok(b) => b,
                 Err(r) => return Ok(Err(r)),
@@ -1109,7 +1125,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(r) = unchanged_approvals(db, &snapshot)? {
                 return Ok(Err(r));
             }
-            let report = fa_lantern::run_over(&snapshot, book, built.as_ref())?;
+            // A replay re-executes the certified run under the caller's
+            // cancellation; its work is the certificate's, never budgeted.
+            let report = fa_lantern::run_over_metered(
+                &snapshot,
+                book,
+                built.as_ref(),
+                None,
+                Some(&cx.query()),
+            )?;
             let actual = match encode_run(&report) {
                 Ok(b) => b,
                 Err(r) => return Ok(Err(r)),

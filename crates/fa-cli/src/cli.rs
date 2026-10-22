@@ -18836,7 +18836,7 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if let Some(extra) = args.positional.get(3) {
                 return Err(usage(format!("unexpected argument `{extra}`"), example));
             }
-            for flag in ["--effective-through", "--account", "--source"] {
+            for flag in ["--effective-through", "--account", "--source", "--budget"] {
                 if args.flag_all(flag).len() > 1 {
                     return Err(usage(
                         format!("procedure run takes only one {flag}"),
@@ -18870,6 +18870,20 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 })?),
             };
             refuse_untaken_date(id, effective_through)?;
+            // The run's work budget (fa-1tvm): the procedure stops at the
+            // first charge past it, and the run is refused with exit 3 and
+            // no finding.
+            let budget = args
+                .flag("--budget")
+                .map(|text| {
+                    text.parse::<u64>().ok().filter(|b| *b > 0).ok_or_else(|| {
+                        usage(
+                            format!("--budget `{text}` is not a positive count of work units"),
+                            "--budget 1000000 (work units: entries, legs and comparisons)",
+                        )
+                    })
+                })
+                .transpose()?;
             let who = ctx.principal(args);
             let bank_cap = if id == "recon.bank_statement_drift" {
                 let cap = ctx.capability(args, &["read"])?;
@@ -18914,12 +18928,13 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     inputs,
                     known_at,
                     effective_through,
+                    budget,
                 };
                 book.run_procedure_with_history(who, cap, &request)??
             } else {
                 let built =
                     fa_lantern::catalog::build(id, params, inputs).map_err(lantern_usage)?;
-                book.run_procedure(built.as_ref(), known_at, effective_through)?
+                book.run_procedure(built.as_ref(), known_at, effective_through, budget)?
             };
             out.known_at(run.coordinate.known_at);
             // Human mode prints one finding per line; robot mode carries

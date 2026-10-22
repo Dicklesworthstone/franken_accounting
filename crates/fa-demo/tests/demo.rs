@@ -108,6 +108,7 @@ fn all_scenarios_initialize_verify_and_trigger_planted_lantern_findings() {
                 proc.as_ref(),
                 None,
                 Some(fa_time::DateDay::from_ymd(2026, 3, 31).expect("date")),
+                None,
             )
             .unwrap_or_else(|e| panic!("{scenario}/{}: {e}", proc.id()));
         assert!(

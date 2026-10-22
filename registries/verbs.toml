@@ -533,11 +533,11 @@ name = "procedure"
 summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for a procedure that takes one (its effective_through in procedure list), through an effective date; a date given to any other procedure is refused. A finding is a statistic with typed citations, never an accusation."
 writes = false
 subcommands = ["list", "run"]
-flags = ["--known-at", "--effective-through", "--param", "--account", "--source", "--grant"]
+flags = ["--known-at", "--effective-through", "--param", "--account", "--source", "--budget", "--grant"]
 switches = []
 events = ["procedure_list", "procedure_run"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>]", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry).", "recon.bank_statement_drift needs current whole-book read and reconcile authority; supply --grant reconcile on the embedded owner route. An unrecorded run needs no produce grant. It evaluates every retained exact statement close at --known-at; --effective-through selects statement close dates without changing their immutable cash cutoff. Use finding record recon.bank_statement_drift to certify and retain the complete observations."]
+usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--param <name>=<integer>]... [--account <code>] [--source <entry vid>] [--budget <work units>]", "--budget caps the run's work (entries, legs and comparisons counted as the procedure runs): the procedure stops at the first unit past it and the run is refused with exit 3 and no finding. A run is also stopped, with no finding, when its caller is cancelled. A procedure runs under its work meter alone, with no clock, entropy, network or filesystem.", "Parameters default to procedures.toml's pinned values; --param overrides one registered parameter. aging.* and trace.* need --effective-through; trace.* also need --account (the commingled account) and --source (the deposit entry).", "recon.bank_statement_drift needs current whole-book read and reconcile authority; supply --grant reconcile on the embedded owner route. An unrecorded run needs no produce grant. It evaluates every retained exact statement close at --known-at; --effective-through selects statement close dates without changing their immutable cash cutoff. Use finding record recon.bank_statement_drift to certify and retain the complete observations."]
 example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
@@ -3031,7 +3031,7 @@ hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--versio
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
 repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
-integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth"]
+integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--budget"]
 
 [[mcp.cluster]]
 name = "fa.orient"

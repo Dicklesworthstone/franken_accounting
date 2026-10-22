@@ -471,6 +471,7 @@ fn record(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             },
             known_at: at,
             effective_through: effective,
+            budget: None,
         };
         let certified = if request.procedure == "recon.bank_statement_drift" {
             book.certify_procedure_with_history(who, &cap, &request)??
