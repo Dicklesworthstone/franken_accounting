@@ -2322,6 +2322,101 @@ fn one_entry_with_multiple_cash_legs_preserves_each_selected_ordinal() {
     assert_eq!(proposals[0].get("entry_ref"), proposals[1].get("entry_ref"));
 }
 
+/// fa-d22b: one statement, a 125.00 USD wire credited on 2026-03-05, imports
+/// through the real binary in every registered bank format and profile and
+/// matches the one posted cash leg it records: csv, camt053, camt052, bai2
+/// (the standard bank profile and the ISO profile), ofx, and mt940 (the
+/// SWIFT profile and the pipe profile).
+#[test]
+fn every_format_imports_via_cli() {
+    let f = Fixture::new();
+    f.post("wire-sale", "2026-03-05", "debit", "125.00", "WIRE-125");
+    let camt = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+  <BkToCstmrStmt><Stmt><Id>March</Id><ElctrncSeqNb>1</ElctrncSeqNb>
+    <Acct><Id><IBAN>GB29NWBK60161331926819</IBAN></Id><Ccy>USD</Ccy></Acct>
+    <Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="USD">0.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-01</Dt></Dt></Bal>
+    <Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="USD">125.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-31</Dt></Dt></Bal>
+    <Ntry><Amt Ccy="USD">125.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Sts><Cd>BOOK</Cd></Sts>
+      <BookgDt><Dt>2026-03-05</Dt></BookgDt><ValDt><Dt>2026-03-05</Dt></ValDt><AcctSvcrRef>WIRE-125</AcctSvcrRef>
+    </Ntry>
+  </Stmt></BkToCstmrStmt>
+</Document>"#;
+    let camt052 = camt
+        .replace("camt.053", "camt.052")
+        .replace("BkToCstmrStmt", "BkToCstmrAcctRpt")
+        .replace("<Stmt>", "<Rpt>")
+        .replace("</Stmt>", "</Rpt>")
+        .replace("CLBD", "ITBD");
+    let csv = format!(
+        "{CSV_HEADER}1,GB29NWBK60161331926819,USD,2026-03-31,0.00,125.00,2026-03-05,2026-03-05,CRDT,125.00,Customer,WIRE-125\n"
+    );
+    // A bank's BAI2 file: account control 0 + 12500 + 12500 (03) + 12500
+    // (16) = 37500 over 3 records; group 5 records; file 7.
+    let bai2 = "01,BANKID,CUSTID,260305,0600,1,,,2/\n\
+02,CUSTID,BANKID,1,260305,2359,USD,2/\n\
+03,GB29NWBK60161331926819,USD,010,0,,,015,12500,,,100,12500,1,Z/\n\
+16,195,12500,V,260305,,WIRE-125,,Customer/\n\
+49,37500,3/\n\
+98,37500,1,5/\n\
+99,37500,1,7/\n";
+    let bai2_iso = "02,OWNER,BANK,1,2026-03-05,2359,USD,1/\n\
+03,GB29NWBK60161331926819,USD,010,0,015,12500/\n\
+16,195,12500,2026-03-05,WIRE-125,Customer/\n";
+    let ofx = "<OFX><TRNUID>1</TRNUID><CURDEF>USD</CURDEF><ACCTID>GB29NWBK60161331926819</ACCTID>\
+<OPENBAL>0.00</OPENBAL>\
+<STMTTRN><DTPOSTED>2026-03-05</DTPOSTED><TRNAMT>125.00</TRNAMT><FITID>WIRE-125</FITID><NAME>Customer</NAME></STMTTRN>\
+<LEDGERBAL><BALAMT>125.00</BALAMT><DTASOF>2026-03-31</DTASOF></LEDGERBAL></OFX>";
+    let mt940 = ":20:MARCH\n:25:GB29NWBK60161331926819\n:28C:1\n\
+:60F:C260301USD0,\n\
+:61:2603050305C125,NTRFWIRE-125\n\
+:86:Customer\n\
+:62F:C260331USD125,\n";
+    let mt940_pipe = ":20:MARCH\n:25:GB29NWBK60161331926819\n:28C:1/1\n\
+:60F:C|2026-03-01|USD|0.00\n\
+:61:2026-03-05|C|125.00|WIRE-125|Customer\n\
+:62F:C|2026-03-31|USD|125.00\n";
+    for (name, format, raw) in [
+        ("statement.csv", "csv", csv.as_str()),
+        ("statement.camt053.xml", "camt053", camt),
+        ("statement.camt052.xml", "camt052", camt052.as_str()),
+        ("statement.bai2", "bai2", bai2),
+        ("statement-iso.bai2", "bai2", bai2_iso),
+        ("statement.ofx", "ofx", ofx),
+        ("statement.mt940", "mt940", mt940),
+        ("statement-pipe.mt940", "mt940", mt940_pipe),
+    ] {
+        let imported = f.import(name, format, raw);
+        println!("import {name} {format}: {}", imported.render());
+        assert_eq!(text(data(&imported), "bank_format"), format, "{name}");
+        let before = head(&f.book);
+        let matched = ok_privileged(
+            &f.book,
+            &[
+                "bank",
+                "match",
+                "--import",
+                text(data(&imported), "manifest_oid"),
+                "--date-window",
+                "0",
+            ],
+        );
+        let report = data(&matched);
+        assert_eq!(
+            integer(report, "proposed_count"),
+            1,
+            "{name}: {}",
+            matched.render()
+        );
+        assert_eq!(integer(report, "unmatched_count"), 0, "{name}");
+        assert_eq!(text(report, "closing_difference"), "0.00 USD", "{name}");
+        let row = &rows(report, "proposals")[0];
+        assert_eq!(text(row, "booking_date"), "2026-03-05", "{name}");
+        assert_eq!(text(row, "value_date"), "2026-03-05", "{name}");
+        assert_eq!(head(&f.book), before, "{name}: matching writes nothing");
+    }
+}
+
 #[test]
 fn real_camt_date_choices_and_currency_attributes_import_and_match() {
     let f = Fixture::new();
