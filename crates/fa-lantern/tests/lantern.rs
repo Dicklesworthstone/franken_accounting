@@ -59,6 +59,9 @@ mod graph_unit_tests;
 #[path = "lantern/meter.rs"]
 mod meter_tests;
 
+#[path = "lantern/jet.rs"]
+mod jet;
+
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 
@@ -1681,7 +1684,7 @@ fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
 fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
     let (h, _) = posted_corpus();
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 61, "every registry row is listed");
+    assert_eq!(rows.len(), 62, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
