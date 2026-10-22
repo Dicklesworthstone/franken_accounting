@@ -44,6 +44,15 @@ use fa_cli::wire::{
 };
 use fa_model::limits::MAX_DAEMON_CONNECTIONS;
 
+/// The longest the serve loop waits before re-polling its listener and its
+/// connections. A readiness event can be lost under load (fa-y9ug): a queued
+/// connection was never accepted, and with no connection and no service
+/// deadline the daemon parked forever while the client waited; a connection's
+/// request was likewise left unread. Every poll retries the socket operation
+/// itself (`accept()`, the read), so a bounded wait turns a lost wakeup into
+/// at most this much latency.
+const ACCEPT_REPOLL_NS: u64 = 1_000_000_000;
+
 /// Kernel-certified peer credentials (`SO_PEERCRED` / `LOCAL_PEERCRED` on Unix
 /// sockets, or simulated peer credentials under the lab runtime; bead fa-een).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1275,6 +1284,12 @@ async fn serve_with<L: Listener, H: Service>(
                 });
             }
         }
+        let now = clock::timer(cx)
+            .map_err(|e| std::io::Error::other(format!("{}", WaitError::Clock(e).frame())))?
+            .now();
+        let repoll = clock::deadline_after(now, ACCEPT_REPOLL_NS)
+            .map_err(|e| std::io::Error::other(format!("{}", WaitError::Clock(e).frame())))?;
+        let next_deadline = Some(next_deadline.map_or(repoll, |at| at.min(repoll)));
         let mut deadline = next_deadline
             .map(|at| clock::Deadline::new(cx, at))
             .transpose()
