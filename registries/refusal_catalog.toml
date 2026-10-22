@@ -1181,7 +1181,7 @@ name = "EXTRACTION_FAILED"
 owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §9.1–§9.3 (evidence intake pipeline: derived text Documents); fa-docket intake"
-fix = "extract a PDF that carries a text layer (fa document extract); an image or a scan has none and needs OCR; a password-protected PDF needs its owner to remove the password; the source document itself stays the evidence"
+fix = "the text layer needs a PDF that carries one; an image or a scan has none, so OCR it (fa document extract <oid> --tool focr); a password-protected PDF needs its owner to remove the password; a tool that failed names its own error; the source document itself stays the evidence"
 
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
