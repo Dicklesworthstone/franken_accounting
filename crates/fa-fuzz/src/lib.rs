@@ -98,6 +98,11 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
         run: fuzz_legacy_gl_formats,
     },
     FuzzTarget {
+        name: "ads_extract",
+        description: "fa-verify ads: arbitrary GL_Detail, Trial_Balance and coordinate-certificate text judged against an authentic complete-prefix bundle, without panic",
+        run: fuzz_ads_extract,
+    },
+    FuzzTarget {
         name: "gql_profile",
         description: "The FrankenAccounting GQL profile rewriter (lexer, selectors, amount law, aggregation planner) on arbitrary UTF-8 without panic",
         run: fuzz_gql_profile,
@@ -451,6 +456,22 @@ pub fn fuzz_fa_verify_inputs(bytes: &[u8]) {
     let _ = fa_verify::disclosure::verify(bytes, &[0], &golden.scope_root);
 }
 
+/// fa-verify ads over untrusted text: the bundle and receipt are the golden,
+/// authentic ones, so the GL_Detail, Trial_Balance and certificate readers
+/// and the proven-selection matcher are reached, not only the bundle check.
+pub fn fuzz_ads_extract(bytes: &[u8]) {
+    let g = golden_seeds();
+    let text = String::from_utf8_lossy(bytes);
+    let keys = [g.public_key];
+    let receipt = Some(g.receipt_bytes.as_slice());
+    let judge = |certificate: &str, gl: &str, tb: &str| {
+        let _ = fa_verify::ads::verify_ads(certificate, gl, tb, &g.bundle_bytes, &keys, receipt);
+    };
+    judge(&g.ads_certificate, &text, &g.ads_trial_balance);
+    judge(&g.ads_certificate, &g.ads_gl_detail, &text);
+    judge(&text, &g.ads_gl_detail, &g.ads_trial_balance);
+}
+
 // ---------------------------------------------------------------------------
 // Target 5: registry_toml
 // ---------------------------------------------------------------------------
@@ -627,6 +648,11 @@ struct GoldenSeeds {
     prefix_proof: Vec<u8>,
     balance_proof: Vec<u8>,
     bundle_bytes: Vec<u8>,
+    /// The ADS package `fa export ads --with-proofs` writes beside
+    /// `bundle_bytes`: the same book at the bundle's state.
+    ads_certificate: String,
+    ads_gl_detail: String,
+    ads_trial_balance: String,
 }
 
 fn golden_seeds() -> &'static GoldenSeeds {
@@ -987,6 +1013,18 @@ fn build_golden_seeds() -> GoldenSeeds {
         .expect("produce bundle")
         .expect("bundle admitted")
         .expect("bundle produced");
+    let through = produced_bundle
+        .checkpoint
+        .checkpoint
+        .body
+        .statement
+        .through_seq;
+    let ads = fa_formats::ads::write_ads_package(
+        &book
+            .format_journal(date, Some(through))
+            .expect("golden ADS selection"),
+    )
+    .expect("golden ADS package");
     let bundle_bytes = produced_bundle.bundle.bytes;
     let receipt_bytes = produced_bundle.receipt;
 
@@ -1009,6 +1047,9 @@ fn build_golden_seeds() -> GoldenSeeds {
         prefix_proof,
         balance_proof,
         bundle_bytes,
+        ads_certificate: ads.certificate_toml,
+        ads_gl_detail: ads.gl_detail,
+        ads_trial_balance: ads.trial_balance,
     }
 }
 
@@ -1065,6 +1106,11 @@ pub fn seeds_for_target(target_name: &str) -> Vec<Vec<u8>> {
             seeds.push(g.prefix_proof.clone());
             seeds.push(g.balance_proof.clone());
             seeds.push(g.bundle_bytes.clone());
+        }
+        "ads_extract" => {
+            seeds.push(g.ads_gl_detail.clone().into_bytes());
+            seeds.push(g.ads_trial_balance.clone().into_bytes());
+            seeds.push(g.ads_certificate.clone().into_bytes());
         }
         "registry_toml" => {
             seeds.push(include_bytes!("../../../registries/units.toml").to_vec());
@@ -1223,6 +1269,25 @@ mod tests {
         assert_eq!(cert.intents().len(), 1);
         assert!(seeds_for_target("payload_decoders").contains(bytes));
         assert!(ScenarioDiffCertificate::decode(&bytes[..bytes.len() - 1]).is_err());
+    }
+
+    /// The ADS target starts from a package that verifies against the
+    /// golden bundle, so its mutations reach the readers and the matcher.
+    #[test]
+    fn the_golden_ads_package_verifies_against_the_golden_bundle() {
+        let g = golden_seeds();
+        let report = fa_verify::ads::verify_ads(
+            &g.ads_certificate,
+            &g.ads_gl_detail,
+            &g.ads_trial_balance,
+            &g.bundle_bytes,
+            &[g.public_key],
+            Some(&g.receipt_bytes),
+        )
+        .expect("a well-formed bundle");
+        assert!(report.verified(), "{:?}", report.failures);
+        assert!(report.entries >= 1 && report.tb_rows >= 1, "{report:?}");
+        assert!(seeds_for_target("ads_extract").contains(&g.ads_gl_detail.clone().into_bytes()));
     }
 
     #[test]
