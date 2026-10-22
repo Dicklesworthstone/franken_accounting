@@ -47,16 +47,45 @@ fn bundle_basis_at<V: Vfs + Clone>(
     book: &BookContext,
     signer: &fa_notary::SigningKey,
     state: Option<fa_model::Oid>,
+    pin: Option<CommitSeq>,
 ) -> Result<Option<Result<BundleBasis, fa_journal::Refusal>>, KernelError> {
-    let chain = fa_notary::chain(db)?;
+    // A pinned capability sees only the states recorded at or before its
+    // pin, so the chain is read as known there: the latest state is the
+    // newest of those, and a state named beyond the pin is out of scope.
+    let chain = fa_notary::chain(db, pin)?;
     let stored = match state {
         None => chain.first(),
         Some(oid) => chain.iter().find(|s| s.oid == oid),
     };
-    match stored {
-        None => Ok(None),
-        Some(stored) => fa_notary::bundle_basis(db, cx, book, stored, signer).map(Some),
+    match (stored, state, pin) {
+        (Some(stored), _, _) => fa_notary::bundle_basis(db, cx, book, stored, signer).map(Some),
+        (None, Some(oid), Some(pin)) => Ok(Some(Err(fa_journal::policy::refusal(
+            &fa_policy::Denial::OutOfScope {
+                caveat: "known_at",
+                value: format!(
+                    "accumulator state {} as recorded at or before known-at {} (the token's pin)",
+                    fa_journal::evidence::hex(&oid.0),
+                    pin.0
+                ),
+            },
+        )))),
+        (None, _, _) => Ok(None),
     }
+}
+
+/// The last effective day a bundle discloses: an account interval's end,
+/// or a later balance cutoff. `None` (every day) for a prefix, for named
+/// entries (their days are known only once read) and for a balance over
+/// every day.
+fn bundle_through(request: &fa_notary::BundleRequest) -> Option<DateDay> {
+    let mut through = match &request.scope {
+        fa_notary::BundleScope::Index(fa_notary::ScopeRequest::Account { to, .. }) => *to,
+        _ => return None,
+    };
+    for balance in &request.balances {
+        through = through.max(balance.effective_through?);
+    }
+    Some(DateDay(through))
 }
 
 fn seal(
@@ -3344,7 +3373,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         &self,
         cx: &PurposeContexts,
     ) -> Result<Vec<fa_notary::StoredState>, BookError> {
-        self.query(cx, |db, _| Ok(fa_notary::chain(db)?))
+        self.query(cx, |db, _| Ok(fa_notary::chain(db, None)?))
     }
 
     /// The public key this book's transparency checkpoints are signed with
@@ -3369,9 +3398,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         request: &fa_notary::BundleRequest,
     ) -> Outcome<Option<ProducedBundle>> {
         cx.query().checkpoint().map_err(BookError::Context)?;
+        // The scope caveats judge what the bundle discloses, before the
+        // journal is read (doctrine 8; plan §13.1 "capability restrictions
+        // may require refusal"). Whole entries of any account are disclosed
+        // and no scope maps onto periods, so an `accounts` or `periods`
+        // caveat refuses; an `effective` caveat admits only an account
+        // interval (and balances) ending within it; a pin is served by the
+        // states recorded at or before it (bundle_basis_at).
+        let reach = fa_policy::Reach {
+            branch: Some(fa_model::Id128::TRUNK),
+            observes: capability
+                .known_at_pin()
+                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            periods: None,
+            through: bundle_through(request),
+            accounts: None,
+        };
         // A production writes nothing, so it is admitted as a read: an
         // Agent-profile capability holding `produce` may produce.
-        if let Err(denial) = fa_policy::admit(
+        if let Err(denial) = fa_policy::admit_within(
             capability,
             &fa_policy::Intent {
                 principal,
@@ -3380,6 +3425,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 book: self.context.book_id,
                 legs: &[],
             },
+            &reach,
+            None,
         ) {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
@@ -3404,8 +3451,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let commitment = capability
             .commitment()
             .map_err(|e| KernelError::Corrupt(format!("capability commitment: {e}")))?;
+        let pin = capability.known_at_pin();
         let basis = self.query(cx, |db, book| {
-            Ok(bundle_basis_at(db, cx, book, &self.signer, state)?)
+            Ok(bundle_basis_at(db, cx, book, &self.signer, state, pin)?)
         })?;
         let (journal, checkpoint) = match basis {
             None => return Ok(Ok(None)),
@@ -3428,6 +3476,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     cx,
                     &self.context,
                     capability,
+                    &reach,
                     &self.blobs,
                     oid,
                     |record| {

@@ -566,17 +566,23 @@ where
     V: asupersync::fs::Vfs + Clone,
     B: asupersync::fs::Vfs + Clone,
 {
-    read_document_for_with(db, ctx, book, capability, store, oid, |_| Ok(())).await
+    let reach = fa_policy::Reach::whole_book(true);
+    read_document_for_with(db, ctx, book, capability, &reach, store, oid, |_| Ok(())).await
 }
 
-/// Like [`read_document_for`], running `before_fetch` on the verified
-/// [`crate::DocumentRecord`] after capability and redaction-contract admission
-/// and before reading any external blob bytes.
+/// Like [`read_document_for`], judging the scope caveats against `reach`
+/// (what the caller's act discloses; a bundle's cited documents reach what
+/// the bundle does) instead of the whole book at its head, and running
+/// `before_fetch` on the verified [`crate::DocumentRecord`] after capability
+/// and redaction-contract admission and before reading any external blob
+/// bytes.
+#[allow(clippy::too_many_arguments)]
 pub async fn read_document_for_with<V, B, F>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &Capability,
+    reach: &fa_policy::Reach<'_>,
     store: &BlobStore<B>,
     oid: Oid,
     before_fetch: F,
@@ -589,10 +595,10 @@ where
     if let Err(d) = fa_policy::admit_read(capability, capability.holder(), book.book_id) {
         return Ok(Err(refusal(&d)));
     }
-    // A document read reaches the whole book at its head: a token with any
-    // scope caveat is refused here, before its currency or revocation is
-    // read.
-    if let Err(d) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
+    // Judged before its currency or revocation is read: a plain document
+    // read reaches the whole book at its head, so a token with any scope
+    // caveat is refused there.
+    if let Err(d) = fa_policy::reach(capability, reach, None) {
         return Ok(Err(refusal(&d)));
     }
     if let Err(d) = fa_policy::current(capability, db.frontier()?) {

@@ -181,7 +181,7 @@ pub(crate) fn export<V: Vfs + Clone>(
             "run fa verify accumulator --json and preserve its findings; no proof is exported over a damaged chain",
         )));
     }
-    let states = fa_notary::chain(db)?;
+    let states = fa_notary::chain(db, None)?;
     let checkpoint = match select(&states, request.state) {
         Ok(state) => state,
         Err(refusal) => return Ok(Err(refusal)),

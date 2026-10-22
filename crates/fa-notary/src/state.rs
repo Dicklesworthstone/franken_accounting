@@ -437,13 +437,15 @@ pub fn latest<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// Every journaled state, newest first, following `prev_state_oid` links.
-/// A link that cannot be followed is an error here; [`verify_accumulator`]
-/// reports it as a finding instead.
+/// Every journaled state as known at `known_at` (default: head), newest
+/// first, following `prev_state_oid` links. A link that cannot be followed
+/// is an error here; [`verify_accumulator`] reports it as a finding instead.
 pub fn chain<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    known_at: Option<CommitSeq>,
 ) -> Result<Vec<StoredState>, KernelError> {
-    match walk(db, db.frontier()?)? {
+    let frontier = db.frontier()?;
+    match walk(db, known_at.map_or(frontier, |at| at.min(frontier)))? {
         (states, None) => Ok(states),
         (_, Some(broken)) => Err(KernelError::Corrupt(broken)),
     }
