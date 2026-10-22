@@ -1242,6 +1242,30 @@ fn witnesses_cosign_an_extending_history_and_refuse_a_rewritten_one() {
     assert_eq!(code, 8, "only alice signed a1");
     let (code, _) = verify(&path("ab.cp"), &["--witness", &book_key]);
     assert_eq!(code, 2, "the book's own key is no witness");
+    // The book's signature comes from the book, never from the --onto file:
+    // a copy with it stripped, or altered, still yields one that verifies.
+    let a1 =
+        fa_notary::TransparencyCheckpoint::decode(&std::fs::read(path("a1.cp")).unwrap()).unwrap();
+    let book_key_bytes: [u8; 32] = unhex(&book_key).try_into().unwrap();
+    let book_id = fa_notary::checkpoint::signer_key_id(&book_key_bytes);
+    let mut stripped = a1.clone();
+    stripped.signatures.retain(|s| s.signer_key_id != book_id);
+    assert_eq!(stripped.signatures.len(), 1, "only alice's is left");
+    let mut altered = a1.clone();
+    for s in &mut altered.signatures {
+        if s.signer_key_id == book_id {
+            s.bytes[0] ^= 1;
+        }
+    }
+    for (name, copy) in [("stripped", stripped), ("altered", altered)] {
+        let file = path(&format!("{name}.cp"));
+        std::fs::write(&file, copy.canonical_bytes().unwrap()).unwrap();
+        let out = path(&format!("{name}-b.cp"));
+        let (code, line) = witness(&f.book, &["--key", &bob, "--onto", &file, "--out", &out]);
+        assert_eq!(code, 0, "{name}: {}", line.render());
+        let (code, report) = verify(&out, &["--witness", &alice_pk, "--witness", &bob_pk]);
+        assert_eq!(code, 0, "{name}: {}", report.render());
+    }
 
     // The next state extends the one alice signed: cosigned with --previous.
     f.post("w-2", "2026-03-11", "6.00", &evidence);

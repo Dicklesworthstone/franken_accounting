@@ -54,7 +54,7 @@ pub const CHECKPOINT_VID_DOMAIN: &[u8] = b"fa:vid:transparency-checkpoint:v1";
 pub const CHECKPOINT_SCHEMA_MAJOR: u16 = 1;
 pub const CHECKPOINT_SCHEMA_MINOR: u16 = 0;
 /// Bounds for the decoder: signers per checkpoint and signature length.
-const MAX_SIGNATURES: usize = 64;
+pub const MAX_SIGNATURES: usize = 64;
 const MAX_SIGNATURE_BYTES: usize = 1024;
 
 fn hash(domain: &[u8], parts: &[&[u8]]) -> Digest {
