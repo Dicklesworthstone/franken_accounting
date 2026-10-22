@@ -763,7 +763,7 @@ foundation revision are recorded with the implementation landing.
 | | `franken_accounting` |
 |---|---|
 | Truth | The journal. There are no balance rows; registers, trial balances, statements, agings, and findings are derived folds, never authoritative, always verifiable by recomputation (`fa verify registers` — available now). |
-| Immutability | Append-only. Corrections are `Reverse` and one-step `Replace` (`fa reverse --replace-with`) entries with `SUPERSEDES` lineage (available now); a typed `fa reclass` verb is target (`fa-i7e`), and restatement cases are target (`fa-75j4`). Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
+| Immutability | Append-only. Corrections are `Reverse` and one-step `Replace` (`fa reverse --replace-with`) entries with `SUPERSEDES` lineage (available now); `fa reclass` moves an amount between accounts as a Reclassification citing its target, and restatement cases run from open through determination, rehearsal, dual-control approval, posting and disclosure with `fa case` (available now; a Restatement-class case's posting waits on `fa-651f`). Period close, reopen, and lock are journaled, approved control entries — never a flag (available now). |
 | Time | Bitemporal by construction: period-scoped entries have a validated **effective date**; all entries have a commit-assigned **recorded sequence**, never user-supplied (available now). Undated Book controls follow registered applicability rules. Instant selectors resolve through retained TimeEvidence (available now). GQL selectors `FOR PERIOD FY2024 AS KNOWN AT 2025-03-03` (`fa-5c1`), `AS ORIGINALLY REPORTED`, `AS ISSUED TO <audience>`, `AS REPORTED IN <certificate>` and `AS CURRENTLY STATED` (`fa-wrrw`) are target GQL selectors, not backups. On `fa tb`, `fa statement` and `fa explain balance` the first three are available now as flags reading one period: `--as-originally-reported` at the certificate its first journaled `StatementIssuance` (`fa statement issue`) issued, else at its first Lock; `--as-issued-to <audience>` at its first issuance to that audience; `--as-reported-in C:<oid>` at that retained statement certificate's known-at. |
 | Exactness | `Amount { unit, mantissa: i128 }` at the unit's registered scale; every rounding, allocation, and FX conversion names a registered law and exact error bound (available now). Native residual postings are explicit where the law requires them; base-valuation residuals are recorded and absorbed under plan §5.2 (`fa-s3c`). No float ever touches an amount. No tolerance. No auto-balancing. |
 | Evidence | Nothing posts without a why: documents, attestations, supplements, REA events (`fa event record`), and `fa explain evidence <entry-vid>` are available now; posting-rule versions (`fa-c34`) complete the target content-addressed provenance closure. |
@@ -808,17 +808,22 @@ fa statement balance-sheet --for FY2025-P12 --compare FY2024-P12 --as-originally
 
 # Corrections are lineage. The original stays (`fa reverse <vid> --reason <name|code>` available today).
 fa reverse <vid> --reason WrongAccount --book acme.fabook --json
+# Accruals and deferrals: an Adjusting entry with its scheduled reversal, from two legs or from an intent; fa batch
+# commits several entries atomically (available today).
+fa accrue --date 2026-03-31 --debit 6100 --credit 2100 --amount "1500.00 USD" --reverse-on 2026-04-01 --evidence <oid> --book acme.fabook --json
 # One-step correction: the reversal and the corrected entry commit together, both or neither (available today).
 fa reverse <vid> --reason WrongAmount --replace-with corrected.json --book acme.fabook --json
-# Restatement cases (fa-75j4): open one over the periods a correction affects and journal its
-# determination (available today); rehearsal, approval, posting and disclosure are next.
+# Restatement cases: open one over the periods a correction affects, journal its determination, then
+# rehearse, approve (dual control), post and disclose it with fa case rehearse|approve|post|disclose (available
+# today; a Restatement-class case's posting waits on fa-651f).
 fa case open --kind Restatement --periods FY2024-P12 --narrative <memo-oid> --book acme.fabook --json
 fa case determine 1 --on 2025-03-03 --authority <minutes-oid> --book acme.fabook --json
 
-# Rehearse the close on a draft, diff it, let a human promote it (drafts available today; close dry-run and diff are target fa-4o0 / fa-s7x).
+# Rehearse the close on a draft, diff it, let a human promote it (available today: close dry-run posts the draft's
+# plans as one scratch batch and shows the stock trial-balance change; --branch draft:<name> reads that rehearsal in
+# tb, statement, explain and gl; the generic fa diff verb is target fa-s7x).
 fa draft new close-2026-03 --book acme.fabook --json
-# Target (fa-4o0):
-fa close dry-run --period 2026-03 --draft close-2026-03 --json
+fa close dry-run --period FY2026-P03 --draft close-2026-03 --json
 # Target (fa-s7x):
 fa diff --from draft:close-2026-03 --to trunk --json
 
@@ -882,7 +887,8 @@ fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
 
 ```gql
--- Target (fa-5c1): GQL through the substrate, plus the FrankenAccounting profile.
+-- fa query runs the profile's native reads today (example above); this query also needs a CALL inside its MATCH
+-- pipeline (fa.open_amount), which this build refuses with the admissible form: target, later fa-5c1 slices.
 MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code:'1200'}), (l)-[:FOR]->(:DimensionValue)<-[:IS]-(p:Party)
 WHERE EXISTS { MATCH (p)-[:RELATED_TO|OWNS|CONTROLS*1..3]-(:LegalEntity {code:'ACME'}) EFFECTIVE AT l.effective_date }
 FOR PERIOD 'FY2025' AS KNOWN AT '2026-02-01T00:00:00Z'
