@@ -778,7 +778,7 @@ flags = []
 switches = []
 events = ["next_step"]
 exits = [0, 2, 4, 5, 7]
-usage = ["next   (command and why; null when there is nothing to do)", "Requires the same current whole-book read authority as triage.", "Under a launch capability (token, fad session, MCP), steps whose registered ops it holds come first, and the rest follow naming the ops they need; an Agent profile is never offered a step that writes the book. The embedded owner grants itself each command's ops, so it gets the book's order."]
+usage = ["next   (command and why; null when there is nothing to do)", "Requires the same current whole-book read authority as triage.", "Under a launch capability (token, fad session, MCP), steps whose registered ops it holds come first, and the rest follow naming the ops they need; an Agent profile is never offered a step that writes trunk: a write a draft can take (resolving holds) is offered as opening that draft, with the `fa draft plan` to run into it, for a Human approver to promote; any other write is left to a Human. The embedded owner grants itself each command's ops, so it gets the book's order."]
 example = "fa next --book ./books/myco --json"
 
 
@@ -1893,7 +1893,7 @@ fields = ["health:string", "daemon:string", "periods:int", "periods_by_state:obj
 [[event]]
 name = "next_step"
 book = true
-doc = "`fa next`: the most urgent step `fa triage` would list for the book now that the caller can run, as `command` (run it with the same --book) and `why`; both null when there is nothing to do. The envelope's next_actions carry the steps after it, ranked for the caller's capability (an Agent profile is never offered a book write)."
+doc = "`fa next`: the most urgent step `fa triage` would list for the book now that the caller can run, as `command` (run it with the same --book) and `why`; both null when there is nothing to do. The envelope's next_actions carry the steps after it, ranked for the caller's capability (an Agent profile is never offered a trunk write; a write a draft can take is offered as opening that draft)."
 fields = ["command:string?", "why:string?"]
 
 
