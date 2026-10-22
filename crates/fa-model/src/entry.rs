@@ -177,6 +177,13 @@ pub const CASE_DISCLOSURE_EXTENSION: u16 = 25;
 /// report release date and the documentation completion date — `u16
 /// version ‖ i32 report_release_day ‖ i32 completion_day`.
 pub const DOCUMENTATION_COMPLETION_EXTENSION: u16 = 26;
+/// Extension tag 27, `fa:prior-period-error:v1` (plan §8.2, §11.12, bead
+/// fa-zgn): an `Adjusting` entry that corrects an immaterial prior-period
+/// error in the current period, without a case, and the earlier period the
+/// error belongs to — `u16 version ‖ str calendar ‖ str period code`. The
+/// proposal digest covers it; the summary of uncorrected misstatements
+/// counts the entry's effect on current-period income (SAB 108 rollover).
+pub const PRIOR_PERIOD_ERROR_EXTENSION: u16 = 27;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -206,6 +213,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     CASE_POSTED_EXTENSION,
     CASE_DISCLOSURE_EXTENSION,
     DOCUMENTATION_COMPLETION_EXTENSION,
+    PRIOR_PERIOD_ERROR_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
