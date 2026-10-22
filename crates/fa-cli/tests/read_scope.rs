@@ -543,6 +543,119 @@ fn exports_enforce_the_same_scope_as_stock_reads_before_disclosing_or_writing() 
     );
 }
 
+/// fa-2q91: `--with-proofs` writes a complete-prefix bundle beside the
+/// extract, so the bundle's reach is judged as well. A token bounded to
+/// March's effective dates exports March's stock but not its proofs (the
+/// bundle holds April's entry); a pinned auditor (plan §15.6) is served the
+/// state recorded at its pin, never a later one, and the extract verifies
+/// offline against it.
+#[test]
+fn ads_proofs_disclose_only_what_the_token_reaches() {
+    let f = Fixture::new();
+    let first = f.ok(&["checkpoint", "create", "--grant", "witness"]);
+    let receipt = data(&f.ok(&[
+        "document",
+        "add",
+        "receipt.txt",
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ]))
+    .clone();
+    f.post(text(&receipt, "oid"), "april-late", "2026-04-20", "9.00");
+    let second = f.ok(&["checkpoint", "create", "--grant", "witness"]);
+    let pin = number(data(&first), "recorded_at");
+    let (pinned, _) = f.issue_ops(
+        "ads-pinned",
+        &["read", "produce"],
+        &["--known-at-most", &pin.to_string()],
+    );
+    let exported = f.ok(&[
+        "--token",
+        &pinned,
+        "export",
+        "ads",
+        "--as-of",
+        "2026-04-30",
+        "--out",
+        "pinned-ads",
+        "--with-proofs",
+    ]);
+    let proof = data(&exported).get("proof").expect("proof");
+    assert_eq!(text(proof, "state"), text(data(&first), "oid"));
+    assert_ne!(text(proof, "state"), text(data(&second), "oid"));
+    assert_eq!(
+        number(data(&exported), "known_at"),
+        number(data(&first), "through_seq")
+    );
+    assert_eq!(
+        number(data(&exported), "entries"),
+        2,
+        "March and April, not the posting after the pin"
+    );
+    let dir = f.dir.join("pinned-ads");
+    let read = |name: &str| std::fs::read(dir.join(name)).expect(name);
+    let key: [u8; 32] = (0..32)
+        .map(|i| {
+            u8::from_str_radix(&text(proof, "checkpoint_public_key")[2 * i..2 * i + 2], 16).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let report = fa_verify::ads::verify_ads(
+        &String::from_utf8(read("ADS_Coordinate_Certificate.toml")).unwrap(),
+        &String::from_utf8(read("GL_Detail.txt")).unwrap(),
+        &read("ADS_Proof.fab"),
+        &[key],
+        Some(&read("ADS_Proof.receipt")),
+    )
+    .unwrap();
+    assert!(report.verified(), "{:?}", report.failures);
+    assert_eq!(report.entries, 2);
+
+    // A state named beyond the pin is out of scope, and writes nothing.
+    f.out_of_scope(
+        &[
+            "--token",
+            &pinned,
+            "export",
+            "ads",
+            "--as-of",
+            "2026-04-30",
+            "--out",
+            "later-ads",
+            "--with-proofs",
+            "--state",
+            text(data(&second), "oid"),
+        ],
+        "`known_at`",
+    );
+    assert!(!f.dir.join("later-ads").exists());
+
+    // March's stock is within an effective bound; its proofs are not.
+    let (through, _) = f.issue_ops(
+        "ads-through",
+        &["read", "produce"],
+        &["--effective-through", "2026-03-31"],
+    );
+    let march = [
+        "--token",
+        through.as_str(),
+        "export",
+        "ads",
+        "--period",
+        "FY2026-P03",
+        "--out",
+    ];
+    f.ok(&[&march[..], &["march-ads"]].concat());
+    f.out_of_scope(
+        &[&march[..], &["march-proofs", "--with-proofs"]].concat(),
+        "`effective`",
+    );
+    assert!(!f.dir.join("march-proofs").exists());
+}
+
 #[test]
 fn event_reads_and_book_surveys_require_current_authority_at_their_actual_reach() {
     let f = Fixture::new();
