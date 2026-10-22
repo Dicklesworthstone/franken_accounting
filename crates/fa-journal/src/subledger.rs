@@ -585,7 +585,7 @@ pub async fn create_native_subledger<V: Vfs + Clone>(
         txn.abort();
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
-            exit::REFUSAL,
+            exit::USAGE,
             "AR requires an Asset posting leaf; AP requires a Liability posting leaf",
             "plan §4.1/§5.6 native control accounts",
             "select a posting leaf with the account type required by this subledger kind",

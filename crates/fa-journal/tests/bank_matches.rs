@@ -384,6 +384,7 @@ impl Harness {
             opening_balance: 0,
             closing_balance: cents.iter().sum(),
             line_oids: lines.iter().map(Document::oid).collect(),
+            csv_layout: None,
             predecessor: None,
         };
         let document = Document {

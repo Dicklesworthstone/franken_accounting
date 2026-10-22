@@ -43,6 +43,7 @@ fn empty_close(h: &mut Harness, closing: DateDay, key: &[u8]) -> BankReconciliat
         opening_balance: 0,
         closing_balance: 0,
         line_oids: Vec::new(),
+        csv_layout: None,
         predecessor: None,
     };
     let document = Document {

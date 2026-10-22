@@ -2696,6 +2696,22 @@ impl Book {
         )))
     }
 
+    /// Import exact original bank CSV bytes using a retained explicit layout.
+    pub fn import_bank_statement_with_layout(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: crate::bank::BankImportRequest,
+        layout: crate::bank::BankCsvLayout,
+    ) -> Outcome<crate::bank::BankImportRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.import_bank_statement_with_layout(
+            &purposes,
+            capability,
+            request,
+            layout,
+        )))
+    }
+
     /// Reopen and verify a retained bank import, then return deterministic
     /// exact-amount/date/reference proposals at one journal prefix. The
     /// capability holds read and reconcile; this confirms no match and posts

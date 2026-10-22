@@ -9,6 +9,8 @@ use super::MAX_RECORD_BYTES;
 use crate::blake3::hash_parts;
 use crate::codec::{DecodeError, Reader, Reason};
 
+mod csv_layout;
+
 // Pinned wire limits and evidence kind from the public registries. The
 // independent verifier does not link the kernel's model or registry decoder.
 const MAX_BANK_LINES: usize = 1022;
@@ -64,7 +66,7 @@ fn manifest(bytes: &[u8]) -> Result<Manifest, DecodeError> {
         return Err(r.error("bank_import.magic", Reason::BadTag(0)));
     }
     let major = r.u16("bank_import.major")?;
-    if !matches!(major, 1 | 2) || r.u16("bank_import.minor")? != 0 {
+    if !matches!(major, 1 | 2 | 3) || r.u16("bank_import.minor")? != 0 {
         return Err(r.error("bank_import.version", Reason::BadTag(0)));
     }
     let book = r.fixed("bank_import.book")?;
@@ -90,7 +92,17 @@ fn manifest(bytes: &[u8]) -> Result<Manifest, DecodeError> {
             return Err(r.error("bank_import.duplicate_line", Reason::Unsorted));
         }
     }
-    let predecessor = if major == 2 {
+    if major == 3 {
+        if parser != 6 {
+            return Err(r.error("bank_import.csv_layout_parser", Reason::BadTag(parser)));
+        }
+        csv_layout::validate(
+            r.bytes(16 * 1024, "bank_import.csv_layout")?,
+            sequence,
+            date,
+        )?;
+    }
+    let predecessor = if major == 2 || (major == 3 && r.present("bank_import.predecessor")?) {
         let manifest_oid = r.fixed("bank_predecessor.manifest_oid")?;
         let manifest_commit = r.fixed("bank_predecessor.manifest_commit")?;
         let statement_oid = r.fixed("bank_predecessor.statement_oid")?;

@@ -50,7 +50,7 @@ mod external;
 mod prepared;
 pub use bank::{
     BankFormat, BankImportManifest, BankImportPredecessor, BankImportWitness, BankStatementLink,
-    bank_statement_link_vid, read_bank_statement_link,
+    bank_statement_link_vid, read_bank_statement_link, read_bank_statement_link_with_manifest,
 };
 pub use derived::{
     DerivedExtractionMetadata, ExtractionMethod, decode_derivation, decode_extraction_derivation,

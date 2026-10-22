@@ -414,6 +414,7 @@ fn native_source_reader_preserves_kind_version_book_and_complete_wire_checks() {
         opening_balance: 0,
         closing_balance: 50,
         line_oids: vec![child.oid()],
+        csv_layout: None,
         predecessor: None,
     };
     let mut document = h.document("Workpaper", manifest.canonical_bytes().unwrap());
@@ -505,7 +506,7 @@ fn linked_documents(
     h: &Harness,
     previous: &BankImportWitness,
 ) -> (BankImportManifest, Vec<Document>, Vec<Document>) {
-    let extract = parsed(BankFormat::Csv, NEXT_CSV.as_bytes()).unwrap();
+    let extract = parsed(BankFormat::Csv, NEXT_CSV.as_bytes(), None).unwrap();
     let mut source = h.document("BankStatement", NEXT_CSV.as_bytes().to_vec());
     source.mime = BankFormat::Csv.mime().into();
     let mut lines = Vec::new();
@@ -526,6 +527,7 @@ fn linked_documents(
         opening_balance: extract.opening_balance,
         closing_balance: extract.closing_balance,
         line_oids: lines.iter().map(Document::oid).collect(),
+        csv_layout: None,
         predecessor: Some(previous.predecessor()),
     };
     let mut manifest_document = h.document("Workpaper", manifest.canonical_bytes().unwrap());
@@ -789,3 +791,360 @@ fn a_caller_cannot_substitute_an_asserted_predecessor_receipt_for_the_native_wit
 }
 
 mod correction_tests;
+
+fn custom_csv_layout() -> BankCsvLayout {
+    BankCsvLayout {
+        name: "bank-download-v1".into(),
+        headers: vec!["Date".into(), "Reference".into(), "Amount".into()],
+        delimiter: b';',
+        decimal_separator: b',',
+        date_format: BankCsvDateFormat::DayMonthYear,
+        booking_date: "Date".into(),
+        value_date: None,
+        counterparty: None,
+        reference: Some("Reference".into()),
+        amounts: BankCsvAmounts::Signed {
+            column: "Amount".into(),
+            positive_is_credit: true,
+        },
+        instrument_id: "BANK-OPER-01".into(),
+        sequence_number: 1,
+        currency: "USD".into(),
+        statement_date: day(),
+        opening_balance: "1000,00".into(),
+        closing_balance: "1450,00".into(),
+    }
+}
+
+const CUSTOM_CSV: &str =
+    "Date;Reference;Amount\n05/03/2026;WIRE-IN-1;600,00\n10/03/2026;ACH-OUT-1;-150,00\n";
+
+fn import_custom(
+    h: &mut Harness,
+    principal: VId,
+    source: &str,
+    layout: BankCsvLayout,
+) -> Outcome<BankImportRecorded> {
+    let cx = h.cx();
+    let account = account_vid(h.book.context().book_id, "1000");
+    h.runtime.block_on(h.book.import_bank_statement_with_layout(
+        &cx,
+        &cap(principal),
+        BankImportRequest {
+            account,
+            format: BankFormat::Csv,
+            bytes: source.as_bytes().to_vec(),
+            previous_manifest: None,
+        },
+        layout,
+    ))
+}
+
+#[test]
+fn declared_csv_import_retains_original_bytes_mapping_and_receipt_after_reopen() {
+    let mut h = Harness::new(141);
+    let before = h.head();
+    let expected_source = h.document("BankStatement", CUSTOM_CSV.as_bytes().to_vec());
+    let recorded = import_custom(&mut h, PRINCIPAL, CUSTOM_CSV, custom_csv_layout())
+        .unwrap()
+        .unwrap();
+    assert_eq!(h.head().0, before.0 + 1);
+    assert_eq!(recorded.manifest.statement_oid, expected_source.oid());
+    assert_eq!(
+        recorded.manifest.statement_commit,
+        expected_source.doc_commit()
+    );
+    assert_eq!(recorded.manifest.csv_layout, Some(custom_csv_layout()));
+    assert!(recorded.manifest.predecessor.is_none());
+    assert_eq!(recorded.verified_predecessors, 0);
+    let bytes = recorded.manifest.canonical_bytes().unwrap();
+    assert_eq!(&bytes[14..18], &[3, 0, 0, 0]);
+    assert_eq!(
+        BankImportManifest::decode(&bytes).unwrap(),
+        recorded.manifest
+    );
+    for length in 0..bytes.len() {
+        assert!(BankImportManifest::decode(&bytes[..length]).is_err());
+    }
+    let mut wrong_parser = recorded.manifest.clone();
+    wrong_parser.format = BankFormat::Camt053;
+    assert!(BankImportManifest::decode(&wrong_parser.canonical_bytes().unwrap()).is_err());
+    let mut wrong_metadata = recorded.manifest.clone();
+    wrong_metadata.sequence_number += 1;
+    assert!(BankImportManifest::decode(&wrong_metadata.canonical_bytes().unwrap()).is_err());
+
+    let after = h.head();
+    let retry = import_custom(&mut h, VId(718), CUSTOM_CSV, custom_csv_layout())
+        .unwrap()
+        .unwrap();
+    assert!(retry.receipt.already_recorded);
+    assert_eq!(retry.receipt.receipt, recorded.receipt.receipt);
+    assert_eq!(h.head(), after);
+
+    let mut changed = custom_csv_layout();
+    changed.reference = Some("Date".into());
+    let refusal = import_custom(&mut h, VId(718), CUSTOM_CSV, changed)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, code::IDEMPOTENCY_CONFLICT);
+    assert_eq!(h.head(), after);
+
+    let cx = h.cx();
+    drop(h.book);
+    h.book = h
+        .runtime
+        .block_on(AsyncBook::open_with_vfs(
+            &cx,
+            h.vfs.clone(),
+            Path::new(PATH),
+            h.keys.clone(),
+            Entropy::deterministic(142),
+        ))
+        .unwrap();
+    let replay = h
+        .runtime
+        .block_on(h.book.load_bank_import(
+            &cx,
+            &privileged_cap(PRINCIPAL),
+            recorded.manifest_oid,
+            after,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.manifest, recorded.manifest);
+    assert_eq!(replay.lines.len(), 2);
+    assert_eq!(replay.lines[0].reference, "WIRE-IN-1");
+    assert_eq!(replay.lines[0].amount.mantissa, 60_000);
+    assert_eq!(replay.lines[1].side, Side::Debit);
+    assert_eq!(replay.witness.receipt(), &recorded.receipt.receipt);
+    let retry = import_custom(&mut h, PRINCIPAL, CUSTOM_CSV, custom_csv_layout())
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.receipt.receipt, recorded.receipt.receipt);
+    assert_eq!(h.head(), after);
+}
+
+#[test]
+fn maximum_csv_imports_keep_external_manifests_and_fixed_size_native_bindings() {
+    use fa_journal::evidence::{Storage, document_record};
+    use fa_journal::import::bank::{BANK_STATEMENT_LINK_PAYLOAD_BYTES, MAX_BANK_LINES};
+    use fa_journal::import::{read_bank_statement_link, read_bank_statement_link_with_manifest};
+
+    let mut h = Harness::new(144);
+    let mut layout = custom_csv_layout();
+    layout.opening_balance = "0,00".into();
+    layout.closing_balance = format!("{},{:02}", MAX_BANK_LINES / 100, MAX_BANK_LINES % 100);
+    let mut source = String::from("Date;Reference;Amount\n");
+    for ordinal in 0..MAX_BANK_LINES {
+        source.push_str(&format!("05/03/2026;ROW-{ordinal};0,01\n"));
+    }
+    let before = h.head();
+    let imported = import_custom(&mut h, PRINCIPAL, &source, layout.clone())
+        .unwrap()
+        .unwrap();
+    assert_eq!(h.head().0, before.0 + 1);
+    assert_eq!(imported.manifest.line_oids.len(), MAX_BANK_LINES);
+    assert!(imported.manifest.canonical_bytes().unwrap().len() > 16 * 1024);
+    assert!(matches!(
+        document_record(&h.book.db, &imported.manifest_oid)
+            .unwrap()
+            .unwrap()
+            .storage,
+        Storage::External { .. }
+    ));
+    let row = h
+        .book
+        .db
+        .vertex(fa_journal::import::bank_statement_link_vid(
+            imported.manifest.book_id,
+            imported.manifest.account,
+            imported.manifest.statement_oid,
+        ))
+        .unwrap()
+        .unwrap();
+    let Some(fgdb_types::CanonicalScalar::Bytes(bytes)) =
+        fa_journal::rows::prop(&row, fa_model::symbols::property::FA_PAYLOAD)
+    else {
+        panic!("native binding payload");
+    };
+    assert_eq!(bytes.len(), BANK_STATEMENT_LINK_PAYLOAD_BYTES);
+    assert_eq!(bytes.len(), 192);
+    assert_eq!(&bytes.as_slice()[12..16], &[2, 0, 0, 0]);
+    assert_eq!(
+        read_bank_statement_link(
+            &h.book.db,
+            imported.manifest.book_id,
+            imported.manifest.account,
+            imported.manifest.statement_oid,
+        )
+        .unwrap()
+        .unwrap_err()
+        .code,
+        code::BLOB_MISSING,
+        "the raw synchronous reader cannot silently skip an external manifest"
+    );
+    let resolved = read_bank_statement_link_with_manifest(
+        &h.book.db,
+        imported.manifest.book_id,
+        &imported.manifest,
+    )
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolved.manifest, imported.manifest);
+    assert_eq!(resolved.receipt, imported.receipt.receipt);
+
+    let after = h.head();
+    let mut changed = layout.clone();
+    changed.reference = Some("Date".into());
+    assert_eq!(
+        import_custom(&mut h, VId(718), &source, changed)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::IDEMPOTENCY_CONFLICT,
+        "a competing mapping against an external manifest is an explicit conflict"
+    );
+    assert_eq!(h.head(), after);
+    let cx = h.cx();
+    drop(h.book);
+    h.book = h
+        .runtime
+        .block_on(AsyncBook::open_with_vfs(
+            &cx,
+            h.vfs.clone(),
+            Path::new(PATH),
+            h.keys.clone(),
+            Entropy::deterministic(145),
+        ))
+        .unwrap();
+    let replay = h
+        .runtime
+        .block_on(h.book.load_bank_import(
+            &cx,
+            &privileged_cap(PRINCIPAL),
+            imported.manifest_oid,
+            after,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.lines.len(), MAX_BANK_LINES);
+    assert_eq!(replay.witness.receipt(), &imported.receipt.receipt);
+    let repeated = import_custom(&mut h, VId(718), &source, layout)
+        .unwrap()
+        .unwrap();
+    assert_eq!(repeated.receipt.receipt, imported.receipt.receipt);
+    assert!(repeated.receipt.already_recorded);
+    assert_eq!(h.head(), after);
+
+    // A maximum canonical CSV linked to that declared import produces an
+    // external v2 manifest; its native binding is still fixed-size v2.
+    let mut next = String::from(
+        "sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference\n",
+    );
+    let opening = format!("{}.{:02}", MAX_BANK_LINES / 100, MAX_BANK_LINES % 100);
+    let closing = format!(
+        "{}.{:02}",
+        2 * MAX_BANK_LINES / 100,
+        2 * MAX_BANK_LINES % 100
+    );
+    for ordinal in 0..MAX_BANK_LINES {
+        next.push_str(&format!(
+            "2,BANK-OPER-01,USD,2026-04-30,{opening},{closing},2026-04-05,2026-04-05,CRDT,0.01,Customer,NEXT-{ordinal}\n"
+        ));
+    }
+    let linked = import_selected(&mut h, &next, Some(imported.manifest_oid))
+        .unwrap()
+        .unwrap();
+    assert_eq!(linked.manifest.line_oids.len(), MAX_BANK_LINES);
+    assert_eq!(
+        &linked.manifest.canonical_bytes().unwrap()[14..18],
+        &[2, 0, 0, 0]
+    );
+    assert!(matches!(
+        document_record(&h.book.db, &linked.manifest_oid)
+            .unwrap()
+            .unwrap()
+            .storage,
+        Storage::External { .. }
+    ));
+    assert_eq!(
+        read_bank_statement_link_with_manifest(
+            &h.book.db,
+            linked.manifest.book_id,
+            &linked.manifest,
+        )
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .receipt,
+        linked.receipt.receipt
+    );
+    assert_eq!(
+        captured_import(&mut h, &linked).receipt(),
+        &linked.receipt.receipt
+    );
+}
+
+#[test]
+fn compact_binding_authenticates_stored_state_before_reporting_a_mapping_conflict() {
+    for (index, target) in ["manifest", "binding", "run"].into_iter().enumerate() {
+        let mut h = Harness::new(146 + u8::try_from(index).unwrap());
+        let imported = import_custom(&mut h, PRINCIPAL, CUSTOM_CSV, custom_csv_layout())
+            .unwrap()
+            .unwrap();
+        let vid = match target {
+            "manifest" => fa_journal::evidence::document_vid(&imported.manifest_oid),
+            "binding" => fa_journal::import::bank_statement_link_vid(
+                imported.manifest.book_id,
+                imported.manifest.account,
+                imported.manifest.statement_oid,
+            ),
+            "run" => imported.receipt.receipt.run,
+            _ => unreachable!(),
+        };
+        let mut change = fgdb::WriteBatch::new(fa_model::symbols::relation::DERIVED_FROM);
+        change.set_vertex_property(
+            vid,
+            fa_model::symbols::property::FA_DIGEST,
+            Some(fa_journal::rows::scalar_bytes("_fa_digest", vec![0xE2; 32]).unwrap()),
+        );
+        let cx = h.cx();
+        h.runtime
+            .block_on(h.book.db.write(&cx.commit(), change))
+            .unwrap();
+        let before = h.head();
+        let mut different = imported.manifest;
+        different.csv_layout.as_mut().unwrap().name = "different-layout".into();
+        let refusal = fa_journal::import::read_bank_statement_link_with_manifest(
+            &h.book.db,
+            different.book_id,
+            &different,
+        )
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(refusal.code, code::DOCUMENT_DRIFT, "tampered {target}");
+        assert_eq!(h.head(), before);
+    }
+}
+
+#[test]
+fn malformed_declared_csv_never_publishes_partial_imports() {
+    let mut h = Harness::new(143);
+    for source in [
+        CUSTOM_CSV.replace("Date;Reference", "Reference;Date"),
+        CUSTOM_CSV.replace("600,00", "600,001"),
+        CUSTOM_CSV.replace("05/03/2026", "31/02/2026"),
+        CUSTOM_CSV.replace("-150,00", "150,00"),
+        CUSTOM_CSV.replace("600,00", "600,00;extra"),
+    ] {
+        let before = h.head();
+        let vertices = h.book.db.vertices_at(before).unwrap().len();
+        let refusal = import_custom(&mut h, PRINCIPAL, &source, custom_csv_layout())
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, code::DOCUMENT_INTAKE);
+        assert_eq!(h.head(), before);
+        assert_eq!(h.book.db.vertices_at(before).unwrap().len(), vertices);
+    }
+}

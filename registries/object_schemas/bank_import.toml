@@ -2,13 +2,13 @@
 schema_version = 1
 name = "BankImportManifest"
 owner = "fa-journal::import::bank"
-major = 2
+major = 3
 minor = 0
 externally_verifiable = true
 
 # Unlinked v1 sources keep their original exact bytes and native identities.
 # A linked v2 manifest adds the immediate prior statement's original receipt.
-versions = ["1:unlinked", "2:explicit-predecessor"]
+versions = ["1:unlinked", "2:explicit-predecessor", "3:declared-csv-layout-with-optional-predecessor"]
 predecessor_fields = ["manifest_oid:bytes32", "manifest_commit:bytes32", "statement_oid:bytes32", "statement_commit:bytes32", "import_run:u128", "receipt_hash:bytes32", "recorded_at:u64", "sequence_number:u64", "statement_date:i32", "closing_balance:amount"]
 max_predecessor_depth = 4096
 
@@ -16,5 +16,12 @@ max_predecessor_depth = 4096
 field = "BankStatementLink"
 appendix_a = "Retained bank statement continuity and sequence/opening-balance checks (§9.4-§9.5)"
 code_type = "fa-journal::import::bank; label BankStatementLink=44"
-rationale = "One immutable deterministic row per book, mapped GL account and current statement OID binds the exact current canonical manifest and its native ImportRun/receipt. Four DERIVED_FROM edges connect the current/prior ImportRuns and current/prior manifest Documents. The row publishes in the existing import transaction. Its absent/equal native point witness prevents competing predecessor links, including across uploaders; matching retries return the original receipt. Prior receipts and source documents remain original transaction witnesses. This projection is checked against retained canonical manifests and receipts; it is not independent authority or a confirmed reconciliation."
+rationale = "One immutable deterministic row per book, mapped GL account and current statement OID binds the exact current canonical manifest and its native ImportRun/receipt. DERIVED_FROM edges connect the current ImportRun and manifest Document, plus the prior run and manifest when explicitly linked. Declared CSV layouts also use this binding without a predecessor. The row publishes in the existing import transaction. Its absent/equal native point witness prevents competing predecessor links or CSV interpretations, including across uploaders; matching retries return the original receipt. Prior receipts and source documents remain original transaction witnesses. New bindings use a fixed 192-byte v2 payload containing the book/account/source identities, manifest OID and commitment, and original run and receipt hash; full manifests stay in their authenticated document storage. The v2 digest domain is fa:bank-statement-link:v2. Legacy v1 inline-manifest bindings and their original domain remain readable. Legacy unlinked v1 imports have no binding and are not retroactively made unique. This projection is checked against retained canonical manifests and receipts; it is not independent authority or a confirmed reconciliation."
 tracking_bead = "fa-zbne"
+
+[[decision]]
+field = "BankImportManifest.version=3"
+appendix_a = "Declared bank CSV layouts with retained original source bytes (§9.5)"
+code_type = "fa-model::bank_csv::BankCsvLayout; fa-journal::import::bank::BankImportManifest"
+rationale = "Version 3 preserves the fields through the ordered BankLine document OIDs, then appends length-prefixed canonical layout bytes and an optional-predecessor presence tag followed by the existing predecessor payload. Only the CSV parser may use v3. The layout binds exact header order, column mappings, date and decimal conventions, signed-amount or debit/credit interpretation, and explicit statement metadata. Matching and reconciliation reparse the retained original source under that declaration. Existing v1/v2 bytes are unchanged. The independent verifier validates the bounded layout encoding in reconciled evidence; it does not independently parse CSV or authenticate the importer's statement metadata."
+tracking_bead = "fa-d22b"

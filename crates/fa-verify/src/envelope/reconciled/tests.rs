@@ -346,3 +346,77 @@ fn reconciled_records_refuse_broken_predecessor_closure_and_bounded_manifest_enc
         }))
     ));
 }
+
+fn declared_layout_bytes(sequence: u64) -> Vec<u8> {
+    let mut w = Writer::default();
+    w.fixed(b"fa:bank-csv-layout:v1")
+        .bytes(b"declared-v1")
+        .count(3)
+        .bytes(b"Date")
+        .bytes(b"Reference")
+        .bytes(b"Amount")
+        .u8(b';')
+        .u8(b',')
+        .u8(2)
+        .bytes(b"Date")
+        .u8(0)
+        .u8(0)
+        .u8(1)
+        .bytes(b"Reference")
+        .u8(0)
+        .bytes(b"Amount")
+        .u8(1)
+        .bytes(b"BANK-123")
+        .u64(sequence)
+        .bytes(b"USD")
+        .i32(20_500)
+        .bytes(b"500,00")
+        .bytes(b"600,00");
+    w.buf
+}
+
+fn declare_layout(fixture: &mut Fixture, layout: &[u8]) {
+    let boundary = manifest_bytes(None).len();
+    let predecessor = fixture.manifest.split_off(boundary);
+    fixture.manifest[14..16].copy_from_slice(&3_u16.to_le_bytes());
+    let mut w = Writer::default();
+    w.bytes(layout)
+        .u8(u8::from(!predecessor.is_empty()))
+        .fixed(&predecessor);
+    fixture.manifest.extend(w.buf);
+    fixture.rebind_manifest();
+}
+
+#[test]
+fn reconciled_v3_layouts_are_independently_decoded_with_and_without_predecessors() {
+    for linked in [false, true] {
+        let mut f = Fixture::new(linked);
+        let layout = declared_layout_bytes(if linked { 8 } else { 7 });
+        declare_layout(&mut f, &layout);
+        assert!(f.verify().is_ok(), "declared layout linked={linked}");
+        let (record, split) = f.record();
+        let envelope = f.verify().unwrap();
+        assert!(check_record(&envelope, &record, split).unwrap().is_empty());
+
+        for length in 0..layout.len() {
+            let mut truncated = Fixture::new(linked);
+            declare_layout(&mut truncated, &layout[..length]);
+            assert!(truncated.verify().is_err(), "layout truncation {length}");
+        }
+        let mut wrong_parser = f.clone();
+        wrong_parser.manifest[50] = 1;
+        wrong_parser.rebind_manifest();
+        assert!(wrong_parser.verify().is_err());
+        let mut trailing_layout = layout.clone();
+        trailing_layout.push(0);
+        let mut trailing = Fixture::new(linked);
+        declare_layout(&mut trailing, &trailing_layout);
+        assert!(trailing.verify().is_err());
+    }
+    let mut wrong_sequence = Fixture::new(false);
+    declare_layout(&mut wrong_sequence, &declared_layout_bytes(8));
+    assert!(wrong_sequence.verify().is_err());
+    let mut oversized = Fixture::new(false);
+    declare_layout(&mut oversized, &vec![0; 16 * 1024 + 1]);
+    assert!(oversized.verify().is_err());
+}
