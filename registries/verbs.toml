@@ -3531,12 +3531,8 @@ subcommand = "export"
 reason = "host-only in this slice: it reads an exported file or ADS package directory from the host filesystem, and the MCP export tool returns exports inline, never as host files"
 
 [[mcp.excluded]]
-verb = "replace"
-reason = "fa_post_reverse with replace_with posts the same Reversal and Replacement pair; one tool per correction keeps the cluster within seven"
-
-[[mcp.excluded]]
 verb = "void-reserve"
-reason = "dangerous: a void releases the hold for good and needs --yes, which an MCP session never carries; fa_post_resolve with disposition posts is the safe alternative"
+reason = "host-only: a void releases the hold for good and needs --yes, which an MCP session never carries; fa_post_resolve with disposition posts is the safe alternative"
 
 [[mcp.excluded]]
 verb = "checkpoint"
@@ -3692,7 +3688,7 @@ doc = "GQL over the book's graph in the FrankenAccounting profile (plan §15.5):
 [[mcp.cluster]]
 name = "fa.correct"
 on_demand = true
-doc = "Corrections beyond an exact reversal (plan §8.2): a Reclassification moves part of an entry's leg to another account, citing it with Reclassifies and a registered reason. Exact reversals and paired replacements are the reverse tool in fa.post. On demand (fa-mcp --cluster fa.correct): the default surface is at its 40-tool budget."
+doc = "Corrections beyond an exact reversal (plan §8.2): a Reclassification moves part of an entry's leg to another account, citing it with Reclassifies and a registered reason. A Replacement posts the corrected entry with the Reversal of the one it corrects, as one pair (the same pair as the reverse tool's replace_with in fa.post). On demand (fa-mcp --cluster fa.correct): the default surface is at its 40-tool budget."
 
 [[mcp.cluster]]
 name = "fa.case"
@@ -4005,6 +4001,21 @@ switches = ["--dry-run"]
 required = ["vid", "--from", "--to", "--amount", "--reason"]
 dont = ["Name the target's vid, the account its leg is on (from), the account it belongs on (to) and the amount moved as \"300.00 USD\". The side and dimensions come from the target's leg; never re-enter them.", "Don't move more than the leg has left: earlier reclassifications of the same entry count, and the refusal (FA-REF-185) says how much is left.", "Don't pick an effective date to dodge the period law: the default is the target's date, and a Closed period needs post_closed with one approval."]
 mistakes = ["A JSON number in amount (write \"300.00 USD\").", "Using a reclassification to change an amount: that is a reversal with a replace_with (the reverse tool).", "Omitting reason or using an unregistered name (WrongAccount is the usual one)."]
+
+[[mcp.tool]]
+cluster = "fa.correct"
+name = "replace"
+verb = "replace"
+subcommands = []
+positionals = ["vid"]
+flags = ["--intent", "--reason", "--effective", "--period", "--key", "--description", "--evidence"]
+switches = ["--dry-run"]
+stdin_property = "intent"
+stdin_kind = "object"
+stdin_via = "--intent"
+required = ["vid", "--reason", "--intent"]
+dont = ["Pass the complete corrected entry as intent: its legs, effective_date and evidence. The reversal derives its exact opposite legs from the target; never re-enter them.", "Don't post the corrected entry as a separate Original: a Replacement exists only paired with its Reversal, and this tool commits both or neither.", "Don't pick an effective date to dodge the period law: the reversal defaults to the target's date, and a Closed period needs post_closed with one approval."]
+mistakes = ["Omitting intent: to reverse without a replacement, use fa_post_reverse.", "A JSON number in a leg amount (write \"300.00 USD\").", "Omitting reason or using an unregistered name (WrongAmount and WrongAccount are the usual ones)."]
 
 [[mcp.tool]]
 cluster = "fa.post"
