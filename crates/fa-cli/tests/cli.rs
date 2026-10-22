@@ -17059,6 +17059,210 @@ fn verify_replay_re_performs_the_history_into_an_independent_book() -> std::io::
     Ok(())
 }
 
+/// Plan §15.3, Appendix B (bead fa-i7e): `fa accrue` and `fa defer` post an
+/// Adjusting entry with its scheduled reversal, from two-leg flags or from an
+/// intent of any legs, and `fa batch` posts a PostBatch, all through `fa
+/// post`'s path: a dry run writes nothing, a retry is the recorded entry.
+/// Planted: a float amount, an intent mixed with leg flags, a class the verb
+/// does not post, one account on both sides, and a single entry intent to
+/// `fa batch` are each refused with nothing written.
+#[test]
+fn accrue_defer_and_batch_post_through_the_post_path() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+
+    let dir = tmp("adjusting")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Adjusting Co",
+        "--time-zone",
+        "UTC",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2100","name":"Accrued liabilities","type":"Liability","unit":"USD"},{"code":"2400","name":"Unearned revenue","type":"Liability","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6100","name":"Utilities","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let read = |vid: &str| {
+        let handle = Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+        let (entry, _) = handle
+            .read_entry(fgdb_types::VId(u128::from_str_radix(vid, 16).unwrap()))
+            .unwrap()
+            .expect("posted entry");
+        entry
+    };
+    let head = || {
+        let (_, out, _) = fa(Some(&book), &["book", "info", "--json"]);
+        doc(&out)
+            .get("coordinate")
+            .and_then(|c| c.get("known_at").cloned())
+    };
+    let accrual: Vec<&str> = vec![
+        "accrue",
+        "--date",
+        "2026-03-31",
+        "--debit",
+        "6100",
+        "--credit",
+        "2100",
+        "--amount",
+        "1500.00 USD",
+        "--reverse-on",
+        "2026-04-01",
+        "--description",
+        "March utilities",
+        "--evidence",
+        &ev,
+        "--json",
+    ];
+
+    // A dry run returns the plan and writes nothing.
+    let before = head();
+    let mut dry = accrual.clone();
+    dry.push("--dry-run");
+    let planned = ok(&dry);
+    assert_eq!(field(&planned, "event"), Some("plan"), "{planned}");
+    assert_eq!(head(), before, "a dry run writes nothing");
+
+    // The accrual posts an Adjusting entry scheduled to reverse on April 1.
+    let posted = ok(&accrual);
+    assert_eq!(field(&posted, "event"), Some("posted"), "{posted}");
+    let vid = field(&posted, "vid").unwrap().to_string();
+    let entry = read(&vid);
+    assert_eq!(entry.proposal.class, fa_model::EntryClass::ADJUSTING);
+    assert_eq!(
+        fa_journal::schedule::auto_reverse(&entry.proposal).unwrap(),
+        Some((
+            fa_time::DateDay::parse("2026-04-01").unwrap(),
+            fa_journal::schedule::RULE_EXACT_NEGATION
+        ))
+    );
+    // Its default key makes a retry the recorded entry.
+    let again = ok(&accrual);
+    assert_eq!(field(&again, "event"), Some("recorded"), "{again}");
+    assert_eq!(field(&again, "vid"), Some(vid.as_str()));
+
+    // A deferral from an intent of any legs; class may be omitted.
+    let deferral = write(
+        &dir,
+        "deferral.json",
+        r#"{"effective_date":"2026-03-31","idempotency_key":"unearned-april","description":"April subscription billed in March","reverse_on":"2026-04-01","legs":[{"side":"debit","account":"4000","amount":"1200.00 USD"},{"side":"credit","account":"2400","amount":"1200.00 USD"}]}"#,
+    );
+    let deferred = ok(&["defer", "--intent", &deferral, "--evidence", &ev, "--json"]);
+    let entry = read(field(&deferred, "vid").unwrap());
+    assert_eq!(entry.proposal.class, fa_model::EntryClass::ADJUSTING);
+    assert!(
+        fa_journal::schedule::auto_reverse(&entry.proposal)
+            .unwrap()
+            .is_some()
+    );
+
+    // A batch posts both members atomically.
+    let member = |key: &str, amount: &str| {
+        format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"{key}","evidence":["{ev}"],"legs":[{{"side":"debit","account":"6100","amount":"{amount} USD"}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
+        )
+    };
+    let batch = write(
+        &dir,
+        "batch.json",
+        &format!(
+            r#"{{"idempotency_key":"utilities-batch","intents":[{},{}]}}"#,
+            member("u1", "10.00"),
+            member("u2", "20.00")
+        ),
+    );
+    let batched = ok(&["batch", "--intent", &batch, "--json"]);
+    assert_eq!(field(&batched, "event"), Some("batch_posted"), "{batched}");
+    assert_eq!(arr(&doc(&batched), "members").len(), 2, "{batched}");
+
+    // Planted negatives: each refused, nothing written.
+    let before = head();
+    let single = write(&dir, "single.json", &member("u3", "5.00"));
+    let original = write(
+        &dir,
+        "original.json",
+        r#"{"class":"Original","effective_date":"2026-03-31","idempotency_key":"not-adjusting","legs":[{"side":"debit","account":"6100","amount":"1.00 USD"},{"side":"credit","account":"2100","amount":"1.00 USD"}]}"#,
+    );
+    for (what, argv) in [
+        (
+            "float amount",
+            vec![
+                "accrue",
+                "--date",
+                "2026-03-31",
+                "--debit",
+                "6100",
+                "--credit",
+                "2100",
+                "--amount",
+                "1.5e3 USD",
+                "--evidence",
+                &ev,
+                "--json",
+            ],
+        ),
+        (
+            "intent and leg flags",
+            vec![
+                "accrue",
+                "--intent",
+                &deferral,
+                "--debit",
+                "6100",
+                "--evidence",
+                &ev,
+                "--json",
+            ],
+        ),
+        (
+            "class mismatch",
+            vec!["defer", "--intent", &original, "--evidence", &ev, "--json"],
+        ),
+        (
+            "same account",
+            vec![
+                "accrue",
+                "--date",
+                "2026-03-31",
+                "--debit",
+                "6100",
+                "--credit",
+                "6100",
+                "--amount",
+                "1.00 USD",
+                "--evidence",
+                &ev,
+                "--json",
+            ],
+        ),
+        (
+            "single entry to batch",
+            vec!["batch", "--intent", &single, "--json"],
+        ),
+    ] {
+        let (code, out, err) = run(&argv);
+        assert_ne!(code, 0, "{what}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+    }
+    assert_eq!(head(), before, "no refused command writes");
+    Ok(())
+}
+
 /// Plan §15.3, Appendix B (bead fa-i7e, scoreboard WF-RQ-02): `fa invoice`
 /// and `fa bill` build the Original entry from their lines (quantity times
 /// unit price, exactly) and post it through `fa post`'s path: a dry run

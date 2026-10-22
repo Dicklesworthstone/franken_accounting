@@ -93,6 +93,9 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("bill", crate::typed::bill_cmd),
     ("receipt", crate::typed::receipt_cmd),
     ("payment", crate::typed::payment_cmd),
+    ("accrue", crate::typed::accrue_cmd),
+    ("defer", crate::typed::defer_cmd),
+    ("batch", crate::typed::batch_cmd),
     ("commit", commit_cmd),
     ("reclass", reclass_cmd),
     ("reverse", reverse_cmd),
@@ -2147,6 +2150,9 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "bill"
             | "receipt"
             | "payment"
+            | "accrue"
+            | "defer"
+            | "batch"
     ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end"))
         || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue")))
         && (args.switch("--dry-run")
@@ -2313,6 +2319,9 @@ pub fn bound_command_admissible(
             | "bill"
             | "receipt"
             | "payment"
+            | "accrue"
+            | "defer"
+            | "batch"
     ) || (matches!(verb, "allocate" | "settle")
         && sub != Some("approve")
         && !args.switch("--approve"));
@@ -2325,7 +2334,17 @@ pub fn bound_command_admissible(
     // Or run it in a scenario, which never posts to trunk at all.
     let agent_rehearsal = matches!(
         verb,
-        "post" | "reverse" | "reserve" | "resolve" | "invoice" | "bill" | "receipt" | "payment"
+        "post"
+            | "reverse"
+            | "reserve"
+            | "resolve"
+            | "invoice"
+            | "bill"
+            | "receipt"
+            | "payment"
+            | "accrue"
+            | "defer"
+            | "batch"
     ) && (args.switch("--dry-run")
         || args.flag("--draft").is_some()
         || args.flag("--scenario").is_some());
@@ -7378,6 +7397,7 @@ fn build_post_request_with_prior(
             Some(EntryClass::PENDING) => "Pending",
             Some(EntryClass::RESOLUTION) => "Resolution",
             Some(EntryClass::REVERSAL) => "Reversal",
+            Some(EntryClass::ADJUSTING) => "Adjusting",
             _ => "Original",
         },
         Some(Json::Str(name)) => name,
