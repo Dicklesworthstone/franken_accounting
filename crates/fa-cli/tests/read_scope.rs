@@ -606,6 +606,7 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
     let report = fa_verify::ads::verify_ads(
         &String::from_utf8(read("ADS_Coordinate_Certificate.toml")).unwrap(),
         &String::from_utf8(read("GL_Detail.txt")).unwrap(),
+        &String::from_utf8(read("Trial_Balance.txt")).unwrap(),
         &read("ADS_Proof.fab"),
         &[key],
         Some(&read("ADS_Proof.receipt")),

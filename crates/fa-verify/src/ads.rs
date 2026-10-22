@@ -13,7 +13,9 @@
 //! from its code and the book id; unit codes are matched to the legs' unit
 //! ids one to one (the codes' names are not authenticated offline). A
 //! migration chunk in scope is not judged: its visibility is not proven
-//! offline, as for balances.
+//! offline, as for balances. `Trial_Balance.txt` must then be exactly the
+//! refold of those proven rows, so it is proven too; the chart's names and
+//! types are not.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +29,9 @@ pub const CLASS_PENDING: u16 = 2;
 /// The GL_Detail header `fa export ads` writes.
 pub const GL_HEADER: &str = "Journal_ID|Journal_Entry_Line_Number|Effective_Date|Recorded_Seq|Entry_Class|GL_Account_Number|Debit_Credit_Indicator|Amount|Transaction_Currency|Unit_Scale|JE_Header_Description|Migrated_From|Line_Description";
 const GL_FIELDS: usize = 13;
+/// The Trial_Balance header `fa export ads` writes.
+pub const TB_HEADER: &str =
+    "GL_Account_Number|As_Of_Date|Debit_Credit_Indicator|Ending_Balance|Currency|Unit_Scale";
 
 /// What the extract check found, beside the bundle's own report.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +43,8 @@ pub struct AdsReport {
     /// GL_Detail entries and rows matched to proven entries.
     pub entries: u64,
     pub rows: u64,
+    /// Trial_Balance rows equal to the refold of those rows.
+    pub tb_rows: u64,
     /// Unit code to the unit id its rows matched, one to one.
     pub units: Vec<(String, u32)>,
     /// Every way the extract differs from the proven selection.
@@ -79,6 +86,7 @@ struct Row {
     debit: bool,
     mantissa: i128,
     unit: String,
+    scale: u32,
 }
 
 /// One extract entry: its rows in line order.
@@ -147,6 +155,7 @@ fn parse_row(line: &str, number: usize) -> Result<Row, String> {
         },
         mantissa: exact(fields[7], scale).ok_or_else(|| bad("Amount at its Unit_Scale"))?,
         unit: fields[8].to_string(),
+        scale,
     })
 }
 
@@ -235,6 +244,7 @@ fn same(extract: &Extracted, proven: &Proven, book: &[u8; 16], units: &Units) ->
 pub fn verify_ads(
     certificate: &str,
     gl_detail: &str,
+    trial_balance: &str,
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
@@ -255,6 +265,7 @@ pub fn verify_ads(
         known_at_seq: field(certificate, "known_at_seq").and_then(|v| v.parse().ok()),
         entries: 0,
         rows: 0,
+        tb_rows: 0,
         units: Vec::new(),
         failures: Vec::new(),
     };
@@ -362,8 +373,73 @@ pub fn verify_ads(
             out.entries
         ));
     }
+    if out.failures.is_empty() {
+        match trial_balance_rows(trial_balance, &extract, &cutoff) {
+            Ok(rows) => out.tb_rows = rows,
+            Err(why) => out.failures.push(why),
+        }
+    }
     out.units = units.by_code.into_iter().collect();
     Ok(out)
+}
+
+/// Check `trial_balance` is exactly the refold of the extract's rows: one
+/// row per (account, currency) in that order, as of `cutoff`, the signed
+/// sum of its legs (debits positive) stated as D (zero or more) or C with
+/// its magnitude at the currency's one scale. Returns the row count.
+fn trial_balance_rows(
+    trial_balance: &str,
+    extract: &[Extracted],
+    cutoff: &str,
+) -> Result<u64, String> {
+    let mut folded: BTreeMap<(&str, &str), (i128, u32)> = BTreeMap::new();
+    for row in extract.iter().flat_map(|entry| &entry.rows) {
+        let cell = folded
+            .entry((row.account.as_str(), row.unit.as_str()))
+            .or_insert((0, row.scale));
+        if cell.1 != row.scale {
+            return Err(format!("GL_Detail states two scales for {}", row.unit));
+        }
+        let moved = if row.debit {
+            cell.0.checked_add(row.mantissa)
+        } else {
+            cell.0.checked_sub(row.mantissa)
+        };
+        cell.0 =
+            moved.ok_or_else(|| "a GL_Detail balance exceeds the exact fold range".to_string())?;
+    }
+    let mut lines = trial_balance.split('\n');
+    if lines.next() != Some(TB_HEADER) {
+        return Err("Trial_Balance does not start with the ADS trial balance header".into());
+    }
+    let stated: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
+    if stated.len() != folded.len() {
+        return Err(format!(
+            "Trial_Balance has {} rows; the proven GL_Detail folds to {} (account, currency) balances",
+            stated.len(),
+            folded.len()
+        ));
+    }
+    for (line, ((account, unit), (balance, scale))) in stated.iter().zip(&folded) {
+        let fields: Vec<&str> = line.split('|').collect();
+        let magnitude = balance
+            .checked_abs()
+            .ok_or_else(|| "a GL_Detail balance exceeds the exact fold range".to_string())?;
+        let side = if *balance < 0 { "C" } else { "D" };
+        let agrees = fields.len() == 6
+            && fields[0] == *account
+            && fields[1] == cutoff
+            && fields[2] == side
+            && fields[5].parse::<u32>().ok() == Some(*scale)
+            && exact(fields[3], *scale) == Some(magnitude)
+            && fields[4] == *unit;
+        if !agrees {
+            return Err(format!(
+                "Trial_Balance row `{line}` is not the refold of the proven GL_Detail ({account} {unit}: {side} {magnitude} at scale {scale}, as of {cutoff})"
+            ));
+        }
+    }
+    u64::try_from(stated.len()).map_err(|_| "Trial_Balance row count".to_string())
 }
 
 #[cfg(test)]
@@ -405,6 +481,40 @@ mod tests {
         let torn = gl.replace("|Rent||\n", "|Ren\nt||\n");
         assert!(extracted(&torn).is_err(), "a broken row is refused");
         assert!(extracted("Journal_ID|x\n").is_err(), "not the ADS header");
+    }
+
+    #[test]
+    fn the_trial_balance_is_exactly_the_refold_of_the_rows() {
+        let gl = format!(
+            "{GL_HEADER}\n\
+             aa|1|2026-03-10|7|1|6000|D|15.00|USD|2|Rent||\n\
+             aa|2|2026-03-10|7|1|1000|C|15.00|USD|2|Rent||\n\
+             bb|1|2026-03-11|8|1|1000|D|1.00|USD|2|x||\n\
+             bb|2|2026-03-11|8|1|4000|C|1.00|USD|2|x||\n"
+        );
+        let extract = extracted(&gl).unwrap();
+        let tb = format!(
+            "{TB_HEADER}\n\
+             1000|2026-03-31|C|14.00|USD|2\n\
+             4000|2026-03-31|C|1.00|USD|2\n\
+             6000|2026-03-31|D|15.00|USD|2\n"
+        );
+        assert_eq!(trial_balance_rows(&tb, &extract, "2026-03-31"), Ok(3));
+        for bad in [
+            tb.replace("C|14.00", "C|14.01"),
+            tb.replace("C|14.00", "D|14.00"),
+            tb.replace("6000|2026-03-31|D|15.00|USD|2\n", ""),
+            format!("{tb}9999|2026-03-31|D|0.00|USD|2\n"),
+            tb.replace("2026-03-31|C|1.00", "2026-03-30|C|1.00"),
+            tb.replace("14.00|USD|2", "14.000|USD|3"),
+            tb.replace("4000|2026-03-31|C|1.00|USD|2\n6000", "6000"),
+            tb.replace(TB_HEADER, "GL_Account_Number|As_Of_Date"),
+        ] {
+            assert!(
+                trial_balance_rows(&bad, &extract, "2026-03-31").is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

@@ -100,7 +100,8 @@ commands:
                                                 an evidence bundle (.fab), every predicate graded
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
-                                                proves through the certificate's cutoff
+                                                proves through the certificate's cutoff and
+                                                Trial_Balance exactly their refold
 
 ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its own):
   --key K...             C is a signed TransparencyCheckpoint; its signature by one of
@@ -1186,13 +1187,21 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             };
             let certificate = text("ADS_Coordinate_Certificate.toml")?;
             let gl_detail = text("GL_Detail.txt")?;
+            let trial_balance = text("Trial_Balance.txt")?;
             let bundle = load(read, &format!("{dir}/ADS_Proof.fab"), false)?;
             let receipt = match args.one("--receipt") {
                 Some(p) => load(read, p, args.hex)?,
                 None => load(read, &format!("{dir}/ADS_Proof.receipt"), false)?,
             };
             Ok(
-                match verify_ads(&certificate, &gl_detail, &bundle, &keys, Some(&receipt)) {
+                match verify_ads(
+                    &certificate,
+                    &gl_detail,
+                    &trial_balance,
+                    &bundle,
+                    &keys,
+                    Some(&receipt),
+                ) {
                     Err(e) => vec![Check {
                         name: "bundle",
                         scope: "format",
@@ -1216,6 +1225,7 @@ fn ads_checks(report: &AdsReport) -> Vec<Check> {
         ("known_at_seq", report.known_at_seq.map_or(Json::Null, n)),
         ("entries", n(report.entries)),
         ("rows", n(report.rows)),
+        ("tb_rows", n(report.tb_rows)),
         (
             "units",
             Json::List(
