@@ -14,7 +14,7 @@ fn stream(moves: &[(bool, i128)], source_at: usize) -> Stream {
             .enumerate()
             .map(|(i, (inflow, magnitude))| Movement {
                 entry: VId(i as u128 + 1),
-                date: DateDay(i as i32),
+                date: DateDay(i32::try_from(i).unwrap()),
                 recorded: i as u64,
                 inflow: *inflow,
                 magnitude: *magnitude,
