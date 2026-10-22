@@ -12885,7 +12885,10 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let target = args.positional.get(1).map(String::as_str);
     if args.flag("--as-known-at").is_some()
-        && !matches!(target, Some("periods" | "close" | "usage" | "fx-conversion"))
+        && !matches!(
+            target,
+            Some("periods" | "close" | "usage" | "fx-conversion")
+        )
     {
         return Err(usage(
             "--as-known-at is supported only by verify periods, verify close, verify usage and verify fx-conversion",
