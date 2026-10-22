@@ -2968,6 +2968,11 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                 Err(LanternError::Parameter { name, .. }) => {
                     not_run.push(format!("{}: {name}", row.id));
                 }
+                // fa-kxc4: the corpus declares no account roles, so a
+                // role-selected procedure is refused before it reports.
+                Err(LanternError::RoleUnassigned { role, .. }) => {
+                    not_run.push(format!("{}: role {role}", row.id));
+                }
                 Err(error) => panic!("{scenario}/{}: {error}", row.id),
             }
         }
@@ -4256,12 +4261,33 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     );
     e_inv.entry.proposal.legs[0].account_ref = inv_vid;
 
-    // fa-kxc4: recon.intercompany reads the intercompany role, not the name.
-    let ic_role = role_entry(&h, ic_vid, "intercompany", CommitSeq(399));
     snapshot.entries = vec![
         e_ic, e_lap1, e_lap2, e_lap3, e_unrec, e_jan_orig, e_subseq, e_ctrl, e_pay, e_capex, e_inv,
-        ic_role,
     ];
+    snapshot.fold_roles().unwrap();
+    // fa-kxc4, planted: 1500 "Network Property & CapEx" and 1300 "Merchandise
+    // Inventory" hold no role, so the role-selected procedures refuse rather
+    // than guess from the names.
+    for procedure in [
+        Box::new(ReconLapping::new().unwrap()) as Box<dyn Procedure>,
+        Box::new(ExpenseCapitalization::new().unwrap()),
+        Box::new(InventoryAging::new().unwrap()),
+        Box::new(ReconIntercompany::new().unwrap()),
+    ] {
+        let refused = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap_err();
+        assert!(
+            matches!(&refused, LanternError::RoleUnassigned { procedure: p, .. } if p == procedure.id()),
+            "{refused:?}"
+        );
+    }
+    // The role-selected procedures read roles, from real role controls.
+    snapshot.entries.extend([
+        role_entry(&h, ic_vid, "intercompany", CommitSeq(399)),
+        role_entry(&h, h.account("1200"), "receivable", CommitSeq(398)),
+        role_entry(&h, h.account("2000"), "payable", CommitSeq(397)),
+        role_entry(&h, capex_vid, "fixed_asset", CommitSeq(396)),
+        role_entry(&h, inv_vid, "inventory", CommitSeq(395)),
+    ]);
     snapshot.fold_roles().unwrap();
 
     // Add a RegisterEquals attestation on Cash (1000) in FY2026-P01 claiming 999_999 (diverging from fold)

@@ -275,24 +275,70 @@ impl Snapshot {
         Ok(())
     }
 
-    /// The accounts holding the role `procedure` draws its population from
-    /// ([`crate::ROLE_POPULATIONS`]); refused when no account holds it.
-    pub fn role_population(&self, procedure: &str) -> Result<BTreeSet<VId>, LanternError> {
-        let Some((_, role)) = crate::ROLE_POPULATIONS
+    /// The roles `procedure` draws its population from
+    /// ([`crate::ROLE_POPULATIONS`]), in table order.
+    fn roles_of(procedure: &str) -> Result<Vec<&'static str>, LanternError> {
+        let roles: Vec<&'static str> = crate::ROLE_POPULATIONS
             .iter()
-            .find(|(id, _)| *id == procedure)
-        else {
+            .filter(|(id, _)| *id == procedure)
+            .map(|(_, role)| *role)
+            .collect();
+        if roles.is_empty() {
             return Err(LanternError::Parameter {
                 procedure: procedure.to_string(),
                 name: "role".into(),
                 message: "the procedure selects no account-role population".into(),
             });
-        };
-        let accounts = self.roles.accounts_with(role);
+        }
+        Ok(roles)
+    }
+
+    /// The accounts holding any role `procedure` draws its population from;
+    /// refused when no account holds any of them.
+    pub fn role_population(&self, procedure: &str) -> Result<BTreeSet<VId>, LanternError> {
+        let roles = Self::roles_of(procedure)?;
+        let accounts: BTreeSet<VId> = roles
+            .iter()
+            .flat_map(|role| self.roles.accounts_with(role))
+            .collect();
         if accounts.is_empty() {
             return Err(LanternError::RoleUnassigned {
                 procedure: procedure.to_string(),
-                role: (*role).to_string(),
+                role: roles.join(" or "),
+            });
+        }
+        Ok(accounts)
+    }
+
+    /// The accounts holding `role`, one of the roles `procedure` reads; an
+    /// empty set when none does.
+    pub fn role_accounts(
+        &self,
+        procedure: &str,
+        role: &str,
+    ) -> Result<BTreeSet<VId>, LanternError> {
+        if !Self::roles_of(procedure)?.iter().any(|r| *r == role) {
+            return Err(LanternError::Parameter {
+                procedure: procedure.to_string(),
+                name: "role".into(),
+                message: format!("the procedure does not read the `{role}` role"),
+            });
+        }
+        Ok(self.roles.accounts_with(role))
+    }
+
+    /// The accounts holding `role`, which `procedure` requires; refused when
+    /// no account holds it.
+    pub fn required_role(
+        &self,
+        procedure: &str,
+        role: &str,
+    ) -> Result<BTreeSet<VId>, LanternError> {
+        let accounts = self.role_accounts(procedure, role)?;
+        if accounts.is_empty() {
+            return Err(LanternError::RoleUnassigned {
+                procedure: procedure.to_string(),
+                role: role.to_string(),
             });
         }
         Ok(accounts)

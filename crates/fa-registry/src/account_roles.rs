@@ -164,7 +164,11 @@ mod tests {
             roles.get("cash").is_none(),
             "a role is listed once consumed"
         );
-        assert_eq!(roles.listing(), "suspense, intercompany");
+        assert_eq!(
+            roles.listing(),
+            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory"
+        );
+        assert!(roles.get("payable").is_some_and(|r| !r.admits("Asset")));
     }
 
     #[test]

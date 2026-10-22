@@ -26,3 +26,33 @@ name = "intercompany"
 account_types = ["Asset", "Liability"]
 meaning = "An intercompany due-from (Asset) or due-to (Liability) account: a balance with another legal entity of the group that must be matched by its reciprocal."
 consumers = ["jet.intercompany_unmatched", "recon.intercompany"]
+
+[[role]]
+name = "receivable"
+account_types = ["Asset"]
+meaning = "A trade or other receivable: amounts parties owe the book, settled by their receipts."
+consumers = ["recon.lapping"]
+
+[[role]]
+name = "payable"
+account_types = ["Liability"]
+meaning = "A trade or other payable: amounts the book owes parties, settled by its payments."
+consumers = ["recon.lapping"]
+
+[[role]]
+name = "fixed_asset"
+account_types = ["Asset"]
+meaning = "Property, plant and equipment or another long-lived asset whose cost the book capitalizes rather than expenses."
+consumers = ["expense.capitalization"]
+
+[[role]]
+name = "accrued_expense"
+account_types = ["Liability"]
+meaning = "An accrued operating cost: a liability credited when an operating cost is recognized before it is paid."
+consumers = ["expense.capitalization"]
+
+[[role]]
+name = "inventory"
+account_types = ["Asset"]
+meaning = "Inventory held for sale or for production (raw materials, work in process, finished goods), relieved to cost of sales."
+consumers = ["aging.inventory"]

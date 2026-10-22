@@ -131,6 +131,11 @@ pub const ROLE_POPULATIONS: &[(&str, &str)] = &[
     ("jet.suspense_aging", "suspense"),
     ("jet.intercompany_unmatched", "intercompany"),
     ("recon.intercompany", "intercompany"),
+    ("recon.lapping", "receivable"),
+    ("recon.lapping", "payable"),
+    ("expense.capitalization", "fixed_asset"),
+    ("expense.capitalization", "accrued_expense"),
+    ("aging.inventory", "inventory"),
 ];
 
 impl LanternError {

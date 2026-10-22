@@ -42,8 +42,7 @@ fn party(f: &mut Fixture, code: &str, bank: &str) -> VId {
 fn all_additional_procedures_round_trip_with_complete_native_populations() {
     let mut f = Fixture::new(91);
     // The role-selected procedures (fa-kxc4) need their roles held.
-    f.assign_role("1020", "suspense");
-    f.assign_role("1010", "intercompany");
+    f.assign_procedure_roles();
     let (source, _) = f.post(1, "3000", "1000", 100, true);
     f.post(2, "1000", "1010", 80, false);
     f.post(3, "1010", "1020", 60, false);
@@ -92,11 +91,15 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
     let mut f = Fixture::new(95);
     let (source, _) = f.post(1, "3000", "1020", 100, false);
     let before = f.head();
-    for (id, role) in [
+    let selected = [
         ("jet.suspense_aging", "suspense"),
         ("jet.intercompany_unmatched", "intercompany"),
         ("recon.intercompany", "intercompany"),
-    ] {
+        ("recon.lapping", "receivable or payable"),
+        ("expense.capitalization", "fixed_asset"),
+        ("aging.inventory", "inventory"),
+    ];
+    for (id, role) in selected {
         let refused = f.book.certify_procedure(
             &f.cx(),
             PRINCIPAL,
@@ -116,13 +119,8 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         }
     }
     assert_eq!(f.head(), before, "a refused run writes nothing");
-    f.assign_role("1020", "suspense");
-    f.assign_role("1010", "intercompany");
-    for id in [
-        "jet.suspense_aging",
-        "jet.intercompany_unmatched",
-        "recon.intercompany",
-    ] {
+    f.assign_procedure_roles();
+    for (id, _) in selected {
         let certified = f.certify(&f.request(id, source));
         assert_eq!(certified.report.version, 2, "{id}");
         assert_eq!(

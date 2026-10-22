@@ -1189,13 +1189,13 @@ summary = "Exact intercompany reciprocal balance reconciliation over the account
 
 [[procedure]]
 id = "recon.lapping"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L42"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Receivables/payables lapping detector: sequential settlements on a control account where party B's cash receipt is recorded within window_days of party A's open item while party A's settlement is delayed or applied after subsequent receipts."
+summary = "Receivables/payables lapping detector over the accounts holding the `receivable` account role or the `payable` account role (registries/account_roles.toml, assigned with fa chart role): sequential settlements where party B's cash receipt is recorded within window_days of party A's open item while party A's settlement is delayed or applied after subsequent receipts. Refused when no account holds either role. Version 1 guessed the accounts from code and name tokens."
 
 [[parameter]]
 procedure = "recon.lapping"
@@ -1300,23 +1300,23 @@ summary = "Ghost-employee and anomalous payroll detector: payroll postings (acco
 
 [[procedure]]
 id = "expense.capitalization"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L48"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "corpus"
-summary = "Improper expense capitalization detector (WorldCom motif): entries that credit an operating expense account and debit a fixed/capital asset account (or reclassify operating costs to capital assets near period end)."
+summary = "Improper expense capitalization detector (WorldCom motif): entries that debit an account holding the `fixed_asset` account role and credit an Expense account or a liability holding the `accrued_expense` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the fixed_asset role. Version 1 guessed the accounts from code and name tokens."
 
 [[procedure]]
 id = "aging.inventory"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L49"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Slow-moving and obsolete inventory aging (ASC 330 / IAS 2): inventory asset accounts whose net debit balance has had no credit relief (cost-of-sales or relief movement) for more than stale_days civil days through the coordinate's effective date."
+summary = "Slow-moving and obsolete inventory aging (ASC 330 / IAS 2): accounts holding the `inventory` account role (registries/account_roles.toml, assigned with fa chart role) whose net debit balance has had no credit relief (cost-of-sales or relief movement) for more than stale_days civil days through the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
 effective_through = "optional"
 
 [[parameter]]
