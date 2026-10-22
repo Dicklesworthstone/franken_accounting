@@ -1139,3 +1139,200 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
     assert_eq!(cli(&without, true).exit, 8);
     assert_eq!(cli(&gl, false).exit, 2);
 }
+
+/// fa-qtfd (plan §13.5): a witness cosigns a recorded checkpoint with its
+/// own key, a second witness adds its signature onto the first's, and
+/// fa-verify meets a quorum of two named witnesses but not three. A witness
+/// extends only the history it signed: the next state is cosigned with
+/// --previous, while a rollback, another key's previous file, a key file
+/// readable by others and a rewritten history under the same book key (a
+/// second book with the same identity whose posting differs) are refused
+/// and write nothing.
+#[test]
+fn witnesses_cosign_an_extending_history_and_refuse_a_rewritten_one() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    f.post("w-1", "2026-03-10", "5.00", &evidence);
+    let created = f.checkpoint();
+    let book_key = text(&created, "public_key").to_string();
+    let path = |name: &str| f.dir.join(name).display().to_string();
+    let witness_key = |name: &str| {
+        let made = ok(
+            &f.book,
+            &["checkpoint", "witness-key", "--out", &path(name)],
+        );
+        let mode = std::fs::metadata(path(name)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a witness key is a 0600 file");
+        (path(name), text(&made, "public_key").to_string())
+    };
+    let (alice, alice_pk) = witness_key("alice.key");
+    let (bob, bob_pk) = witness_key("bob.key");
+    let (_, carol_pk) = witness_key("carol.key");
+    let witness = |book: &Path, args: &[&str]| {
+        run(
+            book,
+            &[&["checkpoint", "witness", "--grant", "witness"][..], args].concat(),
+        )
+    };
+    let (code, first) = witness(&f.book, &["--key", &alice, "--out", &path("a1.cp")]);
+    assert_eq!(code, 0, "{}", first.render());
+    assert_eq!(text(&first, "claim"), "witnessed_detection");
+    assert_eq!(text(&first, "state_oid"), text(&created, "oid"));
+    assert_eq!(get(&first, "extends"), &Json::Null);
+    assert_eq!(text(&first, "book_public_key"), book_key);
+    let (code, both) = witness(
+        &f.book,
+        &[
+            "--key",
+            &bob,
+            "--onto",
+            &path("a1.cp"),
+            "--out",
+            &path("ab.cp"),
+        ],
+    );
+    assert_eq!(code, 0, "{}", both.render());
+    assert_ne!(
+        text(&both, "checkpoint_oid"),
+        text(&first, "checkpoint_oid")
+    );
+
+    let verify = |file: &str, extra: &[&str]| {
+        let mut args: Vec<String> = ["checkpoint", file, "--key", book_key.as_str(), "--json"]
+            .map(str::to_string)
+            .to_vec();
+        args.extend(extra.iter().map(|a| (*a).to_string()));
+        let read = |p: &str| std::fs::read(p);
+        let out = fa_verify::cli::run(&args, &read);
+        (
+            out.exit,
+            json::parse(out.stdout.trim()).expect("one JSON report"),
+        )
+    };
+    let (code, report) = verify(
+        &path("ab.cp"),
+        &["--witness", &alice_pk, "--witness", &bob_pk],
+    );
+    assert_eq!(code, 0, "{}", report.render());
+    let (code, report) = verify(
+        &path("ab.cp"),
+        &[
+            "--witness",
+            &alice_pk,
+            "--witness",
+            &bob_pk,
+            "--witness",
+            &carol_pk,
+            "--quorum",
+            "3",
+        ],
+    );
+    assert_eq!(code, 8, "carol never signed: {}", report.render());
+    assert!(
+        report
+            .render()
+            .contains("2 of the 3 named witnesses signed")
+    );
+    let (code, _) = verify(
+        &path("a1.cp"),
+        &["--witness", &alice_pk, "--witness", &bob_pk],
+    );
+    assert_eq!(code, 8, "only alice signed a1");
+    let (code, _) = verify(&path("ab.cp"), &["--witness", &book_key]);
+    assert_eq!(code, 2, "the book's own key is no witness");
+
+    // The next state extends the one alice signed: cosigned with --previous.
+    f.post("w-2", "2026-03-11", "6.00", &evidence);
+    let next = f.checkpoint();
+    let (code, second) = witness(
+        &f.book,
+        &[
+            "--key",
+            &alice,
+            "--previous",
+            &path("a1.cp"),
+            "--out",
+            &path("a2.cp"),
+        ],
+    );
+    assert_eq!(code, 0, "{}", second.render());
+    assert_eq!(text(&second, "state_oid"), text(&next, "oid"));
+    assert_eq!(
+        integer(get(&second, "extends"), "leaf_count"),
+        integer(&created, "leaf_count")
+    );
+    // Refused, nothing written: another key's previous file; a rollback to
+    // the earlier state; a key file others can read.
+    let (code, refused) = witness(
+        &f.book,
+        &[
+            "--key",
+            &bob,
+            "--previous",
+            &path("a1.cp"),
+            "--out",
+            &path("x1.cp"),
+        ],
+    );
+    assert_eq!(code, 2, "{}", refused.render());
+    assert!(text(&refused, "message").contains("no signature by this witness key"));
+    let (code, refused) = witness(
+        &f.book,
+        &[
+            "--key",
+            &alice,
+            "--previous",
+            &path("a2.cp"),
+            "--state",
+            text(&created, "oid"),
+            "--out",
+            &path("x2.cp"),
+        ],
+    );
+    assert_eq!(code, 8, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-124");
+    std::fs::set_permissions(&alice, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (code, refused) = witness(&f.book, &["--key", &alice, "--out", &path("x3.cp")]);
+    assert_eq!(code, 4, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-155");
+    std::fs::set_permissions(&alice, std::fs::Permissions::from_mode(0o600)).unwrap();
+    for name in ["x1.cp", "x2.cp", "x3.cp"] {
+        assert!(!f.dir.join(name).exists(), "{name}");
+    }
+
+    // A rewritten history under the same book key: the same identity and
+    // signing key, a different first posting. Its checkpoint verifies under
+    // the book key, but it does not extend what alice signed.
+    let g = Fixture::new();
+    let g_evidence = g.chart_and_evidence();
+    g.post("w-1", "2026-03-10", "50.00", &g_evidence);
+    g.post("w-2", "2026-03-11", "6.00", &g_evidence);
+    let rewritten = g.checkpoint();
+    assert_eq!(
+        text(&rewritten, "public_key"),
+        book_key,
+        "the same signing key"
+    );
+    let (code, refused) = witness(
+        &g.book,
+        &[
+            "--key",
+            &alice,
+            "--previous",
+            &path("a2.cp"),
+            "--out",
+            &path("x4.cp"),
+        ],
+    );
+    assert_eq!(code, 8, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-124");
+    assert!(
+        text(&refused, "message")
+            .contains("does not extend the checkpoint this witness signed last"),
+        "{}",
+        refused.render()
+    );
+    assert!(!f.dir.join("x4.cp").exists());
+}

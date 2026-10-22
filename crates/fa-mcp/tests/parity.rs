@@ -104,6 +104,11 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // issued-token ceilings, and --yes.
             || (e.verb == "recover"
                 && matches!(e.subcommand.as_deref(), Some("projections" | "outcomes")))
+            // fa-qtfd: a witness cosigns with its own key file on the host
+            // (and witness-key writes a new secret key file there); no
+            // launch template or issued-token ceiling holds witness.
+            || (e.verb == "checkpoint"
+                && matches!(e.subcommand.as_deref(), Some("witness" | "witness-key")))
             // fa-6l9: a production writes its volume (load files and
             // natives) into a new host directory, like `fa demo init`; MCP
             // output is inline only. Its profiles stay MCP tools.

@@ -489,12 +489,12 @@ fn a_later_state_extends_the_earlier_and_consistency_verifies() {
     let ta = outsider_checkpoint(&a);
     let tb = outsider_checkpoint(&b);
     let tc = outsider_checkpoint(&c);
-    let ab = prove_consistency(&h.db, &h.book, &a.state, &b.state)
+    let ab = prove_consistency(&h.db, &h.book, &a.state.statement(), &b.state)
         .unwrap()
         .unwrap();
     let report = fa_verify::verify_consistency(&ab, &ta, &tb).expect("b extends a");
     assert_eq!(report.extended, tb);
-    let bc = prove_consistency(&h.db, &h.book, &b.state, &c.state)
+    let bc = prove_consistency(&h.db, &h.book, &b.state.statement(), &c.state)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -503,7 +503,7 @@ fn a_later_state_extends_the_earlier_and_consistency_verifies() {
             .extended,
         tc
     );
-    let ac = prove_consistency(&h.db, &h.book, &a.state, &c.state)
+    let ac = prove_consistency(&h.db, &h.book, &a.state.statement(), &c.state)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -515,7 +515,7 @@ fn a_later_state_extends_the_earlier_and_consistency_verifies() {
 
     // Backwards is refused by the producer, and a proof against a state the
     // caller does not trust is refused by the verifier.
-    let back = prove_consistency(&h.db, &h.book, &b.state, &a.state)
+    let back = prove_consistency(&h.db, &h.book, &b.state.statement(), &a.state)
         .unwrap()
         .unwrap_err();
     assert_eq!(back.code, code::NOT_EXTENDED);
@@ -888,7 +888,7 @@ fn checkpointed_entries_must_remain_unchanged_before_verification_or_production(
             prove_inclusion(&h.db, &h.book, &a.state, target, false),
             prove_prefix(&h.db, &h.book, &a.state),
             prove_balance(&h.db, &h.book, &a.state, h.rent, h.usd.0, None),
-            prove_consistency(&h.db, &h.book, &a.state, &b.state),
+            prove_consistency(&h.db, &h.book, &a.state.statement(), &b.state),
         ] {
             let refused = produced.unwrap().unwrap_err();
             assert_eq!(refused.code, code::ACCUMULATOR_DRIFT, "{change}");
@@ -971,7 +971,7 @@ fn an_unchanged_checkpoint_prefix_still_proves_after_later_postings() {
         .unwrap();
     let folded = fa_verify::verify_balance(&balance, &trusted).unwrap();
     assert_eq!((folded.claim.debits, folded.claim.credits), (300, 0));
-    let extension = prove_consistency(&h.db, &h.book, &a.state, &b.state)
+    let extension = prove_consistency(&h.db, &h.book, &a.state.statement(), &b.state)
         .unwrap()
         .unwrap();
     let extended = outsider_checkpoint(&b);
