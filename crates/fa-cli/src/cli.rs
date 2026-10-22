@@ -4480,9 +4480,26 @@ fn parse_chart_specs_fail(
 }
 
 fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let sub = args.positional.get(1).map(String::as_str);
+    // The role flags belong to their own subcommands; anywhere else they
+    // would be silently ignored.
+    for (flag, used_by) in [("--remove", "role"), ("--as-known-at", "roles")] {
+        let given = args.switch(flag) || args.flag(flag).is_some();
+        if given && sub != Some(used_by) {
+            return Err(usage(
+                format!("{flag} is an input to chart {used_by} only"),
+                "fa chart role <account> <role> [--remove] | fa chart roles [--as-known-at <seq>]",
+            ));
+        }
+    }
+    match sub {
+        Some("role") => return crate::chart_role::role(ctx, args),
+        Some("roles") => return crate::chart_role::roles(ctx, args),
+        _ => {}
+    }
     let who = ctx.principal(args);
     let out = &ctx.out;
-    match args.positional.get(1).map(String::as_str) {
+    match sub {
         Some("import") => {
             // A chart comes from a file (or `-`), or from an embedded
             // template (plan §4.3, fa-48m): exactly one of the two.
@@ -4521,12 +4538,29 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let base_unit = book.spec()?.base_unit;
             let units = &book.context().units;
             let accounts = parse_chart_specs_fail(path, &text, base_unit, units)?;
+            let roles = crate::chart_role::chart_roles(path, &text, &accounts)?;
             let date = date_flag(args, DateDay(0))?;
             let key = match args.flag("--key") {
                 Some(k) => k.as_bytes().to_vec(),
                 None => templates::chart_key(&text).into_bytes(),
             };
             let installed = book.install_chart(&accounts, who, date, &key, &capability)??;
+            // Each account role is its own control, keyed under the chart's
+            // key, so a retried import completes them without duplicates.
+            let mut role_items = Vec::with_capacity(roles.len());
+            for (code, role) in &roles {
+                let spec = fa::account_role::AccountRoleSpec {
+                    account: fa_model::account_vid(book.context().book_id, code),
+                    role: role.clone(),
+                    assigned: true,
+                };
+                let role_key = [key.as_slice(), format!(":role:{code}:{role}").as_bytes()].concat();
+                let recorded = book.record_account_role(&spec, who, &role_key, &capability)??;
+                role_items.push(crate::chart_role::account_role_json(
+                    &recorded.control,
+                    code,
+                ));
+            }
             out.at_book(&book)?;
             out.event(
                 "chart_installed",
@@ -4541,13 +4575,19 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         Json::Int(i128::from(installed.recorded_at.0)),
                     ),
                     ("template", template.map_or(Json::Null, |t| s(t.name))),
+                    ("roles", Json::Arr(role_items)),
                 ],
                 &format!(
-                    "installed {} accounts{} (control entry {:032x}, recorded at {})",
+                    "installed {} accounts{} (control entry {:032x}, recorded at {}){}",
                     installed.accounts,
                     template.map_or_else(String::new, |t| format!(" from template {}", t.name)),
                     installed.control_entry.0,
-                    installed.recorded_at.0
+                    installed.recorded_at.0,
+                    if roles.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {} account role(s) assigned", roles.len())
+                    },
                 ),
             );
             Ok(())

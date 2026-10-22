@@ -433,7 +433,8 @@ impl BookError {
             Self::Lantern(
                 fa_lantern::LanternError::Overflow(_)
                 | fa_lantern::LanternError::Money(_)
-                | fa_lantern::LanternError::BudgetExhausted { .. },
+                | fa_lantern::LanternError::BudgetExhausted { .. }
+                | fa_lantern::LanternError::RoleUnassigned { .. },
             ) => fa_journal::exit::REFUSAL,
             Self::Runtime(_)
             | Self::Open(_)
@@ -859,6 +860,33 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.create_native_subledger(
             &purposes, spec, principal, effective_date, idempotency_key, capability,
         )))
+    }
+
+    /// Assign or remove one account role (bead fa-kxc4) under SchemaChange
+    /// authority; an account that already holds (or lacks) it writes nothing.
+    pub fn record_account_role(
+        &mut self,
+        spec: &crate::account_role::AccountRoleSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::account_role::AccountRoleRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_account_role(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// The account roles held at `known_at` (the head when `None`), with the
+    /// prefix they were read at, under current whole-book read authority.
+    pub fn account_roles(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, crate::account_role::AccountRoles)> {
+        with_store!(&self.store, core => core.account_roles(
+            &self.purposes(), known_at, capability,
+        ))
     }
 
     /// Read journaled native subledgers at one prefix under current authority.

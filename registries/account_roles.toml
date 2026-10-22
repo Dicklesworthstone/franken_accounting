@@ -1,0 +1,58 @@
+# =============================================================================
+# registries/account_roles.toml — Account roles (bead fa-kxc4)
+# =============================================================================
+# A role says what an account is for, independently of its code and name. A
+# principal holding schema_change assigns it per account with a journaled
+# schema control (`fa chart role <account> <role>`), and a chart import seeds
+# the roles its accounts carry. Lantern selects a population by role, never
+# by an account's code or the words in its name (plan §11.9: a detector's
+# population and selection rule are registered), and a procedure whose role
+# no account holds refuses with the command that assigns it.
+#
+# A role is listed only once a procedure selects by it; `consumers` names
+# those procedures, and fa-lantern checks the list against its code.
+# `account_types` are the account types the role admits (account_types.toml).
+
+schema_version = 1
+
+[[role]]
+name = "suspense"
+account_types = ["Asset", "Liability"]
+meaning = "A suspense or clearing account: amounts parked until they are identified and moved to their proper accounts, so a balance that ages is an exception."
+consumers = ["jet.suspense_aging"]
+
+[[role]]
+name = "intercompany"
+account_types = ["Asset", "Liability"]
+meaning = "An intercompany due-from (Asset) or due-to (Liability) account: a balance with another legal entity of the group that must be matched by its reciprocal."
+consumers = ["jet.intercompany_unmatched", "recon.intercompany"]
+
+[[role]]
+name = "receivable"
+account_types = ["Asset"]
+meaning = "A trade or other receivable: amounts parties owe the book, settled by their receipts."
+consumers = ["recon.lapping"]
+
+[[role]]
+name = "payable"
+account_types = ["Liability"]
+meaning = "A trade or other payable: amounts the book owes parties, settled by its payments."
+consumers = ["recon.lapping"]
+
+[[role]]
+name = "fixed_asset"
+account_types = ["Asset"]
+meaning = "Property, plant and equipment or another long-lived asset whose cost the book capitalizes rather than expenses."
+consumers = ["expense.capitalization"]
+
+[[role]]
+name = "accrued_expense"
+account_types = ["Liability"]
+meaning = "An accrued operating cost: a liability credited when an operating cost is recognized before it is paid."
+consumers = ["expense.capitalization"]
+
+[[role]]
+name = "inventory"
+account_types = ["Asset"]
+meaning = "Inventory held for sale or for production (raw materials, work in process, finished goods), relieved to cost of sales."
+consumers = ["aging.inventory"]

@@ -883,6 +883,10 @@ fa procedure run trace.libr --effective-through 2025-12-31 --account 1010 --sour
 fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fabook --json
 # A procedure runs under a work meter with no clock, entropy, network or filesystem: --budget refuses it mid-run (exit 3, no finding) at the first unit past the cap.
 fa procedure run graph.layering --budget 5000000 --book acme.fabook --json
+# Suspense aging and the intercompany procedures test the accounts holding a journaled role, never accounts guessed from their names (a chart's accounts may carry "roles" too). While no account holds the role they refuse with this fix (exit 3), rather than report an empty population as nothing found.
+fa chart role 1950 suspense --book acme.fabook --json
+fa chart roles --book acme.fabook --json
+fa procedure run jet.suspense_aging --effective-through 2025-12-31 --book acme.fabook --json
 
 # Audit samples reproducible from a declared seed, over an account's open items at one recorded coordinate, and the Stringer bound over the audited values (available today).
 fa sample mus --account 1200 --seed 20260115 --interval "5000.00 USD" --as-of 2025-12-31 --book acme.fabook --json

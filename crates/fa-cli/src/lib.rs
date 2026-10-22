@@ -19,6 +19,7 @@ pub mod args;
 pub mod authority;
 mod bank;
 mod case;
+mod chart_role;
 pub mod cli;
 pub mod client;
 mod closing;

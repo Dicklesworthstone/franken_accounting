@@ -17,7 +17,6 @@ use crate::jet::{finding, procedure_boilerplate};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
-use fa_model::AccountType;
 use fa_time::DateDay;
 
 /// `aging.open_items`.
@@ -169,30 +168,14 @@ impl Procedure for OpenItemsAging {
 }
 
 /// `aging.inventory` (plan §11.7; ASC 330 / IAS 2): slow-moving and obsolete
-/// inventory aging. Flags inventory asset accounts whose net debit balance has
-/// had no credit relief movement for more than `stale_days` civil days through
-/// the coordinate's effective date.
+/// inventory aging. Flags accounts holding the `inventory` role whose net
+/// debit balance has had no credit relief movement for more than `stale_days`
+/// civil days through the coordinate's effective date. Version 2 selects by
+/// role; version 1 guessed from code and name tokens (fa-kxc4).
 pub struct InventoryAging {
     params: Params,
 }
 procedure_boilerplate!(InventoryAging, "aging.inventory");
-
-fn is_inventory_account(code: &str, name: &str, account_type: AccountType) -> bool {
-    if account_type != AccountType::ASSET {
-        return false;
-    }
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl.starts_with("13")
-        || cl.starts_with("14")
-        || cl.contains("inv")
-        || nl.contains("inventory")
-        || nl.contains("merchandise")
-        || nl.contains("raw material")
-        || nl.contains("finished good")
-        || nl.contains("work in process")
-        || nl.contains("wip")
-}
 
 #[derive(Clone, Debug, Default)]
 struct InventoryPosition {
@@ -207,7 +190,7 @@ impl Procedure for InventoryAging {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -226,6 +209,7 @@ impl Procedure for InventoryAging {
                 message: "must be >= 1".into(),
             });
         }
+        let inventory = snapshot.role_population(Self::ID)?;
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
 
@@ -247,10 +231,7 @@ impl Procedure for InventoryAging {
             }
             for (ordinal, leg) in e.entry.proposal.legs.iter().enumerate() {
                 work.leg()?;
-                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
-                    continue;
-                };
-                if !is_inventory_account(&acct.code, &acct.name, AccountType(acct.account_type)) {
+                if !inventory.contains(&leg.account_ref) {
                     continue;
                 }
                 population += 1;

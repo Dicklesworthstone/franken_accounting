@@ -7532,6 +7532,9 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["chart", "import", &chart]).0, 0);
     assert_eq!(run(true, &["chart", "list"]).0, 0);
+    // fa-kxc4: an account role, then every registered role and its holders.
+    assert_eq!(run(true, &["chart", "role", "1000", "suspense"]).0, 0);
+    assert_eq!(run(true, &["chart", "roles"]).0, 0);
     // fa-waow: no drafts or scenarios yet; trunk is implicit.
     let (code, out) = run(true, &["branch", "list"]);
     assert_eq!(code, 0, "{out}");
@@ -20154,5 +20157,222 @@ fn search_finds_entries_by_their_text_at_a_recorded_frontier() -> std::io::Resul
     assert!(ids(&search(&["zeppelin"])).is_empty());
     assert_eq!(run(&["search"]).0, 2);
     assert_eq!(run(&["search", "rent", "--limit", "0"]).0, 2);
+    Ok(())
+}
+
+/// fa-kxc4: account roles are journaled per account, by `fa chart role` or
+/// by a chart import's `"roles"`, and listed with the procedures that read
+/// them. A role-selected procedure tests the accounts holding its role
+/// whatever their names: an account merely named "Unallocated suspense" is
+/// not in the population, and a procedure whose role no account holds is
+/// refused with the command that assigns it. Planted refusals write nothing.
+#[test]
+fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Result<()> {
+    let dir = tmp("account-roles")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    let known_at = || {
+        field(&ok(&["book", "info"]), "known_at")
+            .unwrap_or_default()
+            .to_owned()
+    };
+    ok(&["book", "create", "--name", "Roles Co"]);
+
+    // Planted: a role the registry does not list, or one the account's type
+    // does not admit, refuses the whole import before anything is written.
+    let head = known_at();
+    for (name, chart, expected) in [
+        (
+            "unregistered.json",
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD","roles":["cash"]}]}"#,
+            "not a registered account role",
+        ),
+        (
+            "mistyped.json",
+            r#"{"accounts":[{"code":"6000","name":"Rent","type":"Expense","unit":"USD","roles":["suspense"]}]}"#,
+            "needs a posting leaf of type Asset or Liability",
+        ),
+    ] {
+        let path = write(&dir, name, chart);
+        let (code, out, err) = run(&["chart", "import", &path]);
+        assert_eq!(code, 2, "{name}: {out}\n{err}");
+        assert!(out.contains(expected), "{name}: {out}");
+        assert_eq!(known_at(), head, "{name}: a refused import writes nothing");
+    }
+
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"1950","name":"Payments in transit","type":"Asset","unit":"USD","roles":["suspense"]},
+            {"code":"9999","name":"Unallocated suspense","type":"Asset","unit":"USD"},
+            {"code":"1600","name":"Due from subsidiary","type":"Asset","unit":"USD"},
+            {"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}
+        ]}"#,
+    );
+    let installed = doc(&ok(&["chart", "import", &chart]));
+    let seeded = arr(&installed, "roles");
+    assert_eq!(seeded.len(), 1, "{installed:?}");
+    assert_eq!(text(&seeded[0], "account"), "1950");
+    assert_eq!(text(&seeded[0], "role"), "suspense");
+    assert_eq!(seeded[0].get("assigned"), Some(&Json::Bool(true)));
+    let in_transit = text(&seeded[0], "account_vid").to_string();
+    // A retried import finds the recorded chart and the recorded role.
+    let again = doc(&ok(&["chart", "import", &chart]));
+    assert_eq!(
+        text(&arr(&again, "roles")[0], "control_entry"),
+        text(&seeded[0], "control_entry")
+    );
+
+    let listing = doc(&ok(&["chart", "roles"]));
+    let role_row = |listing: &Json, role: &str| -> Json {
+        arr(listing, "roles")
+            .iter()
+            .find(|row| text(row, "role") == role)
+            .cloned()
+            .unwrap_or(Json::Null)
+    };
+    let holders = |row: &Json| -> Vec<String> {
+        arr(row, "accounts")
+            .iter()
+            .map(|a| text(a, "account").to_string())
+            .collect()
+    };
+    let suspense = role_row(&listing, "suspense");
+    assert_eq!(holders(&suspense), vec!["1950"], "{listing:?}");
+    assert!(
+        arr(&suspense, "consumers")
+            .iter()
+            .any(|c| c.as_str() == Some("jet.suspense_aging")),
+        "{listing:?}"
+    );
+    assert!(holders(&role_row(&listing, "intercompany")).is_empty());
+
+    // Planted: each refused role change writes nothing.
+    let head = known_at();
+    for (args, expected) in [
+        (
+            vec!["chart", "role", "4000", "suspense"],
+            "admits Asset or Liability",
+        ),
+        (
+            vec!["chart", "role", "1000", "cash"],
+            "not a registered account role",
+        ),
+        (
+            vec!["chart", "role", "1600", "intercompany", "--remove"],
+            "nothing to remove",
+        ),
+        (vec!["chart", "role", "1000"], "one account and one role"),
+        (
+            vec!["chart", "list", "--remove"],
+            "--remove is an input to chart role only",
+        ),
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 2, "{args:?}: {out}\n{err}");
+        assert!(out.contains(expected), "{args:?}: {out}");
+        assert_eq!(known_at(), head, "{args:?}");
+    }
+
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P01"]);
+    let evidence = source_doc(&dir, &book);
+    let post = |key: &str, debit: &str| -> String {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-01-05","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"40.00 USD"}},{{"side":"credit","account":"4000","amount":"40.00 USD"}}]}}"#
+            ),
+        );
+        field(
+            &ok(&["post", "--intent", &intent, "--evidence", &evidence]),
+            "vid",
+        )
+        .unwrap_or_default()
+        .to_owned()
+    };
+    let in_transit_entry = post("in-transit", "1950");
+    let named_suspense_entry = post("named-suspense", "9999");
+
+    // The role, not the name: 1950 aged 26 days is a finding; 9999, named
+    // "Unallocated suspense" without the role, is outside the population.
+    let aging = doc(&ok(&[
+        "procedure",
+        "run",
+        "jet.suspense_aging",
+        "--effective-through",
+        "2026-01-31",
+    ]));
+    assert_eq!(int(&aging, "version"), Some(2), "{aging:?}");
+    let findings = arr(&aging, "findings");
+    assert_eq!(findings.len(), 1, "{aging:?}");
+    let cites = arr(&findings[0], "cites");
+    let accounts: Vec<&str> = cites
+        .iter()
+        .filter(|c| text(c, "kind") == "account")
+        .map(|c| text(c, "account"))
+        .collect();
+    assert_eq!(accounts, vec![in_transit.as_str()], "{aging:?}");
+    let entries: Vec<&str> = cites
+        .iter()
+        .filter(|c| text(c, "kind") == "entry")
+        .map(|c| text(c, "entry"))
+        .collect();
+    assert!(entries.contains(&in_transit_entry.as_str()), "{aging:?}");
+    assert!(
+        !entries.contains(&named_suspense_entry.as_str()),
+        "{aging:?}"
+    );
+
+    // No account holds intercompany: refused with the command that assigns
+    // it, never an empty population reported as nothing found.
+    let head = known_at();
+    let (code, out, err) = run(&["procedure", "run", "jet.intercompany_unmatched"]);
+    assert_eq!(code, 3, "{out}\n{err}");
+    assert!(out.contains("fa chart role"), "{out}");
+    assert!(out.contains("intercompany"), "{out}");
+    assert_eq!(known_at(), head);
+
+    // Assigned, it runs; removed, the earlier prefix still reads it, and a
+    // repeated removal writes nothing.
+    let assigned = doc(&ok(&["chart", "role", "1600", "intercompany"]));
+    assert_eq!(assigned.get("already_recorded"), Some(&Json::Bool(false)));
+    let held_at = int(assigned.get("role").unwrap_or(&Json::Null), "recorded_at")
+        .unwrap_or_default()
+        .to_string();
+    ok(&["procedure", "run", "jet.intercompany_unmatched"]);
+    let removed = doc(&ok(&["chart", "role", "1600", "intercompany", "--remove"]));
+    assert_eq!(removed.get("already_recorded"), Some(&Json::Bool(false)));
+    let removed_role = removed.get("role").cloned().unwrap_or(Json::Null);
+    assert_eq!(removed_role.get("assigned"), Some(&Json::Bool(false)));
+    let repeat = doc(&ok(&["chart", "role", "1600", "intercompany", "--remove"]));
+    assert_eq!(repeat.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(
+        text(repeat.get("role").unwrap_or(&Json::Null), "control_entry"),
+        text(&removed_role, "control_entry")
+    );
+    let now = doc(&ok(&["chart", "roles"]));
+    assert!(
+        holders(&role_row(&now, "intercompany")).is_empty(),
+        "{now:?}"
+    );
+    let then = doc(&ok(&["chart", "roles", "--as-known-at", &held_at]));
+    assert_eq!(
+        holders(&role_row(&then, "intercompany")),
+        vec!["1600"],
+        "{then:?}"
+    );
     Ok(())
 }

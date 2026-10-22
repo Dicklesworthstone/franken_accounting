@@ -89,19 +89,12 @@ impl Procedure for PeriodBoundary {
     }
 }
 
-fn is_ic_account(code: &str, name: &str) -> bool {
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl.starts_with("ic")
-        || nl.contains("intercompany")
-        || nl.contains("due to")
-        || nl.contains("due from")
-}
-
-/// `recon.intercompany` (plan §11.4, `FA-EVID-L41`, `claim = "invariant"`):
-/// exact intercompany reciprocal balance reconciliation across legal entities
-/// and intercompany accounts per period and unit. Any non-zero net reciprocal
-/// imbalance is an invariant violation.
+/// `recon.intercompany` (plan §11.4, `FA-EVID-L41`, `claim = "statistical"`):
+/// exact intercompany reciprocal balance reconciliation over the accounts
+/// holding the `intercompany` role, per period and unit. A non-zero net is a
+/// finding; it is not an invariant violation until the kernel pairs
+/// intercompany legs at commit (FA-INV-13). Version 2 selects by role;
+/// version 1 guessed from code and name tokens.
 pub struct ReconIntercompany {
     params: Params,
 }
@@ -112,7 +105,7 @@ impl Procedure for ReconIntercompany {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -123,6 +116,7 @@ impl Procedure for ReconIntercompany {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
+        let intercompany = snapshot.role_population(Self::ID)?;
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
 
@@ -135,10 +129,7 @@ impl Procedure for ReconIntercompany {
             work.entry()?;
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
-                    continue;
-                };
-                if !is_ic_account(&acct.code, &acct.name) {
+                if !intercompany.contains(&leg.account_ref) {
                     continue;
                 }
                 population += 1;
@@ -192,31 +183,22 @@ impl Procedure for ReconIntercompany {
 }
 
 /// `recon.lapping` (plan §11.4, `FA-EVID-L42`): receivables/payables lapping
-/// detector. Flags sequential settlements on a control or receivable/payable
-/// account where party B's receipt/credit is recorded within `window_days` of
-/// party A's open item while party A's settlement is delayed and applied after
-/// party B's receipt.
+/// detector. Flags sequential settlements on an account holding the
+/// `receivable` or `payable` role where party B's receipt/credit is recorded
+/// within `window_days` of party A's open item while party A's settlement is
+/// delayed and applied after party B's receipt. Version 2 selects by role;
+/// version 1 guessed from code and name tokens (fa-kxc4).
 pub struct ReconLapping {
     params: Params,
 }
 procedure_boilerplate!(ReconLapping, "recon.lapping");
-
-fn is_ar_ap_account(code: &str, name: &str) -> bool {
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl.starts_with("11")
-        || cl.starts_with("12")
-        || cl.starts_with("20")
-        || nl.contains("receivable")
-        || nl.contains("payable")
-}
 
 impl Procedure for ReconLapping {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -236,6 +218,7 @@ impl Procedure for ReconLapping {
             });
         }
 
+        let controls = snapshot.role_population(Self::ID)?;
         let mut pval_to_party: BTreeMap<VId, VId> = BTreeMap::new();
         for p in snapshot.rea.parties.values() {
             pval_to_party.insert(p.dimension_value_vid, p.vid);
@@ -262,10 +245,7 @@ impl Procedure for ReconLapping {
             let eff = e.entry.proposal.effective_date;
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
-                    continue;
-                };
-                if !is_ar_ap_account(&acct.code, &acct.name) {
+                if !controls.contains(&leg.account_ref) {
                     continue;
                 }
                 let party = leg
@@ -1063,53 +1043,20 @@ impl Procedure for PayrollGhost {
 
 /// `expense.capitalization` (plan §11.7, `FA-EVID-L48`, `calibration = "corpus"`):
 /// improper expense capitalization detector (WorldCom motif). Flags entries that
-/// debit a fixed/capital asset account while crediting an operating expense or
-/// accrued line-cost / operating cost liability account.
+/// debit an account holding the `fixed_asset` role while crediting an Expense
+/// account or a liability holding the `accrued_expense` role. Version 2
+/// selects by role; version 1 guessed from code and name tokens (fa-kxc4).
 pub struct ExpenseCapitalization {
     params: Params,
 }
 procedure_boilerplate!(ExpenseCapitalization, "expense.capitalization");
-
-fn is_capex_asset(code: &str, name: &str, account_type: AccountType) -> bool {
-    if account_type != AccountType::ASSET {
-        return false;
-    }
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl.starts_with("15")
-        || cl.starts_with("16")
-        || cl.starts_with("17")
-        || cl.contains("capex")
-        || nl.contains("capex")
-        || nl.contains("property")
-        || nl.contains("plant")
-        || nl.contains("equipment")
-        || nl.contains("fixed asset")
-        || nl.contains("capital")
-}
-
-fn is_operating_cost_credit(code: &str, name: &str, account_type: AccountType) -> bool {
-    if account_type == AccountType::EXPENSE {
-        return true;
-    }
-    if account_type == AccountType::LIABILITY {
-        let cl = code.to_ascii_lowercase();
-        let nl = name.to_ascii_lowercase();
-        return cl == "2100"
-            || nl.contains("accrued line")
-            || nl.contains("line cost")
-            || nl.contains("accrued expense")
-            || nl.contains("accrued operating");
-    }
-    false
-}
 
 impl Procedure for ExpenseCapitalization {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1120,6 +1067,10 @@ impl Procedure for ExpenseCapitalization {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
+        // A fixed asset debited against an operating cost credited: an
+        // Expense account, or a liability holding the accrued_expense role.
+        let fixed_assets = snapshot.required_role(Self::ID, "fixed_asset")?;
+        let accrued = snapshot.role_accounts(Self::ID, "accrued_expense")?;
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
         let population = live.len() as u64;
@@ -1134,16 +1085,17 @@ impl Procedure for ExpenseCapitalization {
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
-                let atype = AccountType(acct.account_type);
+                let operating_cost = AccountType(acct.account_type) == AccountType::EXPENSE
+                    || accrued.contains(&leg.account_ref);
                 match leg.side {
-                    Side::Debit if is_capex_asset(&acct.code, &acct.name, atype) => {
+                    Side::Debit if fixed_assets.contains(&leg.account_ref) => {
                         capex_debits.push((
                             leg.account_ref,
                             leg.amount.unit.0,
                             leg.amount.mantissa.unsigned_abs() as i128,
                         ));
                     }
-                    Side::Credit if is_operating_cost_credit(&acct.code, &acct.name, atype) => {
+                    Side::Credit if operating_cost => {
                         cost_credits.push(leg.account_ref);
                     }
                     _ => {}

@@ -827,33 +827,20 @@ impl Procedure for LargeRoundReversals {
     }
 }
 
-/// `jet.suspense_aging`: suspense, clearing, and wash accounts with uncleared
-/// balances older than `max_age_days`.
+/// `jet.suspense_aging`: accounts holding the `suspense` role with uncleared
+/// balances older than `max_age_days`. Version 2 selects by role; version 1
+/// guessed from code and name tokens.
 pub struct SuspenseAging {
     params: Params,
 }
 procedure_boilerplate!(SuspenseAging, "jet.suspense_aging");
-
-impl SuspenseAging {
-    #[must_use]
-    pub fn is_suspense_account(code: &str, name: &str) -> bool {
-        let c = code.to_ascii_lowercase();
-        let n = name.to_ascii_lowercase();
-        for token in ["suspense", "clearing", "wash", "9999", "unallocated"] {
-            if c.contains(token) || n.contains(token) {
-                return true;
-            }
-        }
-        false
-    }
-}
 
 impl Procedure for SuspenseAging {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -866,15 +853,7 @@ impl Procedure for SuspenseAging {
     ) -> Result<Vec<Finding>, LanternError> {
         let max_age = i32::try_from(self.params.get_u32("max_age_days")?)
             .map_err(|_| LanternError::Overflow("max_age_days"))?;
-        let suspense_vids: std::collections::BTreeSet<VId> = snapshot
-            .accounts
-            .values()
-            .filter(|a| Self::is_suspense_account(&a.code, &a.name))
-            .map(|a| a.vid)
-            .collect();
-        if suspense_vids.is_empty() {
-            return Ok(Vec::new());
-        }
+        let suspense_vids = snapshot.role_population(Self::ID)?;
         let mut live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
         live.sort_by_key(|e| e.vid);
         let population = live.len() as u64;
@@ -943,32 +922,21 @@ impl Procedure for SuspenseAging {
     }
 }
 
-/// `jet.intercompany_unmatched`: live postings on intercompany accounts
-/// without a reciprocal matching balance in the same period and unit.
+/// `jet.intercompany_unmatched`: live postings on accounts holding the
+/// `intercompany` role without a reciprocal matching balance in the same
+/// period and unit. Version 2 selects by role; version 1 guessed from code
+/// and name tokens.
 pub struct IntercompanyUnmatched {
     params: Params,
 }
 procedure_boilerplate!(IntercompanyUnmatched, "jet.intercompany_unmatched");
-
-impl IntercompanyUnmatched {
-    #[must_use]
-    pub fn is_intercompany_account(code: &str, name: &str) -> bool {
-        let c = code.to_ascii_lowercase();
-        let n = name.to_ascii_lowercase();
-        c.starts_with("ic")
-            || c.contains("interco")
-            || n.contains("intercompany")
-            || n.contains("due to")
-            || n.contains("due from")
-    }
-}
 
 impl Procedure for IntercompanyUnmatched {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -979,15 +947,7 @@ impl Procedure for IntercompanyUnmatched {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let ic_vids: std::collections::BTreeSet<VId> = snapshot
-            .accounts
-            .values()
-            .filter(|a| Self::is_intercompany_account(&a.code, &a.name))
-            .map(|a| a.vid)
-            .collect();
-        if ic_vids.is_empty() {
-            return Ok(Vec::new());
-        }
+        let ic_vids = snapshot.role_population(Self::ID)?;
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
         let population = live.len() as u64;

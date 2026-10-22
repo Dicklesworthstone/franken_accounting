@@ -1732,6 +1732,37 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The role control `fa chart role` journals (bead fa-kxc4), as a snapshot
+/// entry recorded at `recorded_at`.
+fn role_entry(
+    h: &Harness,
+    account: VId,
+    role: &str,
+    recorded_at: CommitSeq,
+) -> fa_lantern::SnapshotEntry {
+    let key = format!("role:{:032x}:{role}", account.0);
+    let spec = AccountRoleSpec {
+        account,
+        role: role.into(),
+        assigned: true,
+    };
+    let description = Erasable::seal(
+        &"account role".to_string(),
+        None,
+        &h.book.seal_key,
+        [0x70; 32],
+        [0x71; 24],
+    );
+    let (_, entry) = role_control(&h.book, &spec, PREPARER, key.as_bytes(), description).unwrap();
+    fa_lantern::SnapshotEntry {
+        vid: fa_model::entry_vid(h.book.book_id, &PREPARER.0.to_le_bytes(), key.as_bytes()),
+        entry,
+        recorded_at,
+        period: String::new(),
+        approvals: Vec::new(),
+    }
+}
+
 fn make_snapshot_entry(
     h: &mut Harness,
     vid: VId,
@@ -2937,6 +2968,11 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
                 Err(LanternError::Parameter { name, .. }) => {
                     not_run.push(format!("{}: {name}", row.id));
                 }
+                // fa-kxc4: the corpus declares no account roles, so a
+                // role-selected procedure is refused before it reports.
+                Err(LanternError::RoleUnassigned { role, .. }) => {
+                    not_run.push(format!("{}: role {role}", row.id));
+                }
                 Err(error) => panic!("{scenario}/{}: {error}", row.id),
             }
         }
@@ -3506,7 +3542,37 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
         ));
     }
 
+    snapshot.entries = entries.clone();
+    snapshot.fold_roles().unwrap();
+
+    // fa-kxc4, planted: 9999 is named "Unallocated Suspense Clearing" and
+    // IC10 "Intercompany Due From Sub", but neither holds a role, so the
+    // role-selected procedures refuse rather than guess from the names.
+    let planted: [(Box<dyn Procedure>, &str); 2] = [
+        (Box::new(SuspenseAging::new().unwrap()), "suspense"),
+        (
+            Box::new(IntercompanyUnmatched::new().unwrap()),
+            "intercompany",
+        ),
+    ];
+    for (procedure, role) in planted {
+        let refused = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap_err();
+        assert!(
+            matches!(&refused, LanternError::RoleUnassigned { role: r, .. } if r == role),
+            "{refused:?}"
+        );
+        assert!(refused.fix_hint().unwrap().contains("fa chart role"));
+    }
+    // The roles, as the journal records them: real role controls folded
+    // from the snapshot's own entries.
+    entries.push(role_entry(&h, susp_vid, "suspense", CommitSeq(390)));
+    entries.push(role_entry(&h, ic_vid, "intercompany", CommitSeq(391)));
     snapshot.entries = entries;
+    snapshot.fold_roles().unwrap();
+    assert_eq!(
+        snapshot.roles.accounts_with("suspense"),
+        BTreeSet::from([susp_vid])
+    );
 
     // 1. jet.unusual_accounts & oracle
     let ua = run_over(&snapshot, &h.book, &UnusualAccounts::new().unwrap()).unwrap();
@@ -4196,6 +4262,32 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     snapshot.entries = vec![
         e_ic, e_lap1, e_lap2, e_lap3, e_unrec, e_jan_orig, e_subseq, e_ctrl, e_pay, e_capex, e_inv,
     ];
+    snapshot.fold_roles().unwrap();
+    // fa-kxc4, planted: 1500 "Network Property & CapEx" and 1300 "Merchandise
+    // Inventory" hold no role, so the role-selected procedures refuse rather
+    // than guess from the names.
+    let planted: [Box<dyn Procedure>; 4] = [
+        Box::new(ReconLapping::new().unwrap()),
+        Box::new(ExpenseCapitalization::new().unwrap()),
+        Box::new(InventoryAging::new().unwrap()),
+        Box::new(ReconIntercompany::new().unwrap()),
+    ];
+    for procedure in planted {
+        let refused = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap_err();
+        assert!(
+            matches!(&refused, LanternError::RoleUnassigned { procedure: p, .. } if p == procedure.id()),
+            "{refused:?}"
+        );
+    }
+    // The role-selected procedures read roles, from real role controls.
+    snapshot.entries.extend([
+        role_entry(&h, ic_vid, "intercompany", CommitSeq(399)),
+        role_entry(&h, h.account("1200"), "receivable", CommitSeq(398)),
+        role_entry(&h, h.account("2000"), "payable", CommitSeq(397)),
+        role_entry(&h, capex_vid, "fixed_asset", CommitSeq(396)),
+        role_entry(&h, inv_vid, "inventory", CommitSeq(395)),
+    ]);
+    snapshot.fold_roles().unwrap();
 
     // Add a RegisterEquals attestation on Cash (1000) in FY2026-P01 claiming 999_999 (diverging from fold)
     let reg_claim = RegisterEqualsClaim {
@@ -5726,4 +5818,32 @@ fn assertion_drift_cites_the_attestation_and_only_the_later_entries_that_move_it
         run.findings[0].cites[0],
         Cite::Attestation(revenue_attestation)
     );
+}
+
+/// fa-kxc4: the role each role-selected procedure reads in code is exactly
+/// what `registries/account_roles.toml` lists as that role's consumers, and
+/// each such procedure's registry summary says it selects by role.
+#[test]
+fn role_populations_are_the_registered_role_consumers() {
+    let roles = fa_registry::account_roles::AccountRoles::embedded().expect("account_roles.toml");
+    let mut registered: Vec<(String, String)> = roles
+        .rows
+        .iter()
+        .flat_map(|r| r.consumers.iter().map(|c| (c.clone(), r.name.clone())))
+        .collect();
+    registered.sort();
+    let mut code: Vec<(String, String)> = fa_lantern::ROLE_POPULATIONS
+        .iter()
+        .map(|(p, r)| ((*p).to_string(), (*r).to_string()))
+        .collect();
+    code.sort();
+    assert_eq!(code, registered);
+    for (procedure, role) in fa_lantern::ROLE_POPULATIONS {
+        let row = fa_lantern::bind(procedure).expect("registered");
+        assert!(
+            row.summary.contains(&format!("`{role}` account role")),
+            "{procedure}: {}",
+            row.summary
+        );
+    }
 }

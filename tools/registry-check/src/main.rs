@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode as ProcessExitCode;
 
+use fa_registry::account_roles::AccountRoles;
 use fa_registry::document_stores::DocumentStores;
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::foundations::Ledger;
@@ -88,6 +89,7 @@ const REGISTERED_OPS: &[&str] = &[
 ];
 
 const EXPECTED_REGISTRIES: &[&str] = &[
+    "account_roles.toml",
     "account_types.toml",
     "admissibility.toml",
     "allocation_laws.toml",
@@ -683,6 +685,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let _intake = IntakeSources::embedded().map_err(|e| e.to_string())?;
     let _procedures = Procedures::embedded().map_err(|e| e.to_string())?;
     let _reasons = ReasonCodes::embedded().map_err(|e| e.to_string())?;
+    let _roles = AccountRoles::embedded().map_err(|e| e.to_string())?;
     let _redaction = RedactionContracts::embedded().map_err(|e| e.to_string())?;
     let _capability_caveats = CapabilityCaveats::embedded().map_err(|e| e.to_string())?;
 

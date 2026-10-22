@@ -52,6 +52,7 @@
 #![forbid(unsafe_code)]
 
 pub mod access_log;
+pub mod account_role;
 pub mod aging;
 pub mod allocation_review;
 pub mod async_book;

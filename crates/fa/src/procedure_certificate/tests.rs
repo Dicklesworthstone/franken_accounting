@@ -132,6 +132,40 @@ impl Fixture {
     fn id(&self, code: &str) -> VId {
         account_vid(self.book.context().book_id, code)
     }
+    /// Journal one account role (bead fa-kxc4).
+    fn assign_role(&mut self, code: &str, role: &str) {
+        let cx = self.cx();
+        let spec = crate::account_role::AccountRoleSpec {
+            account: self.id(code),
+            role: role.into(),
+            assigned: true,
+        };
+        let recorded = self
+            .runtime
+            .block_on(self.book.record_account_role(
+                &cx,
+                &spec,
+                PRINCIPAL,
+                format!("role:{code}:{role}").as_bytes(),
+                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(!recorded.already_recorded);
+    }
+    /// A role on one of this fixture's Asset leaves for every role a
+    /// role-selected procedure requires (fa-kxc4), so each one runs.
+    fn assign_procedure_roles(&mut self) {
+        for (code, role) in [
+            ("1020", "suspense"),
+            ("1010", "intercompany"),
+            ("1000", "receivable"),
+            ("1020", "fixed_asset"),
+            ("1010", "inventory"),
+        ] {
+            self.assign_role(code, role);
+        }
+    }
     fn head(&self) -> CommitSeq {
         self.book.head(&self.cx()).unwrap()
     }
@@ -352,6 +386,7 @@ fn partitioned_graph_procedures_certify_and_replay_only_their_scoped_version() {
 #[test]
 fn new_catalog_rows_cannot_silently_omit_their_additional_native_inputs() {
     let mut f = Fixture::new(89);
+    f.assign_procedure_roles();
     let (source, _) = f.post(1, "3000", "1000", 100, false);
     for row in catalog::registered()
         .unwrap()

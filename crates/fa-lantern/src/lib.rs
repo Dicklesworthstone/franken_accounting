@@ -115,7 +115,28 @@ pub enum LanternError {
         procedure: String,
         used: u64,
     },
+    /// The procedure draws its population from an account role that no
+    /// account holds at the snapshot (bead fa-kxc4): an empty population
+    /// would read as "nothing found", so the run is refused instead.
+    RoleUnassigned {
+        procedure: String,
+        role: String,
+    },
 }
+
+/// The account role each role-selected procedure draws its population from
+/// (bead fa-kxc4). `registries/account_roles.toml` names the same pairs as
+/// its roles' `consumers`; a test holds the two together.
+pub const ROLE_POPULATIONS: &[(&str, &str)] = &[
+    ("jet.suspense_aging", "suspense"),
+    ("jet.intercompany_unmatched", "intercompany"),
+    ("recon.intercompany", "intercompany"),
+    ("recon.lapping", "receivable"),
+    ("recon.lapping", "payable"),
+    ("expense.capitalization", "fixed_asset"),
+    ("expense.capitalization", "accrued_expense"),
+    ("aging.inventory", "inventory"),
+];
 
 impl LanternError {
     /// Actionable fix hint for CLI and MCP surfaces (plan §15.3).
@@ -136,6 +157,9 @@ impl LanternError {
                     .into(),
             ),
             Self::BudgetExhausted { fix, .. } => Some(fix.clone()),
+            Self::RoleUnassigned { role, .. } => Some(format!(
+                "fa chart role <account> {role} assigns the role to each account it describes (fa chart roles lists what is assigned)"
+            )),
             _ => None,
         }
     }
@@ -183,6 +207,10 @@ impl fmt::Display for LanternError {
             Self::Cancelled { procedure, used } => write!(
                 f,
                 "procedure `{procedure}` was cancelled after {used} work units; nothing was reported"
+            ),
+            Self::RoleUnassigned { procedure, role } => write!(
+                f,
+                "procedure `{procedure}` selects the accounts holding role `{role}`, and no account holds it; nothing was tested"
             ),
         }
     }
