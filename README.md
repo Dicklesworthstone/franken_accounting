@@ -702,11 +702,14 @@ mechanical; whether a misstatement is material is the auditor's call.
 
 What the summary does not do yet:
 
-- **Carried items are not on statement lines.** A carry-forward's items
-  count in the rollover and iron-curtain totals and are listed under
-  `carried`, but the per-line attribution covers this engagement's own
-  items and its out-of-period corrections only. A carry-forward is not
-  chained: the prior engagement's own carry-forward does not come along.
+- **Carried items need closing routes for their lines.** Per statement
+  line, a turned-around item is reversed on the income statement, and a
+  still-uncorrected item is on the balance sheet with its income legs on
+  the equity account the book's closing routes (`fa close map`) send them
+  to. That income is in opening retained earnings by now. Without a route
+  for such an account the lines are refused, naming it. A carry-forward is
+  not chained: the prior engagement's own carry-forward does not come
+  along.
 - **No foreign-currency conversion.** Legs in other units are listed, never
   converted.
 
