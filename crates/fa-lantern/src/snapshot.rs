@@ -7,7 +7,7 @@
 //! clock: `known_at` is a commit sequence and `effective_through` is a
 //! declared civil date.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
@@ -70,6 +70,9 @@ pub struct Snapshot {
     /// Ascending by vid.
     pub entries: Vec<SnapshotEntry>,
     pub accounts: BTreeMap<VId, AccountRow>,
+    /// The account roles held at `known_at`: the fold of the role controls
+    /// among `entries` (bead fa-kxc4), so the inputs digest covers them.
+    pub roles: fa_journal::AccountRoles,
     /// By period code, this book's calendar only.
     pub periods: BTreeMap<String, PeriodRow>,
     /// By period code, ascending by commit.
@@ -226,7 +229,7 @@ impl Snapshot {
             h.update(&w.finish()?);
             h.finalize().0
         };
-        Ok(Self {
+        Self {
             coordinate: Coordinate {
                 book_id: book.book_id,
                 known_at: seq,
@@ -234,6 +237,7 @@ impl Snapshot {
             },
             entries,
             accounts,
+            roles: fa_journal::AccountRoles::default(),
             periods,
             transitions,
             open_items_as_of,
@@ -241,7 +245,57 @@ impl Snapshot {
             attestations,
             bank_reconciliations: None,
             inputs_digest,
-        })
+        }
+        .with_roles()
+    }
+
+    fn with_roles(mut self) -> Result<Self, LanternError> {
+        self.fold_roles()?;
+        Ok(self)
+    }
+
+    /// Recompute `roles` from `entries`: every role names an account of the
+    /// snapshot. `read` calls it; a caller that edits `entries` calls it again.
+    pub fn fold_roles(&mut self) -> Result<(), LanternError> {
+        let roles = fa_journal::AccountRoles::fold(
+            self.entries
+                .iter()
+                .map(|e| (e.vid, &e.entry, e.recorded_at)),
+        )?;
+        if roles
+            .assigned()
+            .any(|control| !self.accounts.contains_key(&control.spec.account))
+        {
+            return Err(KernelError::Corrupt(
+                "an account role names an account the snapshot does not hold".into(),
+            )
+            .into());
+        }
+        self.roles = roles;
+        Ok(())
+    }
+
+    /// The accounts holding the role `procedure` draws its population from
+    /// ([`crate::ROLE_POPULATIONS`]); refused when no account holds it.
+    pub fn role_population(&self, procedure: &str) -> Result<BTreeSet<VId>, LanternError> {
+        let Some((_, role)) = crate::ROLE_POPULATIONS
+            .iter()
+            .find(|(id, _)| *id == procedure)
+        else {
+            return Err(LanternError::Parameter {
+                procedure: procedure.to_string(),
+                name: "role".into(),
+                message: "the procedure selects no account-role population".into(),
+            });
+        };
+        let accounts = self.roles.accounts_with(role);
+        if accounts.is_empty() {
+            return Err(LanternError::RoleUnassigned {
+                procedure: procedure.to_string(),
+                role: (*role).to_string(),
+            });
+        }
+        Ok(accounts)
     }
 
     /// The period row an entry resolves to, when this calendar has it.

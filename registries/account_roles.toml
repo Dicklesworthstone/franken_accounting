@@ -1,0 +1,28 @@
+# =============================================================================
+# registries/account_roles.toml — Account roles (bead fa-kxc4)
+# =============================================================================
+# A role says what an account is for, independently of its code and name. A
+# principal holding schema_change assigns it per account with a journaled
+# schema control (`fa chart role <account> <role>`), and a chart import seeds
+# the roles its accounts carry. Lantern selects a population by role, never
+# by an account's code or the words in its name (plan §11.9: a detector's
+# population and selection rule are registered), and a procedure whose role
+# no account holds refuses with the command that assigns it.
+#
+# A role is listed only once a procedure selects by it; `consumers` names
+# those procedures, and fa-lantern checks the list against its code.
+# `account_types` are the account types the role admits (account_types.toml).
+
+schema_version = 1
+
+[[role]]
+name = "suspense"
+account_types = ["Asset", "Liability"]
+meaning = "A suspense or clearing account: amounts parked until they are identified and moved to their proper accounts, so a balance that ages is an exception."
+consumers = ["jet.suspense_aging"]
+
+[[role]]
+name = "intercompany"
+account_types = ["Asset", "Liability"]
+meaning = "An intercompany due-from (Asset) or due-to (Liability) account: a balance with another legal entity of the group that must be matched by its reciprocal."
+consumers = ["jet.intercompany_unmatched", "recon.intercompany"]

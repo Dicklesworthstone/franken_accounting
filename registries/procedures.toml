@@ -856,13 +856,13 @@ meaning = "Maximum civil days between the original entry and its cross-period re
 
 [[procedure]]
 id = "jet.suspense_aging"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L28"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Suspense, clearing, and wash accounts (identified by code/name tokens `suspense`, `clearing`, `wash`, `9999`, `unallocated`) that retain a non-zero balance or uncleared postings older than max_age_days as of the coordinate's effective date."
+summary = "Accounts holding the `suspense` account role (registries/account_roles.toml, assigned with fa chart role) that retain a non-zero balance or uncleared postings older than max_age_days as of the coordinate's effective date. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
 effective_through = "optional"
 
 [[parameter]]
@@ -873,13 +873,13 @@ meaning = "Maximum civil days a suspense or clearing balance may remain open bef
 
 [[procedure]]
 id = "jet.intercompany_unmatched"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L29"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Live postings on intercompany accounts (codes starting with `IC` or names containing `intercompany` / `due to` / `due from`) or carrying both legal_entity and counterparty party dimensions without a matching mirror posting in the same period."
+summary = "Live postings on accounts holding the `intercompany` account role (registries/account_roles.toml, assigned with fa chart role) whose net per period and unit is not zero: no matching mirror posting. Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
 
 # ---- Remaining Benford and number tests (plan §11.3; bead fa-ac78) --------
 
@@ -1179,13 +1179,13 @@ summary = "Deterministic entity-resolution candidate generator over Party identi
 
 [[procedure]]
 id = "recon.intercompany"
-version = 1
-claim = "invariant"
+version = 2
+claim = "statistical"
 evidence = "FA-EVID-L41"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Exact intercompany reciprocal balance reconciliation across legal entities and intercompany accounts per period and unit: any non-zero net reciprocal imbalance is an invariant violation."
+summary = "Exact intercompany reciprocal balance reconciliation over the accounts holding the `intercompany` account role (registries/account_roles.toml, assigned with fa chart role), per period and unit: a non-zero net reciprocal balance is a finding. Statistical until the kernel pairs intercompany legs at commit (FA-INV-13). Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
 
 [[procedure]]
 id = "recon.lapping"

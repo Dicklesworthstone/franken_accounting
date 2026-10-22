@@ -909,6 +909,12 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::SchemaChange],
             Reaches,
         ),
+        // fa-kxc4: an account role is a schema control read back by Lantern.
+        row(
+            &["chart", "role", "1000", "suspense"],
+            &[Op::Read, Op::SchemaChange],
+            Succeeds,
+        ),
         row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],

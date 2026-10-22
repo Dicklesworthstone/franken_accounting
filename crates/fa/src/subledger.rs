@@ -109,7 +109,7 @@ impl NativeSubledgerReconciliation {
     }
 }
 
-fn admitted_at<V: Vfs + Clone>(
+pub(crate) fn admitted_at<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     capability: &Capability,

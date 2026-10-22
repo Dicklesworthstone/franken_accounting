@@ -356,6 +356,15 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
             }) => ChartOp::NativeSubledger(crate::subledger::NativeSubledgerSpec::decode(
                 canonical_bytes,
             )?),
+            // A role classifies an account without changing the chart; the
+            // role fold (account_role) checks it names an account.
+            Some(ControlPayload::SchemaChange {
+                kind: crate::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE,
+                canonical_bytes,
+            }) => {
+                crate::account_role::AccountRoleSpec::decode(canonical_bytes)?;
+                continue;
+            }
             Some(ControlPayload::SchemaChange {
                 kind,
                 canonical_bytes,

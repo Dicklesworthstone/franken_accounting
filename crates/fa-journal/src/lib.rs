@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod account_role;
 pub mod allocation;
 pub mod attestation;
 pub mod bank;
@@ -63,6 +64,10 @@ pub mod temporal;
 pub mod upload;
 pub mod usage;
 
+pub use account_role::{
+    AccountRoleControl, AccountRoleRecorded, AccountRoleSpec, AccountRoles, account_roles_at,
+    record_account_role, role_control,
+};
 pub use allocation::AllocationPosting;
 pub use attestation::{
     AttestationClaim, Attested, confirmation_received_by, confirmed_vid, read_attestation,

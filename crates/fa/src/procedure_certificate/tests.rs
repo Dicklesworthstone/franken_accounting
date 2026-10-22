@@ -132,6 +132,27 @@ impl Fixture {
     fn id(&self, code: &str) -> VId {
         account_vid(self.book.context().book_id, code)
     }
+    /// Journal one account role (bead fa-kxc4).
+    fn assign_role(&mut self, code: &str, role: &str) {
+        let cx = self.cx();
+        let spec = crate::account_role::AccountRoleSpec {
+            account: self.id(code),
+            role: role.into(),
+            assigned: true,
+        };
+        let recorded = self
+            .runtime
+            .block_on(self.book.record_account_role(
+                &cx,
+                &spec,
+                PRINCIPAL,
+                format!("role:{code}:{role}").as_bytes(),
+                &fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(!recorded.already_recorded);
+    }
     fn head(&self) -> CommitSeq {
         self.book.head(&self.cx()).unwrap()
     }

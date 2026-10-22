@@ -41,6 +41,9 @@ fn party(f: &mut Fixture, code: &str, bank: &str) -> VId {
 #[test]
 fn all_additional_procedures_round_trip_with_complete_native_populations() {
     let mut f = Fixture::new(91);
+    // The role-selected procedures (fa-kxc4) need their roles held.
+    f.assign_role("1020", "suspense");
+    f.assign_role("1010", "intercompany");
     let (source, _) = f.post(1, "3000", "1000", 100, true);
     f.post(2, "1000", "1010", 80, false);
     f.post(3, "1010", "1020", 60, false);
@@ -78,6 +81,58 @@ fn all_additional_procedures_round_trip_with_complete_native_populations() {
             c.report.procedure
         );
         assert_eq!(f.head(), after);
+    }
+}
+
+/// fa-kxc4: a procedure that selects its population by account role is
+/// refused while no account holds the role, never certified over an empty
+/// population (planted), and certifies and replays once the role is held.
+#[test]
+fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
+    let mut f = Fixture::new(95);
+    let (source, _) = f.post(1, "3000", "1020", 100, false);
+    let before = f.head();
+    for (id, role) in [
+        ("jet.suspense_aging", "suspense"),
+        ("jet.intercompany_unmatched", "intercompany"),
+        ("recon.intercompany", "intercompany"),
+    ] {
+        let refused = f.book.certify_procedure(
+            &f.cx(),
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            &f.request(id, source),
+        );
+        assert!(
+            matches!(
+                &refused,
+                Err(BookError::Lantern(fa_lantern::LanternError::RoleUnassigned { procedure, role: r }))
+                    if procedure == id && r == role
+            ),
+            "{id}: {refused:?}"
+        );
+        if let Err(error) = &refused {
+            assert_eq!(error.exit(), fa_journal::exit::REFUSAL, "{id}");
+        }
+    }
+    assert_eq!(f.head(), before, "a refused run writes nothing");
+    f.assign_role("1020", "suspense");
+    f.assign_role("1010", "intercompany");
+    for id in [
+        "jet.suspense_aging",
+        "jet.intercompany_unmatched",
+        "recon.intercompany",
+    ] {
+        let certified = f.certify(&f.request(id, source));
+        assert_eq!(certified.report.version, 2, "{id}");
+        assert_eq!(
+            f.book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &certified.certificate)
+                .unwrap()
+                .unwrap(),
+            certified.report,
+            "{id}"
+        );
     }
 }
 

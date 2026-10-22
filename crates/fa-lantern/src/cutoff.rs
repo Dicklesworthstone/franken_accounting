@@ -89,19 +89,12 @@ impl Procedure for PeriodBoundary {
     }
 }
 
-fn is_ic_account(code: &str, name: &str) -> bool {
-    let cl = code.to_ascii_lowercase();
-    let nl = name.to_ascii_lowercase();
-    cl.starts_with("ic")
-        || nl.contains("intercompany")
-        || nl.contains("due to")
-        || nl.contains("due from")
-}
-
-/// `recon.intercompany` (plan §11.4, `FA-EVID-L41`, `claim = "invariant"`):
-/// exact intercompany reciprocal balance reconciliation across legal entities
-/// and intercompany accounts per period and unit. Any non-zero net reciprocal
-/// imbalance is an invariant violation.
+/// `recon.intercompany` (plan §11.4, `FA-EVID-L41`, `claim = "statistical"`):
+/// exact intercompany reciprocal balance reconciliation over the accounts
+/// holding the `intercompany` role, per period and unit. A non-zero net is a
+/// finding; it is not an invariant violation until the kernel pairs
+/// intercompany legs at commit (FA-INV-13). Version 2 selects by role;
+/// version 1 guessed from code and name tokens.
 pub struct ReconIntercompany {
     params: Params,
 }
@@ -112,7 +105,7 @@ impl Procedure for ReconIntercompany {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -123,6 +116,7 @@ impl Procedure for ReconIntercompany {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
+        let intercompany = snapshot.role_population(Self::ID)?;
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
 
@@ -135,10 +129,7 @@ impl Procedure for ReconIntercompany {
             work.entry()?;
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
-                    continue;
-                };
-                if !is_ic_account(&acct.code, &acct.name) {
+                if !intercompany.contains(&leg.account_ref) {
                     continue;
                 }
                 population += 1;
