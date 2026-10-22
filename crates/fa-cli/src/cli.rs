@@ -16259,10 +16259,28 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         Some("aging") => {
-            if args.positional.len() != 2 {
+            // `fa aging ar|ap` (plan §15.3; fa-kxc4 roles): the one account
+            // holding the receivable or payable role.
+            let role = match args.positional.get(2).map(String::as_str) {
+                Some("ar") => Some("receivable"),
+                Some("ap") => Some("payable"),
+                _ => None,
+            };
+            if args.positional.len() != 2 + usize::from(role.is_some()) {
                 return Err(usage(
                     "unexpected gl aging argument",
-                    "fa gl aging [--account <code[,code...]> | --all-posting] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
+                    "fa gl aging [ar | ap | --account <code[,code...]> | --all-posting] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
+                ));
+            }
+            if role.is_some()
+                && (args.flag("--account").is_some()
+                    || args.switch("--all-posting")
+                    || args.switch("--reconcile")
+                    || args.flag("--from-source").is_some())
+            {
+                return Err(usage(
+                    "gl aging ar|ap names its account by role; it takes no --account, --all-posting, --reconcile or --from-source",
+                    "fa aging ar --as-of YYYY-MM-DD, or fa gl aging --account <code> --as-of YYYY-MM-DD",
                 ));
             }
             let mut book = ctx.books.open_admitted(args, admit_report)?;
@@ -16319,6 +16337,45 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .first()
                 .map(|code| account_vid(book.context().book_id, code));
             let known_at = gl_known_at(args, &book, out)?;
+            let account = match role {
+                None => account,
+                Some(role) => {
+                    let (at, roles) = book.account_roles(known_at, &capability)??;
+                    let holders: Vec<fgdb_types::VId> =
+                        roles.accounts_with(role).into_iter().collect();
+                    match holders.as_slice() {
+                        [only] => Some(*only),
+                        [] => {
+                            return Err(usage(
+                                format!("no account holds the {role} role at sequence {}", at.0),
+                                format!(
+                                    "fa chart role <account> {role} assigns it (fa chart roles lists the roles), or age an account with --account <code>"
+                                ),
+                            ));
+                        }
+                        many => {
+                            let mut codes: Vec<String> = book
+                                .accounts_at(at, &capability)??
+                                .into_iter()
+                                .filter(|a| many.contains(&a.vid))
+                                .map(|a| a.code)
+                                .collect();
+                            codes.sort();
+                            return Err(usage(
+                                format!(
+                                    "{} accounts hold the {role} role ({})",
+                                    codes.len(),
+                                    codes.join(", ")
+                                ),
+                                format!(
+                                    "age one with fa gl aging --account <code>, or tie them all with fa gl aging --account {} --reconcile",
+                                    codes.join(",")
+                                ),
+                            ));
+                        }
+                    }
+                }
+            };
             book.prepare_report_history(who, &capability, known_at)??;
             // Saved certificates are read after admission, and their own
             // prefix is prepared before the library replays them.
