@@ -14858,7 +14858,7 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
         assert_eq!(text(&error, "class"), "usage");
         assert_eq!(
             text(&error, "message"),
-            "--as-known-at is supported only by verify periods, verify close and verify usage"
+            "--as-known-at is supported only by verify periods, verify close, verify usage and verify fx-conversion"
         );
     }
     Ok(())
