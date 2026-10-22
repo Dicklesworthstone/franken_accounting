@@ -6151,6 +6151,120 @@ fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
     Ok(())
 }
 
+/// fa-7uhr (plan §7.6): `fa period open --dry-run` lists the scheduled
+/// reversals the open would mint, exactly those the open then mints, dated
+/// by the latest tick. Planted: while the latest tick is uncorroborated an
+/// open mints nothing, and the dry run lists nothing and names no tick.
+#[test]
+fn period_open_dry_run_lists_the_scheduled_reversals_the_open_mints() -> std::io::Result<()> {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::Capability;
+    use fgdb_types::VId;
+
+    // March 15 noon and April 1 midnight UTC, declared observations.
+    const ANCHOR_NS: u64 = 1_773_576_000_000_000_000;
+    const APRIL_NS: u64 = 1_775_001_600_000_000_000;
+    let dir = tmp("open-mints")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Open Co",
+        "--time-zone",
+        "UTC",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let witness = Capability::embedded(VId(7), &["witness"]).unwrap();
+    let tick = |ns, corroborated| {
+        let mut handle = open();
+        runtime
+            .block_on(handle.record_tick(&root, ns, corroborated, &witness))
+            .unwrap()
+            .unwrap()
+    };
+    tick(ANCHOR_NS, true);
+    let accrual = write(
+        &dir,
+        "accrual.json",
+        r#"{"class":"Adjusting","effective_date":"2026-03-15","idempotency_key":"march-accrual","reverse_on":"2026-04-01","legs":[{"side":"debit","account":"6000","amount":"1.00 USD"},{"side":"credit","account":"1000","amount":"1.00 USD"}]}"#,
+    );
+    let posted = ok(&[
+        "post",
+        "--intent",
+        &accrual,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&posted, "vid").unwrap().to_string();
+    let dry_run = |code: &str| doc(&ok(&["period", "open", code, "--dry-run", "--json"]));
+
+    // Planted: April has been reached, but the latest tick is not
+    // corroborated, so an open mints nothing and the dry run says so.
+    tick(APRIL_NS, false);
+    let planned = dry_run("FY2026-P04");
+    assert!(
+        arr(&planned, "scheduled_reversals").is_empty(),
+        "{planned:?}"
+    );
+    assert_eq!(planned.get("reversal_tick"), Some(&Json::Null));
+
+    // Corroborated: the dry run lists the schedule, dated by that tick.
+    let dated = tick(APRIL_NS + 1, true);
+    let planned = dry_run("FY2026-P04");
+    let scheduled = arr(&planned, "scheduled_reversals");
+    assert_eq!(scheduled.len(), 1, "{planned:?}");
+    assert_eq!(text(&scheduled[0], "target"), target);
+    assert_eq!(text(&scheduled[0], "reverse_on"), "2026-04-01");
+    assert_eq!(
+        text(&planned, "reversal_tick"),
+        format!("{:032x}", dated.tick.entry.0)
+    );
+    // Other transitions list none.
+    let soft = doc(&ok(&[
+        "period",
+        "soft-close",
+        "FY2026-P03",
+        "--dry-run",
+        "--json",
+    ]));
+    assert!(arr(&soft, "scheduled_reversals").is_empty());
+
+    // The open mints exactly the listed reversal.
+    let target_vid = VId(u128::from_str_radix(&target, 16).unwrap());
+    let reversal = fa_journal::rows::reversal_vid(target_vid);
+    assert!(open().read_entry(reversal).unwrap().is_none());
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    let (minted, _) = open()
+        .read_entry(reversal)
+        .unwrap()
+        .expect("minted at the open");
+    assert_eq!(minted.proposal.effective_date.render(), "2026-04-01");
+    assert!(open().due_reversals().unwrap().is_empty());
+    Ok(())
+}
+
 #[test]
 fn two_phase_reserve_and_resolve_follow_the_contract() -> std::io::Result<()> {
     let dir = tmp("two-phase")?;

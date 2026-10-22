@@ -1188,6 +1188,11 @@ doc = "Applicable FX routing at one effective date and retained prefix under cur
 fields = ["as_of:date", "known_at:seq", "found:bool", "effective_from:date?", "control_entry:hex?", "recorded_at:seq?", "digest:hex?", "routes:[fx_revaluation_route]"]
 
 [[shape]]
+name = "scheduled_reversal"
+doc = "A scheduled reversal an open would mint: its ReversalSchedule, the Adjusting entry it reverses, and the reverse_on date."
+fields = ["schedule:hex", "target:hex", "reverse_on:date"]
+
+[[shape]]
 name = "fx_revaluation_route"
 doc = "One foreign Asset/Liability source and its exclusively assigned same-type functional-currency valuation leaf and Revenue/Expense unrealized destination."
 fields = ["account:string", "account_vid:hex", "valuation_account:string", "valuation_vid:hex", "unrealized_account:string", "unrealized_vid:hex"]
@@ -1418,8 +1423,8 @@ fields = ["period:string", "from:string", "to:string", "proposal_digest:hex", "p
 [[event]]
 name = "period_plan"
 book = true
-doc = "A period transition proposal prepared inline without writing files or journal data. bytes is the complete existing canonical TransitionPlan in hex; approvals bind proposal_digest and the sealed description is preserved. Scope is period-transition-proposal: this prepares the state-machine transition, while commit independently checks current authority, approvals and period state. It is not the authenticated PostEntry effects certificate. MCP dangerous commits remain unavailable; an operator must separately review and authorize the transition."
-fields = ["period:string", "from:string", "to:string", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string"]
+doc = "A period transition proposal prepared inline without writing files or journal data. bytes is the complete existing canonical TransitionPlan in hex; approvals bind proposal_digest and the sealed description is preserved. Scope is period-transition-proposal: this prepares the state-machine transition, while commit independently checks current authority, approvals and period state. It is not the authenticated PostEntry effects certificate. MCP dangerous commits remain unavailable; an operator must separately review and authorize the transition. For an open, scheduled_reversals lists what the commit mints (plan §7.6): every live schedule whose date the latest tick has reached and whose reversal falls in this period, dated by reversal_tick; both are empty and null when the latest tick is not corroborated, since an open then mints nothing. The commit rechecks applications and availability."
+fields = ["period:string", "from:string", "to:string", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string", "scheduled_reversals:[scheduled_reversal]", "reversal_tick:hex?"]
 
 [[event]]
 name = "approved"

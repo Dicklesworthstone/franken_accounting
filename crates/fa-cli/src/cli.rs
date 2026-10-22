@@ -4666,6 +4666,37 @@ fn account_fields(
 // period
 // ---------------------------------------------------------------------------
 
+/// What an `Open` of `code` mints inside its commit (plan §7.6, fa-7uhr):
+/// every live schedule whose date the latest tick has reached and whose
+/// reversal falls in this period, dated by that tick, but only when the
+/// latest tick is corroborated (otherwise the open mints nothing and the
+/// schedules wait for the reversal sweep). The commit rechecks the target's
+/// applications and the availability law, which can still block one.
+fn opening_mints(book: &Book, code: &str) -> Result<(Vec<Json>, Option<VId>), Fail> {
+    let corroborated = book.corroborated_tick_at(book.head()?)?;
+    let Some(tick) = book
+        .latest_tick()?
+        .filter(|latest| corroborated.is_some_and(|c| c.entry == latest.entry))
+    else {
+        return Ok((Vec::new(), None));
+    };
+    let rows = book
+        .due_reversals()?
+        .into_iter()
+        .filter(|due| {
+            matches!(&due.status, fa_journal::ReversalStatus::Waiting { period } if period == code)
+        })
+        .map(|due| {
+            obj(vec![
+                ("schedule", s(format!("{:032x}", due.schedule.vid.0))),
+                ("target", s(format!("{:032x}", due.schedule.target.vid.0))),
+                ("reverse_on", s(due.schedule.reverse_on.render())),
+            ])
+        })
+        .collect();
+    Ok((rows, Some(tick.entry)))
+}
+
 fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let sub = args.positional.get(1).map(String::as_str);
@@ -4852,6 +4883,20 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
                 let encoded = hex(&bytes);
+                let (scheduled, reversal_tick) = if matches!(transition, PeriodTransition::Open) {
+                    opening_mints(&book, code)?
+                } else {
+                    (Vec::new(), None)
+                };
+                let mints = if scheduled.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " The open mints {} scheduled reversal(s) dated by tick {}.",
+                        scheduled.len(),
+                        reversal_tick.map_or(String::new(), |t| format!("{:032x}", t.0))
+                    )
+                };
                 out.event(
                     "period_plan",
                     vec![
@@ -4862,8 +4907,13 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("proposal_digest", s(hex(&digest))),
                         ("bytes", s(&encoded)),
                         ("scope", s("period-transition-proposal")),
+                        ("scheduled_reversals", Json::Arr(scheduled)),
+                        (
+                            "reversal_tick",
+                            reversal_tick.map_or(Json::Null, |t| s(format!("{:032x}", t.0))),
+                        ),
                     ],
-                    &format!("{}: planned {} → {}; nothing was written. Approvals bind proposal {}. Commit authority and required approvals are checked separately.\nCanonical period plan bytes (hex):\n{encoded}", plan.period_code, plan.from.name(), plan.to.name(), hex(&digest)),
+                    &format!("{}: planned {} → {}; nothing was written.{mints} Approvals bind proposal {}. Commit authority and required approvals are checked separately.\nCanonical period plan bytes (hex):\n{encoded}", plan.period_code, plan.from.name(), plan.to.name(), hex(&digest)),
                 );
                 return Ok(());
             }
