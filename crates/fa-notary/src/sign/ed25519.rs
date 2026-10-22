@@ -9,13 +9,19 @@
 //! by construction: a fixed-base table of `j·16^i·B` read by mask-select
 //! over all sixteen entries (no secret index), the complete addition law
 //! (no secret branch), and reduction mod L by a fixed 512-step long
-//! division with masked subtraction. Not measured: no timing harness backs
-//! this, so the claim class is `bounded_model`, never `invariant`.
+//! division with masked subtraction. Every mask passes `black_box`, so the
+//! optimizer cannot prove it boolean and turn a select back into a branch
+//! (a best-effort barrier, not a guarantee). A dudect-style harness
+//! (`crate::ct_harness`, bead fa-cs80) times `mul_base`, the reduction and
+//! `sign` on fixed against random secrets; each run is `statistical`
+//! evidence about one build on one host. The claim class stays
+//! `bounded_model`, never `invariant`.
 //!
 //! Field elements are five 51-bit limbs with 128-bit products — a
 //! different representation from fa-verify's sixteen 16-bit limbs, so the
 //! signer↔verifier differential compares independent arithmetic.
 
+use std::hint::black_box;
 use std::sync::OnceLock;
 
 use fgdb_crypto::zeroize::{Secret, scrub_slice, scrub_words};
@@ -336,10 +342,13 @@ fn mul_base(k: &[u8; 32]) -> Point {
         let digit = u64::from((k[i / 2] >> (4 * (i % 2))) & 0x0f);
         let mut chosen = IDENTITY;
         for (j, entry) in row.iter().enumerate().skip(1) {
-            // All ones iff digit == j, computed without a branch.
+            // All ones iff digit == j, computed without a branch. The
+            // barrier hides the mask's provenance, so the optimizer cannot
+            // prove it boolean and turn the select back into a branch.
             let diff = digit ^ (j as u64);
             let equal = (diff.wrapping_sub(1) >> 63) & 1;
-            chosen = Point::select(&chosen, entry, 0u64.wrapping_sub(equal));
+            let mask = black_box(0u64.wrapping_sub(equal));
+            chosen = Point::select(&chosen, entry, mask);
         }
         acc = acc.add(&chosen, &t.d2);
     }
@@ -381,8 +390,8 @@ fn conditional_sub_l(r: &mut [u64; 4]) {
         d[i] = v;
         borrow = u64::from(o1 | o2);
     }
-    // borrow = 1 means r < L: keep r.
-    let keep = 0u64.wrapping_sub(borrow);
+    // borrow = 1 means r < L: keep r. The barrier as in [`mul_base`].
+    let keep = black_box(0u64.wrapping_sub(borrow));
     for i in 0..4 {
         r[i] = (r[i] & keep) | (d[i] & !keep);
     }
@@ -536,6 +545,69 @@ impl core::fmt::Debug for SigningKey {
         f.debug_struct("SigningKey")
             .field("public", &self.public)
             .finish_non_exhaustive()
+    }
+}
+
+/// The secret-dependent kernels as timing targets for
+/// [`crate::ct_harness`], each returning enough of its result that the call
+/// cannot be elided, and the leak the harness must catch.
+#[cfg(test)]
+pub(crate) mod ct_targets {
+    use super::*;
+
+    /// `[k]B`'s projective X limbs.
+    pub(crate) fn mul_base_x(k: &[u8; 32]) -> [u64; 5] {
+        mul_base(k).x.0
+    }
+
+    /// `x mod L`.
+    pub(crate) fn reduce(x: &[u8; 64]) -> [u64; 4] {
+        reduce_512(x)
+    }
+
+    /// The planted leak: [`mul_base`] except that a zero digit skips its
+    /// addition, the classic shortcut whose running time counts the
+    /// scalar's nonzero digits. The table scan stays masked.
+    fn mul_base_skipping_zero_digits(k: &[u8; 32]) -> Point {
+        let t = tables();
+        let mut acc = IDENTITY;
+        for (i, row) in t.table.iter().enumerate() {
+            let digit = u64::from((k[i / 2] >> (4 * (i % 2))) & 0x0f);
+            let mut chosen = IDENTITY;
+            for (j, entry) in row.iter().enumerate().skip(1) {
+                let equal = ((digit ^ (j as u64)).wrapping_sub(1) >> 63) & 1;
+                chosen = Point::select(&chosen, entry, 0u64.wrapping_sub(equal));
+            }
+            if digit != 0 {
+                acc = acc.add(&chosen, &t.d2);
+            }
+        }
+        acc
+    }
+
+    pub(crate) fn mul_base_skipping_zero_digits_x(k: &[u8; 32]) -> [u64; 5] {
+        mul_base_skipping_zero_digits(k).x.0
+    }
+
+    /// The leaky variant is a correct one: the harness catches a timing
+    /// difference, not a wrong answer.
+    #[test]
+    fn the_leaky_variant_computes_the_same_point() {
+        let mut k = [0u8; 32];
+        for round in 0u8..8 {
+            for (i, b) in k.iter_mut().enumerate() {
+                *b = round.wrapping_mul(37) ^ (i as u8).wrapping_mul(101);
+            }
+            k[usize::from(round)] = 0;
+            assert_eq!(
+                mul_base_skipping_zero_digits(&k).encode(),
+                mul_base(&k).encode()
+            );
+        }
+        assert_eq!(
+            mul_base_skipping_zero_digits(&[0; 32]).encode(),
+            IDENTITY.encode()
+        );
     }
 }
 
