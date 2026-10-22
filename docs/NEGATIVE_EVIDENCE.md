@@ -338,3 +338,34 @@ executed. The RCH receipt binds base `1b1c1853` and test overlays to tree
 This is focused development evidence. Shared main advanced to `324eeec4`
 during that run and needs its own verification; neither the canonical full
 gate nor typed documented valuations are complete.
+
+## 2026-10-22 — Aggregate plans rebased across report metadata (`fa-r19j`, open)
+
+The identified older CLI binary (SHA256
+`5da52e3660586a140482405a9fa99e6267fb3c23477e5fcf691a1d3e50786078`)
+prepared a native fiscal-year Closing plan at sequence 11 in a fresh
+synthetic book. A real `tb --certify` retained a report certificate at
+sequence 12. The unchanged close plan then committed at sequence 13 with
+the original plan certificate digest. This violates plan §5.10's exact
+aggregate-prefix rule even though the report metadata changes no amount.
+Commands, outputs and the synthetic book are retained at
+`/Users/jemanuel/.codex/artifacts/fa-solvency-20261021/older-aggregate-plan-8sgsdvtd/result.json`.
+This proves behavior of that older binary, not current-source acceptance.
+
+Source inspection found that portable plan publication and retained-outcome
+recognition both used the point-plan metadata tolerance for aggregate
+Closing and source-bound Revaluation entries. The drafted repair applies
+the shared aggregate-basis law to those families, preserving point-only
+metadata tolerance and judging exact retries at their original publication
+coordinate. Native and real-CLI regressions require stale refusal without
+publication, fresh-plan success and later exact retry. The direct substrate
+test also includes both publication orders and an actually published
+guard-bypassed control.
+
+Execution is incomplete: the admitted five-package Rust run was cancelled
+by RCH's stuck detector during pinned `fgdb` compilation (job
+`30075807208571128`, daemon history exit 130, local shell 143), before any
+test result or remote completion marker. The separate frozen native
+negative has not obtained an idle worker. Formatting and bounded static
+scans are not runtime proof. Per-intent dependency classification and the
+remaining original acceptance stay in the same open bead.

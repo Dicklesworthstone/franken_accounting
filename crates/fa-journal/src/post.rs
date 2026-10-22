@@ -271,6 +271,12 @@ pub fn check_aggregate_basis(expected: CommitSeq, actual: CommitSeq) -> Result<(
     ))
 }
 
+/// Fold-derived PostEntry families admitted by the current kernel. Other
+/// intents retain their own protocols; this does not enable a new family.
+pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> bool {
+    proposal.class == EntryClass::CLOSING || crate::revaluation::is_source_bound(proposal)
+}
+
 impl PreparedPost {
     /// The committed prefix against which all laws and witnesses were read.
     #[must_use]
@@ -391,8 +397,7 @@ impl PreparedPost {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
         }
-        if (request.proposal.class == EntryClass::CLOSING
-            || crate::revaluation::is_source_bound(&request.proposal))
+        if requires_aggregate_basis(&request.proposal)
             && let Err(refusal) = check_aggregate_basis(txn.basis(), db.frontier()?)
         {
             txn.abort();

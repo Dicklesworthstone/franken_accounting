@@ -343,6 +343,101 @@ fn closing_binary_first_close_delta_reclose_zero_noop_and_exact_plan_retry() {
 }
 
 #[test]
+fn closing_binary_rejects_a_plan_after_real_report_certification() {
+    let f = Fixture::new(true);
+    f.post("metadata-sale", "1000", "4000", "200.00");
+    let (review_path, review) = f.review("metadata-prefix");
+    let prepare = |path: &str| {
+        ok(
+            &f.book,
+            &[
+                "close",
+                "year-end",
+                "--review",
+                &review_path,
+                "--digest",
+                text(&review, "review_digest"),
+                "--dry-run",
+                "--plan-out",
+                path,
+            ],
+        )
+    };
+    let stale_path = f.dir.join("before-certificate.plan").display().to_string();
+    let planned = prepare(&stale_path);
+    let basis = integer(&planned, "snapshot_seq");
+    assert_eq!(head(&f.book), basis);
+
+    // Exercise genuine native certificate retention, not an injected graph
+    // row. This command emits its report and its retained certificate.
+    let certified = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&f.book)
+        .args(["tb", "--period", "FY2026-P12", "--certify", "--json"])
+        .env_remove("FA_BOOK")
+        .stdin(Stdio::null())
+        .output()
+        .expect("certify the actual trial balance");
+    let stdout = String::from_utf8(certified.stdout).expect("UTF-8 report");
+    assert!(
+        certified.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&certified.stderr)
+    );
+    let registry = fa_cli::verbs::registry().expect("registry");
+    let lines: Vec<_> = stdout
+        .lines()
+        .map(|line| {
+            registry.check_line(line).expect("registered robot output");
+            json::parse(line).expect("report line")
+        })
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(text(&lines[0], "event"), "trial_balance");
+    assert_eq!(integer(&lines[0], "known_at"), basis);
+    assert_eq!(text(&lines[1], "event"), "report_certificate");
+    assert_eq!(integer(&lines[1], "recorded_at"), basis + 1);
+    let before = head(&f.book);
+    assert_eq!(before, basis + 1);
+
+    let (code, refused) = run(
+        &f.book,
+        &[
+            "commit",
+            "--plan",
+            &stale_path,
+            "--grant",
+            "read",
+            "--grant",
+            "close",
+        ],
+    );
+    assert_eq!(code, 6, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-034");
+    assert_eq!(head(&f.book), before, "the stale close publishes nothing");
+
+    let fresh_path = f.dir.join("after-certificate.plan").display().to_string();
+    let fresh = prepare(&fresh_path);
+    assert_eq!(integer(&fresh, "snapshot_seq"), before);
+    let posted = f.commit(&fresh_path);
+    assert_eq!(integer(&posted, "recorded_at"), before + 1);
+    let verified = ok(&f.book, &["verify", "close", "FY2026"]);
+    assert_eq!(get(&verified, "nominal_zero_at_close"), &Json::Bool(true));
+    assert_eq!(get(&verified, "needs_reclose"), &Json::Bool(false));
+
+    f.post("after-metadata-close", "1000", "4000", "1.00");
+    let retry_head = head(&f.book);
+    let retry = f.commit(&fresh_path);
+    assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
+    assert_eq!(text(&retry, "vid"), text(&posted, "vid"));
+    assert_eq!(
+        integer(&retry, "recorded_at"),
+        integer(&posted, "recorded_at")
+    );
+    assert_eq!(head(&f.book), retry_head);
+}
+
+#[test]
 fn closing_binary_closed_reclose_preserves_review_across_independent_approval() {
     let f = Fixture::new(true);
     f.post("sale", "1000", "4000", "100.00");
