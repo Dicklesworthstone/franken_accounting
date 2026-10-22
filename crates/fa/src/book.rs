@@ -604,6 +604,16 @@ pub struct Book {
     owner_token: [u8; 32],
 }
 
+/// What an engagement's summary of uncorrected misstatements is computed
+/// from (plan §11.12).
+struct UncorrectedInputs {
+    view: fa_journal::EngagementView,
+    corrections: Vec<fa_journal::OutOfPeriodCorrection>,
+    /// The prior engagement the latest carry-forward names.
+    prior: Option<fa_journal::EngagementView>,
+    summary: fa_journal::UncorrectedSummary,
+}
+
 impl Book {
     fn runtime_and_root() -> Result<(Runtime, Cx), BookError> {
         let runtime = RuntimeBuilder::new()
@@ -1586,23 +1596,13 @@ impl Book {
     ) -> Result<Option<fa_journal::UncorrectedSummary>, BookError> {
         Ok(self
             .uncorrected_inputs(engagement)?
-            .map(|(_, _, summary)| summary))
+            .map(|inputs| inputs.summary))
     }
 
-    /// The engagement, the out-of-period corrections in its scope, and its
-    /// summary of uncorrected misstatements.
-    #[allow(clippy::type_complexity)]
-    fn uncorrected_inputs(
-        &self,
-        engagement: &str,
-    ) -> Result<
-        Option<(
-            fa_journal::EngagementView,
-            Vec<fa_journal::OutOfPeriodCorrection>,
-            fa_journal::UncorrectedSummary,
-        )>,
-        BookError,
-    > {
+    /// The engagement, the out-of-period corrections in its scope, the prior
+    /// engagement its latest carry-forward names, and its summary of
+    /// uncorrected misstatements.
+    fn uncorrected_inputs(&self, engagement: &str) -> Result<Option<UncorrectedInputs>, BookError> {
         let Some(view) = self.engagement(engagement)? else {
             return Ok(None);
         };
@@ -1620,9 +1620,8 @@ impl Book {
         // proposals (its carry-forward is not chained).
         let prior = match view.carry_forwards.last() {
             None => None,
-            Some(carried) => {
-                let prior_view = self
-                    .engagements()?
+            Some(carried) => Some(
+                self.engagements()?
                     .into_iter()
                     .find(|e| e.vid == carried.carry_forward.prior)
                     .ok_or_else(|| {
@@ -1630,22 +1629,25 @@ impl Book {
                             "engagement `{engagement}` carries forward {:032x}, which is no engagement",
                             carried.carry_forward.prior.0
                         )))
-                    })?;
-                Some(fa_journal::uncorrected_misstatements(
-                    &prior_view,
-                    &[],
-                    None,
-                    account_type,
-                )?)
-            }
+                    })?,
+            ),
         };
+        let prior_summary = prior
+            .as_ref()
+            .map(|prior| fa_journal::uncorrected_misstatements(prior, &[], None, account_type))
+            .transpose()?;
         let summary = fa_journal::uncorrected_misstatements(
             &view,
             &corrections,
-            prior.as_ref(),
+            prior_summary.as_ref(),
             account_type,
         )?;
-        Ok(Some((view, corrections, summary)))
+        Ok(Some(UncorrectedInputs {
+            view,
+            corrections,
+            prior,
+            summary,
+        }))
     }
 
     /// The summary of uncorrected misstatements per statement line (plan
@@ -1654,14 +1656,28 @@ impl Book {
     /// method) and of `balance_sheet` (the iron curtain method), each a
     /// definition name `fa statement lint` takes. A covered account that
     /// maps to no line, or to several, is refused with the lint to run.
+    /// Out-of-period corrections are on the income statement, reversed. A
+    /// carry-forward's turned-around items are on the income statement,
+    /// reversed; its still-uncorrected items are on the balance sheet, their
+    /// income legs on the equity account the book's closing routes (read
+    /// under `capability` at the engagement's last scope day) send them to,
+    /// since that income is in opening retained earnings by now; an income
+    /// account with no route is refused, naming it.
     pub fn uncorrected_by_line(
         &self,
         engagement: &str,
         income_statement: &str,
         balance_sheet: &str,
+        capability: &fa_policy::Capability,
     ) -> Outcome<Option<(crate::UncorrectedStatement, crate::UncorrectedStatement)>> {
         use fa_statements::StatementKind;
-        let Some((view, corrections, summary)) = self.uncorrected_inputs(engagement)? else {
+        let Some(UncorrectedInputs {
+            view,
+            corrections,
+            prior,
+            summary,
+        }) = self.uncorrected_inputs(engagement)?
+        else {
             return Ok(Ok(None));
         };
         let resolve = |name: &str, kind: StatementKind| {
@@ -1713,19 +1729,123 @@ impl Book {
         // An out-of-period correction misstates this period's income: the
         // rollover lines take its legs reversed. The period-end balance
         // sheet it corrected carries nothing for it.
-        let rollover_legs: Vec<(u128, fa_money::Side, i128)> = corrections
+        let mut rollover_legs: Vec<(u128, fa_money::Side, i128)> = corrections
             .iter()
             .flat_map(|c| c.legs.iter())
             .filter(|leg| leg.amount.unit == view.profile.unit)
             .map(|leg| (leg.account.0, leg.side.flipped(), leg.amount.mantissa))
             .chain(legs.iter().copied())
             .collect();
+        let mut balance_legs = legs;
+        if let (Some(prior), false) = (&prior, summary.carried.is_empty()) {
+            match self.carried_lines(&view, prior, &summary, &accounts, capability)? {
+                Ok((rollover, balance)) => {
+                    rollover_legs.extend(rollover);
+                    balance_legs.extend(balance);
+                }
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        }
         let income =
             crate::statements::uncorrected_statement(&income_definition, &accounts, &rollover_legs);
         Ok(income.and_then(|income| {
-            crate::statements::uncorrected_statement(&balance_definition, &accounts, &legs)
+            crate::statements::uncorrected_statement(&balance_definition, &accounts, &balance_legs)
                 .map(|balance| Some((income, balance)))
         }))
+    }
+
+    /// The carried items' legs for the statement lines: a turned-around
+    /// item's prior legs reversed for the income statement; a still-uncorrected
+    /// item's prior legs for the balance sheet, each income leg moved to the
+    /// equity account the closing routes in effect at the engagement's last
+    /// scope day send its account to.
+    #[allow(clippy::type_complexity)]
+    fn carried_lines(
+        &self,
+        view: &fa_journal::EngagementView,
+        prior: &fa_journal::EngagementView,
+        summary: &fa_journal::UncorrectedSummary,
+        accounts: &std::collections::BTreeMap<u128, fa_statements::Account>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<(
+        Vec<(u128, fa_money::Side, i128)>,
+        Vec<(u128, fa_money::Side, i128)>,
+    )> {
+        let unit = view.profile.unit;
+        let last_day = view
+            .profile
+            .scope_periods
+            .iter()
+            .filter_map(|code| fa_journal::policy::calendar_period(self.context(), code))
+            .map(|period| period.end)
+            .max()
+            .and_then(|end| end.0.checked_sub(1).map(DateDay))
+            .ok_or_else(|| {
+                BookError::Kernel(fa_journal::KernelError::Corrupt(format!(
+                    "engagement `{}` has no scope period in the calendar",
+                    view.profile.engagement
+                )))
+            })?;
+        let routes = match self.closing_routes_at(last_day, None, capability)? {
+            Ok(routes) => routes.map(|r| r.routes).unwrap_or_default(),
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let income_type = |id: u128| {
+            accounts.get(&id).is_some_and(|a| {
+                a.account_type == fa_model::AccountType::REVENUE.0
+                    || a.account_type == fa_model::AccountType::EXPENSE.0
+            })
+        };
+        let mut rollover = Vec::new();
+        let mut balance = Vec::new();
+        for item in &summary.carried {
+            let legs = prior
+                .proposals
+                .iter()
+                .find(|p| p.proposal.ordinal == item.prior_ordinal)
+                .map(|p| p.proposal.legs.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .filter(|leg| leg.amount.unit == unit);
+            match item.carried {
+                fa_journal::Carried::TurnedAround => rollover.extend(
+                    legs.map(|leg| (leg.account.0, leg.side.flipped(), leg.amount.mantissa)),
+                ),
+                fa_journal::Carried::Uncorrected => {
+                    for leg in legs {
+                        let account = if income_type(leg.account.0) {
+                            match routes.get(&leg.account) {
+                                Some(equity) => equity.0,
+                                None => {
+                                    let code = accounts.get(&leg.account.0).map_or_else(
+                                        || format!("{:032x}", leg.account.0),
+                                        |a| a.code.clone(),
+                                    );
+                                    return Ok(Err(fa_journal::Refusal::new(
+                                        fa_journal::refusal::code::STRUCTURE,
+                                        fa_journal::exit::USAGE,
+                                        format!(
+                                            "carried proposal {} names income account `{code}`, which no closing route sends to equity at {}: its prior income is in opening retained earnings, and the balance sheet lines need that account",
+                                            item.prior_ordinal,
+                                            last_day.render()
+                                        ),
+                                        "plan §11.12 (SAB 108 iron curtain), §7.5 (closing routes)",
+                                        format!(
+                                            "journal the routes with `fa close map --route {code}:<equity code>... --effective-from <date> --key <key>`"
+                                        ),
+                                    )));
+                                }
+                            }
+                        } else {
+                            leg.account.0
+                        };
+                        balance.push((account, leg.side, leg.amount.mantissa));
+                    }
+                }
+                fa_journal::Carried::Corrected => {}
+            }
+        }
+        Ok(Ok((rollover, balance)))
     }
 
     /// Fork the scenario `name` over the trunk prefix at `fork.at` (the head

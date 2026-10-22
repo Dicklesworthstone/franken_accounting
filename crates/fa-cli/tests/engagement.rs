@@ -1384,6 +1384,33 @@ fn a_carry_forward_brings_the_prior_engagements_misstatements_under_both_methods
     ]));
     assert_eq!(text(&carried, "event"), "engagement_carry_forward_recorded");
     assert_eq!(text(data(&carried), "prior"), "march");
+    // On April's balance sheet, March's uncorrected fees are opening retained
+    // earnings: the closing routes name that equity account. Without them
+    // the lines are refused, naming the account.
+    let unrouted = f.refused(&["engagement", "sud", "april"], 2, "FA-REF-100");
+    assert!(
+        text(data(&unrouted), "message").contains("`6000`")
+            && text(data(&unrouted), "fix").contains("fa close map"),
+        "{}",
+        unrouted.render()
+    );
+    f.write(
+        "retained.json",
+        r#"{"code":"3000","name":"Retained earnings","type":"Equity","unit":"USD"}"#,
+    );
+    f.ok(&["chart", "open", "retained.json", "--opened", "2026-01-01"]);
+    f.ok(&[
+        "close",
+        "map",
+        "--route",
+        "4000:3000",
+        "--route",
+        "6000:3000",
+        "--effective-from",
+        "2026-01-01",
+        "--key",
+        "routes",
+    ]);
     let sud = f.ok(&["engagement", "sud", "april"]);
     let sud = data(&sud);
     assert!(rows(sud, "items").is_empty(), "{}", sud.render());
@@ -1416,6 +1443,49 @@ fn a_carry_forward_brings_the_prior_engagements_misstatements_under_both_methods
     assert_eq!(text(iron_curtain, "liabilities"), "10.00 USD");
     assert_eq!(text(iron_curtain, "equity"), "-10.00 USD");
     assert_eq!(text(iron_curtain, "income"), "0.00 USD");
+    // Per line: the turned-around fees reversed on April's income
+    // statement; the uncorrected fees on its balance sheet, the expense
+    // routed to retained earnings (3000), so equity, not unclosed earnings.
+    let lines = |statement: &Json| -> Vec<(String, String)> {
+        rows(statement, "lines")
+            .iter()
+            .map(|line| {
+                (
+                    text(line, "code").to_string(),
+                    text(line, "amount").to_string(),
+                )
+            })
+            .collect()
+    };
+    let pairs = |expected: &[(&str, &str)]| -> Vec<(String, String)> {
+        expected
+            .iter()
+            .map(|(code, amount)| (code.to_string(), amount.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        lines(sud.get("rollover_lines").unwrap()),
+        pairs(&[
+            ("revenue", "0.00 USD"),
+            ("expense", "-20.00 USD"),
+            ("net_income", "20.00 USD"),
+        ])
+    );
+    assert_eq!(
+        lines(sud.get("iron_curtain_lines").unwrap()),
+        pairs(&[
+            ("assets", "0.00 USD"),
+            ("liabilities", "10.00 USD"),
+            ("equity", "-10.00 USD"),
+            ("unclosed_revenue", "0.00 USD"),
+            ("unclosed_expense", "0.00 USD"),
+            ("unclosed_earnings", "0.00 USD"),
+            ("total_equity", "-10.00 USD"),
+            ("liabilities_and_equity", "0.00 USD"),
+            ("balance_check", "0.00 USD"),
+        ]),
+        "the lines total the iron curtain and the balance check stays zero"
+    );
 
     // A later carry-forward governs; the first stays on the record.
     f.ok(&carry(&["april", "--from", "march", "--key", "restated"]));
