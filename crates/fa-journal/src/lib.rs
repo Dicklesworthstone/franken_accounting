@@ -91,12 +91,13 @@ pub use draft::{
     promote_draft, read_draft, rehearse_draft_into,
 };
 pub use engagement::{
-    AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, CompletionView,
+    AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, Carried,
+    CarriedForward, CarriedItem, CarryForward, CarryForwardView, CompletionView,
     DocumentationCompleted, DocumentationCompletion, EngagementKind, EngagementOpened,
     EngagementProfile, EngagementRequest, EngagementState, EngagementView, Materiality,
     OutOfPeriodCorrection, OutOfPeriodItem, ProposalLeg, ProposalView, ProposedAdjustment,
     RecordedDecision, StatementEffect, Uncorrected, UncorrectedItem, UncorrectedSummary,
-    WorkpaperConfirmation, WorkpaperFiled, WorkpaperRepresentation, WorkpaperView,
+    WorkpaperConfirmation, WorkpaperFiled, WorkpaperRepresentation, WorkpaperView, carry_forward,
     complete_documentation, decide_adjustment, file_workpaper, list_engagements, open_engagement,
     prior_period_error, propose_adjustment, read_engagement, superseder_at,
     uncorrected_misstatements, with_prior_period_error,

@@ -613,6 +613,17 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(
             &[
+                "engagement",
+                "carry-forward",
+                "no-such-engagement",
+                "--from",
+                "no-such-prior",
+            ],
+            &[Op::Produce],
+            Reaches,
+        ),
+        row(
+            &[
                 "adjustment",
                 "propose",
                 "--engagement",
