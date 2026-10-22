@@ -373,6 +373,20 @@ impl PreparedPost {
         db: &mut Database<V>,
         ctx: &PurposeContexts,
     ) -> Outcome<Posted> {
+        self.commit_with_crash(db, ctx, None).await
+    }
+
+    /// [`Self::commit`] through the substrate's production crash-point seam
+    /// (`WriteTxn::commit_with_crash`), for the lab campaign that crashes a
+    /// post's publication at each registered point and checks the book after
+    /// reopening (fa-0fl). `None` is `commit`: both run this one path.
+    #[doc(hidden)]
+    pub async fn commit_with_crash<V: asupersync::fs::Vfs + Clone>(
+        self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<Posted> {
         let commit = ctx.commit();
         commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
         let Self {
@@ -413,7 +427,7 @@ impl PreparedPost {
             return Ok(Err(refusal));
         }
         let prepared_at = txn.basis();
-        match txn.commit(db, &commit).await {
+        match txn.commit_with_crash(db, &commit, crash_at).await {
             Ok(seq) => Ok(Ok(Posted::Committed {
                 entry_ref,
                 recorded_at: seq,

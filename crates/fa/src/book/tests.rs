@@ -947,6 +947,111 @@ fn prepared_post_rechecks_its_capability_expiry_without_rejecting_unrelated_comm
     }
 }
 
+/// fa-0fl, the crash-point matrix for one post: the prepared rent post's
+/// publication crashes at each of the substrate's seven registered commit
+/// crash points, the fault VFS then loses every unsynced byte, and the book
+/// reopens. A crash before the commit marker leaves no entry. After the
+/// marker the commit may or may not have reached disk, but never partly:
+/// the entry is whole (read back, folded into its cells, registers verified)
+/// or absent, the earlier journal is untouched, and a retry of the same
+/// intent records it exactly once. The no-crash control commits.
+#[test]
+fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
+    use fgdb::CrashPoint;
+    let cases = [
+        (Some(CrashPoint::BeforeCapsule), Some(false)),
+        (Some(CrashPoint::AfterCapsuleBeforeD1), Some(false)),
+        (
+            Some(CrashPoint::AfterCapsuleFileSyncBeforeDirectorySync),
+            Some(false),
+        ),
+        (
+            Some(CrashPoint::AfterCapsuleDirectorySyncBeforeParentDirectorySync),
+            Some(false),
+        ),
+        (Some(CrashPoint::AfterD1), Some(false)),
+        (Some(CrashPoint::AfterMarkerBeforeD2), None),
+        (
+            Some(CrashPoint::AfterMarkerFileSyncBeforeDirectorySync),
+            None,
+        ),
+        (None, Some(true)),
+    ];
+    for (i, (point, expected)) in cases.into_iter().enumerate() {
+        let seed = 700 + i as u64;
+        under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let PreparedFixture {
+                mut book,
+                vfs,
+                request,
+                march,
+                usd,
+                ..
+            } = prepared_fixture(&root, seed).await;
+            let book_id = book.context().book_id;
+            let before = journal_entries(&book, &cx);
+            let prepared = prepare_fixture_post(&mut book, &cx, request.clone());
+            let outcome = prepared.commit_with_crash(&mut book.db, &cx, point).await;
+            assert_eq!(
+                matches!(outcome, Ok(Ok(_))),
+                point.is_none(),
+                "{point:?}: the publication fails iff a crash is injected: {outcome:?}"
+            );
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let after = journal_entries(&book, &cx);
+            assert!(
+                before.iter().all(|e| after.contains(e)),
+                "{point:?}: the earlier journal changed"
+            );
+            let committed = match after.len().checked_sub(before.len()) {
+                Some(0) => false,
+                Some(1) => true,
+                other => panic!("{point:?}: {other:?} new entries"),
+            };
+            if let Some(expected) = expected {
+                assert_eq!(committed, expected, "{point:?}");
+            }
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            if committed {
+                assert_rent_cells(&fold, book_id, usd, false);
+            } else {
+                assert!(fold.cells.is_empty(), "{point:?}: {fold:?}");
+            }
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            let retried = book.post(&cx, request).await.unwrap().unwrap();
+            assert_eq!(
+                matches!(retried, Posted::AlreadyRecorded { .. }),
+                committed,
+                "{point:?}: {retried:?}"
+            );
+            assert_eq!(journal_entries(&book, &cx).len(), before.len() + 1);
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_rent_cells(&fold, book_id, usd, false);
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+        });
+    }
+}
+
 #[test]
 fn prepared_transition_rechecks_its_capability_expiry_without_rejecting_unrelated_commits() {
     for expires_in in [1, 3] {
