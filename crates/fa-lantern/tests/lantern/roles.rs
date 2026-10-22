@@ -86,7 +86,10 @@ fn outcome(
         .findings
         .iter()
         .map(|f| {
-            let cites: Vec<String> = f
+            // Citations follow vid order, which renaming changes by
+            // construction (an account's vid hashes its code): compare them
+            // as a sorted list.
+            let mut cites: Vec<String> = f
                 .cites
                 .iter()
                 .map(|c| match c {
@@ -101,6 +104,7 @@ fn outcome(
                     other => format!("{other:?}"),
                 })
                 .collect();
+            cites.sort();
             format!(
                 "{} v{} {:?} {}={}e-{} of {} cites={cites:?} {}",
                 f.procedure,
