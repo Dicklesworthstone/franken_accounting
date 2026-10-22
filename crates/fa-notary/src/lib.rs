@@ -40,6 +40,8 @@
 
 pub mod bundle;
 pub mod checkpoint;
+#[cfg(test)]
+mod ct_harness;
 pub mod disclosure;
 pub mod journal;
 pub mod migration_balance;
