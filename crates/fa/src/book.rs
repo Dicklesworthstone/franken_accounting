@@ -596,6 +596,48 @@ pub struct ProducedBundle {
     pub documents: Vec<fa_model::Oid>,
 }
 
+/// A stale plan's intent rehearsed again at the current head
+/// ([`Book::replan`], [`Book::replan_replacement`], [`Book::replan_batch`]).
+#[derive(Clone, Debug)]
+pub struct Replanned<P = fa_intents::PostPlan> {
+    pub plan: P,
+    /// Which of the stale certificate's bindings differ (for a correction,
+    /// in either member), in the order of [`PLAN_BINDINGS`].
+    pub changed: Vec<&'static str>,
+}
+
+/// The plan bindings [`Replanned::changed`] names, in order.
+pub const PLAN_BINDINGS: [&str; 6] = [
+    "basis",
+    "security_policy_epoch",
+    "period",
+    "capability",
+    "entry",
+    "effects",
+];
+
+/// Which [`PLAN_BINDINGS`] differ between two PostEntry plans.
+fn post_plan_changes(was: &fa_intents::PostPlan, now: &fa_intents::PostPlan) -> [bool; 6] {
+    let (a, b) = (was.certificate(), now.certificate());
+    [
+        a.snapshot_seq != b.snapshot_seq,
+        a.security_policy_epoch != b.security_policy_epoch,
+        a.period != b.period,
+        (a.principal, a.capability_commitment, a.expires_at)
+            != (b.principal, b.capability_commitment, b.expires_at),
+        was.prepared_entry() != now.prepared_entry(),
+        a.effects_digest != b.effects_digest,
+    ]
+}
+
+fn named_changes(differs: [bool; 6]) -> Vec<&'static str> {
+    PLAN_BINDINGS
+        .into_iter()
+        .zip(differs)
+        .filter_map(|(name, differs)| differs.then_some(name))
+        .collect()
+}
+
 /// One open book.
 pub struct Book {
     runtime: Runtime,
@@ -2034,6 +2076,73 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.commit_plan(
             &purposes, plan, capability,
         )))
+    }
+
+    /// What a stale plan's PlanInvalidated carries (plan §10.4: refused
+    /// "with `PlanInvalidated {changed: [...]}` and a fresh plan, never
+    /// silently re-planned"): the stale plan's own intent rehearsed again
+    /// under `capability` at the current head, and the certificate fields
+    /// that differ. Nothing is committed; committing the fresh plan is the
+    /// caller's explicit act. A refused rehearsal (the period closed, the
+    /// key recorded meanwhile) is returned as the refusal it is.
+    pub fn replan(
+        &mut self,
+        stale: &fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Replanned> {
+        let plan = match self.plan(stale.intent().clone(), capability)? {
+            Ok(plan) => plan,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let changed = named_changes(post_plan_changes(stale, &plan));
+        Ok(Ok(Replanned { plan, changed }))
+    }
+
+    /// [`Book::replan`] for a correction (Reversal and Replacement): both
+    /// members' intents rehearsed again together; a binding is named when it
+    /// differs in either member.
+    pub fn replan_replacement(
+        &mut self,
+        stale: &fa_intents::ReplacementPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Replanned<fa_intents::ReplacementPlan>> {
+        let plan = match self.plan_replacement(
+            stale.reversal().intent().clone(),
+            stale.replacement().intent().clone(),
+            capability,
+        )? {
+            Ok(plan) => plan,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let reversal = post_plan_changes(stale.reversal(), plan.reversal());
+        let replacement = post_plan_changes(stale.replacement(), plan.replacement());
+        let changed = named_changes(std::array::from_fn(|i| reversal[i] || replacement[i]));
+        Ok(Ok(Replanned { plan, changed }))
+    }
+
+    /// [`Book::replan`] for an atomic batch: the same ordered batch
+    /// rehearsed again. A batch certificate binds no single period, so
+    /// `period` is never named; `entry` is its prepared members' digest.
+    pub fn replan_batch(
+        &mut self,
+        stale: &fa_intents::BatchPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Replanned<fa_intents::BatchPlan>> {
+        let plan = match self.plan_batch(stale.batch().clone(), capability)? {
+            Ok(plan) => plan,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let (a, b) = (stale.certificate(), plan.certificate());
+        let changed = named_changes([
+            a.snapshot_seq != b.snapshot_seq,
+            a.security_policy_epoch != b.security_policy_epoch,
+            false,
+            (a.principal, a.capability_commitment, a.expires_at)
+                != (b.principal, b.capability_commitment, b.expires_at),
+            a.prepared_digest != b.prepared_digest,
+            a.effects_digest != b.effects_digest,
+        ]);
+        Ok(Ok(Replanned { plan, changed }))
     }
 
     /// Rehearse an atomic batch without publishing any member or consuming keys.
