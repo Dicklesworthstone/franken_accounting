@@ -255,7 +255,8 @@ pub use production::{
 };
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{
-    MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest, WitnessRequest, Witnessed,
+    MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest, SuffixArtifact, SuffixRequest,
+    WitnessRequest, Witnessed,
 };
 pub use query::{
     CertifiedQuery, MAX_QUERY_ROWS, QUERY_CERTIFICATE_FORMAT, QUERY_OUTPUT_FORMAT, QueryCell,
