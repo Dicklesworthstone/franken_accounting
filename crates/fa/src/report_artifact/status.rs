@@ -178,6 +178,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 return self
                     .indirect_cash_flow_artifact_status(cx, principal, capability, c, request);
             }
+            Artifact::Query(_) => {
+                return Ok(Err(invalid(
+                    "a query certificate replayed; its freshness compares the statement's result at the head, which query_certificate_status reports (fa certificate status)",
+                )));
+            }
             _ => {
                 return Ok(Err(invalid(format!(
                     "{} certificate replayed, but its accounting-selection freshness law is not implemented; use its historical replay result",

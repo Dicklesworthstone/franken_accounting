@@ -231,7 +231,10 @@ pub use production::{
 };
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest};
-pub use query::{MAX_QUERY_ROWS, QueryCell, QueryRows, profile_refusal};
+pub use query::{
+    CertifiedQuery, MAX_QUERY_ROWS, QUERY_CERTIFICATE_FORMAT, QUERY_OUTPUT_FORMAT, QueryCell,
+    QueryCertificate, QueryCertificateStatus, QueryRows, profile_refusal,
+};
 pub use report_artifact::{
     MAX_REPORT_ARTIFACT_BYTES, ReplayedReportArtifact, ReportArtifact, ReportArtifactExpectation,
     ReportArtifactFamily,

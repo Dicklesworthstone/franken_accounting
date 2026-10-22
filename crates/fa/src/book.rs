@@ -4303,6 +4303,43 @@ impl Book {
         with_store!(&self.store, core => core.query_native(&self.purposes(), native, known_at, period))
     }
 
+    /// Run a profile statement and certify exactly its result (`fa query
+    /// --certify`); see [`crate::QueryCertificate`].
+    pub fn certify_query(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        statement: &str,
+    ) -> Outcome<crate::CertifiedQuery> {
+        with_store!(&self.store, core => core.certify_query(
+            &self.purposes(), principal, capability, statement
+        ))
+    }
+
+    /// Replay a query certificate under current read authority.
+    pub fn replay_query(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::QueryCertificate,
+    ) -> Outcome<crate::QueryRows> {
+        with_store!(&self.store, core => core.replay_query(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
+    /// Replay a query certificate, then run its statement at the head.
+    pub fn query_certificate_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::QueryCertificate,
+    ) -> Outcome<crate::QueryCertificateStatus> {
+        with_store!(&self.store, core => core.query_certificate_status(
+            &self.purposes(), principal, capability, certificate
+        ))
+    }
+
     /// Run a registered Lantern procedure over the trunk as known at
     /// `known_at` (the head when `None`) and, for the historical folds,
     /// through `effective_through`: a pure read (plan §11).

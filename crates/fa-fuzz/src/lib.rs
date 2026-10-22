@@ -322,6 +322,11 @@ pub fn fuzz_payload_decoders(bytes: &[u8]) {
     {
         assert_eq!(SummaryCertificate::decode(&re), Ok(cert));
     }
+    if let Ok(cert) = fa::QueryCertificate::decode(bytes)
+        && let Ok(re) = cert.canonical_bytes()
+    {
+        assert_eq!(fa::QueryCertificate::decode(&re), Ok(cert));
+    }
     if let Ok(cert) = RollForwardCertificate::decode(bytes)
         && let Ok(re) = cert.canonical_bytes()
     {

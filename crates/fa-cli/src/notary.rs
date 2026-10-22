@@ -1028,6 +1028,13 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let query = if artifact.family() == ReportArtifactFamily::Query {
+        let certificate = fa::QueryCertificate::decode(&bytes)?;
+        let rows = book.replay_query(principal, &capability, &certificate)??;
+        Some((certificate, rows))
+    } else {
+        None
+    };
     if let Some(path) = args.flag("--output") {
         crate::cli::write_new_output_file(
             &ctx.files,
@@ -1102,6 +1109,16 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         true
     } else if let Some(certificate) = procedure {
         procedure::render(&ctx.out, certificate.report(), &digest);
+        true
+    } else if let Some((certificate, rows)) = query {
+        let period = certificate.period()?;
+        crate::query::render(
+            &ctx.out,
+            certificate.statement(),
+            period.as_deref(),
+            &rows,
+            Some(&digest),
+        );
         true
     } else {
         false
@@ -1213,7 +1230,8 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     // a scenario diff is superseded only by Plan records its scenario gained
     // after the certified prefix (its trunk is fixed at the fork). A summary
     // trial balance is Changed when its selector no longer reproduces it at
-    // HEAD; that law compares the report, so it names no later entries.
+    // HEAD; that law compares the report, so it names no later entries. A
+    // query is Changed when its statement answers differently at HEAD.
     let status = match artifact.family() {
         ReportArtifactFamily::Summary => {
             if args.flag("--expect").is_some() {
@@ -1228,6 +1246,23 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                     ("Current", checked_at, Vec::new())
                 }
                 fa::SummaryCertificateStatus::Changed { checked_at, .. } => {
+                    ("Changed", checked_at, Vec::new())
+                }
+            }
+        }
+        ReportArtifactFamily::Query => {
+            if args.flag("--expect").is_some() {
+                return Err(usage(
+                    "query status runs the certificate's own statement at the head and does not accept report-policy expectations",
+                    "fa certificate status C:<query-certificate> --json",
+                ));
+            }
+            let certificate = fa::QueryCertificate::decode(&bytes)?;
+            match book.query_certificate_status(principal, &capability, &certificate)?? {
+                fa::QueryCertificateStatus::Current { checked_at } => {
+                    ("Current", checked_at, Vec::new())
+                }
+                fa::QueryCertificateStatus::Changed { checked_at, .. } => {
                     ("Changed", checked_at, Vec::new())
                 }
             }

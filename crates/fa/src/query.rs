@@ -11,17 +11,27 @@
 //! caller's, before this runs: a query is a whole-book read.
 
 use asupersync::fs::Vfs;
+use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, exit};
+use fa_model::{EncodeError, Writer};
 use fa_query::{Law, Native};
-use fgdb::{QueryError, QueryResult, QueryValue};
+use fgdb::{Database, NativeResultCertificate, QueryError, QueryResult, QueryValue};
 use fgdb_gql::algebra::GraphValue;
 use fgdb_gql::{GqlParameters, GqlQueryPolicy, GraphAggregateValue};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, EId, QueryCx, VId};
 
 use crate::{AsyncBook, BookError};
 
 mod aggregate;
+mod certificate;
+
+pub use certificate::{
+    CertifiedQuery, QUERY_CERTIFICATE_FORMAT, QueryCertificate, QueryCertificateStatus,
+};
+
+/// The canonical bytes of a query's result begin with this tag.
+pub const QUERY_OUTPUT_FORMAT: &[u8] = b"fa:query-result:v1";
 
 pub mod code {
     /// A clause outside the profile, a malformed selector, an unsupported
@@ -136,7 +146,7 @@ fn decimal(canonical: &str) -> String {
 }
 
 /// One query's result.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryRows {
     /// The native statement that ran.
     pub statement: String,
@@ -145,6 +155,81 @@ pub struct QueryRows {
     pub rows: Vec<Vec<QueryCell>>,
     /// The substrate's digest of the ordered result under its plan.
     pub result_digest: [u8; 32],
+}
+
+impl QueryRows {
+    /// The result's canonical bytes: the native statement, its sequence,
+    /// the columns, every cell and the substrate's result digest. A query
+    /// certificate binds exactly these bytes.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.bytes(QUERY_OUTPUT_FORMAT)
+            .str(&self.statement)
+            .u64(self.known_at.0)
+            .list(&self.columns, |w, column| {
+                w.str(column);
+            })
+            .list(&self.rows, |w, row| {
+                w.list(row, write_cell);
+            })
+            .fixed(&self.result_digest);
+        w.finish()
+    }
+}
+
+fn write_cell(w: &mut Writer, cell: &QueryCell) {
+    match cell {
+        QueryCell::Null => {
+            w.u8(0);
+        }
+        QueryCell::Bool(b) => {
+            w.u8(1).bool(*b);
+        }
+        QueryCell::Int(n) => {
+            w.u8(2).i128(*n);
+        }
+        QueryCell::Decimal(text) => {
+            w.u8(3).str(text);
+        }
+        QueryCell::Fraction {
+            numerator,
+            denominator,
+        } => {
+            w.u8(4).i128(*numerator).u64(*denominator);
+        }
+        QueryCell::Float(text) => {
+            w.u8(5).str(text);
+        }
+        QueryCell::Text(text) => {
+            w.u8(6).str(text);
+        }
+        QueryCell::Timestamp(ns) => {
+            w.u8(7).i128(*ns);
+        }
+        QueryCell::Bytes(bytes) => {
+            w.u8(8).bytes(bytes);
+        }
+        QueryCell::Vertex(vid) => {
+            w.u8(9).u128(vid.0);
+        }
+        QueryCell::Edge(eid) => {
+            w.u8(10).u128(eid.0);
+        }
+        QueryCell::Path { start, steps } => {
+            w.u8(11).u128(start.0).list(steps, |w, (eid, vid)| {
+                w.u128(eid.0).u128(vid.0);
+            });
+        }
+        QueryCell::List(cells) => {
+            w.u8(12).list(cells, write_cell);
+        }
+        QueryCell::Map(entries) => {
+            w.u8(13).list(entries, |w, (key, value)| {
+                w.str(key);
+                write_cell(w, value);
+            });
+        }
+    }
 }
 
 /// A profile refusal as the catalog's typed refusal.
@@ -187,6 +272,111 @@ fn native_refusal(statement: &str, error: &QueryError) -> Refusal {
     )
 }
 
+/// Refuse a `FOR PERIOD` code the book does not hold at `seq`.
+fn period_refusal<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    code: &str,
+    seq: CommitSeq,
+) -> Result<Option<Refusal>, BookError> {
+    let row = db
+        .vertex_at(fa_model::period_vid(&book.calendar.id, code), seq)
+        .map_err(fa_journal::KernelError::from)?;
+    Ok(
+        (!row.is_some_and(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))).then(
+            || {
+                Refusal::new(
+                    code::QUERY_PROFILE,
+                    exit::REFUSAL,
+                    format!("period `{code}` does not exist at {}", seq.0),
+                    CITE,
+                    "name a period the book holds: fa period list --json",
+                )
+                .at("period", code.to_string())
+            },
+        ),
+    )
+}
+
+/// The native rows a statement may read: an amount aggregate folds more
+/// rows than it returns.
+fn budget(native: &Native) -> GqlQueryPolicy {
+    policy(
+        native
+            .aggregation()
+            .map_or(MAX_QUERY_ROWS, |_| MAX_AGGREGATED_ROWS),
+    )
+}
+
+/// The statement's result from its native rows: the native columns and
+/// values, or the exact aggregation its plan names.
+fn result_of(
+    native: &Native,
+    seq: CommitSeq,
+    result: QueryResult,
+    certificate: &NativeResultCertificate,
+) -> Result<QueryRows, Refusal> {
+    let QueryResult::Rows { columns, rows } = result else {
+        return Err(Refusal::new(
+            code::QUERY_PROFILE,
+            exit::REFUSAL,
+            "the compiled statement is not a read",
+            CITE,
+            "fa query only reads; the journal changes through its intents",
+        ));
+    };
+    let (columns, rows) = match native.aggregation() {
+        Some(plan) => (
+            plan.columns.iter().map(|c| c.name.clone()).collect(),
+            aggregate::aggregate(plan, &rows)?,
+        ),
+        None => (
+            columns,
+            rows.iter()
+                .map(|row| row.iter().map(QueryCell::of).collect())
+                .collect(),
+        ),
+    };
+    Ok(QueryRows {
+        statement: native.statement(seq.0),
+        known_at: seq,
+        columns,
+        rows,
+        result_digest: certificate.result_digest.0,
+    })
+}
+
+/// One certified native read of `native` at `seq` (at most the head).
+fn execute<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    native: &Native,
+    seq: CommitSeq,
+    period: Option<&str>,
+) -> Result<Result<(QueryRows, NativeResultCertificate), Refusal>, BookError> {
+    if let Some(code) = period
+        && let Some(refusal) = period_refusal(db, book, code, seq)?
+    {
+        return Ok(Err(refusal));
+    }
+    let statement = native.statement(seq.0);
+    let (result, certificate) = match db.execute_certified(
+        cx,
+        &statement,
+        &GqlParameters::new(),
+        book.symbols.clone(),
+        budget(native),
+    ) {
+        Ok(executed) => executed,
+        Err(QueryError::Read(error)) => {
+            return Err(BookError::CertifiedRead(QueryError::Read(error)));
+        }
+        Err(error) => return Ok(Err(native_refusal(&statement, &error))),
+    };
+    Ok(result_of(native, seq, result, &certificate).map(|rows| (rows, certificate)))
+}
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Run `native` at `known_at` (at most the head). With `period`, the
     /// period must exist at that sequence.
@@ -199,69 +389,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Result<Result<QueryRows, Refusal>, BookError> {
         self.query(cx, |db, book| {
             let seq = fa_registers::resolve_known_at(db, Some(known_at))?;
-            if let Some(code) = period {
-                let row = db
-                    .vertex_at(fa_model::period_vid(&book.calendar.id, code), seq)
-                    .map_err(fa_journal::KernelError::from)?;
-                if !row.is_some_and(|row| row.labels.contains(&fa_model::symbols::label::PERIOD)) {
-                    return Ok(Err(Refusal::new(
-                        code::QUERY_PROFILE,
-                        exit::REFUSAL,
-                        format!("period `{code}` does not exist at {}", seq.0),
-                        CITE,
-                        "name a period the book holds: fa period list --json",
-                    )
-                    .at("period", code.to_string())));
-                }
-            }
-            let query = cx.query();
-            let statement = native.statement(seq.0);
-            let rows = native
-                .aggregation()
-                .map_or(MAX_QUERY_ROWS, |_| MAX_AGGREGATED_ROWS);
-            let (columns, rows, certificate) = match db.execute_certified(
-                &query,
-                &statement,
-                &GqlParameters::new(),
-                book.symbols.clone(),
-                policy(rows),
-            ) {
-                Ok((QueryResult::Rows { columns, rows }, certificate)) => {
-                    (columns, rows, certificate)
-                }
-                Ok((QueryResult::Write { .. }, _)) => {
-                    return Ok(Err(Refusal::new(
-                        code::QUERY_PROFILE,
-                        exit::REFUSAL,
-                        "the compiled statement is not a read",
-                        CITE,
-                        "fa query only reads; the journal changes through its intents",
-                    )));
-                }
-                Err(QueryError::Read(error)) => {
-                    return Err(BookError::CertifiedRead(QueryError::Read(error)));
-                }
-                Err(error) => return Ok(Err(native_refusal(&statement, &error))),
-            };
-            let (columns, rows) = match native.aggregation() {
-                Some(plan) => match aggregate::aggregate(plan, &rows) {
-                    Ok(rows) => (plan.columns.iter().map(|c| c.name.clone()).collect(), rows),
-                    Err(refusal) => return Ok(Err(refusal)),
-                },
-                None => (
-                    columns,
-                    rows.iter()
-                        .map(|row| row.iter().map(QueryCell::of).collect())
-                        .collect(),
-                ),
-            };
-            Ok(Ok(QueryRows {
-                statement,
-                known_at: seq,
-                columns,
-                rows,
-                result_digest: certificate.result_digest.0,
-            }))
+            Ok(execute(db, &cx.query(), book, native, seq, period)?.map(|(rows, _)| rows))
         })
     }
 }
