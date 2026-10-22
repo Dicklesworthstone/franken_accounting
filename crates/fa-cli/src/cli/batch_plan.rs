@@ -371,7 +371,17 @@ pub(super) fn commit(ctx: &mut Ctx<'_>, args: &Args, plan: BatchPlan) -> Result<
         .collect();
     let capability = ctx.capability(args, &["post"])?;
     let mut book = ctx.books.open(args)?;
-    let posted = book.commit_batch_plan(plan, &capability)??;
+    let posted = match book.commit_batch_plan(plan.clone(), &capability)? {
+        Ok(posted) => posted,
+        Err(refusal) if refusal.code == fa_journal::refusal::code::PLAN_INVALIDATED => {
+            let replanned = match book.replan_batch(&plan, &capability)? {
+                Ok(replanned) => Ok(super::fresh_batch(replanned)?),
+                Err(replan) => Err(replan),
+            };
+            return Err(super::stale_plan(refusal, replanned, ctx.out.is_bound()));
+        }
+        Err(refusal) => return Err(refusal.into()),
+    };
     let members = posted
         .entries
         .iter()
