@@ -112,7 +112,11 @@ fn summary_json(view: &ProductionView) -> Json {
 
 /// One assigned range as robot data; `with_matter` leads with the matter,
 /// for a document's ranges across matters.
-fn range_json(profile: &ProductionProfile, r: &RecordedRange, with_matter: bool) -> Json {
+pub(crate) fn range_json(
+    profile: &ProductionProfile,
+    r: &RecordedRange,
+    with_matter: bool,
+) -> Json {
     let mut fields = Vec::with_capacity(10);
     if with_matter {
         fields.push(("matter", s(&profile.matter)));

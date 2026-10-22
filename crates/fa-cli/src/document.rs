@@ -137,6 +137,7 @@ pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("attach") => attach_doc(ctx, args),
         Some("import") => import_doc(ctx, args),
         Some("list") => list_docs(ctx, args),
+        Some("show") => show_doc(ctx, args),
         None => Err(usage("`fa document` needs a subcommand", ADD_EXAMPLE)),
         other => Err(unhandled("document", other)),
     }
@@ -178,27 +179,7 @@ fn list_docs(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .collect();
     let rows: Vec<Json> = documents
         .iter()
-        .map(|d| {
-            obj(vec![
-                ("oid", s(hex(&d.oid.0))),
-                (
-                    "kind",
-                    s(policy
-                        .kind_by_tag(d.kind)
-                        .map_or_else(|| d.kind.to_string(), |k| k.name.clone())),
-                ),
-                ("mime", s(&d.mime)),
-                (
-                    "grade",
-                    s(policy
-                        .grade_by_tag(d.grade)
-                        .map_or_else(|| d.grade.to_string(), |g| g.name.clone())),
-                ),
-                ("size", Json::Int(i128::from(d.size))),
-                ("doc_commit", s(hex(&d.doc_commit))),
-                ("recorded_at", Json::Int(i128::from(d.recorded_at.0))),
-            ])
-        })
+        .map(|d| obj(summary_fields(&policy, d)))
         .collect();
     let human: Vec<String> = documents
         .iter()
@@ -218,6 +199,105 @@ fn list_docs(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ],
         &human.join("\n"),
     );
+    Ok(())
+}
+
+/// One held document's public metadata, as `document list` and `document
+/// show` report it.
+fn summary_fields(
+    policy: &EvidencePolicy,
+    d: &fa_journal::evidence::DocumentSummary,
+) -> Vec<(&'static str, Json)> {
+    vec![
+        ("oid", s(hex(&d.oid.0))),
+        (
+            "kind",
+            s(policy
+                .kind_by_tag(d.kind)
+                .map_or_else(|| d.kind.to_string(), |k| k.name.clone())),
+        ),
+        ("mime", s(&d.mime)),
+        (
+            "grade",
+            s(policy
+                .grade_by_tag(d.grade)
+                .map_or_else(|| d.grade.to_string(), |g| g.name.clone())),
+        ),
+        ("size", Json::Int(i128::from(d.size))),
+        ("doc_commit", s(hex(&d.doc_commit))),
+        ("recorded_at", Json::Int(i128::from(d.recorded_at.0))),
+    ]
+}
+
+/// `fa document show <oid>` (plan §15.3 `fa doc show`, §13.2): one held
+/// document as the book records it at the head. Its public metadata (as
+/// `document list` gives it), its custody chain, the legal holds active on
+/// it, and its Bates range in every matter that produced it. Never the
+/// bytes: `fa document read` needs read for those.
+fn show_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa document show <oid> --book <dir> --json";
+    let [_, _, oid_text] = args.positional.as_slice() else {
+        return Err(usage("`fa document show` takes one document oid", FIX));
+    };
+    let oid = Oid(hex32(
+        oid_text.strip_prefix("D:").unwrap_or(oid_text),
+        "document oid",
+    )?);
+    let policy = policy()?;
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let Some(summary) = book.documents(None)??.into_iter().find(|d| d.oid == oid) else {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::EVIDENCE_UNKNOWN,
+            fa_journal::refusal::exit::REFUSAL,
+            format!("document {} is not held by this book", hex(&oid.0)),
+            "plan §9 (a document is held once fa document add records it)",
+            "list the documents the book holds with `fa document list --json`",
+        )));
+    };
+    let custody = custody_events(&book.custody_chain(&oid)?)?;
+    let holds = book.legal_holds_on(document_vid(&oid))?;
+    let bates = book.document_bates_ranges(&oid)?;
+    ctx.out.at_book(&book)?;
+    let oid_hex = hex(&oid.0);
+    let human = format!(
+        "document {oid_hex}: {} bytes {} · {} custody event(s) · {} active legal hold(s) · produced in {} matter(s){}",
+        summary.size,
+        summary.mime,
+        custody.len(),
+        holds.len(),
+        bates.len(),
+        bates
+            .iter()
+            .map(|(p, r)| format!(
+                "\n  {}: {}..={}",
+                p.matter,
+                p.label(r.range.start),
+                p.label(r.range.end)
+            ))
+            .collect::<String>()
+    );
+    let mut fields = summary_fields(&policy, &summary);
+    fields.extend([
+        ("custody", Json::Arr(custody)),
+        (
+            "holds",
+            Json::Arr(holds.iter().map(|v| s(format!("{:032x}", v.0))).collect()),
+        ),
+        (
+            "bates",
+            Json::Arr(
+                bates
+                    .iter()
+                    .map(|(p, r)| crate::production::range_json(p, r, true))
+                    .collect(),
+            ),
+        ),
+    ]);
+    ctx.out.event("document_shown", fields, &human);
     Ok(())
 }
 
@@ -810,8 +890,19 @@ fn custody_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let book = ctx.books.open(args)?;
     let chain = book.custody_chain(&oid)?;
     ctx.out.at_book(&book)?;
+    let events = custody_events(&chain)?;
+    ctx.out.event(
+        "custody_chain",
+        vec![("oid", s(&oid_hex)), ("events", Json::Arr(events))],
+        &format!("document {oid_hex}: {} custody event(s)", chain.len()),
+    );
+    Ok(())
+}
+
+/// A custody chain as `document custody` and `document show` report it.
+fn custody_events(chain: &[(fa_journal::CustodyEvent, CommitSeq)]) -> Result<Vec<Json>, Fail> {
     let mut events = Vec::with_capacity(chain.len());
-    for (ev, seq) in &chain {
+    for (ev, seq) in chain {
         let digest = ev.digest().map_err(BookError::Kernel)?;
         let (kind, from) = match &ev.body {
             CustodyBody::Receipt { .. } => ("receipt", Json::Null),
@@ -827,12 +918,7 @@ fn custody_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("recorded_at", Json::Int(i128::from(seq.0))),
         ]));
     }
-    ctx.out.event(
-        "custody_chain",
-        vec![("oid", s(&oid_hex)), ("events", Json::Arr(events))],
-        &format!("document {oid_hex}: {} custody event(s)", chain.len()),
-    );
-    Ok(())
+    Ok(events)
 }
 
 fn erase_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

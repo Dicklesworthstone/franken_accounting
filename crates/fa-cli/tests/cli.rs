@@ -7778,6 +7778,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "list"]).0, 0);
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
+    assert_eq!(run(true, &["document", "show", &ev]).0, 0);
     // Audit engagements (fa-zgn): open, propose, pass, list and show.
     assert_eq!(
         run(

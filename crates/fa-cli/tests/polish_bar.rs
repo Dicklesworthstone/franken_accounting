@@ -617,10 +617,6 @@ fn every_plan_leaf_present_or_registered() {
         ("fa close run", "fa-4o0: the CloseRun task DAG"),
         ("fa close status", "fa-4o0: the CloseRun task DAG"),
         ("fa diff", "fa-k07b: today fa scenario diff"),
-        (
-            "fa doc show",
-            "fa-waow: document list shows each document's metadata",
-        ),
         ("fa exhibit mark", "fa-6l9"),
         (
             "fa finding dismiss",

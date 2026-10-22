@@ -362,6 +362,64 @@ fn a_production_journals_continuing_bates_numbers_and_writes_its_volume() {
     );
     let none = ok(&f.book, &["production", "document", &order]);
     assert!(rows(data(&none), "ranges").is_empty());
+
+    // `fa doc show` (plan §13.2): one document's list metadata with its
+    // range in every matter, its custody chain and the holds on it; never
+    // its bytes.
+    let placed = ok(
+        &f.book,
+        &[
+            "document",
+            "hold",
+            "place",
+            "--authority",
+            &order,
+            "--subject",
+            &invoice,
+        ],
+    );
+    let custody = ok(&f.book, &["document", "custody", &invoice]);
+    let listed = ok(&f.book, &["document", "list"]);
+    let shown = ok(&f.book, &["doc", "show", &invoice]);
+    assert_eq!(text(&shown, "event"), "document_shown");
+    let doc = data(&shown);
+    let row = rows(data(&listed), "documents")
+        .iter()
+        .find(|d| text(d, "oid") == invoice)
+        .expect("the invoice is listed");
+    for key in [
+        "oid",
+        "kind",
+        "mime",
+        "grade",
+        "size",
+        "doc_commit",
+        "recorded_at",
+    ] {
+        assert_eq!(doc.get(key), row.get(key), "{key}");
+    }
+    assert_eq!(rows(doc, "bates"), rows(data(&ranges), "ranges"));
+    assert_eq!(rows(doc, "custody"), rows(data(&custody), "events"));
+    assert!(!rows(doc, "custody").is_empty());
+    assert_eq!(
+        rows(doc, "holds")
+            .iter()
+            .map(|h| h.as_str().expect("a hold vid"))
+            .collect::<Vec<_>>(),
+        vec![text(data(&placed), "hold_vid")]
+    );
+    assert!(doc.get("bytes_hex").is_none() && doc.get("text").is_none());
+    let unproduced = ok(&f.book, &["document", "show", &order]);
+    assert!(rows(data(&unproduced), "bates").is_empty());
+    assert!(rows(data(&unproduced), "holds").is_empty());
+    // Planted: an oid the book does not hold, and a call without an oid.
+    refused(
+        &f.book,
+        &["document", "show", &"ab".repeat(32)],
+        3,
+        "FA-REF-081",
+    );
+    assert_eq!(run(&f.book, &["document", "show"]).0, 2);
 }
 
 #[test]
