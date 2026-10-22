@@ -25,6 +25,7 @@
 // APIs a procedure must never reach (doctrine 3, fa-1tvm).
 #![deny(
     clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
     clippy::disallowed_methods,
     clippy::disallowed_types
 )]
