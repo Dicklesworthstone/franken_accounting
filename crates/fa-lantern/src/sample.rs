@@ -225,6 +225,8 @@ impl Pcg64Dxsm {
 
     /// Return the split state form used by portable journals and manifests.
     #[must_use]
+    // Taking each 128-bit word's low 64 bits is the split itself.
+    #[allow(clippy::cast_possible_truncation)]
     pub const fn split_state(&self) -> ([u64; 2], [u64; 2]) {
         (
             [(self.state >> 64) as u64, self.state as u64],
@@ -260,6 +262,8 @@ impl Pcg64Dxsm {
 
     /// Generate the next raw 64-bit DXSM word, then advance the state.
     #[inline]
+    // DXSM's output function takes the state's low 64 bits by definition.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn next_u64(&mut self) -> u64 {
         let low = (self.state as u64) | 1;
         let mut high = (self.state >> 64) as u64;
@@ -325,6 +329,8 @@ pub fn lcg_advance_128(state: u128, mut delta: u128, mult: u128, inc: u128) -> u
     acc_mult.wrapping_mul(state).wrapping_add(acc_plus)
 }
 
+// The seed's 32-bit words, low first: each narrowing takes a word.
+#[allow(clippy::cast_possible_truncation)]
 fn entropy_words(seed: u64) -> Vec<u32> {
     if seed == 0 {
         return vec![0];
