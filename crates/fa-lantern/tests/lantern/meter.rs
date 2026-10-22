@@ -146,7 +146,7 @@ fn cancellation_is_observed_inside_run() {
     let (h, _) = posted_corpus();
     let snapshot = h.snapshot();
 
-    // Cancelled before the run: the first charge observes it.
+    // Cancelled before the run: refuse before entering the procedure.
     let cancel = Cell::new(true);
     let taken = Cell::new(0);
     let err = run_over_metered(
@@ -158,10 +158,10 @@ fn cancellation_is_observed_inside_run() {
     )
     .expect_err("a cancelled caller stops the run");
     assert!(
-        matches!(&err, LanternError::Cancelled { procedure, used: 1 } if procedure == "jet.weekend"),
+        matches!(&err, LanternError::Cancelled { procedure, used: 0 } if procedure == "jet.weekend"),
         "{err:?}"
     );
-    assert_eq!(taken.get(), 1);
+    assert_eq!(taken.get(), 0);
 
     // Cancelled mid-run: observed within one checkpoint interval.
     let cancel = Cell::new(false);
@@ -191,6 +191,86 @@ fn cancellation_is_observed_inside_run() {
     )
     .expect("an uncancelled run completes");
     assert_eq!(run.findings.len(), 1);
+}
+
+#[test]
+fn cancellation_refuses_an_empty_native_procedure_without_a_work_charge() {
+    let h = harness();
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    assert!(!snapshot.entries.iter().any(|entry| entry.posts()));
+    let procedure = Weekend::new().unwrap();
+    let cancelled = Cell::new(true);
+    let error = run_over_metered(
+        &snapshot,
+        &h.book,
+        &procedure,
+        None,
+        Some(&Flag(&cancelled)),
+    )
+    .expect_err("an empty procedure must still observe its cancelled caller");
+    assert!(
+        matches!(error, LanternError::Cancelled { used: 0, .. }),
+        "{error:?}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    cancelled.set(false);
+    let complete = run_over_metered(
+        &snapshot,
+        &h.book,
+        &procedure,
+        None,
+        Some(&Flag(&cancelled)),
+    )
+    .unwrap();
+    assert!(complete.findings.is_empty());
+    assert_eq!(complete.work, fa_lantern::Work::default());
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn cancellation_after_the_last_interval_withholds_findings_and_preserves_first_refusal() {
+    let (h, _) = posted_corpus();
+    let snapshot = h.snapshot();
+    let cancel = Cell::new(false);
+    let taken = Cell::new(0);
+    let mut procedure = Loop::new(20, &taken);
+    procedure.cancel_after = Some((5, &cancel));
+    let error = run_over_metered(&snapshot, &h.book, &procedure, None, Some(&Flag(&cancel)))
+        .expect_err("cancellation after the last periodic check withholds the result");
+    assert!(
+        matches!(error, LanternError::Cancelled { used: 20, .. }),
+        "{error:?}"
+    );
+    assert_eq!(taken.get(), 20);
+
+    // A swallowed budget refusal precedes cancellation. The final checkpoint
+    // must retain that original cause and count, rather than overwrite it.
+    cancel.set(false);
+    taken.set(0);
+    procedure.discard = true;
+    let error = run_over_metered(
+        &snapshot,
+        &h.book,
+        &procedure,
+        Some(3),
+        Some(&Flag(&cancel)),
+    )
+    .expect_err("the original stopped charge remains the run's refusal");
+    assert!(
+        matches!(
+            error,
+            LanternError::BudgetExhausted {
+                used: 4,
+                budget: 3,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(cancel.get());
+    assert_eq!(taken.get(), 20);
 }
 
 #[test]
