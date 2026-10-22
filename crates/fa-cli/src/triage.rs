@@ -145,7 +145,7 @@ impl Check {
 pub(crate) fn describe(fail: &Fail) -> String {
     match fail {
         Fail::Usage(e) => format!("{} (fix: {})", e.message, e.fix),
-        Fail::Refusal(r) => format!("{}: {}", r.code, r.message),
+        Fail::Refusal(r) | Fail::RefusalDetail(r, _) => format!("{}: {}", r.code, r.message),
         Fail::Book(e) => e.to_string(),
         Fail::Verification { message, .. } => message.clone(),
         Fail::Internal(m) | Fail::Io(m) | Fail::Environment(m) => m.clone(),

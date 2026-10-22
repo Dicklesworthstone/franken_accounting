@@ -596,6 +596,17 @@ pub struct ProducedBundle {
     pub documents: Vec<fa_model::Oid>,
 }
 
+/// A stale plan's intent rehearsed again at the current head
+/// ([`Book::replan`]).
+#[derive(Clone, Debug)]
+pub struct Replanned {
+    pub plan: fa_intents::PostPlan,
+    /// Which of the stale certificate's bindings differ, in this order:
+    /// `basis`, `security_policy_epoch`, `period`, `capability`, `entry`,
+    /// `effects`.
+    pub changed: Vec<&'static str>,
+}
+
 /// One open book.
 pub struct Book {
     runtime: Runtime,
@@ -2012,6 +2023,44 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.commit_plan(
             &purposes, plan, capability,
         )))
+    }
+
+    /// What a stale plan's PlanInvalidated carries (plan §10.4: refused
+    /// "with `PlanInvalidated {changed: [...]}` and a fresh plan, never
+    /// silently re-planned"): the stale plan's own intent rehearsed again
+    /// under `capability` at the current head, and the certificate fields
+    /// that differ. Nothing is committed; committing the fresh plan is the
+    /// caller's explicit act. A refused rehearsal (the period closed, the
+    /// key recorded meanwhile) is returned as the refusal it is.
+    pub fn replan(
+        &mut self,
+        stale: &fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Replanned> {
+        let plan = match self.plan(stale.intent().clone(), capability)? {
+            Ok(plan) => plan,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let (was, now) = (stale.certificate(), plan.certificate());
+        let changed = [
+            ("basis", was.snapshot_seq != now.snapshot_seq),
+            (
+                "security_policy_epoch",
+                was.security_policy_epoch != now.security_policy_epoch,
+            ),
+            ("period", was.period != now.period),
+            (
+                "capability",
+                (was.principal, was.capability_commitment, was.expires_at)
+                    != (now.principal, now.capability_commitment, now.expires_at),
+            ),
+            ("entry", stale.prepared_entry() != plan.prepared_entry()),
+            ("effects", was.effects_digest != now.effects_digest),
+        ]
+        .into_iter()
+        .filter_map(|(name, differs)| differs.then_some(name))
+        .collect();
+        Ok(Ok(Replanned { plan, changed }))
     }
 
     /// Rehearse an atomic batch without publishing any member or consuming keys.

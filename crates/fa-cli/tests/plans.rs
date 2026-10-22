@@ -687,6 +687,157 @@ fn tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key() {
     assert_eq!(get(&committed, "already_recorded"), &Json::Bool(false));
 }
 
+fn names(value: &Json) -> Vec<&str> {
+    match value {
+        Json::Arr(items) => items.iter().map(|i| i.as_str().expect("name")).collect(),
+        other => panic!("changed must be a list: {other:?}"),
+    }
+}
+
+/// fa-we7, plan §10.4: a stale plan is refused with PlanInvalidated naming
+/// what changed and carrying a fresh plan of the same intent at the current
+/// head, never committed for the caller; the fresh plan commits as
+/// reviewed. A different acting capability is named the same way. An
+/// intent that can no longer be planned carries that refusal instead.
+#[test]
+fn a_stale_plan_refusal_carries_a_fresh_plan_and_names_what_changed() {
+    let f = Fixture::new();
+    let intent = f.intent("fresh", "4.50");
+    let stale = text(&f.plan(&intent), "bytes").to_string();
+    let later = write(&f.dir, "later.txt", "Another independent source document.");
+    let add = [
+        "document",
+        "add",
+        later.as_str(),
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ];
+    ok(&f.book, &add);
+    let advanced = head(&f.book);
+    let (code, error) = run(&f.book, &["commit", "--plan", "-"], Some(stale.as_bytes()));
+    assert_eq!(code, 6, "{}", error.render());
+    assert_eq!(text(&error, "refusal_id"), "FA-REF-034");
+    assert_eq!(
+        head(&f.book),
+        advanced,
+        "nothing is committed for the caller"
+    );
+    let detail = get(&error, "detail");
+    let changed = names(get(detail, "changed"));
+    assert!(changed.contains(&"basis"), "{changed:?}");
+    for same in [
+        "capability",
+        "entry",
+        "period",
+        "security_policy_epoch",
+        "effects",
+    ] {
+        assert!(!changed.contains(&same), "{same}: {changed:?}");
+    }
+    assert_eq!(get(detail, "replan_refusal"), &Json::Null);
+    let fresh = get(detail, "fresh_plan");
+    assert_eq!(integer(fresh, "snapshot_seq"), advanced);
+    assert_eq!(text(fresh, "period"), "FY2026-P03");
+    assert!(text(&error, "fix").contains("fa commit --plan -"));
+    let (code, committed) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(fresh, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", committed.render());
+    assert_eq!(text(&committed, "plan_digest"), text(fresh, "plan_digest"));
+    assert_eq!(get(&committed, "already_recorded"), &Json::Bool(false));
+
+    // Another acting capability: named, and the fresh plan binds the caller's.
+    let other = text(&f.plan(&f.intent("other", "1.25")), "bytes").to_string();
+    let wider = ["commit", "--plan", "-", "--grant", "read"];
+    let (code, error) = run(&f.book, &wider, Some(other.as_bytes()));
+    assert_eq!(code, 6, "{}", error.render());
+    let detail = get(&error, "detail");
+    let changed = names(get(detail, "changed"));
+    assert!(changed.contains(&"capability"), "{changed:?}");
+    assert!(!changed.contains(&"basis"), "{changed:?}");
+    let fresh = text(get(detail, "fresh_plan"), "bytes").to_string();
+    let (code, committed) = run(&f.book, &wider, Some(fresh.as_bytes()));
+    assert_eq!(code, 0, "{}", committed.render());
+
+    // A launch-bound session (MCP) gets the same fresh plan, and the fix
+    // names its commit tool; the fresh plan commits through it.
+    let authority = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "operator",
+        LaunchProfile::Preparer,
+        &["post"],
+    )
+    .expect("launch authority");
+    let bound = text(&f.plan(&f.intent("bound", "3.00")), "bytes").to_string();
+    let moved = write(
+        &f.dir,
+        "moved.txt",
+        "A source document between plan and commit.",
+    );
+    ok(
+        &f.book,
+        &[
+            "document",
+            "add",
+            &moved,
+            "--kind",
+            "Receipt",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let (code, error) = commit_bound(&authority, &bound);
+    assert_eq!(code, 6, "{}", error.render());
+    assert!(
+        text(&error, "fix").contains("fa_post_commit_plan"),
+        "{}",
+        error.render()
+    );
+    let detail = get(&error, "detail");
+    assert_eq!(names(get(detail, "changed")), vec!["basis"]);
+    let (code, committed) = commit_bound(&authority, text(get(detail, "fresh_plan"), "bytes"));
+    assert_eq!(code, 0, "{}", committed.render());
+
+    // Recorded meanwhile from a later plan: the stale one cannot be planned
+    // again, and its refusal says so.
+    let twice = f.intent("twice", "2.00");
+    let first = text(&f.plan(&twice), "bytes").to_string();
+    let again = write(&f.dir, "again.txt", "A third independent source document.");
+    ok(
+        &f.book,
+        &[
+            "document",
+            "add",
+            &again,
+            "--kind",
+            "Receipt",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let second = text(&f.plan(&twice), "bytes").to_string();
+    let (code, committed) = run(&f.book, &["commit", "--plan", "-"], Some(second.as_bytes()));
+    assert_eq!(code, 0, "{}", committed.render());
+    let recorded = head(&f.book);
+    let (code, error) = run(&f.book, &["commit", "--plan", "-"], Some(first.as_bytes()));
+    assert_eq!(code, 6, "{}", error.render());
+    assert_eq!(head(&f.book), recorded);
+    let detail = get(&error, "detail");
+    assert_eq!(get(detail, "fresh_plan"), &Json::Null);
+    assert_eq!(get(detail, "changed"), &Json::Null);
+    let replan = get(detail, "replan_refusal");
+    assert_eq!(text(replan, "refusal_id"), "FA-REF-034");
+    assert!(
+        text(replan, "message").contains("already recorded"),
+        "{replan:?}"
+    );
+}
+
 #[test]
 fn law_refusals_and_artifact_output_failures_do_not_emit_a_plan_or_write() {
     let f = Fixture::new();
