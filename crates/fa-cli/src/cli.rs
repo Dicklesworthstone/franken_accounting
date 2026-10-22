@@ -96,6 +96,8 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("accrue", crate::typed::accrue_cmd),
     ("defer", crate::typed::defer_cmd),
     ("batch", crate::typed::batch_cmd),
+    ("post-reserve", crate::typed::post_reserve_cmd),
+    ("void-reserve", crate::typed::void_reserve_cmd),
     ("commit", commit_cmd),
     ("reclass", reclass_cmd),
     ("reverse", reverse_cmd),
@@ -2153,6 +2155,8 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "accrue"
             | "defer"
             | "batch"
+            | "post-reserve"
+            | "void-reserve"
     ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end"))
         || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue")))
         && (args.switch("--dry-run")
@@ -2322,6 +2326,8 @@ pub fn bound_command_admissible(
             | "accrue"
             | "defer"
             | "batch"
+            | "post-reserve"
+            | "void-reserve"
     ) || (matches!(verb, "allocate" | "settle")
         && sub != Some("approve")
         && !args.switch("--approve"));
@@ -2345,6 +2351,8 @@ pub fn bound_command_admissible(
             | "accrue"
             | "defer"
             | "batch"
+            | "post-reserve"
+            | "void-reserve"
     ) && (args.switch("--dry-run")
         || args.flag("--draft").is_some()
         || args.flag("--scenario").is_some());
@@ -7237,6 +7245,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "reason",
         "resolves",
         "disposition",
+        "amount",
         "timeout_ns",
         "reverse_on",
         "prior_period_error",
@@ -7437,6 +7446,12 @@ fn build_post_request_with_prior(
         return Err(usage(
             "`reclassifies` names the target of a Reclassification only",
             "set class: \"Reclassification\" (or use fa reclass), or remove `reclassifies`",
+        ));
+    }
+    if doc.get("amount").is_some() && class != EntryClass::RESOLUTION {
+        return Err(usage(
+            "`amount` posts a two-leg hold: it belongs to a Resolution (fa post-reserve) only",
+            "name the entry's legs in `legs`",
         ));
     }
     if doc.get("revises").is_some() && class != EntryClass::REVISION {
@@ -7744,17 +7759,16 @@ fn build_post_request_with_prior(
             ));
         };
         let resolution_of = Some(hold.entry_ref(vid));
-        let disposition =
-            doc.get("disposition")
-                .and_then(Json::as_str)
-                .unwrap_or(if doc.get("legs").is_some() {
-                    "posts"
-                } else {
-                    "voids"
-                });
+        let disposition = doc.get("disposition").and_then(Json::as_str).unwrap_or(
+            if doc.get("legs").is_some() || doc.get("amount").is_some() {
+                "posts"
+            } else {
+                "voids"
+            },
+        );
         match disposition {
             "voids" | "void" | "release" => {
-                if doc.get("legs").is_some() {
+                if doc.get("legs").is_some() || doc.get("amount").is_some() {
                     return Err(usage(
                         "a Voids resolution carries no legs",
                         "remove `legs`, or set disposition to \"posts\"",
@@ -7772,10 +7786,59 @@ fn build_post_request_with_prior(
             }
             "posts" | "post" => {
                 let mut pairs: Vec<(u16, LegPayload)> = Vec::new();
-                for (i, (leg, explicit)) in parse_legs(doc, &ctx, book, earlier)?
-                    .into_iter()
-                    .enumerate()
-                {
+                if let Some(text) = doc.get("amount") {
+                    // Appendix B PostReserve `amount`: sugar for a two-leg,
+                    // single-unit hold, each leg posting `amount` on its
+                    // own account, side and dimensions; the kernel bounds it
+                    // by what each leg reserved.
+                    if doc.get("legs").is_some() {
+                        return Err(usage(
+                            "a Posts resolution names `legs` or `amount`, not both",
+                            "remove `amount`, or remove `legs` to post the same amount on both legs of a two-leg hold",
+                        ));
+                    }
+                    let text = text
+                        .as_str()
+                        .ok_or_else(|| usage("amount must be a string", "amount: \"60.00 USD\""))?;
+                    let [first, second] = hold.proposal.legs.as_slice() else {
+                        return Err(usage(
+                            format!(
+                                "`amount` posts a two-leg hold; this hold has {} legs",
+                                hold.proposal.legs.len()
+                            ),
+                            "name each posted leg in `legs` (with source_ordinal where an account repeats)",
+                        ));
+                    };
+                    if first.amount.unit != second.amount.unit
+                        || first.base_amount.is_some()
+                        || second.base_amount.is_some()
+                    {
+                        return Err(usage(
+                            "`amount` posts a single-unit hold without base valuations",
+                            "name each posted leg in `legs`",
+                        ));
+                    }
+                    let amount = Amount::parse(text, &ctx.units)
+                        .map_err(|e| usage(format!("amount: {e}"), "amount: \"60.00 USD\""))?;
+                    if amount.unit != first.amount.unit {
+                        return Err(usage(
+                            "amount is not in the hold's unit",
+                            "write the amount in the unit the hold reserved",
+                        ));
+                    }
+                    for (ordinal, held) in [(0u16, first), (1, second)] {
+                        let mut leg = held.clone();
+                        leg.amount = amount;
+                        leg.settles = Vec::new();
+                        pairs.push((ordinal, leg));
+                    }
+                }
+                let listed = if pairs.is_empty() {
+                    parse_legs(doc, &ctx, book, earlier)?
+                } else {
+                    Vec::new()
+                };
+                for (i, (leg, explicit)) in listed.into_iter().enumerate() {
                     let ordinal = match explicit {
                         Some(o) => o,
                         None => {

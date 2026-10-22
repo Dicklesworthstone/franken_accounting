@@ -894,3 +894,81 @@ pub(crate) fn batch_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     post_document(ctx, args, None, doc)
 }
+
+/// `fa post-reserve <hold vid> --date YYYY-MM-DD --amount "<amount> <UNIT>"`
+/// (plan §15.3, Appendix B `PostReserve` amount sugar): a Resolution posting
+/// `amount` on both legs of a two-leg, single-unit hold and releasing the
+/// rest. A hold of more legs names its posted sub-vector with `fa resolve`.
+pub(crate) fn post_reserve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    resolve_reserve(ctx, args, true)
+}
+
+/// `fa void-reserve <hold vid> --date YYYY-MM-DD --yes` (Appendix B
+/// `VoidReserve`): a Resolution releasing the whole hold; it posts nothing
+/// and is dangerous like `fa resolve` with disposition `voids`.
+pub(crate) fn void_reserve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    resolve_reserve(ctx, args, false)
+}
+
+fn resolve_reserve(ctx: &mut Ctx<'_>, args: &Args, posts: bool) -> Result<(), Fail> {
+    let verb = if posts {
+        "post-reserve"
+    } else {
+        "void-reserve"
+    };
+    let example = if posts {
+        "fa post-reserve <hold vid> --date YYYY-MM-DD --amount \"60.00 USD\" [--description <text>] [--key K] [--evidence <oid>]... [--dry-run] --json"
+    } else {
+        "fa void-reserve <hold vid> --date YYYY-MM-DD [--description <text>] [--key K] --yes --json"
+    };
+    if args.positional.len() != 2 {
+        return Err(usage(format!("{verb} needs exactly one hold vid"), example));
+    }
+    for flag in ["--date", "--amount", "--description", "--key"] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(format!("{verb} takes only one {flag}"), example));
+        }
+    }
+    if !posts && args.flag("--amount").is_some() {
+        return Err(usage(
+            "a void releases the whole hold and posts nothing: it takes no --amount",
+            "post part of the hold with fa post-reserve <hold vid> --amount ...",
+        ));
+    }
+    let hold = args.positional[1]
+        .strip_prefix("E:")
+        .unwrap_or(&args.positional[1])
+        .to_string();
+    let date = args
+        .flag("--date")
+        .filter(|date| !date.is_empty())
+        .ok_or_else(|| usage(format!("{verb} needs --date YYYY-MM-DD"), example))?;
+    fa_time::DateDay::parse(date)
+        .map_err(|e| usage(format!("--date: {e}"), "--date YYYY-MM-DD"))?;
+    let mut fields = vec![("effective_date", s(date)), ("resolves", s(hold.as_str()))];
+    let key = if posts {
+        let amount = args
+            .flag("--amount")
+            .filter(|amount| !amount.is_empty())
+            .ok_or_else(|| usage("post-reserve needs --amount \"<amount> <UNIT>\"", example))?;
+        fields.push(("disposition", s("posts")));
+        fields.push(("amount", s(amount)));
+        format!("post-reserve:{hold}:{amount}")
+    } else {
+        fields.push(("disposition", s("voids")));
+        format!("void-reserve:{hold}")
+    };
+    fields.push((
+        "idempotency_key",
+        s(args.flag("--key").map_or(key, str::to_string)),
+    ));
+    if let Some(description) = args.flag("--description") {
+        fields.push(("description", s(description)));
+    }
+    post_document(
+        ctx,
+        args,
+        Some(fa_model::EntryClass::RESOLUTION),
+        obj(fields),
+    )
+}

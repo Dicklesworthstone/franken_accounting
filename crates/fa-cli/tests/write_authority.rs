@@ -428,6 +428,16 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(&["batch", "--intent", "junk.json"], &[Op::Post], Reaches),
         row(
+            &["post-reserve", entry, "--date", DAY, "--amount", "1.00 USD"],
+            &[Op::Post],
+            Reaches,
+        ),
+        row(
+            &["void-reserve", entry, "--date", DAY, "--yes"],
+            &[Op::Post],
+            Reaches,
+        ),
+        row(
             &[
                 "invoice",
                 "--party",

@@ -346,6 +346,30 @@ exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["batch --intent <batch.json|-> [--dry-run [--plan-out <new-file>]]   (the batch is {\"idempotency_key\": \"...\", \"intents\": [<entry intent>, ...]})", "A member that refuses refuses the batch and names its index; nothing is posted. An identical retry returns the recorded outcome. A single entry intent is refused: post it with fa post. Evidence, reverse_on and timeout_ns go in each member intent."]
 example = "fa batch --intent batch.json --book ./books/myco --json"
 
+[[verb]]
+name = "post-reserve"
+summary = "Post part or all of a two-leg hold (plan §15.3, Appendix B PostReserve): a Resolution posting --amount on both legs and releasing the rest. Typed sugar over fa resolve."
+writes = true
+subcommands = []
+flags = ["--date", "--amount", "--description", "--key", "--evidence", "--grant", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["post-reserve <hold vid> --date YYYY-MM-DD --amount \"60.00 USD\" [--description <text>] [--key K] [--evidence <oid>]... [--dry-run [--plan-out <new-file>] | --draft <name>]", "The hold must have two legs in one unit without base valuations; each leg posts --amount on its own account, side and dimensions, at most what it reserved, and the rest is released. A hold of more legs names its posted sub-vector with fa resolve --intent (legs with source_ordinal). The default key is post-reserve:<hold>:<amount>."]
+example = "fa post-reserve <hold vid> --date 2026-03-20 --amount \"60.00 USD\" --book ./books/myco --json"
+
+[[verb]]
+name = "void-reserve"
+summary = "Release a whole hold (plan §15.3, Appendix B VoidReserve): a Resolution that posts nothing. Typed sugar over fa resolve with disposition voids; dangerous, so it needs --yes."
+writes = true
+subcommands = []
+flags = ["--date", "--description", "--key", "--grant", "--plan-out", "--draft"]
+switches = ["--dry-run"]
+events = ["posted", "recorded", "plan", "draft_planned"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["void-reserve <hold vid> --date YYYY-MM-DD [--description <text>] [--key K] --yes   (a void releases the hold for good; the safe alternative is fa post-reserve)", "The default key is void-reserve:<hold>. Host only: MCP sessions carry no --yes."]
+example = "fa void-reserve <hold vid> --date 2026-03-20 --yes --book ./books/myco --json"
+
 
 [[verb]]
 name = "commit"
@@ -1058,6 +1082,16 @@ safe = "keep the intent's true effective date and obtain the authorization the p
 
 [[dangerous]]
 verb = "batch"
+condition = "grant:post_closed"
+safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "post-reserve"
+condition = "grant:post_closed"
+safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
+
+[[dangerous]]
+verb = "void-reserve"
 condition = "grant:post_closed"
 safe = "keep the intent's true effective date and obtain the authorization the period-law refusal names; `--dry-run` rehearses it without confirmation (`fa period list --json` shows each period's state)"
 
@@ -3420,6 +3454,10 @@ on_demand = true
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements) and evidence bundles, checked independently without book keys (plan §15.4: discoverable on demand)."
 
 [[mcp.excluded]]
+verb = "void-reserve"
+reason = "dangerous: a void releases the hold for good and needs --yes, which an MCP session never carries; fa_post_resolve with disposition posts is the safe alternative"
+
+[[mcp.excluded]]
 verb = "checkpoint"
 subcommand = "witness"
 reason = "host-only: a witness cosigns with its own key file on the host (fa-qtfd); no launch template or issued-token ceiling holds witness"
@@ -4356,6 +4394,18 @@ required = ["intent"]
 dont = ["Don't send a single entry intent: a batch is {idempotency_key, intents: [...]}; post one entry with fa_post_post.", "Don't expect a partial batch: one refused member refuses them all."]
 mistakes = ["Putting evidence or reverse_on beside intents instead of in each member intent."]
 
+[[mcp.tool]]
+cluster = "fa.adjust"
+name = "post_reserve"
+verb = "post-reserve"
+subcommands = []
+positionals = ["hold"]
+flags = ["--date", "--amount", "--description", "--key", "--evidence", "--draft"]
+switches = ["--dry-run"]
+required = ["hold", "--date", "--amount"]
+dont = ["Don't post more than the hold reserved: each leg posts at most its reservation and the rest is released.", "Don't use it for a hold of more than two legs: name the sub-vector with fa_post_resolve."]
+mistakes = ["A JSON number in amount: write \"60.00 USD\".", "Naming the original intent's key instead of the hold's vid."]
+
 
 [[mcp.tool]]
 cluster = "fa.rea"
@@ -5263,7 +5313,7 @@ subcommands = ["year-end"]
 ops = ["read", "post", "close"]
 
 [[bound]]
-verbs = ["post", "commit", "reverse", "reclass", "reserve", "resolve", "invoice", "bill", "receipt", "payment", "accrue", "defer", "batch"]
+verbs = ["post", "commit", "reverse", "reclass", "reserve", "resolve", "invoice", "bill", "receipt", "payment", "accrue", "defer", "batch", "post-reserve", "void-reserve"]
 ops = ["post"]
 
 [[bound]]

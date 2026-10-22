@@ -17059,6 +17059,168 @@ fn verify_replay_re_performs_the_history_into_an_independent_book() -> std::io::
     Ok(())
 }
 
+/// Plan §15.3, Appendix B (bead fa-i7e): `fa post-reserve` posts part of a
+/// two-leg hold (each leg at most what it reserved; the rest released) and
+/// `fa void-reserve` releases a whole hold, which is dangerous and needs
+/// --yes. Both are Resolutions through `fa post`'s path, so a retry is the
+/// recorded entry. Planted: posting more than the hold reserved, a hold of
+/// three legs, a void without --yes and a void with an amount are each
+/// refused with nothing written.
+#[test]
+fn post_reserve_and_void_reserve_resolve_two_leg_holds() -> std::io::Result<()> {
+    let dir = tmp("reserve-sugar")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Reserve Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let hold = |key: &str, legs: &str| {
+        let path = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-10","idempotency_key":"{key}","legs":[{legs}]}}"#
+            ),
+        );
+        let out = ok(&["reserve", "--intent", &path, "--evidence", &ev, "--json"]);
+        field(&out, "vid").unwrap().to_string()
+    };
+    let two = r#"{"side":"debit","account":"6000","amount":"80.00 USD"},{"side":"credit","account":"1000","amount":"80.00 USD"}"#;
+    let rent = |out: &str| {
+        let tb = doc(out);
+        arr(&tb, "rows")
+            .iter()
+            .find(|row| text(row, "code") == "6000")
+            .map(|row| {
+                (
+                    text(row, "net").to_string(),
+                    text(row, "debits_pending").to_string(),
+                )
+            })
+    };
+    let tb = || ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    let head = || {
+        let (_, out, _) = fa(Some(&book), &["book", "info", "--json"]);
+        doc(&out)
+            .get("coordinate")
+            .and_then(|c| c.get("known_at").cloned())
+    };
+
+    // 80.00 reserved; 60.00 posted, the other 20.00 released.
+    let first = hold("rent-hold", two);
+    assert_eq!(
+        rent(&tb()),
+        Some(("0.00 USD".into(), "80.00 USD".into())),
+        "the hold is pending"
+    );
+    let post = [
+        "post-reserve",
+        first.as_str(),
+        "--date",
+        "2026-03-20",
+        "--amount",
+        "60.00 USD",
+        "--json",
+    ];
+    let posted = ok(&post);
+    assert_eq!(field(&posted, "event"), Some("posted"), "{posted}");
+    assert_eq!(
+        rent(&tb()),
+        Some(("60.00 USD".into(), "0.00 USD".into())),
+        "60.00 posted, the rest released"
+    );
+    let again = ok(&post);
+    assert_eq!(field(&again, "event"), Some("recorded"), "{again}");
+
+    // A void releases a whole hold, only with --yes.
+    let second = hold("deposit-hold", two);
+    let before = head();
+    let void = [
+        "void-reserve",
+        second.as_str(),
+        "--date",
+        "2026-03-21",
+        "--json",
+    ];
+    let (code, out, err) = run(&void);
+    assert_ne!(code, 0, "a void needs --yes: {out}\n{err}");
+    assert_eq!(head(), before, "the refused void writes nothing");
+    let mut confirmed = void.to_vec();
+    confirmed.push("--yes");
+    let voided = ok(&confirmed);
+    assert_eq!(field(&voided, "event"), Some("posted"), "{voided}");
+    assert_eq!(
+        rent(&tb()),
+        Some(("60.00 USD".into(), "0.00 USD".into())),
+        "the void posts nothing and releases the hold"
+    );
+
+    // Planted negatives.
+    let third = hold("big-hold", two);
+    let three = hold(
+        "split-hold",
+        r#"{"side":"debit","account":"6000","amount":"30.00 USD"},{"side":"credit","account":"1000","amount":"20.00 USD"},{"side":"credit","account":"2000","amount":"10.00 USD"}"#,
+    );
+    let before = head();
+    for (what, argv) in [
+        (
+            "more than reserved",
+            vec![
+                "post-reserve",
+                third.as_str(),
+                "--date",
+                "2026-03-22",
+                "--amount",
+                "90.00 USD",
+                "--json",
+            ],
+        ),
+        (
+            "three legs",
+            vec![
+                "post-reserve",
+                three.as_str(),
+                "--date",
+                "2026-03-22",
+                "--amount",
+                "10.00 USD",
+                "--json",
+            ],
+        ),
+        (
+            "void with an amount",
+            vec![
+                "void-reserve",
+                third.as_str(),
+                "--date",
+                "2026-03-22",
+                "--amount",
+                "1.00 USD",
+                "--yes",
+                "--json",
+            ],
+        ),
+    ] {
+        let (code, out, err) = run(&argv);
+        assert_ne!(code, 0, "{what}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+    }
+    assert_eq!(head(), before, "no refused resolution writes");
+    Ok(())
+}
+
 /// Plan §15.3, Appendix B (bead fa-i7e): `fa accrue` and `fa defer` post an
 /// Adjusting entry with its scheduled reversal, from two-leg flags or from an
 /// intent of any legs, and `fa batch` posts a PostBatch, all through `fa
