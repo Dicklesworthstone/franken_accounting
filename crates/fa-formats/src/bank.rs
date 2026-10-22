@@ -701,12 +701,31 @@ fn parse_camt(
     Ok(extract)
 }
 
-/// Parse a BAI2 cash-management statement (`01`/`02`/`03`/`16`/`49`/`99`) into a
-/// [`BankStatementExtract`]. This bounded profile has one group and one account,
-/// ISO civil dates, and comma-separated summary pairs and transaction fields;
+/// Parse a BAI2 cash-management statement into a [`BankStatementExtract`].
+///
+/// A file whose `02` group header dates itself YYMMDD is read under the
+/// standard BAI version 2 profile ([`parse_bai2_standard`]): what a bank
+/// sends. The original bounded profile, with ISO civil dates and a
+/// six-field `16` record carrying its own date, remains supported for files
+/// already written in it; profiles cannot be mixed within one file.
+pub fn parse_bai2(text: &str, units: &UnitCatalog) -> Result<BankStatementExtract, FormatError> {
+    let standard = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("02,"))
+        .and_then(|group| group.split(',').nth(3))
+        .is_some_and(|date| date.len() == 6 && date.bytes().all(|b| b.is_ascii_digit()));
+    if standard {
+        parse_bai2_standard(text, units)
+    } else {
+        parse_bai2_legacy(text, units)
+    }
+}
+
+/// The original bounded BAI2 profile: one group and one account, ISO civil
+/// dates, comma-separated summary pairs and six-field `16` records;
 /// continuation records and multi-account/group envelopes must be split or
 /// converted explicitly before import.
-pub fn parse_bai2(text: &str, units: &UnitCatalog) -> Result<BankStatementExtract, FormatError> {
+fn parse_bai2_legacy(text: &str, units: &UnitCatalog) -> Result<BankStatementExtract, FormatError> {
     const FMT: &str = "bai2_v2";
     let mut instrument_id = String::new();
     let mut currency = String::from("USD");
@@ -889,6 +908,467 @@ pub fn parse_bai2(text: &str, units: &UnitCatalog) -> Result<BankStatementExtrac
     };
     extract.verify_internal_balance()?;
     Ok(extract)
+}
+
+/// One BAI2 logical record: its code, its fields (a trailing `/` delimiter
+/// removed, `88` continuations joined) and the physical records it spans.
+struct Bai2Record {
+    code: String,
+    fields: Vec<String>,
+    physical: u64,
+}
+
+/// Parse one standard BAI version 2 file (one `01` file, one `02` group with
+/// status 1, one `03` account) into a bank statement extract.
+///
+/// - `01` must declare version 2. Its file identification number, a positive
+///   integer, is the statement's sequence number, so chaining a file to its
+///   predecessor (`--previous-import`) needs consecutive file numbers.
+/// - `02` carries the as-of date (YYMMDD, read as 2000-2099), which is every
+///   detail's booking date, and the currency (USD when blank).
+/// - `03` carries status and summary items, each a type code, an amount, an
+///   item count and a funds type with its extras (`V` value date and time,
+///   `S` three availability amounts, `D` a count of day/amount pairs). Status
+///   010 (opening ledger) and 015 (closing ledger) are required.
+/// - `16` is one detail: a type code in 100..=399 (credit) or 400..=699
+///   (debit), an unsigned amount, a funds type with its extras (a `V` value
+///   date is the line's value date; otherwise the as-of date), the bank and
+///   customer references and a text field that runs to the end of the record.
+/// - `88` continues the previous record: another field of an `03`, or more
+///   text of a `16` (joined with a space).
+/// - `49`, `98` and `99` must state exactly the control totals (the algebraic
+///   sum of every `03` and `16` amount) and record counts the file holds.
+///
+/// Amounts are minor units of the currency at its registered scale (BAI2's
+/// implied decimal). Opening + details = closing is verified like every
+/// other format.
+fn parse_bai2_standard(
+    text: &str,
+    units: &UnitCatalog,
+) -> Result<BankStatementExtract, FormatError> {
+    const FMT: &str = "bai2_v2";
+    let mut records: Vec<Bai2Record> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim_end_matches('\r').trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (code, body) = line
+            .split_once(',')
+            .ok_or_else(|| camt_error(FMT, format!("BAI2 record without fields: {line:?}")))?;
+        if code == "88" {
+            let previous = records
+                .last_mut()
+                .filter(|record| matches!(record.code.as_str(), "03" | "16"))
+                .ok_or_else(|| {
+                    camt_error(FMT, "a BAI2 88 continuation must follow an 03 or 16 record")
+                })?;
+            let continued = body.strip_suffix('/').unwrap_or(body);
+            if previous.code == "16" {
+                let text = previous
+                    .fields
+                    .last_mut()
+                    .ok_or_else(|| camt_error(FMT, "an empty BAI2 16 record"))?;
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(continued);
+            } else {
+                previous
+                    .fields
+                    .extend(continued.split(',').map(str::to_owned));
+            }
+            previous.physical += 1;
+            continue;
+        }
+        let body = body.strip_suffix('/').unwrap_or(body);
+        let fields = if code == "16" {
+            // The text field, last, may itself contain commas: split only
+            // as far as the fixed fields reach once the funds type is known.
+            bai2_detail_fields(body)?
+        } else {
+            body.split(',').map(str::to_owned).collect()
+        };
+        records.push(Bai2Record {
+            code: code.to_owned(),
+            fields,
+            physical: 1,
+        });
+    }
+
+    let mut records = records.into_iter().peekable();
+
+    let file = bai2_take(&mut records, "01")?;
+    if file.fields.len() < 8 || file.fields[7] != "2" {
+        return Err(camt_error(FMT, "BAI2 01 must declare version 2"));
+    }
+    let seq = file.fields[4]
+        .parse::<u64>()
+        .ok()
+        .filter(|seq| *seq > 0)
+        .ok_or_else(|| {
+            camt_error(
+                FMT,
+                "the BAI2 01 file identification number must be a positive integer (it is the statement sequence)",
+            )
+        })?;
+    bai2_date(&file.fields[2])?;
+
+    let group = bai2_take(&mut records, "02")?;
+    if group.fields.len() < 4 || group.fields.len() > 7 {
+        return Err(camt_error(FMT, "malformed BAI2 02 group header"));
+    }
+    if group.fields[2] != "1" {
+        return Err(camt_error(
+            FMT,
+            "only a BAI2 group with status 1 (update) is a statement; deletion, correction and test groups are refused",
+        ));
+    }
+    let as_of = bai2_date(&group.fields[3])?;
+    let group_currency = match group.fields.get(5).map(String::as_str) {
+        None | Some("") => "USD".to_owned(),
+        Some(code) => code.to_owned(),
+    };
+
+    let account = bai2_take(&mut records, "03")?;
+    if account.fields.len() < 2 || account.fields[0].trim().is_empty() {
+        return Err(camt_error(FMT, "BAI2 03 needs an account number"));
+    }
+    let instrument_id = account.fields[0].trim().to_owned();
+    let currency = match account.fields[1].as_str() {
+        "" => group_currency.clone(),
+        code => code.to_owned(),
+    };
+    let (unit_id, _) = units
+        .lookup_code(&currency)
+        .ok_or_else(|| FormatError::UnknownUnit {
+            format: FMT,
+            unit: currency.clone(),
+        })?;
+    let mut control: i128 = 0;
+    let add = |control: &mut i128, amount: i128| -> Result<(), FormatError> {
+        *control = control
+            .checked_add(amount)
+            .ok_or_else(|| FormatError::Overflow {
+                format: FMT,
+                detail: "BAI2 control total overflow".to_owned(),
+            })?;
+        Ok(())
+    };
+    let mut opening = None;
+    let mut closing = None;
+    let items = &account.fields[2..];
+    let mut i = 0usize;
+    while i < items.len() {
+        let type_code = items[i].as_str();
+        if type_code.is_empty() && i + 1 == items.len() {
+            break;
+        }
+        if type_code.len() != 3 || !type_code.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(camt_error(
+                FMT,
+                format!("invalid BAI2 03 type code {type_code:?}"),
+            ));
+        }
+        let amount = items.get(i + 1).map(String::as_str).unwrap_or("");
+        let status = type_code < "100";
+        let value = if amount.is_empty() {
+            None
+        } else {
+            Some(bai2_amount(amount, status)?)
+        };
+        if let Some(value) = value {
+            add(&mut control, value)?;
+        }
+        match type_code {
+            "010" if opening.is_some() => return Err(camt_error(FMT, "repeated BAI2 010")),
+            "010" => opening = value,
+            "015" if closing.is_some() => return Err(camt_error(FMT, "repeated BAI2 015")),
+            "015" => closing = value,
+            _ => {}
+        }
+        // type, amount, item count, funds type and its extras.
+        let mut next = i + 3;
+        bai2_funds(items, &mut next)?;
+        i = next;
+    }
+    let opening_balance =
+        opening.ok_or_else(|| camt_error(FMT, "BAI2 03 has no 010 opening ledger balance"))?;
+    let closing_balance =
+        closing.ok_or_else(|| camt_error(FMT, "BAI2 03 has no 015 closing ledger balance"))?;
+    let mut account_records = account.physical;
+
+    let mut lines = Vec::new();
+    while records.peek().is_some_and(|record| record.code == "16") {
+        let detail = bai2_take(&mut records, "16")?;
+        account_records += detail.physical;
+        let f = &detail.fields;
+        let type_code: u16 = f[0]
+            .parse()
+            .map_err(|_| camt_error(FMT, format!("invalid BAI2 16 type code {:?}", f[0])))?;
+        let side = match type_code {
+            100..=399 => Side::Credit,
+            400..=699 => Side::Debit,
+            _ => {
+                return Err(camt_error(
+                    FMT,
+                    format!(
+                        "BAI2 16 type code {type_code} is neither a credit (100..=399) nor a debit (400..=699)"
+                    ),
+                ));
+            }
+        };
+        let mantissa = bai2_amount(&f[1], false)?;
+        if mantissa == 0 {
+            return Err(camt_error(FMT, "a BAI2 16 detail moves no money"));
+        }
+        add(&mut control, mantissa)?;
+        let mut next = 2usize;
+        let value_date = bai2_funds(f, &mut next)?.unwrap_or(as_of);
+        let bank_ref = f.get(next).map_or("", |s| s.trim());
+        let customer_ref = f.get(next + 1).map_or("", |s| s.trim());
+        let text = f.get(next + 2).map_or("", |s| s.trim());
+        let reference = if bank_ref.is_empty() {
+            customer_ref
+        } else {
+            bank_ref
+        }
+        .to_owned();
+        let ordinal = u32::try_from(lines.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or_else(|| FormatError::Overflow {
+                format: FMT,
+                detail: "BAI2 line ordinal overflow".to_owned(),
+            })?;
+        let amount = Amount::new(unit_id, mantissa);
+        let line_digest = compute_bank_line_digest(
+            &instrument_id,
+            seq,
+            ordinal,
+            as_of,
+            side,
+            amount,
+            &reference,
+        );
+        lines.push(ParsedBankLine {
+            line_ordinal: ordinal,
+            booking_date: as_of,
+            value_date,
+            side,
+            amount,
+            counterparty: text.to_owned(),
+            reference,
+            line_digest,
+        });
+    }
+
+    let account_trailer = bai2_take(&mut records, "49")?;
+    account_records += account_trailer.physical;
+    bai2_trailer(&account_trailer, 2, "49", control, None, account_records)?;
+    let group_trailer = bai2_take(&mut records, "98")?;
+    let group_records = account_records + group.physical + group_trailer.physical;
+    bai2_trailer(&group_trailer, 3, "98", control, Some(1), group_records)?;
+    let file_trailer = bai2_take(&mut records, "99")?;
+    let file_records = group_records + file.physical + file_trailer.physical;
+    bai2_trailer(&file_trailer, 3, "99", control, Some(1), file_records)?;
+    if let Some(extra) = records.next() {
+        return Err(camt_error(
+            FMT,
+            format!(
+                "BAI2 record {} after the 99 file trailer; one file, group and account are read",
+                extra.code
+            ),
+        ));
+    }
+
+    let extract = BankStatementExtract {
+        format_name: FMT,
+        instrument_account_id: instrument_id,
+        sequence_number: seq,
+        currency,
+        statement_date: as_of,
+        opening_balance,
+        closing_balance,
+        lines,
+    };
+    extract.verify_internal_balance()?;
+    Ok(extract)
+}
+
+/// The next BAI2 logical record, which must be `code`.
+fn bai2_take(
+    records: &mut std::iter::Peekable<std::vec::IntoIter<Bai2Record>>,
+    code: &str,
+) -> Result<Bai2Record, FormatError> {
+    const FMT: &str = "bai2_v2";
+    match records.next() {
+        Some(record) if record.code == code => Ok(record),
+        Some(record) => Err(camt_error(
+            FMT,
+            format!("expected a BAI2 {code} record, found {}", record.code),
+        )),
+        None => Err(camt_error(
+            FMT,
+            format!("BAI2 file ends before its {code} record"),
+        )),
+    }
+}
+
+/// A `16` body split into its fixed fields and a final text field that keeps
+/// its commas: type, amount, funds type, the funds type's extras, bank and
+/// customer references, then the text.
+fn bai2_detail_fields(body: &str) -> Result<Vec<String>, FormatError> {
+    const FMT: &str = "bai2_v2";
+    let parts: Vec<&str> = body.split(',').collect();
+    if parts.len() < 3 {
+        return Err(camt_error(
+            FMT,
+            "BAI2 16 needs a type code, an amount and a funds type",
+        ));
+    }
+    let owned: Vec<String> = parts.iter().map(|s| (*s).to_owned()).collect();
+    let mut next = 2usize;
+    bai2_funds(&owned, &mut next)?;
+    // bank reference, customer reference, then the text (all of the rest).
+    // A record may end after its bank reference: the customer reference and
+    // the text are then empty.
+    let fixed = next + 2;
+    let mut fields: Vec<String> = owned.into_iter().take(fixed.min(parts.len())).collect();
+    fields.resize(fixed, String::new());
+    fields.push(
+        parts
+            .get(fixed..)
+            .map_or(String::new(), |rest| rest.join(",")),
+    );
+    Ok(fields)
+}
+
+/// Read the funds type at `fields[*next]` and its extras, advancing `*next`
+/// past them; a `V` value date is returned.
+fn bai2_funds(fields: &[String], next: &mut usize) -> Result<Option<DateDay>, FormatError> {
+    const FMT: &str = "bai2_v2";
+    let funds = fields.get(*next).map_or("", |s| s.trim());
+    *next += 1;
+    let extra = |next: &mut usize, n: usize| -> Result<(), FormatError> {
+        if fields.len() < *next + n {
+            return Err(camt_error(FMT, "BAI2 funds type ends before its fields"));
+        }
+        *next += n;
+        Ok(())
+    };
+    match funds {
+        "" | "0" | "1" | "2" | "Z" => Ok(None),
+        "V" => {
+            let date = bai2_date(fields.get(*next).map_or("", |s| s.trim()))?;
+            extra(next, 2)?;
+            Ok(Some(date))
+        }
+        "S" => {
+            for k in 0..3 {
+                bai2_amount(fields.get(*next + k).map_or("", |s| s.trim()), true)?;
+            }
+            extra(next, 3)?;
+            Ok(None)
+        }
+        "D" => {
+            let count: usize = fields
+                .get(*next)
+                .and_then(|s| s.trim().parse().ok())
+                .ok_or_else(|| camt_error(FMT, "BAI2 funds type D needs a distribution count"))?;
+            extra(next, 1)?;
+            for k in 0..count {
+                bai2_amount(fields.get(*next + 2 * k + 1).map_or("", |s| s.trim()), true)?;
+            }
+            extra(next, 2 * count)?;
+            Ok(None)
+        }
+        other => Err(camt_error(
+            FMT,
+            format!("unknown BAI2 funds type {other:?}"),
+        )),
+    }
+}
+
+/// YYMMDD, read as 2000..=2099 (the standard MT940 rule).
+fn bai2_date(raw: &str) -> Result<DateDay, FormatError> {
+    const FMT: &str = "bai2_v2";
+    let digits = |s: &str| s.parse::<u32>().ok();
+    if raw.len() != 6 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(camt_error(FMT, format!("BAI2 date {raw:?} is not YYMMDD")));
+    }
+    let (Some(yy), Some(mm), Some(dd)) = (digits(&raw[..2]), digits(&raw[2..4]), digits(&raw[4..]))
+    else {
+        return Err(camt_error(FMT, format!("BAI2 date {raw:?} is not YYMMDD")));
+    };
+    let year = i32::try_from(2000 + yy).map_err(|_| camt_error(FMT, "BAI2 year overflow"))?;
+    DateDay::from_ymd(year, mm as u8, dd as u8)
+        .map_err(|_| camt_error(FMT, format!("BAI2 date {raw:?} is not a civil date")))
+}
+
+/// Minor units: digits, signed (`+`/`-`) only where the field is signed.
+fn bai2_amount(raw: &str, signed: bool) -> Result<i128, FormatError> {
+    const FMT: &str = "bai2_v2";
+    let (negative, digits) = match raw.as_bytes().first() {
+        Some(b'-') if signed => (true, &raw[1..]),
+        Some(b'+') if signed => (false, &raw[1..]),
+        _ => (false, raw),
+    };
+    if digits.is_empty() || digits.len() > 30 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(camt_error(FMT, format!("invalid BAI2 amount {raw:?}")));
+    }
+    let value: i128 = digits
+        .parse()
+        .map_err(|_| camt_error(FMT, format!("invalid BAI2 amount {raw:?}")))?;
+    if negative {
+        negate_bank_amount(FMT, value)
+    } else {
+        Ok(value)
+    }
+}
+
+/// A trailer states exactly the control total, the count of accounts or
+/// groups it closes (when it has one) and its scope's physical records.
+fn bai2_trailer(
+    trailer: &Bai2Record,
+    width: usize,
+    code: &str,
+    control: i128,
+    members: Option<u64>,
+    records: u64,
+) -> Result<(), FormatError> {
+    const FMT: &str = "bai2_v2";
+    if trailer.fields.len() != width {
+        return Err(camt_error(FMT, format!("malformed BAI2 {code} trailer")));
+    }
+    let stated = bai2_amount(&trailer.fields[0], true)?;
+    if stated != control {
+        return Err(FormatError::BankContinuity {
+            format: FMT,
+            detail: format!(
+                "BAI2 {code} control total {stated} differs from the file's amounts ({control})"
+            ),
+        });
+    }
+    let count = |raw: &str| raw.trim().parse::<u64>().ok();
+    if let Some(members) = members
+        && count(&trailer.fields[1]) != Some(members)
+    {
+        return Err(camt_error(
+            FMT,
+            format!("BAI2 {code} states another number of accounts or groups than the one read"),
+        ));
+    }
+    if count(&trailer.fields[width - 1]) != Some(records) {
+        return Err(FormatError::BankContinuity {
+            format: FMT,
+            detail: format!(
+                "BAI2 {code} states {} records; its scope holds {records}",
+                trailer.fields[width - 1]
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Parse an OFX / Intuit QBO v2 XML statement into a [`BankStatementExtract`].
@@ -2450,5 +2930,149 @@ Invoice 100
             statement.lines[4].line_digest,
             statement.lines[5].line_digest
         );
+    }
+
+    /// A standard BAI version 2 file: one 125.00 USD wire credit on the as-of
+    /// day, value dated by funds type V. Account control total = 03 amounts
+    /// (0 + 12500 + 12500) + the 16 amount (12500) = 37500 over 3 records.
+    const STANDARD_BAI2: &str = "01,BANKID,CUSTID,260305,0600,7,,,2/\n\
+02,CUSTID,BANKID,1,260305,2359,USD,2/\n\
+03,GB29NWBK60161331926819,USD,010,0,,,015,12500,,,100,12500,1,Z/\n\
+16,195,12500,V,260305,,WIRE-125,CUST-125,Customer, Co/\n\
+49,37500,3/\n\
+98,37500,1,5/\n\
+99,37500,1,7/\n";
+
+    #[test]
+    fn standard_bai2_reads_a_bank_file_with_its_control_totals() {
+        let units = UnitCatalog::embedded().unwrap();
+        let statement = parse_bai2(STANDARD_BAI2, &units).unwrap();
+        assert_eq!(statement.format_name, "bai2_v2");
+        assert_eq!(statement.instrument_account_id, "GB29NWBK60161331926819");
+        assert_eq!(statement.sequence_number, 7);
+        assert_eq!(statement.currency, "USD");
+        assert_eq!(statement.statement_date.render(), "2026-03-05");
+        assert_eq!(
+            (statement.opening_balance, statement.closing_balance),
+            (0, 12_500)
+        );
+        assert_eq!(statement.lines.len(), 1);
+        let line = &statement.lines[0];
+        assert_eq!(line.side, Side::Credit);
+        assert_eq!(line.amount.mantissa, 12_500);
+        assert_eq!(line.booking_date.render(), "2026-03-05");
+        assert_eq!(line.value_date.render(), "2026-03-05");
+        assert_eq!(line.reference, "WIRE-125");
+        // The text keeps its comma: it runs to the end of the record.
+        assert_eq!(line.counterparty, "Customer, Co");
+        // CRLF line ends read the same.
+        assert_eq!(
+            parse_bai2(&STANDARD_BAI2.replace('\n', "\r\n"), &units).unwrap(),
+            statement
+        );
+
+        // An 88 continues the 16's text and counts as a record.
+        let continued = STANDARD_BAI2
+            .replace("Customer, Co/\n", "Customer, Co\n88,Ltd/\n")
+            .replace("49,37500,3/", "49,37500,4/")
+            .replace("98,37500,1,5/", "98,37500,1,6/")
+            .replace("99,37500,1,7/", "99,37500,1,8/");
+        let statement = parse_bai2(&continued, &units).unwrap();
+        assert_eq!(statement.lines[0].counterparty, "Customer, Co Ltd");
+
+        // Distributed availability (S, D) and a debit with no text: the
+        // availability amounts are not control-total amounts.
+        let distributed = "01,BANKID,CUSTID,260305,0600,8,,,2/\n\
+02,CUSTID,BANKID,1,260305,2359,,2/\n\
+03,ACCT-1,,010,10000,,,015,7500,,/\n\
+16,175,1000,S,1000,0,0,DEP-1,,Deposit/\n\
+16,475,3000,D,2,1,2000,2,1000,CHK-1001,1001/\n\
+16,475,500,0,FEE-1,/\n\
+49,22000,5/\n\
+98,22000,1,7/\n\
+99,22000,1,9/\n";
+        let statement = parse_bai2(distributed, &units).unwrap();
+        assert_eq!(statement.currency, "USD", "a blank currency is USD");
+        assert_eq!(
+            statement
+                .lines
+                .iter()
+                .map(|l| (l.side, l.amount.mantissa, l.reference.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (Side::Credit, 1_000, "DEP-1"),
+                (Side::Debit, 3_000, "CHK-1001"),
+                (Side::Debit, 500, "FEE-1"),
+            ]
+        );
+    }
+
+    /// Planted: each integrity rule refuses the file.
+    #[test]
+    fn standard_bai2_refuses_wrong_totals_counts_classes_and_continuity() {
+        let units = UnitCatalog::embedded().unwrap();
+        for (what, invalid) in [
+            (
+                "account control",
+                STANDARD_BAI2.replace("49,37500,3/", "49,37501,3/"),
+            ),
+            (
+                "account records",
+                STANDARD_BAI2.replace("49,37500,3/", "49,37500,4/"),
+            ),
+            (
+                "group control",
+                STANDARD_BAI2.replace("98,37500,1,5/", "98,37400,1,5/"),
+            ),
+            (
+                "group accounts",
+                STANDARD_BAI2.replace("98,37500,1,5/", "98,37500,2,5/"),
+            ),
+            (
+                "file records",
+                STANDARD_BAI2.replace("99,37500,1,7/", "99,37500,1,8/"),
+            ),
+            (
+                "group status",
+                STANDARD_BAI2.replace("02,CUSTID,BANKID,1,", "02,CUSTID,BANKID,4,"),
+            ),
+            ("version", STANDARD_BAI2.replace(",,,2/\n02", ",,,3/\n02")),
+            ("file id", STANDARD_BAI2.replace("0600,7,", "0600,X7,")),
+            ("type class", STANDARD_BAI2.replace("16,195,", "16,799,")),
+            (
+                "funds type",
+                STANDARD_BAI2.replace(",V,260305,", ",Q,260305,"),
+            ),
+            (
+                "value date",
+                STANDARD_BAI2.replace(",V,260305,", ",V,261305,"),
+            ),
+            ("closing ledger", STANDARD_BAI2.replace("015,12500,,,", "")),
+            (
+                "orphan 88",
+                STANDARD_BAI2.replace("49,37500,3/\n", "49,37500,3/\n88,more/\n"),
+            ),
+            (
+                "second account",
+                STANDARD_BAI2.replace("49,37500,3/\n", "49,37500,3/\n03,OTHER,USD,010,0,,/\n"),
+            ),
+            ("after trailer", format!("{STANDARD_BAI2}01,AGAIN/\n")),
+        ] {
+            assert!(
+                parse_bai2(&invalid, &units).is_err(),
+                "{what}: accepted {invalid}"
+            );
+        }
+        // Opening + details != closing, with totals that agree with the
+        // amounts: the continuity rule refuses it.
+        let discontinuous = STANDARD_BAI2
+            .replace("015,12500,", "015,12400,")
+            .replace("49,37500,3/", "49,37400,3/")
+            .replace("98,37500,1,5/", "98,37400,1,5/")
+            .replace("99,37500,1,7/", "99,37400,1,7/");
+        assert!(matches!(
+            parse_bai2(&discontinuous, &units),
+            Err(FormatError::BankContinuity { .. })
+        ));
     }
 }
