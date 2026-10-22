@@ -153,8 +153,8 @@ pub(crate) enum Fail {
     Usage(UsageError),
     Refusal(Refusal),
     /// A catalog refusal whose error event carries a structured `detail`
-    /// (a stale plan's fresh plan, fa-we7).
-    RefusalDetail(Refusal, Json),
+    /// (a stale plan's fresh plan, fa-we7). Boxed: `Fail` stays small.
+    RefusalDetail(Box<(Refusal, Json)>),
     Book(BookError),
     Verification {
         message: String,
@@ -1807,7 +1807,10 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
             refusal: Json::Null,
         },
         Err(Fail::Refusal(r)) => refused(r, Json::Null),
-        Err(Fail::RefusalDetail(r, detail)) => refused(r, detail),
+        Err(Fail::RefusalDetail(boxed)) => {
+            let (r, detail) = *boxed;
+            refused(r, detail)
+        }
         Err(Fail::Book(e)) => {
             if let Some(r) = e.refusal() {
                 Failure {
@@ -4011,7 +4014,8 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
         other => UsageError {
             message: match other {
                 Fail::Internal(m) | Fail::Io(m) | Fail::Environment(m) => m,
-                Fail::Refusal(r) | Fail::RefusalDetail(r, _) => r.message,
+                Fail::Refusal(r) => r.message,
+                Fail::RefusalDetail(boxed) => boxed.0.message,
                 Fail::Book(b) => b.to_string(),
                 Fail::Verification { message, .. } => message,
                 Fail::Usage(u) => u.message,
@@ -8896,7 +8900,7 @@ fn stale_plan(
             ),
         ]),
     };
-    Fail::RefusalDetail(refusal, detail)
+    Fail::RefusalDetail(Box::new((refusal, detail)))
 }
 
 pub(crate) fn emit_posted(
