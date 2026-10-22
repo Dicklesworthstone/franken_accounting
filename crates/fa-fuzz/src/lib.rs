@@ -108,6 +108,11 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
         run: fuzz_interop_readers,
     },
     FuzzTarget {
+        name: "daemon_wire",
+        description: "The fad socket wire: length-prefixed frame decoder in arbitrary pieces, canonical-JSON check, fad_request and fad_response decoders, without panic; decoded frames re-encode without loss",
+        run: fuzz_daemon_wire,
+    },
+    FuzzTarget {
         name: "gql_profile",
         description: "The FrankenAccounting GQL profile rewriter (lexer, selectors, amount law, aggregation planner) on arbitrary UTF-8 without panic",
         run: fuzz_gql_profile,
@@ -574,6 +579,57 @@ pub fn fuzz_cli_args(bytes: &[u8]) {
         let _ = fa_cli::args::parse(&argv, &reg.value_flags(), &reg.switches());
     }
     let _ = fa_cli::cli::parse_cli_invocation(&argv);
+}
+
+/// fa-yrhb: the daemon wire, which `fad` reads from its socket before any
+/// admission. Three parsers are driven without panic: the length-prefixed
+/// frame decoder (fed in two pieces, split where the first byte says), the
+/// canonical-JSON check, and the request and response decoders. Every frame
+/// payload, and the input itself, is tried as a payload. A decoded request or
+/// response survives re-encoding unchanged, and any payload `encode` frames
+/// comes back out of a decoder exactly.
+pub fn fuzz_daemon_wire(bytes: &[u8]) {
+    use fa_cli::wire::{Decoder, Request, Response, canonical, encode};
+    let Ok(reg) = fa_cli::verbs::registry() else {
+        return;
+    };
+    let (max, protocol) = (reg.daemon.max_frame_bytes, reg.daemon.protocol);
+    let drain = |decoder: &mut Decoder, frames: &mut Vec<Vec<u8>>| {
+        while let Ok(Some(frame)) = decoder.next_frame() {
+            frames.push(frame);
+        }
+    };
+    let split = bytes
+        .first()
+        .map_or(0, |b| usize::from(*b) % bytes.len().max(1));
+    let mut decoder = Decoder::new(max);
+    let mut frames = Vec::new();
+    decoder.push(&bytes[..split]);
+    drain(&mut decoder, &mut frames);
+    decoder.push(&bytes[split..]);
+    drain(&mut decoder, &mut frames);
+    let _ = decoder.finish();
+    for payload in frames.iter().map(Vec::as_slice).chain([bytes]) {
+        let Ok(value) = canonical(payload) else {
+            continue;
+        };
+        if let Ok(request) = Request::from_json(&value, protocol) {
+            let again = canonical(request.to_json(protocol).render().as_bytes())
+                .and_then(|v| Request::from_json(&v, protocol));
+            assert_eq!(again, Ok(request), "a request re-encodes without loss");
+        }
+        if let Ok(response) = Response::from_json(&value, protocol) {
+            let again = canonical(response.to_json(protocol).render().as_bytes())
+                .and_then(|v| Response::from_json(&v, protocol));
+            assert_eq!(again, Ok(response), "a response re-encodes without loss");
+        }
+    }
+    if let Ok(frame) = encode(bytes, max) {
+        let mut decoder = Decoder::new(max);
+        decoder.push(&frame);
+        assert_eq!(decoder.next_frame(), Ok(Some(bytes.to_vec())));
+        assert_eq!(decoder.finish(), Ok(()));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,6 +1229,40 @@ pub fn seeds_for_target(target_name: &str) -> Vec<Vec<u8>> {
             seeds.push(include_bytes!("../../../registries/sod_policy.toml").to_vec());
             seeds.push(include_bytes!("../../../registries/verbs.toml").to_vec());
         }
+        "daemon_wire" => {
+            use fa_cli::wire::{Op, Request, Response, encode};
+            if let Ok(reg) = fa_cli::verbs::registry() {
+                let (max, protocol) = (reg.daemon.max_frame_bytes, reg.daemon.protocol);
+                let request = Request {
+                    op: Op::Run,
+                    argv: ["tb", "--period", "FY2026-P03", "--json"]
+                        .map(str::to_string)
+                        .to_vec(),
+                    cwd: Some("/tmp".into()),
+                    stdin: Some(b"{}".to_vec()),
+                    token: Some(vec![0xfa; 8]),
+                }
+                .to_json(protocol)
+                .render()
+                .into_bytes();
+                let response = Response {
+                    op: Op::Run,
+                    exit: 3,
+                    stdout: "{\"event\":\"error\"}\n".into(),
+                    stderr: "refused\n".into(),
+                }
+                .to_json(protocol)
+                .render()
+                .into_bytes();
+                let mut stream = Vec::new();
+                for payload in [&request, &response] {
+                    if let Ok(frame) = encode(payload, max) {
+                        stream.extend(frame);
+                    }
+                }
+                seeds.extend([request, response, stream]);
+            }
+        }
         "cli_args" => {
             seeds.push(b"tb --period FY2026-P03 --book /tmp/b --json".to_vec());
             seeds.push(b"period reopen FY2026-P03 --to soft-closed --reason 1 --dry-run".to_vec());
@@ -1323,6 +1413,30 @@ mod tests {
         assert_eq!(cert.intents().len(), 1);
         assert!(seeds_for_target("payload_decoders").contains(bytes));
         assert!(ScenarioDiffCertificate::decode(&bytes[..bytes.len() - 1]).is_err());
+    }
+
+    /// The daemon-wire target starts from frames fad accepts: a canonical
+    /// request, a canonical response, and both framed in one stream.
+    #[test]
+    fn the_daemon_wire_seeds_are_accepted_frames() {
+        use fa_cli::wire::{Decoder, Request, Response, canonical};
+        let reg = fa_cli::verbs::registry().expect("verbs.toml");
+        let protocol = reg.daemon.protocol;
+        // The checked-in corpus comes first; the three golden seeds last.
+        let seeds = seeds_for_target("daemon_wire");
+        let [request_bytes, response_bytes, stream] = &seeds[seeds.len().saturating_sub(3)..]
+        else {
+            panic!("three golden seeds after the corpus: {}", seeds.len());
+        };
+        let request = canonical(request_bytes).expect("a canonical request");
+        assert!(Request::from_json(&request, protocol).is_ok());
+        let response = canonical(response_bytes).expect("a canonical response");
+        assert!(Response::from_json(&response, protocol).is_ok());
+        let mut decoder = Decoder::new(reg.daemon.max_frame_bytes);
+        decoder.push(stream);
+        assert_eq!(decoder.next_frame(), Ok(Some(request_bytes.clone())));
+        assert_eq!(decoder.next_frame(), Ok(Some(response_bytes.clone())));
+        assert_eq!(decoder.finish(), Ok(()));
     }
 
     /// The ADS target starts from a package that verifies against the
