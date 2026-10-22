@@ -14,7 +14,7 @@ use crate::json::{Json, obj, s};
 
 const EXAMPLE: &str = "fa proof signed-checkpoint|checkpoint|inclusion|consistency|prefix|balance|evidence-disclosure --state <oid|latest> [--out <new-file>] --json";
 
-fn fixed_hex<const N: usize>(text: &str, what: &str) -> Result<[u8; N], Fail> {
+pub(crate) fn fixed_hex<const N: usize>(text: &str, what: &str) -> Result<[u8; N], Fail> {
     if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(usage(
             format!("{what} requires exactly {} hexadecimal digits", N * 2),
