@@ -35,6 +35,8 @@ use fgdb_types::{CanonicalScalar, VId};
 mod outcome_batch_integrity_tests;
 #[path = "genesis/outcome_keys.rs"]
 mod outcome_key_tests;
+#[path = "genesis/subledger.rs"]
+mod subledger_tests;
 
 #[path = "genesis/outcome_recovery.rs"]
 mod outcome_recovery_tests;

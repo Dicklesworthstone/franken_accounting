@@ -846,6 +846,45 @@ impl Book {
         )))
     }
 
+    /// Designate an AR/AP posting leaf and require party detail on every leg.
+    pub fn create_native_subledger(
+        &mut self,
+        spec: &crate::NativeSubledgerSpec,
+        principal: VId,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::NativeSubledgerRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_native_subledger(
+            &purposes, spec, principal, effective_date, idempotency_key, capability,
+        )))
+    }
+
+    /// Read journaled native subledgers at one prefix under current authority.
+    pub fn native_subledgers(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<Vec<crate::NativeSubledger>> {
+        with_store!(&self.store, core => core.native_subledgers(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
+    /// Compare the exact party detail with the independent control-leaf fold.
+    pub fn reconcile_native_subledger(
+        &self,
+        code: &str,
+        effective_through: DateDay,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::NativeSubledgerReconciliation> {
+        with_store!(&self.store, core => core.reconcile_native_subledger(
+            &self.purposes(), code, effective_through, known_at, capability,
+        ))
+    }
+
     /// Journal and materialize a `Party` vertex (`SchemaChange` `kind = 5`, plan §4.5, bead `fa-l2h`).
     #[allow(clippy::too_many_arguments)]
     pub fn create_party(

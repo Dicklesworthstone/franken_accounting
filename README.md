@@ -190,6 +190,40 @@ books. An explicit, authorized backfill that journals the adopted definitions
 and their provenance is still pending; reopening never fills missing facts from
 the current binary. This does not implement unit evolution or redenomination.
 
+### Native receivable and payable subledgers
+
+Designate an existing Asset leaf as a receivables control or a Liability leaf as
+a payables control. Registration retains an immutable definition and requires
+every existing control-account leg to name a valid party, including staged
+migration history. Subsequent control postings require that party dimension too.
+Invoices, bills, receipts and payments use their existing party-qualified legs;
+registration creates no additional posting or balance.
+
+```bash
+fa subledger add AR --control 1200 --kind receivables --name "Trade receivables" \
+  --book ./books/acme --json
+fa subledger add AP --control 2000 --kind payables --name "Trade payables" \
+  --book ./books/acme --json
+fa subledger list --book ./books/acme --json
+fa subledger show AR --book ./books/acme --json
+fa subledger verify AR --as-of 2026-03-31 --book ./books/acme --json
+fa subledger verify AR --as-of 2026-03-31 --as-known-at 42 \
+  --book ./books/acme --json
+```
+
+Verification folds party detail from the retained journal and compares it with
+an independent control-account trial balance at the same recorded sequence and
+effective date. Each currency keeps separate posted debit/credit and pending
+debit/credit totals. A party's `net` is debit minus credit, so an ordinary payable
+credit balance is negative. Partial settlements, reversals and reservation
+releases retain their party attribution. A mismatch produces verification exit 8.
+
+Creation requires whole-book read and schema-change authority; inspection and
+verification require whole-book read authority. The same commands are registered
+in the on-demand `fa.subledger` MCP cluster, with launch authority enforced.
+This native reconciliation does not retain a report certificate or validate
+external summary-feed detail digests; those remain open work under `fa-03s`.
+
 ### Certified reports and replay
 
 Retain the exact selector, known-at sequence, accounting journal prefix, registry

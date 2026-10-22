@@ -649,6 +649,18 @@ usage = ["produce --matter <matter> --document <oid>[:pages[:designation]]... --
 example = "fa produce --matter SEC-v-Acme --document <oid>:12:confidential --document <oid> --out ./prod-001 --book ./books/myco --json"
 
 [[verb]]
+name = "subledger"
+summary = "Native receivable/payable subledgers (plan §5.6): designate one control leaf whose legs must name parties, inspect its journaled definition, and reconcile party detail with the control account at an explicit coordinate."
+writes = true
+subcommands = ["add", "list", "show", "verify"]
+flags = ["--control", "--kind", "--name", "--date", "--key", "--as-of", "--as-known-at"]
+switches = []
+events = ["subledger_recorded", "subledgers", "subledger_reconciled"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["subledger add <code> --control <account> --kind receivables|payables [--name <name>] [--date YYYY-MM-DD] [--key K]   (AR requires an Asset leaf, AP a Liability leaf; needs read and schema_change. Every existing control leg, including staged migration history, must already name a valid party. Registration journals one immutable definition and never adds a posting. The default key is subledger:<code>; an identical retry writes nothing.)", "subledger list [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger show <code> [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger verify <code> --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]   (literal native-unit journal fold by party, compared with an independent control-account trial balance; posted debits/credits and pending debits/credits remain separate. Reversals and reservation releases keep their original party attribution. Reads require whole-book read scope; unsupported scoped requests refuse before data is observed.)", "This is the native one-control-leaf model, not an external summary-feed attestation. Reconciliation is a read-only fold, not a retained report certificate. External detail-digest validation remains tracked by fa-03s."]
+example = "fa subledger verify AR --as-of 2026-03-31 --book ./books/myco --json"
+
+[[verb]]
 name = "party"
 summary = "REA parties (plan §4.1, §4.5): record a party (customer, vendor, employee, bank, related entity, beneficial owner, regulator, counterparty), relate two parties by a registered basis over a valid-time interval, bind another system's identifier to a party, legal entity or instrument, list them, or compute one party's effective ownership of another on a day."
 writes = true
@@ -5505,4 +5517,100 @@ ops = ["read"]
 [[bound]]
 verbs = ["party"]
 subcommands = ["ownership"]
+ops = ["read"]
+
+[[event]]
+name = "subledger_recorded"
+book = true
+doc = "A native AR/AP control definition was journaled, or its exact retry returned the existing definition without writing. It never posts a second control balance."
+fields = ["subledger:native_subledger", "already_recorded:bool"]
+
+[[event]]
+name = "subledgers"
+book = true
+doc = "Native subledger definitions at one recorded prefix, ordered by code. Show returns exactly one definition."
+fields = ["known_at:seq", "subledgers:[native_subledger]"]
+
+[[event]]
+name = "subledger_reconciled"
+book = true
+doc = "Party-qualified immutable journal contributions compared with a separately folded control trial balance at one known-at/effective-through coordinate. Native currencies and posted/pending columns are separate. This is not an external-feed attestation or a replay certificate."
+fields = ["subledger:native_subledger", "known_at:seq", "effective_through:date", "rows:[native_subledger_row]", "totals:[native_subledger_total]", "reconciled:bool"]
+
+[[shape]]
+name = "native_subledger"
+doc = "An immutable receivable/payable subledger definition and the SchemaChange entry that registered it. The control account remains a posting leaf."
+fields = ["code:string", "name:string", "kind:string", "vid:hex", "control_account:string", "control_vid:hex", "control_entry:hex", "recorded_at:seq"]
+
+[[shape]]
+name = "native_subledger_row"
+doc = "One party and native unit's gross posted and pending amounts. Net is debit minus credit, including for payable accounts."
+fields = ["party:string", "party_vid:hex", "unit:string", "debits:amount", "credits:amount", "net:amount", "debits_pending:amount", "credits_pending:amount"]
+
+[[shape]]
+name = "native_subledger_total"
+doc = "The independently computed detail and control totals, compared separately in every native unit and measure."
+fields = ["unit:string", "detail_debits:amount", "detail_credits:amount", "detail_debits_pending:amount", "detail_credits_pending:amount", "control_debits:amount", "control_credits:amount", "control_debits_pending:amount", "control_credits_pending:amount"]
+
+[[mcp.cluster]]
+name = "fa.subledger"
+on_demand = true
+doc = "Native AR/AP subledgers: register party-qualified control leaves, inspect retained definitions, and reconcile party detail with the general ledger."
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "add"
+verb = "subledger"
+subcommands = ["add"]
+positionals = ["code"]
+flags = ["--control", "--kind", "--name", "--date", "--key"]
+switches = []
+required = ["code", "--control", "--kind"]
+dont = ["Registration needs read and schema_change authority; current launch profiles cannot grant schema_change, so ask the embedded owner to register the control. Per-call arguments cannot expand launch authority.", "A control leaf with historical partyless legs refuses registration; do not invent a party to hide legacy omissions."]
+mistakes = ["Using a summary account as the control.", "Expecting registration to create a second balance or post opening amounts."]
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "list"
+verb = "subledger"
+subcommands = ["list"]
+positionals = []
+flags = ["--as-known-at"]
+switches = []
+required = []
+dont = ["Definitions are selected at one retained sequence under current read authority; a historical selector never restores revoked authority."]
+mistakes = ["Treating the definition inventory as a balance report; use verify with an explicit as_of date."]
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "show"
+verb = "subledger"
+subcommands = ["show"]
+positionals = ["code"]
+flags = ["--as-known-at"]
+switches = []
+required = ["code"]
+dont = ["Name the registered subledger code, not a customer's party code."]
+mistakes = ["Expecting a definition to exist before its registering control entry."]
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "verify"
+verb = "subledger"
+subcommands = ["verify"]
+positionals = ["code"]
+flags = ["--as-of", "--as-known-at"]
+switches = []
+required = ["code", "--as-of"]
+dont = ["Choose as_of explicitly; no wall-clock default enters the calculation.", "The report folds native journal legs by party and compares posted and pending measures independently. It does not verify an external summary feed or produce a replay certificate."]
+mistakes = ["Combining currencies into one amount.", "Interpreting a payable credit balance's negative debit-minus-credit net as a debit posting."]
+
+[[bound]]
+verbs = ["subledger"]
+subcommands = ["add"]
+ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["subledger"]
+subcommands = ["list", "show", "verify"]
 ops = ["read"]

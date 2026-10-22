@@ -9660,6 +9660,45 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(text(&noop, "current_carrying_net"), "110.00 USD");
     assert_eq!(text(&noop, "target_base_net"), "110.00 USD");
 
+    // Native controls expose definition and reconciliation events through
+    // the same registry-checked binary. Populated histories are covered by
+    // the dedicated subledger integration tests.
+    let subledger_book = dir.join("native-subledger-events-book");
+    let mut run_subledger = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&subledger_book), &argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        out
+    };
+    run_subledger(&["book", "create", "--name", "Native subledger events"]);
+    let subledger_chart = write(
+        &dir,
+        "native-subledger-chart.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"}]}"#,
+    );
+    run_subledger(&["chart", "import", &subledger_chart]);
+    run_subledger(&[
+        "subledger",
+        "add",
+        "AR",
+        "--control",
+        "1200",
+        "--kind",
+        "receivables",
+    ]);
+    run_subledger(&["subledger", "list"]);
+    run_subledger(&["subledger", "show", "AR"]);
+    let reconciled = doc(&run_subledger(&[
+        "subledger",
+        "verify",
+        "AR",
+        "--as-of",
+        "2026-03-31",
+    ]));
+    assert_eq!(reconciled.get("reconciled"), Some(&Json::Bool(true)));
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
