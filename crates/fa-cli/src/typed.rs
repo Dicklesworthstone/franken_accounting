@@ -972,3 +972,28 @@ fn resolve_reserve(ctx: &mut Ctx<'_>, args: &Args, posts: bool) -> Result<(), Fa
         obj(fields),
     )
 }
+
+/// `fa replace <vid> --reason <name> --intent <corrected entry>` (plan
+/// §15.3, Appendix B Replace): typed sugar over `fa reverse --replace-with`,
+/// the target's exact Reversal and its corrected Replacement committed as one
+/// pair, both or neither. It always names the corrected entry, so it is never
+/// a bare reversal; `fa reverse` is that.
+pub(crate) fn replace_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa replace <vid> --reason WrongAmount --intent corrected.json --json";
+    if args.flag_all("--intent").len() != 1 {
+        return Err(usage(
+            "fa replace posts the corrected entry with the reversal: name it once with --intent <file|->",
+            format!(
+                "{EXAMPLE}; to reverse without a replacement, fa reverse <vid> --reason <name>"
+            ),
+        ));
+    }
+    let mut pair = args.clone();
+    if let Some(verb) = pair.positional.first_mut() {
+        "reverse".clone_into(verb);
+    }
+    if let Some(intent) = pair.flags.remove("--intent") {
+        pair.flags.insert("--replace-with".to_string(), intent);
+    }
+    crate::cli::reverse_cmd(ctx, &pair)
+}

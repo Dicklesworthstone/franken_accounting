@@ -370,6 +370,18 @@ exits = [0, 2, 3, 4, 5, 6, 7, 8]
 usage = ["void-reserve <hold vid> --date YYYY-MM-DD [--description <text>] [--key K] --yes   (a void releases the hold for good; the safe alternative is fa post-reserve)", "The default key is void-reserve:<hold>. Host only: MCP sessions carry no --yes."]
 example = "fa void-reserve <hold vid> --date 2026-03-20 --yes --book ./books/myco --json"
 
+[[verb]]
+name = "replace"
+summary = "Correct an entry (plan §15.3, Appendix B Replace): its exact Reversal and the corrected Replacement commit as one pair, both or neither. Typed sugar over fa reverse --replace-with."
+writes = true
+subcommands = []
+flags = ["--reason", "--intent", "--effective", "--period", "--key", "--description", "--grant", "--evidence", "--plan-out"]
+switches = ["--dry-run"]
+events = ["corrected", "replacement_plan"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["replace <vid|E:vid> --reason <name|code> --intent <corrected.json|-> [--effective YYYY-MM-DD] [--period <code>] [--key K] [--description <text>] [--evidence <oid>]... [--dry-run [--plan-out <new-file>]]", "The corrected entry intent carries the legs, without class, reverses or reason; its effective_date, period and idempotency_key default to the target's date and period and replace:<vid>. --effective, --period, --key and --description apply to the reversal, as on fa reverse. The corrected entry is required: fa reverse <vid> --reason <name> reverses without a replacement. Correction drafts are not supported."]
+example = "fa replace <vid> --reason WrongAmount --intent corrected.json --book ./books/myco --json"
+
 
 [[verb]]
 name = "commit"
@@ -1091,6 +1103,11 @@ safe = "keep the target's date and obtain the authority and approval the period 
 
 [[dangerous]]
 verb = "reverse"
+condition = "grant:post_closed"
+safe = "keep the intended reversal date and obtain the authority the period law requires; `fa period list --json` shows the target period's state"
+
+[[dangerous]]
+verb = "replace"
 condition = "grant:post_closed"
 safe = "keep the intended reversal date and obtain the authority the period law requires; `fa period list --json` shows the target period's state"
 
@@ -3503,6 +3520,10 @@ on_demand = true
 doc = "Portable accounting proofs from recorded checkpoints (signed by the book's key, or raw statements) and evidence bundles, checked independently without book keys (plan §15.4: discoverable on demand)."
 
 [[mcp.excluded]]
+verb = "replace"
+reason = "fa_post_reverse with replace_with posts the same Reversal and Replacement pair; one tool per correction keeps the cluster within seven"
+
+[[mcp.excluded]]
 verb = "void-reserve"
 reason = "dangerous: a void releases the hold for good and needs --yes, which an MCP session never carries; fa_post_resolve with disposition posts is the safe alternative"
 
@@ -5362,7 +5383,7 @@ subcommands = ["year-end"]
 ops = ["read", "post", "close"]
 
 [[bound]]
-verbs = ["post", "commit", "reverse", "reclass", "reserve", "resolve", "invoice", "bill", "receipt", "payment", "accrue", "defer", "batch", "post-reserve", "void-reserve"]
+verbs = ["post", "commit", "reverse", "reclass", "reserve", "resolve", "invoice", "bill", "receipt", "payment", "accrue", "defer", "batch", "post-reserve", "void-reserve", "replace"]
 ops = ["post"]
 
 [[bound]]

@@ -439,6 +439,18 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(
             &[
+                "replace",
+                entry,
+                "--reason",
+                "WrongAccount",
+                "--intent",
+                "junk.json",
+            ],
+            &[Op::Post],
+            Reaches,
+        ),
+        row(
+            &[
                 "invoice",
                 "--party",
                 "C-1",

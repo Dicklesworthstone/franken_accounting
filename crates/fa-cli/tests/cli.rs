@@ -17257,6 +17257,147 @@ fn verify_replay_re_performs_the_history_into_an_independent_book() -> std::io::
     Ok(())
 }
 
+/// Plan §15.3, Appendix B Replace (bead fa-i7e): `fa replace` is `fa
+/// reverse --replace-with`. The exact Reversal and the corrected Replacement
+/// commit as one pair, and a retry through `fa reverse` is that same pair,
+/// recorded. A dry run plans the pair and writes nothing. Planted: no
+/// corrected entry, two of them, and a draft are each refused before any
+/// write. Without the corrected entry, `fa replace` would be a bare reversal.
+#[test]
+fn replace_posts_the_reversal_and_its_replacement_as_one_pair() -> std::io::Result<()> {
+    let dir = tmp("replace-sugar")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Replace Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let ev = source_doc(&dir, &book);
+    let intent = write(
+        &dir,
+        "entry.json",
+        r#"{"effective_date":"2026-03-15","description":"rent","idempotency_key":"rent-1","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"1000","amount":"10.00 USD"}]}"#,
+    );
+    let posted = ok(&["post", "--intent", &intent, "--evidence", &ev, "--json"]);
+    let vid = field(&posted, "vid").unwrap().to_string();
+    let corrected = write(
+        &dir,
+        "corrected.json",
+        r#"{"description":"rent, corrected","legs":[{"side":"debit","account":"6000","amount":"12.00 USD"},{"side":"credit","account":"1000","amount":"12.00 USD"}]}"#,
+    );
+    let tb = || report(&book, &["tb", "--period", "FY2026-P03", "--json"]);
+    let before = tb();
+
+    // Planted: refused before anything is published.
+    for (what, extra) in [
+        ("no corrected entry", vec![]),
+        (
+            "two corrected entries",
+            vec![
+                "--intent",
+                corrected.as_str(),
+                "--intent",
+                corrected.as_str(),
+            ],
+        ),
+        (
+            "a draft",
+            vec!["--intent", corrected.as_str(), "--draft", "d1"],
+        ),
+    ] {
+        let mut args = vec!["replace", vid.as_str(), "--reason", "WrongAmount"];
+        args.extend(extra);
+        args.extend(["--evidence", ev.as_str(), "--json"]);
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{what}: {out}\n{err}");
+        assert_eq!(field(&out, "event"), Some("error"), "{what}: {out}");
+    }
+    let (_, out, _) = fa(
+        Some(&book),
+        &["replace", vid.as_str(), "--reason", "WrongAmount", "--json"],
+    );
+    assert!(
+        out.contains("--intent") && out.contains("fa reverse"),
+        "the refusal names the corrected entry and the bare reversal: {out}"
+    );
+    // A dry run plans both members and writes nothing.
+    let planned = ok(&[
+        "replace",
+        vid.as_str(),
+        "--reason",
+        "WrongAmount",
+        "--intent",
+        corrected.as_str(),
+        "--evidence",
+        &ev,
+        "--dry-run",
+        "--json",
+    ]);
+    assert_eq!(
+        field(&planned, "event"),
+        Some("replacement_plan"),
+        "{planned}"
+    );
+    assert_eq!(tb(), before, "nothing refused or planned is written");
+
+    let out = ok(&[
+        "replace",
+        vid.as_str(),
+        "--reason",
+        "WrongAmount",
+        "--intent",
+        corrected.as_str(),
+        "--evidence",
+        &ev,
+        "--json",
+    ]);
+    assert_eq!(field(&out, "event"), Some("corrected"), "{out}");
+    assert_eq!(field(&out, "target"), Some(vid.as_str()));
+    assert_eq!(field(&out, "already_recorded"), Some("false"));
+    let reversal = field(&out, "reversal").unwrap().to_string();
+    let replacement = field(&out, "replacement").unwrap().to_string();
+    for (entry, kind) in [(&reversal, "Reverses"), (&replacement, "Replaces")] {
+        let shown = doc(&ok(&["entry", "show", entry, "--json"]));
+        let lineage = arr(&shown, "supersedes");
+        assert_eq!(lineage.len(), 1, "{entry}");
+        assert_eq!(text(&lineage[0], "entry"), vid);
+        assert_eq!(text(&lineage[0], "kind"), kind);
+    }
+    let after = tb();
+    let row = after
+        .split('{')
+        .find(|row| field(row, "code") == Some("6000"))
+        .expect("rent row");
+    assert_eq!(field(row, "net"), Some("12.00 USD"), "{after}");
+
+    // The same pair through fa reverse is the recorded one.
+    let again = ok(&[
+        "reverse",
+        vid.as_str(),
+        "--reason",
+        "WrongAmount",
+        "--replace-with",
+        corrected.as_str(),
+        "--evidence",
+        &ev,
+        "--json",
+    ]);
+    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
+    assert_eq!(field(&again, "reversal"), Some(reversal.as_str()));
+    assert_eq!(field(&again, "replacement"), Some(replacement.as_str()));
+    assert_eq!(tb(), after);
+    Ok(())
+}
+
 /// Plan §15.3, Appendix B (bead fa-i7e): `fa post-reserve` posts part of a
 /// two-leg hold (each leg at most what it reserved; the rest released) and
 /// `fa void-reserve` releases a whole hold, which is dangerous and needs

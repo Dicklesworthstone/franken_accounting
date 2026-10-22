@@ -98,6 +98,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("batch", crate::typed::batch_cmd),
     ("post-reserve", crate::typed::post_reserve_cmd),
     ("void-reserve", crate::typed::void_reserve_cmd),
+    ("replace", crate::typed::replace_cmd),
     ("commit", commit_cmd),
     ("reclass", reclass_cmd),
     ("reverse", reverse_cmd),
@@ -2139,6 +2140,7 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "batch"
             | "post-reserve"
             | "void-reserve"
+            | "replace"
     ) || (verb == "close" && args.positional.get(1).map(String::as_str) == Some("year-end"))
         || (verb == "fx" && args.positional.get(1).map(String::as_str) == Some("revalue")))
         && (args.switch("--dry-run")
@@ -2310,6 +2312,7 @@ pub fn bound_command_admissible(
             | "batch"
             | "post-reserve"
             | "void-reserve"
+            | "replace"
     ) || (matches!(verb, "allocate" | "settle")
         && sub != Some("approve")
         && !args.switch("--approve"));
@@ -2335,6 +2338,7 @@ pub fn bound_command_admissible(
             | "batch"
             | "post-reserve"
             | "void-reserve"
+            | "replace"
     ) && (args.switch("--dry-run")
         || args.flag("--draft").is_some()
         || args.flag("--scenario").is_some());
@@ -6718,7 +6722,7 @@ fn reclass_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     post_document(ctx, args, Some(EntryClass::RECLASSIFICATION), obj(fields))
 }
 
-fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+pub(crate) fn reverse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
         return Err(usage(
             "reverse needs exactly one entry vid",
