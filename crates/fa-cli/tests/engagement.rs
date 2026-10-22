@@ -1421,3 +1421,101 @@ fn a_carry_forward_brings_the_prior_engagements_misstatements_under_both_methods
         Some(&Json::Arr(Vec::new()))
     );
 }
+
+/// Plan §11.12: an engagement's findings join its index like its
+/// workpapers, once each, and one filed after the documentation completion
+/// is marked an addition after completion (AS 1215.16).
+#[test]
+fn findings_are_filed_in_the_index_once_and_marked_after_completion() {
+    let f = Fixture::new();
+    f.ok(OPEN);
+    // Two weekend postings: jet.weekend observes each.
+    f.post("saturday", "2026-03-14", "1000", "4000", "10.00");
+    f.post("sunday", "2026-03-15", "1000", "4000", "20.00");
+    let recorded = f.ok(&["finding", "record", "jet.weekend"]);
+    let ids: Vec<String> = rows(data(&recorded), "finding_ids")
+        .iter()
+        .map(|id| id.as_str().expect("a finding id").to_string())
+        .collect();
+    assert_eq!(ids.len(), 2, "{}", recorded.render());
+    let file = |id: &str| f.ok(&["engagement", "file", "FY26-audit", "--finding", id]);
+    let first = file(&ids[0]);
+    assert_eq!(text(&first, "event"), "engagement_finding_filed");
+    assert_eq!(text(data(&first), "finding"), ids[0]);
+    assert_eq!(
+        data(&first).get("added_after_completion"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(
+        data(&file(&ids[0])).get("already_recorded"),
+        Some(&Json::Bool(true)),
+        "the same filing retried is the recorded one"
+    );
+    // Planted negatives, nothing journaled: a vid that is no finding; the
+    // same finding filed again under another key (its record's identity is
+    // the finding's, so the other content conflicts with it).
+    let none = "0".repeat(32);
+    f.refused(
+        &["engagement", "file", "FY26-audit", "--finding", &none],
+        2,
+        "FA-REF-100",
+    );
+    f.refused(
+        &[
+            "engagement",
+            "file",
+            "FY26-audit",
+            "--finding",
+            &ids[0],
+            "--key",
+            "again",
+        ],
+        6,
+        "FA-REF-032",
+    );
+    let (status, output) = f.run(&[
+        "engagement",
+        "file",
+        "FY26-audit",
+        "--finding",
+        &ids[1],
+        "--document",
+        &f.evidence,
+    ]);
+    assert_eq!(
+        status,
+        2,
+        "one --document or one --finding: {}",
+        output.render()
+    );
+
+    f.ok(&[
+        "engagement",
+        "complete",
+        "FY26-audit",
+        "--report-release",
+        "2026-04-15",
+        "--completion-date",
+        "2026-04-30",
+    ]);
+    let later = file(&ids[1]);
+    assert_eq!(
+        data(&later).get("added_after_completion"),
+        Some(&Json::Bool(true))
+    );
+    let shown = f.ok(&["engagement", "show", "FY26-audit"]);
+    let findings = rows(data(&shown), "findings");
+    assert_eq!(
+        findings
+            .iter()
+            .map(|x| (
+                text(x, "finding").to_string(),
+                x.get("added_after_completion").cloned()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (ids[0].clone(), Some(Json::Bool(false))),
+            (ids[1].clone(), Some(Json::Bool(true))),
+        ]
+    );
+}
