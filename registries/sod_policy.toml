@@ -714,6 +714,18 @@ agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §11.12, AS 1215.15 (documentation_completion_date: within 45 days after the report release date)"
 
+[[rule]]
+name = "engagement-carry-forward"
+class = "EngagementControl"
+transition = "CarryForward"
+preparer_op = "produce"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §11.12 (audit.sud under both SAB 108 methods with prior-year carry-forward)"
+
 # A RestatementCase's opening and its determination (plan §8.3; fa-75j4)
 # under `restate`. Dual control applies when the case's effect manifest is
 # approved (a later slice); opening a case and recording the determination

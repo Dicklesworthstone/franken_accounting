@@ -297,6 +297,11 @@ pub mod code {
     /// journaled, no report release date, or a completion date outside the
     /// 45 days after it (AS 1215.15; bead fa-zgn).
     pub const DOCUMENTATION_COMPLETION: &str = "FA-REF-190";
+    /// A carry-forward names no admissible prior engagement: itself, another
+    /// unit, a scope that does not end before this one begins, or a proposal
+    /// that is not one of its uncorrected misstatements (SAB 108; bead
+    /// fa-zgn).
+    pub const CARRY_FORWARD: &str = "FA-REF-191";
     /// The class × period-state cell is `refuse`.
     pub const PERIOD_LAW: &str = "FA-REF-010";
     /// The cell requires a capability op the principal lacks.

@@ -1101,7 +1101,7 @@ exit = "refusal"
 cite = "plan §8.3 (Disclosed: the disclosure document is attested), §9.3 (a Reviewed attestation by a principal other than the uploader; bead fa-75j4)"
 fix = "record the disclosure with fa document add <file> --kind Disclosure, have a principal other than its uploader attest it with fa attest review <oid>, then fa case disclose <case> --document <oid>"
 
-# ---- Engagements (180–184, 190; fa-zgn; 185–189 are other beads') ---
+# ---- Engagements (180–184, 190–191; fa-zgn; 185–189 are other beads') ---
 [[refusal]]
 code = "FA-REF-180"
 name = "ENGAGEMENT_UNKNOWN"
@@ -1149,6 +1149,14 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §11.12, AS 1215.15 (documentation is complete within 45 days after the report release date, journaled once; later additions are marked added_after_completion)"
 fix = "complete it once with fa engagement complete <id> --completion-date YYYY-MM-DD [--report-release YYYY-MM-DD], the completion date within 45 days after the report release date; fa engagement show <id> --json shows its state"
+
+[[refusal]]
+code = "FA-REF-191"
+name = "CARRY_FORWARD"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §11.12 (audit.sud under both SAB 108 methods with prior-year carry-forward)"
+fix = "carry forward another engagement of this book in the same unit whose scope periods all end before this one's begin, naming with --turned-around and --corrected only its uncorrected proposals (fa engagement sud <prior> --json lists them)"
 
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]

@@ -1721,6 +1721,42 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Journal `engagement`'s carry-forward of `prior`'s uncorrected
+    /// misstatements (plan §11.12, SAB 108).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn carry_forward(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        prior: &str,
+        turned_around: Vec<u32>,
+        corrected: Vec<u32>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CarriedForward> {
+        let description =
+            format!("carry engagement {prior}'s uncorrected misstatements into {engagement}");
+        let req = self.engagement_request(
+            cx,
+            capability,
+            effective_date,
+            &description,
+            idempotency_key,
+        )?;
+        Ok(fa_journal::carry_forward(
+            &mut self.db,
+            cx,
+            &self.context,
+            engagement,
+            prior,
+            turned_around,
+            corrected,
+            req,
+        )
+        .await?)
+    }
+
     /// The engagement `engagement` and every proposal it journaled.
     pub fn engagement(
         &self,

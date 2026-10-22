@@ -7521,6 +7521,42 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .0,
         0
     );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "engagement",
+                "open",
+                "events-next",
+                "--kind",
+                "audit",
+                "--period",
+                "FY2026-P04",
+                "--overall",
+                "100.00 USD",
+                "--performance",
+                "75.00 USD",
+                "--clearly-trivial",
+                "5.00 USD"
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &[
+                "engagement",
+                "carry-forward",
+                "events-next",
+                "--from",
+                "events-engagement"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(
         run(true, &["tb", "--period", "FY2026-P03", "--render", "md"]).0,

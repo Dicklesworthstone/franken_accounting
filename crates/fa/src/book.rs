@@ -1528,6 +1528,26 @@ impl Book {
         )))
     }
 
+    /// Journal `engagement`'s carry-forward of `prior`'s uncorrected
+    /// misstatements (plan §11.12, SAB 108).
+    #[allow(clippy::too_many_arguments)]
+    pub fn carry_forward(
+        &mut self,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        prior: &str,
+        turned_around: Vec<u32>,
+        corrected: Vec<u32>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CarriedForward> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.carry_forward(
+            &purposes, capability, engagement, prior, turned_around, corrected, effective_date,
+            idempotency_key,
+        )))
+    }
+
     /// The engagement `engagement` and every proposal it journaled.
     pub fn engagement(
         &self,
@@ -1580,9 +1600,36 @@ impl Book {
             .into_iter()
             .map(|row| (row.vid.0, fa_model::AccountType(row.account_type)))
             .collect();
-        let summary = fa_journal::uncorrected_misstatements(&view, &corrections, |vid| {
-            types.get(&vid.0).copied()
-        })?;
+        let account_type = |vid: VId| types.get(&vid.0).copied();
+        // A carry-forward brings the prior engagement's own uncorrected
+        // proposals (its carry-forward is not chained).
+        let prior = match view.carry_forwards.last() {
+            None => None,
+            Some(carried) => {
+                let prior_view = self
+                    .engagements()?
+                    .into_iter()
+                    .find(|e| e.vid == carried.carry_forward.prior)
+                    .ok_or_else(|| {
+                        BookError::Kernel(fa_journal::KernelError::Corrupt(format!(
+                            "engagement `{engagement}` carries forward {:032x}, which is no engagement",
+                            carried.carry_forward.prior.0
+                        )))
+                    })?;
+                Some(fa_journal::uncorrected_misstatements(
+                    &prior_view,
+                    &[],
+                    None,
+                    account_type,
+                )?)
+            }
+        };
+        let summary = fa_journal::uncorrected_misstatements(
+            &view,
+            &corrections,
+            prior.as_ref(),
+            account_type,
+        )?;
         Ok(Some((view, corrections, summary)))
     }
 
