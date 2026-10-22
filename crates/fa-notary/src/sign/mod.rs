@@ -13,8 +13,10 @@
 //! between the two is the evidence that they agree.
 //!
 //! Constant-time claim, verbatim and no stronger: constant-time by
-//! construction (fixed-base table, mask-select, no secret-dependent branch
-//! or index); not measured. Claim class `bounded_model`, never `invariant`.
+//! construction (fixed-base table, mask-select behind an optimization
+//! barrier, no secret-dependent branch or index); timed per host by a
+//! dudect-style harness, `statistical` evidence per run (fa-cs80). Claim
+//! class `bounded_model`, never `invariant`.
 
 pub mod ed25519;
 pub mod sha512;
