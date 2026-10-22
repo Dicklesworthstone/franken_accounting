@@ -20,6 +20,8 @@ use fa_registry::procedures::Claim;
 use fgdb_crypto::Hasher;
 use fgdb_types::VId;
 
+use fa_money::wide::U256;
+
 use crate::{LanternError, Params};
 
 /// Scale for basis-point probabilities and intervals (`10_000 == 100.00%`).
@@ -143,41 +145,73 @@ pub struct WilsonIntervalBps {
 }
 
 /// Compute the 95% Wilson score confidence interval (`z = 196 / 100`) in basis
-/// points ($0 \dots 10_000$) using exact integer arithmetic and `u128::isqrt`.
+/// points ($0 \dots 10_000$) using exact integer arithmetic: the products are
+/// exact 256-bit values, so every pair of `u64` counts has its interval.
 #[must_use]
-// Statistics over labeled-corpus counts, never amounts. The products stay
-// below 2^128 while trials < 3 * 10^11; beyond that overflow-checks panics.
-#[allow(clippy::arithmetic_side_effects, clippy::disallowed_methods)]
 pub fn wilson_interval_95_bps(successes: u64, trials: u64) -> WilsonIntervalBps {
+    // The interval that claims nothing: never narrower than the truth.
+    let vacuous = WilsonIntervalBps {
+        successes,
+        trials,
+        point_estimate_bps: 0,
+        lower_bps: 0,
+        upper_bps: 10_000,
+    };
     if trials == 0 {
         return WilsonIntervalBps {
             successes: 0,
             trials: 0,
-            point_estimate_bps: 0,
-            lower_bps: 0,
-            upper_bps: 10_000,
+            ..vacuous
         };
     }
+    // With k <= n < 2^64 every intermediate is below 2^210, so each checked
+    // step below succeeds; were one ever to fail, the vacuous interval is the
+    // answer, never a narrower one.
+    wilson_exact(successes, trials).unwrap_or(vacuous)
+}
+
+/// The Wilson interval of `successes` out of `trials > 0`, every product in
+/// exact 256-bit arithmetic (fa-4aym: the u128 form overflowed, and so
+/// panicked, beyond about 3 * 10^11 trials).
+fn wilson_exact(successes: u64, trials: u64) -> Option<WilsonIntervalBps> {
     let k = u128::from(successes.min(trials));
     let n = u128::from(trials);
-    let point_estimate_bps = ((k * 10_000) / n) as u32;
-
-    let denom = n * (10_000 * n + 38_416);
-    let center_num = 10_000 * n * (10_000 * k + 19_208);
-    let radicand = n * (40_000 * k * (n - k) + 38_416 * n);
-    let root = radicand.isqrt();
-    let half_num = 10_000 * 98 * root;
-
-    let lower_bps = (center_num.saturating_sub(half_num) / denom) as u32;
-    let upper_bps = ((center_num + half_num).div_ceil(denom)).min(10_000) as u32;
-
-    WilsonIntervalBps {
+    let quotient = |num: U256, den: U256| -> Option<u128> { num.checked_div_rem(den)?.0.to_u128() };
+    let point = quotient(U256::from_product(k, 10_000), U256::from_u128(n))?;
+    // denom = n (10_000 n + 38_416)
+    let denom = U256::from_product(n, n.checked_mul(10_000)?.checked_add(38_416)?);
+    // center = 10_000 n (10_000 k + 19_208)
+    let center = U256::from_product(
+        n.checked_mul(10_000)?,
+        k.checked_mul(10_000)?.checked_add(19_208)?,
+    );
+    // radicand = n (40_000 k (n - k) + 38_416 n)
+    let radicand = U256::from_product(k.checked_mul(40_000)?, n.checked_sub(k)?)
+        .checked_add(U256::from_product(38_416, n))?
+        .checked_mul_u128(n)?;
+    // half = 10_000 * 98 * sqrt(radicand), z/2 = 98/100 scaled by 10_000.
+    let half = U256::from_product(980_000, radicand.isqrt());
+    let lower = match center.checked_sub(half) {
+        Some(below) => quotient(below, denom)?,
+        None => 0,
+    };
+    let (upper, rest) = center.checked_add(half)?.checked_div_rem(denom)?;
+    let upper = upper.to_u128()?;
+    let upper = if rest.is_zero() {
+        upper
+    } else {
+        upper.checked_add(1)?
+    };
+    let point = u32::try_from(point).ok()?;
+    let lower = u32::try_from(lower).ok()?;
+    let upper = u32::try_from(upper.min(10_000)).ok()?;
+    Some(WilsonIntervalBps {
         successes,
         trials,
-        point_estimate_bps,
-        lower_bps: lower_bps.min(point_estimate_bps),
-        upper_bps: upper_bps.max(point_estimate_bps),
-    }
+        point_estimate_bps: point,
+        lower_bps: lower.min(point),
+        upper_bps: upper.max(point),
+    })
 }
 
 /// Precision and recall evaluation with 95% Wilson confidence intervals on a
@@ -488,6 +522,45 @@ mod tests {
             assert!(w.point_estimate_bps <= w.upper_bps);
             assert!(w.upper_bps <= 10_000);
         }
+    }
+
+    /// fa-4aym: every pair of u64 counts has its interval. The u128 form
+    /// overflowed, and so panicked, beyond about 3 * 10^11 trials; below
+    /// that bound the 256-bit form agrees with the reference oracle exactly.
+    #[test]
+    fn wilson_interval_is_total_over_u64_counts_and_agrees_with_the_oracle_below_its_bound() {
+        for n in [1u64, 2, 3, 7, 1_000, 999_983, 100_000_000_000] {
+            for k in [0, 1, n / 3, n / 2, n - 1, n] {
+                let w = wilson_interval_95_bps(k, n);
+                assert_eq!(
+                    (w.point_estimate_bps, w.lower_bps, w.upper_bps),
+                    naive_wilson_interval_bps(k, n),
+                    "{k}/{n}"
+                );
+            }
+        }
+        for (k, n) in [
+            (0, u64::MAX),
+            (1, u64::MAX),
+            (u64::MAX / 2, u64::MAX),
+            (u64::MAX, u64::MAX),
+        ] {
+            let w = wilson_interval_95_bps(k, n);
+            assert!(
+                w.lower_bps <= w.point_estimate_bps
+                    && w.point_estimate_bps <= w.upper_bps
+                    && w.upper_bps <= 10_000,
+                "{w:?}"
+            );
+            assert!(
+                w.upper_bps - w.lower_bps <= 2,
+                "nearly degenerate at 2^64 trials: {w:?}"
+            );
+        }
+        let half = wilson_interval_95_bps(u64::MAX / 2, u64::MAX);
+        assert_eq!(half.point_estimate_bps, 4_999, "(2^63 - 1) / (2^64 - 1)");
+        assert_eq!(wilson_interval_95_bps(0, u64::MAX).lower_bps, 0);
+        assert_eq!(wilson_interval_95_bps(u64::MAX, u64::MAX).upper_bps, 10_000);
     }
 
     #[test]

@@ -236,7 +236,9 @@ fn branches_procedures_and_certificates() {
     // A scenario's replay, read at its head: the native read is the same
     // statement, and the caller reads it on the scenario's materialization.
     let (on_scenario, n) = native("MATCH (a:Account) AT BRANCH 'scenario:but-for' RETURN a.code");
-    assert_eq!(on_scenario.scenario.as_deref(), Some("but-for"));
+    assert_eq!(on_scenario.branch.as_deref(), Some("scenario:but-for"));
+    let (on_draft, _) = native("MATCH (a:Account) AT BRANCH 'draft:march' RETURN a.code");
+    assert_eq!(on_draft.branch.as_deref(), Some("draft:march"));
     assert_eq!(on_scenario.known_at, KnownAt::Head);
     assert_eq!(
         n.statement(3),
@@ -245,18 +247,26 @@ fn branches_procedures_and_certificates() {
     assert!(
         native("MATCH (a:Account) AT BRANCH trunk RETURN a.code")
             .0
-            .scenario
+            .branch
             .is_none()
     );
     native("MATCH (a:Account) RETURN a.code AT BRANCH 'scenario:x' AS KNOWN AT HEAD");
     for (text, says) in [
         (
             "MATCH (a:Account) AT BRANCH 'scenario:' RETURN a.code",
-            "trunk or one scenario",
+            "trunk, one scenario or one draft",
+        ),
+        (
+            "MATCH (a:Account) AT BRANCH 'draft:' RETURN a.code",
+            "trunk, one scenario or one draft",
         ),
         (
             "MATCH (a:Account) AT BRANCH scenario RETURN a.code",
-            "trunk or one scenario",
+            "trunk, one scenario or one draft",
+        ),
+        (
+            "MATCH (a:Account) AT BRANCH 'draft:march' RETURN a.code AS KNOWN AT 7",
+            "replay's head",
         ),
         (
             "MATCH (a:Account) AT BRANCH trunk AT BRANCH 'scenario:x' RETURN a.code",

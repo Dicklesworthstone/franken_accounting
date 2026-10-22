@@ -690,6 +690,24 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     };
     let alice = approve(&mut book, 2);
     let bob = approve(&mut book, 3);
+    // FA-INV-10.self-promotion (plan §8.3): no approver prepared any entry
+    // in the case. The planner of its one entry did not open the case, and
+    // still cannot approve it; nothing is written.
+    let planned_by = approve(&mut book, planner_vid.0);
+    let head = book.head().unwrap();
+    let own_entry = book
+        .approve_case(
+            restate.clone(),
+            1,
+            vec![alice, planned_by],
+            date,
+            b"own-entry",
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(own_entry.code, "FA-REF-008", "{own_entry:?}");
+    assert_eq!(book.head().unwrap(), head);
+    assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Rehearsed);
     book.approve_case(restate.clone(), 1, vec![alice, bob], date, b"dual")
         .unwrap()
         .unwrap();

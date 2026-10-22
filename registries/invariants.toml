@@ -40,9 +40,13 @@ resolve = ["FA-INV-15.core", "FA-INV-15.availability"]
 reverse = ["FA-INV-08.reversal", "FA-INV-08.reversed-once", "FA-INV-08.unsettle"]
 period = ["FA-INV-02.control-record", "FA-INV-02.lifecycle-by-transition", "FA-INV-03.transition-journaled", "FA-INV-03.transition-approvals"]
 approve = ["FA-INV-10.approval-binds-proposal", "FA-INV-10.sod"]
+draft = ["FA-INV-10.self-promotion"]
+close = ["FA-INV-03.nominal-zero"]
+case = ["FA-INV-10.self-promotion", "FA-INV-10.sod"]
 registers = ["FA-INV-04.core"]
-tb = ["FA-INV-04.core", "FA-INV-07.core"]
-statement = ["FA-INV-04.core", "FA-INV-07.core"]
+tb = ["FA-INV-04.core", "FA-INV-07.core", "FA-INV-07.branch"]
+statement = ["FA-INV-04.core", "FA-INV-07.core", "FA-INV-07.branch"]
+query = ["FA-INV-07.core", "FA-INV-07.branch"]
 open_items = ["FA-INV-04.open-amount"]
 checkpoint = ["FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-14.signed"]
 proof = ["FA-INV-04.outsider-recomputation", "FA-INV-14.inclusion", "FA-INV-14.seq-range-complete", "FA-INV-14.scope-index-complete"]
@@ -51,6 +55,8 @@ replay = ["FA-INV-11.core"]
 certificate = ["FA-INV-11.core"]
 finding = ["FA-INV-11.finding-replay", "FA-INV-02.payload-immutable", "FA-INV-10.sod"]
 event = ["FA-INV-05.event-closure", "FA-INV-09.core"]
+engagement = ["FA-INV-02.control-record", "FA-INV-02.lifecycle-by-transition", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-10.sod"]
+adjustment = ["FA-INV-02.control-record", "FA-INV-02.lifecycle-by-transition", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-10.sod"]
 
 [[invariant]]
 id = "FA-INV-01"
@@ -390,11 +396,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-03"
 id = "nominal-zero"
-status = "dormant"
+status = "live"
 statement = "After the latest Closing entry of a fiscal year the nominal accounts fold to zero at that known-at."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-4o0"]
+owner = "fa-4o0"
+checkers = ["fa-journal::tests/genesis.rs::year_end_close_first_delta_zero_and_historical_verification", "fa-cli::tests/closing.rs::closing_binary_first_close_delta_reclose_zero_noop_and_exact_plan_retry"]
+negatives = ["fa-journal::tests/genesis.rs::year_end_close_balanced_forgery_and_raw_closing_are_refused", "fa-journal::tests/genesis.rs::year_end_close_native_preparation_cannot_miss_an_appended_contribution"]
 waiver = "forbidden"
 
 [[clause]]
@@ -646,11 +655,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-07"
 id = "branch"
-status = "dormant"
+status = "live"
 statement = "Branch predicates select drafts and scenarios without aliasing trunk."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-s7x"]
+owner = "fa-s7x"
+checkers = ["fa-cli::tests/cli.rs::a_draft_reaches_trunk_only_through_another_principals_promotion"]
+negatives = ["fa-cli::tests/cli.rs::a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk"]
 waiver = "forbidden"
 
 [[clause]]
@@ -805,7 +817,7 @@ checker_strength = "negative_fixture"
 first_gate = "G1"
 owner = "fa-llx"
 checkers = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings", "fa::lib::book::tests::a_bank_statement_through_the_facade_reads_redacted_until_privileged", "fa::tests/read_scope_oracle.rs::the_engine_judges_every_scoped_read_as_the_literal_model_does", "fa-reference::lib::read_scope::tests::each_caveat_refuses_what_it_does_not_cover_and_admits_the_rest"]
-negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read", "fa-journal::lib::redaction::tests::an_agent_reads_public_documents_and_only_the_governed_redacted_view", "fa-journal::tests/genesis.rs::a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes", "fa-cli::tests/read_scope.rs::scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them", "fa-cli::tests/read_scope.rs::every_command_that_does_not_judge_its_reach_refuses_a_scoped_token", "fa-cli::tests/read_scope.rs::a_statement_reaches_what_its_basis_folds"]
+negatives = ["fa-journal::tests/policy.rs::a_capability_authorizes_only_its_holder_and_refusals_precede_any_read", "fa-journal::tests/policy.rs::an_agent_profile_capability_never_writes_trunk_and_its_refusal_cites_fa_s7x", "fa-journal::tests/genesis.rs::a_foreign_book_or_branch_coordinate_is_refused_before_any_read", "fa-journal::lib::redaction::tests::an_agent_reads_public_documents_and_only_the_governed_redacted_view", "fa-journal::tests/genesis.rs::a_privileged_holder_derives_the_view_a_reader_gets_in_place_of_the_bytes", "fa-cli::tests/read_scope.rs::scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them", "fa-cli::tests/read_scope.rs::every_command_that_does_not_judge_its_reach_refuses_a_scoped_token", "fa-cli::tests/read_scope.rs::a_statement_reaches_what_its_basis_folds", "fa-cli::tests/engagement.rs::engagement_records_need_produce_and_never_come_from_an_agent"]
 waiver = "forbidden"
 
 [[clause]]
@@ -894,11 +906,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-10"
 id = "self-promotion"
-status = "dormant"
+status = "live"
 statement = "A principal cannot approve its own draft's promotion or a case containing its own entries."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G2"
-activating = ["fa-s7x"]
+owner = "fa-s7x"
+checkers = ["fa-registers::tests/differential.rs::drafts_agree_with_the_independent_oracle_across_seeds", "fa-policy::tests/sod_oracle.rs::engine_and_oracle_agree_on_case_bound_rules_with_known_preparers"]
+negatives = ["fa-journal::tests/genesis.rs::draft_promotion_re_admits_every_intent_and_refuses_without_partial_effect", "fa::tests/restatement_case.rs::a_prior_period_adjustment_case_posts_its_approved_manifest_once", "fa::tests/restatement_case.rs::a_rehearsed_case_is_approved_under_dual_control"]
 waiver = "forbidden"
 
 [[clause]]

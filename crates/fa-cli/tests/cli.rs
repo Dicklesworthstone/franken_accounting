@@ -17984,7 +17984,7 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
             "--as-known-at",
             "HEAD",
         ],
-        &["tb", "--period", "FY2026-P03", "--branch", "draft:close-03"],
+        &["tb", "--period", "FY2026-P03", "--branch", "close-03"],
         &[
             "post",
             "--intent",
@@ -18000,6 +18000,13 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     assert_eq!(
         (code, field(&out, "refusal_id")),
         (3, Some("FA-REF-162")),
+        "{out}"
+    );
+    // A draft is read the same way; one the book does not hold is refused.
+    let (code, out, _) = run(&["tb", "--period", "FY2026-P03", "--branch", "draft:close-03"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-157")),
         "{out}"
     );
 
@@ -18353,6 +18360,45 @@ fn a_draft_reaches_trunk_only_through_another_principals_promotion() -> std::io:
         Some("false"),
         "a planned intent is not a trunk entry: {out}"
     );
+    // FA-INV-07.branch: --branch draft:<name> reads the draft's rehearsal
+    // (trunk with its planned intents posted) and names it in the
+    // coordinate; trunk reads never see the planned entry.
+    let rent_debits = |argv: &[&str]| {
+        let (code, out, _) = run(argv);
+        assert_eq!(code, 0, "{argv:?}: {out}");
+        let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+        let branch = line
+            .get("coordinate")
+            .and_then(|c| c.get("branch"))
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let debits = arr(&doc(&out), "rows")
+            .iter()
+            .find(|r| text(r, "code") == "6000")
+            .map_or_else(String::new, |r| text(r, "debits").to_string());
+        (branch, debits)
+    };
+    assert_eq!(
+        rent_debits(&["tb", "--period", "FY2026-P03", "--branch", "draft:march"]),
+        ("draft:march".to_string(), "25.00 USD".to_string())
+    );
+    let (trunk_branch, trunk_debits) = rent_debits(&["tb", "--period", "FY2026-P03"]);
+    assert_eq!(trunk_branch, "trunk");
+    assert!(
+        trunk_debits.is_empty() || trunk_debits == "0.00 USD",
+        "trunk never sees the draft: {trunk_debits}"
+    );
+    let legs = |argv: &[&str]| {
+        let (code, out, _) = run(argv);
+        assert_eq!(code, 0, "{argv:?}: {out}");
+        Json::Arr(arr(&doc(&out), "rows").to_vec()).render()
+    };
+    let count = "MATCH (l:Leg) RETURN COUNT(*) AS legs";
+    let in_draft = format!("{count} AT BRANCH 'draft:march'");
+    assert_eq!(legs(&["query", &in_draft]), "[[2]]");
+    assert_eq!(legs(&["query", count, "--branch", "draft:march"]), "[[2]]");
+    assert_eq!(legs(&["query", count]), "[[0]]");
 
     let (code, out, _) = run(&["draft", "promote", "march", "--as", "preparer", "--yes"]);
     assert_eq!(code, 7, "{out}");

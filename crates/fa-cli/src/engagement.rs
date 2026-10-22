@@ -996,6 +996,7 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             &engagement,
             income_statement.unwrap_or("income-statement"),
             balance_sheet.unwrap_or("balance-sheet"),
+            &cap,
         )??
         .ok_or_else(|| unknown(&engagement))?;
     let units = book.context().units.clone();

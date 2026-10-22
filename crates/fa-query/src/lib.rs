@@ -12,7 +12,7 @@
 //!   posting resolved, so an entry of a special period is never claimed by
 //!   the normal period that shares its day;
 //! - `EFFECTIVE BETWEEN <date> AND <date>` into the leg's effective day;
-//! - `AT BRANCH trunk`, or `AT BRANCH 'scenario:<name>'`: the scenario's
+//! - `AT BRANCH trunk`, or `AT BRANCH 'scenario:<name>'` / `'draft:<name>'`: the scenario's
 //!   materialization (its trunk prefix replayed at the fork plus its
 //!   intents), read at its own head and uncertified;
 //! - `CALL fa.trial_balance`, which is the registered trial balance itself;
@@ -91,9 +91,9 @@ pub struct Profiled {
     /// `EXPLAIN (CERTIFICATE)`: the caller certifies the result and retains
     /// its certificate, exactly as for `fa query --certify`.
     pub certify: bool,
-    /// `AT BRANCH 'scenario:<name>'`: the scenario the caller reads instead
+    /// `AT BRANCH 'scenario:<name>'` or `'draft:<name>'`: the branch selector
     /// of trunk.
-    pub scenario: Option<String>,
+    pub branch: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,7 +140,7 @@ pub const PROCEDURES: &[&str] = &["fa.trial_balance"];
 /// The longest statement the profile reads (bytes).
 pub const MAX_STATEMENT_BYTES: usize = 16 * 1024;
 
-const BRANCH_FIX: &str = "AT BRANCH trunk, or AT BRANCH 'scenario:<name>' for a scenario's replay (fa scenario list --json)";
+const BRANCH_FIX: &str = "AT BRANCH trunk, AT BRANCH 'scenario:<name>' for a scenario's replay (fa scenario list --json) or AT BRANCH 'draft:<name>' for a draft's rehearsal (fa draft list --json)";
 
 const KNOWN_AT_FIX: &str =
     "select one coordinate: AS KNOWN AT <commit sequence> | HEAD | '<RFC3339 instant>'";
@@ -160,14 +160,14 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
     }
     let lexed = lex::lex(text)?;
     let selectors = selectors(&lexed)?;
-    if selectors.scenario.is_some() {
-        // A scenario is its materialization: a replay with its own
-        // sequences, read at its head, and not certified.
+    if selectors.branch.is_some() {
+        // A scenario or a draft is read as its replay: with its own
+        // sequences, at its head, and not certified.
         if !matches!(selectors.known_at, None | Some(KnownAt::Head)) {
             return Err(Refusal::new(
                 Law::Profile,
                 0,
-                "a scenario is read at its replay's head; AS KNOWN AT selects trunk's history",
+                "a scenario or draft is read at its replay's head; AS KNOWN AT selects trunk's history",
                 "drop AS KNOWN AT, or read trunk without AT BRANCH",
             ));
         }
@@ -175,8 +175,8 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
             return Err(Refusal::new(
                 Law::Profile,
                 0,
-                "a scenario read is not certified",
-                "drop EXPLAIN (CERTIFICATE); a scenario's change against trunk certifies with fa scenario diff --certify",
+                "a scenario or draft read is not certified",
+                "drop EXPLAIN (CERTIFICATE); a scenario's change against trunk certifies with fa scenario diff --certify, a draft's with fa close dry-run --certify",
             ));
         }
     }
@@ -204,7 +204,7 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
         period: selectors.period,
         selection,
         certify: selectors.certify,
-        scenario: selectors.scenario,
+        branch: selectors.branch,
     })
 }
 
@@ -216,8 +216,8 @@ struct Selectors {
     period: Option<String>,
     effective: Option<(DateDay, DateDay)>,
     certify: bool,
-    branch: bool,
-    scenario: Option<String>,
+    branched: bool,
+    branch: Option<String>,
 }
 
 fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
@@ -404,7 +404,7 @@ fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
                 Some(Kind::Word) => lexed.str(i + 2).to_string(),
                 _ => String::new(),
             };
-            if found.branch {
+            if found.branched {
                 return Err(Refusal::new(
                     Law::Profile,
                     start,
@@ -412,23 +412,24 @@ fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
                     BRANCH_FIX,
                 ));
             }
-            match name.strip_prefix("scenario:") {
-                _ if name == "trunk" => {}
-                Some(scenario)
-                    if lexed.kind(i + 2) == Some(Kind::Quoted) && !scenario.is_empty() =>
+            let named = |prefix: &str| {
+                name.strip_prefix(prefix)
+                    .is_some_and(|rest| !rest.is_empty())
+            };
+            if name != "trunk" {
+                if lexed.kind(i + 2) != Some(Kind::Quoted)
+                    || !(named("scenario:") || named("draft:"))
                 {
-                    found.scenario = Some(scenario.to_string());
-                }
-                _ => {
                     return Err(Refusal::new(
                         Law::Profile,
                         at(i + 2),
-                        "a query reads trunk or one scenario",
+                        "a query reads trunk, one scenario or one draft",
                         BRANCH_FIX,
                     ));
                 }
+                found.branch = Some(name);
             }
-            found.branch = true;
+            found.branched = true;
             found.spans.push((start, lexed.tokens[i + 2].end));
             i += 3;
             continue;
