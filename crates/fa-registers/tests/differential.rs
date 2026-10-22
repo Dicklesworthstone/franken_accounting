@@ -2064,9 +2064,151 @@ fn kernel_and_oracle_agree_on_period_transition_reasons() {
 
 #[test]
 fn kernel_and_oracle_agree_on_a_generated_history() {
+    generated_history_campaign(0x9E37_79B9_7F4A_7C15).assert_minimums("seed 0x9e3779b97f4a7c15");
+}
+
+/// fa-2ihd: the same campaign, every assertion included, over more seeds.
+/// Tier 1 runs 8 seeds; `FA_DIFFERENTIAL_SEEDS=<n>` runs n (tier 2). Each
+/// seed builds its own book and history, and a divergence names its seed.
+#[test]
+fn kernel_and_oracle_agree_on_generated_histories_across_seeds() {
+    let seeds = std::env::var("FA_DIFFERENTIAL_SEEDS")
+        .ok()
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(8);
+    let mut total = Coverage::default();
+    for i in 1..=seeds {
+        let seed = splitmix(i);
+        match std::panic::catch_unwind(|| generated_history_campaign(seed)) {
+            Ok(coverage) => total.add(&coverage),
+            Err(_) => {
+                panic!("the generated history diverged at seed {seed:#018x} (seed {i} of {seeds})")
+            }
+        }
+    }
+    // One seed's luck decides how often each plant fires; across the seeds
+    // the campaign must still reach every one of a single seed's minimums.
+    total.assert_minimums(&format!("{seeds} seeds"));
+}
+
+/// What one generated history exercised, so that agreement is not vacuous.
+#[derive(Debug, Default)]
+struct Coverage {
+    evidence_refused: BTreeMap<&'static str, u32>,
+    posted: u32,
+    recorded: u32,
+    posted_holds: u32,
+    applications_posted: u32,
+    undone: u32,
+    resolutions: (u32, u32),
+    refused: BTreeSet<&'static str>,
+    explained_legs: usize,
+    march_cash_history: usize,
+    open_item_legs: usize,
+    corruption_planted: u32,
+}
+
+impl Coverage {
+    fn add(&mut self, other: &Coverage) {
+        for (code, count) in &other.evidence_refused {
+            *self.evidence_refused.entry(code).or_insert(0) += count;
+        }
+        self.posted += other.posted;
+        self.recorded += other.recorded;
+        self.posted_holds += other.posted_holds;
+        self.applications_posted += other.applications_posted;
+        self.undone += other.undone;
+        self.resolutions.0 += other.resolutions.0;
+        self.resolutions.1 += other.resolutions.1;
+        self.refused.extend(other.refused.iter().copied());
+        self.explained_legs += other.explained_legs;
+        self.march_cash_history += other.march_cash_history;
+        self.open_item_legs += other.open_item_legs;
+        self.corruption_planted += other.corruption_planted;
+    }
+
+    fn assert_minimums(&self, what: &str) {
+        // Every evidence refusal the plants aim at was produced.
+        for code in ["FA-REF-080", "FA-REF-081", "FA-REF-082", "FA-REF-086"] {
+            assert!(
+                self.evidence_refused.get(code).copied().unwrap_or(0) >= 3,
+                "{what}: evidence plant {code}: {:?}",
+                self.evidence_refused
+            );
+        }
+        // The history exercised every outcome kind.
+        assert!(self.posted >= 30, "{what}: posted {}", self.posted);
+        assert!(self.recorded >= 3, "{what}: recorded {}", self.recorded);
+        assert!(
+            self.posted_holds >= 5,
+            "{what}: holds {}",
+            self.posted_holds
+        );
+        assert!(
+            self.applications_posted >= 5,
+            "{what}: applications {}",
+            self.applications_posted
+        );
+        assert!(self.undone >= 1, "{what}: no reversal undid an application");
+        assert!(
+            self.resolutions.0 >= 3 && self.resolutions.1 >= 3,
+            "{what}: resolutions (posts, voids) {:?}",
+            self.resolutions
+        );
+        for must in [
+            "FA-REF-001",
+            "FA-REF-010",
+            "FA-REF-032",
+            "FA-REF-051",
+            "FA-REF-060",
+            "FA-REF-061",
+            "FA-REF-062",
+            "FA-REF-070",
+            "FA-REF-071",
+            "FA-REF-072",
+            "FA-REF-073",
+            "FA-REF-102",
+            "FA-REF-160",
+        ] {
+            assert!(
+                self.refused.contains(must),
+                "{what}: refusal {must} never exercised: {:?}",
+                self.refused
+            );
+        }
+        assert!(
+            self.explained_legs > 0,
+            "{what}: the history explains no legs"
+        );
+        assert!(
+            self.march_cash_history > 3,
+            "{what}: March cash has a history of {}",
+            self.march_cash_history
+        );
+        assert!(self.open_item_legs > 0, "{what}: no open-item leg checked");
+        assert!(
+            self.corruption_planted >= 1,
+            "{what}: no live leg had an application to corrupt"
+        );
+    }
+}
+
+/// A nonzero xorshift seed derived from `i` (SplitMix64).
+fn splitmix(i: u64) -> u64 {
+    let mut z = i.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) | 1
+}
+
+/// One generated history: 640 random steps of posts, holds, resolutions,
+/// reversals, replacements, invoices and receipts and period transitions,
+/// each compared with the reference oracle, then the registers, open items
+/// and planted corruption. Returns what it exercised.
+fn generated_history_campaign(seed: u64) -> Coverage {
     let (mut k, mut oracle, periods) = setup();
     let usd = k.book.units.lookup("USD").unwrap();
-    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut rng = Rng(seed);
     let dates = [
         DateDay::from_ymd(2026, 2, 10).unwrap(),
         DateDay::from_ymd(2026, 3, 15).unwrap(),
@@ -2741,27 +2883,18 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         }
     }
 
-    // Every evidence refusal the plants aim at was produced, on every seed.
-    for code in ["FA-REF-080", "FA-REF-081", "FA-REF-082", "FA-REF-086"] {
-        assert!(
-            evidence_refused.get(code).copied().unwrap_or(0) >= 3,
-            "evidence plant {code}: {evidence_refused:?}"
-        );
-    }
-
-    // The history exercised every outcome kind, so agreement is not vacuous.
-    assert!(posted >= 30, "posted {posted}");
-    assert!(recorded >= 3, "recorded {recorded}");
-    assert!(posted_holds >= 5, "holds {posted_holds}");
-    assert!(
-        applications_posted >= 5,
-        "applications {applications_posted}"
-    );
-    assert!(undone >= 1, "no reversal undid an application");
-    assert!(
-        posted_resolutions.0 >= 3 && posted_resolutions.1 >= 3,
-        "resolutions (posts, voids) {posted_resolutions:?}"
-    );
+    // What the history exercised; the caller asserts the minimums (one
+    // seed's, or the sum over many).
+    let mut coverage = Coverage {
+        evidence_refused,
+        posted,
+        recorded,
+        posted_holds,
+        applications_posted,
+        undone,
+        resolutions: posted_resolutions,
+        ..Coverage::default()
+    };
     // FA-REF-102: a registered class this slice does not post. Replacement
     // alone is refused as unpaired (FA-REF-160, fa-giar), so the generated
     // history no longer reaches 102; one deterministic Closing intent keeps
@@ -2783,26 +2916,7 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             _ => panic!("closing plant: kernel {kernel:?}, oracle {model:?}"),
         }
     }
-    for must in [
-        "FA-REF-001",
-        "FA-REF-010",
-        "FA-REF-032",
-        "FA-REF-051",
-        "FA-REF-060",
-        "FA-REF-061",
-        "FA-REF-062",
-        "FA-REF-070",
-        "FA-REF-071",
-        "FA-REF-072",
-        "FA-REF-073",
-        "FA-REF-102",
-        "FA-REF-160",
-    ] {
-        assert!(
-            refused.contains_key(must),
-            "refusal {must} never exercised: {refused:?}"
-        );
-    }
+    coverage.refused = refused.keys().copied().collect();
     assert_eq!(oracle.journal_len() as u32, posted);
 
     // Every register cell of every period agrees, cell by cell, and the
@@ -2974,12 +3088,12 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
             }
         }
     }
-    assert!(explained_legs > 0, "the history explains some legs");
+    coverage.explained_legs = explained_legs;
     // The busiest cell's history replays: each point is the explanation as
     // known at that sequence (a fresh read of the journal prefix).
     let cash = account_vid(k.book.book_id, "1000");
     let ex = explain_balance(&k.db, &k.book, cash, &periods[2], None).unwrap();
-    assert!(ex.history.len() > 3, "March cash has a history");
+    coverage.march_cash_history = ex.history.len();
     for h in &ex.history {
         let then = explain_balance(&k.db, &k.book, cash, &periods[2], Some(h.recorded_at)).unwrap();
         let posted = then.cells.iter().find(|c| c.key.unit_id == h.unit_id);
@@ -3031,128 +3145,129 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
     }
     let verified = verify_open_items(&k.db, &k.book, None).unwrap();
     assert!(verified.is_green(), "{verified:?}");
-    assert!(verified.legs_checked > 0);
+    coverage.open_item_legs = verified.legs_checked;
 
     // Corruption negative: a leg whose applied mirror is removed is drift to
     // the verifier and corruption to the kernel — never an implicit zero
     // that would admit a fresh over-application.
-    let victim = kernel_items
-        .iter()
-        .find(|i| i.applied > 0)
-        .expect("some live leg has an application");
-    let victim_leg = fa_journal::rows::leg_vid(victim.entry, victim.ordinal);
-    {
-        let ctx = k.ctx();
-        let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
-        batch.set_vertex_property(victim_leg, fa_model::symbols::property::APPLIED, None);
-        k.runtime
-            .block_on(async { k.db.write(&ctx.commit(), batch).await })
-            .expect("plant the missing mirror");
-    }
-    let verified = verify_open_items(&k.db, &k.book, None).unwrap();
-    assert!(!verified.is_green(), "{verified:?}");
-    assert!(
-        verified
-            .drift
-            .iter()
-            .any(|d| d.entry == victim.entry && d.ordinal == victim.ordinal && d.stored.is_none()),
-        "{verified:?}"
-    );
-    let victim_index = refs
-        .iter()
-        .position(|r| r.vid == victim.entry)
-        .expect("victim is a posted entry");
-    // The corruption check lives behind the period law, so post into a
-    // period both engines agree is Open. The random walk may leave March
-    // Closed or Locked, and reopening those is case-bound (fa-llx, fa-oz3),
-    // so take May, which the walk never touches, through Open, SoftClose and
-    // an approved SoftClosed -> Reopen in both engines.
-    let may = periods[4].clone();
-    for (n, t) in [
-        PeriodTransition::Open,
-        PeriodTransition::SoftClose,
-        PeriodTransition::Reopen {
-            to: PeriodState::Open,
-        },
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let kernel = kernel_transition(&mut k, &may, t, 9_000 + n as u64);
-        let model = oracle.transition(&may, t);
-        assert!(
-            kernel.is_ok() && model.is_ok(),
-            "May {t:?} for the probe: kernel {kernel:?} oracle {model:?}"
-        );
-    }
-    assert_eq!(
-        oracle.period_state(&may),
-        Some(PeriodState::Open),
-        "May must be Open for the corruption probe"
-    );
-    let receipt = Intent {
-        class: "Original".into(),
-        date: DateDay::from_ymd(2026, 5, 15).unwrap(),
-        discriminator: None,
-        legs: vec![
-            Leg {
-                side: fa_reference::Side::Debit,
-                account: "1000".into(),
-                unit: usd.0,
-                entity: None,
-                mantissa: 1,
-            },
-            Leg {
-                side: fa_reference::Side::Credit,
-                account: "1200".into(),
-                unit: usd.0,
-                entity: None,
-                mantissa: 1,
-            },
-        ],
-        key: b"after-corruption".to_vec(),
-        ops: vec!["post".into(), "post_closed".into()],
-        approvals: 0,
-        reverses: None,
-        supersession_reason: 1,
-        resolves: None,
-        settles: vec![Settle {
-            leg: 1,
-            target: victim_index,
-            ordinal: usize::from(victim.ordinal),
-            mantissa: 1,
-        }],
-    };
-    let outcome = kernel_post_raw(&mut k, &receipt, usd, &refs);
-    assert!(
-        matches!(outcome, Err(KernelError::Corrupt(_))),
-        "a missing mirror must be corruption, got {outcome:?}"
-    );
-    // A negative mirror (which would inflate the open amount) and a mirror
-    // above the leg's capacity are corruption too, and drift to the verifier.
-    for (what, bad) in [("negative", -100i128), ("oversized", i128::MAX / 4)] {
-        let ctx = k.ctx();
-        let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
-        batch.set_vertex_property(
-            victim_leg,
-            fa_model::symbols::property::APPLIED,
-            Some(fa_journal::rows::mantissa_scalar("applied", bad).unwrap()),
-        );
-        k.runtime
-            .block_on(async { k.db.write(&ctx.commit(), batch).await })
-            .expect("plant the bad mirror");
+    // A history without an application has nothing to corrupt; the caller
+    // requires the plant (one seed's, or at least once over many).
+    if let Some(victim) = kernel_items.iter().find(|i| i.applied > 0) {
+        coverage.corruption_planted += 1;
+        let victim_leg = fa_journal::rows::leg_vid(victim.entry, victim.ordinal);
+        {
+            let ctx = k.ctx();
+            let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+            batch.set_vertex_property(victim_leg, fa_model::symbols::property::APPLIED, None);
+            k.runtime
+                .block_on(async { k.db.write(&ctx.commit(), batch).await })
+                .expect("plant the missing mirror");
+        }
         let verified = verify_open_items(&k.db, &k.book, None).unwrap();
-        assert!(!verified.is_green(), "{what}: {verified:?}");
-        let mut probe = receipt.clone();
-        probe.key = format!("after-{what}").into_bytes();
-        let outcome = kernel_post_raw(&mut k, &probe, usd, &refs);
+        assert!(!verified.is_green(), "{verified:?}");
+        assert!(
+            verified.drift.iter().any(|d| d.entry == victim.entry
+                && d.ordinal == victim.ordinal
+                && d.stored.is_none()),
+            "{verified:?}"
+        );
+        let victim_index = refs
+            .iter()
+            .position(|r| r.vid == victim.entry)
+            .expect("victim is a posted entry");
+        // The corruption check lives behind the period law, so post into a
+        // period both engines agree is Open. The random walk may leave March
+        // Closed or Locked, and reopening those is case-bound (fa-llx, fa-oz3),
+        // so take May, which the walk never touches, through Open, SoftClose and
+        // an approved SoftClosed -> Reopen in both engines.
+        let may = periods[4].clone();
+        for (n, t) in [
+            PeriodTransition::Open,
+            PeriodTransition::SoftClose,
+            PeriodTransition::Reopen {
+                to: PeriodState::Open,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let kernel = kernel_transition(&mut k, &may, t, 9_000 + n as u64);
+            let model = oracle.transition(&may, t);
+            assert!(
+                kernel.is_ok() && model.is_ok(),
+                "May {t:?} for the probe: kernel {kernel:?} oracle {model:?}"
+            );
+        }
+        assert_eq!(
+            oracle.period_state(&may),
+            Some(PeriodState::Open),
+            "May must be Open for the corruption probe"
+        );
+        let receipt = Intent {
+            class: "Original".into(),
+            date: DateDay::from_ymd(2026, 5, 15).unwrap(),
+            discriminator: None,
+            legs: vec![
+                Leg {
+                    side: fa_reference::Side::Debit,
+                    account: "1000".into(),
+                    unit: usd.0,
+                    entity: None,
+                    mantissa: 1,
+                },
+                Leg {
+                    side: fa_reference::Side::Credit,
+                    account: "1200".into(),
+                    unit: usd.0,
+                    entity: None,
+                    mantissa: 1,
+                },
+            ],
+            key: b"after-corruption".to_vec(),
+            ops: vec!["post".into(), "post_closed".into()],
+            approvals: 0,
+            reverses: None,
+            supersession_reason: 1,
+            resolves: None,
+            settles: vec![Settle {
+                leg: 1,
+                target: victim_index,
+                ordinal: usize::from(victim.ordinal),
+                mantissa: 1,
+            }],
+        };
+        let outcome = kernel_post_raw(&mut k, &receipt, usd, &refs);
         assert!(
             matches!(outcome, Err(KernelError::Corrupt(_))),
-            "a {what} mirror must be corruption, got {outcome:?}"
+            "a missing mirror must be corruption, got {outcome:?}"
         );
+        // A negative mirror (which would inflate the open amount) and a mirror
+        // above the leg's capacity are corruption too, and drift to the verifier.
+        for (what, bad) in [("negative", -100i128), ("oversized", i128::MAX / 4)] {
+            let ctx = k.ctx();
+            let mut batch = WriteBatch::new(fa_model::symbols::relation::HAS_LEG);
+            batch.set_vertex_property(
+                victim_leg,
+                fa_model::symbols::property::APPLIED,
+                Some(fa_journal::rows::mantissa_scalar("applied", bad).unwrap()),
+            );
+            k.runtime
+                .block_on(async { k.db.write(&ctx.commit(), batch).await })
+                .expect("plant the bad mirror");
+            let verified = verify_open_items(&k.db, &k.book, None).unwrap();
+            assert!(!verified.is_green(), "{what}: {verified:?}");
+            let mut probe = receipt.clone();
+            probe.key = format!("after-{what}").into_bytes();
+            let outcome = kernel_post_raw(&mut k, &probe, usd, &refs);
+            assert!(
+                matches!(outcome, Err(KernelError::Corrupt(_))),
+                "a {what} mirror must be corruption, got {outcome:?}"
+            );
+        }
     }
     let tb = trial_balance(&k.db, &k.book, &periods).unwrap();
     assert!(tb.is_balanced(), "{:?}", tb.unit_totals);
+    coverage
 }
 
 fn create_year(k: &mut Kernel, oracle: &mut Oracle, year: i32) -> CommitSeq {
