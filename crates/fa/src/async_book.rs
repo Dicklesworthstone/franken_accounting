@@ -2817,6 +2817,60 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Record a `Confirmed` attestation over the confirmation response
+    /// `document` by the capability's holder (plan §11.12, AS 2310).
+    pub async fn record_confirmation(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        by_party: VId,
+        balance: fa_money::Amount,
+        as_of: DateDay,
+    ) -> Outcome<fa_journal::Attested> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::record_confirmation(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            capability.holder(),
+            *document,
+            by_party,
+            balance,
+            as_of,
+        )
+        .await?)
+    }
+
+    /// Record management's `Represented` attestation over the representation
+    /// letter `document` by the capability's holder (plan §11.12, AS 2805);
+    /// each claim is sealed under the book key with fresh entropy.
+    pub async fn record_representation(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        document: &fa_model::Oid,
+        claims: &[String],
+        as_of: DateDay,
+    ) -> Outcome<fa_journal::Attested> {
+        let claims = claims
+            .iter()
+            .map(|claim| self.seal_text(cx, claim))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(fa_journal::record_representation(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            capability.holder(),
+            *document,
+            claims,
+            as_of,
+        )
+        .await?)
+    }
+
     pub async fn record_manual_assertion(
         &mut self,
         cx: &PurposeContexts,
