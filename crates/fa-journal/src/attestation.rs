@@ -26,10 +26,18 @@
 //!   natively from cumulative posted cash and active immutable bank matches.
 //!   Its publication and historical verification live in [`crate::bank`].
 //!
-//! The other Appendix A claims (`Prepared`, `Confirmed`,
-//! `Examined`, `Custom`) keep their tags (1, 5–7) and are not
-//! representable in this build: no constructor exists, and a stored payload
-//! carrying one does not decode.
+//! - **`Confirmed { by_party, balance, as_of }`** (§11.12, AS 2310): the
+//!   auditor states what a party confirmed, over the confirmation response
+//!   (a `Confirmation` document); the attester holds `produce`. Whether it
+//!   is audit-grade is an engagement's judgment: its firm principal received
+//!   the document ([`confirmation_received_by`]).
+//! - **`Represented { claims, as_of }`** (§11.12, AS 2805, tag 9):
+//!   management's representations over the letter (a `Representation`
+//!   document), each claim sealed; the attester holds `approve`.
+//!
+//! The other Appendix A claims (`Prepared`, `Examined`, `Custom`) keep
+//! their tags (1, 6, 7) and are not representable in this build: no
+//! constructor exists, and a stored payload carrying one does not decode.
 //!
 //! **Identities are derived, so the kernel reads them as point witnesses.**
 //! A ManualAssertion's subject is the entry's `proposal_digest`; the
@@ -62,6 +70,7 @@ use fa_model::symbols::{label, property, relation};
 use fa_model::{
     DecodeError, EntryPayload, Erasable, Id128, Oid, Reader, SealKey, Writer, domain_digest,
 };
+use fa_money::{Amount, UnitId};
 use fa_policy::{Capability, Op, Profile};
 use fa_registry::evidence_policy::{EvidencePolicy, Requirement};
 use fa_registry::reason_codes::ReasonCodes;
@@ -85,8 +94,9 @@ const SCHEME_CAPABILITY: u8 = 0;
 pub const MANUAL_ASSERTION_SCOPE: &str = "manual_assertion";
 
 /// `AttestationClaim` tags, in Appendix A's order; 8 is §9.2's
-/// ManualAssertion. [`claim::REVIEWED`], [`claim::RECONCILED`], [`claim::REGISTER_EQUALS`] and
-/// [`claim::MANUAL_ASSERTION`] are implemented.
+/// ManualAssertion and 9 §11.12's Represented. [`claim::REVIEWED`],
+/// [`claim::RECONCILED`], [`claim::REGISTER_EQUALS`], [`claim::CONFIRMED`],
+/// [`claim::MANUAL_ASSERTION`] and [`claim::REPRESENTED`] are implemented.
 pub mod claim {
     pub const PREPARED: u8 = 1;
     pub const REVIEWED: u8 = 2;
@@ -96,7 +106,11 @@ pub mod claim {
     pub const EXAMINED: u8 = 6;
     pub const CUSTOM: u8 = 7;
     pub const MANUAL_ASSERTION: u8 = 8;
+    pub const REPRESENTED: u8 = 9;
 }
+
+/// The claims one management representation may carry.
+pub const MAX_REPRESENTATION_CLAIMS: usize = 64;
 
 /// Subject tags of `subject_refs`.
 const SUBJECT_DOCUMENT: u8 = 1;
@@ -299,6 +313,22 @@ pub enum AttestationClaim {
     RegisterEquals(RegisterEqualsClaim),
     /// "Every statement line is confirmed and cumulative cash equals its close."
     Reconciled(Box<ReconciledClaim>),
+    /// "This party confirmed this balance as of this date" (plan §11.12,
+    /// AS 2310): the confirmation response document is the subject. Whether
+    /// it is audit-grade depends on who received the document, which the
+    /// engagement that relies on it judges.
+    Confirmed {
+        by_party: VId,
+        balance: Amount,
+        as_of: DateDay,
+    },
+    /// "Management represents these claims as of this date" (plan §11.12,
+    /// AS 2805): the representation letter is the subject; each claim is
+    /// sealed under the book key, like a ManualAssertion's statement.
+    Represented {
+        claims: Vec<Erasable<String>>,
+        as_of: DateDay,
+    },
 }
 
 impl AttestationClaim {
@@ -309,6 +339,8 @@ impl AttestationClaim {
             Self::ManualAssertion { .. } => claim::MANUAL_ASSERTION,
             Self::RegisterEquals(_) => claim::REGISTER_EQUALS,
             Self::Reconciled(_) => claim::RECONCILED,
+            Self::Confirmed { .. } => claim::CONFIRMED,
+            Self::Represented { .. } => claim::REPRESENTED,
         }
     }
 
@@ -320,6 +352,8 @@ impl AttestationClaim {
             Self::ManualAssertion { .. } => "ManualAssertion",
             Self::RegisterEquals(_) => "RegisterEquals",
             Self::Reconciled(_) => "Reconciled",
+            Self::Confirmed { .. } => "Confirmed",
+            Self::Represented { .. } => "Represented",
         }
     }
 }
@@ -376,6 +410,20 @@ fn vid_of(domain: &[u8], book: Id128, key: &[u8; 32]) -> VId {
 #[must_use]
 pub fn review_vid(book: Id128, document: &Oid) -> VId {
     vid_of(b"fa:vid:attestation-review:v1", book, &document.0)
+}
+
+/// `vid(Confirmed) = H("fa:vid:attestation-confirmed:v1" ‖ book ‖
+/// document_oid)`: one confirmation per confirmation response document.
+#[must_use]
+pub fn confirmed_vid(book: Id128, document: &Oid) -> VId {
+    vid_of(b"fa:vid:attestation-confirmed:v1", book, &document.0)
+}
+
+/// `vid(Represented) = H("fa:vid:attestation-represented:v1" ‖ book ‖
+/// document_oid)`: one representation per representation letter.
+#[must_use]
+pub fn represented_vid(book: Id128, document: &Oid) -> VId {
+    vid_of(b"fa:vid:attestation-represented:v1", book, &document.0)
 }
 
 /// `vid(ManualAssertion) = H("fa:vid:attestation-manual:v1" ‖ book ‖
@@ -439,6 +487,12 @@ impl Attestation {
             (AttestationClaim::ManualAssertion { .. }, Subject::Proposal(d)) => {
                 Some(manual_assertion_vid(self.book_id, d))
             }
+            (AttestationClaim::Confirmed { .. }, Subject::Document(oid)) => {
+                Some(confirmed_vid(self.book_id, oid))
+            }
+            (AttestationClaim::Represented { .. }, Subject::Document(oid)) => {
+                Some(represented_vid(self.book_id, oid))
+            }
             (AttestationClaim::RegisterEquals(c), Subject::Cell(d)) if *d == c.cell_digest() => {
                 Some(register_equals_vid(
                     self.book_id,
@@ -483,6 +537,24 @@ impl Attestation {
             }
             AttestationClaim::RegisterEquals(c) => c.encode(&mut w),
             AttestationClaim::Reconciled(c) => c.encode(&mut w)?,
+            // `u128 by_party ‖ u32 unit ‖ i128 mantissa ‖ i32 as_of`.
+            AttestationClaim::Confirmed {
+                by_party,
+                balance,
+                as_of,
+            } => {
+                w.u128(by_party.0)
+                    .u32(balance.unit.0)
+                    .i128(balance.mantissa)
+                    .i32(as_of.0);
+            }
+            // `list(erasable claim) ‖ i32 as_of`.
+            AttestationClaim::Represented { claims, as_of } => {
+                w.list(claims, |w, c| {
+                    c.encode(w);
+                });
+                w.i32(as_of.0);
+            }
         }
         w.list(&[self.subject], |w, s| match s {
             Subject::Document(oid) => {
@@ -561,8 +633,28 @@ impl StoredAttestation {
                     claim::RECONCILED => {
                         AttestationClaim::Reconciled(Box::new(ReconciledClaim::decode(&mut r)?))
                     }
-                    // Prepared, Confirmed, Examined, Custom: not
-                    // in this build.
+                    claim::CONFIRMED => AttestationClaim::Confirmed {
+                        by_party: VId(r.u128("confirmed.by_party")?),
+                        balance: Amount::new(
+                            UnitId(r.u32("confirmed.unit")?),
+                            r.i128("confirmed.mantissa")?,
+                        ),
+                        as_of: DateDay(r.i32("confirmed.as_of")?),
+                    },
+                    claim::REPRESENTED => {
+                        let claims =
+                            r.list(MAX_REPRESENTATION_CLAIMS, "represented.claims", |r| {
+                                Erasable::decode(r, fa_model::limits::MAX_DESCRIPTION_BYTES)
+                            })?;
+                        if claims.is_empty() {
+                            return Err(r.invalid("represented.claims"));
+                        }
+                        AttestationClaim::Represented {
+                            claims,
+                            as_of: DateDay(r.i32("represented.as_of")?),
+                        }
+                    }
+                    // Prepared, Examined, Custom: not in this build.
                     t => return Err(r.bad_tag("attestation.claim", t)),
                 };
                 let subjects = r.list(1, "attestation.subject_refs", |r| {
@@ -791,7 +883,9 @@ pub fn witness_manual_assertion<V: asupersync::fs::Vfs + Clone>(
         }))),
         AttestationClaim::Reviewed { .. }
         | AttestationClaim::RegisterEquals(_)
-        | AttestationClaim::Reconciled(_) => Ok(Err(attestation_drift(
+        | AttestationClaim::Reconciled(_)
+        | AttestationClaim::Confirmed { .. }
+        | AttestationClaim::Represented { .. } => Ok(Err(attestation_drift(
             vid,
             "another claim sits at a ManualAssertion's identity",
         ))),
@@ -914,6 +1008,23 @@ fn same_statement(stored: &Attestation, ours: &Attestation, key: &SealKey) -> bo
                     (Ok(x), Ok(y)) if x == y
                 )
         }
+        (
+            AttestationClaim::Represented {
+                claims: a,
+                as_of: x,
+            },
+            AttestationClaim::Represented {
+                claims: b,
+                as_of: y,
+            },
+        ) => {
+            let max = fa_model::limits::MAX_DESCRIPTION_BYTES;
+            x == y
+                && a.len() == b.len()
+                && a.iter().zip(b).all(|(s, t)| {
+                    matches!((s.open(key, max), t.open(key, max)), (Ok(p), Ok(q)) if p == q)
+                })
+        }
         (stored, ours) => stored == ours,
     }
 }
@@ -1011,8 +1122,9 @@ fn recorded_or_conflict(row: &VertexRow, ours: &Attestation, key: &SealKey) -> O
     }
     let what = match &stored.attestation.subject {
         Subject::Document(oid) => format!(
-            "document {} was already reviewed by principal {:032x}",
+            "document {} already carries a {} attestation by principal {:032x}",
             hex(&oid.0),
+            stored.attestation.claim.name(),
             stored.attestation.principal.0
         ),
         Subject::Proposal(d) => format!(
@@ -1130,6 +1242,244 @@ pub async fn record_review<V: asupersync::fs::Vfs + Clone>(
         }
     }
     commit_attestation(db, ctx, book, txn, &attestation, &binding, Some(dvid)).await
+}
+
+/// Record a `Confirmed { by_party, balance, as_of }` attestation over the
+/// confirmation response `document` (plan §11.12, AS 2310) by `principal`:
+/// what the party confirmed, as the auditor states it. Before any read: the
+/// capability admits a trunk `produce` (an Agent records none) and is
+/// current, and the balance is in a unit this book registers. Then, in one
+/// transaction: the document is one this book holds, verified; `by_party`
+/// is a party of this book; one Attestation vertex with `ATTESTS →
+/// Document`. Whether the confirmation is audit-grade is judged by the
+/// engagement that relies on it, from who received the document
+/// ([`confirmation_received_by`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn record_confirmation<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    principal: VId,
+    document: Oid,
+    by_party: VId,
+    balance: Amount,
+    as_of: DateDay,
+) -> Outcome<Attested> {
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    if let Err(d) = fa_policy::admit(
+        capability,
+        &fa_policy::Intent {
+            principal,
+            trunk: true,
+            op: Op::Produce,
+            book: book.book_id,
+            legs: &[],
+        },
+    ) {
+        return Ok(Err(crate::policy::refusal(&d)));
+    }
+    if book.units.get(balance.unit).is_none() {
+        return Ok(Err(Refusal::new(
+            code::UNIT_UNREGISTERED,
+            exit::REFUSAL,
+            format!(
+                "the confirmed balance's unit id {} is not registered in this book",
+                balance.unit.0
+            ),
+            "plan §4.4 (amounts are mantissas at a registered unit's scale)",
+            "state the balance in a unit registered in registries/units.toml",
+        )));
+    }
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(crate::policy::refusal(&d)));
+    }
+    let binding = binding(capability)?;
+    let attestation = Attestation {
+        book_id: book.book_id,
+        claim: AttestationClaim::Confirmed {
+            by_party,
+            balance,
+            as_of,
+        },
+        subject: Subject::Document(document),
+        principal,
+        evidence_refs: Vec::new(),
+    };
+    let txn_cx = ctx.txn();
+    let txn = db.begin(&txn_cx)?;
+    if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    match held_document(&txn, db, &policy, &document)? {
+        Ok(Some(doc)) if of_kind(&policy, &doc, "Confirmation") => {}
+        Ok(Some(_)) => {
+            txn.abort();
+            return Ok(Err(subject_refusal(
+                format!(
+                    "document {} is not a Confirmation document",
+                    hex(&document.0)
+                ),
+                "attest the confirmation response itself, recorded with `fa document add <file> --kind Confirmation --json`",
+            )));
+        }
+        Ok(None) => {
+            txn.abort();
+            return Ok(Err(subject_refusal(
+                format!(
+                    "the confirmation names document {} which this book does not hold",
+                    hex(&document.0)
+                ),
+                "record the confirmation response with `fa document add <file> --kind Confirmation --json` and attest the oid it prints",
+            )));
+        }
+        Err(r) => {
+            txn.abort();
+            return Ok(Err(r));
+        }
+    }
+    let is_party = txn
+        .vertex(db, by_party)?
+        .is_some_and(|row| row.labels.contains(&label::PARTY));
+    if !is_party {
+        txn.abort();
+        return Ok(Err(subject_refusal(
+            format!(
+                "the confirming party {:032x} is not a party of this book",
+                by_party.0
+            ),
+            "record the party with `fa party add <code> --kind <kind> --json` first",
+        )));
+    }
+    commit_attestation(
+        db,
+        ctx,
+        book,
+        txn,
+        &attestation,
+        &binding,
+        Some(document_vid(&document)),
+    )
+    .await
+}
+
+/// Record a `Represented { claims, as_of }` attestation over the
+/// representation letter `document` (plan §11.12, AS 2805) by `principal`,
+/// management. Before any read: one to [`MAX_REPRESENTATION_CLAIMS`]
+/// claims, each opening under the book key to text that is not blank; the
+/// capability passes the [`human_reviewer`] hook (it holds `approve`, which
+/// no Agent holds) and is current. Then, in one transaction: the document
+/// is one this book holds, verified, and one Attestation vertex with
+/// `ATTESTS → Document`.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_representation<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    principal: VId,
+    document: Oid,
+    claims: Vec<Erasable<String>>,
+    as_of: DateDay,
+) -> Outcome<Attested> {
+    let policy = EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+    let max = fa_model::limits::MAX_DESCRIPTION_BYTES;
+    let readable = claims.iter().all(|c| {
+        c.open(&book.seal_key, max)
+            .is_ok_and(|text| !text.trim().is_empty())
+    });
+    if claims.is_empty() || claims.len() > MAX_REPRESENTATION_CLAIMS || !readable {
+        return Ok(Err(Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            format!(
+                "a representation carries 1..={MAX_REPRESENTATION_CLAIMS} claims, each a statement that is not blank"
+            ),
+            "plan §11.12 AttestationClaim::Represented { claims[], as_of }",
+            "state each representation with its own --claim <text>",
+        )));
+    }
+    if let Err(r) = human_reviewer(capability, principal, book) {
+        return Ok(Err(r));
+    }
+    if let Err(d) = fa_policy::current(capability, db.frontier()?) {
+        return Ok(Err(crate::policy::refusal(&d)));
+    }
+    let binding = binding(capability)?;
+    let attestation = Attestation {
+        book_id: book.book_id,
+        claim: AttestationClaim::Represented { claims, as_of },
+        subject: Subject::Document(document),
+        principal,
+        evidence_refs: Vec::new(),
+    };
+    let txn_cx = ctx.txn();
+    let txn = db.begin(&txn_cx)?;
+    if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    match held_document(&txn, db, &policy, &document)? {
+        Ok(Some(doc)) if of_kind(&policy, &doc, "Representation") => {}
+        Ok(Some(_)) => {
+            txn.abort();
+            return Ok(Err(subject_refusal(
+                format!(
+                    "document {} is not a Representation document",
+                    hex(&document.0)
+                ),
+                "attest the representation letter itself, recorded with `fa document add <file> --kind Representation --json`",
+            )));
+        }
+        Ok(None) => {
+            txn.abort();
+            return Ok(Err(subject_refusal(
+                format!(
+                    "the representation names document {} which this book does not hold",
+                    hex(&document.0)
+                ),
+                "record the representation letter with `fa document add <file> --kind Representation --json` and attest the oid it prints",
+            )));
+        }
+        Err(r) => {
+            txn.abort();
+            return Ok(Err(r));
+        }
+    }
+    commit_attestation(
+        db,
+        ctx,
+        book,
+        txn,
+        &attestation,
+        &binding,
+        Some(document_vid(&document)),
+    )
+    .await
+}
+
+/// The principal that received `document`, from its custody receipt (event
+/// 0), if the book holds it. A confirmation is audit-grade for an engagement
+/// only when its firm principal received it (AS 2310: the auditor controls
+/// the confirmation process).
+pub fn confirmation_received_by<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    document: &Oid,
+) -> Result<Option<VId>, KernelError> {
+    Ok(crate::custody::custody_chain(db, document)?
+        .first()
+        .and_then(|(event, _)| match &event.body {
+            crate::custody::CustodyBody::Receipt { received_by, .. } if event.index == 0 => {
+                Some(*received_by)
+            }
+            _ => None,
+        }))
+}
+
+/// Whether `doc` is of the registered document kind `kind`.
+fn of_kind(policy: &EvidencePolicy, doc: &crate::evidence::DocumentRecord, kind: &str) -> bool {
+    policy.kind_by_name(kind).is_some_and(|k| k.tag == doc.kind)
 }
 
 /// A document this book holds, read in `txn` and verified, or `None`.
@@ -1406,6 +1756,99 @@ mod tests {
         assert!(StoredAttestation::decode(&crossed.canonical_bytes(&binding()).unwrap()).is_err());
     }
 
+    /// Confirmed and Represented round-trip, bind every signed byte, take
+    /// their own identities over the same document, and refuse a subject
+    /// that is not a document or a representation without claims.
+    #[test]
+    fn confirmations_and_representations_round_trip_with_their_own_identities() {
+        let book = Id128([5; 16]);
+        let letter = Oid([9; 32]);
+        let confirmed = Attestation {
+            book_id: book,
+            claim: AttestationClaim::Confirmed {
+                by_party: VId(77),
+                balance: Amount::new(UnitId(1), -1_234_567),
+                as_of: DateDay(20_600),
+            },
+            subject: Subject::Document(letter),
+            principal: VId(8),
+            evidence_refs: Vec::new(),
+        };
+        let represented = Attestation {
+            book_id: book,
+            claim: AttestationClaim::Represented {
+                claims: vec![
+                    statement("all transactions are recorded", 2),
+                    statement("no fraud involving management is known", 3),
+                ],
+                as_of: DateDay(20_610),
+            },
+            subject: Subject::Document(letter),
+            principal: VId(6),
+            evidence_refs: Vec::new(),
+        };
+        for a in [&confirmed, &represented] {
+            let bytes = a.canonical_bytes(&binding()).unwrap();
+            let stored = StoredAttestation::decode(&bytes).unwrap();
+            assert_eq!(&stored.attestation, a, "{}", a.claim.name());
+            let signed = bytes.len() - 32 - 34;
+            for i in 0..signed {
+                let mut t = bytes.clone();
+                t[i] ^= 0x01;
+                assert!(StoredAttestation::decode(&t).is_err(), "byte {i}");
+            }
+        }
+        assert_eq!(confirmed.vid(), Some(confirmed_vid(book, &letter)));
+        assert_eq!(represented.vid(), Some(represented_vid(book, &letter)));
+        let review = review_vid(book, &letter);
+        assert_ne!(confirmed.vid(), Some(review));
+        assert_ne!(represented.vid(), Some(review));
+        assert_ne!(confirmed.vid(), represented.vid());
+        let crossed = Attestation {
+            subject: Subject::Proposal([7; 32]),
+            ..confirmed.clone()
+        };
+        assert_eq!(crossed.vid(), None);
+        assert!(StoredAttestation::decode(&crossed.canonical_bytes(&binding()).unwrap()).is_err());
+        let empty = Attestation {
+            claim: AttestationClaim::Represented {
+                claims: Vec::new(),
+                as_of: DateDay(20_610),
+            },
+            ..represented.clone()
+        };
+        assert!(StoredAttestation::decode(&empty.canonical_bytes(&binding()).unwrap()).is_err());
+        // A representation re-sealed on a retry is the same statement; one
+        // claim changed is not.
+        let key = SealKey([0x11; 32]);
+        let resealed = Attestation {
+            claim: AttestationClaim::Represented {
+                claims: vec![
+                    statement("all transactions are recorded", 4),
+                    statement("no fraud involving management is known", 5),
+                ],
+                as_of: DateDay(20_610),
+            },
+            ..represented.clone()
+        };
+        assert_ne!(
+            resealed.signed_digest().unwrap(),
+            represented.signed_digest().unwrap()
+        );
+        assert!(same_statement(&represented, &resealed, &key));
+        let changed = Attestation {
+            claim: AttestationClaim::Represented {
+                claims: vec![
+                    statement("all transactions are recorded", 4),
+                    statement("fraud is known", 5),
+                ],
+                as_of: DateDay(20_610),
+            },
+            ..represented.clone()
+        };
+        assert!(!same_statement(&represented, &changed, &key));
+    }
+
     /// Fixed vectors for both derived identities, computed by an independent
     /// single-chunk BLAKE3 written from the specification (checked against
     /// the published vectors for "" and "abc"), never by this code: a change
@@ -1444,10 +1887,9 @@ mod tests {
             claim::PREPARED,
             claim::RECONCILED,
             claim::REGISTER_EQUALS,
-            claim::CONFIRMED,
             claim::EXAMINED,
             claim::CUSTOM,
-            9,
+            10,
         ] {
             let mut t = bytes.clone();
             t[18] = tag;
