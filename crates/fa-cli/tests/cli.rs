@@ -17695,6 +17695,13 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     let again = doc(&out);
     assert_eq!(again.get("already_recorded"), Some(&Json::Bool(true)));
     assert_eq!(int(&again, "fork_at"), fork_at);
+    // Metamorphic (fa-k07b): a scenario with no intents diffs empty against
+    // trunk at its fork.
+    let (code, out, err) = run(&["scenario", "diff", "but-for", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let empty = doc(&out);
+    assert_eq!(int(&empty, "intents"), Some(0), "{out}");
+    assert!(arr(&empty, "rows").is_empty(), "{out}");
 
     // The counterfactual sale runs in the scenario, rehearsed there first.
     let sale = intent(
