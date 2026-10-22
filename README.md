@@ -658,6 +658,14 @@ An audit's mechanics are journaled; the judgments stay the auditor's.
   `out_of_period` and counts it under rollover: it misstates this period's
   income. The iron curtain does not count it, because the period-end
   balance sheet is already corrected (SAB 108).
+- **Carry forward.** `fa engagement carry-forward <id> --from <prior>`
+  brings an earlier engagement's uncorrected misstatements into this one.
+  The auditor states which turned around through this period's income
+  (`--turned-around N`) and which an out-of-period correction here
+  corrected (`--corrected N`); the rest are still uncorrected at this
+  period's end. The summary counts them under the iron curtain (still
+  uncorrected) or the rollover (turned around), and reports
+  `prior_period_carry_forward: true`. A later carry-forward governs.
 - **File and complete.** `fa engagement file` puts a document the book holds
   in the engagement's workpaper index, once. `fa engagement complete`
   journals the documentation completion once, at most 45 days after the
@@ -680,6 +688,7 @@ fa engagement sud FY26-audit --json
 fa engagement sud FY26-audit --definition us_gaap_small_company_balance_sheet --json
 fa engagement file FY26-audit --document <oid> --json
 fa engagement complete FY26-audit --report-release 2027-02-15 --completion-date 2027-03-20 --json
+fa engagement carry-forward FY27-audit --from FY26-audit --turned-around 2 --corrected 3 --json
 fa document attest confirmed <oid> --party C-1 --balance "1200.00 USD" --as-of 2026-12-31 --json
 fa document attest represented <oid> --claim "All transactions are recorded" --as-of 2027-02-15 --json
 ```
@@ -690,10 +699,11 @@ mechanical; whether a misstatement is material is the auditor's call.
 
 What the summary does not do yet:
 
-- **No prior-period carry-forward.** Uncorrected misstatements of a prior
-  engagement do not carry into this one's iron curtain or turn around in
-  its rollover. The event states this as `prior_period_carry_forward:
-  false` (`fa-zgn`).
+- **Carried items are not on statement lines.** A carry-forward's items
+  count in the rollover and iron-curtain totals and are listed under
+  `carried`, but the per-line attribution covers this engagement's own
+  items and its out-of-period corrections only. A carry-forward is not
+  chained: the prior engagement's own carry-forward does not come along.
 - **No foreign-currency conversion.** Legs in other units are listed, never
   converted.
 
