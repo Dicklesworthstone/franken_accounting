@@ -1149,3 +1149,121 @@ fn confirmations_and_representations_are_attested_and_graded_in_the_workpaper_in
     assert_eq!(int(representation, "claims"), 2);
     assert_eq!(text(representation, "as_of"), "2026-04-15");
 }
+
+/// Plan §8.2, SAB 108: an immaterial prior-period error corrected in the
+/// current period without a case is an Adjusting entry naming the earlier
+/// period. It misstates this period's income, so the summary counts it under
+/// the rollover method; the period-end balance sheet it corrected carries
+/// nothing for it under the iron curtain. Once reversed it no longer counts.
+#[test]
+fn an_out_of_period_correction_misstates_rollover_income_until_it_is_reversed() {
+    let f = Fixture::new();
+    f.ok(OPEN);
+    // February's unrecorded fees, 400.00, expensed in March.
+    let adjusting = |key: &str, class: &str, relates_to: Option<&str>| -> String {
+        let name = format!("{key}.json");
+        let marker = relates_to
+            .map(|period| format!(r#","prior_period_error":"{period}""#))
+            .unwrap_or_default();
+        f.write(
+            &name,
+            &format!(
+                r#"{{"class":"{class}","idempotency_key":"{key}","effective_date":"2026-03-20"{marker},"legs":[{{"side":"debit","account":"6000","amount":"400.00 USD"}},{{"side":"credit","account":"2100","amount":"400.00 USD"}}]}}"#
+            ),
+        );
+        name
+    };
+    // Planted negatives, nothing journaled: the marker names an earlier
+    // period of the calendar, on an Adjusting entry only.
+    for period in ["FY2026-P03", "FY2026-P04", "FY2026-P99"] {
+        let intent = adjusting(&format!("bad-{period}"), "Adjusting", Some(period));
+        f.refused(
+            &["post", "--intent", &intent, "--evidence", &f.evidence],
+            2,
+            "FA-REF-100",
+        );
+    }
+    let original = adjusting("original", "Original", None);
+    let before = f.head();
+    let (status, output) = f.run(&[
+        "post",
+        "--intent",
+        &original,
+        "--evidence",
+        &f.evidence,
+        "--prior-period-error",
+        "FY2026-P02",
+    ]);
+    assert_eq!(status, 2, "{}", output.render());
+    assert_eq!(f.head(), before + f.access_events_since(before));
+
+    let intent = adjusting("out-of-period", "Adjusting", Some("FY2026-P02"));
+    let posted = f.ok(&["post", "--intent", &intent, "--evidence", &f.evidence]);
+    let entry = text(data(&posted), "vid").to_string();
+    let sud = f.ok(&["engagement", "sud", "FY26-audit"]);
+    let sud = data(&sud);
+    assert!(rows(sud, "items").is_empty(), "{}", sud.render());
+    let out_of_period = rows(sud, "out_of_period");
+    assert_eq!(out_of_period.len(), 1, "{}", sud.render());
+    assert_eq!(text(&out_of_period[0], "entry"), entry);
+    assert_eq!(text(&out_of_period[0], "relates_to"), "FY2026-P02");
+    let effect = out_of_period[0].get("effect").unwrap();
+    assert_eq!(text(effect, "income"), "400.00 USD", "income understated");
+    assert_eq!(
+        text(effect, "equity"),
+        "-400.00 USD",
+        "against opening retained earnings"
+    );
+    assert_eq!(
+        out_of_period[0].get("clearly_trivial"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(text(sud, "rollover_income"), "400.00 USD");
+    let iron_curtain = sud.get("iron_curtain").unwrap();
+    for line in ["income", "assets", "liabilities", "equity"] {
+        assert_eq!(text(iron_curtain, line), "0.00 USD", "{line}");
+    }
+    // 400.00 under rollover: above performance (375.00), within overall.
+    assert_eq!(sud.get("exceeds_performance"), Some(&Json::Bool(true)));
+    assert_eq!(sud.get("exceeds_overall"), Some(&Json::Bool(false)));
+    let lines = |statement: &Json| -> Vec<(String, String)> {
+        rows(statement, "lines")
+            .iter()
+            .map(|line| {
+                (
+                    text(line, "code").to_string(),
+                    text(line, "amount").to_string(),
+                )
+            })
+            .collect()
+    };
+    let pairs = |expected: &[(&str, &str)]| -> Vec<(String, String)> {
+        expected
+            .iter()
+            .map(|(code, amount)| (code.to_string(), amount.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        lines(sud.get("rollover_lines").unwrap()),
+        pairs(&[
+            ("revenue", "0.00 USD"),
+            ("expense", "-400.00 USD"),
+            ("net_income", "400.00 USD"),
+        ]),
+        "this period's expense is overstated by last period's fees"
+    );
+    assert!(
+        lines(sud.get("iron_curtain_lines").unwrap())
+            .iter()
+            .all(|(_, amount)| amount == "0.00 USD"),
+        "{}",
+        sud.render()
+    );
+
+    // Reversed, the correction no longer stands and no longer counts.
+    f.ok(&["reverse", &entry, "--reason", "WrongPeriod"]);
+    let sud = f.ok(&["engagement", "sud", "FY26-audit"]);
+    let sud = data(&sud);
+    assert!(rows(sud, "out_of_period").is_empty(), "{}", sud.render());
+    assert_eq!(text(sud, "rollover_income"), "0.00 USD");
+}

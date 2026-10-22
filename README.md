@@ -650,6 +650,14 @@ An audit's mechanics are journaled; the judgments stay the auditor's.
   the registered definitions by default, or the classified presets with
   `--definition us_gaap_small_company_income_statement` and
   `--definition us_gaap_small_company_balance_sheet`.
+- **Out-of-period corrections.** An immaterial prior-period error fixed in
+  the current period without a case is an `Adjusting` entry posted with
+  `"prior_period_error": "FY2025-P12"` (or `--prior-period-error`); the
+  kernel refuses the marker on any other class or on a period that does not
+  end before the entry's date. While it stands, the summary lists it under
+  `out_of_period` and counts it under rollover: it misstates this period's
+  income. The iron curtain does not count it, because the period-end
+  balance sheet is already corrected (SAB 108).
 - **File and complete.** `fa engagement file` puts a document the book holds
   in the engagement's workpaper index, once. `fa engagement complete`
   journals the documentation completion once, at most 45 days after the
@@ -682,14 +690,12 @@ mechanical; whether a misstatement is material is the auditor's call.
 
 What the summary does not do yet:
 
-- **No prior-period carry-forward.** Without it, the rollover and
-  iron-curtain totals sum the same items. The event states this as
-  `prior_period_carry_forward: false`.
+- **No prior-period carry-forward.** Uncorrected misstatements of a prior
+  engagement do not carry into this one's iron curtain or turn around in
+  its rollover. The event states this as `prior_period_carry_forward:
+  false` (`fa-zgn`).
 - **No foreign-currency conversion.** Legs in other units are listed, never
   converted.
-
-Prior-year carry-forward and reason-coded prior-period corrections in the
-summary are not wired yet (`fa-zgn`).
 
 ### Exact arithmetic available now
 

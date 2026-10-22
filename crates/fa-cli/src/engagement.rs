@@ -776,6 +776,28 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let out_of_period = summary
+        .out_of_period
+        .iter()
+        .map(|item| {
+            Ok(obj(vec![
+                ("entry", vid_hex(item.entry)),
+                ("effective_date", s(item.effective_date.render())),
+                ("relates_to", s(item.relates_to.code.as_str())),
+                ("effect", effect_json(item.effect, summary.unit, &units)?),
+                ("clearly_trivial", Json::Bool(item.clearly_trivial)),
+                (
+                    "other_units",
+                    Json::Arr(
+                        item.other_units
+                            .iter()
+                            .map(|u| registered_unit_code(*u, &units).map(s))
+                            .collect::<Result<Vec<_>, Fail>>()?,
+                    ),
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
     let rollover = render_amount(Amount::new(summary.unit, summary.rollover_income), &units)?;
     ctx.out.at_book(&book)?;
     ctx.out.event(
@@ -784,6 +806,7 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("engagement", summary_json(&view, &units)?),
             ("unit", s(registered_unit_code(summary.unit, &units)?)),
             ("items", Json::Arr(items)),
+            ("out_of_period", Json::Arr(out_of_period)),
             ("rollover_income", s(rollover.as_str())),
             (
                 "iron_curtain",
@@ -805,8 +828,9 @@ fn sud(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
         ],
         &format!(
-            "engagement {engagement}: {} uncorrected misstatement(s); rollover income effect {rollover}; {} performance materiality, {} overall (mechanical comparisons; materiality is the auditor's judgment)",
+            "engagement {engagement}: {} uncorrected misstatement(s), {} out-of-period correction(s); rollover income effect {rollover}; {} performance materiality, {} overall (mechanical comparisons; materiality is the auditor's judgment)",
             summary.items.len(),
+            summary.out_of_period.len(),
             if summary.exceeds_performance {
                 "exceeds"
             } else {

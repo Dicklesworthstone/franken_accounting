@@ -42,11 +42,12 @@
 
 use std::collections::BTreeMap;
 
+use fa_model::entry::PRIOR_PERIOD_ERROR_EXTENSION;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, Oid,
-    Reader, TypedRef, Writer, domain_digest, engagement_vid, entry_mirrors, entry_vid, period_vid,
-    proposed_adjustment_vid,
+    PeriodRef, Reader, TypedRef, Writer, domain_digest, engagement_vid, entry_mirrors, entry_vid,
+    period_vid, proposed_adjustment_vid,
 };
 use fa_money::{Amount, Side, UnitId};
 use fa_policy::{Capability, Intent};
@@ -2692,7 +2693,7 @@ fn decision_of<V: asupersync::fs::Vfs + Clone>(
 /// The entry that reversed or replaced `entry` at `seq`, if any. Only a
 /// reversal or a replacement supersedes, each at an identity derived from
 /// its target (plan §4.9), so two point reads decide it.
-fn superseder_at<V: asupersync::fs::Vfs + Clone>(
+pub fn superseder_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     entry: VId,
     seq: CommitSeq,
@@ -2771,37 +2772,134 @@ pub struct UncorrectedItem {
     pub other_units: Vec<UnitId>,
 }
 
+/// A standing out-of-period correction in an engagement's scope (plan §8.2):
+/// an `Adjusting` entry effective in a scope period that carries
+/// `fa:prior-period-error:v1`, so it corrects an earlier period's error in
+/// this period's income. Read from the journal by the caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutOfPeriodCorrection {
+    pub entry: VId,
+    pub effective_date: DateDay,
+    /// The earlier period whose error it corrects.
+    pub relates_to: PeriodRef,
+    pub legs: Vec<ProposalLeg>,
+}
+
+/// One out-of-period correction in the summary of uncorrected misstatements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutOfPeriodItem {
+    pub entry: VId,
+    pub effective_date: DateDay,
+    pub relates_to: PeriodRef,
+    /// What moving the correction out of this period's income would change,
+    /// in the engagement's unit: its income effect reversed, against opening
+    /// retained earnings in `equity`.
+    pub effect: StatementEffect,
+    /// Every line's effect is at most the stated clearly trivial threshold.
+    pub clearly_trivial: bool,
+    /// Units of its legs other than the engagement's: listed, never converted.
+    pub other_units: Vec<UnitId>,
+}
+
 /// The summary of uncorrected misstatements (plan §11.12, `audit.sud`):
 /// the effect of every passed proposal, and of every booked one whose entry
 /// has since been reversed or replaced, had it been booked and stood, in
 /// the engagement's unit, and mechanical comparisons with the stated
-/// parameters. With no
-/// prior-period engagement linked there is no carry-forward, so the rollover
-/// (current-period income) and iron-curtain (period-end balance sheet)
-/// quantifications sum the same items; both are reported.
+/// parameters, under both SAB 108 methods. The proposals count under both;
+/// an out-of-period correction misstates this period's income (rollover)
+/// but leaves the period-end balance sheet corrected, so the iron curtain
+/// does not count it. With no prior-period engagement linked there is no
+/// carry-forward.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UncorrectedSummary {
     pub unit: UnitId,
     pub items: Vec<UncorrectedItem>,
-    /// Rollover: the passed items' effect on the period's income.
+    pub out_of_period: Vec<OutOfPeriodItem>,
+    /// Rollover: the uncorrected proposals' and the out-of-period
+    /// corrections' effect on the period's income.
     pub rollover_income: i128,
-    /// Iron curtain: the passed items' cumulative effect at period end.
+    /// Iron curtain: the uncorrected proposals' cumulative effect at period
+    /// end.
     pub iron_curtain: StatementEffect,
-    /// The largest absolute total exceeds the stated performance materiality.
+    /// Under either method, the largest absolute total exceeds the stated
+    /// performance materiality.
     pub exceeds_performance: bool,
-    /// The largest absolute total exceeds the stated overall materiality.
+    /// Under either method, the largest absolute total exceeds the stated
+    /// overall materiality.
     pub exceeds_overall: bool,
 }
 
-/// The summary of uncorrected misstatements for `view`'s passed proposals.
+/// The effect of booking `legs`, in `unit`, and the other units they name.
+fn effect_of(
+    legs: &[ProposalLeg],
+    unit: UnitId,
+    account_type: &impl Fn(VId) -> Option<fa_model::AccountType>,
+    what: &dyn Fn() -> String,
+) -> Result<(StatementEffect, Vec<UnitId>), KernelError> {
+    use fa_model::AccountType;
+    let mut effect = StatementEffect::default();
+    let mut other_units = Vec::new();
+    for leg in legs {
+        if leg.amount.unit != unit {
+            if !other_units.contains(&leg.amount.unit) {
+                other_units.push(leg.amount.unit);
+            }
+            continue;
+        }
+        let ty = account_type(leg.account).ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "{} names account {:032x}, which the chart does not have",
+                what(),
+                leg.account.0
+            ))
+        })?;
+        // A debit raises an asset; a credit raises a liability, equity
+        // or income. Amounts are positive, so both signs are exact.
+        let negated = leg
+            .amount
+            .mantissa
+            .checked_neg()
+            .ok_or_else(|| KernelError::Corrupt("leg amount overflow".into()))?;
+        let (debit_less_credit, credit_less_debit) = match leg.side {
+            Side::Debit => (leg.amount.mantissa, negated),
+            Side::Credit => (negated, leg.amount.mantissa),
+        };
+        let line = match ty {
+            AccountType::ASSET => StatementEffect {
+                assets: debit_less_credit,
+                ..StatementEffect::default()
+            },
+            AccountType::LIABILITY => StatementEffect {
+                liabilities: credit_less_debit,
+                ..StatementEffect::default()
+            },
+            AccountType::EQUITY => StatementEffect {
+                equity: credit_less_debit,
+                ..StatementEffect::default()
+            },
+            AccountType::REVENUE | AccountType::EXPENSE => StatementEffect {
+                income: credit_less_debit,
+                ..StatementEffect::default()
+            },
+            _ => continue,
+        };
+        effect = effect.add(line)?;
+    }
+    other_units.sort();
+    Ok((effect, other_units))
+}
+
+/// The summary of uncorrected misstatements for `view`'s uncorrected
+/// proposals and the out-of-period `corrections` in its scope.
 /// `account_type` names each leg account's type (from the chart); memo legs
 /// are outside the statements and are not summarized.
 pub fn uncorrected_misstatements(
     view: &EngagementView,
+    corrections: &[OutOfPeriodCorrection],
     account_type: impl Fn(VId) -> Option<fa_model::AccountType>,
 ) -> Result<UncorrectedSummary, KernelError> {
-    use fa_model::AccountType;
     let unit = view.profile.unit;
+    let trivial = view.profile.materiality.clearly_trivial.unsigned_abs();
     let mut items = Vec::new();
     let mut total = StatementEffect::default();
     for p in &view.proposals {
@@ -2822,74 +2920,169 @@ pub fn uncorrected_misstatements(
             },
             _ => continue,
         };
-        let mut effect = StatementEffect::default();
-        let mut other_units = Vec::new();
-        for leg in &p.proposal.legs {
-            if leg.amount.unit != unit {
-                if !other_units.contains(&leg.amount.unit) {
-                    other_units.push(leg.amount.unit);
-                }
-                continue;
-            }
-            let ty = account_type(leg.account).ok_or_else(|| {
-                KernelError::Corrupt(format!(
-                    "proposal {} names account {:032x}, which the chart does not have",
-                    p.proposal.ordinal, leg.account.0
-                ))
-            })?;
-            // A debit raises an asset; a credit raises a liability, equity
-            // or income. Amounts are positive, so both signs are exact.
-            let negated = leg
-                .amount
-                .mantissa
-                .checked_neg()
-                .ok_or_else(|| KernelError::Corrupt("leg amount overflow".into()))?;
-            let (debit_less_credit, credit_less_debit) = match leg.side {
-                Side::Debit => (leg.amount.mantissa, negated),
-                Side::Credit => (negated, leg.amount.mantissa),
-            };
-            let line = match ty {
-                AccountType::ASSET => StatementEffect {
-                    assets: debit_less_credit,
-                    ..StatementEffect::default()
-                },
-                AccountType::LIABILITY => StatementEffect {
-                    liabilities: credit_less_debit,
-                    ..StatementEffect::default()
-                },
-                AccountType::EQUITY => StatementEffect {
-                    equity: credit_less_debit,
-                    ..StatementEffect::default()
-                },
-                AccountType::REVENUE | AccountType::EXPENSE => StatementEffect {
-                    income: credit_less_debit,
-                    ..StatementEffect::default()
-                },
-                _ => continue,
-            };
-            effect = effect.add(line)?;
-        }
-        other_units.sort();
+        let ordinal = p.proposal.ordinal;
+        let (effect, other_units) = effect_of(&p.proposal.legs, unit, &account_type, &|| {
+            format!("proposal {ordinal}")
+        })?;
         total = total.add(effect)?;
         items.push(UncorrectedItem {
-            ordinal: p.proposal.ordinal,
+            ordinal,
             effective_date: p.proposal.effective_date,
             basis,
             effect,
-            clearly_trivial: effect.largest()
-                <= view.profile.materiality.clearly_trivial.unsigned_abs(),
+            clearly_trivial: effect.largest() <= trivial,
+            other_units,
+        });
+    }
+    let mut rollover_income = total.income;
+    let mut out_of_period = Vec::new();
+    for c in corrections {
+        let (booked, other_units) = effect_of(&c.legs, unit, &account_type, &|| {
+            format!("out-of-period entry {:032x}", c.entry.0)
+        })?;
+        // The correction put `booked.income` into this period's income; the
+        // misstatement is undone by taking it back out, against opening
+        // retained earnings.
+        let reversed = booked
+            .income
+            .checked_neg()
+            .ok_or_else(|| KernelError::Corrupt("out-of-period income overflow".into()))?;
+        let effect = StatementEffect {
+            income: reversed,
+            equity: booked.income,
+            ..StatementEffect::default()
+        };
+        rollover_income = rollover_income
+            .checked_add(reversed)
+            .ok_or_else(|| KernelError::Corrupt("uncorrected misstatements overflow".into()))?;
+        out_of_period.push(OutOfPeriodItem {
+            entry: c.entry,
+            effective_date: c.effective_date,
+            relates_to: c.relates_to.clone(),
+            effect,
+            clearly_trivial: effect.largest() <= trivial,
             other_units,
         });
     }
     let m = view.profile.materiality;
+    let largest = total.largest().max(rollover_income.unsigned_abs());
     Ok(UncorrectedSummary {
         unit,
         items,
-        rollover_income: total.income,
+        out_of_period,
+        rollover_income,
         iron_curtain: total,
-        exceeds_performance: total.largest() > m.performance.unsigned_abs(),
-        exceeds_overall: total.largest() > m.overall.unsigned_abs(),
+        exceeds_performance: largest > m.performance.unsigned_abs(),
+        exceeds_overall: largest > m.overall.unsigned_abs(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Out-of-period corrections (plan §8.2: "Immaterial errors corrected in the
+// current period without a case are `Adjusting` entries with `reason_code:
+// PriorPeriodError { relates_to: PeriodRef }`")
+// ---------------------------------------------------------------------------
+
+const PRIOR_PERIOD_ERROR_VERSION: u16 = 1;
+
+/// The `fa:prior-period-error:v1` bytes naming `relates_to`.
+fn prior_period_error_bytes(relates_to: &PeriodRef) -> Result<Vec<u8>, KernelError> {
+    let mut w = Writer::with_capacity(6 + relates_to.calendar.len() + relates_to.code.len());
+    w.u16(PRIOR_PERIOD_ERROR_VERSION);
+    relates_to.encode(&mut w);
+    Ok(w.finish()?)
+}
+
+/// The earlier period whose error an entry corrects
+/// (`fa:prior-period-error:v1`): `Ok(None)` without the extension, `Err(why)`
+/// when its bytes are malformed.
+pub fn prior_period_error(p: &EntryPayload) -> Result<Option<PeriodRef>, String> {
+    let Some((_, raw)) = p
+        .extensions
+        .iter()
+        .find(|(t, _)| *t == PRIOR_PERIOD_ERROR_EXTENSION)
+    else {
+        return Ok(None);
+    };
+    let malformed = |e: fa_model::DecodeError| format!("fa:prior-period-error:v1: {e:?}");
+    let mut r = Reader::new(raw);
+    let version = r.u16("prior_period_error.version").map_err(malformed)?;
+    if version != PRIOR_PERIOD_ERROR_VERSION {
+        return Err(format!(
+            "fa:prior-period-error:v1 version {version} is not supported"
+        ));
+    }
+    let relates_to = PeriodRef::decode(&mut r).map_err(malformed)?;
+    r.finish().map_err(malformed)?;
+    Ok(Some(relates_to))
+}
+
+/// `p` marked as correcting the error of the earlier period `relates_to`
+/// (extensions stay sorted by tag).
+pub fn with_prior_period_error(
+    mut p: EntryPayload,
+    relates_to: &PeriodRef,
+) -> Result<EntryPayload, KernelError> {
+    p.schema_minor = p.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
+    p.extensions
+        .retain(|(t, _)| *t != PRIOR_PERIOD_ERROR_EXTENSION);
+    p.extensions.push((
+        PRIOR_PERIOD_ERROR_EXTENSION,
+        prior_period_error_bytes(relates_to)?,
+    ));
+    p.extensions.sort_by_key(|(t, _)| *t);
+    Ok(p)
+}
+
+/// Judge a submitted proposal's prior-period-error marker before the posting
+/// transaction (plan §8.2): `Ok(None)` when it carries none. Only an
+/// `Adjusting` entry carries it, and it names a period of this book's
+/// calendar that ends on or before the entry's effective date.
+pub(crate) fn admit_prior_period_error(
+    book: &BookContext,
+    p: &EntryPayload,
+) -> Result<Option<PeriodRef>, Refusal> {
+    let refuse = |why: String| {
+        Refusal::new(
+            code::STRUCTURE,
+            exit::USAGE,
+            why,
+            "plan §8.2 (an immaterial prior-period error corrected in the current period without a case is an Adjusting entry naming the period it relates to)",
+            "post the correction as class Adjusting with prior_period_error naming an earlier period of this book's calendar, or open a case (`fa case open`) for a restatement",
+        )
+    };
+    let relates_to = match prior_period_error(p) {
+        Ok(None) => return Ok(None),
+        Ok(Some(r)) => r,
+        Err(why) => return Err(refuse(why)),
+    };
+    if p.class != EntryClass::ADJUSTING {
+        return Err(refuse(format!(
+            "only an Adjusting entry corrects a prior-period error; this is a {}",
+            p.class.name().unwrap_or("?")
+        )));
+    }
+    if relates_to.calendar != book.calendar.id {
+        return Err(refuse(format!(
+            "prior_period_error names calendar `{}`, not this book's `{}`",
+            relates_to.calendar, book.calendar.id
+        )));
+    }
+    let Some(period) = crate::policy::calendar_period(book, &relates_to.code) else {
+        return Err(refuse(format!(
+            "prior_period_error names `{}`, which is no period of calendar `{}`",
+            relates_to.code, book.calendar.id
+        )));
+    };
+    // `end` is exclusive: the period is earlier when it ends by this day.
+    if period.end > p.effective_date {
+        return Err(refuse(format!(
+            "prior_period_error names `{}`, which does not end before the correction's effective date {}",
+            relates_to.code,
+            p.effective_date.render()
+        )));
+    }
+    Ok(Some(relates_to))
 }
 
 #[cfg(test)]
@@ -3223,7 +3416,7 @@ mod tests {
                 VId(79),
             ),
         ]);
-        let summary = uncorrected_misstatements(&view, chart).unwrap();
+        let summary = uncorrected_misstatements(&view, &[], chart).unwrap();
         assert_eq!(summary.unit, usd());
         assert_eq!(
             summary
@@ -3291,7 +3484,7 @@ mod tests {
                 ),
                 pass(3),
             )]);
-            let summary = uncorrected_misstatements(&view, chart).unwrap();
+            let summary = uncorrected_misstatements(&view, &[], chart).unwrap();
             assert_eq!(summary.exceeds_performance, performance, "{amount}");
             assert_eq!(summary.exceeds_overall, overall, "{amount}");
             assert!(!summary.items[0].clearly_trivial);
@@ -3302,6 +3495,74 @@ mod tests {
             proposal_view(1, vec![leg(Side::Debit, 99, 5), leg(Side::Credit, 2, 5)]),
             pass(4),
         )]);
-        assert!(uncorrected_misstatements(&view, chart).is_err());
+        assert!(uncorrected_misstatements(&view, &[], chart).is_err());
+    }
+
+    /// SAB 108: an out-of-period correction misstates this period's income,
+    /// so the rollover counts it, reversed against opening retained
+    /// earnings; it corrects the period-end balance sheet, so the iron
+    /// curtain does not. Materiality is judged under either method.
+    #[test]
+    fn out_of_period_corrections_count_under_the_rollover_method_only() {
+        let view = engagement_view(vec![decided(
+            proposal_view(
+                1,
+                vec![leg(Side::Debit, 5, 4_000), leg(Side::Credit, 2, 4_000)],
+            ),
+            AdjustmentDecision::Pass { reason_code: 3 },
+        )]);
+        // Last year's unrecorded fees, 30,000.00, expensed this year.
+        let correction = OutOfPeriodCorrection {
+            entry: VId(90),
+            effective_date: DateDay(20_550),
+            relates_to: PeriodRef {
+                calendar: "fiscal".into(),
+                code: "FY2025-P12".into(),
+            },
+            legs: vec![
+                leg(Side::Debit, 5, 3_000_000),
+                leg(Side::Credit, 2, 3_000_000),
+            ],
+        };
+        let summary =
+            uncorrected_misstatements(&view, std::slice::from_ref(&correction), chart).unwrap();
+        let [item] = summary.out_of_period.as_slice() else {
+            panic!("one out-of-period item: {:?}", summary.out_of_period)
+        };
+        assert_eq!(item.entry, VId(90));
+        assert_eq!(item.relates_to, correction.relates_to);
+        assert_eq!(
+            item.effect,
+            StatementEffect {
+                income: 3_000_000,
+                equity: -3_000_000,
+                ..StatementEffect::default()
+            },
+            "income understated by the expense; opening retained earnings overstated"
+        );
+        assert!(!item.clearly_trivial);
+        assert_eq!(summary.rollover_income, 3_000_000 - 4_000);
+        assert_eq!(
+            summary.iron_curtain,
+            StatementEffect {
+                income: -4_000,
+                liabilities: 4_000,
+                ..StatementEffect::default()
+            },
+            "the corrected balance sheet carries only the passed proposal"
+        );
+        assert!(!summary.exceeds_performance && !summary.exceeds_overall);
+
+        // 39,960.00 under rollover is above performance (37,500.00) though
+        // the iron curtain total (40.00) is not.
+        let mut larger = correction;
+        larger.legs = vec![
+            leg(Side::Debit, 5, 4_000_000),
+            leg(Side::Credit, 2, 4_000_000),
+        ];
+        let summary = uncorrected_misstatements(&view, &[larger], chart).unwrap();
+        assert_eq!(summary.rollover_income, 3_996_000);
+        assert_eq!(summary.iron_curtain.largest(), 4_000);
+        assert!(summary.exceeds_performance && !summary.exceeds_overall);
     }
 }

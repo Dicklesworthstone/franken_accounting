@@ -1732,6 +1732,58 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// The standing out-of-period corrections effective in `scope_periods`
+    /// (plan §8.2, §11.12): `Adjusting` entries carrying
+    /// `fa:prior-period-error:v1` that no reversal or replacement has
+    /// superseded, at the head, in journal order.
+    pub fn out_of_period_corrections(
+        &self,
+        cx: &PurposeContexts,
+        scope_periods: &[String],
+    ) -> Result<Vec<fa_journal::OutOfPeriodCorrection>, BookError> {
+        self.query(cx, |db, book| {
+            let seq = fa_registers::resolve_known_at(db, None)?;
+            let mut corrections = Vec::new();
+            for (vid, entry, _) in fa_registers::entries_at(db, book, seq)? {
+                let p = &entry.proposal;
+                let relates_to = match fa_journal::prior_period_error(p) {
+                    Ok(Some(relates_to)) => relates_to,
+                    Ok(None) => continue,
+                    Err(why) => {
+                        return Err(fa_journal::KernelError::Corrupt(format!(
+                            "entry {:032x}: {why}",
+                            vid.0
+                        ))
+                        .into());
+                    }
+                };
+                // The period its date resolves to: a posting names its
+                // period only when the intent declared one.
+                if !scope_periods.contains(&fa_registers::entry_period(book, &entry)?) {
+                    continue;
+                }
+                if fa_journal::superseder_at(db, vid, seq)?.is_some() {
+                    continue;
+                }
+                corrections.push(fa_journal::OutOfPeriodCorrection {
+                    entry: vid,
+                    effective_date: p.effective_date,
+                    relates_to,
+                    legs: p
+                        .legs
+                        .iter()
+                        .map(|leg| fa_journal::ProposalLeg {
+                            side: leg.side,
+                            account: leg.account_ref,
+                            amount: leg.amount,
+                        })
+                        .collect(),
+                });
+            }
+            Ok(corrections)
+        })
+    }
+
     /// Every engagement of the book.
     pub fn engagements(
         &self,

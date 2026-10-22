@@ -6833,11 +6833,17 @@ fn batch_member_fail(index: usize, fail: Fail) -> Fail {
 /// of its IntentOutcome, so an identical retry returns the recorded outcome.
 fn post_batch_document(ctx: &mut Ctx<'_>, args: &Args, doc: &Json) -> Result<(), Fail> {
     const FIX: &str = "a batch intent is {\"idempotency_key\": \"...\", \"intents\": [<entry intent>, ...]}; fa robot-docs examples shows an entry intent";
-    for flag in ["--balancing", "--timeout-ns", "--reverse-on", "--evidence"] {
+    for flag in [
+        "--balancing",
+        "--timeout-ns",
+        "--reverse-on",
+        "--prior-period-error",
+        "--evidence",
+    ] {
         if !args.flag_all(flag).is_empty() {
             return Err(usage(
                 format!("a batch intent takes no {flag}; nothing was posted"),
-                "put timeout_ns, reverse_on and evidence in each member intent",
+                "put timeout_ns, reverse_on, prior_period_error and evidence in each member intent",
             ));
         }
     }
@@ -6987,13 +6993,18 @@ struct BuiltPost {
     reversal_detail: Option<(String, Reason)>,
 }
 
+/// The timing fields of an entry intent, and the earlier period an
+/// Adjusting entry's out-of-period correction relates to (plan §8.2).
+struct PostTiming {
+    timeout_ns: Option<u64>,
+    reverse_on: Option<DateDay>,
+    prior_period_error: Option<String>,
+}
+
 /// Timing is request data. The posting kernel resolves its committed tick
-/// anchor and schedule law; the CLI never reads a clock or creates an effect.
-fn post_timing(
-    args: &Args,
-    doc: &Json,
-    class: EntryClass,
-) -> Result<(Option<u64>, Option<DateDay>), Fail> {
+/// anchor and schedule law, and judges the prior period; the CLI never reads
+/// a clock or creates an effect.
+fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming, Fail> {
     let Json::Obj(fields) = doc else {
         return Err(usage("intent must be an object", "fa robot-docs examples"));
     };
@@ -7015,6 +7026,7 @@ fn post_timing(
         "disposition",
         "timeout_ns",
         "reverse_on",
+        "prior_period_error",
         "fx",
     ];
     if let Some((field, _)) = fields
@@ -7031,6 +7043,12 @@ fn post_timing(
         (
             "reverse_on",
             "--reverse-on",
+            EntryClass::ADJUSTING,
+            "Adjusting",
+        ),
+        (
+            "prior_period_error",
+            "--prior-period-error",
             EntryClass::ADJUSTING,
             "Adjusting",
         ),
@@ -7093,7 +7111,21 @@ fn post_timing(
             })
         })
         .transpose()?;
-    Ok((timeout_ns, reverse_on))
+    let prior_period_error = match doc.get("prior_period_error") {
+        Some(Json::Str(code)) => Some(code.clone()),
+        Some(_) => {
+            return Err(usage(
+                "prior_period_error must be a period code string",
+                "prior_period_error: \"FY2025-P12\", or --prior-period-error FY2025-P12 (the earlier period whose error this Adjusting entry corrects)",
+            ));
+        }
+        None => args.flag("--prior-period-error").map(str::to_string),
+    };
+    Ok(PostTiming {
+        timeout_ns,
+        reverse_on,
+        prior_period_error,
+    })
 }
 
 /// Resolve and seal the request once. Planning and posting must use these
@@ -7181,7 +7213,11 @@ fn build_post_request_with_prior(
             "remove `class` from the intent, or use `fa post`",
         ));
     }
-    let (timeout_ns, reverse_on) = post_timing(args, doc, class)?;
+    let PostTiming {
+        timeout_ns,
+        reverse_on,
+        prior_period_error,
+    } = post_timing(args, doc, class)?;
     let typed_reversal = forced == Some(EntryClass::REVERSAL);
     if doc.get("reclassifies").is_some() && class != EntryClass::RECLASSIFICATION {
         return Err(usage(
@@ -7741,6 +7777,17 @@ fn build_post_request_with_prior(
     let proposal = crate::fx::value_intent(book, &capability, doc, proposal)?;
     let proposal = match reverse_on {
         Some(day) => fa_journal::with_auto_reverse(proposal, day),
+        None => proposal,
+    };
+    let proposal = match prior_period_error {
+        Some(code) => fa_journal::with_prior_period_error(
+            proposal,
+            &PeriodRef {
+                calendar: ctx.calendar.id.clone(),
+                code,
+            },
+        )
+        .map_err(BookError::Kernel)?,
         None => proposal,
     };
     Ok(BuiltPost {

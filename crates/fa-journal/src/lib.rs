@@ -94,11 +94,12 @@ pub use engagement::{
     AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, CompletionView,
     DocumentationCompleted, DocumentationCompletion, EngagementKind, EngagementOpened,
     EngagementProfile, EngagementRequest, EngagementState, EngagementView, Materiality,
-    ProposalLeg, ProposalView, ProposedAdjustment, RecordedDecision, StatementEffect, Uncorrected,
-    UncorrectedItem, UncorrectedSummary, WorkpaperConfirmation, WorkpaperFiled,
-    WorkpaperRepresentation, WorkpaperView, complete_documentation, decide_adjustment,
-    file_workpaper, list_engagements, open_engagement, propose_adjustment, read_engagement,
-    uncorrected_misstatements,
+    OutOfPeriodCorrection, OutOfPeriodItem, ProposalLeg, ProposalView, ProposedAdjustment,
+    RecordedDecision, StatementEffect, Uncorrected, UncorrectedItem, UncorrectedSummary,
+    WorkpaperConfirmation, WorkpaperFiled, WorkpaperRepresentation, WorkpaperView,
+    complete_documentation, decide_adjustment, file_workpaper, list_engagements, open_engagement,
+    prior_period_error, propose_adjustment, read_engagement, superseder_at,
+    uncorrected_misstatements, with_prior_period_error,
 };
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{
