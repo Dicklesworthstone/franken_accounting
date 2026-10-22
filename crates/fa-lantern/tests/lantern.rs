@@ -1731,7 +1731,6 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
     ));
 }
 
-#[allow(clippy::too_many_arguments)]
 /// The role control `fa chart role` journals (bead fa-kxc4), as a snapshot
 /// entry recorded at `recorded_at`.
 fn role_entry(
@@ -1763,6 +1762,7 @@ fn role_entry(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_snapshot_entry(
     h: &mut Harness,
     vid: VId,
