@@ -28,8 +28,8 @@ use crate::graph::{
 };
 use crate::jet::{
     IntercompanyUnmatched, LargeRoundReversals, ManualVsRule, PeriodEndTiming, PostClosing,
-    RoundAmounts, SelfApproved, SuspenseAging, ThinDescriptions, UnusualAccounts, UnusualPreparers,
-    Weekend,
+    RoundAmounts, SelfApproved, SelfSourcedEvidence, SuspenseAging, ThinDescriptions,
+    UnusualAccounts, UnusualPreparers, Weekend,
 };
 use crate::numbers::{RelativeSizeFactor, SequenceGaps, ThresholdSplitting};
 use crate::trace::{Law, Trace};
@@ -65,6 +65,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         PostClosing::ID => Box::new(PostClosing::with(params)),
         Weekend::ID => Box::new(Weekend::with(params)),
         SelfApproved::ID => Box::new(SelfApproved::with(params)),
+        SelfSourcedEvidence::ID => Box::new(SelfSourcedEvidence::with(params)),
         ThinDescriptions::ID => Box::new(ThinDescriptions::with(params)),
         UnusualAccounts::ID => Box::new(UnusualAccounts::with(params)),
         UnusualPreparers::ID => Box::new(UnusualPreparers::with(params)),
