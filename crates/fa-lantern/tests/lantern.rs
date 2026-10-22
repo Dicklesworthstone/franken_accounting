@@ -3548,16 +3548,14 @@ fn phase_19_5b_remaining_jet_digit_and_number_procedures_and_oracles() {
     // fa-kxc4, planted: 9999 is named "Unallocated Suspense Clearing" and
     // IC10 "Intercompany Due From Sub", but neither holds a role, so the
     // role-selected procedures refuse rather than guess from the names.
-    for (procedure, role) in [
-        (
-            Box::new(SuspenseAging::new().unwrap()) as Box<dyn Procedure>,
-            "suspense",
-        ),
+    let planted: [(Box<dyn Procedure>, &str); 2] = [
+        (Box::new(SuspenseAging::new().unwrap()), "suspense"),
         (
             Box::new(IntercompanyUnmatched::new().unwrap()),
             "intercompany",
         ),
-    ] {
+    ];
+    for (procedure, role) in planted {
         let refused = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap_err();
         assert!(
             matches!(&refused, LanternError::RoleUnassigned { role: r, .. } if r == role),
@@ -4268,12 +4266,13 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     // fa-kxc4, planted: 1500 "Network Property & CapEx" and 1300 "Merchandise
     // Inventory" hold no role, so the role-selected procedures refuse rather
     // than guess from the names.
-    for procedure in [
-        Box::new(ReconLapping::new().unwrap()) as Box<dyn Procedure>,
+    let planted: [Box<dyn Procedure>; 4] = [
+        Box::new(ReconLapping::new().unwrap()),
         Box::new(ExpenseCapitalization::new().unwrap()),
         Box::new(InventoryAging::new().unwrap()),
         Box::new(ReconIntercompany::new().unwrap()),
-    ] {
+    ];
+    for procedure in planted {
         let refused = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap_err();
         assert!(
             matches!(&refused, LanternError::RoleUnassigned { procedure: p, .. } if p == procedure.id()),
