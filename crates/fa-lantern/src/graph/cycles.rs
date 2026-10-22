@@ -41,7 +41,6 @@ pub(crate) struct Cycles {
     /// Paths refer to positions in the caller's `edges`. Every edge is used
     /// in at most one path; rotations are not additional findings.
     pub paths: Vec<Vec<usize>>,
-    pub steps: u64,
 }
 
 type Adjacency = BTreeMap<(Option<u128>, u32, i128, u128), Vec<usize>>;
@@ -181,7 +180,7 @@ pub(crate) fn find<E>(
             paths.push(path);
         }
     }
-    Ok(Cycles { paths, steps })
+    Ok(Cycles { paths })
 }
 
 #[cfg(test)]
@@ -344,13 +343,14 @@ mod tests {
             }))
         ));
         assert_eq!(meter.work().comparisons, 5);
-        assert!(complete.steps > meter.work().comparisons);
+        assert!(8 > meter.work().comparisons);
 
         // No lost or duplicated work charge on a successful search.
-        let mut meter = crate::Meter::new("graph.round_trips", Some(complete.steps), None);
+        let mut meter = crate::Meter::new("graph.round_trips", Some(8), None);
         let metered = super::find(&edges, 3, 10, 100, &mut || meter.compare(1)).unwrap();
         assert_eq!(metered, complete);
-        assert_eq!(meter.work().comparisons, complete.steps);
+        // Five roots plus one and two continuations in the two cycles.
+        assert_eq!(meter.work().comparisons, 8);
     }
 
     #[test]
@@ -369,7 +369,11 @@ mod tests {
         // before this root's entire search returns to the outer loop.
         let mut edges = vec![edge(1, 10, 20, 1)];
         edges.extend((2..2_100).map(|id| edge(id, 20, 30, 2)));
-        let complete = find(&edges, 3, 10, 10_000).unwrap();
+        let mut complete_steps = 0u64;
+        let complete = super::find(&edges, 3, 10, 10_000, &mut || {
+            complete_steps += 1;
+            Ok::<(), core::convert::Infallible>(())
+        }).unwrap();
         assert!(complete.paths.is_empty());
         let cancel = Cell::new(false);
         let flag = Flag(&cancel);
@@ -389,7 +393,7 @@ mod tests {
         assert_eq!(visited, used);
         assert_eq!(meter.work().comparisons, used);
         assert!(used < 2_099, "the first root was still being searched");
-        assert!(used < complete.steps);
+        assert!(used < complete_steps);
     }
 
     /// Independent tiny-graph oracle: enumerate chronological subsets, check
