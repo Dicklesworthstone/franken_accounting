@@ -12,7 +12,9 @@
 //!   posting resolved, so an entry of a special period is never claimed by
 //!   the normal period that shares its day;
 //! - `EFFECTIVE BETWEEN <date> AND <date>` into the leg's effective day;
-//! - `AT BRANCH trunk`, the only branch a query reads in this build;
+//! - `AT BRANCH trunk`, or `AT BRANCH 'scenario:<name>'`: the scenario's
+//!   materialization (its trunk prefix replayed at the fork plus its
+//!   intents), read at its own head and uncertified;
 //! - `CALL fa.trial_balance`, which is the registered trial balance itself;
 //! - `EXPLAIN (CERTIFICATE)` leading the statement: the caller certifies the
 //!   result, as `fa query --certify` does.
@@ -89,6 +91,9 @@ pub struct Profiled {
     /// `EXPLAIN (CERTIFICATE)`: the caller certifies the result and retains
     /// its certificate, exactly as for `fa query --certify`.
     pub certify: bool,
+    /// `AT BRANCH 'scenario:<name>'`: the scenario the caller reads instead
+    /// of trunk.
+    pub scenario: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,6 +140,8 @@ pub const PROCEDURES: &[&str] = &["fa.trial_balance"];
 /// The longest statement the profile reads (bytes).
 pub const MAX_STATEMENT_BYTES: usize = 16 * 1024;
 
+const BRANCH_FIX: &str = "AT BRANCH trunk, or AT BRANCH 'scenario:<name>' for a scenario's replay (fa scenario list --json)";
+
 const KNOWN_AT_FIX: &str =
     "select one coordinate: AS KNOWN AT <commit sequence> | HEAD | '<RFC3339 instant>'";
 
@@ -153,6 +160,26 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
     }
     let lexed = lex::lex(text)?;
     let selectors = selectors(&lexed)?;
+    if selectors.scenario.is_some() {
+        // A scenario is its materialization: a replay with its own
+        // sequences, read at its head, and not certified.
+        if !matches!(selectors.known_at, None | Some(KnownAt::Head)) {
+            return Err(Refusal::new(
+                Law::Profile,
+                0,
+                "a scenario is read at its replay's head; AS KNOWN AT selects trunk's history",
+                "drop AS KNOWN AT, or read trunk without AT BRANCH",
+            ));
+        }
+        if selectors.certify {
+            return Err(Refusal::new(
+                Law::Profile,
+                0,
+                "a scenario read is not certified",
+                "drop EXPLAIN (CERTIFICATE); a scenario's change against trunk certifies with fa scenario diff --certify",
+            ));
+        }
+    }
     let mut rest = text.to_string();
     for span in &selectors.spans {
         rest.replace_range(span.0..span.1, &" ".repeat(span.1 - span.0));
@@ -177,6 +204,7 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
         period: selectors.period,
         selection,
         certify: selectors.certify,
+        scenario: selectors.scenario,
     })
 }
 
@@ -188,6 +216,8 @@ struct Selectors {
     period: Option<String>,
     effective: Option<(DateDay, DateDay)>,
     certify: bool,
+    branch: bool,
+    scenario: Option<String>,
 }
 
 fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
@@ -374,14 +404,31 @@ fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
                 Some(Kind::Word) => lexed.str(i + 2).to_string(),
                 _ => String::new(),
             };
-            if name != "trunk" {
+            if found.branch {
                 return Err(Refusal::new(
                     Law::Profile,
-                    at(i + 2),
-                    "a query reads trunk in this build",
-                    "AT BRANCH trunk; a scenario's ledger: fa tb --branch <scenario>",
+                    start,
+                    "a statement has one AT BRANCH",
+                    BRANCH_FIX,
                 ));
             }
+            match name.strip_prefix("scenario:") {
+                _ if name == "trunk" => {}
+                Some(scenario)
+                    if lexed.kind(i + 2) == Some(Kind::Quoted) && !scenario.is_empty() =>
+                {
+                    found.scenario = Some(scenario.to_string());
+                }
+                _ => {
+                    return Err(Refusal::new(
+                        Law::Profile,
+                        at(i + 2),
+                        "a query reads trunk or one scenario",
+                        BRANCH_FIX,
+                    ));
+                }
+            }
+            found.branch = true;
             found.spans.push((start, lexed.tokens[i + 2].end));
             i += 3;
             continue;

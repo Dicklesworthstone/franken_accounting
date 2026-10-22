@@ -17580,6 +17580,47 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
             .all(|r| text(r, "credits") == "0.00 USD"),
         "trunk never sees the scenario's revenue: {trunk_out}"
     );
+    // A query reads the scenario's replay too, named in the statement or
+    // with --branch; trunk has no revenue legs at all.
+    let revenue = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code: '4000'}), (l)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side";
+    let on_scenario = format!("{revenue} AT BRANCH 'scenario:but-for'");
+    for argv in [
+        vec!["query", on_scenario.as_str()],
+        vec!["query", revenue, "--branch", "scenario:but-for"],
+    ] {
+        let (code, out, err) = run(&argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        let line = json::parse(out.lines().last().unwrap_or_default()).unwrap_or(Json::Null);
+        assert_eq!(
+            line.get("coordinate")
+                .and_then(|c| c.get("branch"))
+                .and_then(Json::as_str),
+            Some("scenario:but-for"),
+            "{out}"
+        );
+        assert_eq!(
+            Json::Arr(arr(&doc(&out), "rows").to_vec()).render(),
+            r#"[["USD",1,"500"]]"#,
+            "{out}"
+        );
+    }
+    let (code, out, err) = run(&["query", revenue]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(arr(&doc(&out), "rows").is_empty(), "{out}");
+    for refused in [
+        vec!["query", on_scenario.as_str(), "--certify"],
+        vec!["query", on_scenario.as_str(), "--branch", "scenario:other"],
+        vec![
+            "query",
+            revenue,
+            "--branch",
+            "scenario:but-for",
+            "--certify",
+        ],
+    ] {
+        let (code, out, _) = run(&refused);
+        assert_eq!(code, 2, "{refused:?}: {out}");
+    }
     let (code, out, err) = run(&[
         &["statement", "income-statement", "--for", "FY2026-P03"][..],
         &branch,

@@ -5,7 +5,8 @@
 //!
 //! A query reads the whole graph, so it is admitted as a whole-book read
 //! before anything is observed: a token carrying any scope caveat is
-//! refused, never filtered.
+//! refused, never filtered. `AT BRANCH 'scenario:<name>'` (or `--branch
+//! scenario:<name>`) reads the scenario's replay, admitted on trunk.
 //!
 //! `--certify`, `--certificate-out <new-file>` or a leading `EXPLAIN
 //! (CERTIFICATE)` also retains the result's certificate, which needs
@@ -35,6 +36,35 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     };
     let profiled = fa::compile_query(text).map_err(|r| Fail::Refusal(fa::profile_refusal(&r)))?;
+    // AT BRANCH 'scenario:<name>' is --branch scenario:<name>: the book
+    // source admits authority on trunk, then reads the scenario's replay.
+    let branched;
+    let args = match &profiled.scenario {
+        Some(name) => {
+            let selector = format!("scenario:{name}");
+            if args.flag("--branch").is_some_and(|given| given != selector) {
+                return Err(usage(
+                    "AT BRANCH and --branch name different branches",
+                    "name the branch once: AT BRANCH 'scenario:<name>' in the statement, or --branch scenario:<name>",
+                ));
+            }
+            let mut with = args.clone();
+            with.flags.insert("--branch".to_string(), vec![selector]);
+            branched = with;
+            &branched
+        }
+        None => args,
+    };
+    if args
+        .flag("--branch")
+        .is_some_and(|branch| branch != "trunk")
+        && (profiled.certify || !matches!(profiled.known_at, QueryKnownAt::Head))
+    {
+        return Err(usage(
+            "a scenario read is its replay at its head: it is not certified, and AS KNOWN AT selects trunk's history",
+            "drop EXPLAIN (CERTIFICATE) and AS KNOWN AT, or read trunk without --branch",
+        ));
+    }
     let native = match profiled.selection {
         QuerySelection::TrialBalance => {
             // The registered trial balance itself: the same command, so the

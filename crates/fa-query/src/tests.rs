@@ -231,8 +231,49 @@ fn branches_procedures_and_certificates() {
     assert!(
         refused("MATCH (a:Account) AT BRANCH 'what-if' RETURN a.code")
             .fix
-            .contains("--branch")
+            .contains("AT BRANCH 'scenario:<name>'")
     );
+    // A scenario's replay, read at its head: the native read is the same
+    // statement, and the caller reads it on the scenario's materialization.
+    let (on_scenario, n) = native("MATCH (a:Account) AT BRANCH 'scenario:but-for' RETURN a.code");
+    assert_eq!(on_scenario.scenario.as_deref(), Some("but-for"));
+    assert_eq!(on_scenario.known_at, KnownAt::Head);
+    assert_eq!(
+        n.statement(3),
+        "MATCH (a:Account) FOR SYSTEM_TIME AS OF SEQ 3 RETURN a.code"
+    );
+    assert!(
+        native("MATCH (a:Account) AT BRANCH trunk RETURN a.code")
+            .0
+            .scenario
+            .is_none()
+    );
+    native("MATCH (a:Account) RETURN a.code AT BRANCH 'scenario:x' AS KNOWN AT HEAD");
+    for (text, says) in [
+        (
+            "MATCH (a:Account) AT BRANCH 'scenario:' RETURN a.code",
+            "trunk or one scenario",
+        ),
+        (
+            "MATCH (a:Account) AT BRANCH scenario RETURN a.code",
+            "trunk or one scenario",
+        ),
+        (
+            "MATCH (a:Account) AT BRANCH trunk AT BRANCH 'scenario:x' RETURN a.code",
+            "one AT BRANCH",
+        ),
+        (
+            "MATCH (a:Account) AT BRANCH 'scenario:x' RETURN a.code AS KNOWN AT 7",
+            "replay's head",
+        ),
+        (
+            "EXPLAIN (CERTIFICATE) MATCH (a:Account) AT BRANCH 'scenario:x' RETURN a.code",
+            "not certified",
+        ),
+    ] {
+        let r = refused(text);
+        assert!(r.message.contains(says), "{text}: {r:?}");
+    }
     let p = rewrite("CALL fa.trial_balance FOR PERIOD 'FY2026-P03' AS KNOWN AT 12").unwrap();
     assert_eq!(p.selection, Selection::TrialBalance);
     assert_eq!(p.period.as_deref(), Some("FY2026-P03"));
