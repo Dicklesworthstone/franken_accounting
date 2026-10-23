@@ -1174,6 +1174,15 @@ exit = "refusal"
 cite = "plan §11.12 (audit.sud under both SAB 108 methods with prior-year carry-forward)"
 fix = "carry forward another engagement of this book in the same unit whose scope periods all end before this one's begin, naming with --turned-around and --corrected only its uncorrected proposals (fa engagement sud <prior> --json lists them)"
 
+# ---- Consolidation (194) ----------------------------------------------------
+[[refusal]]
+code = "FA-REF-194"
+name = "CONSOLIDATION_REFUSED"
+owners = ["fa"]
+exit = "refusal"
+cite = "plan §12.3, FA-INV-13 (consolidation: eliminations from the ownership graph and intercompany accounts, NCI, consolidated equity reconciliation)"
+fix = "the refusal names what failed: give the book two or more legal entities, record each subsidiary's OWNS stake in whole basis points, assign the consolidation roles (fa chart role <account> <role>; fa chart roles), and post an intercompany balance's or charge's counterparty side; nothing is posted to balance a consolidation"
+
 # ---- Evidence extraction (193) ---------------------------------------------
 [[refusal]]
 code = "FA-REF-193"

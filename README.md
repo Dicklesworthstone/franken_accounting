@@ -82,6 +82,8 @@ fa tb --book ./books/acme --as-of 2026-03-15 --as-known-at 42 --json
 fa verify registers --book ./books/acme --period FY2026-P03 --json
 # A multi-entity book: each legal entity's register refolds against the journal.
 fa verify entities --book ./books/acme --period FY2026-P03 --json
+# Consolidate that book's entities: eliminations from the OWNS edges and account roles, the NCI, and consolidated statements (nothing is posted).
+fa consolidate --period FY2026-P03 --book ./books/acme --json
 # Find entries by their description or leg memos, documents by their (extracted) text, and recorded findings by their narrative: one index rebuilt from the journal per query.
 fa search "office rent" --book ./books/acme --json
 # What changed since sequence 40: March balances then and now, and every entry recorded since, whatever date it carries.
@@ -1036,8 +1038,10 @@ scenario branches, statement diffs and traces are not rendered yet. Over MCP,
 `render: md` returns the Markdown inline; file formats are host-only.
 
 This slice covers one book and native units. Custom company layouts, cash-flow
-and equity-roll-forward statements, consolidation, FX translation, and
-presentation rounding remain separate work. A certificate establishes replay
+and equity-roll-forward statements, FX translation, and presentation rounding
+remain separate work. `fa consolidate` consolidates one multi-entity book's
+legal entities (plan §12.3); consolidation across books, with translation and
+CTA, is not available yet (fa-76hy). A certificate establishes replay
 and arithmetic over the journal; it does not establish GAAP conformity.
 
 ### Statement issuance

@@ -65,6 +65,7 @@ pub mod cash_flow_policy;
 pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;
+pub mod consolidation;
 pub mod dimension;
 pub mod document_disclosure;
 pub mod draft_review;

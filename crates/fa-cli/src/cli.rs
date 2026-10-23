@@ -119,6 +119,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("explain", explain_cmd),
     ("search", search_cmd),
     ("diff", crate::diff::diff_cmd),
+    ("consolidate", crate::consolidate::consolidate_cmd),
     ("query", crate::query::query_cmd),
     ("procedure", procedure_cmd),
     ("jet", jet_cmd),
@@ -12582,9 +12583,9 @@ pub(crate) fn render_statement_trace(
     Ok(())
 }
 
-type StatementPresentation = (Vec<(&'static str, Json)>, String);
+pub(crate) type StatementPresentation = (Vec<(&'static str, Json)>, String);
 
-fn statement_presentation(
+pub(crate) fn statement_presentation(
     statement: &Statement,
     units: &fa_money::UnitRegistry,
 ) -> Result<StatementPresentation, Fail> {

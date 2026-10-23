@@ -1028,7 +1028,7 @@ fn every_triggerable_fix_executes() {
 #[test]
 fn fix_naming_unknown_verb_fails() {
     let reg = registry().expect("verbs.toml");
-    assert!(fix_verb(reg, &argv(&["consolidate", "--all"])).is_none());
+    assert!(fix_verb(reg, &argv(&["amalgamate", "--all"])).is_none());
     assert!(fix_verb(reg, &argv(&["period", "list", "--json"])).is_some());
     // An "informational" fix that re-reads is not a repair of a refusal it
     // cannot change: resubmitting the closed-period post after reading the

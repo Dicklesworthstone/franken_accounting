@@ -417,7 +417,7 @@ mod tests {
     fn placeholders_unknown_verbs_and_foreign_flags_are_not_commands() {
         for text in [
             "`fa period create --fiscal-year <FY>`",
-            "`fa consolidate --all`",
+            "`fa amalgamate --all`",
             "`fa tb --not-a-flag`",
             "`fa chart frobnicate`",
             "`fa post --intent {file}`",

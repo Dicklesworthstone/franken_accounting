@@ -45,12 +45,6 @@ reason = "Split-conformal threshold calibration has no calibration surface."
 expires = "2026-11-21"
 
 [[unwired]]
-path = "fa_statements::concordat"
-owner_bead = "fa-76hy"
-reason = "Consolidation runs, eliminations and intercompany matching are reachable from no surface, although fa-journal's refusal text points at Concordat."
-expires = "2026-11-21"
-
-[[unwired]]
 path = "fa_statements::regulatory"
 owner_bead = "fa-doa9"
 reason = "FFIEC 031/041 and FR Y-9C schedule definitions key on two-digit code prefixes that do not match templates/charts/us-bank-call-report.json, so they cannot be surfaced as they stand."

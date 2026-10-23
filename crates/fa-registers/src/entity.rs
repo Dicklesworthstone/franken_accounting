@@ -277,6 +277,148 @@ pub fn fold_period_by_entity<V: asupersync::fs::Vfs + Clone>(
     })
 }
 
+/// One posted cell by legal entity: the debits and credits of the legs a
+/// fold selected for one `(entity, account, unit)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityBalance {
+    pub entity: Option<String>,
+    pub account: VId,
+    pub unit_id: u32,
+    pub debits: i128,
+    pub credits: i128,
+}
+
+/// Posted stock by legal entity through `through` at `known_at`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityStock {
+    pub known_at: CommitSeq,
+    pub through: DateDay,
+    /// Ordered by `(entity, account, unit)`.
+    pub cells: Vec<EntityBalance>,
+}
+
+/// Posted movement by legal entity within `periods` at `known_at`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityActivity {
+    pub known_at: CommitSeq,
+    /// The selected periods, sorted.
+    pub periods: Vec<String>,
+    /// Ordered by `(entity, account, unit)`.
+    pub cells: Vec<EntityBalance>,
+}
+
+type EntitySums = BTreeMap<(Option<String>, VId, u32), (i128, i128)>;
+
+fn add_legs(sums: &mut EntitySums, spec: &BookSpec, entry: &Entry) -> Result<(), RegisterError> {
+    for leg in &entry.proposal.legs {
+        let slot = sums
+            .entry((entity_of(spec, leg), leg.account_ref, leg.amount.unit.0))
+            .or_insert((0, 0));
+        let side = match leg.side {
+            Side::Debit => &mut slot.0,
+            Side::Credit => &mut slot.1,
+        };
+        *side = side
+            .checked_add(leg.amount.mantissa)
+            .ok_or(RegisterError::Overflow)?;
+    }
+    Ok(())
+}
+
+fn balances(sums: EntitySums) -> Vec<EntityBalance> {
+    sums.into_iter()
+        .map(
+            |((entity, account, unit_id), (debits, credits))| EntityBalance {
+                entity,
+                account,
+                unit_id,
+                debits,
+                credits,
+            },
+        )
+        .collect()
+}
+
+/// The posted stock of every legal entity through `day` at `known_at` (head
+/// when `None`): the legs [`crate::balance_as_of`] folds into its posted
+/// columns (effective on or before `day`; pending holds, released or not,
+/// excluded), keyed one dimension finer by each leg's entity. Per (account,
+/// unit) the cells sum to that fold's posted debits and credits.
+pub fn stock_by_entity<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    day: DateDay,
+    known_at: Option<CommitSeq>,
+) -> Result<EntityStock, RegisterError> {
+    let seq = resolve_known_at(db, known_at)?;
+    let spec = book_spec(db)?;
+    let mut sums = EntitySums::new();
+    for (_, entry, _) in &entries_at(db, book, seq)? {
+        if entry.proposal.legs.is_empty()
+            || entry.proposal.class == EntryClass::PENDING
+            || entry.proposal.effective_date > day
+        {
+            continue;
+        }
+        add_legs(&mut sums, &spec, entry)?;
+    }
+    Ok(EntityStock {
+        known_at: seq,
+        through: day,
+        cells: balances(sums),
+    })
+}
+
+/// The posted movement of every legal entity within `periods` at `known_at`
+/// (head when `None`): the legs [`crate::period_activity_excluding_classes`]
+/// folds into its posted columns (the entries of those periods, outside the
+/// excluded classes and their reversals; pending holds excluded), keyed one
+/// dimension finer by each leg's entity. Per (account, unit) the cells sum to
+/// that fold's posted debits and credits.
+pub fn period_activity_by_entity<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+) -> Result<EntityActivity, RegisterError> {
+    let seq = resolve_known_at(db, known_at)?;
+    let periods = crate::select_periods(db, book, periods, seq)?;
+    let spec = book_spec(db)?;
+    let entries = entries_at(db, book, seq)?;
+    let by_id: BTreeMap<_, _> = if excluded_classes.is_empty() {
+        BTreeMap::new()
+    } else {
+        entries
+            .iter()
+            .map(|(vid, entry, at)| (*vid, (entry, *at)))
+            .collect()
+    };
+    let mut sums = EntitySums::new();
+    for (vid, entry, _) in &entries {
+        if entry.proposal.legs.is_empty()
+            || entry.proposal.class == EntryClass::PENDING
+            || periods.binary_search(&entry_period(book, entry)?).is_err()
+            || !crate::accounting_class_included(
+                db,
+                book,
+                seq,
+                (*vid, entry),
+                &by_id,
+                excluded_classes,
+            )?
+        {
+            continue;
+        }
+        add_legs(&mut sums, &spec, entry)?;
+    }
+    Ok(EntityActivity {
+        known_at: seq,
+        periods,
+        cells: balances(sums),
+    })
+}
+
 /// `(account, unit) → (debits, credits)`.
 type AccountSums = BTreeMap<(VId, u32), (i128, i128)>;
 
