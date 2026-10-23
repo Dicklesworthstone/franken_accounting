@@ -3860,10 +3860,81 @@ impl Book {
         ))
     }
 
-    /// Produce a portable native trial balance for `fa-verify report`.
+    /// Load immutable source/review birth prefixes needed even by a HEAD
+    /// external-feed report after a persisted book is reopened at a checkpoint.
+    pub fn prepare_external_feed_history(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_external_feed_history(
+            &purposes, principal, capability, known_at,
+        )))
+    }
+
+    /// Reconcile every reviewed batch of a named external feed against all
+    /// activity on its selected control account, retaining unmatched leg refs.
+    pub fn reconcile_external_feed(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::ExternalFeedRequest,
+    ) -> Outcome<crate::ExternalFeedReconciliation> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.reconcile_external_feed(
+            &purposes, principal, capability, request,
+        ))
+    }
+
+    /// Bind a whole-feed reconciliation to its fixed historical source and
+    /// independently selected control account and effective cutoff.
+    pub fn certify_external_feed(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::ExternalFeedRequest,
+    ) -> Outcome<crate::CertifiedExternalFeed> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.certify_external_feed(
+            &purposes, principal, capability, request,
+        ))
+    }
+
+    pub fn replay_external_feed(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ExternalFeedCertificate,
+        expected: &crate::ExternalFeedRequest,
+    ) -> Outcome<crate::ExternalFeedReconciliation> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.replay_external_feed(
+            &purposes, principal, capability, certificate, expected,
+        ))
+    }
+
+    /// Recompute a certificate's selected scope at its original prefix and
+    /// HEAD, attributing changes to later journal publications.
+    pub fn external_feed_certificate_status(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::ExternalFeedCertificate,
+    ) -> Outcome<crate::CertificateStatus> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.external_feed_certificate_status(
+            &purposes, principal, capability, certificate,
+        ))
+    }
+
+    /// Produce a portable native trial balance or statement for `fa-verify report`.
     /// Replays the certificate under current whole-book read/produce authority,
     /// then exports every payload in a signed checkpoint covering its prefix.
     /// Returns `None` if the selected recorded checkpoint is unavailable.
+    /// Statement verification requires the recipient's complete unit-ID list;
+    /// the checkpoint does not authenticate genesis unit-table membership.
     pub fn produce_report_bundle(
         &mut self,
         principal: VId,

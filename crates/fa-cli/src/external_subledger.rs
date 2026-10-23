@@ -12,7 +12,7 @@ use crate::cli::{
 };
 use crate::json::{Json, obj, s};
 
-const HELP: &str = "fa subledger detail --input <batch.json|-> [--out <new-file>]; retain the bytes as a Workpaper and obtain an independent Reviewed attestation; fa subledger feed --document D:<oid> --date YYYY-MM-DD --key K [--dry-run --plan-out <new-file>]; fa subledger verify-feed <entry> [--as-known-at <seq>]";
+const HELP: &str = "fa subledger reconcile-feed <feed> --control <account> --as-of YYYY-MM-DD [--as-known-at <seq>] [--certify | --certificate-out <new-file>]; fa subledger detail --input <batch.json|-> [--out <new-file>]; retain the bytes as a Workpaper and obtain an independent Reviewed attestation; fa subledger feed --document D:<oid> --date YYYY-MM-DD --key K [--dry-run --plan-out <new-file>]; fa subledger verify-feed <entry> [--as-known-at <seq>]";
 const FLAGS: &[&str] = &[
     "--input",
     "--out",
@@ -26,6 +26,7 @@ const FLAGS: &[&str] = &[
     "--kind",
     "--name",
     "--as-of",
+    "--certificate-out",
 ];
 
 fn options(args: &Args, allowed: &[&str], dry_run: bool) -> Result<(), Fail> {
@@ -40,6 +41,14 @@ fn options(args: &Args, allowed: &[&str], dry_run: bool) -> Result<(), Fail> {
         if values.len() > 1 {
             return Err(usage(format!("{flag} may be supplied only once"), HELP));
         }
+    }
+    if args.switch("--certify")
+        && args.positional.get(1).map(String::as_str) != Some("reconcile-feed")
+    {
+        return Err(usage(
+            "external-feed certification is available for reconcile-feed",
+            HELP,
+        ));
     }
     if args.switch("--dry-run") && !dry_run {
         return Err(usage("--dry-run rehearses subledger feed only", HELP));
@@ -147,6 +156,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("detail") => detail(ctx, args),
         Some("feed") => feed(ctx, args),
         Some("verify-feed") => verify(ctx, args),
+        Some("reconcile-feed") => reconcile_feed(ctx, args),
         _ => Err(usage("unknown external-feed operation", HELP)),
     }
 }
@@ -261,7 +271,7 @@ fn verify(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
-    book.prepare_report_history(principal, &capability, known_at)??;
+    book.prepare_external_feed_history(principal, &capability, known_at)??;
     let Some((entry, _)) = book
         .read_scope(principal, &capability)??
         .read_entry(vid, known_at)??
@@ -335,6 +345,242 @@ fn verify(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             report.summary_legs.len(),
             report.recorded_at.0
         ),
+    );
+    Ok(())
+}
+
+fn reconcile_feed(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    options(
+        args,
+        &["--control", "--as-of", "--as-known-at", "--certificate-out"],
+        false,
+    )?;
+    let [_, _, feed] = args.positional.as_slice() else {
+        return Err(usage(
+            "reconcile-feed names exactly one external feed",
+            HELP,
+        ));
+    };
+    let control = args.require("--control", "the GL control account code")?;
+    let through = DateDay::parse(args.require("--as-of", "YYYY-MM-DD")?)
+        .map_err(|error| usage(format!("invalid --as-of: {error}"), HELP))?;
+    if args
+        .flag("--as-known-at")
+        .is_some_and(|value| value != "HEAD" && value.parse::<u64>().is_err())
+    {
+        return Err(usage(
+            "external-feed reconciliation requires HEAD or a recorded sequence",
+            HELP,
+        ));
+    }
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let principal = ctx.principal(args);
+    let capability = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.read_scope(principal, &capability)??;
+        Ok(())
+    })?;
+    let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
+    book.prepare_external_feed_history(principal, &capability, known_at)??;
+    let mut request = fa::ExternalFeedRequest {
+        feed: feed.clone(),
+        control_account: account_vid(book.context().book_id, control),
+        effective_through: through,
+        known_at,
+    };
+    let (report, certificate) = if certify {
+        let certified = book.certify_external_feed(principal, &capability, &request)??;
+        (certified.report, Some(certified.certificate))
+    } else {
+        (
+            book.reconcile_external_feed(principal, &capability, &request)??,
+            None,
+        )
+    };
+    request.known_at = Some(report.known_at);
+    let retained = if let Some(certificate) = &certificate {
+        let artifact = fa::ReportArtifact::try_from(certificate)?;
+        let (bytes, retained) = crate::notary::retain_report_artifact_for(
+            &mut book,
+            &ctx.files,
+            args,
+            &artifact,
+            &capability,
+            fa::ReportArtifactExpectation::ExternalFeed(&request),
+        )?;
+        Some((artifact, bytes, retained))
+    } else {
+        None
+    };
+    ctx.out.at_book(&book)?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(certificate.digest()));
+    render_feed(&ctx.out, &book, &report, digest.as_deref())?;
+    if let Some((artifact, bytes, retained)) = retained {
+        let expected = crate::notary::external_feed_expectation_json(&request);
+        crate::notary::emit_report_artifact_for(
+            &ctx.out,
+            args,
+            &artifact,
+            fa::EXTERNAL_FEED_REPORT_FORMAT,
+            &bytes,
+            &retained,
+            &expected,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn render_feed(
+    out: &crate::cli::Out,
+    book: &Book,
+    report: &fa::ExternalFeedReconciliation,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let amount = |unit, mantissa| -> Result<Json, Fail> {
+        Ok(s(render_amount(
+            fa_money::Amount {
+                unit: fa_money::UnitId(unit),
+                mantissa,
+            },
+            &book.context().units,
+        )?))
+    };
+    let dimensions = |set: &[(u32, fgdb_types::VId)]| {
+        Json::Arr(
+            set.iter()
+                .map(|(dimension, value)| {
+                    obj(vec![
+                        ("dimension", Json::Int(i128::from(*dimension))),
+                        ("value", s(format!("{:032x}", value.0))),
+                    ])
+                })
+                .collect(),
+        )
+    };
+    let rows = report
+        .rows
+        .iter()
+        .map(|row| {
+            Ok(obj(vec![
+                ("unit_id", Json::Int(i128::from(row.unit_id))),
+                ("dimension_set", dimensions(&row.dimension_set)),
+                ("detail_debits", amount(row.unit_id, row.detail_debits)?),
+                ("detail_credits", amount(row.unit_id, row.detail_credits)?),
+                ("control_debits", amount(row.unit_id, row.control_debits)?),
+                ("control_credits", amount(row.unit_id, row.control_credits)?),
+                ("pending_debits", amount(row.unit_id, row.pending_debits)?),
+                ("pending_credits", amount(row.unit_id, row.pending_credits)?),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let totals = report
+        .totals
+        .iter()
+        .map(|row| {
+            Ok(obj(vec![
+                ("unit_id", Json::Int(i128::from(row.unit_id))),
+                ("detail_debits", amount(row.unit_id, row.detail_debits)?),
+                ("detail_credits", amount(row.unit_id, row.detail_credits)?),
+                ("control_debits", amount(row.unit_id, row.control_debits)?),
+                ("control_credits", amount(row.unit_id, row.control_credits)?),
+                ("pending_debits", amount(row.unit_id, row.pending_debits)?),
+                ("pending_credits", amount(row.unit_id, row.pending_credits)?),
+                ("register_debits", amount(row.unit_id, row.register_debits)?),
+                (
+                    "register_credits",
+                    amount(row.unit_id, row.register_credits)?,
+                ),
+                (
+                    "register_debits_pending",
+                    amount(row.unit_id, row.register_debits_pending)?,
+                ),
+                (
+                    "register_credits_pending",
+                    amount(row.unit_id, row.register_credits_pending)?,
+                ),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let batches = report
+        .batches
+        .iter()
+        .map(|batch| {
+            obj(vec![
+                ("entry", s(format!("{:032x}", batch.entry.vid.0))),
+                ("entry_digest", s(hex(&batch.entry.entry_digest))),
+                ("recorded_at", Json::Int(i128::from(batch.recorded_at.0))),
+                ("batch_key", s(&batch.batch_key)),
+                ("document_oid", s(hex(&batch.evidence.document_oid.0))),
+                ("review", s(format!("{:032x}", batch.review.attestation.0))),
+                ("detail_rows", Json::Int(batch.detail_rows as i128)),
+            ])
+        })
+        .collect();
+    let contributions = report
+        .contributions
+        .iter()
+        .map(|entry| {
+            obj(vec![
+                ("entry", s(format!("{:032x}", entry.entry.vid.0))),
+                ("entry_digest", s(hex(&entry.entry.entry_digest))),
+                ("recorded_at", Json::Int(i128::from(entry.recorded_at.0))),
+                ("effective_date", s(entry.effective_date.render())),
+                ("source", s(format!("{:032x}", entry.source.vid.0))),
+                ("source_digest", s(hex(&entry.source.entry_digest))),
+                ("reversed", Json::Bool(entry.reversed)),
+            ])
+        })
+        .collect();
+    let unmatched = report
+        .unattributed
+        .iter()
+        .map(|leg| {
+            Ok(obj(vec![
+                ("entry", s(format!("{:032x}", leg.entry.vid.0))),
+                ("entry_digest", s(hex(&leg.entry.entry_digest))),
+                ("ordinal", Json::Int(i128::from(leg.ordinal))),
+                ("unit_id", Json::Int(i128::from(leg.unit.0))),
+                (
+                    "side",
+                    s(match leg.side {
+                        Side::Debit => "debit",
+                        Side::Credit => "credit",
+                    }),
+                ),
+                ("amount", amount(leg.unit.0, leg.amount)?),
+                ("dimension_set", dimensions(&leg.dimension_set)),
+                ("pending", Json::Bool(leg.pending)),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    out.known_at(report.known_at);
+    out.event_with_certificate(
+        "external_feed_reconciled",
+        vec![
+            ("feed", s(&report.feed)),
+            ("control_account", s(format!("{:032x}", report.control_account.0))),
+            ("known_at", Json::Int(i128::from(report.known_at.0))),
+            ("effective_through", s(report.effective_through.render())),
+            ("batches", Json::Arr(batches)),
+            ("contributions", Json::Arr(contributions)),
+            ("unattributed", Json::Arr(unmatched)),
+            ("rows", Json::Arr(rows)),
+            ("totals", Json::Arr(totals)),
+            ("reconciled", Json::Bool(report.reconciled)),
+        ],
+        &format!("External feed {}: {} reviewed batches, {} attributable postings, {} unmatched control legs; reconciled={} at sequence {} through {}.",
+            report.feed, report.batches.len(), report.contributions.len(), report.unattributed.len(),
+            report.reconciled, report.known_at.0, report.effective_through.render()),
+        certificate,
     );
     Ok(())
 }

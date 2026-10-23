@@ -20,8 +20,17 @@ const HELP: &str = "fa subledger add <code> --control <account> --kind receivabl
 
 pub(crate) fn subledger_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
-    if matches!(sub, Some("detail" | "feed" | "verify-feed")) {
+    if matches!(
+        sub,
+        Some("detail" | "feed" | "verify-feed" | "reconcile-feed")
+    ) {
         return crate::external_subledger::command(ctx, args);
+    }
+    if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+        return Err(usage(
+            "subledger certification is available for reconcile-feed",
+            HELP,
+        ));
     }
     if args.switch("--dry-run") {
         return Err(usage("--dry-run rehearses subledger feed only", HELP));

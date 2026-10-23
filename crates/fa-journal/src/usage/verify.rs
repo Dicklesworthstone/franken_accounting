@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
-use fa_model::{ControlPayload, EntryRef, Id128};
+use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin, EntryRef, Id128, ScheduleTrigger};
 use fgdb::{Database, WriteTxnError};
 use fgdb_delta_types::{DeltaRow, ElementId, RelationId};
 use fgdb_types::context::PurposeContexts;
@@ -427,9 +427,10 @@ fn validate_source<V: Vfs + Clone>(
     let capability = issuance(&debit.capability)?;
     let root = issuance(&debit.key.root_issuance)?;
     let root_id = capability.daily_root().unwrap_or(debit.capability);
+    let executor = source_executor(db, book, &entry, debit.entry.vid, created, entries)?;
     if root_id != debit.key.root_issuance
         || root.daily_root().is_some()
-        || capability.holder() != entry.proposal.principal_ref
+        || capability.holder() != executor
         || root.daily_totals().is_empty()
     {
         return Err(corrupt(
@@ -465,4 +466,68 @@ fn validate_source<V: Vfs + Clone>(
         ));
     }
     Ok(())
+}
+
+/// Automatic reversals retain System authorship. When Open triggers them,
+/// authority belongs to the actor of that exact same-publication control;
+/// neither a named unrelated transition nor another entry's principal can
+/// redirect a quota charge. Sweep attribution already names its executor.
+fn source_executor<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    entry: &Entry,
+    vid: VId,
+    created: CommitSeq,
+    entries: &BTreeMap<VId, CommitSeq>,
+) -> Result<VId, KernelError> {
+    let EntryOrigin::Schedule {
+        schedule_ref,
+        trigger: ScheduleTrigger::OpenPeriod { transition_ref },
+    } = entry.proposal.origin
+    else {
+        return Ok(entry.proposal.principal_ref);
+    };
+    let [target] = entry.proposal.supersession.as_slice() else {
+        return Err(corrupt(
+            "Open-triggered quota source has no exact reversal target",
+        ));
+    };
+    if entry.proposal.class != EntryClass::REVERSAL
+        || entry.proposal.principal_ref != crate::rows::system_principal(book.book_id)
+        || target.kind != fa_model::SupersessionKind::Reverses
+        || vid != crate::rows::reversal_vid(target.target.vid)
+        || schedule_ref != crate::rows::schedule_vid(target.target.vid)
+        || entries.get(&transition_ref) != Some(&created)
+    {
+        return Err(corrupt(
+            "Open-triggered quota source is not the bound System reversal",
+        ));
+    }
+    let row = db
+        .vertex_at(transition_ref, created)?
+        .ok_or_else(|| corrupt("quota source's Open transition is missing"))?;
+    let (transition, _) = crate::post::entry_of(&row)?;
+    let Some(ControlPayload::PeriodTransition {
+        period_ref,
+        from,
+        to,
+        ..
+    }) = transition.proposal.control.as_ref()
+    else {
+        return Err(corrupt("quota source's trigger is not a period transition"));
+    };
+    if transition.proposal.book_id != book.book_id
+        || transition.proposal.branch_id != Id128::TRUNK
+        || transition.proposal.class != EntryClass::PERIOD_CONTROL
+        || *from != fa_time::PeriodState::Future.tag()
+        || *to != fa_time::PeriodState::Open.tag()
+        || period_ref.calendar != book.calendar.id
+        || crate::policy::resolved_period(book, entry.proposal.effective_date, None).as_deref()
+            != Some(period_ref.code.as_str())
+    {
+        return Err(corrupt(
+            "quota source is not triggered by the same period's atomic Open",
+        ));
+    }
+    Ok(transition.proposal.principal_ref)
 }

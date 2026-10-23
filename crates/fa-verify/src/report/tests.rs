@@ -20,7 +20,7 @@ fn account_id(code: &str) -> u128 {
 fn erasable(w: &mut Writer) {
     w.fixed(&[0; 32]).u8(0).fixed(&[0; 24]).bytes(&[]);
 }
-// A fixture encoder: each argument is one field of the record it writes.
+/// One fixture leaf: each argument is one field of the encoded record.
 #[allow(clippy::too_many_arguments)]
 fn record(
     class: u16,
@@ -219,6 +219,9 @@ fn bundle(
             false,
         ),
         Selection::Activity(p) => (p.clone(), None, true),
+        Selection::Statement(_) => {
+            panic!("the native trial-balance fixture requires a TB selector")
+        }
     };
     let mut totals = BTreeMap::new();
     for row in expected_rows {
@@ -246,6 +249,9 @@ fn bundle(
             for code in p {
                 cert.bytes(code.as_bytes());
             }
+        }
+        Selection::Statement(_) => {
+            panic!("the native trial-balance fixture requires a TB selector")
         }
     }
     cert.fixed(&[0; 32])
@@ -360,5 +366,218 @@ fn incomplete_payloads_wrong_anchor_and_unsigned_self_trust_are_refused() {
     assert_eq!(
         verify_fixture(&bytes, anchor).unwrap_err().predicate,
         "record_derivation"
+    );
+}
+
+// Hand-written definition and expected output, without the producer evaluator
+// or this verifier's statement fold. The extra unit is deliberately all zero.
+fn native_statement_fixture(amount: i128, omit_mapping: bool) -> (Vec<u8>, SignedCheckpoint) {
+    let mut records = schema();
+    records.push(record(1, 3, 10, b"jan", 100, None, None, None));
+    records.push(record(1, 4, 40, b"feb", 200, None, None, None));
+    records.push(record(1, 5, 10, b"later-knowledge", 50, None, None, None));
+    let (tb, anchor) = bundle(
+        &records,
+        4,
+        Selection::Periods(vec!["P2".into()]),
+        &rows(300, 0),
+    );
+    let mut old = Reader::new(&tb);
+    old.bytes(64, "format").unwrap();
+    old.u16("major").unwrap();
+    old.u16("minor").unwrap();
+    let native = certificate(old.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate").unwrap()).unwrap();
+    let signed = old.bytes(1024, "checkpoint").unwrap();
+    let prefix = old.bytes(MAX_REPORT_BUNDLE_BYTES, "prefix").unwrap();
+    let mut definition = Writer::default();
+    definition
+        .fixed(b"FA-STATEMENT-DEF\0")
+        .u16(1)
+        .u16(0)
+        .bytes(b"test-balance")
+        .bytes(b"Independent balance")
+        .u32(1)
+        .u8(0)
+        .count(3);
+    for (code, typ, sign) in [("assets", 1, 0), ("equity", 3, 1)] {
+        definition
+            .bytes(code.as_bytes())
+            .bytes(code.as_bytes())
+            .u8(0)
+            .count(1)
+            .u8(typ)
+            .u8(sign);
+    }
+    definition
+        .bytes(b"balance")
+        .bytes(b"balance")
+        .u8(1)
+        .count(1)
+        .bytes(b"assets")
+        .count(1)
+        .bytes(b"equity")
+        .count(1)
+        .bytes(b"balance");
+    let definition_digest = hash_parts(
+        b"fa:statement-definition:v1",
+        &[
+            &(definition.buf.len() as u32).to_le_bytes(),
+            &definition.buf,
+        ],
+    );
+    let mut output = Writer::default();
+    output
+        .fixed(b"FA-STATEMENT\0")
+        .u16(1)
+        .u16(0)
+        .fixed(&BOOK)
+        .fixed(&[0; 16])
+        .u64(4)
+        .bytes(b"test-balance")
+        .u32(1)
+        .fixed(&definition_digest)
+        .bytes(&definition.buf)
+        .count(2);
+    for (label, period, through) in [("current", "P2", 58), ("comparative", "P1", 30)] {
+        output
+            .bytes(label.as_bytes())
+            .count(1)
+            .bytes(period.as_bytes())
+            .u8(0)
+            .i32(through);
+    }
+    output.count(6);
+    for code in ["assets", "equity", "balance"] {
+        for unit in [1, 7] {
+            let nonzero = code != "balance" && unit == 1;
+            output
+                .bytes(code.as_bytes())
+                .bytes(code.as_bytes())
+                .u32(unit)
+                .count(2)
+                .i128(if nonzero { amount } else { 0 })
+                .i128(if nonzero { 100 } else { 0 });
+        }
+    }
+    output.count(if omit_mapping { 1 } else { 2 });
+    for (code, name, typ, line) in [
+        ("1000", "Cash", 1, "assets"),
+        ("3000", "Equity", 3, "equity"),
+    ] {
+        if omit_mapping && typ == 3 {
+            continue;
+        }
+        output
+            .u128(account_id(code))
+            .bytes(code.as_bytes())
+            .bytes(name.as_bytes())
+            .u8(typ)
+            .u8(1)
+            .bytes(line.as_bytes());
+    }
+    let mut cert = Writer::default();
+    cert.fixed(STATEMENT_CERTIFICATE_FORMAT)
+        .bytes(b"fa-fold-over-prefix")
+        .bytes(b"embedded-owner")
+        .bytes(b"fa:statement:v1")
+        .fixed(&BOOK)
+        .fixed(&[0; 16])
+        .u64(4)
+        .u8(2)
+        .bytes(&definition.buf)
+        .count(1)
+        .bytes(b"P2")
+        .count(1)
+        .bytes(b"P1")
+        .fixed(&[0; 32])
+        .fixed(&native.journal_root)
+        .u64(native.leaves)
+        .count(7);
+    for _ in 0..7 {
+        cert.bytes(b"not an outsider proof");
+    }
+    cert.bytes(&output.buf)
+        .fixed(&hash_parts(b"fa:report-output:v1", &[&output.buf]))
+        .u8(0);
+    let digest = hash_parts(STATEMENT_CERTIFICATE_FORMAT, &[&cert.buf]);
+    cert.fixed(&digest);
+    let mut result = Writer::default();
+    result
+        .bytes(REPORT_BUNDLE_FORMAT)
+        .u16(1)
+        .u16(0)
+        .bytes(&cert.buf)
+        .bytes(signed)
+        .bytes(prefix)
+        .count(records.len());
+    for record in records {
+        result.u32(record.len as u32).bytes(&record.bytes);
+    }
+    result.count(0);
+    (result.buf, anchor)
+}
+
+#[test]
+fn native_statement_uses_recipient_units_comparatives_and_authenticated_mappings() {
+    let (bytes, anchor) = native_statement_fixture(300, false);
+    let report = verify_report_with_units(&bytes, &[], None, None, Some(&[1, 7]), |_, _| {
+        Ok(anchor.clone())
+    })
+    .unwrap();
+    assert!(report.rows.is_empty());
+    assert_eq!(report.unit_universe_source, "recipient-supplied");
+    let statement = report.statement.unwrap();
+    assert_eq!(statement.columns.len(), 2);
+    assert_eq!(statement.lines[0].amounts, [300, 100]);
+    assert_eq!(statement.lines[1].amounts, [0, 0]);
+    assert_eq!(statement.lines[4].amounts, [0, 0]);
+    assert_eq!(
+        verify_fixture(&bytes, anchor.clone())
+            .unwrap_err()
+            .predicate,
+        "statement_units"
+    );
+    assert_eq!(
+        verify_report_with_units(&bytes, &[], None, None, Some(&[7]), |_, _| Ok(
+            anchor.clone()
+        ))
+        .unwrap_err()
+        .predicate,
+        "statement_units"
+    );
+    assert_eq!(
+        verify_report_with_units(&bytes, &[], None, None, Some(&[1]), |_, _| Ok(anchor))
+            .unwrap_err()
+            .predicate,
+        "report_recomputation"
+    );
+    for (amount, omitted) in [(301, false), (300, true)] {
+        let (bytes, anchor) = native_statement_fixture(amount, omitted);
+        assert_eq!(
+            verify_report_with_units(&bytes, &[], None, None, Some(&[1, 7]), |_, _| Ok(anchor))
+                .unwrap_err()
+                .predicate,
+            "report_recomputation"
+        );
+    }
+}
+
+#[test]
+fn recipient_statement_unit_lists_are_validated_before_untrusted_bytes() {
+    for units in [vec![], vec![2, 1], vec![1, 1], (0..4097).collect()] {
+        assert_eq!(
+            verify_statement_report(&[], &[], None, None, &units)
+                .unwrap_err()
+                .predicate,
+            "statement_units"
+        );
+    }
+    let records = schema();
+    let (bytes, _) = bundle(&records, 2, Selection::AsOf(30), &[]);
+    assert_eq!(
+        verify_statement_report(&bytes, &[], None, None, &[1])
+            .unwrap_err()
+            .predicate,
+        "supported_report"
     );
 }

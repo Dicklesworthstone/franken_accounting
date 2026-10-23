@@ -1,5 +1,17 @@
 //! Retained external-detail documents and matched native summary proposals.
 
+mod certificate;
+mod reconciliation;
+
+pub use certificate::{
+    CertifiedExternalFeed, EXTERNAL_FEED_CERTIFICATE_FORMAT, ExternalFeedCertificate,
+    MAX_EXTERNAL_FEED_CERTIFICATE_BYTES,
+};
+pub use reconciliation::{
+    EXTERNAL_FEED_REPORT_FORMAT, ExternalFeedContribution, ExternalFeedLeg,
+    ExternalFeedReconciliation, ExternalFeedRequest, ExternalFeedRow, ExternalFeedTotal,
+};
+
 use asupersync::fs::Vfs;
 use fa_journal::DocumentRead;
 use fa_model::{EntryPayload, EntryRef, Oid};
@@ -26,6 +38,38 @@ fn invalid(message: impl Into<String>) -> fa_journal::Refusal {
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Hydrate original posting coordinates as well as the selected report
+    /// prefix. Even a HEAD report must replay the source review at the batch's
+    /// birth, which may precede a reopened database's current checkpoint.
+    pub async fn prepare_external_feed_history(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: fgdb_types::VId,
+        capability: &Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<()> {
+        if let Err(refusal) =
+            reconciliation::authorize(self, cx, principal, capability, known_at, false)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, known_at)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        // Loading retained history can suspend. Recheck current authority
+        // before returning any observation to a caller revoked meanwhile.
+        Ok(
+            reconciliation::authorize(self, cx, principal, capability, known_at, false)?
+                .map(|_| ()),
+        )
+    }
+
     /// Read the exact retained source document under current Read and Post
     /// authority, then derive a complete native summary. This writes no entry
     /// or approval; the normal PostPlan kernel rechecks source, review,

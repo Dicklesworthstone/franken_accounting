@@ -1,6 +1,9 @@
 //! End-to-end statement regressions through the public facade and its real
 //! memory and directory books. Every monetary input is admitted by the posting kernel.
 
+#[path = "statements/report_bundle.rs"]
+mod report_bundle;
+
 use std::path::Path;
 
 use fa::{

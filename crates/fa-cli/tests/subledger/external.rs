@@ -103,3 +103,153 @@ fn retained_reviewed_detail_plans_posts_and_reconciles_once() {
     assert!(refusal.contains("FA-REF-192"), "{refusal}");
     assert_eq!(f.head(), posted_at, "duplicate source publishes nothing");
 }
+
+fn event_data(output: &str, expected: &str) -> Json {
+    output
+        .lines()
+        .map(|line| json::parse(line).unwrap())
+        .find(|event| event.get("event").and_then(Json::as_str) == Some(expected))
+        .unwrap_or_else(|| panic!("missing {expected}: {output}"))
+        .get("data")
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn aggregate_feed_certificate_reopens_replays_and_exposes_zero_net_control_contamination() {
+    let f = Fixture::new();
+    let detail = f.file("aggregate-source.json", &format!(
+        r#"{{"feed":"vendor-ap","batch_key":"aggregate-001","effective_date":"2026-03-15","rows":[{{"source_digest":"{}","account":"6000","side":"debit","amount":"100.00 USD"}},{{"source_digest":"{}","account":"2000","side":"credit","amount":"100.00 USD","party":"V-1"}}]}}"#,
+        "01".repeat(32), "02".repeat(32),
+    ));
+    let detail_path = f.dir.join("aggregate-detail.bin");
+    f.ok(&[
+        "subledger",
+        "detail",
+        "--input",
+        &detail,
+        "--out",
+        detail_path.to_str().unwrap(),
+    ]);
+    let document = data(&f.ok(&[
+        "document",
+        "add",
+        detail_path.to_str().unwrap(),
+        "--kind",
+        "Workpaper",
+        "--grade",
+        "HumanUpload",
+    ]));
+    let oid = text(&document, "oid");
+    f.ok(&["attest", "review", &oid, "--as", "reviewer"]);
+    f.ok(&[
+        "subledger",
+        "feed",
+        "--document",
+        &format!("D:{oid}"),
+        "--date",
+        "2026-03-15",
+        "--key",
+        "aggregate-summary",
+    ]);
+    let at = f.head();
+    let request = [
+        "subledger",
+        "reconcile-feed",
+        "vendor-ap",
+        "--control",
+        "2000",
+        "--as-of",
+        "2026-03-31",
+    ];
+    let plain = data(&f.ok(&request));
+    assert_eq!(plain.get("reconciled"), Some(&Json::Bool(true)));
+    assert_eq!(rows(&plain, "batches").len(), 1);
+    assert!(rows(&plain, "unattributed").is_empty());
+    assert_eq!(
+        text(&rows(&plain, "totals")[0], "detail_credits"),
+        "100.00 USD"
+    );
+    assert_eq!(
+        text(&rows(&plain, "totals")[0], "register_credits"),
+        "100.00 USD"
+    );
+    assert_eq!(f.head(), at, "plain reconciliation does not publish");
+
+    let path = f.dir.join("aggregate.cert");
+    let mut certify = request.to_vec();
+    certify.extend(["--certificate-out", path.to_str().unwrap()]);
+    let produced = f.ok(&certify);
+    assert_eq!(event_data(&produced, "external_feed_reconciled"), plain);
+    let metadata = event_data(&produced, "report_certificate");
+    let locator = format!("C:{}", text(&metadata, "oid"));
+    assert!(text(&metadata, "replay_command").contains("--expect"));
+    let bytes = std::fs::read(&path).unwrap();
+    let artifact = fa::ReportArtifact::decode(&bytes).unwrap();
+    assert_eq!(artifact.family(), fa::ReportArtifactFamily::ExternalFeed);
+    let expected = format!(
+        r#"{{"kind":"external-feed-reconciliation","feed":"vendor-ap","control_account":"2000","through":"2026-03-31","known_at":{at}}}"#,
+    );
+    assert_eq!(
+        text(
+            &data(&f.ok(&["certificate", "status", &locator, "--expect", &expected])),
+            "status"
+        ),
+        "Current"
+    );
+    for wrong in [
+        expected.replace("vendor-ap", "different-feed"),
+        expected.replace("2000", "1200"),
+        expected.replace("2026-03-31", "2026-03-30"),
+    ] {
+        let (exit, refusal) = f.run(&["replay", &locator, "--expect", &wrong]);
+        assert_eq!(exit, 8, "wrong recipient request: {refusal}");
+    }
+    let (exit, refusal) = f.run(&["replay", &locator]);
+    assert_eq!(
+        exit, 8,
+        "a delivered artifact cannot provide its own expected request: {refusal}"
+    );
+
+    // Equal debit and credit additions leave the net balance unchanged. They
+    // still have no reviewed source in this feed and must never disappear.
+    let contamination = f.file("unmatched-control.json", r#"{"effective_date":"2026-03-16","idempotency_key":"unmatched-control","legs":[{"side":"debit","account":"2000","amount":"10.00 USD","party":"V-1"},{"side":"credit","account":"2000","amount":"10.00 USD","party":"V-1"}]}"#);
+    f.ok(&[
+        "post",
+        "--intent",
+        &contamination,
+        "--evidence",
+        &f.evidence,
+    ]);
+    let current = data(&f.ok(&request));
+    assert_eq!(current.get("reconciled"), Some(&Json::Bool(false)));
+    assert_eq!(rows(&current, "unattributed").len(), 2);
+    assert_eq!(
+        text(&rows(&current, "totals")[0], "detail_credits"),
+        "100.00 USD"
+    );
+    assert_eq!(
+        text(&rows(&current, "totals")[0], "control_credits"),
+        "110.00 USD"
+    );
+    assert_eq!(
+        text(&rows(&current, "totals")[0], "control_debits"),
+        "10.00 USD"
+    );
+    let status = data(&f.ok(&["certificate", "status", &locator, "--expect", &expected]));
+    assert_eq!(text(&status, "status"), "SupersededBy");
+    assert_eq!(rows(&status, "later_entries").len(), 1);
+    let before = f.head();
+    let output = f.dir.join("aggregate.replayed");
+    let replayed = f.ok(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expected,
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(event_data(&replayed, "external_feed_reconciled"), plain);
+    assert_eq!(std::fs::read(&output).unwrap(), artifact.output());
+    assert_eq!(f.head(), before, "historical replay does not publish");
+}
