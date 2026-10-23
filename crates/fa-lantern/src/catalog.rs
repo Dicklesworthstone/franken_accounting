@@ -31,7 +31,7 @@ use crate::jet::{
     RoundAmounts, SelfApproved, SelfSourcedEvidence, SuspenseAging, ThinDescriptions,
     UnusualAccounts, UnusualPreparers, Weekend,
 };
-use crate::numbers::{RelativeSizeFactor, SequenceGaps, ThresholdSplitting};
+use crate::numbers::{RelativeSizeFactor, RoundAmountDensity, SequenceGaps, ThresholdSplitting};
 use crate::trace::{Law, Trace};
 use crate::{LanternError, Params, Procedure};
 
@@ -78,6 +78,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         Near::ID => Box::new(Near::with(params)),
         SequenceGaps::ID => Box::new(SequenceGaps::with(params)),
         RelativeSizeFactor::ID => Box::new(RelativeSizeFactor::with(params)),
+        RoundAmountDensity::ID => Box::new(RoundAmountDensity::with(params)),
         ThresholdSplitting::ID => Box::new(ThresholdSplitting::with(params)),
         PeriodBoundary::ID => Box::new(PeriodBoundary::with(params)),
         ReconIntercompany::ID => Box::new(ReconIntercompany::with(params)),

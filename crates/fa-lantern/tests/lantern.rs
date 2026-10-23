@@ -23,7 +23,7 @@ use fa_lantern::graph::{RoundTrips, Structuring};
 use fa_lantern::jet::{
     PeriodEndTiming, PostClosing, RoundAmounts, SelfApproved, ThinDescriptions, Weekend,
 };
-use fa_lantern::numbers::SequenceGaps;
+use fa_lantern::numbers::{RoundAmountDensity, SequenceGaps};
 use fa_lantern::projection::{documents, money_flow, preparers};
 use fa_lantern::trace::{Law, Trace};
 use fa_lantern::witness;
@@ -67,6 +67,9 @@ mod jet;
 
 #[path = "lantern/duplicates.rs"]
 mod duplicates;
+
+#[path = "lantern/numbers.rs"]
+mod numbers;
 
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
@@ -1086,6 +1089,7 @@ fn rankings_are_deterministic_and_an_order_dependent_ranking_fails_the_witness()
         Box::new(SameSameDifferent::new().unwrap()),
         Box::new(Near::new().unwrap()),
         Box::new(SequenceGaps::new().unwrap()),
+        Box::new(RoundAmountDensity::new().unwrap()),
         Box::new(FirstDigit::with(
             Params::defaults(FirstDigit::ID)
                 .unwrap()
@@ -1881,7 +1885,7 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
             .expect("registered role and account type admitted");
     }
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 63, "every registry row is listed");
+    assert_eq!(rows.len(), 64, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -2745,6 +2749,7 @@ fn complexity_witness_holds_across_100_1000_and_10000_entries() {
             Box::new(SameSameDifferent::new().unwrap()),
             Box::new(Near::new().unwrap()),
             Box::new(SequenceGaps::new().unwrap()),
+            Box::new(RoundAmountDensity::new().unwrap()),
             Box::new(FirstDigit::new().unwrap()),
             Box::new(PeriodBoundary::new().unwrap()),
             Box::new(RoundTrips::new().unwrap()),

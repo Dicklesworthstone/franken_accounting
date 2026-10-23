@@ -1054,6 +1054,34 @@ default = 3
 meaning = "Minimum postings in a subset before RSF is evaluated."
 
 [[procedure]]
+id = "numbers.round_amount_density"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L64"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Accounts whose share of round legs (a nonzero magnitude that is a whole multiple of 10^round_power units, as in jet.round_amounts) exceeds the book's own share by a binomial z of at least sqrt(z_squared): (x N - n X)^2 >= z_squared * n X (N - X) with x N > n X, for the account's x round legs of n and the book's X of N, in exact integers. Accounts with fewer than min_legs nonzero legs are not tested, and nothing is flagged when the book has no round leg or only round legs. Medium, or High when z is at least twice the threshold; the finding cites the account and its first round legs."
+
+[[parameter]]
+procedure = "numbers.round_amount_density"
+name = "round_power"
+default = 2
+meaning = "A leg is round when its magnitude is a whole multiple of 10^round_power units (2 = a multiple of 100.00; at most 30)."
+
+[[parameter]]
+procedure = "numbers.round_amount_density"
+name = "min_legs"
+default = 20
+meaning = "The fewest nonzero legs an account needs before its round share is tested."
+
+[[parameter]]
+procedure = "numbers.round_amount_density"
+name = "z_squared"
+default = 9
+meaning = "The square of the least binomial z flagged (9 = z of 3); at least 1."
+
+[[procedure]]
 id = "numbers.threshold_splitting"
 version = 1
 claim = "statistical"
