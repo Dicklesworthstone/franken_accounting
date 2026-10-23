@@ -747,3 +747,49 @@ fn a_commit_notification_never_enables_unconfigured_or_stopped_work() {
     .unwrap()
     .expect("lab completed");
 }
+
+#[test]
+fn cancelling_a_queued_commit_wake_prevents_native_maintenance_and_rearming() {
+    let completed = Arc::new(AtomicBool::new(false));
+    let done = completed.clone();
+    let result = lab(167, move |root| async move {
+        let mut fixture = fixture(&root, 167).await;
+        let mut work = TimedWork::maintenance_only(
+            &root,
+            POLICY,
+            vec!["FY2026-P03".into(), "FY2026-P04".into()],
+        )
+        .unwrap();
+        work.notify_commit();
+        root.cancel_with(CancelKind::User, Some("stop queued register work"));
+        assert!(work.run_register_wake(&root, &mut fixture.book).await);
+        let registers = work.register_maintenance().unwrap();
+        assert_eq!(
+            registers.attempts(),
+            0,
+            "no native publication was attempted"
+        );
+        assert!(registers.periods().iter().all(|p| p.last_success.is_none()));
+        assert_eq!(
+            registers.status().get("next_period"),
+            Some(&s("FY2026-P03"))
+        );
+        assert_eq!(work.deadline(), None);
+        assert!(!work.register_wake);
+        work.notify_commit();
+        assert!(
+            !work.register_wake,
+            "cancellation cannot be undone by a notification"
+        );
+        assert!(!work.run_register_wake(&root, &mut fixture.book).await);
+        done.store(true, Ordering::Release);
+    });
+    assert!(
+        completed.load(Ordering::Acquire),
+        "all cancellation assertions ran"
+    );
+    assert!(matches!(
+        result,
+        Err(asupersync::runtime::JoinError::Cancelled(_))
+    ));
+}
