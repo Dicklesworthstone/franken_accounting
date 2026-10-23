@@ -593,8 +593,8 @@ daemon test's rustfmt layout overlay stop before any Cargo output with
 `RCH_SCOPED_COMPLETION_UNCONFIRMED` (remote255/client1). Both original durable
 wrappers are recovered through `rch jobs recover`, with terminal acknowledgement
 and delivery255; recovery's own exit0 is not a test pass. The retry follows
-that acknowledgement and a fresh passing source/native disk preflight. No
-third compilation request is submitted. The retained transcripts are
+that acknowledgement and a fresh passing source/native disk preflight. The
+retained transcripts are
 `network-mcp-daemon-repaired-f812bacd-20261023.log` and
 `network-mcp-daemon-repaired-retry-f812bacd-20261023.log`.
 
@@ -611,3 +611,15 @@ remains disqualified for heavy local work. Three-/four-file static scans
 separately exit0 with zero critical findings; neither qualifies the complete
 static or canonical exact-tree gate. Repaired runtime execution is UNRUN and
 no Bead is closed.
+
+After two fresh native census controls complete within the unchanged1s bound
+(0.949s/4704 rows and0.983s/4713 rows), and both mounted source and native disk
+preflights pass19.2122% free, one further ordinary request uses the exact
+committed review candidate `aab87ea4` with no overlays. It also stops before
+Cargo, remote255/client1. Original wrapper
+`rchw-1eab1b99-62c2-43b7-94bc-8d5bb16ab7d0` is recovered with delivery255 and
+terminal acknowledgement. The transcript is
+`network-mcp-daemon-committed-aab87ea4-20261023.log`; recovery is recorded in
+`rch-recover-72123-20261023.json`. The positive standalone census controls do
+not establish launcher health. All three repaired campaigns are UNRUN. Stop
+retries and retain the review train, original acceptance and canonical gate.
