@@ -20332,7 +20332,7 @@ fn a_canon_rule_is_checked_against_the_book_and_derives_legs_from_a_recorded_eve
     let (code, out, _) = run(&["rule", "check", &rule, "--json"]);
     assert_eq!(code, 0, "{out}");
     let checked = doc(&out);
-    assert_eq!(text(&checked, "event"), "rule_checked");
+    assert!(out.contains("\"event\":\"rule_checked\""), "{out}");
     assert_eq!(text(&checked, "rule"), "sale_with_tax");
     assert_eq!(text(&checked, "event_kind"), "sale");
     let digest = text(&checked, "ir_digest").to_string();

@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 use asupersync::fs::Vfs;
 use fa_intents::PostPlan;
 use fa_journal::{KernelError, PeriodRow};
-use fa_model::symbols::relation;
+use fa_model::symbols::{label, relation};
 use fa_model::{EntryClass, EntryPayload, LegPayload, SupersessionKind};
 use fa_money::{Amount, Side};
 use fa_policy::{Capability, Reach};
@@ -235,6 +235,15 @@ fn possible_duplicates<V: Vfs + Clone>(
             .map_err(KernelError::from)?
         {
             if own.contains(&vid) || cited.contains(&vid) {
+                continue;
+            }
+            // A period's IN_PERIOD in-neighbours are its entries and its
+            // materialized register cells; only entries are candidates.
+            let is_entry = db
+                .vertex_at(vid, at)
+                .map_err(KernelError::from)?
+                .is_some_and(|row| row.labels.contains(&label::ENTRY));
+            if !is_entry {
                 continue;
             }
             let Some((entry, _)) = fa_journal::post::read_entry_at(db, vid, at)? else {

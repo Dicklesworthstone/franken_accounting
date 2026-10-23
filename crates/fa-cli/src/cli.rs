@@ -7320,6 +7320,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
     const FIELDS: &[&str] = &[
         "class",
         "effective_date",
+        "document_date",
         "effective_period",
         "idempotency_key",
         "description",
@@ -8645,7 +8646,18 @@ pub(crate) fn emit_post_plan(
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
     // What journal-entry testing would flag, said before the commit (plan
     // §5.1, fa-d5un): data only, never a refusal or a change to the plan.
-    let warned = book.plan_warnings(plan, capability)?;
+    // The duplicate scan reads other entries. A launch-bound session's own
+    // token decides whether it may; the embedded posture's operator acts
+    // with the owner's authority, so it reads as the planning principal.
+    let embedded_reader;
+    let reader = if out.is_bound() {
+        capability
+    } else {
+        embedded_reader = Capability::embedded(capability.holder(), &["read"])
+            .map_err(|e| Fail::Internal(format!("the embedded read capability: {e}")))?;
+        &embedded_reader
+    };
+    let warned = book.plan_warnings(plan, reader)?;
     let warnings = Json::Arr(
         warned
             .warnings
