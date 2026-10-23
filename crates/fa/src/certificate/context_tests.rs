@@ -1,6 +1,8 @@
 //! Genuine native genesis fixtures distinguish an older supported symbol
 //! table from a newer book whose mutable mirror impersonates that table.
 
+mod functional;
+
 use std::path::Path;
 
 use asupersync::fs::{UnixVfs, Vfs};

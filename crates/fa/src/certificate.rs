@@ -28,9 +28,13 @@ use fgdb::{Database, NativeResultCertificate};
 use fgdb_crypto::{Digest, Hasher};
 use fgdb_delta_types::DeltaRow;
 use fgdb_gql::{GqlParameters, GqlQueryPolicy};
+use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, QueryCx, VId};
 
 use crate::{BookError, Outcome};
+
+mod functional;
+pub(crate) use functional::verify_sources as verify_functional_sources;
 
 pub mod code {
     pub const CERTIFICATE_INVALID: &str = "FA-REF-150";
@@ -44,6 +48,10 @@ pub const INSTANT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v2";
 pub const REPORT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v3";
 /// Statements bind their complete canonical definition and comparative columns.
 pub const STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v4";
+/// Functional statements additionally bind retained Rate documents and FX laws.
+/// Existing native statements keep their v4 encoding and valuation semantics.
+pub const FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v5";
+pub const FUNCTIONAL_STATEMENT_OUTPUT_FORMAT: &str = "fa:functional-statement:v1";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -51,8 +59,9 @@ pub const MAX_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PERIODS: usize = 65_536;
 const MAX_NATIVE_BYTES: usize = 1024 * 1024;
 
-// These are exactly the authoritative vertex families the current register
-// folds read. No Leg/Register mirror supplies a report's accounting facts. Every
+// These are the authoritative vertex families shared by literal report folds.
+// Functional statements additionally bind the Rate-only Document projection.
+// No Leg/Register mirror supplies a report's accounting facts. Every
 // property decoded by AccountRow, PeriodRow and migration::run_from_row is
 // included, even where a field currently only participates in validation.
 const INPUTS: &[(&str, &str)] = &[
@@ -167,9 +176,17 @@ impl TrialBalanceSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportSelection {
     TrialBalance(TrialBalanceSelection),
-    ExplainBalance { account: VId, period: String },
-    OpenItems { account: Option<VId> },
+    ExplainBalance {
+        account: VId,
+        period: String,
+    },
+    OpenItems {
+        account: Option<VId>,
+    },
     Statement(Box<crate::StatementSelection>),
+    /// The book's functional unit, using independently verified retained base
+    /// valuations. No current-rate conversion or presentation translation.
+    FunctionalStatement(Box<crate::StatementSelection>),
 }
 
 impl From<TrialBalanceSelection> for ReportSelection {
@@ -190,7 +207,9 @@ impl ReportSelection {
             Self::TrialBalance(selection) => selection.is_canonical(),
             Self::ExplainBalance { period, .. } => !period.is_empty() && period.len() <= 128,
             Self::OpenItems { .. } => true,
-            Self::Statement(selection) => selection.is_canonical(),
+            Self::Statement(selection) | Self::FunctionalStatement(selection) => {
+                selection.is_canonical()
+            }
         }
     }
 
@@ -198,6 +217,9 @@ impl ReportSelection {
         match self {
             Self::TrialBalance(selection) => Self::TrialBalance(selection.normalize()),
             Self::Statement(selection) => Self::Statement(Box::new((*selection).normalize())),
+            Self::FunctionalStatement(selection) => {
+                Self::FunctionalStatement(Box::new((*selection).normalize()))
+            }
             selection => selection,
         }
     }
@@ -209,6 +231,7 @@ impl ReportSelection {
             Self::ExplainBalance { .. } => "fa:balance-explanation:v1",
             Self::OpenItems { .. } => "fa:open-items:v1",
             Self::Statement(_) => "fa:statement:v1",
+            Self::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_OUTPUT_FORMAT,
         }
     }
 
@@ -226,6 +249,10 @@ impl ReportSelection {
             }
             Self::Statement(selection) => {
                 w.u8(2);
+                selection.write(w)?;
+            }
+            Self::FunctionalStatement(selection) => {
+                w.u8(3);
                 selection.write(w)?;
             }
         }
@@ -247,6 +274,9 @@ impl ReportSelection {
             2 if version == 4 => Ok(Self::Statement(Box::new(crate::StatementSelection::read(
                 r,
             )?))),
+            3 if version == 5 => Ok(Self::FunctionalStatement(Box::new(
+                crate::StatementSelection::read(r)?,
+            ))),
             tag => Err(r.bad_tag("report selector", tag)),
         }
     }
@@ -276,6 +306,10 @@ impl ReportSelection {
                 Ok(crate::statements::report_at(db, book, selection, at)?
                     .map(|statement| ReportOutput::Statement(Box::new(statement))))
             }
+            Self::FunctionalStatement(selection) => Ok(crate::statements::report_functional_at(
+                db, book, selection, at,
+            )?
+            .map(|statement| ReportOutput::FunctionalStatement(Box::new(statement)))),
         }
     }
 }
@@ -288,6 +322,7 @@ pub enum ReportOutput {
     ExplainBalance(Box<BalanceExplanation>),
     OpenItems(OpenItemsReport),
     Statement(Box<fa_statements::Statement>),
+    FunctionalStatement(Box<fa_statements::Statement>),
 }
 
 impl ReportOutput {
@@ -297,7 +332,9 @@ impl ReportOutput {
             Self::TrialBalance(report) => report.known_at,
             Self::ExplainBalance(report) => report.known_at,
             Self::OpenItems(report) => report.known_at,
-            Self::Statement(report) => CommitSeq(report.known_at),
+            Self::Statement(report) | Self::FunctionalStatement(report) => {
+                CommitSeq(report.known_at)
+            }
         }
     }
 
@@ -309,7 +346,9 @@ impl ReportOutput {
             Self::TrialBalance(report) => report.known_at = known_at,
             Self::ExplainBalance(report) => report.known_at = known_at,
             Self::OpenItems(report) => report.known_at = known_at,
-            Self::Statement(report) => report.known_at = known_at.0,
+            Self::Statement(report) | Self::FunctionalStatement(report) => {
+                report.known_at = known_at.0;
+            }
         }
     }
 
@@ -319,6 +358,13 @@ impl ReportOutput {
             Self::ExplainBalance(report) => report.canonical_bytes(),
             Self::OpenItems(report) => report.canonical_bytes(),
             Self::Statement(report) => report.canonical_bytes(),
+            Self::FunctionalStatement(report) => {
+                let mut w = Writer::new();
+                w.fixed(FUNCTIONAL_STATEMENT_OUTPUT_FORMAT.as_bytes())
+                    .str("retained-base-amounts")
+                    .bytes(&report.canonical_bytes()?);
+                w.finish()
+            }
         }
     }
 }
@@ -416,8 +462,9 @@ fn encoding(e: fa_model::EncodeError) -> BookError {
 }
 
 /// The registries every report fold reads, in commitment order (fa-t8gk).
-/// Post-time admissibility, limits, and rounding laws are not read by literal
-/// report folds, and symbol IDs are already bound per book at genesis
+/// Native-unit folds do not read post-time admissibility, limits or rounding
+/// laws. Functional statements additionally bind the FX and rounding laws
+/// used to verify their retained valuations. Symbol IDs are bound at genesis
 /// (`Book.symbols_digest`, checked with additive-prefix compatibility in
 /// `symbols_match_at`) and per query in `NativeResultCertificate`.
 const REPORT_REGISTRIES: &[(&str, &str)] = &[
@@ -467,6 +514,15 @@ fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static
     let mut sources = REPORT_REGISTRIES.to_vec();
     if matches!(selection, ReportSelection::ExplainBalance { .. }) {
         sources.push(REASON_CODES);
+    }
+    if matches!(selection, ReportSelection::FunctionalStatement(_)) {
+        sources.extend([
+            ("fx_laws", include_str!("../../../registries/fx_laws.toml")),
+            (
+                "rounding_laws",
+                include_str!("../../../registries/rounding_laws.toml"),
+            ),
+        ]);
     }
     sources
 }
@@ -574,8 +630,8 @@ fn hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn statements(at: CommitSeq) -> Vec<String> {
-    INPUTS
+fn statements(at: CommitSeq, selection: &ReportSelection) -> Vec<String> {
+    let mut statements: Vec<_> = INPUTS
         .iter()
         .map(|(kind, fields)| {
             let projections: String = fields
@@ -587,7 +643,17 @@ fn statements(at: CommitSeq) -> Vec<String> {
                 at.0
             )
         })
-        .collect()
+        .collect();
+    if matches!(selection, ReportSelection::FunctionalStatement(_)) {
+        // Restrict the payload closure to Rate documents. Unrelated documents
+        // can require additional disclosure authority (for example bank data).
+        // Every cited OID and the Rate mirror are independently bound below.
+        statements.push(format!(
+            "MATCH (n:Document) FOR SYSTEM_TIME AS OF SEQ {} WHERE n.code = 'Rate' RETURN n,n._fa_payload,n._fa_digest,n.book_id,n.code ORDER BY n",
+            at.0
+        ));
+    }
+    statements
 }
 
 fn policy() -> GqlQueryPolicy {
@@ -656,6 +722,7 @@ impl ReportCertificate {
             }
             ReportSelection::TrialBalance(_) => CERTIFICATE_FORMAT,
             ReportSelection::Statement(_) => STATEMENT_CERTIFICATE_FORMAT,
+            ReportSelection::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT,
             _ => REPORT_CERTIFICATE_FORMAT,
         }
     }
@@ -685,6 +752,7 @@ impl ReportCertificate {
             .fixed(&self.output_digest);
         if self.format() == REPORT_CERTIFICATE_FORMAT
             || self.format() == STATEMENT_CERTIFICATE_FORMAT
+            || self.format() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -716,6 +784,8 @@ impl ReportCertificate {
                 3
             } else if format == STATEMENT_CERTIFICATE_FORMAT {
                 4
+            } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
+                5
             } else {
                 return Err(r.invalid("report certificate format"));
             };
@@ -735,8 +805,9 @@ impl ReportCertificate {
             let registry_digest = r.fixed("registry closure")?;
             let journal_root = r.fixed("journal root")?;
             let journal_leaves = r.u64("journal leaves")?;
-            let count = r.count(INPUTS.len(), "native inputs")?;
-            if count != INPUTS.len() {
+            let required_inputs = INPUTS.len() + usize::from(version == 5);
+            let count = r.count(required_inputs, "native inputs")?;
+            if count != required_inputs {
                 return Err(r.invalid("complete native input closure"));
             }
             let mut inputs = Vec::new();
@@ -790,7 +861,7 @@ impl ReportCertificate {
                 "TimeEvidence brackets do not resolve to the certified sequence",
             ));
         }
-        let expected = statements(self.known_at);
+        let expected = statements(self.known_at, &self.selection);
         if self.inputs.len() != expected.len()
             || self.inputs.iter().zip(expected).any(|(input, statement)| {
                 input.statement != statement || input.plan.snapshot_seq != self.known_at
@@ -827,7 +898,7 @@ impl ReportCertificate {
 
 pub(crate) fn certify<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &QueryCx,
+    cx: &PurposeContexts,
     book: &BookContext,
     selection: TrialBalanceSelection,
     known_at: Option<CommitSeq>,
@@ -837,7 +908,7 @@ pub(crate) fn certify<V: Vfs + Clone>(
 
 pub(crate) fn certify_instant<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &QueryCx,
+    cx: &PurposeContexts,
     book: &BookContext,
     selection: TrialBalanceSelection,
     requested_utc_ns: u64,
@@ -864,7 +935,7 @@ fn certified_trial_balance(report: CertifiedReport) -> Result<CertifiedTrialBala
 
 pub(crate) fn certify_report<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &QueryCx,
+    cx: &PurposeContexts,
     book: &BookContext,
     selection: ReportSelection,
     known_at: Option<CommitSeq>,
@@ -874,12 +945,13 @@ pub(crate) fn certify_report<V: Vfs + Clone>(
 
 pub(crate) fn certify_report_instant<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &QueryCx,
+    cx: &PurposeContexts,
     book: &BookContext,
     selection: ReportSelection,
     requested_utc_ns: u64,
 ) -> Outcome<CertifiedReport> {
-    let time = match fa_journal::resolve_instant_at(db, cx, book, requested_utc_ns, None)? {
+    let time = match fa_journal::resolve_instant_at(db, &cx.query(), book, requested_utc_ns, None)?
+    {
         Ok(time) => time,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -1053,18 +1125,22 @@ mod context_tests;
 
 fn certify_selected<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &QueryCx,
+    cx: &PurposeContexts,
     book: &BookContext,
     selection: ReportSelection,
     known_at: Option<CommitSeq>,
     time_selection: Option<fa_journal::InstantSelection>,
 ) -> Outcome<CertifiedReport> {
-    cx.checkpoint().map_err(BookError::Context)?;
+    let query = cx.query();
+    query.checkpoint().map_err(BookError::Context)?;
     let selection = selection.normalize();
     let head = db.frontier().map_err(fa_journal::KernelError::from)?;
     let at = known_at.unwrap_or(head);
     if at > head {
-        if matches!(&selection, ReportSelection::Statement(_)) {
+        if matches!(
+            &selection,
+            ReportSelection::Statement(_) | ReportSelection::FunctionalStatement(_)
+        ) {
             return Ok(Err(crate::statements::invalid(format!(
                 "statement known-at {} is beyond book head {}",
                 at.0, head.0
@@ -1077,7 +1153,10 @@ fn certify_selected<V: Vfs + Clone>(
         .into());
     }
     if !selection.is_canonical() {
-        if matches!(&selection, ReportSelection::Statement(_)) {
+        if matches!(
+            &selection,
+            ReportSelection::Statement(_) | ReportSelection::FunctionalStatement(_)
+        ) {
             return Ok(Err(crate::statements::invalid(
                 "select nonempty, bounded statement periods",
             )));
@@ -1090,6 +1169,11 @@ fn certify_selected<V: Vfs + Clone>(
     // Empty as-of/open-item folds must not certify a coordinate before genesis,
     // or fold with a calendar/units context that the native closure never read.
     context_at(db, book, at)?;
+    if matches!(&selection, ReportSelection::FunctionalStatement(_))
+        && let Err(refusal) = functional::verify_sources(db, cx, book, at)?
+    {
+        return Ok(Err(refusal));
+    }
     let report = match selection.report(db, book, at)? {
         Ok(report) => report,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1100,11 +1184,11 @@ fn certify_selected<V: Vfs + Clone>(
         )));
     }
     let mut inputs = Vec::new();
-    for statement in statements(at) {
-        cx.checkpoint().map_err(BookError::Context)?;
+    for statement in statements(at, &selection) {
+        query.checkpoint().map_err(BookError::Context)?;
         let (_, certificate) = db
             .execute_certified(
-                cx,
+                &query,
                 &statement,
                 &GqlParameters::new(),
                 book.symbols.clone(),
@@ -1117,7 +1201,7 @@ fn certify_selected<V: Vfs + Clone>(
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if let Err(refusal) = unchanged_entries(db, cx, &journal)? {
+    if let Err(refusal) = unchanged_entries(db, &query, &journal)? {
         return Ok(Err(refusal));
     }
     let output = report.canonical_bytes().map_err(encoding)?;
@@ -1189,7 +1273,7 @@ fn unchanged_entries<V: Vfs + Clone>(
 
 pub(crate) fn replay<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &QueryCx,
+    cx: &PurposeContexts,
     book: &BookContext,
     certificate: &ReportCertificate,
 ) -> Outcome<TrialBalance> {
@@ -1208,11 +1292,12 @@ pub(crate) fn replay<V: Vfs + Clone>(
 
 pub(crate) fn replay_report<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &QueryCx,
+    cx: &PurposeContexts,
     book: &BookContext,
     certificate: &ReportCertificate,
 ) -> Outcome<ReportOutput> {
-    cx.checkpoint().map_err(BookError::Context)?;
+    let query = cx.query();
+    query.checkpoint().map_err(BookError::Context)?;
     if let Err(refusal) = certificate.validate() {
         return Ok(Err(refusal));
     }
@@ -1228,8 +1313,11 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     if certificate.registry_digest != current
-        && certificate.registry_digest != legacy_v2
-        && certificate.registry_digest != legacy_registry_digest(&certificate.selection)
+        && (matches!(
+            &certificate.selection,
+            ReportSelection::FunctionalStatement(_)
+        ) || (certificate.registry_digest != legacy_v2
+            && certificate.registry_digest != legacy_registry_digest(&certificate.selection)))
     {
         return Ok(Err(registry_unavailable(
             "report certificate",
@@ -1244,7 +1332,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         // the retained tick payloads against their unchanged current records.
         let actual = match fa_journal::resolve_instant_at(
             db,
-            cx,
+            &query,
             book,
             expected.resolution.requested_utc_ns,
             Some(CommitSeq(expected.resolution.frontier)),
@@ -1264,7 +1352,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
     }
     for (index, input) in certificate.inputs.iter().enumerate() {
         if let Err(error) = db.replay(
-            cx,
+            &query,
             input,
             &GqlParameters::new(),
             book.symbols.clone(),
@@ -1272,7 +1360,9 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         ) {
             return Ok(Err(invalid(format!(
                 "native input {index} ({}) does not replay: {error}",
-                INPUTS[index].0
+                INPUTS
+                    .get(index)
+                    .map_or("Rate documents", |(kind, _)| *kind)
             ))));
         }
     }
@@ -1280,6 +1370,13 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         return Ok(Err(invalid(format!(
             "the certified historical book context is unavailable: {error}"
         ))));
+    }
+    if matches!(
+        &certificate.selection,
+        ReportSelection::FunctionalStatement(_)
+    ) && let Err(refusal) = functional::verify_sources(db, cx, book, certificate.known_at)?
+    {
+        return Ok(Err(refusal));
     }
     let journal = match Journal::read(db, book, Some(certificate.known_at), None)? {
         Ok(journal) => journal,
@@ -1290,7 +1387,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             "the accounting journal prefix does not match the certified one",
         )));
     }
-    if let Err(refusal) = unchanged_entries(db, cx, &journal)? {
+    if let Err(refusal) = unchanged_entries(db, &query, &journal)? {
         return Ok(Err(refusal));
     }
     let report = match certificate
@@ -1322,10 +1419,11 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
 
 pub(crate) fn status<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &QueryCx,
+    cx: &PurposeContexts,
     book: &BookContext,
     certificate: &ReportCertificate,
 ) -> Outcome<CertificateStatus> {
+    let query = cx.query();
     let report = match replay_report(db, cx, book, certificate)? {
         Ok(report) => report,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1347,19 +1445,26 @@ pub(crate) fn status<V: Vfs + Clone>(
             Entry::decode(&leaf.payload).map_err(fa_journal::KernelError::from)?,
         );
     }
-    let (additional_report, chart_entries) =
-        match statement_chart_additions(db, cx, book, certificate, &report, &journal, &entries)? {
-            Ok(additions) => additions,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
+    let (additional_report, chart_entries) = match statement_chart_additions(
+        db,
+        &query,
+        book,
+        certificate,
+        &report,
+        &journal,
+        &entries,
+    )? {
+        Ok(additions) => additions,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let relevance_report = additional_report.as_ref().unwrap_or(&report);
-    if let Err(refusal) = unchanged_account_metadata(db, cx, relevance_report, head)? {
+    if let Err(refusal) = unchanged_account_metadata(db, &query, relevance_report, head)? {
         return Ok(Err(refusal));
     }
     let mut later_entries = Vec::new();
     let mut migration_visibility = BTreeMap::new();
     for leaf in &journal.leaves {
-        cx.checkpoint().map_err(BookError::Context)?;
+        query.checkpoint().map_err(BookError::Context)?;
         if leaf.envelope.commit_seq <= certificate.known_at {
             continue;
         }
@@ -1421,7 +1526,7 @@ pub(crate) fn status<V: Vfs + Clone>(
         // creation changes an AsOf report's period list, and a corrupt mirror
         // can expose an old migration chunk. Never label an unexplained
         // change Current merely because the entry scan found no new cause.
-        cx.checkpoint().map_err(BookError::Context)?;
+        query.checkpoint().map_err(BookError::Context)?;
         let mut current = match certificate.selection.report(db, book, head) {
             Ok(Ok(report)) => report,
             Ok(Err(refusal)) => {
@@ -1471,10 +1576,15 @@ fn statement_chart_additions<V: Vfs + Clone>(
     journal: &Journal,
     entries: &BTreeMap<VId, Entry>,
 ) -> Outcome<(Option<ReportOutput>, BTreeSet<VId>)> {
-    let (ReportSelection::Statement(selection), ReportOutput::Statement(statement)) =
-        (&certificate.selection, report)
-    else {
-        return Ok(Ok((None, BTreeSet::new())));
+    let (selection, statement, functional) = match (&certificate.selection, report) {
+        (ReportSelection::Statement(selection), ReportOutput::Statement(statement)) => {
+            (selection, statement, false)
+        }
+        (
+            ReportSelection::FunctionalStatement(selection),
+            ReportOutput::FunctionalStatement(statement),
+        ) => (selection, statement, true),
+        _ => return Ok(Ok((None, BTreeSet::new()))),
     };
     let mut additions = Vec::new();
     let mut chart_entries = BTreeSet::new();
@@ -1599,7 +1709,11 @@ fn statement_chart_additions<V: Vfs + Clone>(
             .then(a.account.id.cmp(&b.account.id))
     });
     Ok(Ok((
-        Some(ReportOutput::Statement(Box::new(augmented))),
+        Some(if functional {
+            ReportOutput::FunctionalStatement(Box::new(augmented))
+        } else {
+            ReportOutput::Statement(Box::new(augmented))
+        }),
         chart_entries,
     )))
 }
@@ -1893,7 +2007,7 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
             .iter()
             .map(|(vid, row)| (*vid, AccountMetadata::Complete(row.clone())))
             .collect(),
-        ReportOutput::Statement(report) => report
+        ReportOutput::Statement(report) | ReportOutput::FunctionalStatement(report) => report
             .mappings
             .iter()
             .map(|mapping| {
@@ -1997,7 +2111,11 @@ pub(crate) fn selected(
             }
         }
         (ReportSelection::ExplainBalance { .. }, ReportOutput::ExplainBalance(_)) => {}
-        (ReportSelection::Statement(selection), ReportOutput::Statement(report)) => {
+        (ReportSelection::Statement(selection), ReportOutput::Statement(report))
+        | (
+            ReportSelection::FunctionalStatement(selection),
+            ReportOutput::FunctionalStatement(report),
+        ) => {
             if entry.proposal.class == EntryClass::PENDING {
                 return Ok(false);
             }
@@ -2095,7 +2213,7 @@ pub(crate) fn selected(
         ReportSelection::ExplainBalance {
             period: selected, ..
         } => *selected == period.code,
-        ReportSelection::Statement(selection) => {
+        ReportSelection::Statement(selection) | ReportSelection::FunctionalStatement(selection) => {
             selection.periods.binary_search(&period.code).is_ok()
                 || selection.comparative.binary_search(&period.code).is_ok()
         }
@@ -2555,6 +2673,64 @@ mod tests {
             selection.comparative = vec!["FY2024-P03".into()];
         }
         assert_ne!(changed.body_bytes().unwrap(), original);
+    }
+
+    #[test]
+    fn functional_statement_v5_separates_native_bytes_and_binds_valuation_sources() {
+        let definition = crate::StatementSelection {
+            definition: crate::StatementDefinition::embedded("income-statement").unwrap(),
+            periods: vec!["FY2026-P01".into()],
+            comparative: vec!["FY2025-P01".into()],
+        };
+        let native = ReportSelection::Statement(Box::new(definition.clone()));
+        let functional = ReportSelection::FunctionalStatement(Box::new(definition));
+        let mut writer = Writer::new();
+        functional.write(&mut writer).unwrap();
+        let encoded = writer.finish().unwrap();
+        let mut reader = Reader::new(&encoded);
+        assert_eq!(ReportSelection::read(&mut reader, 5).unwrap(), functional);
+        reader.finish().unwrap();
+        for version in 1..5 {
+            assert!(ReportSelection::read(&mut Reader::new(&encoded), version).is_err());
+        }
+        let native_inputs = statements(CommitSeq(7), &native);
+        let functional_inputs = statements(CommitSeq(7), &functional);
+        assert_eq!(functional_inputs[..INPUTS.len()], native_inputs);
+        assert_eq!(functional_inputs.len(), native_inputs.len() + 1);
+        assert!(
+            functional_inputs
+                .last()
+                .unwrap()
+                .contains("WHERE n.code = 'Rate'")
+        );
+        assert_eq!(
+            report_registries(&functional)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            [
+                "account_types",
+                "entry_classes",
+                "units",
+                "foundations",
+                "fx_laws",
+                "rounding_laws"
+            ],
+        );
+        assert_ne!(
+            registry_digest(&functional).unwrap(),
+            registry_digest(&native).unwrap()
+        );
+        let certificate = wire_fixture(functional, None);
+        assert_eq!(
+            certificate.format(),
+            FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
+        );
+        assert_eq!(
+            certificate.output_format(),
+            FUNCTIONAL_STATEMENT_OUTPUT_FORMAT
+        );
+        assert_eq!(certificate.body_bytes().unwrap().last(), Some(&0));
     }
 
     #[test]

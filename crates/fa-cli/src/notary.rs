@@ -56,6 +56,24 @@ fn prepare_artifact_history(
             "report artifact belongs to another book",
         ));
     }
+    if artifact.family() == ReportArtifactFamily::Native
+        && matches!(
+            artifact.source_certificate().selection,
+            ReportSelection::FunctionalStatement(_)
+        )
+    {
+        // Functional verification checks immutable Entry births and carrying
+        // sources even when the supplied file selects HEAD. A compacted book
+        // needs the complete retained history in that case too.
+        book.replay_report_artifact_for_with_history(
+            principal,
+            capability,
+            bytes,
+            Some(artifact.digest()),
+            fa::ReportArtifactExpectation::AsSupplied,
+        )??;
+        return Ok(());
+    }
     if artifact.family() == ReportArtifactFamily::Procedure {
         let certificate = fa::ProcedureCertificate::decode(bytes)?;
         book.prepare_procedure_history(
@@ -1081,6 +1099,10 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (ReportOutput::Statement(report), ReportSelection::Statement(_)) => {
                 crate::cli::render_statement(&ctx.out, &book, report, Some(&digest))?
             }
+            (
+                ReportOutput::FunctionalStatement(report),
+                ReportSelection::FunctionalStatement(_),
+            ) => crate::cli::render_functional_statement(&ctx.out, &book, report, Some(&digest))?,
             _ => {
                 return Err(certificate_invalid(
                     "replayed report kind differs from the retained certificate selector",
@@ -1334,7 +1356,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ctx.out.effective(format!("period:{period}"));
         }
         ReportSelection::OpenItems { .. } => {}
-        ReportSelection::Statement(selection) => {
+        ReportSelection::Statement(selection) | ReportSelection::FunctionalStatement(selection) => {
             ctx.out.effective(periods_selector(&selection.periods));
         }
     }

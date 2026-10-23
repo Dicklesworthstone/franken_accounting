@@ -595,6 +595,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
+        if matches!(&artifact.inner, Artifact::Native(certificate)
+            if matches!(&certificate.selection, crate::ReportSelection::FunctionalStatement(_)))
+            && let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await?
+        {
+            // Functional replay checks every native Entry birth and original
+            // carrying-value prefix. A checkpoint reopened exactly at the
+            // report's known-at still needs the complete retained history.
+            return Ok(Err(refusal));
+        }
         self.replay_report_artifact_for(cx, principal, capability, bytes, expected_digest, expected)
     }
 

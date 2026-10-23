@@ -982,7 +982,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let result = self.query(cx, |db, book| {
             let source = match crate::certificate::certify_report(
                 db,
-                &cx.query(),
+                cx,
                 book,
                 ReportSelection::OpenItems { account: None },
                 request.known_at,
@@ -1097,9 +1097,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         let built = catalog::build(&request.procedure, request.parameters, request.inputs)?;
         let result = self.query(cx, |db, book| {
-            if let Err(r) =
-                crate::certificate::replay_report(db, &cx.query(), book, &certificate.source)?
-            {
+            if let Err(r) = crate::certificate::replay_report(db, cx, book, &certificate.source)? {
                 return Ok(Err(r));
             }
             if let Err(e) = db.replay(

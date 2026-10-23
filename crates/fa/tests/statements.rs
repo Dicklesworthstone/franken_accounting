@@ -1268,3 +1268,237 @@ fn a_restatement_view_never_answers_from_an_unreported_coordinate() {
         "the certificate is read only under read authority"
     );
 }
+
+#[test]
+fn functional_income_preserves_actual_closing_reversal_lineage_and_closing_period_adjustments() {
+    let mut fixture = Fixture::new(0xe7);
+    let usd = fixture.usd;
+    let book_id = fixture.book.context().book_id;
+    let close_period = "FY2026-CLOSE";
+    let december = "FY2026-P12";
+    let date = day(2026, 12, 31);
+    let read = Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap();
+    let close = Capability::embedded(PRINCIPAL, &["read", "post", "close"]).unwrap();
+    for period in [december, close_period] {
+        fixture
+            .book
+            .transition_period(
+                period,
+                PeriodTransition::Open,
+                PRINCIPAL,
+                1,
+                period.as_bytes(),
+                &close,
+            )
+            .unwrap()
+            .unwrap();
+    }
+    let routes = ["4000", "6000", "6100"]
+        .into_iter()
+        .map(|code| (account_vid(book_id, code), account_vid(book_id, "3000")))
+        .collect();
+    let description = fixture
+        .book
+        .seal_text("Reviewed nominal-to-equity closing map")
+        .unwrap();
+    fixture
+        .book
+        .set_closing_routes(
+            fa::ClosingRoutesRequest {
+                principal: PRINCIPAL,
+                effective_from: day(2026, 1, 1),
+                routes,
+                idempotency_key: b"functional-statement-close-map".to_vec(),
+                description,
+            },
+            &Capability::embedded(PRINCIPAL, &["read", "schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    fixture.transfer(
+        day(2026, 12, 30),
+        b"functional-sale",
+        usd,
+        ("1000", "4000"),
+        10_000,
+    );
+    fixture.transfer(
+        day(2026, 12, 30),
+        b"functional-expense",
+        usd,
+        ("6000", "1000"),
+        2_000,
+    );
+    let income_selection = StatementSelection {
+        definition: StatementDefinition::embedded("income-statement").unwrap(),
+        periods: vec![december.into(), close_period.into()],
+        comparative: vec![december.into()],
+    };
+    let balance_selection = StatementSelection {
+        definition: StatementDefinition::embedded("balance-sheet").unwrap(),
+        periods: vec![close_period.into()],
+        comparative: Vec::new(),
+    };
+    let before = fixture
+        .book
+        .functional_statement(PRINCIPAL, &read, income_selection.clone(), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(amounts(&before, "net_income", usd), &[8_000, 8_000]);
+
+    // Publish the kernel's intrinsic YearEndClose, rather than substituting
+    // another entry class or planting precomputed journal rows.
+    let workpaper = Document {
+        book_id,
+        kind: fa_registry::evidence_policy::EvidencePolicy::embedded()
+            .unwrap()
+            .kind_by_name("Workpaper")
+            .unwrap()
+            .tag,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"Reviewed year-end nominal balances and closing routes".to_vec(),
+    };
+    fixture.book.add_document(&workpaper).unwrap().unwrap();
+    let prepared = fixture
+        .book
+        .prepare_year_end_close(
+            &fa::YearEndCloseRequest {
+                fiscal_year: 2026,
+                closing_period: close_period.into(),
+            },
+            &close,
+        )
+        .unwrap()
+        .unwrap();
+    let mut template = fixture.proposal(
+        date,
+        b"functional-real-close",
+        EntryClass::CLOSING,
+        Vec::new(),
+    );
+    template.effective_period = Some(fa_model::PeriodRef {
+        calendar: fixture.book.context().calendar.id.clone(),
+        code: close_period.into(),
+    });
+    template.evidence = vec![workpaper.evidence_ref(1)];
+    let closing = fixture
+        .book
+        .post(PostRequest {
+            proposal: prepared.proposal(template).unwrap(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: close,
+        })
+        .unwrap()
+        .unwrap()
+        .entry_ref();
+    let (original, _) = fixture.book.read_entry(closing.vid).unwrap().unwrap();
+    assert_eq!(original.proposal.class, EntryClass::CLOSING);
+    assert!(!original.proposal.extensions.is_empty());
+    let certified = fixture
+        .book
+        .certify_functional_statement(PRINCIPAL, &read, income_selection.clone(), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        amounts(&certified.statement, "net_income", usd),
+        &[8_000, 8_000]
+    );
+    let after_close = fixture
+        .book
+        .functional_statement(PRINCIPAL, &read, balance_selection.clone(), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(amounts(&after_close, "equity", usd), &[8_000]);
+    assert_eq!(amounts(&after_close, "unclosed_earnings", usd), &[0]);
+
+    let mut target = closing;
+    for (key, equity, unclosed) in [
+        (b"undo-functional-close".as_slice(), 0, 8_000),
+        (b"restore-functional-close".as_slice(), 8_000, 0),
+    ] {
+        let (source, _) = fixture.book.read_entry(target.vid).unwrap().unwrap();
+        let mut legs = source.proposal.legs.clone();
+        for leg in &mut legs {
+            leg.side = if leg.side == Side::Debit {
+                Side::Credit
+            } else {
+                Side::Debit
+            };
+            leg.settles.clear();
+        }
+        let mut reversal = fixture.proposal(date, key, EntryClass::REVERSAL, legs);
+        reversal.effective_period = source.proposal.effective_period.clone();
+        reversal.supersession = vec![fa_model::Supersession {
+            target,
+            kind: fa_model::SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        target = fixture.commit(reversal).entry_ref();
+        let income = fixture
+            .book
+            .functional_statement(PRINCIPAL, &read, income_selection.clone(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(amounts(&income, "net_income", usd), &[8_000, 8_000]);
+        let stock = fixture
+            .book
+            .functional_statement(PRINCIPAL, &read, balance_selection.clone(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(amounts(&stock, "equity", usd), &[equity]);
+        assert_eq!(amounts(&stock, "unclosed_earnings", usd), &[unclosed]);
+        assert_eq!(amounts(&stock, "total_equity", usd), &[8_000]);
+        assert_eq!(amounts(&stock, "balance_check", usd), &[0]);
+        assert!(matches!(
+            fixture
+                .book
+                .certificate_status(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            CertificateStatus::Current { .. }
+        ));
+    }
+
+    // A Closing-kind period can contain ordinary operating adjustments.
+    // Excluding the entire period would incorrectly erase this expense.
+    let mut adjustment = fixture.proposal(
+        date,
+        b"ordinary-closing-period-expense",
+        EntryClass::ADJUSTING,
+        fixture.legs(usd, ("6000", "1000"), 500),
+    );
+    adjustment.effective_period = Some(fa_model::PeriodRef {
+        calendar: fixture.book.context().calendar.id.clone(),
+        code: close_period.into(),
+    });
+    let adjustment = fixture.commit(adjustment).entry_ref();
+    let income = fixture
+        .book
+        .functional_statement(PRINCIPAL, &read, income_selection, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(amounts(&income, "net_income", usd), &[7_500, 8_000]);
+    let stock = fixture
+        .book
+        .functional_statement(PRINCIPAL, &read, balance_selection, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(amounts(&stock, "assets", usd), &[7_500]);
+    assert_eq!(amounts(&stock, "total_equity", usd), &[7_500]);
+    assert_eq!(amounts(&stock, "balance_check", usd), &[0]);
+    assert!(
+        matches!(fixture.book.certificate_status(&certified.certificate).unwrap().unwrap(),
+        CertificateStatus::SupersededBy { later_entries, .. } if later_entries.contains(&adjustment.vid))
+    );
+    assert_eq!(
+        fixture
+            .book
+            .replay_report(&certified.certificate)
+            .unwrap()
+            .unwrap(),
+        ReportOutput::FunctionalStatement(Box::new(certified.statement))
+    );
+}

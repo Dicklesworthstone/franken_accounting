@@ -5,6 +5,8 @@
 //! definition snapshot. Independent custom-definition activation, presentation
 //! rounding, translation and consolidation remain separate operations.
 
+use std::collections::BTreeMap;
+
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, exit};
@@ -16,9 +18,10 @@ use fa_statements::{
 };
 use fa_time::DateDay;
 use fgdb::Database;
-use fgdb_types::{CommitSeq, QueryCx};
+use fgdb_types::context::PurposeContexts;
+use fgdb_types::{CommitSeq, QueryCx, VId};
 
-use crate::{BookError, Outcome};
+use crate::{AsyncBook, BookError, Outcome};
 
 pub const STATEMENT_INVALID: &str = "FA-REF-152";
 const MAX_PERIODS: usize = 65_536;
@@ -341,6 +344,29 @@ pub(crate) fn report_at<V: Vfs + Clone>(
     selection: &StatementSelection,
     at: CommitSeq,
 ) -> Outcome<Statement> {
+    report_at_basis(db, book, selection, at, false)
+}
+
+/// The same historical chart partition and definition, valued from the
+/// journal's retained functional amounts. No current rate is selected and no
+/// monetary entry is generated. Outstanding pending holds are not earnings or
+/// posted stock and are therefore excluded by the authoritative folds.
+pub(crate) fn report_functional_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    selection: &StatementSelection,
+    at: CommitSeq,
+) -> Outcome<Statement> {
+    report_at_basis(db, book, selection, at, true)
+}
+
+fn report_at_basis<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    selection: &StatementSelection,
+    at: CommitSeq,
+    functional: bool,
+) -> Outcome<Statement> {
     let mut accounts = Vec::new();
     for row in db.vertices_at(at).map_err(fa_journal::KernelError::from)? {
         if !row.labels.contains(&label::ACCOUNT) {
@@ -363,6 +389,7 @@ pub(crate) fn report_at<V: Vfs + Clone>(
     }
     accounts.sort_by(|a, b| a.code.cmp(&b.code).then(a.id.cmp(&b.id)));
     let mut columns = Vec::new();
+    let mut functional_unit = None;
     for (name, periods) in [
         ("current", &selection.periods),
         ("comparative", &selection.comparative),
@@ -399,44 +426,55 @@ pub(crate) fn report_at<V: Vfs + Clone>(
         let Some(through) = last else {
             return Ok(Err(invalid("a statement column has no period cutoff")));
         };
-        let fold = match selection.definition.basis() {
-            Basis::Stock => fa_registers::balance_as_of(db, book, through, Some(at)),
-            Basis::Activity => fa_registers::period_activity_excluding_classes(
-                db,
-                book,
-                periods,
-                Some(at),
-                selection.definition.excluded_classes(),
-            ),
-        };
-        let fold = match fold {
-            Ok(fold) => fold,
-            Err(fa_registers::RegisterError::InvalidSelection(message)) => {
-                return Ok(Err(invalid(message)));
-            }
-            Err(fa_registers::RegisterError::Overflow) => {
-                return Ok(Err(invalid(
-                    "the selected journal amounts exceed the exact register fold range",
-                )));
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let mut balances = Vec::new();
-        for row in fold.rows {
-            if book.units.get(fa_money::UnitId(row.unit_id)).is_none() {
-                return Err(fa_journal::KernelError::Corrupt(format!(
-                    "statement fold uses unregistered unit {}",
-                    row.unit_id
-                ))
+        let balances = if functional {
+            let (unit, balances) =
+                match functional_balances(db, book, selection, periods, through, at) {
+                    Ok(result) => result,
+                    Err(error) => return register_refusal(error),
+                };
+            if functional_unit
+                .replace(unit)
+                .is_some_and(|previous| previous != unit)
+            {
+                return Err(fa_journal::KernelError::Corrupt(
+                    "functional statement columns disagree on the historical base unit".into(),
+                )
                 .into());
             }
-            balances.push(AccountBalance {
-                account_id: row.account.0,
-                unit_id: row.unit_id,
-                debits: row.debits,
-                credits: row.credits,
-            });
-        }
+            balances
+        } else {
+            let fold = match selection.definition.basis() {
+                Basis::Stock => fa_registers::balance_as_of(db, book, through, Some(at)),
+                Basis::Activity => fa_registers::period_activity_excluding_classes(
+                    db,
+                    book,
+                    periods,
+                    Some(at),
+                    selection.definition.excluded_classes(),
+                ),
+            };
+            let fold = match fold {
+                Ok(fold) => fold,
+                Err(error) => return register_refusal(error),
+            };
+            let mut balances = Vec::new();
+            for row in fold.rows {
+                if book.units.get(fa_money::UnitId(row.unit_id)).is_none() {
+                    return Err(fa_journal::KernelError::Corrupt(format!(
+                        "statement fold uses unregistered unit {}",
+                        row.unit_id
+                    ))
+                    .into());
+                }
+                balances.push(AccountBalance {
+                    account_id: row.account.0,
+                    unit_id: row.unit_id,
+                    debits: row.debits,
+                    credits: row.credits,
+                });
+            }
+            balances
+        };
         columns.push(ColumnInput {
             label: name.into(),
             periods: periods.clone(),
@@ -454,11 +492,297 @@ pub(crate) fn report_at<V: Vfs + Clone>(
         branch_id: Id128::TRUNK,
         known_at: at.0,
         accounts,
-        units: book.units.iter().map(|(id, _)| id.0).collect(),
+        units: match functional_unit {
+            Some(unit) => vec![unit.0],
+            None => book.units.iter().map(|(id, _)| id.0).collect(),
+        },
         columns,
     };
     Ok(fa_statements::evaluate(&selection.definition, &input)
         .map_err(|error| invalid(error.to_string())))
+}
+
+fn register_refusal<T>(error: fa_registers::RegisterError) -> Outcome<T> {
+    match error {
+        fa_registers::RegisterError::InvalidSelection(message) => Ok(Err(invalid(message))),
+        fa_registers::RegisterError::Overflow => Ok(Err(invalid(
+            "the selected journal amounts exceed the exact register fold range",
+        ))),
+        error => Err(error.into()),
+    }
+}
+
+fn functional_balances<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    selection: &StatementSelection,
+    periods: &[String],
+    through: DateDay,
+    at: CommitSeq,
+) -> Result<(fa_money::UnitId, Vec<AccountBalance>), fa_registers::RegisterError> {
+    use fa_registers::RegisterError;
+    let mut balances: BTreeMap<(VId, u32), (i128, i128)> = BTreeMap::new();
+    let mut add = |account, unit, debits, credits| -> Result<(), RegisterError> {
+        let total = balances.entry((account, unit)).or_default();
+        total.0 = total.0.checked_add(debits).ok_or(RegisterError::Overflow)?;
+        total.1 = total
+            .1
+            .checked_add(credits)
+            .ok_or(RegisterError::Overflow)?;
+        Ok(())
+    };
+    let unit = match selection.definition.basis() {
+        Basis::Stock => {
+            let fold = fa_registers::fold_functional_stock(db, book, through, Some(at))?;
+            for cell in fold.cells {
+                add(
+                    cell.key.account,
+                    cell.key.unit_id,
+                    cell.debits,
+                    cell.credits,
+                )?;
+            }
+            fold.base_unit
+        }
+        Basis::Activity => {
+            let mut unit = None;
+            for period in periods {
+                let fold = fa_registers::fold_period_functional_excluding_classes(
+                    db,
+                    book,
+                    period,
+                    Some(at),
+                    selection.definition.excluded_classes(),
+                )?;
+                if unit
+                    .replace(fold.base_unit)
+                    .is_some_and(|previous| previous != fold.base_unit)
+                {
+                    return Err(RegisterError::InvalidSelection(
+                        "functional statement periods disagree on the historical base unit".into(),
+                    ));
+                }
+                for cell in fold.cells {
+                    add(
+                        cell.key.account,
+                        cell.key.unit_id,
+                        cell.debits,
+                        cell.credits,
+                    )?;
+                }
+            }
+            unit.ok_or_else(|| {
+                RegisterError::InvalidSelection(
+                    "a functional statement column needs a period".into(),
+                )
+            })?
+        }
+    };
+    if book.units.get(unit).is_none() || balances.keys().any(|(_, cell_unit)| *cell_unit != unit.0)
+    {
+        return Err(RegisterError::InvalidSelection(
+            "functional statement amounts must use the book's registered base unit".into(),
+        ));
+    }
+    Ok((
+        unit,
+        balances
+            .into_iter()
+            .map(|((account, unit), (debits, credits))| AccountBalance {
+                account_id: account.0,
+                unit_id: unit,
+                debits,
+                credits,
+            })
+            .collect(),
+    ))
+}
+
+pub(crate) fn certified_functional(
+    report: crate::CertifiedReport,
+) -> Result<CertifiedStatement, Refusal> {
+    match report.report {
+        crate::ReportOutput::FunctionalStatement(statement) => Ok(CertifiedStatement {
+            statement: *statement,
+            certificate: report.certificate,
+        }),
+        _ => Err(invalid(
+            "the certified output is not a functional-currency statement",
+        )),
+    }
+}
+
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    fn admit_functional_statement(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+        certify: bool,
+    ) -> Outcome<CommitSeq> {
+        let admission = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                if certify {
+                    fa_policy::require(
+                        capability,
+                        fa_policy::Op::Produce,
+                        "certifying a functional statement",
+                    )
+                } else {
+                    Ok(())
+                }
+            })
+            .and_then(|()| {
+                fa_policy::reach(
+                    capability,
+                    &fa_policy::Reach {
+                        observes: known_at
+                            .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                        ..fa_policy::Reach::whole_book(true)
+                    },
+                    None,
+                )
+            });
+        if let Err(denial) = admission {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        self.query(cx, |db, book| {
+            Ok(fa_journal::policy::current_at(db, book, capability)?.map(|current| current.at()))
+        })
+    }
+
+    async fn prepare_functional_statement(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        known_at: Option<CommitSeq>,
+        certify: bool,
+    ) -> Outcome<CommitSeq> {
+        let head =
+            match self.admit_functional_statement(cx, principal, capability, known_at, certify)? {
+                Ok(head) => head,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let at = known_at.unwrap_or(head);
+        if at > head {
+            return Ok(Err(invalid(format!(
+                "statement known-at {} is beyond book head {}",
+                at.0, head.0
+            ))));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) =
+            self.admit_functional_statement(cx, principal, capability, Some(at), certify)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(at))
+    }
+
+    /// Evaluate the complete historical chart in the book's functional
+    /// currency. Retained valuations and their laws are verified at the fixed
+    /// prefix; current whole-book Read authority is required before history is
+    /// loaded. This read never selects a new rate or publishes a journal row.
+    pub async fn functional_statement(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<Statement> {
+        let at = match self
+            .prepare_functional_statement(cx, principal, capability, known_at, false)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let selection = selection.normalize();
+        if !selection.is_canonical() {
+            return Ok(Err(invalid("select nonempty, bounded statement periods")));
+        }
+        let result = self.query(cx, |db, book| {
+            crate::certificate::context_at(db, book, at)?;
+            if let Err(refusal) = crate::certificate::verify_functional_sources(db, cx, book, at)? {
+                return Ok(Err(refusal));
+            }
+            report_functional_at(db, book, &selection, at)
+        })?;
+        if let Err(refusal) =
+            self.admit_functional_statement(cx, principal, capability, Some(at), false)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Certify functional stock or activity, with optional comparative
+    /// columns, under current whole-book Read and Produce authority.
+    pub async fn certify_functional_statement(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<CertifiedStatement> {
+        let at = match self
+            .prepare_functional_statement(cx, principal, capability, known_at, true)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let result = self
+            .certify_report(
+                cx,
+                crate::ReportSelection::FunctionalStatement(Box::new(selection)),
+                Some(at),
+            )?
+            .and_then(certified_functional);
+        if let Err(refusal) =
+            self.admit_functional_statement(cx, principal, capability, Some(at), true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Certify the functional statement with the original TimeEvidence
+    /// brackets that resolve the requested instant to a retained prefix.
+    pub async fn certify_functional_statement_at_instant(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: StatementSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<CertifiedStatement> {
+        if let Err(refusal) = self
+            .prepare_functional_statement(cx, principal, capability, None, true)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let result = self
+            .certify_report_at_instant(
+                cx,
+                crate::ReportSelection::FunctionalStatement(Box::new(selection)),
+                requested_utc_ns,
+            )?
+            .and_then(certified_functional);
+        if let Err(refusal) =
+            self.admit_functional_statement(cx, principal, capability, None, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
 }
 
 pub(crate) fn certified(report: crate::CertifiedReport) -> Result<CertifiedStatement, Refusal> {

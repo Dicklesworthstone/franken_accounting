@@ -3268,7 +3268,9 @@ fn report_replay_keeps_historical_account_metadata_and_status_refuses_rebinding(
         match &replayed {
             ReportOutput::ExplainBalance(report) => assert_eq!(report.account_row.name, "Cash"),
             ReportOutput::OpenItems(report) => assert_eq!(report.accounts[&cash].name, "Cash"),
-            ReportOutput::TrialBalance(_) | ReportOutput::Statement(_) => {}
+            ReportOutput::TrialBalance(_)
+            | ReportOutput::Statement(_)
+            | ReportOutput::FunctionalStatement(_) => {}
         }
         let refusal = book
             .certificate_status(&result.certificate)
@@ -3322,7 +3324,7 @@ fn certification_requires_genesis_and_the_historical_runtime_context() {
     let purposes = book.purposes();
     let error = with_store!(&book.store, core => crate::certificate::certify_report(
         &core.db,
-        &purposes.query(),
+        &purposes,
         &context,
         TrialBalanceSelection::AsOf(day).into(),
         Some(at),
@@ -3331,7 +3333,7 @@ fn certification_requires_genesis_and_the_historical_runtime_context() {
     assert!(error.to_string().contains("context differs"), "{error}");
     let refusal = with_store!(&book.store, core => crate::certificate::replay_report(
         &core.db,
-        &purposes.query(),
+        &purposes,
         &context,
         &certificate,
     ))

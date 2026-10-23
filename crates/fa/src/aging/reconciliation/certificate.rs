@@ -369,7 +369,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let control = match query.with_restriction(|| {
             crate::certificate::certify_report(
                 &self.db,
-                &query,
+                cx,
                 self.context(),
                 TrialBalanceSelection::AsOf(request.effective_through).into(),
                 Some(at),

@@ -842,3 +842,49 @@ fn every_advertised_tool_is_named_by_a_bound_rule() {
         "advertised tools no [[bound]] rule names: give each a rule, or register an [[mcp.excluded]] row"
     );
 }
+
+#[test]
+fn functional_statement_mcp_preserves_basis_comparatives_and_certificate_authority() {
+    let (mcp, reg) = embedded();
+    let tool = mcp.tool_for("statement", None).unwrap();
+    assert_eq!(tool.wire_name(), "fa_read_statement");
+    let schema = tool.input_schema(&mcp, reg);
+    assert_eq!(schema["properties"]["functional"]["type"], json!("boolean"));
+    assert!(schema["properties"].get("certificate_out").is_none());
+    let args = json!({
+        "name": "balance-sheet", "functional": true, "for": "FY2026-P02",
+        "compare": "FY2026-P01", "as_known_at": "17", "certify": true,
+    });
+    let invocation = tool.invocation(&mcp, reg, &args).unwrap();
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert!(parsed.switch("--functional"));
+    assert!(parsed.switch("--certify"));
+    assert_eq!(parsed.flag("--compare"), Some("FY2026-P01"));
+    assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+    let required = fa_cli::cli::bound_command_ops("statement", &parsed).unwrap();
+    assert_eq!(
+        required.iter().map(|op| op.name()).collect::<Vec<_>>(),
+        ["read", "produce"]
+    );
+    let translated = mcp.command_to_call(reg,
+        "fa statement balance-sheet --functional --for FY2026-P02 --compare FY2026-P01 --as-known-at 17 --certify --json").unwrap();
+    assert_eq!(translated.tool, tool.wire_name());
+    assert_eq!(translated.arguments, args);
+    let plain = tool
+        .invocation(
+            &mcp,
+            reg,
+            &json!({"name": "income-statement", "for": "FY2026-P02", "functional": true}),
+        )
+        .unwrap();
+    let parsed = fa_cli::args::parse(&plain.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("statement", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read"]
+    );
+}

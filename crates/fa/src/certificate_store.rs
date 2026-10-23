@@ -503,12 +503,9 @@ async fn retain_inner<V: Vfs + Clone, W: Vfs + Clone>(
                 "non-native retention requires a full family replay",
             )));
         }
-        if let Err(refusal) = crate::certificate::replay_report(
-            db,
-            &query_cx,
-            book,
-            certificate.source_certificate(),
-        )? {
+        if let Err(refusal) =
+            crate::certificate::replay_report(db, cx, book, certificate.source_certificate())?
+        {
             txn.abort();
             return Ok(Err(refusal));
         }

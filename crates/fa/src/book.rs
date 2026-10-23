@@ -3367,6 +3367,51 @@ impl Book {
         with_store!(&self.store, core => core.statement(&self.purposes(), selection, known_at))
     }
 
+    /// Evaluate a statement in the historical book's functional currency.
+    /// The admitted whole-book reader receives exact retained valuations;
+    /// this hydrates history without publishing or revaluing any entry.
+    pub fn functional_statement(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_statement(
+            &purposes, principal, capability, selection, known_at,
+        )))
+    }
+
+    /// Certify functional stock/activity and comparative columns under
+    /// current whole-book Read and Produce authority.
+    pub fn certify_functional_statement(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedStatement> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_statement(
+            &purposes, principal, capability, selection, known_at,
+        )))
+    }
+
+    /// Functional statement certification with retained TimeEvidence brackets.
+    pub fn certify_functional_statement_at_instant(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: crate::StatementSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedStatement> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_statement_at_instant(
+            &purposes, principal, capability, selection, requested_utc_ns,
+        )))
+    }
+
     /// Certify the complete statement definition, chart partition, historical
     /// period columns and exact native-unit amounts without writing the book.
     pub fn certify_statement(
@@ -5606,7 +5651,9 @@ impl ReadScope<'_> {
                     fa_statements::Basis::Activity => self.authority.periods(book, seq, &reached),
                 }
             }
-            ReportSelection::OpenItems { .. } => self.authority.whole_book(seq),
+            ReportSelection::OpenItems { .. } | ReportSelection::FunctionalStatement(_) => {
+                self.authority.whole_book(seq)
+            }
         };
         Ok(admitted.map(|()| seq))
     }

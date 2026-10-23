@@ -494,7 +494,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let source = match query.with_restriction(|| {
             crate::certificate::certify_report(
                 &self.db,
-                &query,
+                cx,
                 self.context(),
                 ReportSelection::OpenItems {
                     account: request.account,

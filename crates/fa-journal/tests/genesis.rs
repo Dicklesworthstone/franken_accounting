@@ -7321,6 +7321,50 @@ fn period_verification_detects_planted_state_and_topology_drift_without_mutation
 }
 
 #[test]
+fn instant_resolution_keeps_opening_date_at_its_saved_frontier() {
+    use fa_time::UtcInstant;
+
+    let mut h = harness();
+    let lower = UtcInstant::parse("2026-03-15T12:00:00Z").unwrap().unix_ns();
+    let upper = UtcInstant::parse("2026-03-16T12:00:00Z").unwrap().unix_ns();
+    let first = h.tick(lower, b"historical-instant-lower", 1);
+    let second = h.tick(upper, b"historical-instant-upper", 2);
+    let frontier = h.db.frontier().unwrap();
+    let selected = lower + 1;
+    let original = resolve_instant_at(&h.db, &h.ctx().query(), &h.book, selected, Some(frontier))
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.lower_entry, first.entry_ref.vid);
+    assert_eq!(original.upper_entry, Some(second.entry_ref.vid));
+
+    let mut spec = fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap();
+    spec.opening_date = Some(DateDay::from_ymd(2026, 4, 1).unwrap());
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.set_vertex_property(
+        book_root(),
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(spec.canonical_bytes().unwrap()).unwrap()),
+    );
+    h.write_raw(damage);
+    let april = UtcInstant::parse("2026-04-02T00:00:00Z").unwrap().unix_ns();
+    h.tick(april, b"later-instant", 3);
+    let head = h.db.frontier().unwrap();
+
+    let current = resolve_instant_at(&h.db, &h.ctx().query(), &h.book, selected, None)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((current.code, current.exit), ("FA-REF-151", exit::REFUSAL));
+    assert!(current.message.contains("BeforeBookGenesis"));
+    assert_eq!(
+        resolve_instant_at(&h.db, &h.ctx().query(), &h.book, selected, Some(frontier))
+            .unwrap()
+            .unwrap(),
+        original,
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
 fn instant_before_book_genesis_and_non_increasing_ticks_are_refused() {
     use fa_journal::genesis::BookSpec;
     use fa_journal::sweep::{SOURCE_DAEMON_CLOCK, TickRequest, latest_tick, record_tick};

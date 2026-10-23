@@ -68,6 +68,41 @@ fn ok(book: &Path, args: &[&str]) -> Json {
     output
 }
 
+fn ok_many(book: &Path, args: &[&str]) -> Vec<Json> {
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(book)
+        .args(["--via", "direct"])
+        .args(args)
+        .arg("--json")
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .env_remove("FA_KEYS")
+        .output()
+        .expect("run multi-event fa command");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{args:?}: {stdout}\n{stderr}");
+    let registry = fa_cli::verbs::registry().unwrap();
+    stdout
+        .lines()
+        .map(|line| {
+            registry
+                .check_line(line)
+                .unwrap_or_else(|error| panic!("{args:?}: {error}\n{line}"));
+            json::parse(line).unwrap()
+        })
+        .collect()
+}
+
+fn statement_amounts<'a>(report: &'a Json, code: &str, unit: &str) -> &'a [Json] {
+    let line = rows(report, "lines")
+        .iter()
+        .find(|line| text(line, "code") == code && text(line, "unit") == unit)
+        .unwrap_or_else(|| panic!("missing statement line {code}/{unit}: {report:?}"));
+    rows(line, "amounts")
+}
+
 fn head(book: &Path) -> i128 {
     let info = ok(book, &["book", "info"]);
     integer(info.get("coordinate").unwrap(), "known_at")
@@ -532,4 +567,291 @@ fn ambiguous_stock_and_activity_selections_refuse_before_opening_a_book() {
         assert_eq!(refused.get("book"), Some(&Json::Null));
     }
     assert!(!absent.exists());
+}
+
+#[test]
+fn functional_statement_cli_reopens_cold_history_certifies_replays_and_tracks_backdates() {
+    let seed = 0xe8;
+    let fixture = Fixture::create(Some(seed));
+    fixture.post("statement-january", "2026-01-05", "100.00", 11);
+    fixture.post("statement-february", "2026-02-05", "200.00", 12);
+    fixture.compact(seed);
+    let before = head(&fixture.book);
+    let native = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P02",
+            "--compare",
+            "FY2026-P01",
+        ],
+    );
+    assert_eq!(
+        statement_amounts(data(&native), "assets", "EUR"),
+        &[
+            Json::Str("300.00 EUR".into()),
+            Json::Str("100.00 EUR".into())
+        ]
+    );
+    let balance = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--functional",
+            "--for",
+            "FY2026-P02",
+            "--compare",
+            "FY2026-P01",
+        ],
+    );
+    assert_eq!(
+        text(data(&balance), "scope"),
+        "single-book-functional-currency"
+    );
+    assert_eq!(
+        text(data(&balance), "valuation_basis"),
+        "retained-base-amounts"
+    );
+    assert_eq!(text(data(&balance), "base_unit"), "USD");
+    assert_eq!(data(&balance).get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(
+        statement_amounts(data(&balance), "assets", "USD"),
+        &[
+            Json::Str("350.00 USD".into()),
+            Json::Str("110.00 USD".into())
+        ]
+    );
+    assert_eq!(
+        statement_amounts(data(&balance), "balance_check", "USD"),
+        &[Json::Str("0.00 USD".into()), Json::Str("0.00 USD".into())]
+    );
+    assert!(
+        rows(data(&balance), "lines")
+            .iter()
+            .all(|line| text(line, "unit") == "USD")
+    );
+    assert_eq!(
+        head(&fixture.book),
+        before,
+        "functional read must not publish a valuation"
+    );
+
+    let certificate_path = fixture.dir.join("functional-statement.cert");
+    let original = ok_many(
+        &fixture.book,
+        &[
+            "statement",
+            "income-statement",
+            "--functional",
+            "--for",
+            "FY2026-P02",
+            "--compare",
+            "FY2026-P01",
+            "--certificate-out",
+            certificate_path.to_str().unwrap(),
+            "--render",
+            "md",
+        ],
+    );
+    assert_eq!(original.len(), 3);
+    assert_eq!(text(&original[0], "event"), "statement");
+    assert_eq!(
+        statement_amounts(data(&original[0]), "net_income", "USD"),
+        &[
+            Json::Str("240.00 USD".into()),
+            Json::Str("110.00 USD".into())
+        ]
+    );
+    assert_eq!(text(&original[1], "event"), "report_certificate");
+    assert_eq!(text(&original[2], "event"), "rendered");
+    assert!(
+        text(data(&original[2]), "markdown").contains("Valuation basis: functional currency USD")
+    );
+    let certificate =
+        fa::ReportCertificate::decode(&std::fs::read(&certificate_path).unwrap()).unwrap();
+    assert!(matches!(
+        certificate.selection,
+        fa::ReportSelection::FunctionalStatement(_)
+    ));
+    let reference = format!("C:{}", text(data(&original[1]), "oid"));
+    let replay = ok_many(&fixture.book, &["replay", &reference]);
+    assert_eq!(
+        replay[0], original[0],
+        "retained replay keeps the explicit functional basis"
+    );
+    assert_eq!(
+        text(
+            data(&ok(&fixture.book, &["certificate", "status", &reference])),
+            "status"
+        ),
+        "Current"
+    );
+
+    fixture.post("statement-backdate", "2026-01-20", "10.00", 13);
+    let status = ok(&fixture.book, &["certificate", "status", &reference]);
+    assert_eq!(text(data(&status), "status"), "SupersededBy");
+    assert!(!rows(data(&status), "later_entries").is_empty());
+    assert_eq!(
+        ok_many(&fixture.book, &["replay", &reference])[0],
+        original[0]
+    );
+    let historical = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "income-statement",
+            "--functional",
+            "--for",
+            "FY2026-P02",
+            "--compare",
+            "FY2026-P01",
+            "--as-known-at",
+            &certificate.known_at.0.to_string(),
+        ],
+    );
+    assert_eq!(data(&historical), data(&original[0]));
+    let current = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "income-statement",
+            "--functional",
+            "--for",
+            "FY2026-P02",
+            "--compare",
+            "FY2026-P01",
+        ],
+    );
+    assert_eq!(
+        statement_amounts(data(&current), "net_income", "USD"),
+        &[
+            Json::Str("240.00 USD".into()),
+            Json::Str("123.00 USD".into())
+        ]
+    );
+}
+
+#[test]
+fn functional_statement_cli_refuses_unsupported_workflows_and_unvalued_foreign_rows() {
+    let fixture = Fixture::new();
+    for args in [
+        vec![
+            "statement",
+            "diff",
+            "--functional",
+            "--for",
+            "FY2026-P01",
+            "--definition",
+            "balance-sheet",
+            "--before",
+            "1",
+        ],
+        vec![
+            "statement",
+            "lint",
+            "--functional",
+            "--definition",
+            "balance-sheet",
+        ],
+        vec![
+            "statement",
+            "balance-sheet",
+            "--functional",
+            "--for",
+            "FY2026-P01",
+            "--as-originally-reported",
+        ],
+        vec![
+            "statement",
+            "equity-roll-forward",
+            "--functional",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-01-31",
+        ],
+    ] {
+        assert_eq!(run(&fixture.book, &args).0, 2, "{args:?}");
+    }
+    let unvalued = fixture.file("unvalued-statement.json", r#"{"effective_date":"2026-02-05","idempotency_key":"unvalued-statement","legs":[{"side":"debit","account":"1200","amount":"10.00 EUR"},{"side":"credit","account":"4000","amount":"10.00 EUR"}]}"#);
+    ok(
+        &fixture.book,
+        &[
+            "post",
+            "--intent",
+            &unvalued,
+            "--evidence",
+            &fixture.evidence,
+        ],
+    );
+    let before = head(&fixture.book);
+    let (status, event) = run(
+        &fixture.book,
+        &[
+            "statement",
+            "balance-sheet",
+            "--functional",
+            "--for",
+            "FY2026-P02",
+        ],
+    );
+    assert_ne!(status, 0, "{}", event.render());
+    assert_ne!(text(&event, "event"), "statement");
+    assert_eq!(head(&fixture.book), before);
+}
+
+#[test]
+fn functional_statement_file_at_cold_head_replays_and_reports_status_without_retention() {
+    let seed = 0xe9;
+    let fixture = Fixture::create(Some(seed));
+    fixture.post("file-only-january", "2026-01-05", "100.00", 11);
+    fixture.post("file-only-february", "2026-02-05", "200.00", 12);
+    let before = head(&fixture.book);
+    let mut book = Book::open_dir(
+        &fixture.book,
+        BookKeys::for_development(seed),
+        Entropy::deterministic(991),
+    )
+    .unwrap();
+    let capability = fa::Capability::embedded(fgdb_types::VId(1), &["read", "produce"]).unwrap();
+    let certified = book
+        .certify_functional_statement(
+            capability.holder(),
+            &capability,
+            fa::StatementSelection {
+                definition: fa::StatementDefinition::embedded("balance-sheet").unwrap(),
+                periods: vec!["FY2026-P02".into()],
+                comparative: vec!["FY2026-P01".into()],
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(book.head().unwrap(), certified.certificate.known_at);
+    let path = fixture.dir.join("unretained-functional-statement.cert");
+    std::fs::write(&path, certified.certificate.canonical_bytes().unwrap()).unwrap();
+    drop(book);
+    fixture.compact(seed);
+    let replay = ok(&fixture.book, &["replay", path.to_str().unwrap()]);
+    assert_eq!(
+        text(data(&replay), "valuation_basis"),
+        "retained-base-amounts"
+    );
+    assert_eq!(integer(data(&replay), "known_at"), before);
+    assert_eq!(
+        statement_amounts(data(&replay), "assets", "USD"),
+        &[
+            Json::Str("350.00 USD".into()),
+            Json::Str("110.00 USD".into())
+        ]
+    );
+    let status = ok(
+        &fixture.book,
+        &["certificate", "status", path.to_str().unwrap()],
+    );
+    assert_eq!(text(data(&status), "status"), "Current");
+    assert_eq!(head(&fixture.book), before);
 }
