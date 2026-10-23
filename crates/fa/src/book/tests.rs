@@ -1130,7 +1130,7 @@ fn prepared_open_conflicts_with_a_new_due_schedule_and_fresh_open_mints_once() {
             .await
             .unwrap()
             .unwrap();
-        let capability = Capability::embedded(VId(1), &["close"]).unwrap();
+        let capability = Capability::embedded(VId(1), &["close", "post"]).unwrap();
         let prepared = prepare_fixture_transition(
             &mut fixture.book,
             &cx,
@@ -1157,6 +1157,39 @@ fn prepared_open_conflicts_with_a_new_due_schedule_and_fresh_open_mints_once() {
             .unwrap()
             .unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
+        assert_eq!(fixture.book.head(&cx).unwrap(), before);
+        assert_eq!(journal_entries(&fixture.book, &cx), entries);
+        assert_eq!(
+            fixture
+                .book
+                .periods(&cx)
+                .unwrap()
+                .iter()
+                .find(|p| p.code == fixture.april)
+                .unwrap()
+                .state,
+            fa_time::PeriodState::Future
+        );
+        // Opening the period also mints the due reversal. Close authority
+        // alone must not authorize that posting or publish the transition.
+        let description = fixture.book.seal_text(&cx, "close-only Open").unwrap();
+        let refusal = fa_journal::period::prepare_transition(
+            &mut fixture.book.db,
+            &cx,
+            &context,
+            &fixture.april,
+            PeriodTransition::Open,
+            VId(1),
+            1,
+            b"close-only-open",
+            description,
+            &Capability::embedded(VId(1), &["close"]).unwrap(),
+            &[],
+        )
+        .unwrap()
+        .err()
+        .expect("a due reversal requires post authority");
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
         assert_eq!(fixture.book.head(&cx).unwrap(), before);
         assert_eq!(journal_entries(&fixture.book, &cx), entries);
         assert_eq!(
