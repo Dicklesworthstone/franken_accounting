@@ -20,7 +20,7 @@ use fa_model::{
 };
 use fa_policy::{Capability, Intent, Op, Party, Profile, Reach};
 use fa_time::{DateDay, MonthEndPolicy, MonthlyRecurrence};
-use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
+use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
@@ -395,8 +395,8 @@ fn admit<V: Vfs + Clone>(
         {
             return Ok(Err(policy::refusal(&d)));
         }
-        if write {
-            if let Err(d) = fa_policy::admit(
+        if write
+            && let Err(d) = fa_policy::admit(
                 capability,
                 &Intent {
                     principal: capability.holder(),
@@ -405,9 +405,9 @@ fn admit<V: Vfs + Clone>(
                     book: book.book_id,
                     legs: &[],
                 },
-            ) {
-                return Ok(Err(policy::refusal(&d)));
-            }
+            )
+        {
+            return Ok(Err(policy::refusal(&d)));
         }
         policy::current_at(db, book, capability).map(|r| r.map(|_| ()))
     })
@@ -868,8 +868,8 @@ pub async fn cancel_recurring<V: Vfs + Clone>(
             "no recurring schedule named `{name}`"
         ))));
     };
-    if capability.holder() != record.plan.capability.holder() {
-        if let Err(d) = fa_policy::admit(
+    if capability.holder() != record.plan.capability.holder()
+        && let Err(d) = fa_policy::admit(
             capability,
             &Intent {
                 principal: capability.holder(),
@@ -878,9 +878,9 @@ pub async fn cancel_recurring<V: Vfs + Clone>(
                 book: book.book_id,
                 legs: &[],
             },
-        ) {
-            return Ok(Err(policy::refusal(&d)));
-        }
+        )
+    {
+        return Ok(Err(policy::refusal(&d)));
     }
     let evid = cancel_vid(schedule);
     let mut txn = db.begin(&ctx.txn())?;
@@ -1044,7 +1044,7 @@ pub(crate) fn witness<V: Vfs + Clone>(
 
 pub(crate) fn stage_progress<V: Vfs + Clone>(
     txn: &mut WriteTxn,
-    db: &Database<V>,
+    db: &mut Database<V>,
     token: Executing,
     entry: VId,
 ) -> Result<(), KernelError> {
