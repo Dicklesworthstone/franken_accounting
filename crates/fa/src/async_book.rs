@@ -3444,8 +3444,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.signer.public_key()
     }
 
-    /// Export a native trial-balance or statement certificate with a complete
-    /// journal prefix for the independent offline report verifier. The complete
+    /// Export a native trial-balance or statement certificate with a signed,
+    /// payload-complete journal prefix for the independent offline verifier. The complete
     /// prefix is disclosed, so account/effective scope caveats cannot be served
     /// by filtering its records. The certificate is replayed before production.
     pub async fn produce_report_bundle(
@@ -3487,7 +3487,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 fa_journal::exit::REFUSAL,
                 "offline report production requires this book's sequence-selected native trial-balance or statement certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify a native fa tb or fa statement report using HEAD or a recorded sequence, then produce its C:<oid> against a checkpoint covering that sequence; statement verification also requires the recipient's complete unit-ID list",
+                "certify a native fa tb or fa statement report using HEAD or a recorded sequence, then produce its C:<oid> against a checkpoint covering that sequence",
             )));
         }
         if let Err(refusal) = self
@@ -3499,6 +3499,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(refusal) = self.replay_report(cx, certificate)? {
             return Ok(Err(refusal));
         }
+        let registries = if matches!(&certificate.selection, crate::ReportSelection::Statement(_)) {
+            match crate::certificate::offline_statement_registries(certificate, &self.context.units)
+            {
+                Ok(registries) => Some(registries),
+                Err(refusal)
+                    if refusal.code == fa_notary::code::SCOPE_UNSUPPORTED
+                        || refusal.code
+                            == crate::certificate::code::CERTIFICATE_REGISTRY_UNAVAILABLE =>
+                {
+                    // Preserve native replay's legacy export for custom book
+                    // units and supported historical closures. A v1 statement
+                    // verifier must receive the complete recipient unit list;
+                    // it never claims an authenticated registry universe.
+                    None
+                }
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        } else {
+            None
+        };
         let at = self.head(cx)?;
         let commitment = capability
             .commitment()
@@ -3531,13 +3551,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let bytes = certificate
             .canonical_bytes()
             .map_err(|error| KernelError::Model(error.into()))?;
-        let bundle = match fa_notary::report::assemble(
-            &journal,
-            &checkpoint,
-            &bytes,
-            certificate.known_at,
-            &bodies,
-        )? {
+        let assembled = match registries.as_deref() {
+            Some(registries) => fa_notary::report::assemble_with_registries(
+                &journal,
+                &checkpoint,
+                &bytes,
+                certificate.known_at,
+                &bodies,
+                registries,
+            ),
+            None => fa_notary::report::assemble(
+                &journal,
+                &checkpoint,
+                &bytes,
+                certificate.known_at,
+                &bodies,
+            ),
+        }?;
+        let bundle = match assembled {
             Ok(bundle) => bundle,
             Err(refusal) => return Ok(Err(refusal)),
         };

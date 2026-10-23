@@ -103,8 +103,9 @@ commands:
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
-               [--units N,N,...]               independently recompute native trial-balance rows,
-                                                or statement lines with recipient-selected unit IDs
+               [--units N,N,...]               independently recompute native trial-balance rows
+                                                or statement lines. V1 statements require --units;
+                                                V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
                                                 proves through the certificate's cutoff and
@@ -124,9 +125,10 @@ options:
   --account A    an account vid: decimal, or 0x followed by up to 32 hex characters
   --from D --to D  an inclusive effective-day interval (days since 1970-01-01)
   --receipt R    a bundle's detached production receipt
-  --units N,N,...  statements require 1..=4096 strictly ascending unique native unit IDs;
-                 obtain the complete list independently of the report. It is an explicit
-                 recipient input, not proof of the book's unit registration or display labels.
+  --units N,N,...  V1 statements require 1..=4096 strictly ascending unique native unit IDs;
+                 obtain the complete list independently. For V1 it is a report premise,
+                 not proof of unit registration or labels. For V2 the list is optional;
+                 if supplied it must exactly match the authenticated registry closure.
   --json         one JSON report on stdout (robot mode)
   --hex          read every input file as hexadecimal text
 
@@ -689,7 +691,7 @@ fn statement_units(raw: &str) -> Result<Vec<u32>, Usage> {
     let invalid = || {
         usage(
             "`--units` requires 1..=4096 strictly ascending unique decimal u32 unit IDs",
-            "pass the complete independently obtained unit ID list, for example --units 0,1,2; omit --units only for a trial balance",
+            "pass the complete independently obtained unit ID list, for example --units 0,1,2; omit --units for a trial balance or a version-2 registry bundle",
         )
     };
     let mut units = Vec::new();
@@ -1331,18 +1333,20 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 .map(|p| load(read, p, args.hex))
                 .transpose()?;
             let verified = match units.as_deref() {
-                Some(units) => crate::report::verify_statement_report(
+                Some(units) => crate::report::verify_statement_report_expected(
                     &bytes,
                     &keys,
                     expected_checkpoint.as_ref(),
                     receipt.as_deref(),
                     units,
+                    expected_digest.as_ref(),
                 ),
-                None => crate::report::verify_report(
+                None => crate::report::verify_report_expected(
                     &bytes,
                     &keys,
                     expected_checkpoint.as_ref(),
                     receipt.as_deref(),
+                    expected_digest.as_ref(),
                 ),
             };
             match verified {
@@ -1354,19 +1358,6 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     reason: Some(error.detail),
                 }),
                 Ok(report) => {
-                    if expected_digest.is_some_and(|expected| expected != report.certificate_digest)
-                    {
-                        checks.push(Check {
-                            name: "recipient_certificate",
-                            scope: "recomputation",
-                            verdict: Verdict::Fail,
-                            detail: Vec::new(),
-                            reason: Some(
-                                "report uses another certificate than --expect requested".into(),
-                            ),
-                        });
-                        return Ok(checks);
-                    }
                     checks.push(Check::pass(
                         "report_bundle",
                         report.scope,
@@ -1485,9 +1476,14 @@ fn statement_checks(
     statement: &crate::report::VerifiedStatement,
     unit_universe_source: &str,
 ) -> Vec<Check> {
+    let authenticated_registry = unit_universe_source == "authenticated-registry";
     let mut checks = vec![Check::pass(
         "statement_parameters",
-        "recipient_selected_units",
+        if authenticated_registry {
+            "authenticated_parameters"
+        } else {
+            "recipient_selected_units"
+        },
         vec![
             ("definition", s(&statement.definition_name)),
             ("definition_digest", h(&statement.definition_digest)),
@@ -1505,15 +1501,33 @@ fn statement_checks(
             ),
             (
                 "unit_registration",
-                s("not authenticated by the checkpoint prefix"),
+                s(if authenticated_registry {
+                    "canonical registry closure bound to a trusted certificate pin or signed receipt; journaled activation not verified"
+                } else {
+                    "not authenticated by the checkpoint prefix"
+                }),
             ),
             ("unit_labels", s("not verified")),
             (
                 "definition_authority",
-                s("report parameter; independent approval is not established"),
+                s(if authenticated_registry {
+                    "bound to a recipient-selected certificate digest or signed production receipt"
+                } else {
+                    "report parameter; independent approval is not established"
+                }),
             ),
         ],
     )];
+    checks.push(Check::pass(
+        "statement_definition",
+        "recomputation",
+        vec![
+            ("name", s(&statement.definition_name)),
+            ("version", n(u64::from(statement.definition_version))),
+            ("definition_digest", h(&statement.definition_digest)),
+            ("mapped_accounts", n(statement.mappings.len() as u64)),
+        ],
+    ));
     for column in &statement.columns {
         checks.push(Check::pass(
             "statement_column",
@@ -2053,7 +2067,9 @@ mod tests {
     fn statement_result_preserves_exact_columns_and_declares_unit_premise() {
         let statement = crate::report::VerifiedStatement {
             definition_name: "income-statement".into(),
+            definition_version: 1,
             definition_digest: [7; 32],
+            mappings: Vec::new(),
             kind: "IncomeStatement",
             columns: vec![
                 crate::report::StatementColumn {

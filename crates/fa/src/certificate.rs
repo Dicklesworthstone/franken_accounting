@@ -559,6 +559,51 @@ fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
     )
 }
 
+/// Canonical registry inputs carried by the native statement report bundle.
+/// The closure must be the one this certificate actually names. A historical
+/// or custom book unit table cannot be replaced by the executable's defaults:
+/// native statements render zero-valued lines for every book unit as well.
+pub(crate) fn offline_statement_registries(
+    certificate: &ReportCertificate,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
+    if !matches!(&certificate.selection, ReportSelection::Statement(_)) {
+        return Err(invalid(
+            "portable statement registries require a native statement certificate",
+        ));
+    }
+    let sources = report_registries(&certificate.selection);
+    let current = registry_digest(&certificate.selection)?;
+    if certificate.registry_digest != current {
+        return Err(registry_unavailable(
+            "offline statement certificate",
+            &certificate.registry_digest,
+            &current,
+            &sources,
+        ));
+    }
+    let declared = fa_money::UnitRegistry::embedded()
+        .map_err(|error| invalid(format!("embedded unit registry cannot be loaded: {error}")))?;
+    if !units.iter().eq(declared.iter()) {
+        return Err(Refusal::new(
+            fa_notary::code::SCOPE_UNSUPPORTED,
+            exit::REFUSAL,
+            "the book's exact unit definitions differ from the certificate's portable registry closure",
+            "plan §13.6 / FA-INV-11 (every statement input, including zero-valued unit columns, is bound)",
+            "export this report from a book whose immutable unit table matches its retained registry epoch; do not substitute or renumber historical units",
+        ));
+    }
+    sources
+        .into_iter()
+        .map(|(name, text)| {
+            let document = fa_registry::toml::parse(text).map_err(|error| {
+                invalid(format!("embedded registry {name} does not parse: {error}"))
+            })?;
+            Ok((name.to_string(), document.canonical_bytes()))
+        })
+        .collect()
+}
+
 /// The v5 registry closure before the additive retained-carrying close law.
 /// Every original law and every other registry remains bound byte-for-byte
 /// canonically. This is usable only for prefixes whose valuations use those
@@ -2750,6 +2795,72 @@ mod tests {
             selection.comparative = vec!["FY2024-P03".into()];
         }
         assert_ne!(changed.body_bytes().unwrap(), original);
+    }
+
+    #[test]
+    fn offline_statement_export_binds_exact_registry_documents_and_book_units() {
+        let selection = ReportSelection::from(crate::StatementSelection {
+            definition: crate::StatementDefinition::embedded("balance-sheet").unwrap(),
+            periods: vec!["FY2026-P03".into()],
+            comparative: Vec::new(),
+        });
+        let mut certificate = wire_fixture(selection, None);
+        certificate.registry_digest = registry_digest(&certificate.selection).unwrap();
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        let documents = offline_statement_registries(&certificate, &units).unwrap();
+        assert_eq!(
+            documents
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["account_types", "entry_classes", "units", "foundations"]
+        );
+        let leaves = documents
+            .iter()
+            .map(|(name, bytes)| {
+                (
+                    name.as_str(),
+                    digest(b"fa:registry-canonical-digest:v1", bytes),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            registry_closure(b"fa:report-registry-closure:v2", &leaves),
+            certificate.registry_digest
+        );
+        let mut subset = fa_money::UnitRegistry::empty();
+        subset
+            .register(units.iter().next().unwrap().1.clone())
+            .unwrap();
+        assert_eq!(
+            offline_statement_registries(&certificate, &subset)
+                .unwrap_err()
+                .code,
+            fa_notary::code::SCOPE_UNSUPPORTED
+        );
+        // Cardinality and unit codes are not sufficient: the same ID with a
+        // changed scale would reinterpret every historical amount.
+        let mut changed = fa_money::UnitRegistry::empty();
+        for (id, unit) in units.iter() {
+            let mut unit = unit.clone();
+            if id.0 == 0 {
+                unit.scale = 3;
+            }
+            changed.register(unit).unwrap();
+        }
+        assert_eq!(
+            offline_statement_registries(&certificate, &changed)
+                .unwrap_err()
+                .code,
+            fa_notary::code::SCOPE_UNSUPPORTED
+        );
+        certificate.registry_digest = legacy_v2_registry_digest(&certificate.selection).unwrap();
+        assert_eq!(
+            offline_statement_registries(&certificate, &units)
+                .unwrap_err()
+                .code,
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE
+        );
     }
 
     #[test]

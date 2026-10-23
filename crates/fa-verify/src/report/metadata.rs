@@ -18,10 +18,16 @@ pub(super) struct EntryInfo<'a> {
     /// Before replacement-pair identities were target-derived, the immutable
     /// corrected member used its ordinary key identity. Both encodings name
     /// the same authenticated payload, never an arbitrary producer alias.
-    legacy_identity: Option<u128>,
+    pub(super) legacy_identity: Option<u128>,
 }
 
 impl EntryInfo<'_> {
+    pub fn identities(&self) -> impl Iterator<Item = u128> + '_ {
+        std::iter::once(self.identity).chain(
+            self.legacy_identity
+                .filter(|legacy| *legacy != self.identity),
+        )
+    }
     pub fn matches_identity(&self, identity: u128) -> bool {
         self.identity == identity || self.legacy_identity == Some(identity)
     }
@@ -152,6 +158,9 @@ pub(super) fn entry_info<'a>(
         let digest = r.fixed("supersession.digest")?;
         let kind = r.u8("supersession.kind")?;
         r.u16("supersession.reason")?;
+        if !(1..=6).contains(&kind) {
+            return Err(failed("entry_lineage", "unknown supersession kind"));
+        }
         supersession.push((target, digest, kind));
     }
     let mut resolution = None;
@@ -414,6 +423,16 @@ impl Schema {
                     ));
                 }
                 r.i32("account.lifecycle_date")?;
+                if kind == 4 {
+                    let account = self
+                        .accounts
+                        .get_mut(&crate::ads::account_vid(book, code))
+                        .ok_or_else(|| failed("account_metadata", "absent promoted account"))?;
+                    if !account.is_leaf {
+                        return Err(failed("account_metadata", "account was already a summary"));
+                    }
+                    account.is_leaf = false;
+                }
             }
             13 => {
                 if &r.fixed::<21>("period_creation.domain")? != b"fa:period-creation:v1" {
@@ -481,6 +500,10 @@ impl Schema {
             ));
         }
         match selection {
+            Selection::Statement(_) => Err(failed(
+                "report_selector",
+                "statement selection requires its authenticated registry closure",
+            )),
             Selection::AsOf(day) => Ok((
                 self.periods
                     .iter()
@@ -510,44 +533,38 @@ impl Schema {
                 let activity = matches!(selection, Selection::Activity(_));
                 Ok((codes.clone(), (!activity).then_some(through), activity))
             }
-            Selection::Statement(_) => Err(failed(
-                "report_selector",
-                "statement columns require their own period selectors",
-            )),
         }
     }
     pub fn bounds(&self, codes: &[String]) -> Result<(i32, i32), ReportError> {
-        let mut first = i32::MAX;
-        let mut last = i32::MIN;
-        for code in codes {
-            let period = self.periods.get(code).ok_or_else(|| {
-                failed(
-                    "period_metadata",
-                    format!("unknown statement period {code}"),
-                )
-            })?;
-            first = first.min(period.start);
-            last = last.max(
-                period
-                    .end
-                    .checked_sub(1)
-                    .ok_or_else(|| failed("period_metadata", "statement period end underflow"))?,
-            );
-        }
-        if codes.is_empty() || first > last {
+        if codes.is_empty() {
             return Err(failed(
                 "period_metadata",
                 "empty statement period selection",
             ));
         }
+        let mut first = i32::MAX;
+        let mut last = i32::MIN;
+        for code in codes {
+            let p = self.periods.get(code).ok_or_else(|| {
+                failed(
+                    "period_metadata",
+                    format!("unknown statement period {code}"),
+                )
+            })?;
+            first = first.min(p.start);
+            last = last.max(
+                p.end
+                    .checked_sub(1)
+                    .ok_or_else(|| failed("period_metadata", "period-end underflow"))?,
+            );
+        }
         Ok((first, last))
     }
-    pub fn is_closing_period(&self, info: &EntryInfo<'_>, day: i32) -> Result<bool, ReportError> {
-        let code = self.entry_period(info, day)?;
-        Ok(self
-            .periods
-            .get(&code)
-            .is_some_and(|period| period.kind == 3))
+    pub fn period_kind(&self, code: &str) -> Result<u8, ReportError> {
+        self.periods
+            .get(code)
+            .map(|period| period.kind)
+            .ok_or_else(|| failed("period_metadata", "unknown entry period"))
     }
     pub fn entry_period(
         &self,
