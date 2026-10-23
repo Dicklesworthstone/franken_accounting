@@ -467,6 +467,120 @@ fn policy(bytes: &[u8], book: &[u8; 16]) -> Result<Policy, VerifyError> {
     })
 }
 
+/// The report fold's migration visibility over an already authenticated,
+/// payload-complete prefix. The same independent lifecycle decoder serves
+/// balance and report proofs; neither trusts mutable run-state projections.
+pub(crate) fn report_visibility(
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    bodies: &[(u64, &[u8])],
+    known_at: u64,
+) -> Result<BTreeSet<u64>, VerifyError> {
+    let mut runs: BTreeMap<u128, Run> = BTreeMap::new();
+    let mut needed = BTreeSet::new();
+    let mut chunks = Vec::new();
+    for (index, (envelope, (len, payload))) in envelopes.iter().zip(records).enumerate() {
+        if envelope.commit_seq > known_at || envelope.kind != crate::envelope::KIND_ENTRY {
+            continue;
+        }
+        if !matches!(envelope.class, CLASS_MIGRATION | CLASS_MIGRATION_CONTROL) {
+            continue;
+        }
+        let index = index as u64;
+        match metadata(envelope, &payload[..*len], index)? {
+            Metadata::Chunk(run) => {
+                needed.insert(run);
+                chunks.push((index, run, envelope.effective_day));
+            }
+            Metadata::Control {
+                run,
+                kind,
+                digest,
+                body_digest,
+            } => {
+                if kind == 0 {
+                    if runs
+                        .insert(
+                            run,
+                            Run {
+                                open_index: index,
+                                open_day: envelope
+                                    .effective_day
+                                    .ok_or_else(|| scope_error(index))?,
+                                digest,
+                                terminal: None,
+                                policy: None,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(scope_error(index));
+                    }
+                } else {
+                    let state = runs.get_mut(&run).ok_or_else(|| scope_error(index))?;
+                    if state.terminal.is_some()
+                        || index <= state.open_index
+                        || body_digest != state.digest
+                    {
+                        return Err(scope_error(index));
+                    }
+                    state.terminal = Some((index, kind));
+                }
+            }
+            Metadata::Ordinary => return Err(scope_error(index)),
+        }
+    }
+    let mut opens: Vec<_> = runs
+        .iter()
+        .filter(|(run, _)| needed.contains(run))
+        .map(|(run, state)| (state.open_index, *run))
+        .collect();
+    opens.sort_unstable();
+    if opens.len() != bodies.len() {
+        return Err(scope_error(opens.first().map_or(0, |(index, _)| *index)));
+    }
+    for ((open_index, run), (supplied_index, body)) in opens.into_iter().zip(bodies) {
+        if open_index != *supplied_index {
+            return Err(scope_error(open_index.min(*supplied_index)));
+        }
+        let state = runs.get_mut(&run).ok_or_else(|| scope_error(open_index))?;
+        if body_digest(body) != state.digest {
+            return Err(VerifyError::Record(crate::envelope::RecordError::Digest {
+                which: "migration.run_body",
+            }));
+        }
+        let book = envelopes
+            .first()
+            .ok_or_else(|| scope_error(open_index))?
+            .book_id;
+        let policy = policy(body, &book)?;
+        if policy.run != run || policy.opening_day != state.open_day {
+            return Err(scope_error(open_index));
+        }
+        state.policy = Some(policy);
+    }
+    let mut visible = BTreeSet::new();
+    for (index, run, day) in chunks {
+        let state = runs.get(&run).ok_or_else(|| scope_error(index))?;
+        if index <= state.open_index
+            || state
+                .terminal
+                .is_some_and(|(terminal, _)| index >= terminal)
+        {
+            return Err(scope_error(index));
+        }
+        let policy = state.policy.ok_or_else(|| scope_error(state.open_index))?;
+        if matches!(state.terminal, Some((_, 1)))
+            && policy
+                .counts_from
+                .is_none_or(|cutoff| day.is_some_and(|d| d >= cutoff))
+        {
+            visible.insert(index);
+        }
+    }
+    Ok(visible)
+}
+
 #[cfg(test)]
 mod tests {
     mod complete_tests;
@@ -886,118 +1000,4 @@ mod tests {
             }
         }
     }
-}
-
-/// The report fold's migration visibility over an already authenticated,
-/// payload-complete prefix. The same independent lifecycle decoder serves
-/// balance and report proofs; neither trusts mutable run-state projections.
-pub(crate) fn report_visibility(
-    envelopes: &[LeafEnvelope],
-    records: &[(usize, &[u8])],
-    bodies: &[(u64, &[u8])],
-    known_at: u64,
-) -> Result<BTreeSet<u64>, VerifyError> {
-    let mut runs: BTreeMap<u128, Run> = BTreeMap::new();
-    let mut needed = BTreeSet::new();
-    let mut chunks = Vec::new();
-    for (index, (envelope, (len, payload))) in envelopes.iter().zip(records).enumerate() {
-        if envelope.commit_seq > known_at || envelope.kind != crate::envelope::KIND_ENTRY {
-            continue;
-        }
-        if !matches!(envelope.class, CLASS_MIGRATION | CLASS_MIGRATION_CONTROL) {
-            continue;
-        }
-        let index = index as u64;
-        match metadata(envelope, &payload[..*len], index)? {
-            Metadata::Chunk(run) => {
-                needed.insert(run);
-                chunks.push((index, run, envelope.effective_day));
-            }
-            Metadata::Control {
-                run,
-                kind,
-                digest,
-                body_digest,
-            } => {
-                if kind == 0 {
-                    if runs
-                        .insert(
-                            run,
-                            Run {
-                                open_index: index,
-                                open_day: envelope
-                                    .effective_day
-                                    .ok_or_else(|| scope_error(index))?,
-                                digest,
-                                terminal: None,
-                                policy: None,
-                            },
-                        )
-                        .is_some()
-                    {
-                        return Err(scope_error(index));
-                    }
-                } else {
-                    let state = runs.get_mut(&run).ok_or_else(|| scope_error(index))?;
-                    if state.terminal.is_some()
-                        || index <= state.open_index
-                        || body_digest != state.digest
-                    {
-                        return Err(scope_error(index));
-                    }
-                    state.terminal = Some((index, kind));
-                }
-            }
-            Metadata::Ordinary => return Err(scope_error(index)),
-        }
-    }
-    let mut opens: Vec<_> = runs
-        .iter()
-        .filter(|(run, _)| needed.contains(run))
-        .map(|(run, state)| (state.open_index, *run))
-        .collect();
-    opens.sort_unstable();
-    if opens.len() != bodies.len() {
-        return Err(scope_error(opens.first().map_or(0, |(index, _)| *index)));
-    }
-    for ((open_index, run), (supplied_index, body)) in opens.into_iter().zip(bodies) {
-        if open_index != *supplied_index {
-            return Err(scope_error(open_index.min(*supplied_index)));
-        }
-        let state = runs.get_mut(&run).ok_or_else(|| scope_error(open_index))?;
-        if body_digest(body) != state.digest {
-            return Err(VerifyError::Record(crate::envelope::RecordError::Digest {
-                which: "migration.run_body",
-            }));
-        }
-        let book = envelopes
-            .first()
-            .ok_or_else(|| scope_error(open_index))?
-            .book_id;
-        let policy = policy(body, &book)?;
-        if policy.run != run || policy.opening_day != state.open_day {
-            return Err(scope_error(open_index));
-        }
-        state.policy = Some(policy);
-    }
-    let mut visible = BTreeSet::new();
-    for (index, run, day) in chunks {
-        let state = runs.get(&run).ok_or_else(|| scope_error(index))?;
-        if index <= state.open_index
-            || state
-                .terminal
-                .is_some_and(|(terminal, _)| index >= terminal)
-        {
-            return Err(scope_error(index));
-        }
-        let policy = state.policy.ok_or_else(|| scope_error(state.open_index))?;
-        if matches!(state.terminal, Some((_, 1)))
-            && policy
-                .counts_from
-                .is_none_or(|cutoff| day.is_some_and(|d| d >= cutoff))
-        {
-            visible.insert(index);
-        }
-    }
-    Ok(visible)
 }

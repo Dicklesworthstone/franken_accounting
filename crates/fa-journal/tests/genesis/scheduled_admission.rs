@@ -1,5 +1,6 @@
 //! Automatic accrual reversals obey native posting laws at execution.
 use super::*;
+use fa_journal::refusal::code;
 use fa_journal::schedule::{ReversalBatch, ReversalStatus};
 use fa_journal::usage::{UsageCell, UsageKey, verify_usage};
 use fa_model::symbols::label;
