@@ -151,7 +151,7 @@ fn certified_historical_trial_balance_survives_export_and_offline_recomputation(
             .predicate,
         "production_receipt"
     );
-    let mut another_checkpoint = anchor.checkpoint.clone();
+    let mut another_checkpoint = anchor.checkpoint;
     another_checkpoint.through_seq += 1;
     assert_eq!(
         fa_verify::report::verify_report(&bundle, &[key], Some(&another_checkpoint), None)
