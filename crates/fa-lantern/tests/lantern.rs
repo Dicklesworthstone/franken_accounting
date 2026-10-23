@@ -1735,7 +1735,63 @@ fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
 
 #[test]
 fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
-    let (h, _) = posted_corpus();
+    let (mut h, _) = posted_corpus();
+    let head = h.db.frontier().unwrap();
+    let suspense = fa_lantern::catalog::build(
+        "jet.suspense_aging",
+        Params::defaults("jet.suspense_aging").unwrap(),
+        Default::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        run(
+            &h.db,
+            &h.ctx().query(),
+            &h.book,
+            None,
+            Some(day(2026, 4, 30)),
+            suspense.as_ref(),
+        ),
+        Err(LanternError::RoleUnassigned { procedure, role })
+            if procedure == "jet.suspense_aging" && role == "suspense"
+    ));
+    assert_eq!(h.db.frontier().unwrap(), head);
+    // The positive catalog requires each role-selected population. Admit
+    // real role controls; do not infer roles from account codes or names.
+    let cx = h.ctx();
+    for (account, role) in [
+        ("1000", "cash"),
+        ("1010", "suspense"),
+        ("1010", "intercompany"),
+        ("1010", "fixed_asset"),
+        ("1010", "inventory"),
+        ("1200", "receivable"),
+        ("2000", "payable"),
+        ("2000", "accrued_expense"),
+        ("2000", "investor_capital"),
+        ("6000", "payroll"),
+    ] {
+        let spec = AccountRoleSpec {
+            account: h.account(account),
+            role: role.into(),
+            assigned: true,
+        };
+        let key = format!("catalog-role:{account}:{role}");
+        let description = h.seal("catalog population role");
+        h.runtime
+            .block_on(record_account_role(
+                &mut h.db,
+                &cx,
+                &h.book,
+                &spec,
+                PREPARER,
+                key.as_bytes(),
+                description,
+                &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+            ))
+            .expect("native role control")
+            .expect("registered role and account type admitted");
+    }
     let rows = fa_lantern::catalog::registered().unwrap();
     assert_eq!(rows.len(), 61, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();

@@ -373,7 +373,8 @@ mod tests {
         let complete = super::find(&edges, 3, 10, 10_000, &mut || {
             complete_steps += 1;
             Ok::<(), core::convert::Infallible>(())
-        }).unwrap();
+        })
+        .unwrap();
         assert!(complete.paths.is_empty());
         let cancel = Cell::new(false);
         let flag = Flag(&cancel);
@@ -389,7 +390,7 @@ mod tests {
         let Err(Error::Interrupted(crate::LanternError::Cancelled { used, .. })) = result else {
             panic!("the recursive search did not propagate cancellation: {result:?}");
         };
-        assert!(used >= 5 && used <= 5 + crate::CANCELLATION_INTERVAL);
+        assert!((5..=5 + crate::CANCELLATION_INTERVAL).contains(&used));
         assert_eq!(visited, used);
         assert_eq!(meter.work().comparisons, used);
         assert!(used < 2_099, "the first root was still being searched");
