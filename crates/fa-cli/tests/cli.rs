@@ -20255,12 +20255,13 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
     assert_eq!(text(&seeded[0], "role"), "suspense");
     assert_eq!(seeded[0].get("assigned"), Some(&Json::Bool(true)));
     let in_transit = text(&seeded[0], "account_vid").to_string();
-    // A retried import finds the recorded chart and the recorded role.
-    let again = doc(&ok(&["chart", "import", &chart]));
-    assert_eq!(
-        text(&arr(&again, "roles")[0], "control_entry"),
-        text(&seeded[0], "control_entry")
-    );
+    // A second import of the same chart is refused (its accounts exist,
+    // FA-REF-100) and writes nothing; the recorded role stands.
+    let head = known_at();
+    let (code, out, err) = run(&["chart", "import", &chart]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(out.contains("FA-REF-100"), "{out}");
+    assert_eq!(known_at(), head, "a refused re-import writes nothing");
 
     let listing = doc(&ok(&["chart", "roles"]));
     let role_row = |listing: &Json, role: &str| -> Json {

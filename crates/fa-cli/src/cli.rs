@@ -4567,7 +4567,9 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             };
             let installed = book.install_chart(&accounts, who, date, &key, &capability)??;
             // Each account role is its own control, keyed under the chart's
-            // key, so a retried import completes them without duplicates.
+            // key. A re-import is refused at install (its accounts exist), so
+            // a role an interrupted import did not record is assigned with
+            // `fa chart role`, whose retry is the recorded control.
             let mut role_items = Vec::with_capacity(roles.len());
             for (code, role) in &roles {
                 let spec = fa::account_role::AccountRoleSpec {
