@@ -446,3 +446,77 @@ This is a red static verdict, not a passing gate. Rust tests, clippy and the
 complete exact-tree gate remain UNRUN: the only disk-qualified Linux worker
 reports critical memory pressure even while its local slot is free. No
 pressure threshold, worker cap or acceptance criterion is weakened.
+
+## 2026-10-23 — Admitted runtime results and chart retry contract (`fa-1tvm`, `fa-r19j`, `fa-kxc4`, open)
+
+The newly configured `trj` worker admits the strict development run after
+source and native build-filesystem SBH checks pass. At `5492f2c6` plus
+overlay `97b0afe805d2405fce7390732b29b8009b106fa9be67f0b29ab0cfe37f842a7a`,
+the complete requested `fa`, `fa-cli`, `fa-gen`, and `fa-lantern` test run
+exits 101: 1,308 passed, eight failed, none ignored. All eight meter/context
+regressions, nine cycle unit cases, real CLI circular-flow budget refusal,
+saved-close invalidation after report certification, and saved-FX-review/plan
+invalidation after a later invoice pass by name. These replace UNRUN only
+for those cases at this source cut; the four-package verdict is RED.
+
+The failures expose four fixture/consumer mismatches and a real kernel gap:
+Unix socket fixtures exceed `sun_path` under long RCH `TMPDIR`; `tru 0.1.1`
+serializes integer JSON values as `6.0`; the bound-operation matrix supplies
+the forbidden global `--yes` flag before it can test missing operations;
+and the positive catalog fixture omits the journaled roles its procedures
+require. The chart-role CLI test also expects an exact chart retry to return
+its recorded outcome, whereas an older template test expects that same retry
+to refuse. `install_chart` has no recorded-outcome branch and stages live
+identities again, violating the normative idempotency contract in plan §5.9.
+
+The fixture repairs retain the assertions they were meant to reach. Socket
+probes use short retained unique directories with an explicit portable length
+bound. The external reference adapter strips only an exact `.0` numeric suffix
+outside strings, without floating arithmetic; fractional/exponent/overflow,
+malformed-number and wrong-integer controls still refuse or compare unequal,
+and the production JSON reader still refuses `6.0`. Real native role controls
+populate the positive catalog, with a missing-role/unchanged-head negative
+beforehand. The operation matrix keeps every operation check and separately
+requires `--yes` to refuse without changing the head.
+
+The chart repair recognizes an existing journal entry only after current
+authorization and SoD checks, compares the canonical or decrypted semantic
+request identity, and returns the original `ChartInstalled` without writing.
+New controls require a nonce-independent exact retry after a role control,
+same-key changed account/reason conflict, new-key duplicate refusal, and
+unauthorized retry refusal, all with unchanged head. The template gate's
+win/lose split is explicit: an exact retry now passes with the original
+identity and birth; a distinct request over existing accounts still refuses.
+The old exact-retry refusal assertion was inconsistent with plan §5.9; no
+plan, threshold, refusal policy, or format is weakened to preserve it.
+
+The first fixture-only rerun at `bb5a0485` plus its four recorded overlays
+exits 101 with 112 passed and one failed: the four socket cases, TOON
+differential and new reference-adapter controls pass, while the chart retry
+still fails. The combined kernel/catalog/matrix run then passes 577 tests
+with remote and client exits zero at `bb5a0485` plus overlay fingerprint
+`06e89c5c171bb20c0634805845c5c6737de0e9aff122ee64af34d95a5b0be987`.
+Workspace all-target Clippy first refuses a manual-range assertion in the
+recursive cancellation test. Its equivalent inclusive-range form passes
+Clippy with warnings denied, nine cycle tests, and 75 registry/validator
+tests at the same base plus final overlay fingerprint
+`9e7a6a0134931e9b59d7328b71ad5ec2ab41fb3cd706f8db98bdee3dc2e1f8d3`.
+The RCH receipt's `tree=fef081eed09666df4fa6b97188cf5f1ed1b06830`
+is the baseline commit's tree, not the composed overlay tree. The source
+identity here is the named base plus overlay fingerprint and retained patch;
+the baseline tree alone cannot qualify the repair.
+
+The original circular-flow native regression also executes at exact
+`1f98e137` with only its frozen test-file overlay: one test runs and fails,
+remote/client 101, because budget seven is reported at eleven work units
+after the search, rather than being interrupted at eight. The same named
+native case and its real CLI counterpart pass in the repaired candidate.
+This is an actual expected-failure control, not a queue timeout or a passing
+ordinary test run. Its log is
+`cycle-original-native-negative-1f98e137-20261023.log`.
+
+Logs are `snapshot-aggregate-positive-5492f2c6-20261023.log`,
+`cli-fixture-repairs-bb5a0485-20261023.log`, and
+`admitted-repairs-bb5a0485-20261023.log` under the verification-output directory.
+Whole static scanning and the complete canonical exact-tree gate remain
+unqualified; no Bead is closed from these selected results.
