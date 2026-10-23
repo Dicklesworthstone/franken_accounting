@@ -2107,15 +2107,23 @@ fn rich_leg_fields_without_a_law_are_refused_not_admitted() {
     let mut converted = base.clone();
     converted.legs[0].base_amount = Some(Amount::new(h.usd, 10));
     let mut entity = base.clone();
-    // Dimension 1 is the legal entity (fa-bvx): it has its law. Any other
-    // dimension still waits for the dimension registry slice.
+    let mut tagged = base.clone();
+    // Dimension 1 is the legal entity (fa-bvx), 12 the party, and 2..=9
+    // the registered kinds (fa-ficc): each has its law. An id no dimension
+    // holds has none.
     let mut dimensioned = base;
-    dimensioned.legs[0].dimension_set = vec![(2, VId(99))];
+    dimensioned.legs[0].dimension_set = vec![(13, VId(99))];
     for (what, p) in [("base_amount", converted), ("dimension_set", dimensioned)] {
         let r = h.post(h.request(p, &["post"])).unwrap_err();
         assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{what}");
         assert!(r.message.contains(what), "{what}: {}", r.message);
     }
+    // A registered kind's law: a cost center value the book never created
+    // is refused, naming the dimension.
+    tagged.legs[0].dimension_set = vec![(2, VId(99))];
+    let r = h.post(h.request(tagged, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("cost_center value"), "{r}");
     // This book declares no legal entities, so a leg naming one is refused.
     entity.legs[0].dimension_set = vec![(fa_model::LEGAL_ENTITY_DIMENSION, VId(99))];
     let r = h.post(h.request(entity, &["post"])).unwrap_err();
