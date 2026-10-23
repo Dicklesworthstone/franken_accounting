@@ -21105,15 +21105,21 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     let leg = |e: &str, a: &str, d: &str, c: &str| {
         (e.to_string(), a.to_string(), d.to_string(), c.to_string())
     };
+    // A group entry's legs follow Concordat's canonical order by entity id,
+    // which derives from the book's id: compare them as sets.
+    let sorted = |mut legs: Vec<(String, String, String, String)>| {
+        legs.sort();
+        legs
+    };
     assert_eq!(eliminations.len(), 4, "{out}");
     assert_eq!(
-        legs("ELIM-IC-GROUP-"),
-        vec![
+        sorted(legs("ELIM-IC-GROUP-")),
+        sorted(vec![
             leg("P", "1300", "0.00 USD", "30.00 USD"),
             leg("S1", "2300", "30.00 USD", "0.00 USD"),
             leg("P", "4300", "30.00 USD", "0.00 USD"),
             leg("S1", "5300", "0.00 USD", "30.00 USD"),
-        ]
+        ])
     );
     let s1 = |kind: &str| {
         eliminations
@@ -21181,18 +21187,19 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
                 })
                 .collect()
         })
+        .map(sorted)
         .collect();
     assert_eq!(
         income,
         vec![
-            vec![
+            sorted(vec![
                 leg("P", "4300", "30.00 USD", "0.00 USD"),
                 leg("S1", "5300", "0.00 USD", "30.00 USD"),
-            ],
-            vec![
+            ]),
+            sorted(vec![
                 leg("S1", "5900", "6.00 USD", "0.00 USD"),
                 leg("S1", "3200", "0.00 USD", "6.00 USD"),
-            ],
+            ]),
         ],
         "{out}"
     );
