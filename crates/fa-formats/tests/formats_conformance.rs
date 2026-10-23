@@ -523,6 +523,46 @@ fn ads_v3_preserves_delimiters_controls_unicode_and_empty_optional_text() {
 }
 
 #[test]
+fn ads_reader_refuses_conflicting_headers_line_numbers_and_metadata() {
+    let units = UnitCatalog::embedded().unwrap();
+    let package = write_ads_package(&sample_multi_unit_journal()).unwrap();
+    for (column, bad) in [
+        (1, "9"),
+        (9, "255"),
+        (10, "different header text"),
+        (11, "different origin"),
+    ] {
+        let mut corrupted = package.clone();
+        let mut lines: Vec<String> = package.gl_detail.lines().map(str::to_owned).collect();
+        let mut fields: Vec<String> = lines[2].split('|').map(str::to_owned).collect();
+        fields[column] = bad.to_owned();
+        lines[2] = fields.join("|");
+        corrupted.gl_detail = format!("{}\n", lines.join("\n"));
+        assert!(
+            matches!(
+                read_ads_package(&corrupted, &units),
+                Err(FormatError::Parse { .. })
+            ),
+            "column {column}"
+        );
+    }
+    for (old, new) in [
+        ("base_unit_scale = 2", "base_unit_scale = -254"),
+        ("known_at_seq = 3", "known_at_seq = -1"),
+        ("entry_count = 3", "entry_count = 99"),
+        ("schema_version = 1", "schema_version = 999"),
+    ] {
+        let mut corrupted = package.clone();
+        assert!(corrupted.certificate_toml.contains(old));
+        corrupted.certificate_toml = corrupted.certificate_toml.replace(old, new);
+        assert!(
+            read_ads_package(&corrupted, &units).is_err(),
+            "metadata {new}"
+        );
+    }
+}
+
+#[test]
 fn tigerbeetle_semantic_corpus_agrees_on_all_scenarios_and_catches_planted_mutation() {
     let corpus = TbCorpus::embedded().expect("tigerbeetle_semantics.toml");
     assert_eq!(corpus.scenarios.len(), 8);
