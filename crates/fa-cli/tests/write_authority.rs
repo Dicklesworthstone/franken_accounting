@@ -433,6 +433,19 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &[
+                "assert-balance",
+                "--account",
+                "1200",
+                "--period",
+                "FY2026-P03",
+                "--balance",
+                "100.00 USD",
+            ],
+            &[Op::Reconcile],
+            Reaches,
+        ),
+        row(
             &["void-reserve", entry, "--date", DAY, "--yes"],
             &[Op::Post],
             Reaches,

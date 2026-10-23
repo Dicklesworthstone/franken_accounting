@@ -107,6 +107,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("allocate", allocate_cmd),
     ("settle", settle_cmd),
     ("document", document::document_cmd),
+    ("assert-balance", document::assert_balance_cmd),
     ("event", event_cmd),
     ("migrate", migrate_cmd),
     ("tb", tb_cmd),

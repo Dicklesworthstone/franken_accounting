@@ -330,6 +330,132 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
 /// entry keeps its own evidence; `fa explain evidence` lists the supplement
 /// with its documents; the same attachment again is the recorded one; an
 /// unknown entry, an unknown document and a missing --evidence are refused.
+/// `fa assert-balance` (plan §9.4, Appendix B AssertBalance): an
+/// assertion equal to the cell's net (debits minus credits) records a
+/// RegisterEquals attestation that holds, and recording it again is the
+/// recorded one; a false one is refused FA-REF-140, exit 3, naming both
+/// amounts and the difference, and records nothing.
+#[test]
+fn assert_balance_records_a_true_assertion_and_refuses_a_false_one() -> std::io::Result<()> {
+    let dir = tmp("assert-balance")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Assert Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let statement = write(
+        &dir,
+        "statement.txt",
+        b"Bank statement: March closing balance",
+    );
+    let out = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            &statement,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    let oid = field(&out, "oid").expect("oid").to_string();
+    let rent = write(
+        &dir,
+        "rent.json",
+        format!("{{\"idempotency_key\":\"rent\",{RENT}}}").as_bytes(),
+    );
+    ok(
+        &book,
+        &["post", "--intent", &rent, "--evidence", &oid, "--json"],
+    );
+
+    // Cash was credited 1500.00: its net is negative. Rent's is positive.
+    let assert = |account: &str, balance: &str| -> Vec<String> {
+        [
+            "assert-balance",
+            "--account",
+            account,
+            "--period",
+            "FY2026-P03",
+            "--balance",
+            balance,
+            "--evidence",
+            &oid,
+            "--json",
+        ]
+        .iter()
+        .map(|a| (*a).to_string())
+        .collect()
+    };
+    let args = |v: &[String]| v.iter().map(String::as_str).collect::<Vec<_>>();
+    let cash = ok(&book, &args(&assert("1000", "-1500.00 USD")));
+    assert_eq!(
+        field(&cash, "event"),
+        Some("attestation_recorded"),
+        "{cash}"
+    );
+    assert_eq!(field(&cash, "claim"), Some("RegisterEquals"), "{cash}");
+    assert_eq!(field(&cash, "holds"), Some("true"), "{cash}");
+    assert_eq!(field(&cash, "already_recorded"), Some("false"), "{cash}");
+    let again = ok(&book, &args(&assert("1000", "-1500.00 USD")));
+    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
+    assert_eq!(
+        field(&again, "attestation_vid"),
+        field(&cash, "attestation_vid")
+    );
+    let rent_holds = ok(&book, &args(&assert("6000", "1500.00 USD")));
+    assert_eq!(field(&rent_holds, "holds"), Some("true"), "{rent_holds}");
+    let checked = ok(
+        &book,
+        &[
+            "document",
+            "attest",
+            "register-equals",
+            field(&cash, "attestation_vid").unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(field(&checked, "holds"), Some("true"), "{checked}");
+
+    // Planted: the wrong sign, and a wrong amount. Each is refused and
+    // records nothing.
+    let head = |out: &str| field(out, "known_at").map(str::to_string);
+    let before = ok(&book, &["book", "info", "--json"]);
+    assert!(head(&before).is_some(), "{before}");
+    let wrong_sign = refused(
+        &book,
+        &args(&assert("1000", "1500.00 USD")),
+        "FA-REF-140",
+        3,
+    );
+    assert!(
+        wrong_sign.contains("-1500.00 USD") && wrong_sign.contains("off by 3000.00 USD"),
+        "{wrong_sign}"
+    );
+    refused(
+        &book,
+        &args(&assert("6000", "1499.99 USD")),
+        "FA-REF-140",
+        3,
+    );
+    let after = ok(&book, &["book", "info", "--json"]);
+    assert_eq!(head(&after), head(&before), "a false assertion wrote");
+    let (code, _, _) = fa(&book, &["assert-balance", "--account", "1000", "--json"]);
+    assert_eq!(code, 2);
+    Ok(())
+}
+
 #[test]
 fn attach_creates_supplemental_evidence() -> std::io::Result<()> {
     let dir = tmp("attach")?;

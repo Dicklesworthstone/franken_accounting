@@ -100,9 +100,20 @@ fn differences<V: asupersync::fs::Vfs + Clone>(
     };
     let mut diffs = Vec::new();
     if expected.amount != claim.amount {
+        let difference = claim
+            .amount
+            .mantissa
+            .checked_sub(expected.amount.mantissa)
+            .map_or_else(String::new, |d| {
+                format!(
+                    " (off by {})",
+                    Amount::new(expected.amount.unit, d).render(&book.units)
+                )
+            });
         diffs.push(format!(
-            "the cell's net is {} (mantissa), not {}",
-            expected.amount.mantissa, claim.amount.mantissa
+            "the cell's net (debits minus credits) is {}, not {}{difference}",
+            expected.amount.render(&book.units),
+            claim.amount.render(&book.units)
         ));
     }
     if expected.evaluated_known_at != claim.evaluated_known_at {

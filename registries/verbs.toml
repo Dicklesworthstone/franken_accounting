@@ -480,6 +480,18 @@ usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--gra
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
+name = "assert-balance"
+summary = "Assert a balance (plan §9.4, Appendix B AssertBalance): plain-text accounting's balance assertion as a RegisterEquals attestation. The asserted amount is the cell's net at the period's end; an assertion equal to the fold is recorded, any other is refused naming both amounts."
+writes = true
+subcommands = []
+flags = ["--account", "--period", "--balance", "--entity", "--evidence", "--as-known-at", "--grant"]
+switches = []
+events = ["attestation_recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["assert-balance --account <code> --period <code> --balance \"<amount> <UNIT>\" [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]", "The amount is the cell's net, debits minus credits, at the period's last day (a credit balance is negative: Cash credited 1500.00 asserts \"-1500.00 USD\"); its unit names the cell. The RegisterEquals law folds the cell again: an equal assertion records an attestation bound to the fold digest at its sequence, and any other is refused FA-REF-140 (exit 3) naming both amounts and the difference, writing nothing. Needs reconcile. Re-check a recorded assertion later with fa document attest register-equals <attestation-vid>; fa procedure run recon.assertion_drift reports assertions a later entry made stale."]
+example = "fa assert-balance --account 1000 --period FY2026-P03 --balance \"-1500.00 USD\" --evidence <statement oid> --book ./books/myco --json"
+
+[[verb]]
 name = "event"
 summary = "Record an REA economic event vertex (plan §4.1, §9.1; Appendix A Event) with participant parties, economic resources, and evidence documents, or inspect recorded events."
 writes = true
@@ -4782,6 +4794,18 @@ mistakes = ["Passing a host path as `file`: supply the document inline as `text`
 
 [[mcp.tool]]
 cluster = "fa.evidence"
+name = "assert_balance"
+verb = "assert-balance"
+subcommands = []
+positionals = []
+flags = ["--account", "--period", "--balance", "--entity", "--evidence", "--as-known-at"]
+switches = []
+required = ["--account", "--period", "--balance"]
+dont = ["Don't assert a number you want to be true: the law folds the cell and refuses any other amount (FA-REF-140), writing nothing.", "Don't flip the sign of a credit balance: the amount is debits minus credits, so a credited cash account is negative."]
+mistakes = ["A JSON number in balance: write \"-1500.00 USD\".", "Asserting a summary account: assert each leaf's cell."]
+
+[[mcp.tool]]
+cluster = "fa.evidence"
 name = "steward"
 verb = "document"
 subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list", "show"]
@@ -5561,6 +5585,12 @@ ops = ["post"]
 verbs = ["document"]
 subcommands = ["read", "list", "show"]
 ops = ["read"]
+
+# A balance assertion records a RegisterEquals attestation, as attest
+# register-equals --account does: reconcile.
+[[bound]]
+verbs = ["assert-balance"]
+ops = ["reconcile"]
 
 [[bound]]
 verbs = ["document"]

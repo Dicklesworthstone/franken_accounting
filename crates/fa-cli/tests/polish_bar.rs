@@ -600,10 +600,6 @@ fn bare_fa_prints_triage_and_exits_zero() {
 #[test]
 fn every_plan_leaf_present_or_registered() {
     const PENDING: &[(&str, &str)] = &[
-        (
-            "fa assert-balance",
-            "fa-waow: document attest register-equals; an alias cannot carry the attestation kind",
-        ),
         ("fa benford", "fa-waow: today fa procedure run benford.*"),
         (
             "fa book open",

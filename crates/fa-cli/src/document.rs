@@ -1561,20 +1561,8 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let account_code = args.require("--account", "1000")?;
             let period = args.require("--period", "FY2026-P03")?.to_string();
             let entity = args.flag("--entity").map(str::to_string);
-            let known_at = match args.flag("--as-known-at") {
-                None | Some("HEAD") => None,
-                Some(raw) => Some(CommitSeq(raw.parse::<u64>().map_err(|_| {
-                    usage(
-                        format!("--as-known-at `{raw}` must be a CommitSeq or HEAD"),
-                        "--as-known-at HEAD",
-                    )
-                })?)),
-            };
-            let mut evidence = Vec::new();
-            for e in args.flag_all("--evidence") {
-                evidence.push(Oid(hex32(e, "--evidence")?));
-            }
-            evidence.sort();
+            let known_at = head_or_seq(args)?;
+            let evidence = sorted_evidence(args)?;
             let capability = ctx.capability(args, &["reconcile"])?;
             let mut book = ctx.books.open(args)?;
             let unit_id = match args.flag("--unit") {
@@ -1594,28 +1582,7 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 entity,
             };
             let claim = book.evaluate_register_equals(&key, known_at)?;
-            let attested = book.record_register_equals(&capability, &claim, evidence)??;
-            let holds = book.assertion_holds(attested.vid)?.unwrap_or(true);
-            ctx.out.at_book(&book)?;
-            let vid_hex = format!("{:032x}", attested.vid.0);
-            let cell_hex = hex(&claim.fold_digest);
-            ctx.out.event(
-                "attestation_recorded",
-                vec![
-                    ("attestation_vid", s(&vid_hex)),
-                    ("claim", s("RegisterEquals")),
-                    ("subject", s(&cell_hex)),
-                    ("signed_digest", s(hex(&attested.signed_digest))),
-                    ("recorded_at", Json::Int(i128::from(attested.recorded_at.0))),
-                    ("already_recorded", Json::Bool(attested.already_recorded)),
-                    ("holds", Json::Bool(holds)),
-                ],
-                &format!(
-                    "recorded RegisterEquals attestation {vid_hex} at {} (holds = {holds})",
-                    attested.recorded_at.0
-                ),
-            );
-            Ok(())
+            record_register_equals(&ctx.out, &mut book, &capability, &claim, evidence)
         }
         other => Err(usage(
             format!(
@@ -1625,6 +1592,97 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa attest review|manual|register-equals ...",
         )),
     }
+}
+
+/// `--as-known-at HEAD|<seq>`: `None` is the head.
+fn head_or_seq(args: &Args) -> Result<Option<CommitSeq>, Fail> {
+    match args.flag("--as-known-at") {
+        None | Some("HEAD") => Ok(None),
+        Some(raw) => raw.parse::<u64>().map(|n| Some(CommitSeq(n))).map_err(|_| {
+            usage(
+                format!("--as-known-at `{raw}` must be a CommitSeq or HEAD"),
+                "--as-known-at HEAD",
+            )
+        }),
+    }
+}
+
+/// The `--evidence <oid>` citations, sorted.
+fn sorted_evidence(args: &Args) -> Result<Vec<Oid>, Fail> {
+    let mut evidence = Vec::new();
+    for e in args.flag_all("--evidence") {
+        evidence.push(Oid(hex32(e, "--evidence")?));
+    }
+    evidence.sort();
+    Ok(evidence)
+}
+
+/// Record `claim` through the RegisterEquals law (fa-registers
+/// record_register_equals: the cell is folded again and any difference is
+/// FA-REF-140) and report the attestation.
+fn record_register_equals(
+    out: &crate::cli::Out,
+    book: &mut fa::Book,
+    capability: &fa_journal::Capability,
+    claim: &fa::RegisterEquals,
+    evidence: Vec<Oid>,
+) -> Result<(), Fail> {
+    let attested = book.record_register_equals(capability, claim, evidence)??;
+    let holds = book.assertion_holds(attested.vid)?.unwrap_or(true);
+    out.at_book(book)?;
+    let vid_hex = format!("{:032x}", attested.vid.0);
+    let cell_hex = hex(&claim.fold_digest);
+    out.event(
+        "attestation_recorded",
+        vec![
+            ("attestation_vid", s(&vid_hex)),
+            ("claim", s("RegisterEquals")),
+            ("subject", s(&cell_hex)),
+            ("signed_digest", s(hex(&attested.signed_digest))),
+            ("recorded_at", Json::Int(i128::from(attested.recorded_at.0))),
+            ("already_recorded", Json::Bool(attested.already_recorded)),
+            ("holds", Json::Bool(holds)),
+        ],
+        &format!(
+            "recorded RegisterEquals attestation {vid_hex} at {} (holds = {holds})",
+            attested.recorded_at.0
+        ),
+    );
+    Ok(())
+}
+
+/// `fa assert-balance --account <code> --period <code> --balance "<amount>
+/// <UNIT>" [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]`
+/// (plan §9.4, Appendix B AssertBalance): plain-text accounting's balance
+/// assertion as an attestation. The asserted amount is the cell's net,
+/// debits minus credits, at the period's end; its unit names the cell's
+/// unit. The RegisterEquals law folds the cell again: an assertion equal to
+/// the fold is recorded, and any other is refused (FA-REF-140, exit 3)
+/// naming both amounts. Nothing is written for a false assertion.
+pub(crate) fn assert_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa assert-balance --account 1000 --period FY2026-P03 --balance \"-1500.00 USD\" [--evidence <oid>]... --book <dir> --json";
+    if args.positional.len() != 1 {
+        return Err(usage("assert-balance takes no positional argument", FIX));
+    }
+    let account_code = args.require("--account", "1000")?;
+    let period = args.require("--period", "FY2026-P03")?.to_string();
+    let balance_text = args.require("--balance", "\"<amount> <UNIT>\"")?;
+    let entity = args.flag("--entity").map(str::to_string);
+    let known_at = head_or_seq(args)?;
+    let evidence = sorted_evidence(args)?;
+    let capability = ctx.capability(args, &["reconcile"])?;
+    let mut book = ctx.books.open(args)?;
+    let balance = fa_money::Amount::parse(balance_text, &book.context().units)
+        .map_err(|e| usage(format!("--balance `{balance_text}`: {e}"), FIX))?;
+    let key = fa::EntityCellKey {
+        account: account_vid(book.context().book_id, account_code),
+        unit_id: balance.unit.0,
+        period,
+        entity,
+    };
+    let mut claim = book.evaluate_register_equals(&key, known_at)?;
+    claim.amount = balance;
+    record_register_equals(&ctx.out, &mut book, &capability, &claim, evidence)
 }
 
 fn parse_intake_source(raw: Option<&str>, who: VId) -> fa_model::IntakeSource {
