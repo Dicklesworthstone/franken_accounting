@@ -129,9 +129,6 @@ impl Harness {
     fn cx(&self) -> PurposeContexts {
         PurposeContexts::narrow_runtime_root(&self.root)
     }
-    fn head(&self) -> CommitSeq {
-        self.book.head(&self.cx()).unwrap()
-    }
     fn id(&self, code: &str) -> VId {
         account_vid(BOOK, code)
     }
