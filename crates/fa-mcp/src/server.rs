@@ -1431,9 +1431,18 @@ pub fn build_server(config: ServerConfig) -> Result<Server, ServerError> {
     for (uri, doc) in RESOURCES {
         builder = builder.resource(FaResource::new(Arc::clone(&adapter), uri, doc));
     }
-    builder
-        .try_build()
-        .map_err(|e| ServerError::Foundation(format!("fa-mcp could not register its tools: {e}")))
+    let server = builder.try_build().map_err(|e| {
+        ServerError::Foundation(format!("fa-mcp could not register its tools: {e}"))
+    })?;
+    // Registration alone does not validate the final protocol advertisement.
+    // Fail at launch if catalog growth makes discovery unusable, preserving
+    // the pinned framework's own instruction and capability limits.
+    server.server_discovery().map_err(|e| {
+        ServerError::Foundation(format!(
+            "fa-mcp cannot advertise its registered server: {e}"
+        ))
+    })?;
+    Ok(server)
 }
 
 #[cfg(test)]
@@ -1468,6 +1477,43 @@ mod tests {
             assert_eq!(d.name, spec.wire_name());
             assert!(d.description.as_deref().is_some_and(|s| s.contains("Do:")));
             assert_eq!(d.input_schema["type"], json!("object"));
+        }
+    }
+
+    #[test]
+    fn final_discovery_fits_the_protocol_with_maximum_launch_identity_and_all_clusters() {
+        let mut launch = config();
+        // Quotes exercise JSON expansion at the maximum admitted byte length.
+        launch.principal = "\"".repeat(256);
+        let adapter = Adapter::new(launch.clone()).expect("maximum launch identity");
+        launch.clusters = adapter
+            .mcp
+            .clusters
+            .iter()
+            .filter(|cluster| cluster.on_demand)
+            .map(|cluster| cluster.name.clone())
+            .collect();
+        let server = build_server(launch).expect("a usable server, without opening the book");
+        let discovery = server.server_discovery().expect("final protocol discovery");
+        let instructions = discovery
+            .instructions()
+            .expect("accounting guidance")
+            .as_str();
+        assert!(fastmcp_rust::ServerInstructions::new(instructions).is_ok());
+        assert!(instructions.contains("tools/list"));
+        assert!(instructions.contains("resources/list"));
+        assert!(instructions.contains("FA-REF-013"));
+        assert!(instructions.contains("never invent balancing legs"));
+        assert!(instructions.contains(&adapter.authority_json().to_string()));
+        for cluster in &adapter.mcp.clusters {
+            assert!(instructions.contains(&cluster.name), "{}", cluster.name);
+            assert!(instructions.contains(&cluster.doc), "{}", cluster.name);
+        }
+        for workflow in MACROS {
+            assert!(instructions.contains(&workflow.wire_name()));
+        }
+        for (uri, _) in RESOURCES {
+            assert!(instructions.contains(uri), "{uri}");
         }
     }
 
