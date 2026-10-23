@@ -483,6 +483,7 @@ pub fn due_reversals<V: asupersync::fs::Vfs + Clone>(
                         match crate::post::admit_accounts(
                             db,
                             book,
+                            EntryClass::REVERSAL,
                             schedule.reverse_on,
                             &target.proposal.legs,
                             |vid| Ok(db.vertex(vid)?),
@@ -846,9 +847,14 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = policy::capability_witness(txn, db, book, capability)? {
         return execution_refusal(mints, schedule, trigger, refusal);
     }
-    match crate::post::admit_accounts(db, book, schedule.reverse_on, &proposal.legs, |vid| {
-        Ok(txn.vertex(db, vid)?)
-    })? {
+    match crate::post::admit_accounts(
+        db,
+        book,
+        EntryClass::REVERSAL,
+        schedule.reverse_on,
+        &proposal.legs,
+        |vid| Ok(txn.vertex(db, vid)?),
+    )? {
         Ok(_) => {}
         Err(refusal) => {
             mints
@@ -1129,9 +1135,14 @@ pub(crate) fn recorded_open_mints<V: asupersync::fs::Vfs + Clone>(
         if applied_blocked {
             continue;
         }
-        if let Err(refusal) = crate::post::admit_accounts(db, book, s.reverse_on, &legs, |vid| {
-            Ok(db.vertex_at(vid, before)?)
-        })? {
+        if let Err(refusal) = crate::post::admit_accounts(
+            db,
+            book,
+            EntryClass::REVERSAL,
+            s.reverse_on,
+            &legs,
+            |vid| Ok(db.vertex_at(vid, before)?),
+        )? {
             mints.blocked.push((s.target, refusal_reason(&refusal)));
             continue;
         }
@@ -1590,6 +1601,7 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
             if let Err(refusal) = crate::post::admit_accounts(
                 db,
                 book,
+                reversal.proposal.class,
                 reversal.proposal.effective_date,
                 &reversal.proposal.legs,
                 |vid| Ok(db.vertex_at(vid, before)?),

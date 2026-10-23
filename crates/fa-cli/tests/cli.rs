@@ -7227,6 +7227,10 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
         assert_eq!(code, 2, "{filter} {extra:?}: {out}");
     }
 
+    // An untagged leg on 6100 before any requirement.
+    let (code, out) = post("untagged-before", "2026-03-25", "{}");
+    assert_eq!(code, 0, "{out}");
+    let untagged_before = text(&doc(&out), "vid").to_string();
     // fa dimension require: from now on every leg on 6100 names a cost
     // center; requiring it again writes nothing.
     let (code, out) = run(&["dimension", "require", "cost_center", "6100"]);
@@ -7254,6 +7258,20 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     assert!(out.contains("one of: CC") && !out.contains("CC10"), "{out}");
     assert_eq!(head(&run), before);
     let (code, out) = post("required-tagged", "2026-03-25", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 0, "{out}");
+    // An exact reversal carries its target's values as dictated: neither the
+    // requirement nor CC10's closed window blocks reversing the untagged
+    // entry posted before it, or the CC10 entry dated after the window.
+    let (code, out) = run(&["reverse", &untagged_before, "--reason", "WrongAmount"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&[
+        "reverse",
+        &vid,
+        "--reason",
+        "WrongAmount",
+        "--effective",
+        "2026-03-25",
+    ]);
     assert_eq!(code, 0, "{out}");
     // Removed, an untagged leg is admitted again.
     let (code, out) = run(&["dimension", "require", "cost_center", "6100", "--remove"]);

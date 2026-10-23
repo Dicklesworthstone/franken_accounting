@@ -505,12 +505,13 @@ pub async fn create_dimension_value<V: Vfs + Clone>(
 
 /// Judge leg `i`'s registered-kind dimension values at `effective_date` by
 /// point reads: each must be a value of the dimension the leg names it
-/// under, effective on that date. The legal entity and the party are judged
-/// by their own laws.
+/// under and, when `judge_effectivity`, effective on that date. The legal
+/// entity and the party are judged by their own laws.
 pub(crate) fn admit_leg_dimensions(
     leg: &LegPayload,
     i: usize,
     effective_date: DateDay,
+    judge_effectivity: bool,
     mut read_vertex: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
 ) -> Result<Option<Refusal>, KernelError> {
     for (dimension_id, value) in &leg.dimension_set {
@@ -524,7 +525,7 @@ pub(crate) fn admit_leg_dimensions(
         let Some(row) = decoded.filter(|row| row.dimension_id == kind.id) else {
             return Ok(Some(unknown_value(kind, *value, i)));
         };
-        if !row.spec.is_effective_at(effective_date) {
+        if judge_effectivity && !row.spec.is_effective_at(effective_date) {
             let window = match (row.spec.valid_from, row.spec.valid_to) {
                 (Some(from), Some(to)) => format!("from {} before {}", from.render(), to.render()),
                 (Some(from), None) => format!("from {}", from.render()),
@@ -851,6 +852,28 @@ pub async fn record_dimension_requirement<V: Vfs + Clone>(
         ))),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Whether an entry of `class` has legs a preparer chooses, so dimension
+/// requirements and value effectivity bind them; a class whose legs the law
+/// dictates (an exact negation, a hold's posted sub-vector, a
+/// reclassification's target buckets, a close, a revaluation, an
+/// elimination or a legacy import) carries its values as dictated, so a
+/// requirement or a closed window never blocks reversing or closing what
+/// was posted before.
+#[must_use]
+pub fn preparer_chooses_legs(class: fa_model::EntryClass) -> bool {
+    use fa_model::EntryClass as C;
+    !matches!(
+        class,
+        C::REVERSAL
+            | C::RESOLUTION
+            | C::RECLASSIFICATION
+            | C::CLOSING
+            | C::REVALUATION
+            | C::ELIMINATION
+            | C::MIGRATION
+    )
 }
 
 /// The dimensions each account requires, read once per entry: one point
