@@ -1204,7 +1204,7 @@ fn ads_text_survives_real_post_export_reimport_and_offline_verification() {
     ];
     let verified = fa_verify::cli::run(&args, &|path| std::fs::read(path));
     assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
-    // A bad escape is a format failure even in an unauthenticated memo field.
+    // A bad escape is a format failure even in an unauthenticated text field.
     let corrupt = package.gl_detail.replacen("\\p", "\\q", 1);
     let rejected = fa_verify::cli::run(&args, &|path| {
         if Path::new(path)
