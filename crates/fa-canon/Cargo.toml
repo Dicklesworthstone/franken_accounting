@@ -14,3 +14,7 @@ workspace = true
 fa-model = { path = "../fa-model", version = "=0.0.1" }
 fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
+
+[dev-dependencies]
+# The naive Canon reader the differential compares against (tests only).
+fa-reference = { path = "../fa-reference", version = "=0.0.1" }

@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod admissibility;
+pub mod canon;
 pub mod evidence;
 pub mod external_subledger;
 pub mod fx;
