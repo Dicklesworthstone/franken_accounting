@@ -270,7 +270,10 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
             Err(e) => {
                 return cli::usage_error(
                     argv,
-                    format!("--token {}: cannot read the token file: {e}", path.display()),
+                    format!(
+                        "--token {}: cannot read the token file: {e}",
+                        path.display()
+                    ),
                     "supply a readable token file produced by `fa capability issue`",
                     false,
                 )
@@ -289,22 +292,19 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
                 .0;
             }
         };
-        let authority = match fa_cli::authority::LaunchAuthority::from_token(
-            dir.to_path_buf(),
-            None,
-            &token,
-        ) {
-            Ok(a) => a,
-            Err(e) => {
-                return cli::usage_error(
-                    argv,
-                    format!("--token {}: {e}", path.display()),
-                    "supply a token whose profile is admissible for MCP (agent or preparer)",
-                    false,
-                )
-                .0;
-            }
-        };
+        let authority =
+            match fa_cli::authority::LaunchAuthority::from_token(dir.to_path_buf(), None, &token) {
+                Ok(a) => a,
+                Err(e) => {
+                    return cli::usage_error(
+                        argv,
+                        format!("--token {}: {e}", path.display()),
+                        "supply a token whose profile is admissible for MCP (agent or preparer)",
+                        false,
+                    )
+                    .0;
+                }
+            };
         Some((path.clone(), authority))
     } else {
         None
