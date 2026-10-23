@@ -617,6 +617,18 @@ usage = ["search <query> [--kind entry|document|finding|all] [--as-known-at HEAD
 example = "fa search \"office rent\" --book ./books/myco --json"
 
 [[verb]]
+name = "diff"
+summary = "The ledger between two recorded frontiers: one trial-balance selection at --from and at --to, every account and unit whose balance changed, and every entry recorded in between, whatever date it carries (plan §15.3)."
+writes = false
+subcommands = []
+flags = ["--from", "--to", "--period", "--fiscal-year", "--as-of", "--limit"]
+switches = ["--activity"]
+events = ["ledger_diff"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["diff --from <seq|RFC3339> [--to HEAD|<seq>|<RFC3339>] --period <code>... | --fiscal-year <year> [--activity] | --as-of YYYY-MM-DD [--limit N]   (--from is required; --to defaults to the head; the selection is the same as fa tb's; entries are listed in recorded order, at most --limit of them, default 200, 1..=1000, with entries_total counting all)", "Only recorded time differs between the two sides, so an entry dated into an earlier period appears in the window it was recorded in: what changed in the books since a report was run at --from. delta = (after debits - credits) - (before debits - credits), exact; pending (reserved, unposted) amounts are apart. --from after --to is refused. A whole-book read: a token carrying any scope caveat is refused. fa entry show <vid> reads a listed entry; fa explain lineage <vid> its supersession."]
+example = "fa diff --from 40 --period FY2026-P03 --book ./books/myco --json"
+
+[[verb]]
 name = "query"
 summary = "Run a GQL statement in the FrankenAccounting profile (plan §15.5): native GQL plus AS KNOWN AT, FOR PERIOD, EFFECTIVE BETWEEN and AT BRANCH, compiled onto one certified native read at one recorded sequence; CALL fa.trial_balance is fa tb itself."
 writes = false
@@ -1942,6 +1954,12 @@ doc = "A full-text search at known_at (fa search): records is how many entries, 
 fields = ["query:string", "known_at:seq", "records:int", "index_digest:hex", "total:int", "hits:[search_hit]"]
 
 [[event]]
+name = "ledger_diff"
+book = true
+doc = "A trial-balance selection at two recorded frontiers (fa diff): from and to are the sequences compared (to is the head unless --to named one), periods or effective_through the selection, changes only the account and unit rows whose posted or pending balance differs, and entries every entry recorded after from and through to in recorded order (the first --limit of entries_total). An entry dated into an earlier period is listed by when it was recorded."
+fields = ["from:seq", "to:seq", "periods:[string]", "effective_through:date?", "activity:bool", "changes:[ledger_change]", "entries_total:int", "entries:[recorded_entry]"]
+
+[[event]]
 name = "query_rows"
 book = true
 doc = "A profile query's result (fa query): the statement as written, the native statement it compiled to and ran, the recorded sequence it read (an omitted or HEAD known-at resolved before the read), the FOR PERIOD code when given, the column names and each row's values in the native read's order. A vertex or edge is its 32-hex id, a decimal (an amount mirror or an exact sum of them) is exact text without trailing zeros (1000, 0.5), an exact average is {numerator, denominator}, bytes are hex. result_digest is the substrate's digest of the native read's ordered result under its plan (for an amount aggregate, the rows the profile aggregated): the same statement at the same sequence gives the same digest. Under fa query --certify, or replayed by fa replay, the envelope's certificate is the query certificate's oid."
@@ -3204,6 +3222,16 @@ fields = ["period:string", "green:bool", "known_at:seq", "cells_checked:int", "e
 name = "search_hit"
 doc = "One ranked search hit: kind (entry, document or finding), id (an entry's vid as 32-hex, for fa entry show; a document's oid as 64-hex, for fa document read; or a finding's vid as 32-hex, for fa finding show), recorded_at (its creating sequence), score_micro (BM25 in micro-units), the query terms it matched, and a snippet of its text."
 fields = ["kind:string", "id:hex", "recorded_at:seq", "score_micro:int", "matched_terms:[string]", "snippet:string"]
+
+[[shape]]
+name = "ledger_change"
+doc = "One account and unit whose balance differs between a diff's two frontiers: debits and credits before and after, posted and pending (reserved, unposted) apart, and the signed change in each net (debits - credits) balance."
+fields = ["account:hex", "code:string", "name:string", "before_debits:amount", "before_credits:amount", "after_debits:amount", "after_credits:amount", "delta:amount", "before_debits_pending:amount", "before_credits_pending:amount", "after_debits_pending:amount", "after_credits_pending:amount", "pending_delta:amount"]
+
+[[shape]]
+name = "recorded_entry"
+doc = "One entry recorded in a diff's window: its vid (for fa entry show), the sequence that recorded it, its class, the date it carries and its period (null for a control without one), and what it supersedes."
+fields = ["vid:hex", "recorded_at:seq", "class:string", "effective_date:date", "period:string?", "supersedes:[lineage]"]
 
 [[shape]]
 name = "cell_drift"
@@ -4987,6 +5015,18 @@ mistakes = ["Writing the law with an underscore: pro-rata, network-fifo, restitu
 
 [[mcp.tool]]
 cluster = "fa.forensics"
+name = "ledger_diff"
+verb = "diff"
+subcommands = []
+positionals = []
+flags = ["--from", "--to", "--period", "--fiscal-year", "--as-of", "--limit"]
+switches = ["--activity"]
+required = ["--from"]
+dont = ["Name the frontiers as recorded sequences (or RFC3339 instants), never effective dates: a diff compares what the book said at two moments of recorded time over the same selection.", "Don't read an entry's presence as wrongdoing: a late or backdated entry is listed by when it was recorded; read it with show entry and explain lineage before concluding anything."]
+mistakes = ["Expecting the entries dated in the selected period only: every entry recorded in the window is listed, whatever date it carries.", "Omitting the selection: give period(s), fiscal_year, or as_of, as for the trial balance."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
 name = "procedure"
 verb = "procedure"
 subcommands = ["list", "run"]
@@ -5564,6 +5604,11 @@ ops = ["read"]
 # A search reads every entry: the whole book.
 [[bound]]
 verbs = ["search"]
+ops = ["read"]
+
+# A ledger diff lists every entry in its window: the whole book.
+[[bound]]
+verbs = ["diff"]
 ops = ["read"]
 
 # A query reads the whole graph.
