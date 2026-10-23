@@ -11363,7 +11363,11 @@ fn year_end_close_refuses_nonzero_retired_accounts_with_or_without_a_route() {
         .unwrap()
         .unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-102", exit::REFUSAL));
-        assert!(refusal.message.contains("nonzero fiscal-year balance"));
+        assert!(
+            refusal
+                .message
+                .contains("nonzero fiscal-year carrying balance")
+        );
         assert!(refusal.message.contains("6000"));
         assert!(
             h.post_plan(h.request(reviewed.clone(), &["read", "post", "close"]))

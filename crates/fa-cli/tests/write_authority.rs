@@ -935,6 +935,22 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::Read, Op::SchemaChange],
             Reaches,
         ),
+        // No reviewed detail document exists, so an admitted feed reaches
+        // its own refusal and posts nothing.
+        row(
+            &[
+                "subledger",
+                "feed",
+                "--document",
+                "D:0000000000000000000000000000000000000000000000000000000000000000",
+                "--date",
+                DAY,
+                "--key",
+                "matrix-feed",
+            ],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
         row(
             &[
                 "party",
