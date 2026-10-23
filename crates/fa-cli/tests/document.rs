@@ -903,6 +903,144 @@ fn extract_records_a_pdf_text_layer_as_a_derived_document() -> std::io::Result<(
     Ok(())
 }
 
+/// fa-lzrn (plan §9.1, fa-646's subprocess graders): `fa document extract
+/// --tool focr` OCRs an image through the owner's `focr`, resolved in PATH,
+/// over a private copy of the source that is removed afterwards. The derived
+/// document records `franken_ocr`, the tool's version and `replayable =
+/// false`. Planted: with no focr in PATH the tool did not run (exit 4, an
+/// environment failure, never invented text); a focr that fails is
+/// FA-REF-193; an unknown tool is a usage error naming the three.
+#[cfg(unix)]
+#[test]
+fn extract_runs_the_owner_ocr_tool_and_refuses_when_it_is_absent() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp("ocr")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Ocr Co", "--json"]);
+    let scan = write(
+        &dir,
+        "receipt.png",
+        b"\x89PNG\r\n\x1a\nscanned-receipt-pixels",
+    );
+    let added = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            &scan,
+            "--kind",
+            "Receipt",
+            "--mime",
+            "image/png",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    let receipt = field(&added, "oid").unwrap().to_string();
+
+    // A stand-in focr: it checks its argv and that it was handed the
+    // source's bytes, then prints robot JSON as `focr ocr --json` does.
+    let bin = dir.join("bin");
+    std::fs::create_dir(&bin)?;
+    let fake = |name: &str, body: &str| -> std::io::Result<()> {
+        let path = bin.join(name);
+        std::fs::write(&path, body)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+    };
+    fake(
+        "focr",
+        "#!/bin/sh\nPATH=/usr/bin:/bin\nif [ \"$1\" = \"--version\" ]; then echo 'focr 0.3.0-test'; exit 0; fi\n[ \"$1\" = ocr ] && [ \"$2\" = --json ] && [ -f \"$3\" ] || exit 9\ngrep -q scanned-receipt-pixels \"$3\" || exit 8\n# printf, not echo: dash's echo would turn the JSON's \\\\n into a newline.\nprintf '%s\\n' '{\"markdown\":\"CORNER CAFE RECEIPT\\nTOTAL 42.00 USD\",\"tool_version\":\"0.3.0-test\"}'\n",
+    )?;
+    let run = |path: &str, args: &[&str]| -> (i32, String) {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&book)
+            .args(args)
+            .env_remove("FA_BOOK")
+            .env("PATH", path)
+            .output()
+            .expect("run fa");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let reg = registry().expect("verbs.toml");
+        for line in stdout.lines() {
+            let checked = reg.check_line(line);
+            assert!(checked.is_ok(), "args={args:?}: {checked:?}\n{line}");
+        }
+        (out.status.code().unwrap_or(-1), stdout)
+    };
+    let with_focr = bin.display().to_string();
+    let extract = [
+        "document",
+        "extract",
+        receipt.as_str(),
+        "--tool",
+        "focr",
+        "--json",
+    ];
+    let (code, out) = run(&with_focr, &extract);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("document_extracted"), "{out}");
+    assert_eq!(field(&out, "source_oid"), Some(receipt.as_str()), "{out}");
+    assert_eq!(field(&out, "kind"), Some("Receipt"), "{out}");
+    assert_eq!(field(&out, "method"), Some("franken_ocr"), "{out}");
+    assert_eq!(field(&out, "tool_name"), Some("focr"), "{out}");
+    assert_eq!(field(&out, "tool_version"), Some("0.3.0-test"), "{out}");
+    assert_eq!(field(&out, "replayable"), Some("false"), "{out}");
+    assert!(
+        out.contains("CORNER CAFE RECEIPT\\nTOTAL 42.00 USD"),
+        "{out}"
+    );
+    // Provenance names the source by its handle, never the temporary path.
+    assert!(
+        out.contains(&format!(
+            "\"command_line\":[\"focr\",\"ocr\",\"--json\",\"D:{receipt}\"]"
+        )),
+        "{out}"
+    );
+    assert!(!out.contains("fa-extract-"), "{out}");
+    // The private copy of the source is gone.
+    let leftover: Vec<_> = std::fs::read_dir(std::env::temp_dir())?
+        .filter_map(Result::ok)
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("fa-extract-") && name.contains(&receipt)
+        })
+        .collect();
+    assert!(leftover.is_empty(), "{leftover:?}");
+
+    // No focr in PATH: the tool did not run.
+    let empty = dir.join("empty");
+    std::fs::create_dir(&empty)?;
+    let (code, out) = run(&empty.display().to_string(), &extract);
+    assert_eq!(code, 4, "{out}");
+    assert_eq!(field(&out, "event"), Some("error"), "{out}");
+    assert!(out.contains("did not run"), "{out}");
+    // A focr that fails is the extraction refusal.
+    fake(
+        "focr",
+        "#!/bin/sh\necho 'focr: unreadable image' >&2\nexit 2\n",
+    )?;
+    let (code, out) = run(&with_focr, &extract);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-193"), "{out}");
+    // An unknown tool is a usage error.
+    let (code, out) = run(
+        &with_focr,
+        &[
+            "document",
+            "extract",
+            &receipt,
+            "--tool",
+            "tesseract",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("pdf-text"), "{out}");
+    Ok(())
+}
+
 /// The receiver takes over (plan §15.6, scoreboard WF-TRT-02, fa-k07b): `fa book
 /// fork receivership` on the appointing order holds everything recorded
 /// through the appointment and opens the estate's branch there; a document

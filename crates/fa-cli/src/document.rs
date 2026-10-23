@@ -641,14 +641,18 @@ fn attach_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-/// `fa document extract <oid> [--kind <Kind>]` (plan §9.1; fa-646's
-/// pipeline): the source document's PDF text layer as a derived text
-/// Document. Its bytes bind the source oid (`fa:derived-document:v1`), so the
-/// lineage is part of its identity; the extraction is deterministic, so the
-/// same source gives the same document. The upload is admitted and graded
-/// like `fa document add`, by who runs it, never the source's grade.
+/// `fa document extract <oid> [--tool pdf-text|focr|fw] [--kind <Kind>]`
+/// (plan §9.1; fa-646's pipeline): the source document's text as a derived
+/// text Document. Its bytes bind the source oid (`fa:derived-document:v1`),
+/// so the lineage is part of its identity. `pdf-text` (the default) reads a
+/// PDF's text layer deterministically, so the same source gives the same
+/// document; `focr` (OCR of an image or scan) and `fw` (an audio transcript)
+/// run the owner's tools as subprocesses and record `replayable = false`.
+/// The upload is admitted and graded like `fa document add`, by who runs it,
+/// never the source's grade.
 fn extract_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const EXAMPLE: &str = "fa document extract <oid> [--kind Invoice] --book <dir> --json";
+    const EXAMPLE: &str =
+        "fa document extract <oid> [--tool pdf-text|focr|fw] [--kind Invoice] --book <dir> --json";
     let oid_text = args.positional.get(2).ok_or_else(|| {
         usage(
             "`fa document extract` needs the source document's oid",
@@ -659,6 +663,10 @@ fn extract_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Err(usage(format!("unexpected argument `{extra}`"), EXAMPLE));
     }
     let source_oid = Oid(hex32(oid_text, "document oid")?);
+    let tool = args.flag("--tool").unwrap_or("pdf-text");
+    if !matches!(tool, "pdf-text" | "focr" | "fw") {
+        return Err(named("extraction tool", tool, &["pdf-text", "focr", "fw"]));
+    }
     let policy = policy()?;
     let kind_override = match args.flag("--kind") {
         Some(name) => Some(
@@ -690,8 +698,12 @@ fn extract_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
     };
-    let derived = fa::extract_pdf_text_layer(&source, who, kind_override.unwrap_or(source.kind))
-        .map_err(Fail::Refusal)?;
+    let kind = kind_override.unwrap_or(source.kind);
+    let derived = if tool == "pdf-text" {
+        fa::extract_pdf_text_layer(&source, who, kind).map_err(Fail::Refusal)?
+    } else {
+        run_extraction_tool(tool, &source, &source_oid, who, kind)?
+    };
     let added = if let Some(authority) = &authority {
         book.upload_document(
             authority.capability(),
@@ -749,17 +761,85 @@ fn extract_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
         ],
         &format!(
-            "{} derived document {oid} ({kind_out}, {grade_out}): the text layer of {source_hex}, {} bytes of text, at {}; read it with fa document read {oid}",
+            "{} derived document {oid} ({kind_out}, {grade_out}): {} text of {source_hex}, {} bytes, at {}; read it with fa document read {oid}",
             if added.already_recorded {
                 "already recorded:"
             } else {
                 "recorded"
             },
+            derived.metadata.method.name(),
             derived.metadata.extracted_text.len(),
             added.recorded_at.0
         ),
     );
     Ok(())
+}
+
+/// The file extension an extraction tool reads `mime` by (focr takes images
+/// and PDFs, fw audio and video); `bin` for anything else.
+fn tool_input_extension(mime: &str) -> &'static str {
+    let base = mime.split(';').next().unwrap_or("").trim();
+    match base {
+        "application/pdf" => "pdf",
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/tiff" => "tiff",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/flac" => "flac",
+        "audio/ogg" => "ogg",
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" => "m4a",
+        "video/mp4" => "mp4",
+        _ => "bin",
+    }
+}
+
+/// Run an owner extraction tool (`focr` for images and scanned PDFs, `fw`
+/// for audio) over a private copy of the source (mode 0600, never an
+/// existing path), removed afterwards whatever the outcome. The tool's name
+/// is fixed and resolved in PATH, never a caller's path. A tool that is not
+/// installed, or has no model, did not run: an environment failure (exit 4),
+/// never invented text.
+fn run_extraction_tool(
+    tool: &str,
+    source: &Document,
+    source_oid: &Oid,
+    who: VId,
+    kind: u8,
+) -> Result<fa::DerivedDocumentResult, Fail> {
+    let input = std::env::temp_dir().join(format!(
+        "fa-extract-{}-{}.{}",
+        std::process::id(),
+        hex(&source_oid.0),
+        tool_input_extension(&source.mime)
+    ));
+    let shown = input.display().to_string();
+    write_new(
+        &input,
+        &shown,
+        &source.bytes,
+        "extraction input",
+        "temporary",
+    )?;
+    let outcome = if tool == "fw" {
+        fa::run_fw_extraction(source, &input, who, kind, &fa::FwConfig::default())
+    } else {
+        fa::run_focr_extraction(source, &input, who, kind, &fa::FocrConfig::default())
+    };
+    // The copy may hold privileged bytes: it goes whether the tool ran or not.
+    std::fs::remove_file(&input).map_err(|e| {
+        Fail::Io(format!(
+            "could not remove the extraction input {shown}: {e}; remove it by hand, it holds the source document's bytes"
+        ))
+    })?;
+    match outcome.map_err(Fail::Refusal)? {
+        fa::ExternalToolOutcome::Completed(derived) => Ok(derived),
+        fa::ExternalToolOutcome::Unrun { binary, reason } => Err(Fail::Environment(format!(
+            "`{binary}` did not run: {reason}; install it (franken_ocr provides focr, franken_whisper provides fw), or extract a PDF's text layer with --tool pdf-text"
+        ))),
+    }
 }
 
 /// The `extraction` shape of a derived text document `holder`: how it was
@@ -773,6 +853,10 @@ fn extraction_json(
         ("method", s(meta.method.name())),
         ("tool_name", s(&meta.tool_name)),
         ("tool_version", s(&meta.tool_version)),
+        (
+            "command_line",
+            Json::Arr(meta.command_line.iter().map(s).collect()),
+        ),
         ("replayable", Json::Bool(meta.replayable)),
         (
             "sources",
