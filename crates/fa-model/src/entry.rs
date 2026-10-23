@@ -2472,8 +2472,15 @@ mod tests {
                 }
             );
         }
-        // Keep the negative probes beyond every registered control kind.
-        for id in [0, 18, 19, u16::MAX] {
+        // The negative probes stay beyond every registered control kind, so
+        // registering the next kind does not turn one into a valid id.
+        let beyond = ControlKind::ALL
+            .iter()
+            .map(|(kind, _, _)| kind.id())
+            .max()
+            .unwrap()
+            + 1;
+        for id in [0, beyond, beyond + 1, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

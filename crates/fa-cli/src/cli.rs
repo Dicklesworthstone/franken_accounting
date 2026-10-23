@@ -132,7 +132,6 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("production", crate::production::production_cmd),
     ("produce", crate::production::produce_cmd),
     ("subledger", crate::subledger::subledger_cmd),
-    ("schedule", crate::recurring::schedule_cmd),
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
@@ -151,6 +150,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("robot-docs", robot_docs_cmd),
     ("help", help_cmd),
     ("demo", demo_cmd),
+    ("schedule", crate::recurring::schedule_cmd),
 ];
 
 /// The registered verbs this build can dispatch (the parity tests compare

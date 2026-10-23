@@ -1555,7 +1555,9 @@ fn prepared_open_conflicts_with_a_new_due_schedule_and_fresh_open_mints_once() {
             .await
             .unwrap()
             .unwrap();
-        let capability = Capability::embedded(VId(1), &["close"]).unwrap();
+        // The fresh Open mints the due reversal, so the opener must also be
+        // able to post it; a close-only Open is refused atomically.
+        let capability = Capability::embedded(VId(1), &["close", "post"]).unwrap();
         let prepared = prepare_fixture_transition(
             &mut fixture.book,
             &cx,

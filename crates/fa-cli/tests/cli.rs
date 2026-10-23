@@ -10107,6 +10107,152 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     ]));
     assert_eq!(reconciled.get("reconciled"), Some(&Json::Bool(true)));
 
+    // An approved recurring schedule's life cycle and a reviewed external
+    // feed, each event through the binary. Their histories are covered by
+    // tests/recurring.rs and tests/subledger/external.rs.
+    let feed_book = dir.join("recurring-and-feed-events-book");
+    let mut run_feed = |args: &[&str]| -> Json {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&feed_book), &argv);
+        assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+        doc(&out)
+    };
+    run_feed(&[
+        "book",
+        "create",
+        "--name",
+        "Recurring and feed events",
+        "--opening-date",
+        "2026-01-01",
+        "--time-zone",
+        "UTC",
+    ]);
+    let feed_chart = write(
+        &dir,
+        "feed-chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    run_feed(&["chart", "import", &feed_chart]);
+    run_feed(&["period", "create", "--fiscal-year", "2026"]);
+    run_feed(&["period", "open", "FY2026-P03"]);
+    let vendor = write(
+        &dir,
+        "feed-vendor.json",
+        r#"{"code":"V-1","kind":"Vendor","name":"V-1"}"#,
+    );
+    run_feed(&["party", "add", &vendor]);
+    let lease = write(&dir, "lease.txt", "Reviewed lease: monthly rent 50.00 USD.");
+    let lease = run_feed(&[
+        "document",
+        "add",
+        &lease,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let template = write(
+        &dir,
+        "rent-template.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-31","description":"Monthly rent","idempotency_key":"rent-template","evidence":["{}"],"legs":[{{"side":"debit","account":"6000","amount":"50.00 USD"}},{{"side":"credit","account":"1000","amount":"50.00 USD"}}]}}"#,
+            text(&lease, "oid")
+        ),
+    );
+    let rent_plan = dir.join("rent.plan").display().to_string();
+    let planned = run_feed(&[
+        "schedule",
+        "recurring",
+        "create",
+        "rent",
+        "--template",
+        &template,
+        "--every-months",
+        "1",
+        "--month-end",
+        "ClampToMonthEnd",
+        "--end",
+        "2026-12-31",
+        "--dry-run",
+        "--plan-out",
+        &rent_plan,
+    ]);
+    let approval = run_feed(&[
+        "approve",
+        "--proposal",
+        text(&planned, "proposal_digest"),
+        "--as",
+        "controller",
+    ]);
+    run_feed(&[
+        "schedule",
+        "recurring",
+        "create",
+        "rent",
+        "--plan",
+        &rent_plan,
+        "--approval",
+        text(&approval, "approval_vid"),
+    ]);
+    assert_eq!(
+        arr(&run_feed(&["schedule", "recurring", "list"]), "schedules").len(),
+        1
+    );
+    run_feed(&[
+        "schedule",
+        "recurring",
+        "cancel",
+        "rent",
+        "--reason",
+        "lease ended",
+    ]);
+    let batch = write(
+        &dir,
+        "feed-batch.json",
+        &format!(
+            r#"{{"feed":"vendor-ap","batch_key":"events-001","effective_date":"2026-03-15","rows":[{{"source_digest":"{}","account":"6000","side":"debit","amount":"100.00 USD"}},{{"source_digest":"{}","account":"2000","side":"credit","amount":"100.00 USD","party":"V-1"}}]}}"#,
+            "01".repeat(32),
+            "02".repeat(32),
+        ),
+    );
+    let detail = dir.join("feed-detail.bin").display().to_string();
+    run_feed(&["subledger", "detail", "--input", &batch, "--out", &detail]);
+    let workpaper = run_feed(&[
+        "document",
+        "add",
+        &detail,
+        "--kind",
+        "Workpaper",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let workpaper = text(&workpaper, "oid").to_string();
+    run_feed(&["attest", "review", &workpaper, "--as", "reviewer"]);
+    let posted = run_feed(&[
+        "subledger",
+        "feed",
+        "--document",
+        &format!("D:{workpaper}"),
+        "--date",
+        "2026-03-15",
+        "--key",
+        "events-feed",
+    ]);
+    let verified = run_feed(&["subledger", "verify-feed", text(&posted, "vid")]);
+    assert_eq!(verified.get("reconciled"), Some(&Json::Bool(true)));
+    let fed = run_feed(&[
+        "subledger",
+        "reconcile-feed",
+        "vendor-ap",
+        "--control",
+        "2000",
+        "--as-of",
+        "2026-03-31",
+    ]);
+    assert_eq!(fed.get("reconciled"), Some(&Json::Bool(true)));
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
