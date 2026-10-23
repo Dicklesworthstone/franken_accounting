@@ -643,7 +643,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     {
         return Err(usage(
             "--certificate selects the report's complete journal prefix and cannot be combined with another scope, balances or inline documents",
-            "fa bundle produce --certificate C:<trial-balance-certificate> [--state <oid|latest>] [--out <new.fab> --receipt-out <new-file>]",
+            "fa bundle produce --certificate C:<native-report-certificate> [--state <oid|latest>] [--out <new.fab> --receipt-out <new-file>]",
         ));
     }
     let scope_args = bundle_scope_args(args, BUNDLE_EXAMPLE)?;
@@ -703,6 +703,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let state = scope_args.state;
     let mut report_digest = None;
+    let mut report_units = None;
     let produced = if let Some(source) = report_source {
         let certificate = crate::notary::certificate_input(
             &book,
@@ -714,6 +715,15 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             fa::ReportCertificate::decode,
         )?;
         report_digest = Some(hex(&certificate.digest));
+        if matches!(&certificate.selection, fa::ReportSelection::Statement(_)) {
+            report_units = Some(
+                book.context()
+                    .units
+                    .iter()
+                    .map(|(id, _)| id.0)
+                    .collect::<Vec<_>>(),
+            );
+        }
         book.produce_report_bundle(principal, &capability, state, &certificate)??
     } else {
         book.produce_bundle(principal, &capability, state, &request)??
@@ -789,8 +799,23 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let Some(digest) = report_digest {
         verify.push_str(&format!(" --expect {digest}"));
     }
+    if let Some(units) = &report_units {
+        verify.push_str(&format!(
+            " --units {}",
+            units
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    let unit_premise = if report_units.is_some() {
+        "\nConfirm --units against the recipient's complete unit-ID list: the checkpoint authenticates the journal, not genesis unit-table membership or unit labels."
+    } else {
+        ""
+    };
     let human = format!(
-        "Produced evidence bundle {digest} ({} bytes, scope {scope_name}, {} balance(s)){}.\nVerify it offline: {verify}",
+        "Produced evidence bundle {digest} ({} bytes, scope {scope_name}, {} balance(s)){}.\nVerify it offline: {verify}{unit_premise}",
         produced.bundle.bytes.len(),
         request.balances.len(),
         output.map_or_else(String::new, |path| format!(" in {path}")),
@@ -812,6 +837,17 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("balances", Json::Int(request.balances.len() as i128)),
             ("inline_documents", Json::Bool(request.inline_documents)),
             ("checkpoint_public_key", s(&public_key)),
+            (
+                "report_units",
+                report_units.map_or(Json::Null, |units| {
+                    Json::Arr(
+                        units
+                            .into_iter()
+                            .map(|id| Json::Int(i128::from(id)))
+                            .collect(),
+                    )
+                }),
+            ),
             ("bytes", inline(&produced.bundle.bytes)),
             ("receipt", inline(&produced.receipt)),
             ("file", output.map_or(Json::Null, s)),

@@ -326,15 +326,49 @@ pub(super) struct Sources<'a, 'b> {
     pub resolved: &'a BTreeSet<usize>,
 }
 
+#[derive(Default)]
+struct Lineage {
+    classes: BTreeMap<usize, bool>,
+    /// Test-only work witness emitted where an uncached record is inspected.
+    #[cfg(test)]
+    inspected: Vec<usize>,
+}
+
 impl Sources<'_, '_> {
-    fn income_included(&self, mut index: usize) -> Result<bool, ReportError> {
+    fn income_included(
+        &self,
+        mut index: usize,
+        lineage: &mut Lineage,
+    ) -> Result<bool, ReportError> {
         let mut visited = BTreeSet::new();
-        while self.envelopes[index].class == 4 {
+        let mut path = Vec::new();
+        let included = loop {
+            if let Some(included) = lineage.classes.get(&index) {
+                break *included;
+            }
             if !visited.insert(index) {
                 return Err(failed(
                     "accounting_lineage",
                     "reversal lineage contains a cycle",
                 ));
+            }
+            path.push(index);
+            #[cfg(test)]
+            lineage.inspected.push(index);
+            let original = &self.envelopes[index];
+            if original.class != 4 {
+                if original.class == 12 {
+                    let day = original.effective_day.ok_or_else(|| {
+                        failed("accounting_lineage", "migration has no effective day")
+                    })?;
+                    if self.schema.is_closing_period(&self.infos[&index], day)? {
+                        return Err(failed(
+                            "accounting_lineage",
+                            "Closing-period migration does not retain its original accounting class",
+                        ));
+                    }
+                }
+                break original.class != 8;
             }
             let [(identity, digest, 1)] = self.infos[&index].supersession.as_slice() else {
                 return Err(failed(
@@ -359,23 +393,13 @@ impl Sources<'_, '_> {
                 ));
             }
             index = target;
+        };
+        // Publish classifications only after the whole new path is verified.
+        // A cached ancestor never excuses checking the edge that reaches it.
+        for index in path {
+            lineage.classes.insert(index, included);
         }
-        let original = &self.envelopes[index];
-        if original.class == 8 {
-            return Ok(false);
-        }
-        if original.class == 12 {
-            let day = original
-                .effective_day
-                .ok_or_else(|| failed("accounting_lineage", "migration has no effective day"))?;
-            if self.schema.is_closing_period(&self.infos[&index], day)? {
-                return Err(failed(
-                    "accounting_lineage",
-                    "Closing-period migration does not retain its original accounting class",
-                ));
-            }
-        }
-        Ok(true)
+        Ok(included)
     }
 }
 
@@ -472,6 +496,7 @@ pub(super) fn recompute(
         .collect();
     let mut columns = Vec::new();
     let mut values = Vec::new();
+    let mut lineage = Lineage::default();
     for (label, periods) in [
         ("current", &selection.periods),
         ("comparative", &selection.comparative),
@@ -499,7 +524,7 @@ pub(super) fn recompute(
             } else {
                 day <= last
             };
-            if !selected || (definition.income && !sources.income_included(*index)?) {
+            if !selected || (definition.income && !sources.income_included(*index, &mut lineage)?) {
                 continue;
             }
             for leg in &sources.legs[*index] {
@@ -675,6 +700,135 @@ pub(super) fn recompute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lineage_record(
+        ordinal: u64,
+        target: Option<(u128, [u8; 32])>,
+    ) -> (Vec<u8>, usize, LeafEnvelope, u128) {
+        let mut w = Writer::default();
+        w.u16(1)
+            .u16(0)
+            .fixed(&[3; 16])
+            .fixed(&[0; 16])
+            .u16(if target.is_some() { 4 } else { 1 })
+            .i32(0)
+            .u8(0);
+        w.fixed(&[0; 32]).u8(0).fixed(&[0; 24]).bytes(&[]);
+        w.u8(0).count(2);
+        for (account, side) in [(1, 0), (2, 1)] {
+            w.u8(side ^ ((ordinal & 1) as u8))
+                .u128(account)
+                .u32(1)
+                .i128(10)
+                .u8(0)
+                .count(0)
+                .u8(0)
+                .count(0);
+        }
+        w.u8(0)
+            .count(1)
+            .u32(1)
+            .i128(10)
+            .i128(10)
+            .u8(0)
+            .bytes(&ordinal.to_le_bytes())
+            .u8(0)
+            .fixed(&[0; 32])
+            .u16(1)
+            .u128(99)
+            .u8(0)
+            .count(0)
+            .count(usize::from(target.is_some()));
+        if let Some((identity, digest)) = target {
+            w.u128(identity).fixed(&digest).u8(1).u16(1);
+        }
+        w.u8(0).count(0).count(0);
+        let length = w.buf.len();
+        let proposal = hash_parts(crate::envelope::PROPOSAL_DIGEST_DOMAIN, &[&w.buf]);
+        let digest = hash_parts(crate::envelope::ENTRY_DIGEST_DOMAIN, &[&proposal, &[]]);
+        w.fixed(&proposal).fixed(&digest);
+        let envelope = crate::envelope::envelope_of_entry(&w.buf, length, ordinal + 1, 0).unwrap();
+        let identity = metadata::entry_info(&w.buf[..length], &envelope)
+            .unwrap()
+            .identity;
+        (w.buf, length, envelope, identity)
+    }
+
+    #[test]
+    fn long_reversal_ancestry_is_inspected_once_and_cached_edges_still_authenticate() {
+        const COUNT: usize = 4096;
+        let mut records = Vec::with_capacity(COUNT + 1);
+        let mut target = None;
+        for index in 0..COUNT {
+            let record = lineage_record(index as u64, target);
+            target = Some((record.3, record.2.record_digest));
+            records.push(record);
+        }
+        // A new branch reaches a cached, genuine payload with the wrong
+        // identity. Memoization must not make that edge authoritative.
+        records.push(lineage_record(
+            COUNT as u64,
+            Some((records[0].3 ^ 1, records[0].2.record_digest)),
+        ));
+        let envelopes: Vec<_> = records.iter().map(|record| record.2.clone()).collect();
+        let infos = records
+            .iter()
+            .enumerate()
+            .map(|(index, record)| {
+                (
+                    index,
+                    metadata::entry_info(&record.0[..record.1], &record.2).unwrap(),
+                )
+            })
+            .collect();
+        let by_digest = envelopes
+            .iter()
+            .enumerate()
+            .map(|(index, record)| (record.record_digest, index))
+            .collect();
+        let schema = metadata::Schema::default();
+        let certificate = Certificate {
+            book: [3; 16],
+            branch: [0; 16],
+            known_at: (COUNT + 1) as u64,
+            selection: crate::report::Selection::AsOf(0),
+            journal_root: [0; 32],
+            leaves: (COUNT + 1) as u64,
+            output: &[],
+            output_digest: [0; 32],
+            digest: [0; 32],
+        };
+        let sources = Sources {
+            certificate: &certificate,
+            schema: &schema,
+            envelopes: &envelopes,
+            legs: &[],
+            infos: &infos,
+            by_digest: &by_digest,
+            visible_migrations: &BTreeSet::new(),
+            resolved: &BTreeSet::new(),
+        };
+        let mut lineage = Lineage::default();
+        assert!(sources.income_included(COUNT - 1, &mut lineage).unwrap());
+        // Revisit the entire source population in both orders, as comparative
+        // columns do, while observing actual ancestry inspections rather than
+        // timing or merely counting cache entries.
+        for index in (0..COUNT).chain((0..COUNT).rev()) {
+            assert!(sources.income_included(index, &mut lineage).unwrap());
+        }
+        let mut inspected = lineage.inspected.clone();
+        inspected.sort_unstable();
+        assert_eq!(inspected, (0..COUNT).collect::<Vec<_>>());
+        assert_eq!(
+            sources
+                .income_included(COUNT, &mut lineage)
+                .unwrap_err()
+                .predicate,
+            "accounting_lineage"
+        );
+        assert!(!lineage.classes.contains_key(&COUNT));
+        assert_eq!(lineage.inspected.len(), COUNT + 1);
+    }
 
     #[test]
     fn wide_statement_sum_cancels_before_narrowing_and_detects_real_overflow() {

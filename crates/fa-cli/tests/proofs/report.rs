@@ -199,3 +199,120 @@ fn report_production_admits_authority_before_observing_certificate_files() {
     }
     assert!(!missing_book.exists());
 }
+
+#[test]
+fn certified_income_statement_exports_a_recipient_bound_offline_command() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    f.post("portable-statement-sale", "2026-03-10", "12.34", &evidence);
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&f.book)
+        .args([
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--compare",
+            "FY2026-P02",
+            "--certify",
+            "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .output()
+        .expect("certify a native income statement");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let registry = fa_cli::verbs::registry().unwrap();
+    let events: Vec<_> = stdout
+        .lines()
+        .map(|line| {
+            registry.check_line(line).unwrap();
+            json::parse(line).unwrap()
+        })
+        .collect();
+    let metadata = events
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .expect("retained statement certificate");
+    let certificate = fa::ReportCertificate::decode(&unhex(text(metadata, "bytes"))).unwrap();
+    assert!(matches!(
+        &certificate.selection,
+        fa::ReportSelection::Statement(_)
+    ));
+    let locator = format!("C:{}", text(metadata, "oid"));
+    let state = f.checkpoint();
+    let state_oid = text(&state, "oid");
+    let signed = exported(&f.book, &["signed-checkpoint", "--state", state_oid]);
+    let key = text(&signed, "checkpoint_public_key");
+    let checkpoint_path = f.dir.join("income-statement.checkpoint");
+    let bundle_path = f.dir.join("income-statement.fab");
+    let receipt_path = f.dir.join("income-statement.receipt");
+    std::fs::write(&checkpoint_path, bytes(&signed)).unwrap();
+    let produced = ok(
+        &f.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            state_oid,
+            "--out",
+            bundle_path.to_str().unwrap(),
+            "--receipt-out",
+            receipt_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(text(&produced, "scope"), "report");
+    let units = f
+        .open()
+        .context()
+        .units
+        .iter()
+        .map(|(id, _)| id.0.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let expected = fa_verify::blake3::hex(&certificate.digest);
+    let command = text(&produced, "verify");
+    assert!(command.contains("--units "), "{command}");
+    assert!(command.contains(&units), "{command}");
+    assert!(
+        command.contains(&format!("--expect {expected}")),
+        "{command}"
+    );
+    // Use the same actual offline dispatcher as the standalone fa-verify
+    // binary. Its only inputs are the exported files and recipient premises.
+    let args = [
+        "report",
+        bundle_path.to_str().unwrap(),
+        "--key",
+        key,
+        "--checkpoint",
+        checkpoint_path.to_str().unwrap(),
+        "--receipt",
+        receipt_path.to_str().unwrap(),
+        "--expect",
+        &expected,
+        "--units",
+        &units,
+        "--json",
+    ]
+    .map(str::to_string);
+    let verified = fa_verify::cli::run(&args, &|path| std::fs::read(path));
+    assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
+    assert!(verified.stdout.contains("\"verdict\":\"verified\""));
+    let without_units: Vec<_> = args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, arg)| (!matches!(index, 10 | 11)).then_some(arg.clone()))
+        .collect();
+    let refused = fa_verify::cli::run(&without_units, &|path| std::fs::read(path));
+    assert_eq!(refused.exit, 8, "{}{}", refused.stdout, refused.stderr);
+    assert!(refused.stdout.contains("statement_units"));
+    assert!(!refused.stdout.contains("\"verdict\":\"verified\""));
+}
