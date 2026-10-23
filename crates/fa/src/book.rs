@@ -3967,6 +3967,31 @@ impl Book {
         certificate: &crate::RollForwardCertificate,
     ) -> Outcome<crate::RollForward> {
         with_store!(&self.store, core => core.replay_roll_forward(
+    /// Certify the complete equity statement and its explicit classification roles.
+    pub fn certify_equity_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::EquityRollForwardRequest,
+    ) -> Outcome<crate::CertifiedEquityRollForward> {
+        with_store!(&self.store, core => core.certify_equity_roll_forward(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay only the independently expected equity scope and classification.
+    pub fn replay_equity_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::EquityRollForwardCertificate,
+        expected: &crate::EquityRollForwardRequest,
+    ) -> Outcome<crate::EquityRollForwardReport> {
+        with_store!(&self.store, core => core.replay_equity_roll_forward(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
             &self.purposes(), principal, capability, certificate
         ))
     }

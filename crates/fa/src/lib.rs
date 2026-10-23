@@ -67,6 +67,7 @@ pub mod certificate;
 mod certificate_store;
 pub mod document_disclosure;
 pub mod draft_review;
+pub mod equity_certificate;
 pub mod evidence_disclosure;
 pub mod findings;
 pub mod fx;
@@ -136,6 +137,10 @@ pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use draft_review::{
     CertifiedDraftDiff, DRAFT_DIFF_CERTIFICATE_FORMAT, DRAFT_DIFF_OUTPUT_FORMAT, DraftDiff,
     DraftDiffCertificate, DraftDiffRow, MAX_DRAFT_DIFF_CERTIFICATE_BYTES, MAX_DRAFT_DIFF_ROWS,
+};
+pub use equity_certificate::{
+    CertifiedEquityRollForward, EQUITY_CERTIFICATE_FORMAT, EQUITY_REPORT_FORMAT,
+    EquityRollForwardCertificate, MAX_EQUITY_CERTIFICATE_BYTES,
 };
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};

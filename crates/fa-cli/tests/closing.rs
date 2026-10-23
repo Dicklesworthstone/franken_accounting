@@ -11,6 +11,8 @@ use fa_cli::json::{self, Json};
 
 #[path = "closing/draft_review.rs"]
 mod draft_review;
+#[path = "closing/equity_certificate.rs"]
+mod equity_certificate;
 
 fn run(book: &Path, args: &[&str]) -> (i32, Json) {
     let result = Command::new(env!("CARGO_BIN_EXE_fa"))
@@ -748,7 +750,15 @@ fn equity_roll_forward_ties_issuances_distributions_and_net_income_through_a_yea
             "a date window, not a period code",
             &["--for", "FY2026-P12"][..],
         ),
-        ("not certifiable yet", &["--certify"][..]),
+        (
+            "duplicate certificate paths",
+            &[
+                "--certificate-out",
+                "first.cert",
+                "--certificate-out",
+                "second.cert",
+            ][..],
+        ),
     ] {
         let mut args_ = base.to_vec();
         args_.extend_from_slice(args);

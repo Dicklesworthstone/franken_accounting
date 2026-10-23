@@ -17318,13 +17318,20 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward --from 2026-01-01 --to 2026-12-31 --issuance 3100 --distribution 3200 --book <dir>";
+const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward --from 2026-01-01 --to 2026-12-31 --issuance 3100 --distribution 3200 [--certify | --certificate-out <new-file>] --book <dir>";
 
 /// `fa statement equity-roll-forward` (plan §12.1, bead fa-nzix): the
 /// statement of changes in equity over an inclusive effective window at one
 /// recorded prefix. It reads like the lead schedule it is built from: the
 /// whole recorded prefix is judged before the window projects it.
 fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage(
+            "--certificate-out may be supplied only once",
+            EQUITY_ROLL_FORWARD_EXAMPLE,
+        ));
+    }
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     if let Some(flag) = [
         "--for",
         "--compare",
@@ -17332,7 +17339,6 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         "--before",
         "--after",
         "--max-publications",
-        "--certificate-out",
         "--branch",
         "--before-certificate",
         "--after-certificate",
@@ -17354,23 +17360,33 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
     .into_iter()
     .find(|flag| args.flag(flag).is_some())
     .or_else(|| {
-        ["--certify", "--as-originally-reported", "--dry-run"]
+        ["--as-originally-reported", "--dry-run"]
             .into_iter()
             .find(|switch| args.switch(switch))
     }) {
         return Err(usage(
             format!(
-                "{flag} does not apply to statement equity-roll-forward: it selects inclusive --from/--to dates over every equity, revenue and expense leaf, and it is not certifiable yet"
+                "{flag} does not apply to statement equity-roll-forward: it selects inclusive --from/--to dates over every equity, revenue and expense leaf"
             ),
             EQUITY_ROLL_FORWARD_EXAMPLE,
         ));
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["read"])?;
+    let capability = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
     let out = &ctx.out;
     let mut book = ctx
         .books
         .open_admitted(args, |book: &mut Book| -> Result<(), Fail> {
+            if certify {
+                gl_certificate_preflight(book, &ctx.files, args, &capability)?;
+            }
             book.read_scope(who, &capability)??;
             let (known_at, _) = known_at_read_flag(args, book, out, &capability)?;
             book.prepare_report_history(who, &capability, known_at)??;
@@ -17407,16 +17423,43 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         distribution_accounts: named("--distribution"),
     };
     book.prepare_report_history(who, &capability, request.known_at)??;
-    let report = book.equity_roll_forward(who, &capability, &request)??;
-    render_equity_roll_forward(out, &book, &report)
+    if certify {
+        let certified = book.certify_equity_roll_forward(who, &capability, &request)??;
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+        let expected = certified.certificate.request();
+        let expectation = notary::equity_expectation_json(expected);
+        let (bytes, retained) = notary::retain_report_artifact_for(
+            &mut book,
+            &ctx.files,
+            args,
+            &artifact,
+            &capability,
+            fa::ReportArtifactExpectation::EquityRollForward(expected),
+        )?;
+        render_equity_roll_forward(out, &book, &certified.report, Some(&hex(artifact.digest())))?;
+        notary::emit_report_artifact_for(
+            out,
+            args,
+            &artifact,
+            fa::EQUITY_REPORT_FORMAT,
+            &bytes,
+            &retained,
+            &expectation,
+        );
+        Ok(())
+    } else {
+        let report = book.equity_roll_forward(who, &capability, &request)??;
+        render_equity_roll_forward(out, &book, &report, None)
+    }
 }
 
 /// The Statement of Changes in Equity as `equity_roll_forward`: every unit's
 /// reconciliation and every classified equity leg it folded.
-fn render_equity_roll_forward(
+pub(crate) fn render_equity_roll_forward(
     out: &Out,
     book: &Book,
     report: &fa::EquityRollForwardReport,
+    certificate: Option<&str>,
 ) -> Result<(), Fail> {
     let statement = &report.statement;
     out.known_at(CommitSeq(statement.known_at));
@@ -17519,7 +17562,7 @@ fn render_equity_roll_forward(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    out.event(
+    out.event_with_certificate(
         "equity_roll_forward",
         vec![
             ("label", s(&statement.label)),
@@ -17531,6 +17574,7 @@ fn render_equity_roll_forward(
             ("movements", Json::Arr(movements)),
         ],
         &human,
+        certificate,
     );
     Ok(())
 }

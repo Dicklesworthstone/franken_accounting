@@ -8,9 +8,9 @@ mod expectations;
 mod procedure;
 
 pub(crate) use expectations::{
-    aging_expectation_json, cash_flow_expectation_json, indirect_expectation_json,
-    policy_cash_flow_expectation_json, portfolio_expectation_json, reconciliation_expectation_json,
-    split_cash_flow_expectation_json,
+    aging_expectation_json, cash_flow_expectation_json, equity_expectation_json,
+    indirect_expectation_json, policy_cash_flow_expectation_json, portfolio_expectation_json,
+    reconciliation_expectation_json, split_cash_flow_expectation_json,
 };
 
 use std::io::Read;
@@ -1021,6 +1021,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let equity = if artifact.family() == ReportArtifactFamily::EquityRollForward {
+        let expectations::Expected::Equity(request) = &expected else {
+            return Err(certificate_invalid(
+                "equity replay needs an independent equity-roll-forward expectation",
+            ));
+        };
+        let certificate = fa::EquityRollForwardCertificate::decode(&bytes)?;
+        Some(book.replay_equity_roll_forward(principal, &capability, &certificate, request)??)
+    } else {
+        None
+    };
     let procedure = if artifact.family() == ReportArtifactFamily::Procedure {
         Some(fa::procedure_certificate::ProcedureCertificate::decode(
             &bytes,
@@ -1107,6 +1118,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(report) = aging {
         crate::cli::render_aging(&ctx.out, &book, &report, Some(&digest))?;
         true
+    } else if let Some(report) = equity {
+        crate::cli::render_equity_roll_forward(&ctx.out, &book, &report, Some(&digest))?;
+        true
     } else if let Some(certificate) = procedure {
         procedure::render(&ctx.out, certificate.report(), &digest);
         true
@@ -1132,6 +1146,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ReportArtifactFamily::Summary
                 | ReportArtifactFamily::RollForward
                 | ReportArtifactFamily::EffectiveDateAging
+                | ReportArtifactFamily::EquityRollForward
         )
     {
         ctx.out.known_at(replayed.known_at);

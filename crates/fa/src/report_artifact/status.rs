@@ -25,6 +25,7 @@ enum MetadataScope {
     Account(VId),
     PostingLeaves,
     MonetaryLeaves,
+    EquityLeaves,
 }
 
 fn stock_selected(
@@ -171,6 +172,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Artifact::AgingPortfolio(c) => {
                 return self.aging_portfolio_artifact_status(cx, principal, capability, c);
             }
+            Artifact::EquityRollForward(c) => {
+                return self.equity_artifact_status(cx, principal, capability, c);
+            }
             Artifact::IndirectCashFlow(c) => {
                 let ReportArtifactExpectation::IndirectCashFlow(request) = expected else {
                     return Ok(Err(expectation_required(artifact.family())));
@@ -191,6 +195,62 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
         };
         self.roll_forward_artifact_status(cx, principal, capability, source)
+    }
+
+    fn equity_artifact_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &crate::EquityRollForwardCertificate,
+    ) -> Outcome<CertificateStatus> {
+        let head = self.head(cx)?;
+        let mut request = certificate.request().clone();
+        let accounts: BTreeSet<_> = certificate
+            .source_certificate()
+            .request()
+            .accounts
+            .iter()
+            .copied()
+            .collect();
+        let units: BTreeSet<_> = request.units.iter().copied().collect();
+        let later_entries = match self.later_artifact_entries(
+            cx,
+            certificate.known_at(),
+            head,
+            MetadataScope::EquityLeaves,
+            |entry, _| {
+                Ok(entry.proposal.class != EntryClass::PENDING
+                    && stock_selected(entry, request.effective_through, |account| {
+                        accounts.contains(&account)
+                    })
+                    && entry.proposal.legs.iter().any(|leg| {
+                        accounts.contains(&leg.account_ref)
+                            && units.contains(&leg.amount.unit.0)
+                            && leg.amount.mantissa != 0
+                    }))
+            },
+        )? {
+            Ok(entries) => entries,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !later_entries.is_empty() {
+            return Ok(Ok(CertificateStatus::SupersededBy {
+                checked_at: head,
+                later_entries,
+            }));
+        }
+        request.known_at = Some(head);
+        let mut current = match self.equity_roll_forward(cx, principal, capability, &request)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(invalid(refusal.message))),
+        };
+        current.statement.known_at = certificate.known_at().0;
+        let bytes = match current.canonical_bytes() {
+            Ok(bytes) => bytes,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(unchanged(head, bytes == certificate.output()))
     }
 
     fn aging_artifact_status(
@@ -472,10 +532,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         MetadataScope::MonetaryLeaves => {
                             account.is_leaf && (1..=5).contains(&account.account_type)
                         }
+                        MetadataScope::EquityLeaves => {
+                            account.is_leaf && (3..=5).contains(&account.account_type)
+                        }
                     };
                     if include {
                         projected.push(
-                            if matches!(metadata_scope, MetadataScope::MonetaryLeaves) {
+                            if matches!(
+                                metadata_scope,
+                                MetadataScope::MonetaryLeaves | MetadataScope::EquityLeaves
+                            ) {
                                 AccountMetadata::Presentation(fa_statements::Account {
                                     id: account.vid.0,
                                     code: account.code.clone(),
