@@ -122,7 +122,7 @@ fn named(what: &str, given: &str, names: &[&str]) -> Fail {
     )
 }
 
-/// `fa document <add|read|redact|disclose|custody|erase|hold|attest|import> ...`.
+/// `fa document <add|read|redact|disclose|custody|erase|hold|attest|attach|extract|import|list> ...`.
 pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Dispatch has already refused a subcommand verbs.toml does not register.
     match args.positional.get(1).map(String::as_str) {
@@ -135,6 +135,7 @@ pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("hold") => hold_doc(ctx, args),
         Some("attest") => attest_doc(ctx, args),
         Some("attach") => attach_doc(ctx, args),
+        Some("extract") => extract_doc(ctx, args),
         Some("import") => import_doc(ctx, args),
         Some("list") => list_docs(ctx, args),
         Some("show") => show_doc(ctx, args),
@@ -640,6 +641,153 @@ fn attach_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// `fa document extract <oid> [--kind <Kind>]` (plan §9.1; fa-646's
+/// pipeline): the source document's PDF text layer as a derived text
+/// Document. Its bytes bind the source oid (`fa:derived-document:v1`), so the
+/// lineage is part of its identity; the extraction is deterministic, so the
+/// same source gives the same document. The upload is admitted and graded
+/// like `fa document add`, by who runs it, never the source's grade.
+fn extract_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str = "fa document extract <oid> [--kind Invoice] --book <dir> --json";
+    let oid_text = args.positional.get(2).ok_or_else(|| {
+        usage(
+            "`fa document extract` needs the source document's oid",
+            EXAMPLE,
+        )
+    })?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), EXAMPLE));
+    }
+    let source_oid = Oid(hex32(oid_text, "document oid")?);
+    let policy = policy()?;
+    let kind_override = match args.flag("--kind") {
+        Some(name) => Some(
+            policy
+                .kind_by_name(name)
+                .ok_or_else(|| {
+                    let names: Vec<&str> = policy.kinds.iter().map(|k| k.name.as_str()).collect();
+                    named("document kind", name, &names)
+                })?
+                .tag,
+        ),
+        None => None,
+    };
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "post"])?;
+    let authority = ctx.authority().cloned();
+    let mut book = ctx.books.open(args)?;
+    // Authorization precedes observation (doctrine 8): the upload is
+    // admitted before the source is read.
+    if let Some(authority) = &authority {
+        book.preflight_intake(authority.capability(), fa::IntakeAction::Upload)??;
+    }
+    let source = match book.read_document_for(&capability, &source_oid)?? {
+        DocumentRead::Full(doc) => doc,
+        DocumentRead::Redacted(_) => {
+            return Err(usage(
+                "extraction reads the whole document; this capability sees its redacted view",
+                "extract under a capability that reveals the document (`--grant privileged`)",
+            ));
+        }
+    };
+    let derived = fa::extract_pdf_text_layer(&source, who, kind_override.unwrap_or(source.kind))
+        .map_err(Fail::Refusal)?;
+    let added = if let Some(authority) = &authority {
+        book.upload_document(
+            authority.capability(),
+            fa_journal::UploadRequest {
+                kind: derived.document.kind,
+                mime: derived.document.mime.clone(),
+                bytes: derived.document.bytes.clone(),
+                asserted_grade: None,
+            },
+        )??
+    } else {
+        // `fa document add`'s honest default: a derived text is never graded
+        // above who produced it.
+        let grade = policy
+            .grade_by_name("AgentUpload")
+            .ok_or_else(|| Fail::Internal("missing AgentUpload grade".into()))?;
+        book.add_document(&Document {
+            grade: grade.tag,
+            ..derived.document.clone()
+        })??
+    };
+    ctx.out.at_book(&book)?;
+    let kind_out = policy
+        .kind_by_tag(added.kind)
+        .map_or_else(|| added.kind.to_string(), |k| k.name.clone());
+    let grade_out = policy
+        .grade_by_tag(added.grade)
+        .map_or_else(|| added.grade.to_string(), |g| g.name.clone());
+    let oid = hex(&added.oid.0);
+    let commit = hex(&added.doc_commit);
+    let source_hex = hex(&source_oid.0);
+    ctx.out.event(
+        "document_extracted",
+        vec![
+            ("oid", s(&oid)),
+            ("doc_commit", s(&commit)),
+            ("source_oid", s(&source_hex)),
+            ("kind", s(&kind_out)),
+            ("grade", s(&grade_out)),
+            ("self_sourced", Json::Bool(self_sourced(&policy, added.grade))),
+            ("size", Json::Int(i128::from(added.size))),
+            ("recorded_at", Json::Int(i128::from(added.recorded_at.0))),
+            ("already_recorded", Json::Bool(added.already_recorded)),
+            (
+                "extraction",
+                extraction_json(&oid, &[derived.source_oid], &derived.metadata),
+            ),
+            (
+                "evidence",
+                obj(vec![
+                    ("document_oid", s(&oid)),
+                    ("doc_commit", s(&commit)),
+                    ("role", s(DEFAULT_ROLE)),
+                ]),
+            ),
+        ],
+        &format!(
+            "{} derived document {oid} ({kind_out}, {grade_out}): the text layer of {source_hex}, {} bytes of text, at {}; read it with fa document read {oid}",
+            if added.already_recorded {
+                "already recorded:"
+            } else {
+                "recorded"
+            },
+            derived.metadata.extracted_text.len(),
+            added.recorded_at.0
+        ),
+    );
+    Ok(())
+}
+
+/// The `extraction` shape of a derived text document `holder`: how it was
+/// extracted, the sources its bytes bind, and the text as untrusted content.
+fn extraction_json(
+    holder: &str,
+    sources: &[Oid],
+    meta: &fa_journal::DerivedExtractionMetadata,
+) -> Json {
+    obj(vec![
+        ("method", s(meta.method.name())),
+        ("tool_name", s(&meta.tool_name)),
+        ("tool_version", s(&meta.tool_version)),
+        ("replayable", Json::Bool(meta.replayable)),
+        (
+            "sources",
+            Json::Arr(sources.iter().map(|o| s(hex(&o.0))).collect()),
+        ),
+        (
+            "text",
+            obj(vec![
+                ("untrusted_content", s(&meta.extracted_text)),
+                ("source", s(format!("D:{holder}"))),
+            ]),
+        ),
+    ])
+}
+
 fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let oid_text = args
         .positional
@@ -679,12 +827,18 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let oid_hex = hex(&oid.0);
             let commit_hex = hex(&doc.doc_commit());
             let bytes_hex = hex(&doc.bytes);
+            // A derived document's bytes are its binary envelope, readable
+            // UTF-8 or not: its text is `extraction.text`, never `text`.
+            let extraction = fa_journal::decode_extraction_derivation(&doc.bytes)
+                .map_or(Json::Null, |(sources, meta)| {
+                    extraction_json(&oid_hex, &sources, &meta)
+                });
             let text = match std::str::from_utf8(&doc.bytes) {
-                Ok(utf8) => Json::Obj(vec![
+                Ok(utf8) if extraction == Json::Null => Json::Obj(vec![
                     ("untrusted_content".into(), s(utf8)),
                     ("source".into(), s(format!("D:{oid_hex}"))),
                 ]),
-                Err(_) => Json::Null,
+                _ => Json::Null,
             };
             ctx.out.event(
                 "document_read",
@@ -698,6 +852,7 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("size", Json::Int(doc.bytes.len() as i128)),
                     ("bytes_hex", s(&bytes_hex)),
                     ("text", text),
+                    ("extraction", extraction),
                     ("disclosed_chunks", Json::Null),
                     ("withheld_chunks", Json::Null),
                     ("view_commit", Json::Null),
@@ -739,6 +894,7 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("size", Json::Int(i128::from(view.size))),
                     ("bytes_hex", Json::Null),
                     ("text", Json::Null),
+                    ("extraction", Json::Null),
                     ("disclosed_chunks", Json::Int(disclosed as i128)),
                     ("withheld_chunks", Json::Int(withheld as i128)),
                     ("view_commit", s(hex(&view_commit))),
