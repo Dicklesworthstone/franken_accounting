@@ -380,8 +380,16 @@ pub(crate) fn account_binding<V: Vfs + Clone>(
     book: &BookContext,
     account: &VertexRow,
 ) -> Result<Option<NativeSubledger>, KernelError> {
+    account_binding_with(&mut |vid| Ok(txn.vertex(db, vid)?), book, account)
+}
+
+fn account_binding_with(
+    read_vertex: &mut impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
+    book: &BookContext,
+    account: &VertexRow,
+) -> Result<Option<NativeSubledger>, KernelError> {
     let vid = native_subledger_vid(book.book_id, account.vid);
-    let Some(root) = txn.vertex(db, vid)? else {
+    let Some(root) = read_vertex(vid)? else {
         if target(account)?.is_some() {
             return Err(corrupt(
                 "account control_of references a missing designation",
@@ -395,9 +403,8 @@ pub(crate) fn account_binding<V: Vfs + Clone>(
         ));
     }
     let source = target(&root)?.ok_or_else(|| corrupt("subledger has no registration source"))?;
-    let source = txn
-        .vertex(db, source)?
-        .ok_or_else(|| corrupt("subledger registration source is missing"))?;
+    let source =
+        read_vertex(source)?.ok_or_else(|| corrupt("subledger registration source is missing"))?;
     let record = declared(&source, book)?;
     validate_projection(book, &record, &root)?;
     if record.spec.control_account != account.vid {
@@ -420,7 +427,15 @@ fn valid_party<V: Vfs + Clone>(
     book: &BookContext,
     value: VId,
 ) -> Result<bool, KernelError> {
-    let Some(row) = txn.vertex(db, value)? else {
+    valid_party_with(&mut |vid| Ok(txn.vertex(db, vid)?), book, value)
+}
+
+fn valid_party_with(
+    read_vertex: &mut impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
+    book: &BookContext,
+    value: VId,
+) -> Result<bool, KernelError> {
+    let Some(row) = read_vertex(value)? else {
         return Ok(false);
     };
     if !row.labels.contains(&label::DIMENSION_VALUE)
@@ -434,7 +449,7 @@ fn valid_party<V: Vfs + Clone>(
     if party_value_vid(book.book_id, &code) != value {
         return Ok(false);
     }
-    let Some(party) = txn.vertex(db, party_vid(book.book_id, &code))? else {
+    let Some(party) = read_vertex(party_vid(book.book_id, &code))? else {
         return Ok(false);
     };
     Ok(party.labels.contains(&label::PARTY)
@@ -452,15 +467,16 @@ fn missing_party(code_str: &str, account: VId, ordinal: usize) -> Refusal {
         .because(Why::Law("FA-INV-12.core".into()))
 }
 
-pub(crate) fn validate_leg<V: Vfs + Clone>(
-    txn: &WriteTxn,
-    db: &Database<V>,
+/// Shared native admission at either transaction witnesses or a retained
+/// prefix. Historical schedule retries run exactly the same party law.
+pub(crate) fn validate_leg_with(
+    read_vertex: &mut impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
     book: &BookContext,
     account: &VertexRow,
     leg: &LegPayload,
     ordinal: usize,
 ) -> Result<Option<Refusal>, KernelError> {
-    let Some(record) = account_binding(txn, db, book, account)? else {
+    let Some(record) = account_binding_with(read_vertex, book, account)? else {
         return Ok(None);
     };
     let party = leg
@@ -468,7 +484,7 @@ pub(crate) fn validate_leg<V: Vfs + Clone>(
         .iter()
         .find(|(kind, _)| *kind == PARTY_DIMENSION);
     if let Some((_, value)) = party
-        && valid_party(txn, db, book, *value)?
+        && valid_party_with(read_vertex, book, *value)?
     {
         return Ok(None);
     }

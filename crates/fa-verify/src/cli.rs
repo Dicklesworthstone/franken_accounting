@@ -18,6 +18,8 @@
 //!                                                a document's public commitment from its bytes
 //!   bundle       <bundle> --key K... [--receipt R]
 //!                                                an evidence bundle, every predicate graded
+//!   report       <bundle> --key K... [--units N,N,...]
+//!                                                a native report; statement units come from the recipient
 //! ```
 //!
 //! `ANCHOR` is how the caller trusts the checkpoint, and there are exactly
@@ -101,7 +103,8 @@ commands:
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
-                                                independently recompute every native trial-balance row
+               [--units N,N,...]               independently recompute native trial-balance rows,
+                                                or statement lines with recipient-selected unit IDs
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
                                                 proves through the certificate's cutoff and
@@ -121,6 +124,9 @@ options:
   --account A    an account vid: decimal, or 0x followed by up to 32 hex characters
   --from D --to D  an inclusive effective-day interval (days since 1970-01-01)
   --receipt R    a bundle's detached production receipt
+  --units N,N,...  statements require 1..=4096 strictly ascending unique native unit IDs;
+                 obtain the complete list independently of the report. It is an explicit
+                 recipient input, not proof of the book's unit registration or display labels.
   --json         one JSON report on stdout (robot mode)
   --hex          read every input file as hexadecimal text
 
@@ -145,7 +151,7 @@ const COMMANDS: [&str; 11] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 15] = [
+const VALUE_FLAGS: [&str; 16] = [
     "--key",
     "--witness",
     "--quorum",
@@ -161,6 +167,7 @@ const VALUE_FLAGS: [&str; 15] = [
     "--kind",
     "--expect",
     "--receipt",
+    "--units",
 ];
 const SWITCHES: [&str; 3] = ["--json", "--hex", "--unsigned-checkpoint"];
 
@@ -195,7 +202,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
         ],
         "doc-commit" => &["--kind", "--expect"],
         "bundle" | "ads" => &["--key", "--receipt"],
-        "report" => &["--key", "--receipt", "--checkpoint", "--expect"],
+        "report" => &["--key", "--receipt", "--checkpoint", "--expect", "--units"],
         _ => &[],
     }
 }
@@ -674,6 +681,29 @@ fn account(text: &str) -> Result<u128, Usage> {
             "pass a decimal vid or 0x followed by up to 32 hex characters",
         )
     })
+}
+
+/// Statements include zero-valued lines for the recipient's complete native
+/// unit universe. Never derive that universe from the output being checked.
+fn statement_units(raw: &str) -> Result<Vec<u32>, Usage> {
+    let invalid = || {
+        usage(
+            "`--units` requires 1..=4096 strictly ascending unique decimal u32 unit IDs",
+            "pass the complete independently obtained unit ID list, for example --units 0,1,2; omit --units only for a trial balance",
+        )
+    };
+    let mut units = Vec::new();
+    for token in raw.split(',') {
+        if units.len() == 4096 || token.is_empty() || !token.bytes().all(|c| c.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        let id = token.parse::<u32>().map_err(|_| invalid())?;
+        if units.last().is_some_and(|previous| *previous >= id) {
+            return Err(invalid());
+        }
+        units.push(id);
+    }
+    Ok(units)
 }
 
 fn int<T: std::str::FromStr>(args: &Args, flag: &str, what: &str) -> Result<T, Usage> {
@@ -1282,6 +1312,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         })
                 })
                 .transpose()?;
+            let units = args.one("--units").map(statement_units).transpose()?;
             let mut checks = Vec::new();
             let expected_checkpoint = if let Some(path) = args.one("--checkpoint") {
                 let bytes = load(read, path, args.hex)?;
@@ -1299,12 +1330,22 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 .one("--receipt")
                 .map(|p| load(read, p, args.hex))
                 .transpose()?;
-            match crate::report::verify_report(
-                &bytes,
-                &keys,
-                expected_checkpoint.as_ref(),
-                receipt.as_deref(),
-            ) {
+            let verified = match units.as_deref() {
+                Some(units) => crate::report::verify_statement_report(
+                    &bytes,
+                    &keys,
+                    expected_checkpoint.as_ref(),
+                    receipt.as_deref(),
+                    units,
+                ),
+                None => crate::report::verify_report(
+                    &bytes,
+                    &keys,
+                    expected_checkpoint.as_ref(),
+                    receipt.as_deref(),
+                ),
+            };
+            match verified {
                 Err(error) => checks.push(Check {
                     name: error.predicate,
                     scope: "recomputation",
@@ -1328,7 +1369,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     checks.push(Check::pass(
                         "report_bundle",
-                        "recomputation",
+                        report.scope,
                         vec![
                             ("bundle_digest", h(&report.bundle_digest)),
                             ("certificate_digest", h(&report.certificate_digest)),
@@ -1340,13 +1381,24 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 s(if report.activity { "activity" } else { "stock" }),
                             ),
                             ("records", n(report.checked_records as u64)),
-                            ("rows", n(report.rows.len() as u64)),
+                            (
+                                "rows",
+                                n(report
+                                    .statement
+                                    .as_ref()
+                                    .map_or(report.rows.len(), |statement| statement.lines.len())
+                                    as u64),
+                            ),
+                            ("unit_universe_source", s(report.unit_universe_source)),
                             (
                                 "native_read_attestations",
                                 s("retained; not used as outsider proofs"),
                             ),
                         ],
                     ));
+                    if let Some(statement) = &report.statement {
+                        checks.extend(statement_checks(statement, report.unit_universe_source));
+                    }
                     for row in &report.rows {
                         checks.push(Check::pass(
                             "trial_balance_row",
@@ -1364,7 +1416,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     checks.push(Check::pass(
                         "canonical_report",
-                        "recomputation",
+                        report.scope,
                         vec![("output_digest", h(&report.output_digest))],
                     ));
                     if let Some(receipt) = report.receipt {
@@ -1427,6 +1479,77 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         }
         _ => unreachable_command(cmd),
     }
+}
+
+fn statement_checks(
+    statement: &crate::report::VerifiedStatement,
+    unit_universe_source: &str,
+) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "statement_parameters",
+        "recipient_selected_units",
+        vec![
+            ("definition", s(&statement.definition_name)),
+            ("definition_digest", h(&statement.definition_digest)),
+            ("kind", s(statement.kind)),
+            ("unit_universe_source", s(unit_universe_source)),
+            (
+                "units",
+                Json::List(
+                    statement
+                        .units
+                        .iter()
+                        .map(|unit| n(u64::from(*unit)))
+                        .collect(),
+                ),
+            ),
+            (
+                "unit_registration",
+                s("not authenticated by the checkpoint prefix"),
+            ),
+            ("unit_labels", s("not verified")),
+            (
+                "definition_authority",
+                s("report parameter; independent approval is not established"),
+            ),
+        ],
+    )];
+    for column in &statement.columns {
+        checks.push(Check::pass(
+            "statement_column",
+            "recomputation",
+            vec![
+                ("label", s(&column.label)),
+                (
+                    "periods",
+                    Json::List(column.periods.iter().map(s).collect()),
+                ),
+                ("effective_from", day(column.effective_from)),
+                ("effective_through", day(Some(column.effective_through))),
+            ],
+        ));
+    }
+    for line in &statement.lines {
+        checks.push(Check::pass(
+            "statement_line",
+            "recomputation",
+            vec![
+                ("code", s(&line.code)),
+                ("label", s(&line.label)),
+                ("unit", n(u64::from(line.unit))),
+                (
+                    "amounts",
+                    Json::List(
+                        line.amounts
+                            .iter()
+                            .map(|amount| s(amount.to_string()))
+                            .collect(),
+                    ),
+                ),
+            ],
+        ));
+    }
+    checks
 }
 
 /// The bundle's checks, then the extract's: exactly the proven selection.
@@ -1867,6 +1990,123 @@ mod tests {
         ]
         .map(str::to_string);
         assert_eq!(run(&malformed, &no_read).exit, EXIT_USAGE);
+    }
+
+    #[test]
+    fn statement_unit_input_is_bounded_canonical_and_refused_before_io() {
+        let key = key_hex();
+        let no_read = |_: &str| -> std::io::Result<Vec<u8>> {
+            panic!("invalid statement unit parameters must refuse before file I/O")
+        };
+        for units in [
+            "",
+            ",",
+            "0,",
+            "0,,1",
+            "1,0",
+            "0,0",
+            "-1",
+            "+1",
+            "1.0",
+            "0, 1",
+            "4294967296",
+        ] {
+            let args = [
+                "report", "missing", "--key", &key, "--units", units, "--json",
+            ]
+            .map(str::to_string);
+            let output = run(&args, &no_read);
+            assert_eq!(output.exit, EXIT_USAGE, "{units}: {}", output.stdout);
+        }
+        for count in [4095, 4096] {
+            let input = (0..count)
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let parsed =
+                statement_units(&input).unwrap_or_else(|_| panic!("valid boundary {count}"));
+            assert_eq!(parsed.len(), count);
+        }
+        let oversized = (0..4097)
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let args = ["report", "missing", "--key", &key, "--units", &oversized].map(str::to_string);
+        assert_eq!(run(&args, &no_read).exit, EXIT_USAGE);
+        assert_eq!(
+            statement_units("0,1,4294967295").unwrap_or_else(|_| panic!("u32 boundary")),
+            vec![0, 1, u32::MAX]
+        );
+        let misplaced = ["bundle", "missing", "--key", &key, "--units", "0"].map(str::to_string);
+        assert_eq!(run(&misplaced, &no_read).exit, EXIT_USAGE);
+        let repeated = [
+            "report", "missing", "--key", &key, "--units", "0", "--units", "1",
+        ]
+        .map(str::to_string);
+        assert_eq!(run(&repeated, &no_read).exit, EXIT_USAGE);
+        let missing = |_: &str| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "fixture"));
+        let valid = ["report", "missing", "--key", &key, "--units", "0,1"].map(str::to_string);
+        assert_eq!(run(&valid, &missing).exit, EXIT_IO);
+    }
+
+    #[test]
+    fn statement_result_preserves_exact_columns_and_declares_unit_premise() {
+        let statement = crate::report::VerifiedStatement {
+            definition_name: "income-statement".into(),
+            definition_digest: [7; 32],
+            kind: "IncomeStatement",
+            columns: vec![
+                crate::report::StatementColumn {
+                    label: "current".into(),
+                    periods: vec!["FY2026-P01".into()],
+                    effective_from: Some(20_454),
+                    effective_through: 20_484,
+                },
+                crate::report::StatementColumn {
+                    label: "comparative".into(),
+                    periods: vec!["FY2025-P01".into()],
+                    effective_from: Some(20_089),
+                    effective_through: 20_119,
+                },
+            ],
+            lines: vec![crate::report::StatementLine {
+                code: "income".into(),
+                label: "Net income".into(),
+                unit: 0,
+                amounts: vec![i128::MAX, i128::MIN],
+            }],
+            units: vec![0, 1],
+        };
+        let checks = statement_checks(&statement, "recipient-supplied");
+        let output = report("report", true, &checks);
+        assert_eq!(output.exit, EXIT_VERIFIED);
+        assert!(
+            output
+                .stdout
+                .contains("\"unit_universe_source\":\"recipient-supplied\"")
+        );
+        assert!(
+            output
+                .stdout
+                .contains("not authenticated by the checkpoint prefix")
+        );
+        assert!(
+            output
+                .stdout
+                .contains("independent approval is not established")
+        );
+        assert!(output.stdout.contains("\"units\":[0,1]"));
+        assert!(output.stdout.contains("\"label\":\"comparative\""));
+        assert!(output.stdout.contains("\"periods\":[\"FY2025-P01\"]"));
+        assert!(output.stdout.contains(&format!(
+            "\"amounts\":[\"{}\",\"{}\"]",
+            i128::MAX,
+            i128::MIN
+        )));
+        let human = report("report", false, &checks);
+        assert!(human.stdout.contains("statement_line (recomputation)"));
+        assert!(human.stdout.contains("recipient-supplied"));
+        assert!(human.stdout.contains(&i128::MIN.to_string()));
     }
 
     /// A tampered artifact, an untrusted key, or a question the proof does

@@ -42,6 +42,7 @@ pub enum ReportArtifactFamily {
     EffectiveDateAging,
     RollForward,
     EquityRollForward,
+    ExternalFeed,
     CashFlow,
     IndirectCashFlow,
     AgingReconciliation,
@@ -72,6 +73,7 @@ impl ReportArtifactFamily {
             Self::EffectiveDateAging => "effective-date-aging",
             Self::RollForward => "roll-forward",
             Self::EquityRollForward => "equity-roll-forward",
+            Self::ExternalFeed => "external-feed-reconciliation",
             Self::CashFlow => "cash-flow",
             Self::IndirectCashFlow => "indirect-cash-flow",
             Self::AgingReconciliation => "aging-reconciliation",
@@ -102,6 +104,7 @@ pub enum ReportArtifactExpectation<'a> {
     },
     IndirectCashFlow(&'a IndirectCashFlowRequest),
     EquityRollForward(&'a crate::EquityRollForwardRequest),
+    ExternalFeed(&'a crate::ExternalFeedRequest),
     AgingReconciliation(&'a AgingReconciliationRequest),
     AgingPortfolio(&'a AgingPortfolioRequest),
     SplitCashFlow {
@@ -122,6 +125,7 @@ enum Artifact {
     Aging(Box<AgingCertificate>),
     RollForward(Box<RollForwardCertificate>),
     EquityRollForward(Box<crate::EquityRollForwardCertificate>),
+    ExternalFeed(Box<crate::ExternalFeedCertificate>),
     CashFlow(Box<CashFlowCertificate>),
     IndirectCashFlow(Box<IndirectCashFlowCertificate>),
     AgingReconciliation(Box<AgingReconciliationCertificate>),
@@ -220,6 +224,8 @@ impl ReportArtifact {
             Artifact::EquityRollForward(Box::new(crate::EquityRollForwardCertificate::decode(
                 bytes,
             )?))
+        } else if format == crate::EXTERNAL_FEED_CERTIFICATE_FORMAT {
+            Artifact::ExternalFeed(Box::new(crate::ExternalFeedCertificate::decode(bytes)?))
         } else if format == crate::CASH_FLOW_CERTIFICATE_FORMAT {
             Artifact::CashFlow(Box::new(CashFlowCertificate::decode(bytes)?))
         } else if format == crate::INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT {
@@ -264,6 +270,7 @@ impl ReportArtifact {
             Artifact::Aging(_) => ReportArtifactFamily::EffectiveDateAging,
             Artifact::RollForward(_) => ReportArtifactFamily::RollForward,
             Artifact::EquityRollForward(_) => ReportArtifactFamily::EquityRollForward,
+            Artifact::ExternalFeed(_) => ReportArtifactFamily::ExternalFeed,
             Artifact::CashFlow(_) => ReportArtifactFamily::CashFlow,
             Artifact::IndirectCashFlow(_) => ReportArtifactFamily::IndirectCashFlow,
             Artifact::AgingReconciliation(_) => ReportArtifactFamily::AgingReconciliation,
@@ -292,6 +299,7 @@ impl ReportArtifact {
             Artifact::Aging(c) => c.source(),
             Artifact::RollForward(c) => c.source_certificate(),
             Artifact::EquityRollForward(c) => c.source_certificate().source_certificate(),
+            Artifact::ExternalFeed(c) => c.source_certificate(),
             Artifact::CashFlow(c) => c.source_certificate().source_certificate(),
             Artifact::IndirectCashFlow(c) => c
                 .source_certificate()
@@ -354,6 +362,7 @@ impl ReportArtifact {
             Artifact::Aging(c) => c.digest(),
             Artifact::RollForward(c) => c.digest(),
             Artifact::EquityRollForward(c) => c.digest(),
+            Artifact::ExternalFeed(c) => c.digest(),
             Artifact::CashFlow(c) => c.digest(),
             Artifact::IndirectCashFlow(c) => c.digest(),
             Artifact::AgingReconciliation(c) => c.digest(),
@@ -378,6 +387,7 @@ impl ReportArtifact {
             Artifact::Aging(c) => c.output(),
             Artifact::RollForward(c) => c.output(),
             Artifact::EquityRollForward(c) => c.output(),
+            Artifact::ExternalFeed(c) => c.output(),
             Artifact::CashFlow(c) => c.output(),
             Artifact::IndirectCashFlow(c) => c.output(),
             Artifact::AgingReconciliation(c) => c.output(),
@@ -410,6 +420,7 @@ impl ReportArtifact {
             Artifact::Aging(c) => c.canonical_bytes(),
             Artifact::RollForward(c) => c.canonical_bytes(),
             Artifact::EquityRollForward(c) => c.canonical_bytes(),
+            Artifact::ExternalFeed(c) => c.canonical_bytes(),
             Artifact::CashFlow(c) => c.canonical_bytes(),
             Artifact::IndirectCashFlow(c) => c.canonical_bytes(),
             Artifact::AgingReconciliation(c) => c.canonical_bytes(),
@@ -445,6 +456,7 @@ from_certificate!(
     AgingCertificate,
     RollForwardCertificate,
     crate::EquityRollForwardCertificate,
+    crate::ExternalFeedCertificate,
     CashFlowCertificate,
     IndirectCashFlowCertificate,
     AgingReconciliationCertificate,
@@ -572,6 +584,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "report artifact differs from the independently expected digest",
             )));
         }
+        if matches!(&artifact.inner, Artifact::ExternalFeed(_))
+            && let Err(refusal) = self
+                .prepare_external_feed_history(cx, principal, capability, Some(artifact.known_at()))
+                .await?
+        {
+            return Ok(Err(refusal));
+        }
         if let Artifact::Procedure(certificate) = &artifact.inner
             && let Err(refusal) = self
                 .prepare_procedure_history(
@@ -656,6 +675,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 ReportArtifactExpectation::EquityRollForward(request),
             ) => self
                 .replay_equity_roll_forward(cx, principal, capability, c, request)?
+                .map(|_| ()),
+            (Artifact::ExternalFeed(c), ReportArtifactExpectation::ExternalFeed(request)) => self
+                .replay_external_feed(cx, principal, capability, c, request)?
                 .map(|_| ()),
             (Artifact::StatementDiff(c), ReportArtifactExpectation::AsSupplied) => self
                 .replay_statement_diff(cx, principal, capability, c)?

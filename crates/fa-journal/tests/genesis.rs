@@ -47,6 +47,8 @@ mod outcome_batch_integrity_tests;
 mod outcome_key_tests;
 #[path = "genesis/recurring.rs"]
 mod recurring_tests;
+#[path = "genesis/scheduled_admission.rs"]
+mod scheduled_admission_tests;
 #[path = "genesis/subledger.rs"]
 mod subledger_tests;
 
@@ -367,7 +369,7 @@ impl Harness {
                     1,
                     key,
                     description,
-                    &Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops"),
+                    &Capability::embedded(PRINCIPAL, &["close", "reopen", "post"]).expect("ops"),
                     &approvals,
                 )
                 .await

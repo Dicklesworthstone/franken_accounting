@@ -175,6 +175,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Artifact::EquityRollForward(c) => {
                 return self.equity_artifact_status(cx, principal, capability, c);
             }
+            Artifact::ExternalFeed(c) => {
+                return self.external_feed_certificate_status(cx, principal, capability, c);
+            }
             Artifact::IndirectCashFlow(c) => {
                 let ReportArtifactExpectation::IndirectCashFlow(request) = expected else {
                     return Ok(Err(expectation_required(artifact.family())));

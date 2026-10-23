@@ -1158,9 +1158,10 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         // The trigger is this transition's own control entry; the minted
         // reversals are the book's (its System principal). The executor is
         // this transition, admitted under `close` at the head of this
-        // function (fa-llx); the hook still rechecks the Reversal row, SoD
-        // and epoch for each minted entry.
-        match crate::schedule::mint_on_open(&txn, db, ctx, book, capability, period_code, evid)? {
+        // function. Every due effect additionally requires its executor's
+        // current Post authority, amount/scope limits and daily budget.
+        match crate::schedule::mint_on_open(&mut txn, db, ctx, book, capability, period_code, evid)?
+        {
             Ok(mints) => {
                 let minted = mints.minted.clone();
                 let blocked = mints.blocked.clone();

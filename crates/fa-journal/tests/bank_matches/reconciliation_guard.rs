@@ -829,7 +829,7 @@ fn opening_a_period_refuses_unauthorized_automatic_cash_effects_atomically() {
             1,
             b"guard-open-april",
             description.clone(),
-            &Capability::embedded(OWNER, &["close"]).unwrap(),
+            &Capability::embedded(OWNER, &["close", "post"]).unwrap(),
             &[],
         ))
         .unwrap()
@@ -849,7 +849,7 @@ fn opening_a_period_refuses_unauthorized_automatic_cash_effects_atomically() {
             1,
             b"guard-open-april",
             description.clone(),
-            &Capability::embedded(OWNER, &["close", "reconcile"]).unwrap(),
+            &Capability::embedded(OWNER, &["close", "post", "reconcile"]).unwrap(),
             &[],
         ))
         .unwrap()

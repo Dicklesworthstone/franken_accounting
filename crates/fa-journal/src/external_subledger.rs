@@ -608,6 +608,67 @@ pub fn reconcile_at<V: Vfs + Clone>(
     }))
 }
 
+/// Reconcile the original publication and require its immutable dependencies
+/// to remain byte-identical at the report's selected prefix. A certificate may
+/// therefore bind these populations at one frontier without replacing the
+/// historical review with a later attestation.
+pub fn reconcile_unchanged_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    target: EntryRef,
+    known_at: CommitSeq,
+) -> Outcome<ExternalSubledgerReconciliation> {
+    let report = match reconcile_at(db, book, target, known_at)? {
+        Ok(report) => report,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let (_, entry_at) = crate::post::read_entry_at(db, target.vid, known_at)?
+        .ok_or_else(|| corrupt("summary vanished within a fixed prefix"))?;
+    let batch_id = derive_batch_identity(book.book_id, &report.feed, &report.batch_key);
+    let document = document_vid(&report.evidence.document_oid);
+    for vid in [document, report.review.attestation, batch_id] {
+        let original = db.vertex_at(vid, entry_at)?;
+        let selected = db.vertex_at(vid, known_at)?;
+        // Document custody is legitimately append-only/versioned. The source
+        // payload, identity and kind remain immutable; custody counters do not
+        // change the economic assertion or replace the original review.
+        if !matches!((original, selected), (Some(a), Some(b))
+            if a.created_at == b.created_at && a.labels == b.labels
+                && if vid == document {
+                    [property::FA_PAYLOAD, property::FA_DIGEST, property::BOOK_ID, property::CODE]
+                        .iter().all(|key| crate::rows::prop(&a, *key) == crate::rows::prop(&b, *key))
+                } else { a.props == b.props })
+        {
+            return Ok(Err(invalid(
+                "a source, independent review or unique-batch identity changed after publication",
+            )));
+        }
+    }
+    let expected = edge_id(relation::REVIEWED_BY, target.vid, report.review.attestation);
+    if !db.edges_at(known_at)?.iter().any(|edge| {
+        edge.entry.eid == expected
+            && edge.entry.relation == relation::REVIEWED_BY
+            && edge.entry.src == target.vid
+            && edge.entry.dst == report.review.attestation
+            && edge.props.is_empty()
+    }) {
+        return Ok(Err(invalid(
+            "the selected prefix lost the summary's review lineage",
+        )));
+    }
+    Ok(Ok(report))
+}
+
+fn derive_batch_identity(book: Id128, feed: &str, batch_key: &str) -> VId {
+    let digest = domain_digest(
+        b"fa:vid:external-subledger-batch:v1",
+        &[&book.0, feed.as_bytes(), batch_key.as_bytes()],
+    );
+    let mut low = [0; 16];
+    low.copy_from_slice(&digest[..16]);
+    VId(u128::from_le_bytes(low))
+}
+
 /// Verify the exact projection population as well as each summary. Used by
 /// projection verification so an orphan or deleted identity cannot disappear.
 pub fn verify_all_at<V: Vfs + Clone>(

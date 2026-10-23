@@ -9,8 +9,8 @@ mod procedure;
 
 pub(crate) use expectations::{
     aging_expectation_json, cash_flow_expectation_json, equity_expectation_json,
-    indirect_expectation_json, policy_cash_flow_expectation_json, portfolio_expectation_json,
-    reconciliation_expectation_json, split_cash_flow_expectation_json,
+    external_feed_expectation_json, indirect_expectation_json, policy_cash_flow_expectation_json,
+    portfolio_expectation_json, reconciliation_expectation_json, split_cash_flow_expectation_json,
 };
 
 use std::io::Read;
@@ -72,6 +72,10 @@ fn prepare_artifact_history(
             Some(artifact.digest()),
             fa::ReportArtifactExpectation::AsSupplied,
         )??;
+        return Ok(());
+    }
+    if artifact.family() == ReportArtifactFamily::ExternalFeed {
+        book.prepare_external_feed_history(principal, capability, Some(artifact.known_at()))??;
         return Ok(());
     }
     if artifact.family() == ReportArtifactFamily::Procedure {
@@ -1050,6 +1054,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let external_feed = if artifact.family() == ReportArtifactFamily::ExternalFeed {
+        let expectations::Expected::ExternalFeed(request) = &expected else {
+            return Err(certificate_invalid(
+                "external-feed replay needs an independent external-feed-reconciliation expectation",
+            ));
+        };
+        let certificate = fa::ExternalFeedCertificate::decode(&bytes)?;
+        Some(book.replay_external_feed(principal, &capability, &certificate, request)??)
+    } else {
+        None
+    };
     let procedure = if artifact.family() == ReportArtifactFamily::Procedure {
         Some(fa::procedure_certificate::ProcedureCertificate::decode(
             &bytes,
@@ -1143,6 +1158,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(report) = equity {
         crate::cli::render_equity_roll_forward(&ctx.out, &book, &report, Some(&digest))?;
         true
+    } else if let Some(report) = external_feed {
+        crate::external_subledger::render_feed(&ctx.out, &book, &report, Some(&digest))?;
+        true
     } else if let Some(certificate) = procedure {
         procedure::render(&ctx.out, certificate.report(), &digest);
         true
@@ -1169,6 +1187,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 | ReportArtifactFamily::RollForward
                 | ReportArtifactFamily::EffectiveDateAging
                 | ReportArtifactFamily::EquityRollForward
+                | ReportArtifactFamily::ExternalFeed
         )
     {
         ctx.out.known_at(replayed.known_at);

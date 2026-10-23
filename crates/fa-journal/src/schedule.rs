@@ -23,7 +23,7 @@
 //!
 //! Its envelope is fully determined by the schedule, so both paths mint the
 //! same thing:
-//! - the original preparer as principal;
+//! - the book's System principal, with the original author retained by lineage;
 //! - the exact swap, under the target's own sealed description;
 //! - dated `reverse_on`;
 //! - the date basis recorded as extension 3.
@@ -31,7 +31,8 @@
 //! Execution rechecks the period law against the Reversal row (Open and
 //! SoftClosed admit; Closed needs `post_closed`, which the scheduler never
 //! holds; Locked refuses), live applications against the target, and the
-//! availability law. A schedule that does not pass is **blocked**: reported,
+//! ordinary account/subledger and availability laws, current executor authority,
+//! and daily spending limits. A schedule that does not pass is **blocked**: reported,
 //! never minted, and never stalling a batch. A person reverses it by hand.
 //!
 //! Both moments take time only from a corroborated committed tick (sweep.rs
@@ -474,6 +475,25 @@ pub fn due_reversals<V: asupersync::fs::Vfs + Clone>(
                             row: LIVE_APPLICATIONS_ROW.into(),
                         }
                     }
+                    ReversalStatus::Due => {
+                        let row = db.vertex(schedule.target.vid)?.ok_or_else(|| {
+                            KernelError::Corrupt("a scheduled target is missing".into())
+                        })?;
+                        let target = decode_entry(&row)?;
+                        match crate::post::admit_accounts(
+                            db,
+                            book,
+                            schedule.reverse_on,
+                            &target.proposal.legs,
+                            |vid| Ok(db.vertex(vid)?),
+                        )? {
+                            Ok(_) => ReversalStatus::Due,
+                            Err(refusal) => ReversalStatus::Blocked {
+                                state,
+                                row: refusal_reason(&refusal),
+                            },
+                        }
+                    }
                     s => s,
                 }
             }
@@ -524,10 +544,6 @@ fn swapped(legs: &[LegPayload]) -> Vec<LegPayload> {
 /// The writes of the reversals one transaction mints, and what it blocked.
 pub(crate) struct Mints {
     has_leg: WriteBatch,
-    leg_edges: [WriteBatch; 3],
-    in_period: WriteBatch,
-    supersedes: WriteBatch,
-    reconciliation: WriteBatch,
     cells: BTreeMap<VId, CellRun>,
     accounts: BTreeMap<VId, AccountRow>,
     /// `(target, reversal)` in mint order.
@@ -540,14 +556,6 @@ impl Mints {
     pub(crate) fn new() -> Self {
         Self {
             has_leg: WriteBatch::new(relation::HAS_LEG),
-            leg_edges: [
-                WriteBatch::new(relation::POSTS_TO),
-                WriteBatch::new(relation::IN_UNIT),
-                WriteBatch::new(relation::FOR),
-            ],
-            in_period: WriteBatch::new(relation::IN_PERIOD),
-            supersedes: WriteBatch::new(relation::SUPERSEDES),
-            reconciliation: WriteBatch::new(relation::CITES),
             cells: BTreeMap::new(),
             accounts: BTreeMap::new(),
             minted: Vec::new(),
@@ -560,13 +568,7 @@ impl Mints {
         for (cell, run) in &self.cells {
             run.before.stage(&run.after, *cell, &mut self.has_leg)?;
         }
-        let mut out = vec![
-            self.has_leg,
-            self.in_period,
-            self.supersedes,
-            self.reconciliation,
-        ];
-        out.extend(self.leg_edges);
+        let mut out = vec![self.has_leg];
         out.retain(|b| !b.is_empty());
         Ok(out)
     }
@@ -662,15 +664,38 @@ fn judge_limits(
     Ok(None)
 }
 
+fn refusal_reason(refusal: &Refusal) -> String {
+    format!("{}: {}", refusal.code, refusal.message)
+}
+
+fn execution_refusal(
+    mints: &mut Mints,
+    schedule: &Schedule,
+    trigger: ScheduleTrigger,
+    refusal: Refusal,
+) -> Outcome<()> {
+    if matches!(trigger, ScheduleTrigger::Sweep { .. }) {
+        mints
+            .blocked
+            .push((schedule.target, refusal_reason(&refusal)));
+        Ok(Ok(()))
+    } else {
+        // Open cannot silently record an authority-dependent block that its
+        // exact historical retry cannot reproduce from immutable sources.
+        Ok(Err(refusal))
+    }
+}
+
 /// Mint (or block) the scheduled reversal of `schedule` inside `txn`, in a
 /// period of `state`, under `tick`'s evidence (plan §7.6). The envelope is
-/// fully determined by the schedule; the checks are the Reversal row, live
-/// applications, the availability law, and SoD (default row, no approvals).
+/// fully determined by the schedule. Its actual effects undergo shared native
+/// authority and account admission, availability, reconciliation, daily usage,
+/// the Reversal row, live applications and SoD (default row, no approvals).
 /// `Ok(Err)` refuses the whole transaction; a block is recorded in `mints`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
-    txn: &WriteTxn,
-    db: &Database<V>,
+    txn: &mut WriteTxn,
+    db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &fa_policy::Capability,
@@ -684,6 +709,34 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     executor: Party,
     epoch: u64,
 ) -> Outcome<()> {
+    // A period-scoped opener must reach the accrual being undone before
+    // its payload is observed, just as a manually posted Reversal must.
+    if capability.is_scoped() {
+        let current = match policy::current_at(db, book, capability)? {
+            Ok(current) => current,
+            Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
+        };
+        let scope = policy::account_scope(db, book, &current)?;
+        if !policy::entry_in_scope_by_metadata(
+            txn,
+            db,
+            book,
+            capability,
+            scope.as_ref(),
+            schedule.target.vid,
+        )? {
+            return execution_refusal(
+                mints,
+                schedule,
+                trigger,
+                policy::refusal(&fa_policy::Denial::OutOfScope {
+                    caveat: "scheduled_target",
+                    value: "the original accrual's complete account and effective-date footprint"
+                        .into(),
+                }),
+            );
+        }
+    }
     let target_row = txn
         .vertex(db, schedule.target.vid)?
         .ok_or_else(|| KernelError::Corrupt("a scheduled target is missing".into()))?;
@@ -731,41 +784,6 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let legs = swapped(&target.proposal.legs);
-    let reconciliation = match crate::post::reconciliation_citations(
-        txn,
-        db,
-        ctx,
-        book,
-        capability,
-        schedule.reverse_on,
-        &legs,
-    )? {
-        Ok(citations) => citations,
-        Err(refusal)
-            if refusal.code == code::CAPABILITY
-                && matches!(trigger, ScheduleTrigger::Sweep { .. }) =>
-        {
-            mints.blocked.push((
-                schedule.target,
-                format!("{}: {}", refusal.code, refusal.message),
-            ));
-            return Ok(Ok(()));
-        }
-        // A period transition is one requested atomic action. Refuse Open
-        // before publishing it when its automatic effects lack authority;
-        // its exact retry must not silently lose a newly invented block reason.
-        Err(refusal) => return Ok(Err(refusal)),
-    };
-    if let Some(why) = judge_limits(
-        |vid| Ok(txn.vertex(db, vid)?),
-        book,
-        mints,
-        &legs,
-        &schedule.period,
-    )? {
-        mints.blocked.push((schedule.target, why));
-        return Ok(Ok(()));
-    }
     let proposal = EntryPayload {
         schema_minor: fa_model::entry::SCHEMA_MINOR,
         book_id: book.book_id,
@@ -800,6 +818,57 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         extensions: vec![(DATE_BASIS_EXTENSION, date_basis_bytes(policy, tick.entry))],
         tags: Vec::new(),
     };
+    // System is attribution, not ambient authority. The actual executor
+    // must authorize every leg at execution; the transaction retains its
+    // revocation/issuance witness and the current policy epoch.
+    match crate::post::authorize_effects(
+        db,
+        book,
+        capability,
+        capability.holder(),
+        &proposal,
+        false,
+    )? {
+        Ok(_) => {}
+        Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
+    };
+    if capability.has_requires_dry_run_caveat() {
+        return execution_refusal(
+            mints,
+            schedule,
+            trigger,
+            policy::refusal(&fa_policy::Denial::OutOfScope {
+                caveat: "requires_dry_run",
+                value: "an automatic reversal without a verified posting certificate".into(),
+            }),
+        );
+    }
+    if let Err(refusal) = policy::capability_witness(txn, db, book, capability)? {
+        return execution_refusal(mints, schedule, trigger, refusal);
+    }
+    match crate::post::admit_accounts(db, book, schedule.reverse_on, &proposal.legs, |vid| {
+        Ok(txn.vertex(db, vid)?)
+    })? {
+        Ok(_) => {}
+        Err(refusal) => {
+            mints
+                .blocked
+                .push((schedule.target, refusal_reason(&refusal)));
+            return Ok(Ok(()));
+        }
+    }
+    let reconciliation = match crate::post::reconciliation_citations(
+        txn,
+        db,
+        ctx,
+        book,
+        capability,
+        schedule.reverse_on,
+        &proposal.legs,
+    )? {
+        Ok(citations) => citations,
+        Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
+    };
     if let Err(e) = proposal.validate() {
         return Err(KernelError::Corrupt(format!(
             "a scheduled reversal is malformed: {e}"
@@ -822,27 +891,49 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let entry = proposal.seal(Vec::new(), None)?;
-    let pvid = period_vid(&book.calendar.id, &schedule.period);
-    mints
-        .has_leg
-        .create_vertex(rvid, vec![label::ENTRY], entry_mirrors(&entry)?);
-    crate::outcome::stage_entry(&mut mints.has_leg, &entry, rvid)?;
-    let leg_edges = crate::projections::stage_legs(&mut mints.has_leg, rvid, &entry, book)?;
-    for (aggregate, batch) in mints.leg_edges.iter_mut().zip(leg_edges) {
-        aggregate.extend(batch)?;
+    let usage = match crate::usage::judge(txn, db, ctx, book, capability, &entry, rvid)? {
+        Ok(usage) => usage,
+        Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
+    };
+    if let Some(why) = judge_limits(
+        |vid| Ok(txn.vertex(db, vid)?),
+        book,
+        mints,
+        &entry.proposal.legs,
+        &schedule.period,
+    )? {
+        mints.blocked.push((schedule.target, why));
+        return Ok(Ok(()));
     }
-    mints
-        .in_period
-        .add_edge(edge_id(relation::IN_PERIOD, rvid, pvid), rvid, pvid, vec![]);
-    mints.supersedes.add_edge(
+    let pvid = period_vid(&book.calendar.id, &schedule.period);
+    let mut has_leg = WriteBatch::new(relation::HAS_LEG);
+    has_leg.create_vertex(rvid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_entry(&mut has_leg, &entry, rvid)?;
+    let leg_edges = crate::projections::stage_legs(&mut has_leg, rvid, &entry, book)?;
+    let mut in_period = WriteBatch::new(relation::IN_PERIOD);
+    in_period.add_edge(edge_id(relation::IN_PERIOD, rvid, pvid), rvid, pvid, vec![]);
+    let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
+    supersedes.add_edge(
         edge_id(relation::SUPERSEDES, rvid, schedule.target.vid),
         rvid,
         schedule.target.vid,
         vec![],
     );
-    if let Some(edges) = crate::post::reconciliation_edges(rvid, &reconciliation) {
-        mints.reconciliation.extend(edges)?;
+    let usage_edges = usage
+        .as_ref()
+        .map(|usage| usage.stage(&mut has_leg))
+        .transpose()?;
+    let mut batches = vec![has_leg, in_period, supersedes];
+    batches.extend(leg_edges);
+    if let Some(edges) = usage_edges {
+        batches.extend(edges);
     }
+    if let Some(edges) = crate::post::reconciliation_edges(rvid, &reconciliation) {
+        batches.push(edges);
+    }
+    // The next reversal must observe this entry and quota receipt in the
+    // same overlay. Publishing remains the caller's single atomic commit.
+    txn.write_ordered(db, batches)?;
     mints.minted.push((schedule.target, entry.entry_ref(rvid)));
     Ok(Ok(()))
 }
@@ -855,8 +946,8 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
 /// minted reversals are dated in the period being opened, which they find
 /// Open.
 pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
-    txn: &WriteTxn,
-    db: &Database<V>,
+    txn: &mut WriteTxn,
+    db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: &fa_policy::Capability,
@@ -1035,6 +1126,12 @@ pub(crate) fn recorded_open_mints<V: asupersync::fs::Vfs + Clone>(
         if applied_blocked {
             continue;
         }
+        if let Err(refusal) = crate::post::admit_accounts(db, book, s.reverse_on, &legs, |vid| {
+            Ok(db.vertex_at(vid, before)?)
+        })? {
+            mints.blocked.push((s.target, refusal_reason(&refusal)));
+            continue;
+        }
         if let Some(why) = judge_limits(
             |vid| Ok(db.vertex_at(vid, before)?),
             book,
@@ -1156,7 +1253,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
         let state = state_from_scalar(txn.vertex_property(db, pvid, property::STATE)?.as_ref())
             .ok_or_else(|| KernelError::Corrupt(format!("period `{}` state mirror", s.period)))?;
         if let Err(r) = mint(
-            &txn,
+            &mut txn,
             db,
             ctx,
             book,
@@ -1484,6 +1581,20 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
                 v.drift.push(format!(
                     "the scheduled reversal of {:032x} is not the bound effect",
                     target.vid.0
+                ));
+            }
+            let before = CommitSeq(rrow.created_at.0.saturating_sub(1));
+            if let Err(refusal) = crate::post::admit_accounts(
+                db,
+                book,
+                reversal.proposal.effective_date,
+                &reversal.proposal.legs,
+                |vid| Ok(db.vertex_at(vid, before)?),
+            )? {
+                v.drift.push(format!(
+                    "scheduled reversal {:032x} violated native account admission: {}",
+                    rrow.vid.0,
+                    refusal_reason(&refusal),
                 ));
             }
             if cancel.is_some() {
