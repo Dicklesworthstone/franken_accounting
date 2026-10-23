@@ -24,6 +24,7 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, BookError, IntakeAction, Outcome};
 
+pub use fa_journal::carrying::{FxSettlementRequest, PreparedFxSettlement};
 pub use fa_journal::fx::{FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
 
 /// The canonical Rate document's media type; its bytes use the native codec.
@@ -316,6 +317,92 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )
         });
         evaluation.checkpoint().map_err(BookError::Context)?;
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, capability.holder(), true, None)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Prepare a foreign open-item settlement from its retained carrying
+    /// history and an explicitly selected Rate document. The cash amount is
+    /// an assertion checked against that rate, never a balancing plug.
+    /// Current whole-book Read and Post authority precede source observation;
+    /// the ordinary posting kernel independently repeats the relief check.
+    pub async fn prepare_fx_settlement(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        request: &FxSettlementRequest,
+        template: EntryPayload,
+        budget: &mut ArithmeticBudget<'_, impl Sized>,
+    ) -> Outcome<PreparedFxSettlement> {
+        if let Err(refusal) =
+            self.authorize_fx_read(cx, capability, template.principal_ref, true, None)?
+        {
+            return Ok(Err(refusal));
+        }
+        if template.book_id != self.context().book_id {
+            return Ok(Err(invalid(
+                "the settlement template names a different book",
+            )));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, capability.holder(), capability, None)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        let document = match self
+            .read_document_for(cx, capability, &request.rate_document)
+            .await?
+        {
+            Ok(DocumentRead::Full(document)) => document,
+            Ok(DocumentRead::Redacted(_)) => {
+                return Ok(Err(Refusal::new(
+                    code::CAPABILITY,
+                    exit::SAFETY,
+                    "FX settlement requires the complete retained Rate document",
+                    "plan §5.7 / §6.4 (governed settlement evidence)",
+                    "use a capability permitted to read the complete Settlement Rate document",
+                )));
+            }
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if document.book_id != self.context().book_id
+            || document.kind != RATE_DOCUMENT_KIND
+            || document.mime != FX_RATE_MIME
+            || document.oid() != request.rate_document
+        {
+            return Ok(Err(invalid(
+                "the settlement source is not this book's canonical Rate document",
+            )));
+        }
+        let rate = match FxRateDocument::decode(&document.bytes) {
+            Ok(rate) => rate,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = currency_units(&rate, &self.context().units) {
+            return Ok(Err(refusal));
+        }
+        let selected =
+            match self.authorize_fx_read(cx, capability, template.principal_ref, true, None)? {
+                Ok(selected) => selected,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        self.query(cx, |db, book| {
+            crate::certificate::context_at(db, book, selected)
+        })?;
+        let result = fa_journal::carrying::prepare_fx_settlement(
+            &self.db,
+            cx,
+            &self.context,
+            capability,
+            request,
+            template,
+            budget,
+        )?;
         if let Err(refusal) =
             self.authorize_fx_read(cx, capability, capability.holder(), true, None)?
         {

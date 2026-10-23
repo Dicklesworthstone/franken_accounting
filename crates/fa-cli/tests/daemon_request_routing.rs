@@ -19,14 +19,18 @@ use fa_journal::exit;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn socket_peer() -> (PathBuf, thread::JoinHandle<Request>) {
-    let dir = std::env::temp_dir().join(format!(
+    // The real socket must fit sockaddr_un.sun_path even when the harness
+    // supplies an arbitrarily long TMPDIR (as RCH clean snapshots do).
+    let dir = Path::new("/tmp").join(format!(
         "fa-route-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed),
     ));
     std::fs::create_dir(&dir).unwrap();
     let daemon = verbs::registry().unwrap().daemon.clone();
-    let listener = UnixListener::bind(dir.join(&daemon.socket)).unwrap();
+    let socket = dir.join(&daemon.socket);
+    assert!(socket.as_os_str().len() < 104, "{}", socket.display());
+    let listener = UnixListener::bind(socket).unwrap();
     listener.set_nonblocking(true).unwrap();
     let peer = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);

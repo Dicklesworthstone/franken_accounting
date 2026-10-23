@@ -362,10 +362,194 @@ publication, fresh-plan success and later exact retry. The direct substrate
 test also includes both publication orders and an actually published
 guard-bypassed control.
 
-Execution is incomplete: the admitted five-package Rust run was cancelled
-by RCH's stuck detector during pinned `fgdb` compilation (job
-`30075807208571128`, daemon history exit 130, local shell 143), before any
-test result or remote completion marker. The separate frozen native
-negative has not obtained an idle worker. Formatting and bounded static
-scans are not runtime proof. Per-intent dependency classification and the
-remaining original acceptance stay in the same open bead.
+The first five-package Rust run was cancelled by RCH's stuck detector during
+pinned `fgdb` compilation (job `30075807208571128`, daemon history exit 130,
+local shell 143), before any test result or remote completion marker. Later
+strict development runs establish the following narrower results:
+
+- At exact `95c6239d`, all 13 substrate and 146 journal `genesis` tests pass,
+  including metadata invalidation, point-plan/exact-retry controls, both
+  aggregate publication orders and a guard-bypassed stale native publication.
+- At exact original `522f2979`, the one metadata regression fails because
+  the stale Closing actually commits at sequence 12. Its expected-failure
+  run exits 101; it is not a normal green test run.
+- The registered dependency-class slice and foundation-probe registration
+  pass 75 registry/validator tests and scoped clippy at `ae2f8622` plus the
+  recorded foundation-ledger overlay. The hash-checked prebuilt substrate
+  inversion runs its actual selected test and fails as expected.
+
+Logs are retained under
+`/Volumes/trj-data/projects/franken_accounting-verification-output/` as
+`aggregate-native-positive-95c6239d.log`,
+`portable-negative-warm-522f2979.log`,
+`aggregate-registry-ae2f8622.log`, and
+`aggregate-inversion-artifact-one-thread-95c6239d.log`. These are distinct
+source cuts and development evidence, not one composed canonical verdict.
+The CLI request at `95c6239d` timed out in admission with exit 103 and ran
+zero tests; the later export call repair at `1f98e137` still needs its CLI
+run. Full original acceptance and the canonical complete gate remain open.
+
+## 2026-10-22 — Circular-flow search charged only after completion (`fa-1tvm`, open)
+
+At `1f98e137`, the ordinary procedure meter already enforces runtime work
+budgets and cancellation during charges. However, `graph.round_trips` with
+`max_hops > 2` calls `cycles::find` to completion and only then charges its
+search steps. The recursive search enforces its separate maximum-search
+bound, but cannot observe the caller's smaller work budget or cancellation
+while traversing a root's continuations. This is a source-observed breach
+of doctrine 3, not a newly executed runtime result.
+
+The repair passes a fallible checkpoint callback into each actual root and
+recursive-edge charge. The adapter supplies the existing procedure meter
+and propagates its original refusal; it no longer charges the same work
+again afterward. The search receives no time, entropy, filesystem or
+network handle. Existing motif and independent exhaustive-subset oracle
+cases remain, with new actual-meter recursion interruption tests and a
+native three-transfer corpus. A real CLI regression requires budget seven
+to refuse at the eighth charge, no partial findings or head change, and
+identical complete findings/work under sufficient and unrestricted budgets.
+These new tests are drafted and runtime verification is still UNRUN. No
+claim is made about every procedure, snapshot-acquisition cancellation,
+full stripped-context acceptance, or the complete canonical gate.
+
+The same source also lacks a cancellation check at run entry and completion:
+an empty native procedure never charges the meter, and cancellation arriving
+after the last periodic check can leave a short procedure returning findings.
+The runner now checks those boundaries without inventing charged work. A
+retained first refusal still wins if the procedure swallowed an earlier
+budget error. Additional regressions require an already-cancelled empty
+native `jet.weekend` run to refuse at zero work, an uncancelled empty run to
+complete at zero work, and late cancellation to withhold the result while
+preserving any preceding budget refusal. These are source changes and
+unexecuted regression requirements; both the original-code request and the
+complete selected positive request on this resume timed out in RCH admission
+with exit 103 and executed zero tests. No runtime gate passed in this block.
+
+Snapshot acquisition is another source-observed gap at `7f215518`: it takes
+no context while reading and decoding the book, and the direct `run` API
+also drops the caller's cancellation source. The follow-on draft requires
+`QueryCx` for both entry points, checks before selecting a storage prefix,
+between bulk reads, during entry/approval/vertex decoding, and before returning
+the snapshot, and carries that same context into the procedure meter. The
+facade, certification/replay paths and native corpus callers pass their
+existing query context. Procedures still receive only the meter. Runtime
+context negatives and uncancelled digest/work controls are added but UNRUN.
+Bulk storage reads, sorts, hashing and role/open-item folds remain indivisible
+at this boundary; this is not a claim of bounded cancellation throughout
+snapshot acquisition or completion of `fa-1tvm`.
+
+Formatting and whitespace checks pass for this draft. The ten-file static
+scan exits 1 with one critical report and 1,149 warnings. Its critical is the
+unchanged `panic!("fresh late entry must commit")` in the bank-reconciliation
+test helper, also present at `7f215518`; the assertion and scanner are retained.
+This is a red static verdict, not a passing gate. Rust tests, clippy and the
+complete exact-tree gate remain UNRUN: the only disk-qualified Linux worker
+reports critical memory pressure even while its local slot is free. No
+pressure threshold, worker cap or acceptance criterion is weakened.
+
+## 2026-10-23 — Admitted runtime results and chart retry contract (`fa-1tvm`, `fa-r19j`, `fa-kxc4`, open)
+
+The newly configured `trj` worker admits the strict development run after
+source and native build-filesystem SBH checks pass. At `5492f2c6` plus
+overlay `97b0afe805d2405fce7390732b29b8009b106fa9be67f0b29ab0cfe37f842a7a`,
+the complete requested `fa`, `fa-cli`, `fa-gen`, and `fa-lantern` test run
+exits 101: 1,308 passed, eight failed, none ignored. All eight meter/context
+regressions, nine cycle unit cases, real CLI circular-flow budget refusal,
+saved-close invalidation after report certification, and saved-FX-review/plan
+invalidation after a later invoice pass by name. These replace UNRUN only
+for those cases at this source cut; the four-package verdict is RED.
+
+The failures expose four fixture/consumer mismatches and a real kernel gap:
+Unix socket fixtures exceed `sun_path` under long RCH `TMPDIR`; `tru 0.1.1`
+serializes integer JSON values as `6.0`; the bound-operation matrix supplies
+the forbidden global `--yes` flag before it can test missing operations;
+and the positive catalog fixture omits the journaled roles its procedures
+require. The chart-role CLI test also expects an exact chart retry to return
+its recorded outcome, whereas an older template test expects that same retry
+to refuse. `install_chart` has no recorded-outcome branch and stages live
+identities again, violating the normative idempotency contract in plan §5.9.
+
+The fixture repairs retain the assertions they were meant to reach. Socket
+probes use short retained unique directories with an explicit portable length
+bound. The external reference adapter strips only an exact `.0` numeric suffix
+outside strings, without floating arithmetic; fractional/exponent/overflow,
+malformed-number and wrong-integer controls still refuse or compare unequal,
+and the production JSON reader still refuses `6.0`. Real native role controls
+populate the positive catalog, with a missing-role/unchanged-head negative
+beforehand. The operation matrix keeps every operation check and separately
+requires `--yes` to refuse without changing the head.
+
+The chart repair recognizes an existing journal entry only after current
+authorization and SoD checks, compares the canonical or decrypted semantic
+request identity, and returns the original `ChartInstalled` without writing.
+New controls require a nonce-independent exact retry after a role control,
+same-key changed account/reason conflict, new-key duplicate refusal, and
+unauthorized retry refusal, all with unchanged head. The template gate's
+win/lose split is explicit: an exact retry now passes with the original
+identity and birth; a distinct request over existing accounts still refuses.
+The old exact-retry refusal assertion was inconsistent with plan §5.9; no
+plan, threshold, refusal policy, or format is weakened to preserve it.
+
+The first fixture-only rerun at `bb5a0485` plus its four recorded overlays
+exits 101 with 112 passed and one failed: the four socket cases, TOON
+differential and new reference-adapter controls pass, while the chart retry
+still fails. The combined kernel/catalog/matrix run then passes 577 tests
+with remote and client exits zero at `bb5a0485` plus overlay fingerprint
+`06e89c5c171bb20c0634805845c5c6737de0e9aff122ee64af34d95a5b0be987`.
+Workspace all-target Clippy first refuses a manual-range assertion in the
+recursive cancellation test. Its equivalent inclusive-range form passes
+Clippy with warnings denied, nine cycle tests, and 75 registry/validator
+tests at the same base plus final overlay fingerprint
+`9e7a6a0134931e9b59d7328b71ad5ec2ab41fb3cd706f8db98bdee3dc2e1f8d3`.
+The RCH receipt's `tree=fef081eed09666df4fa6b97188cf5f1ed1b06830`
+is the baseline commit's tree, not the composed overlay tree. The source
+identity here is the named base plus overlay fingerprint and retained patch;
+the baseline tree alone cannot qualify the repair.
+
+The original circular-flow native regression also executes at exact
+`1f98e137` with only its frozen test-file overlay: one test runs and fails,
+remote/client 101, because budget seven is reported at eleven work units
+after the search, rather than being interrupted at eight. The same named
+native case and its real CLI counterpart pass in the repaired candidate.
+This is an actual expected-failure control, not a queue timeout or a passing
+ordinary test run. Its log is
+`cycle-original-native-negative-1f98e137-20261023.log`.
+
+Logs are `snapshot-aggregate-positive-5492f2c6-20261023.log`,
+`cli-fixture-repairs-bb5a0485-20261023.log`, and
+`admitted-repairs-bb5a0485-20261023.log` under the verification-output directory.
+Whole static scanning and the complete canonical exact-tree gate remain
+unqualified; no Bead is closed from these selected results.
+
+## 2026-10-23 — Network tracing charges the caller after completion (fa-1tvm)
+
+The exact `836009e9` workspace-built CLI, SHA256
+`ebc3e3998f9082f947fdfde1dd479476bf6f8e5e483b2d5d40dfcb425c5e65e2`,
+reproduces the remaining charge-after-return defect on a separately retained,
+explicitly synthetic book. A source100.00USD and transfer80.00USD leave the
+literal expected20.00/80.00 under all four network laws. Budget6 is refused
+only after520 work units for every law; budget520 is refused after1636 for
+FIFO/LIFO,625 for LIBR, and623 for pro rata. Every refusal is one error event,
+exit3, and the complete before/after book-info envelopes are unchanged.
+The executable was copied and hash-checked before and after the probe, while
+the original exact-source workspace campaign retained its own source bytes.
+The manifest and all command/stdout/stderr records are retained under
+`franken_accounting-verification-output/network-runtime-probe-836009e9-20261023/`.
+This is a current compiled CLI counterexample; it is not a passing repaired
+Rust test or a canonical gate verdict.
+
+The draft correction charges each projection cell estimate before allocating
+its matrix, then forwards the caller's fallible meter to every existing engine
+step. It retains the independent `max_*` limits and preserves the original
+typed caller refusal without returning a partial report. A successful engine's
+reported work must reconcile exactly to the caller's counter delta; it is not
+charged a second time. Native regressions require projection refusal at260
+with budget6, engine refusal at524 with budget520, unchanged exact-budget
+findings/work, all four literal20/80 schedules, and deterministic cancellation
+injection. Pure-law controls compare the complete unchanged schedules and work
+counts and stop each law at its tenth callback. The repaired runtime results
+remain unrun at this checkpoint. Indivisible sorts, arbitrary-precision
+arithmetic, bulk storage readers, registered per-procedure budgets, structural
+stripped-context admission, and full complexity coverage are still separate
+unmet acceptance within the original open fa-1tvm; this callback wiring does
+not establish a universal wall-time checkpoint bound.

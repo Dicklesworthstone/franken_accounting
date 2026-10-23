@@ -308,14 +308,10 @@ fn multi_round_trips(
     }
     let n = edges.len() as u64;
     work.compare(n.saturating_mul(n.max(1).ilog2().into()))?;
-    // Each search step is charged as it is taken, so the run's budget and
-    // cancellation stop the search mid-way (fa-1tvm).
     let found = cycles::find(&edges, max_hops, window_days, max_steps, &mut || {
         work.compare(1)
-    })
-    .map_err(|error| {
+    }).map_err(|error| {
         match error {
-            cycles::Error::Meter(refused) => refused,
             cycles::Error::NonPositiveAmount => LanternError::Overflow("nonpositive circular-flow edge"),
             cycles::Error::Parameters => LanternError::Parameter {
                 procedure: RoundTrips::ID.into(),
@@ -327,6 +323,7 @@ fn multi_round_trips(
                 name: "max_search_steps".into(),
                 message: "circular-flow search limit reached; no partial findings returned; narrow the population or increase max_search_steps (at most 10000000)".into(),
             },
+            cycles::Error::Interrupted(error) => error,
         }
     })?;
     let mut out = Vec::new();

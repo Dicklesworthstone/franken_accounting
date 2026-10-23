@@ -384,3 +384,261 @@ fn fixed_prefix_stock_still_requires_current_whole_book_authority() {
     );
     assert_eq!(f.book.head().unwrap(), revoked_head);
 }
+
+fn statement_selection(name: &str, comparative: bool) -> fa::StatementSelection {
+    fa::StatementSelection {
+        definition: fa::StatementDefinition::embedded(name).unwrap(),
+        periods: vec!["FY2026-P02".into()],
+        comparative: if comparative {
+            vec!["FY2026-P01".into()]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+fn statement_amounts<'a>(statement: &'a fa::Statement, code: &str, unit: UnitId) -> &'a [i128] {
+    &statement
+        .lines
+        .iter()
+        .find(|line| line.code == code && line.unit_id == unit.0)
+        .unwrap_or_else(|| panic!("missing {code}/{}: {statement:?}", unit.0))
+        .amounts
+}
+
+#[test]
+fn functional_statements_combine_retained_rates_and_replay_comparatives_after_backdates() {
+    let mut f = Fixture::new();
+    f.post(b"statement-january", day(1, 5), 10_000, 11);
+    f.post(b"statement-february", day(2, 5), 20_000, 12);
+    let pin = f.book.head().unwrap();
+    let balance_selection = statement_selection("balance-sheet", true);
+    let native = f
+        .book
+        .statement(balance_selection.clone(), Some(pin))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement_amounts(&native, "assets", f.eur),
+        &[30_000, 10_000]
+    );
+    assert_eq!(statement_amounts(&native, "assets", f.usd), &[0, 0]);
+    let balance = f
+        .book
+        .functional_statement(
+            PRINCIPAL,
+            &cap(&["read"]),
+            balance_selection.clone(),
+            Some(pin),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement_amounts(&balance, "assets", f.usd),
+        &[35_000, 11_000]
+    );
+    assert_eq!(
+        statement_amounts(&balance, "total_equity", f.usd),
+        &[35_000, 11_000]
+    );
+    assert_eq!(statement_amounts(&balance, "balance_check", f.usd), &[0, 0]);
+    assert!(balance.lines.iter().all(|line| line.unit_id == f.usd.0));
+    assert_eq!(balance.mappings.len(), 2);
+    assert_eq!(
+        f.book.head().unwrap(),
+        pin,
+        "report must not publish a conversion"
+    );
+
+    let income_selection = statement_selection("income-statement", true);
+    let income = f
+        .book
+        .certify_functional_statement(
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            income_selection.clone(),
+            Some(pin),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement_amounts(&income.statement, "net_income", f.usd),
+        &[24_000, 11_000]
+    );
+    assert!(matches!(
+        income.certificate.selection,
+        fa::ReportSelection::FunctionalStatement(_)
+    ));
+    let bytes = income.certificate.canonical_bytes().unwrap();
+    let saved = fa::ReportCertificate::decode(&bytes).unwrap();
+    assert_eq!(saved, income.certificate);
+    let native_income = f
+        .book
+        .certify_statement(income_selection.clone(), Some(pin))
+        .unwrap()
+        .unwrap();
+    assert_ne!(native_income.certificate.digest, saved.digest);
+    assert_ne!(native_income.certificate.output, saved.output);
+    let replay = f.book.replay_report(&saved).unwrap().unwrap();
+    assert_eq!(
+        replay,
+        fa::ReportOutput::FunctionalStatement(Box::new(income.statement.clone()))
+    );
+    assert_eq!(replay.canonical_bytes().unwrap(), saved.output);
+    assert_eq!(
+        f.book.head().unwrap(),
+        pin,
+        "constructing a certificate is read-only"
+    );
+
+    // A new quote is evidence, not permission to revalue old entries.
+    f.rate(day(1, 5), 90, "Unselected newer quote for statement test");
+    assert!(matches!(
+        f.book.certificate_status(&saved).unwrap().unwrap(),
+        fa::CertificateStatus::Current { .. }
+    ));
+    let unchanged = f
+        .book
+        .functional_statement(PRINCIPAL, &cap(&["read"]), balance_selection.clone(), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement_amounts(&unchanged, "assets", f.usd),
+        &[35_000, 11_000]
+    );
+
+    let later = f.post(b"statement-backdate", day(1, 20), 1_000, 13);
+    assert!(
+        matches!(f.book.certificate_status(&saved).unwrap().unwrap(),
+        fa::CertificateStatus::SupersededBy { later_entries, .. } if later_entries.contains(&later.vid))
+    );
+    assert_eq!(f.book.replay_report(&saved).unwrap().unwrap(), replay);
+    let historical = f
+        .book
+        .functional_statement(
+            PRINCIPAL,
+            &cap(&["read"]),
+            balance_selection.clone(),
+            Some(pin),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical, balance);
+    let current = f
+        .book
+        .functional_statement(PRINCIPAL, &cap(&["read"]), balance_selection, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement_amounts(&current, "assets", f.usd),
+        &[36_300, 12_300]
+    );
+    let current_income = f
+        .book
+        .functional_statement(PRINCIPAL, &cap(&["read"]), income_selection, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement_amounts(&current_income, "net_income", f.usd),
+        &[24_000, 12_300]
+    );
+}
+
+#[test]
+fn functional_statement_scope_and_produce_authority_precede_historical_reads() {
+    let mut f = Fixture::new();
+    f.post(b"statement-authority", day(1, 5), 10_000, 11);
+    let pin = f.book.head().unwrap();
+    let selection = statement_selection("balance-sheet", true);
+    let expected = f
+        .book
+        .functional_statement(PRINCIPAL, &cap(&["read"]), selection.clone(), Some(pin))
+        .unwrap()
+        .unwrap();
+    let limited = cap(&["read"]).known_at_most(pin);
+    f.rate(day(1, 5), 12, "Advance authority frontier");
+    assert_eq!(
+        f.book
+            .functional_statement(PRINCIPAL, &limited, selection.clone(), Some(pin))
+            .unwrap()
+            .unwrap(),
+        expected
+    );
+    let head = f.book.head().unwrap();
+    for denied in [
+        cap(&["post"]),
+        cap(&["read"]).for_accounts(&["1200"]).unwrap(),
+        cap(&["read"]).for_books(&[Id128([0x7b; 16])]).unwrap(),
+        cap(&["read"]).expiring_at(head),
+    ] {
+        assert_eq!(
+            f.book
+                .functional_statement(PRINCIPAL, &denied, selection.clone(), Some(pin))
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            7
+        );
+    }
+    assert_eq!(
+        f.book
+            .functional_statement(VId(2), &cap(&["read"]), selection.clone(), Some(pin))
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        7
+    );
+    assert_eq!(
+        f.book
+            .certify_functional_statement(PRINCIPAL, &cap(&["read"]), selection.clone(), Some(pin))
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        7
+    );
+    assert_eq!(f.book.head().unwrap(), head);
+    f.book
+        .revoke_capability(
+            cap(&["issue_capability"]),
+            limited.commitment().unwrap(),
+            day(2, 5),
+            b"revoke-functional-statement",
+            "Historical statements do not resurrect revoked authority",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.book
+            .functional_statement(PRINCIPAL, &limited, selection, Some(pin))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "FA-REF-023"
+    );
+}
+
+#[test]
+fn functional_statement_refuses_unvalued_foreign_contributions_at_the_selected_prefix() {
+    let mut f = Fixture::new();
+    f.post(b"statement-valued", day(1, 5), 10_000, 11);
+    let pin = f.book.head().unwrap();
+    let unvalued = f.proposal(b"statement-unvalued", day(2, 5), 5_000);
+    f.book.post(request(unvalued)).unwrap().unwrap();
+    let head = f.book.head().unwrap();
+    let selection = statement_selection("balance-sheet", true);
+    let historical = f
+        .book
+        .functional_statement(PRINCIPAL, &cap(&["read"]), selection.clone(), Some(pin))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement_amounts(&historical, "assets", f.usd),
+        &[11_000, 11_000]
+    );
+    assert!(matches!(
+        f.book
+            .functional_statement(PRINCIPAL, &cap(&["read"]), selection, None),
+        Err(BookError::Registers(RegisterError::ProjectionDrift(_)))
+    ));
+    assert_eq!(f.book.head().unwrap(), head);
+}

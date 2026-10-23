@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::process::Command;
 
 use asupersync::Budget;
-use asupersync::runtime::RuntimeBuilder;
+use asupersync::runtime::{Runtime, RuntimeBuilder};
 use fa_gen::{GenConfig, GeneratedCorpus, ScenarioKind, generate};
 use fa_journal::evidence::{Document, add_document};
 use fa_journal::policy::{ApprovalRequest, Approved, record_approval};
@@ -40,17 +40,21 @@ const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 
 struct PostedScenario {
+    ctx: PurposeContexts,
     db: Database<MemVfs>,
     book: BookContext,
     corpus: GeneratedCorpus,
     posted_refs: Vec<EntryRef>,
     book_journal_digest: Oid,
+    // Keep the context's runtime alive through subsequent snapshot checks.
+    _runtime: Runtime,
 }
 
 impl PostedScenario {
     fn run_procedure(&self, p: &dyn Procedure) -> ProcedureRun {
         let mut snapshot = Snapshot::read(
             &self.db,
+            &self.ctx.query(),
             &self.book,
             None,
             Some(self.corpus.snapshot_cutoff),
@@ -446,11 +450,13 @@ fn post_corpus(corpus: GeneratedCorpus) -> PostedScenario {
     let book_journal_digest = Oid(h.finalize().0);
 
     PostedScenario {
+        ctx,
         db,
         book,
         corpus,
         posted_refs,
         book_journal_digest,
+        _runtime: runtime,
     }
 }
 

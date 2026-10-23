@@ -181,6 +181,9 @@ impl NetworkTrace {
             engine::Error::Allocation => {
                 LanternError::Overflow("network allocation did not conserve its capacities")
             }
+            engine::Error::Interrupted => {
+                LanternError::Overflow("network checkpoint stopped without a caller refusal")
+            }
         }
     }
 }
@@ -282,6 +285,7 @@ fn transfers(
         if steps >= max_steps {
             return Err(LanternError::Parameter { procedure: String::new(), name: "max_steps".into(), message: "network projection exhausted max_steps before tracing; no partial schedule was emitted".into() });
         }
+        work.compare(price)?;
         let mut capacities: Vec<i128> = debits.iter().map(|(_, amount)| *amount).collect();
         for (from, total) in credits {
             let shares = allocation(unit, total, &capacities)
@@ -325,7 +329,6 @@ fn transfers(
             return Err(LanternError::Overflow("network debit margin"));
         }
     }
-    work.compare(steps)?;
     Ok((out, steps))
 }
 
@@ -494,7 +497,9 @@ impl NetworkTrace {
             }
             other => other,
         })?;
-        let report = engine::trace_with_options(
+        let comparisons_before_engine = work.work().comparisons;
+        let mut interrupted = None;
+        let result = engine::trace_with_options(
             &edges,
             &assets,
             (self.source.0, self.account.0),
@@ -507,12 +512,31 @@ impl NetworkTrace {
                 max_hops,
                 max_steps: max_steps - projection_steps,
             },
+            &mut |steps| {
+                work.compare(steps).map_err(|error| {
+                    interrupted = Some(error);
+                    engine::Error::Interrupted
+                })
+            },
             |amount, weights| allocation(unit, amount, weights),
-        )
-        .map_err(|e| Self::engine_error_for(procedure_id, e))?;
-        // The engine bounds itself by `max_steps`; its steps are charged
-        // when it returns (it is not metered mid-search).
-        work.compare(report.steps)?;
+        );
+        // Keep the caller's original typed budget/cancellation refusal. The
+        // engine's own limits remain independent, and no partial report can
+        // escape even if an internal path ever swallows its callback error.
+        if let Some(error) = interrupted {
+            return Err(error);
+        }
+        let report = result.map_err(|e| Self::engine_error_for(procedure_id, e))?;
+        if work
+            .work()
+            .comparisons
+            .checked_sub(comparisons_before_engine)
+            != Some(report.steps)
+        {
+            return Err(LanternError::Overflow(
+                "network engine work does not reconcile to its caller's meter",
+            ));
+        }
         let scale = crate::unit_scale(book, unit.0)?;
         let entity_name =
             legal_entity.map_or_else(|| "implicit-book".into(), |v| format!("{v:032x}"));

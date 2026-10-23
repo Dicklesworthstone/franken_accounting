@@ -4567,9 +4567,7 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             };
             let installed = book.install_chart(&accounts, who, date, &key, &capability)??;
             // Each account role is its own control, keyed under the chart's
-            // key. A re-import is refused at install (its accounts exist), so
-            // a role an interrupted import did not record is assigned with
-            // `fa chart role`, whose retry is the recorded control.
+            // key, so a retried import completes them without duplicates.
             let mut role_items = Vec::with_capacity(roles.len());
             for (code, role) in &roles {
                 let spec = fa::account_role::AccountRoleSpec {
@@ -11627,6 +11625,22 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa statement balance-sheet|income-statement --for <period> [--compare <period>] --json",
         ));
     }
+    let functional = args.switch("--functional");
+    if functional
+        && (matches!(
+            args.positional[1].as_str(),
+            "diff" | "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
+        ) || args.flag("--branch").is_some()
+            || ["--before-certificate", "--after-certificate", "--from-diff"]
+                .iter()
+                .any(|flag| args.flag(flag).is_some())
+            || crate::issuance::view_flag(args).is_some())
+    {
+        return Err(usage(
+            "--functional selects a balance sheet or income statement on the trunk at one known-at; statement comparisons, issuance views and other statement workflows do not select a functional basis",
+            "fa statement balance-sheet|income-statement --functional --for <period> [--compare <period>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]",
+        ));
+    }
     // Statement issuance (plan §12.5, bead fa-wrrw).
     match args.positional[1].as_str() {
         "issue" => return crate::issuance::issue(ctx, args),
@@ -11829,9 +11843,37 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "fa statement balance-sheet --for FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>",
     )?;
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["read"])?;
+    let capability = ctx.capability(
+        args,
+        if functional && certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
     let mut book = ctx.books.open_admitted(args, |book| {
-        prepare_native_certificate_history(book, &capability, None)?;
+        if functional {
+            let selected = args
+                .flag("--known-at")
+                .or_else(|| args.flag("--as-known-at"))
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .map(CommitSeq);
+            fa_policy::admit_read(&capability, who, book.context().book_id)
+                .and_then(|()| {
+                    fa_policy::reach(
+                        &capability,
+                        &fa_policy::Reach {
+                            observes: selected
+                                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                            ..fa_policy::Reach::whole_book(true)
+                        },
+                        None,
+                    )
+                })
+                .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        } else {
+            prepare_native_certificate_history(book, &capability, None)?;
+        }
         book.read_scope(who, &capability)??;
         Ok(())
     })?;
@@ -11839,7 +11881,11 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Each column's reach is judged against the scope caveats before the
     // period's transitions or any column is read (doctrine 8, fa-0x0), and
     // the pinned coordinate is judged again before the fold.
-    let reach = ReportSelection::from(selection.clone());
+    let reach = if functional {
+        ReportSelection::FunctionalStatement(Box::new(selection.clone()))
+    } else {
+        ReportSelection::from(selection.clone())
+    };
     // Plan §7.4: the statement as its --for period was reported (first, to
     // an audience, or in a retained certificate); a --compare column is read
     // at that same snapshot.
@@ -11855,8 +11901,25 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     book.read_scope(who, &capability)??
         .admit_report(&reach, known_at)??;
-    prepare_native_certificate_history(&mut book, &capability, known_at)?;
-    let (statement, certificate) = if certify {
+    if !functional {
+        prepare_native_certificate_history(&mut book, &capability, known_at)?;
+    }
+    let (statement, certificate) = if functional && certify {
+        let certified = match requested_utc_ns {
+            Some(instant) => {
+                book.certify_functional_statement_at_instant(who, &capability, selection, instant)??
+            }
+            None => book.certify_functional_statement(who, &capability, selection, known_at)??,
+        };
+        ctx.out
+            .time_selection(certified.certificate.time_selection.as_ref());
+        (certified.statement, Some(certified.certificate))
+    } else if functional {
+        (
+            book.functional_statement(who, &capability, selection, known_at)??,
+            None,
+        )
+    } else if certify {
         let certified = match requested_utc_ns {
             Some(instant) => book.certify_statement_at_instant(selection, instant)??,
             None => book.certify_statement(selection, known_at)??,
@@ -11869,7 +11932,7 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     // Render every amount, column and mapping before retaining a certificate
     // or emitting a success. Missing units never become printable fallbacks.
-    let rendered = statement_presentation(&statement, &book.context().units)?;
+    let rendered = statement_presentation_basis(&statement, &book.context().units, functional)?;
     let presented = presentation
         .map(|request| present_statement(&statement, &book.context().units, request))
         .transpose()?;
@@ -11881,8 +11944,14 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 &book.context().units,
                 statement.lines.iter().map(|line| line.unit_id),
             )?;
-            let ir = fa::render_statement_ir(&statement, definition, &specs)
+            let mut ir = fa::render_statement_ir(&statement, definition, &specs)
                 .map_err(|e| Fail::Internal(format!("statement IR: {e}")))?;
+            if functional {
+                let unit = functional_statement_unit(&statement, &book.context().units)?;
+                ir.definition_name
+                    .push_str(&format!(" (functional {unit}; retained base amounts)"));
+                ir.markdown.push_str(&format!("\nValuation basis: functional currency {unit}, from retained base amounts verified under their original laws.\n"));
+            }
             let rendering = render_ir(&book, request, &ir)?;
             write_rendering(&ctx.files, request, &rendering)?;
             Some(rendering)
@@ -12468,6 +12537,31 @@ fn statement_presentation(
     statement: &Statement,
     units: &fa_money::UnitRegistry,
 ) -> Result<StatementPresentation, Fail> {
+    statement_presentation_basis(statement, units, false)
+}
+
+fn functional_statement_unit(
+    statement: &Statement,
+    units: &fa_money::UnitRegistry,
+) -> Result<String, Fail> {
+    let unit = statement
+        .lines
+        .first()
+        .map(|line| line.unit_id)
+        .ok_or_else(|| Fail::Internal("a functional statement has no unit".into()))?;
+    if statement.lines.iter().any(|line| line.unit_id != unit) {
+        return Err(Fail::Internal(
+            "a functional statement contains more than one unit".into(),
+        ));
+    }
+    registered_unit_code(fa_money::UnitId(unit), units)
+}
+
+fn statement_presentation_basis(
+    statement: &Statement,
+    units: &fa_money::UnitRegistry,
+    functional: bool,
+) -> Result<StatementPresentation, Fail> {
     if statement.columns.is_empty() {
         return Err(Fail::Internal("a statement has no columns".into()));
     }
@@ -12562,25 +12656,45 @@ fn statement_presentation(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    human.push_str(
-        "Scope: one book, exact native units; no FX conversion or presentation rounding.\n",
-    );
-    Ok((
-        vec![
-            ("name", s(&statement.definition_name)),
-            (
-                "definition_version",
-                Json::Int(i128::from(statement.definition_version)),
-            ),
-            ("definition_digest", s(hex(&statement.definition_digest))),
-            ("known_at", Json::Int(i128::from(statement.known_at))),
-            ("columns", Json::Arr(columns)),
-            ("lines", Json::Arr(lines)),
-            ("mappings", Json::Arr(mappings)),
-            ("scope", s("single-book-native-units")),
-        ],
-        human,
-    ))
+    let mut fields = vec![
+        ("name", s(&statement.definition_name)),
+        (
+            "definition_version",
+            Json::Int(i128::from(statement.definition_version)),
+        ),
+        ("definition_digest", s(hex(&statement.definition_digest))),
+        ("known_at", Json::Int(i128::from(statement.known_at))),
+        ("columns", Json::Arr(columns)),
+        ("lines", Json::Arr(lines)),
+        ("mappings", Json::Arr(mappings)),
+        (
+            "scope",
+            s(if functional {
+                "single-book-functional-currency"
+            } else {
+                "single-book-native-units"
+            }),
+        ),
+    ];
+    if functional {
+        let unit = functional_statement_unit(statement, units)?;
+        fields.extend([
+            ("functional", Json::Bool(true)),
+            ("base_unit", s(&unit)),
+            ("valuation_basis", s("retained-base-amounts")),
+        ]);
+        human.push_str(&format!("Scope: one book, functional currency {unit}; retained base amounts verified under their original laws.\n"));
+    } else {
+        fields.extend([
+            ("functional", Json::Bool(false)),
+            ("base_unit", Json::Null),
+            ("valuation_basis", s("native-amounts")),
+        ]);
+        human.push_str(
+            "Scope: one book, exact native units; no FX conversion or presentation rounding.\n",
+        );
+    }
+    Ok((fields, human))
 }
 
 const PRESENT_EXAMPLE: &str = "fa statement balance-sheet --for FY2026-P03 --present-in thousands [--rounding HalfEven] --json";
@@ -12762,6 +12876,19 @@ pub(crate) fn render_statement(
     certificate: Option<&str>,
 ) -> Result<(), Fail> {
     let rendered = statement_presentation(statement, &book.context().units)?;
+    emit_statement(out, statement, rendered, certificate);
+    Ok(())
+}
+
+/// The functional replay retains its valuation basis through the typed
+/// output rather than rendering committed base amounts as native currency.
+pub(crate) fn render_functional_statement(
+    out: &Out,
+    book: &Book,
+    statement: &Statement,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let rendered = statement_presentation_basis(statement, &book.context().units, true)?;
     emit_statement(out, statement, rendered, certificate);
     Ok(())
 }
@@ -17513,13 +17640,20 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward --from 2026-01-01 --to 2026-12-31 --issuance 3100 --distribution 3200 --book <dir>";
+const EQUITY_ROLL_FORWARD_EXAMPLE: &str = "fa statement equity-roll-forward --from 2026-01-01 --to 2026-12-31 --issuance 3100 --distribution 3200 [--certify | --certificate-out <new-file>] --book <dir>";
 
 /// `fa statement equity-roll-forward` (plan §12.1, bead fa-nzix): the
 /// statement of changes in equity over an inclusive effective window at one
 /// recorded prefix. It reads like the lead schedule it is built from: the
 /// whole recorded prefix is judged before the window projects it.
 fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage(
+            "--certificate-out may be supplied only once",
+            EQUITY_ROLL_FORWARD_EXAMPLE,
+        ));
+    }
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     if let Some(flag) = [
         "--for",
         "--compare",
@@ -17527,7 +17661,6 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         "--before",
         "--after",
         "--max-publications",
-        "--certificate-out",
         "--branch",
         "--before-certificate",
         "--after-certificate",
@@ -17549,23 +17682,33 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
     .into_iter()
     .find(|flag| args.flag(flag).is_some())
     .or_else(|| {
-        ["--certify", "--as-originally-reported", "--dry-run"]
+        ["--as-originally-reported", "--dry-run"]
             .into_iter()
             .find(|switch| args.switch(switch))
     }) {
         return Err(usage(
             format!(
-                "{flag} does not apply to statement equity-roll-forward: it selects inclusive --from/--to dates over every equity, revenue and expense leaf, and it is not certifiable yet"
+                "{flag} does not apply to statement equity-roll-forward: it selects inclusive --from/--to dates over every equity, revenue and expense leaf"
             ),
             EQUITY_ROLL_FORWARD_EXAMPLE,
         ));
     }
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["read"])?;
+    let capability = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
     let out = &ctx.out;
     let mut book = ctx
         .books
         .open_admitted(args, |book: &mut Book| -> Result<(), Fail> {
+            if certify {
+                gl_certificate_preflight(book, &ctx.files, args, &capability)?;
+            }
             book.read_scope(who, &capability)??;
             let (known_at, _) = known_at_read_flag(args, book, out, &capability)?;
             book.prepare_report_history(who, &capability, known_at)??;
@@ -17602,16 +17745,43 @@ fn statement_equity_roll_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
         distribution_accounts: named("--distribution"),
     };
     book.prepare_report_history(who, &capability, request.known_at)??;
-    let report = book.equity_roll_forward(who, &capability, &request)??;
-    render_equity_roll_forward(out, &book, &report)
+    if certify {
+        let certified = book.certify_equity_roll_forward(who, &capability, &request)??;
+        let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
+        let expected = certified.certificate.request();
+        let expectation = notary::equity_expectation_json(expected);
+        let (bytes, retained) = notary::retain_report_artifact_for(
+            &mut book,
+            &ctx.files,
+            args,
+            &artifact,
+            &capability,
+            fa::ReportArtifactExpectation::EquityRollForward(expected),
+        )?;
+        render_equity_roll_forward(out, &book, &certified.report, Some(&hex(artifact.digest())))?;
+        notary::emit_report_artifact_for(
+            out,
+            args,
+            &artifact,
+            fa::EQUITY_REPORT_FORMAT,
+            &bytes,
+            &retained,
+            &expectation,
+        );
+        Ok(())
+    } else {
+        let report = book.equity_roll_forward(who, &capability, &request)??;
+        render_equity_roll_forward(out, &book, &report, None)
+    }
 }
 
 /// The Statement of Changes in Equity as `equity_roll_forward`: every unit's
 /// reconciliation and every classified equity leg it folded.
-fn render_equity_roll_forward(
+pub(crate) fn render_equity_roll_forward(
     out: &Out,
     book: &Book,
     report: &fa::EquityRollForwardReport,
+    certificate: Option<&str>,
 ) -> Result<(), Fail> {
     let statement = &report.statement;
     out.known_at(CommitSeq(statement.known_at));
@@ -17714,7 +17884,7 @@ fn render_equity_roll_forward(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
-    out.event(
+    out.event_with_certificate(
         "equity_roll_forward",
         vec![
             ("label", s(&statement.label)),
@@ -17726,6 +17896,7 @@ fn render_equity_roll_forward(
             ("movements", Json::Arr(movements)),
         ],
         &human,
+        certificate,
     );
     Ok(())
 }

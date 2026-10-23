@@ -270,6 +270,9 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         "--entity",
         "--cash",
         "--amount",
+        "--fx-rate",
+        "--conversion",
+        "--realized-fx",
         kind.control_flag(),
     ] {
         if args.flag_all(flag).len() > 1 {
@@ -313,7 +316,41 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
             ));
         }
     };
+    let fx_route = ["--fx-rate", "--conversion", "--realized-fx"];
+    let uses_fx = fx_route.iter().any(|flag| args.flag(flag).is_some());
+    if uses_fx {
+        for flag in fx_route {
+            args.require(
+                flag,
+                "FX settlement requires --fx-rate, --conversion and --realized-fx together",
+            )?;
+        }
+        let applied = args.flag_all("--applies");
+        if applied.len() != 1 || !applied[0].contains('=') {
+            return Err(usage(
+                "FX settlement requires exactly one --applies with its explicit foreign amount",
+                "--amount \"1100.00 USD\" --applies <invoice vid>:0=\"1000.00 EUR\" --fx-rate D:<oid> --conversion <code> --realized-fx <code>",
+            ));
+        }
+    }
     let settles = applications(args, &amount, &example)?;
+    let control_amount = if uses_fx {
+        settles
+            .as_ref()
+            .and_then(Json::as_arr)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("amount"))
+            .and_then(Json::as_str)
+            .ok_or_else(|| {
+                usage(
+                    "FX settlement is missing its foreign application amount",
+                    &example,
+                )
+            })?
+            .to_string()
+    } else {
+        amount.clone()
+    };
     let legs = vec![
         leg_json(
             kind.cash_side(),
@@ -327,7 +364,7 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         leg_json(
             kind.control_side(),
             control,
-            &amount,
+            &control_amount,
             None,
             entity,
             Some(party),
@@ -341,12 +378,33 @@ fn settle(ctx: &mut Ctx<'_>, args: &Args, kind: Settle) -> Result<(), Fail> {
         },
         str::to_string,
     );
-    let doc = obj(vec![
+    let mut fields = vec![
         ("effective_date", s(date)),
         ("description", s(description)),
         ("idempotency_key", s(key)),
         ("legs", Json::Arr(legs)),
-    ]);
+    ];
+    if uses_fx {
+        fields.push((
+            "fx",
+            obj(vec![
+                ("law", s("SettlementCarryingBasis")),
+                (
+                    "rates",
+                    Json::Arr(vec![s(args.require("--fx-rate", "D:<oid>")?)]),
+                ),
+                (
+                    "conversion_account",
+                    s(args.require("--conversion", "<account code>")?),
+                ),
+                (
+                    "realized_fx_account",
+                    s(args.require("--realized-fx", "<account code>")?),
+                ),
+            ]),
+        ));
+    }
+    let doc = obj(fields);
     post_document(ctx, args, None, doc)
 }
 

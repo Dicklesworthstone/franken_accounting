@@ -280,7 +280,8 @@ pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> Result<bool, 
         .get("PostEntry", Some(proposal.class.0))
         .map_err(|e| KernelError::Corrupt(e.to_string()))?;
     Ok(dependency == fa_registry::DependencyClass::Aggregate
-        || crate::revaluation::is_source_bound(proposal))
+        || crate::revaluation::is_source_bound(proposal)
+        || crate::carrying::is_source_bound(proposal))
 }
 
 impl PreparedPost {
@@ -1069,6 +1070,12 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
         }
         return Ok(Err(crate::revaluation::unsupported_batch()));
     }
+    if crate::carrying::is_source_bound(&req.proposal) {
+        if let Some(txn) = carried {
+            txn.abort();
+        }
+        return Ok(Err(crate::carrying::unsupported_batch()));
+    }
     prepare_post_in(db, ctx, book, req, None, admission, carried)
 }
 
@@ -1421,6 +1428,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             )
         {
             return Ok(Err(crate::revaluation::unsupported_batch()));
+        }
+    }
+    if crate::carrying::is_source_bound(proposal) {
+        if let Err(refusal) = crate::revaluation::authorize(db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+        if carried.is_some()
+            || replacement_basis.is_some()
+            || matches!(
+                admission,
+                Admission::Promote(_) | Admission::ScratchDraft(_)
+            )
+        {
+            return Ok(Err(crate::carrying::unsupported_batch()));
         }
     }
     // Allocation is admitted only by recomputing its exact, evidence-bound
@@ -2052,6 +2073,26 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
     }
+    if proposal.class != EntryClass::REVERSAL
+        && proposal
+            .legs
+            .iter()
+            .any(|leg| leg.amount.unit != spec.base_unit && !leg.settles.is_empty())
+        && !crate::carrying::is_source_bound(proposal)
+    {
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::SETTLE_SHAPE,
+            exit::REFUSAL,
+            "foreign applications require the journal-derived RemainingCarryingValue settlement law",
+            "plan §5.7 (native and functional application relief are recorded together)",
+            "prepare a SettlementCarryingBasis application from its retained foreign open item and Settlement Rate document",
+        )));
+    }
+    if let Err(refusal) = crate::carrying::validate_post(db, ctx, book, proposal, txn.basis())? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
 
     // A fresh correction names a registered reason. Outcome recognition
     // stays first: an identical retry never rewrites or reinterprets an old
@@ -2662,7 +2703,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         (Some(claim), Some(target))
             if matches!(
                 claim.law,
-                crate::fx::FxLawId::SpotClose | crate::fx::FxLawId::PeriodAverage
+                crate::fx::FxLawId::SpotClose
+                    | crate::fx::FxLawId::PeriodAverage
+                    | crate::fx::FxLawId::SettlementCarryingBasis
             ) =>
         {
             match reversal_fx_origin(&txn, db, ctx, book, proposal, target)? {

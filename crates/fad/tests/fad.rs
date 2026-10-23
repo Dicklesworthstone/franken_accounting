@@ -23,9 +23,17 @@ fn tmp(name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let d = std::env::temp_dir().join(format!("fad-{}-{name}-{n}", std::process::id()));
+        // RCH's private TMPDIR may exceed sockaddr_un's path limit before
+        // the real daemon can start. Keep these retained socket fixtures short.
+        let d = Path::new("/tmp").join(format!("fad-{}-{name}-{n}", std::process::id()));
         if std::fs::create_dir(&d).is_ok() {
-            return d.canonicalize().unwrap_or(d);
+            let d = d.canonicalize().unwrap_or(d);
+            assert!(
+                d.join("book/fad.sock").as_os_str().as_encoded_bytes().len() < 104,
+                "portable Unix socket fixture: {}",
+                d.display()
+            );
+            return d;
         }
         assert!(n < 1_000, "cannot create a scratch directory");
     }

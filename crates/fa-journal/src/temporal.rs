@@ -11,9 +11,9 @@ use fa_time::{InstantResolution, InstantResolutionError, TimeObservation};
 use fgdb::Database;
 use fgdb_types::{CommitSeq, QueryCx, VId};
 
-use crate::genesis::BookContext;
+use crate::genesis::{BookContext, BookSpec};
 use crate::refusal::{KernelError, Outcome, Refusal, exit};
-use crate::rows::bytes;
+use crate::rows::{book_root, bytes};
 
 pub const INSTANT_UNAVAILABLE: &str = "FA-REF-151";
 
@@ -99,7 +99,13 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
             "resolve against the current book or retain the original certified history",
         )));
     }
-    let mut genesis_utc_ns = crate::genesis::read_book_spec(db)?
+    // The saved observed frontier bounds the Book's opening date as well as
+    // its ticks. A later root cannot reinterpret an earlier instant selection.
+    let spec = db
+        .vertex_at(book_root(), at)?
+        .map(|row| BookSpec::decode(&bytes(&row, property::FA_PAYLOAD, "book._fa_payload")?))
+        .transpose()?;
+    let mut genesis_utc_ns = spec
         .and_then(|spec| spec.opening_date)
         .map(day_start_utc_ns);
     let mut migration_seq: Option<u64> = None;

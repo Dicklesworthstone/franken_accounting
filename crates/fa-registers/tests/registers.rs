@@ -537,6 +537,11 @@ fn materialize_then_verify_is_green_and_a_tampered_register_is_drift() {
 
 #[test]
 fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() {
+    use fa_registers::{
+        fold_period_functional, fold_period_functional_excluding_classes,
+        verify_functional_fold_excluding_classes,
+    };
+
     let mut h = harness();
     h.post_rent(100, b"ordinary-activity");
     let adjustment = h.commit(h.proposal(
@@ -613,6 +618,100 @@ fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() 
             .all(|totals| *totals == (0, 0))
     );
 
+    // Functional income must apply the same policy through both reversals;
+    // filtering only the visible Reversal class would reintroduce the expense.
+    let functional = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        None,
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(functional.entries, 1);
+    assert_eq!(functional.total_debits().unwrap(), 100);
+    assert_eq!(functional.total_credits().unwrap(), 100);
+    let expense = functional
+        .cells
+        .iter()
+        .find(|cell| cell.key.account == h.rent)
+        .unwrap();
+    assert_eq!((expense.debits, expense.credits), (100, 0));
+    let reserved = functional
+        .pending
+        .iter()
+        .find(|cell| cell.key.account == h.rent)
+        .unwrap();
+    assert_eq!((reserved.debits, reserved.credits), (500, 0));
+    verify_functional_fold_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        &[EntryClass::ADJUSTING],
+        &functional,
+    )
+    .unwrap();
+    let functional_history = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        Some(before_reversal),
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(functional_history.cells, functional.cells);
+    assert!(functional_history.pending.is_empty());
+
+    let all = fold_period_functional(&h.db, &h.book, &h.march, None).unwrap();
+    assert_eq!(
+        fold_period_functional_excluding_classes(&h.db, &h.book, &h.march, None, &[]).unwrap(),
+        all,
+        "an empty policy preserves the legacy functional fold, including its digest"
+    );
+    let no_closing = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        None,
+        &[EntryClass::CLOSING],
+    )
+    .unwrap();
+    assert_eq!(no_closing.cells, all.cells);
+    assert_ne!(no_closing.fold_digest, all.fold_digest);
+    assert!(
+        verify_functional_fold_excluding_classes(
+            &h.db,
+            &h.book,
+            &h.march,
+            &[EntryClass::CLOSING],
+            &all,
+        )
+        .is_err(),
+        "equal amounts cannot substitute for the requested accounting policy"
+    );
+    let no_adjustments_or_holds = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        None,
+        &[
+            EntryClass::PENDING,
+            EntryClass::ADJUSTING,
+            EntryClass::ADJUSTING,
+        ],
+    )
+    .unwrap();
+    assert!(no_adjustments_or_holds.pending.is_empty());
+    assert_eq!(no_adjustments_or_holds.cells, functional.cells);
+    verify_functional_fold_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        &[EntryClass::ADJUSTING, EntryClass::PENDING],
+        &no_adjustments_or_holds,
+    )
+    .unwrap();
+
     let fold = h.materialize_march();
     let cell = fold
         .cells
@@ -633,6 +732,17 @@ fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() 
     assert_eq!(after.rows, filtered.rows);
     assert_eq!(after.unit_totals, filtered.unit_totals);
     assert_eq!(after.pending_unit_totals, filtered.pending_unit_totals);
+    let functional_after = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        None,
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(functional_after.cells, functional.cells);
+    assert_eq!(functional_after.pending, functional.pending);
+    assert_eq!(functional_after.fold_digest, functional.fold_digest);
 }
 
 #[test]
@@ -3385,7 +3495,7 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
     }
     let mut settle_tpl = h.proposal(Vec::new(), b"fx-settle-mar28", EntryClass::ORIGINAL);
     settle_tpl.effective_date = mar_28;
-    let settle_prop = plan_realized_fx_settlement(
+    let mut settle_prop = plan_realized_fx_settlement(
         &mut budget,
         settle_tpl,
         ar_eur,
@@ -3400,6 +3510,21 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
         &h.book.units,
     )
     .unwrap();
+    let invoice_vid = fa_model::entry_vid(
+        h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        b"fx-spot-100-eur",
+    );
+    let invoice_ref = fa_journal::post::read_entry(&h.db, invoice_vid)
+        .unwrap()
+        .unwrap()
+        .0
+        .entry_ref(invoice_vid);
+    settle_prop.legs[0].settles = vec![fa_model::Settlement {
+        target: invoice_ref,
+        ordinal: 0,
+        amount: Amount::new(eur, 10_000),
+    }];
 
     // Verify realized FX entry against independent reference oracle (`FA-INV-01.realized-fx`).
     let to_oracle_legs = |p: &EntryPayload| -> Vec<OracleRealizedLeg> {
@@ -3439,7 +3564,7 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
             proposal: settle_prop.clone(),
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            capability: Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
         };
         h.runtime
             .block_on(async move { post(db, &ctx, book, req).await })
@@ -4180,14 +4305,18 @@ fn fx_unpaired_realized_fx_settlement_is_refused_without_mutating_book() {
             proposal: unpaired_settle,
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            capability: Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
         };
         let err = h
             .runtime
             .block_on(async move { post(db, &ctx, book, req).await })
             .unwrap()
             .unwrap_err();
-        assert_eq!((err.code, err.exit), ("FA-REF-001", exit::REFUSAL));
+        assert_eq!(
+            (err.code, err.exit),
+            (fa_journal::refusal::code::SETTLE_SHAPE, exit::REFUSAL)
+        );
+        assert!(err.message.contains("explicitly applied foreign leg"));
     }
     assert_eq!(h.db.frontier().unwrap(), before);
 }

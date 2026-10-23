@@ -19,6 +19,7 @@ pub(super) enum Expected {
     AsSupplied,
     CashFlow(RollForwardRequest, CashFlowDefinition),
     Indirect(IndirectCashFlowRequest),
+    Equity(fa::EquityRollForwardRequest),
     Reconciliation(AgingReconciliationRequest),
     Portfolio(AgingPortfolioRequest),
     PolicyCashFlow(RollForwardRequest, CashFlowPolicy),
@@ -38,6 +39,7 @@ impl Expected {
                 definition,
             },
             Self::Indirect(request) => fa::ReportArtifactExpectation::IndirectCashFlow(request),
+            Self::Equity(request) => fa::ReportArtifactExpectation::EquityRollForward(request),
             Self::Reconciliation(request) => {
                 fa::ReportArtifactExpectation::AgingReconciliation(request)
             }
@@ -142,17 +144,8 @@ fn day(doc: &Json, key: &str) -> Result<DateDay, Fail> {
         .map_err(|error| invalid(format!("invalid expected {key} date: {error}")))
 }
 
-fn scope(doc: &Json, book: &Book) -> Result<RollForwardRequest, Fail> {
-    let accounts = array(doc, "accounts")?
-        .iter()
-        .map(|item| match item {
-            Json::Str(text) => account(text, book),
-            _ => Err(invalid(
-                "expected accounts must contain account codes or 32-hex ids",
-            )),
-        })
-        .collect::<Result<Vec<_>, Fail>>()?;
-    let units = array(doc, "units")?
+fn units(doc: &Json, book: &Book) -> Result<Vec<u32>, Fail> {
+    array(doc, "units")?
         .iter()
         .map(|item| {
             let unit = match item {
@@ -176,7 +169,20 @@ fn scope(doc: &Json, book: &Book) -> Result<RollForwardRequest, Fail> {
             }
             Ok(unit.0)
         })
+        .collect::<Result<Vec<_>, Fail>>()
+}
+
+fn scope(doc: &Json, book: &Book) -> Result<RollForwardRequest, Fail> {
+    let accounts = array(doc, "accounts")?
+        .iter()
+        .map(|item| match item {
+            Json::Str(text) => account(text, book),
+            _ => Err(invalid(
+                "expected accounts must contain account codes or 32-hex ids",
+            )),
+        })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let units = units(doc, book)?;
     if accounts.is_empty() || units.is_empty() {
         return Err(invalid("expected accounts and units must both be nonempty"));
     }
@@ -266,6 +272,41 @@ pub(super) fn parse(
                 cash_definition: definition,
                 income_periods,
                 definition: indirect,
+            }))
+        }
+        "equity-roll-forward" => {
+            exact_fields(
+                &doc,
+                &[
+                    "kind",
+                    "units",
+                    "label",
+                    "from",
+                    "through",
+                    "known_at",
+                    "issuance_accounts",
+                    "distribution_accounts",
+                ],
+            )?;
+            let roles = |key| -> Result<Vec<VId>, Fail> {
+                array(&doc, key)?
+                    .iter()
+                    .map(|item| match item {
+                        Json::Str(text) => account(text, book),
+                        _ => Err(invalid(
+                            "expected equity roles must contain account codes or ids",
+                        )),
+                    })
+                    .collect()
+            };
+            Ok(Expected::Equity(fa::EquityRollForwardRequest {
+                units: units(&doc, book)?,
+                label: string(&doc, "label")?.to_string(),
+                effective_from: day(&doc, "from")?,
+                effective_through: day(&doc, "through")?,
+                known_at: Some(fixed_prefix(&doc)?),
+                issuance_accounts: roles("issuance_accounts")?,
+                distribution_accounts: roles("distribution_accounts")?,
             }))
         }
         "policy-cash-flow" => {
@@ -430,6 +471,44 @@ fn scope_fields(request: &RollForwardRequest) -> Vec<(&'static str, Json)> {
                 .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
         ),
     ]
+}
+
+pub(crate) fn equity_expectation_json(request: &fa::EquityRollForwardRequest) -> Json {
+    let roles = |accounts: &[VId]| {
+        Json::Arr(
+            accounts
+                .iter()
+                .map(|id| s(format!("{:032x}", id.0)))
+                .collect(),
+        )
+    };
+    obj(vec![
+        ("kind", s("equity-roll-forward")),
+        (
+            "units",
+            Json::Arr(
+                request
+                    .units
+                    .iter()
+                    .map(|unit| Json::Int(i128::from(*unit)))
+                    .collect(),
+            ),
+        ),
+        ("label", s(&request.label)),
+        ("from", s(request.effective_from.render())),
+        ("through", s(request.effective_through.render())),
+        (
+            "known_at",
+            request
+                .known_at
+                .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+        ),
+        ("issuance_accounts", roles(&request.issuance_accounts)),
+        (
+            "distribution_accounts",
+            roles(&request.distribution_accounts),
+        ),
+    ])
 }
 
 fn policy_fields(definition: &CashFlowDefinition) -> Vec<(&'static str, Json)> {
@@ -674,6 +753,9 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
             request,
             definition,
         } => cash_flow_expectation_json(request, definition),
+        fa::ReportArtifactExpectation::EquityRollForward(request) => {
+            equity_expectation_json(request)
+        }
         fa::ReportArtifactExpectation::IndirectCashFlow(request) => {
             indirect_expectation_json(request)
         }

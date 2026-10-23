@@ -26,12 +26,14 @@ use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{
-    RegisterError, contribution_seq, entries_at, entry_period, migration_activations, period_at,
-    resolutions, resolve_known_at,
+    RegisterError, accounting_class_included, contribution_seq, entries_at, entry_period,
+    migration_activations, period_at, resolutions, resolve_known_at,
 };
 
 /// Domain separator for functional-value register fold digests (`FA-INV-04.functional-fold`).
 pub const FUNCTIONAL_FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-functional-fold:v1";
+/// Domain separator binding a functional activity fold to its class exclusions.
+pub const FUNCTIONAL_ACTIVITY_DIGEST_DOMAIN: &[u8] = b"fa:register-functional-activity:v1";
 /// Domain separator for inception-to-date functional stock folds.
 pub const FUNCTIONAL_STOCK_DIGEST_DOMAIN: &[u8] = b"fa:register-functional-stock:v1";
 /// Domain separator for current-rate translation certificates (`plan §12.4`, `fa-rn6g`).
@@ -181,9 +183,9 @@ fn functional_mantissa(
 ) -> Result<i128, RegisterError> {
     match leg.base_amount {
         Some(base) => {
-            if base.unit != spec.base_unit || base.mantissa <= 0 {
+            if base.unit != spec.base_unit || base.mantissa < 0 {
                 return Err(RegisterError::ProjectionDrift(format!(
-                    "entry {:032x} leg {ordinal} has base_amount in unit {} (mantissa {}), expected positive base_unit {}",
+                    "entry {:032x} leg {ordinal} has base_amount in unit {} (mantissa {}), expected nonnegative base_unit {}",
                     entry_vid.0, base.unit.0, base.mantissa, spec.base_unit.0
                 )));
             }
@@ -380,6 +382,25 @@ pub fn fold_period_functional<V: asupersync::fs::Vfs + Clone>(
     period_code: &str,
     known_at: Option<CommitSeq>,
 ) -> Result<FunctionalFold, RegisterError> {
+    fold_period_functional_excluding_classes(db, book, period_code, known_at, &[])
+}
+
+/// Fold functional activity with the same class and reversal-lineage rules as
+/// [`crate::period_activity_excluding_classes`]. Excluding Closing preserves
+/// operating income after year-end transfers and their exact reversals, while
+/// retaining ordinary adjustments posted in a Closing-kind period. Ambiguous
+/// imported Closing-period activity is refused instead of guessed.
+///
+/// A nonempty exclusion policy is part of the fold digest. Its order and
+/// duplicates do not matter; an empty policy preserves the existing
+/// [`fold_period_functional`] result and digest byte for byte.
+pub fn fold_period_functional_excluding_classes<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    known_at: Option<CommitSeq>,
+    excluded_classes: &[EntryClass],
+) -> Result<FunctionalFold, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
     let root = db
@@ -412,9 +433,20 @@ pub fn fold_period_functional<V: asupersync::fs::Vfs + Clone>(
     let entries = entries_at(db, book, seq)?;
     let resolved = resolutions(&entries)?;
     let activated = migration_activations(&entries)?;
+    let by_id: BTreeMap<_, _> = if excluded_classes.is_empty() {
+        BTreeMap::new()
+    } else {
+        entries
+            .iter()
+            .map(|(vid, entry, at)| (*vid, (entry, *at)))
+            .collect()
+    };
 
     for (vid, entry, created_at) in &entries {
         if entry.proposal.legs.is_empty() || entry_period(book, entry)? != period_code {
+            continue;
+        }
+        if !accounting_class_included(db, book, seq, (*vid, entry), &by_id, excluded_classes)? {
             continue;
         }
         let contribution = contribution_seq(entry, *created_at, &activated)?;
@@ -459,6 +491,24 @@ pub fn fold_period_functional<V: asupersync::fs::Vfs + Clone>(
         posted_legs_digest,
         &pending_holds,
     )?;
+    let fold_digest = if excluded_classes.is_empty() {
+        fold_digest
+    } else {
+        let classes: Vec<_> = excluded_classes
+            .iter()
+            .map(|class| class.0)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut w = Writer::new();
+        w.fixed(&fold_digest).list(&classes, |w, class| {
+            w.u16(*class);
+        });
+        let mut h = Hasher::new();
+        h.update(FUNCTIONAL_ACTIVITY_DIGEST_DOMAIN);
+        h.update(&w.finish().map_err(RegisterError::Encoding)?);
+        h.finalize().0
+    };
 
     Ok(FunctionalFold {
         period: period_code.into(),
@@ -481,7 +531,26 @@ pub fn verify_functional_fold<V: asupersync::fs::Vfs + Clone>(
     period_code: &str,
     claimed: &FunctionalFold,
 ) -> Result<(), RegisterError> {
-    let refolded = fold_period_functional(db, book, period_code, Some(claimed.known_at))?;
+    verify_functional_fold_excluding_classes(db, book, period_code, &[], claimed)
+}
+
+/// Verify functional activity at the claimed prefix under the caller's exact
+/// exclusion policy. A fold under a different policy fails verification even
+/// when the resulting amounts happen to agree.
+pub fn verify_functional_fold_excluding_classes<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    excluded_classes: &[EntryClass],
+    claimed: &FunctionalFold,
+) -> Result<(), RegisterError> {
+    let refolded = fold_period_functional_excluding_classes(
+        db,
+        book,
+        period_code,
+        Some(claimed.known_at),
+        excluded_classes,
+    )?;
     if refolded != *claimed {
         return Err(RegisterError::ProjectionDrift(format!(
             "functional fold drift on period `{period_code}` at seq {}: expected digest {:02x?}, got {:02x?}",

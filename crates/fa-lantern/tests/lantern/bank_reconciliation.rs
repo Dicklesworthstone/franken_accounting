@@ -126,7 +126,14 @@ pub(super) fn snapshot(
     let states = read_bank_reconciliation_states(&h.db, &h.ctx(), &h.book, &read_cap(), known_at)
         .unwrap()
         .unwrap();
-    let mut snapshot = Snapshot::read(&h.db, &h.book, known_at, effective_through).unwrap();
+    let mut snapshot = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        known_at,
+        effective_through,
+    )
+    .unwrap();
     snapshot.bank_reconciliations = Some(states);
     snapshot
 }
@@ -271,7 +278,7 @@ fn missing_admission_or_native_close_population_is_an_explicit_refusal() {
             .is_err()
     );
 
-    let mut raw = Snapshot::read(&h.db, &h.book, None, None).unwrap();
+    let mut raw = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, None).unwrap();
     assert!(matches!(
         run_over(&raw, &h.book, &procedure),
         Err(LanternError::Parameter { .. })

@@ -66,7 +66,7 @@ residual_mode = "designated_leg"
 admitted_classes = ["Original", "Adjusting", "Reversal", "Resolution"]
 status = "live"
 standard_ref = "ASC 830-20-35-2 / IAS 21.28"
-meaning = "Settlement of a foreign-currency open item: native legs balance in each currency through a paired conversion account while functional-currency base amounts clear the settled item's historical carrying basis and recognize realized FX gain or loss."
+meaning = "Settlement of a foreign-currency open item through a paired conversion account. RemainingCarryingValue relieves HalfEven(open_base * applied_native / open_native), with the final application relieving all remaining base. A fully applied single-target leg records that relief in base_amount; reversals restore its recorded relief exactly. Aggregate valuation adjustments without an item-allocation law and ambiguous multi-target relief are refused."
 
 [[law]]
 id = 5

@@ -62,6 +62,7 @@ use fa_registry::procedures::{Claim, Procedure as Row, Procedures};
 use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_crypto::Hasher;
+use fgdb_types::context::QueryCx;
 use fgdb_types::{CommitSeq, VId};
 
 pub use snapshot::{Snapshot, SnapshotEntry, Transition};
@@ -624,7 +625,9 @@ impl Cancellation for fgdb_types::context::QueryCx {
 /// `Cx`. It grants no clock, entropy, network or filesystem capability. It
 /// counts the procedure's work, refuses the charge that passes the run's
 /// budget, and consults the caller's cancellation every
-/// [`CANCELLATION_INTERVAL`] work units, starting with the first charge. A
+/// [`CANCELLATION_INTERVAL`] work units, starting with the first charge.
+/// The runner also checks cancellation before entering the procedure and
+/// before returning its result, even when no work was charged. A
 /// refused charge ends the run: its error propagates and no finding is
 /// returned.
 pub struct Meter<'a> {
@@ -697,9 +700,22 @@ impl<'a> Meter<'a> {
         }
         if used >= self.next_check {
             self.next_check = used.saturating_add(CANCELLATION_INTERVAL);
-            if self.cancellation.is_some_and(|source| source.cancelled()) {
-                return Err(self.stop(Stop::Cancelled { used }));
-            }
+            self.checkpoint()?;
+        }
+        Ok(())
+    }
+
+    /// Run boundaries must observe cancellation even with no charge, or
+    /// after fewer than one interval's remaining steps. Preserve the first
+    /// stopped charge if a procedure swallowed it before returning.
+    fn checkpoint(&mut self) -> Result<(), LanternError> {
+        if let Some(stop) = self.stopped {
+            return Err(self.refusal(stop));
+        }
+        if self.cancellation.is_some_and(|source| source.cancelled()) {
+            return Err(self.stop(Stop::Cancelled {
+                used: self.work.total(),
+            }));
         }
         Ok(())
     }
@@ -720,11 +736,6 @@ impl<'a> Meter<'a> {
             },
             Stop::Cancelled { used } => LanternError::Cancelled { procedure, used },
         }
-    }
-
-    /// The refusal of a charge the procedure discarded, if any.
-    fn discarded_refusal(&self) -> Option<LanternError> {
-        self.stopped.map(|stop| self.refusal(stop))
     }
 }
 
@@ -921,16 +932,19 @@ fn digest(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
 
 /// Run `procedure` over the trunk of `book` as known at `known_at` (the head
 /// when `None`), with the historical folds read through `effective_through`
-/// when one is declared.
+/// when one is declared. The query context checkpoints snapshot acquisition
+/// and supplies the procedure meter's cancellation source; procedures receive
+/// only the meter, not the storage context.
 pub fn run<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: &QueryCx,
     book: &BookContext,
     known_at: Option<CommitSeq>,
     effective_through: Option<DateDay>,
     procedure: &dyn Procedure,
 ) -> Result<ProcedureRun, LanternError> {
-    let snapshot = Snapshot::read(db, book, known_at, effective_through)?;
-    run_over(&snapshot, book, procedure)
+    let snapshot = Snapshot::read(db, cx, book, known_at, effective_through)?;
+    run_over_metered(&snapshot, book, procedure, None, Some(cx))
 }
 
 /// Run `procedure` over an already-read snapshot (the witness re-runs over a
@@ -953,6 +967,8 @@ pub fn run_over_metered(
     budget: Option<u64>,
     cancellation: Option<&dyn Cancellation>,
 ) -> Result<ProcedureRun, LanternError> {
+    let mut meter = Meter::new(procedure.id(), budget, cancellation);
+    meter.checkpoint()?;
     let row = bind(procedure.id())?;
     if row.version != procedure.version() {
         return Err(LanternError::Version {
@@ -991,11 +1007,8 @@ pub fn run_over_metered(
         });
         digest(PARAMETERS_DIGEST_DOMAIN, &w.finish()?)
     };
-    let mut meter = Meter::new(procedure.id(), budget, cancellation);
     let mut findings = procedure.run(snapshot, book, &mut meter)?;
-    if let Some(refusal) = meter.discarded_refusal() {
-        return Err(refusal);
-    }
+    meter.checkpoint()?;
     let work = meter.work();
     for f in &findings {
         f.check(&row.id, row.version)?;
@@ -1037,6 +1050,7 @@ pub fn run_over_metered(
         population,
     );
     let decision_card_digest = decision_card.digest()?;
+    meter.checkpoint()?;
     Ok(ProcedureRun {
         procedure: row.id,
         version: row.version,

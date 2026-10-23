@@ -999,8 +999,8 @@ impl McpRegistry {
         let mut text = String::from(
             "FrankenAccounting over MCP: each call runs the accounting dispatcher under one trusted launch-bound principal, profile, capability and book. Start with `fa_orient_capabilities`. Tool arguments cannot contain as, grant, yes, keys, book, principal, profile, via or token; even null or false is refused as forbidden_argument. Input content travels inline: file, intent_file, plan_file, plan_out, review_out and certificate_out are refused as forbidden_path before dispatch unless the operator launched the server with an explicit --files <dir> containment root (fa-yha). Use dry_run: true on a period transition to receive its sealed proposal bytes without writing a file or changing the book. The Agent default reads but cannot publish accounting entries to trunk (FA-REF-013); it may rehearse a post, reverse, reserve or resolve with dry_run: true, and that plan commits for no one; or it may plan the same call into its own draft with draft: \"<name>\" (open one with fa_draft_manage, action new), which reaches trunk only when a Human approver promotes the draft on the host. An operator may explicitly launch the bounded Preparer profile. Dangerous commits remain unavailable through MCP until a separate confirmation exchange exists; planning does not authorize a commit. This is launch-time trust unless the operator launched the session with --token, an issued capability the kernel admits only against its journaled issuance. A book held by fad is refused until its transport can preserve this authority. Rules: amounts are strings with their unit (\"1500.00 USD\"), never JSON numbers; effective dates are civil YYYY-MM-DD; historical report instant selectors remain available; recorded time is assigned by the journal; corrections are new entries — nothing is edited in place; never invent balancing legs, re-date entries to dodge period law, approve your own proposal, or cite a placeholder. A tool's first content block is the robot envelope's data; the second adds book, coordinate, certificate, warnings, next_actions and authority. Resources retain their data first and return launch authority in a second JSON block. Tool errors carry {type, message, recoverable, fix_hint, suggested_tool_calls, exit, refusal_id, cite, detail, authority}. A different identity or stronger authority requires an operator to launch a separate appropriately bound session.\n\nClusters:\n",
         );
+        text.push_str("Use tools/list for full tool schemas and guidance, and resources/list for resource descriptions.\n");
         for c in &self.clusters {
-            let names: Vec<String> = self.tools_of(&c.name).map(ToolSpec::wire_name).collect();
             let on_demand = if c.on_demand {
                 format!(
                     " (on demand: the operator launches fa-mcp with --cluster {})",
@@ -1009,12 +1009,7 @@ impl McpRegistry {
             } else {
                 String::new()
             };
-            text.push_str(&format!(
-                "- {}{on_demand} — {} Tools: {}\n",
-                c.name,
-                c.doc,
-                names.join(", ")
-            ));
+            text.push_str(&format!("- {}{on_demand} — {}\n", c.name, c.doc));
         }
         text.push_str("\nExit classes (an error's `type`): ");
         let exits = fa_registry::ExitCodes::embedded()
@@ -1036,8 +1031,8 @@ impl McpRegistry {
             ));
         }
         text.push_str("\nResources:\n");
-        for (uri, doc) in RESOURCES {
-            text.push_str(&format!("- {uri} — {doc}\n"));
+        for (uri, _) in RESOURCES {
+            text.push_str(&format!("- {uri}\n"));
         }
         text.push_str("\nUnavailable resources (not advertised):\n");
         for (uri, reason) in UNAVAILABLE_RESOURCES {

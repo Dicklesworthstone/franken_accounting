@@ -1126,6 +1126,36 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "chart entry.payload")?)?;
+        let same = stored.proposal_digest == proposal_digest
+            || matches!(
+                (
+                    stored.proposal.semantic_digest(&book.seal_key),
+                    entry.proposal.semantic_digest(&book.seal_key),
+                ),
+                (Ok(recorded), Ok(requested)) if recorded == requested
+            );
+        return if same {
+            Ok(Ok(ChartInstalled {
+                recorded_at: row.created_at,
+                control_entry: row.vid,
+                accounts: accounts.len(),
+            }))
+        } else {
+            Ok(Err(Refusal::new(
+                code::IDEMPOTENCY_CONFLICT,
+                exit::CONFLICT,
+                format!(
+                    "chart idempotency key reused with different content; the recorded entry is {:032x}",
+                    row.vid.0
+                ),
+                "plan §5.9 (same key returns only the same canonical semantic request)",
+                "resubmit the original chart request, or use a new key for a distinct chart with unused account codes",
+            )))
+        };
+    }
     // A budget-capped account is born with one cell per existing period.
     let existing_periods = if accounts
         .iter()

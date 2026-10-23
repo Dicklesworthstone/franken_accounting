@@ -3726,7 +3726,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Some(at) => at,
                 None => db.frontier().map_err(KernelError::from)?,
             };
-            Ok(fa_journal::verify_fx_conversions(db, &book.units, at)?)
+            Ok(fa_journal::verify_fx_conversions(db, cx, book, at)?)
         })
     }
 
@@ -3792,7 +3792,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         budget: Option<u64>,
     ) -> Result<fa_lantern::ProcedureRun, BookError> {
         self.query(cx, |db, book| {
-            let snapshot = fa_lantern::Snapshot::read(db, book, known_at, effective_through)?;
+            let snapshot =
+                fa_lantern::Snapshot::read(db, &cx.query(), book, known_at, effective_through)?;
             Ok(fa_lantern::run_over_metered(
                 &snapshot,
                 book,
@@ -3946,7 +3947,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Outcome<crate::CertifiedTrialBalance> {
         self.query(cx, |db, book| {
-            crate::certificate::certify(db, &cx.query(), book, selection, known_at)
+            crate::certificate::certify(db, cx, book, selection, known_at)
         })
     }
 
@@ -3958,7 +3959,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Outcome<crate::CertifiedReport> {
         self.query(cx, |db, book| {
-            crate::certificate::certify_report(db, &cx.query(), book, selection, known_at)
+            crate::certificate::certify_report(db, cx, book, selection, known_at)
         })
     }
 
@@ -4025,7 +4026,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         requested_utc_ns: u64,
     ) -> Outcome<crate::CertifiedTrialBalance> {
         self.query(cx, |db, book| {
-            crate::certificate::certify_instant(db, &cx.query(), book, selection, requested_utc_ns)
+            crate::certificate::certify_instant(db, cx, book, selection, requested_utc_ns)
         })
     }
 
@@ -4037,13 +4038,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         requested_utc_ns: u64,
     ) -> Outcome<crate::CertifiedReport> {
         self.query(cx, |db, book| {
-            crate::certificate::certify_report_instant(
-                db,
-                &cx.query(),
-                book,
-                selection,
-                requested_utc_ns,
-            )
+            crate::certificate::certify_report_instant(db, cx, book, selection, requested_utc_ns)
         })
     }
 
@@ -4054,7 +4049,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::ReportOutput> {
         self.query(cx, |db, book| {
-            crate::certificate::replay_report(db, &cx.query(), book, certificate)
+            crate::certificate::replay_report(db, cx, book, certificate)
         })
     }
 
@@ -4065,7 +4060,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &crate::ReportCertificate,
     ) -> Outcome<TrialBalance> {
         self.query(cx, |db, book| {
-            crate::certificate::replay(db, &cx.query(), book, certificate)
+            crate::certificate::replay(db, cx, book, certificate)
         })
     }
 
@@ -4076,7 +4071,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::CertificateStatus> {
         self.query(cx, |db, book| {
-            crate::certificate::status(db, &cx.query(), book, certificate)
+            crate::certificate::status(db, cx, book, certificate)
         })
     }
 

@@ -859,8 +859,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         let reconcile = request.procedure == bank::PROCEDURE;
         let result = self.query(cx, |db, book| {
-            let mut snapshot =
-                Snapshot::read(db, book, request.known_at, request.effective_through)?;
+            let mut snapshot = Snapshot::read(
+                db,
+                &cx.query(),
+                book,
+                request.known_at,
+                request.effective_through,
+            )?;
             if reconcile
                 && let Err(refusal) = bank::populate(db, cx, book, capability, &mut snapshot)?
             {
@@ -977,7 +982,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let result = self.query(cx, |db, book| {
             let source = match crate::certificate::certify_report(
                 db,
-                &cx.query(),
+                cx,
                 book,
                 ReportSelection::OpenItems { account: None },
                 request.known_at,
@@ -1001,8 +1006,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             } else {
                 Vec::new()
             };
-            let mut snapshot =
-                Snapshot::read(db, book, Some(source.known_at), request.effective_through)?;
+            let mut snapshot = Snapshot::read(
+                db,
+                &cx.query(),
+                book,
+                Some(source.known_at),
+                request.effective_through,
+            )?;
             if bank_procedure
                 && let Err(r) = bank::populate(db, cx, book, capability, &mut snapshot)?
             {
@@ -1087,9 +1097,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         let built = catalog::build(&request.procedure, request.parameters, request.inputs)?;
         let result = self.query(cx, |db, book| {
-            if let Err(r) =
-                crate::certificate::replay_report(db, &cx.query(), book, &certificate.source)?
-            {
+            if let Err(r) = crate::certificate::replay_report(db, cx, book, &certificate.source)? {
                 return Ok(Err(r));
             }
             if let Err(e) = db.replay(
@@ -1108,6 +1116,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             }
             let mut snapshot = Snapshot::read(
                 db,
+                &cx.query(),
                 book,
                 Some(certificate.known_at()),
                 request.effective_through,

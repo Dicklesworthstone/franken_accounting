@@ -321,5 +321,91 @@ fn analytic_artifacts_replay_after_reopen_with_no_partial_output_or_new_authorit
     }
 }
 
+#[test]
+fn circular_flow_budget_refuses_inside_search_without_partial_output_or_head_change() {
+    let dir = temp();
+    let path = dir.join("book");
+    ok(
+        &path,
+        &["book", "create", "--name", "Bounded circular search"],
+    );
+    let chart = dir.join("chart.json");
+    std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"Cash A","type":"Asset","unit":"USD"},{"code":"1010","name":"Cash B","type":"Asset","unit":"USD"},{"code":"1020","name":"Cash C","type":"Asset","unit":"USD"}]}"#).unwrap();
+    ok(&path, &["chart", "import", chart.to_str().unwrap()]);
+    ok(&path, &["period", "create", "--fiscal-year", "2026"]);
+    ok(&path, &["period", "open", "FY2026-P01"]);
+    let doc = dir.join("source.txt");
+    std::fs::write(&doc, "Synthetic three-transfer circular-flow source").unwrap();
+    let evidence = ok(
+        &path,
+        &[
+            "document",
+            "add",
+            doc.to_str().unwrap(),
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let evidence = text(data(&evidence[0]), "oid");
+    for (key, date, from, to) in [
+        ("hop1", 5, "1000", "1010"),
+        ("hop2", 6, "1010", "1020"),
+        ("hop3", 7, "1020", "1000"),
+    ] {
+        post(&path, &dir, evidence, key, date, from, to, "1.00 USD");
+    }
+    let keys = BookKeys::load(&path.join("book.keys")).unwrap();
+    let head = || {
+        Book::open_dir(&path, keys.clone(), Entropy::production())
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    let before = head();
+    let args = [
+        "procedure",
+        "run",
+        "graph.round_trips",
+        "--param",
+        "max_hops=3",
+    ];
+    let complete = ok(&path, &args);
+    assert_eq!(complete.len(), 1);
+    assert_eq!(text(&complete[0], "event"), "procedure_run");
+    let result = data(&complete[0]);
+    assert_eq!(
+        result.get("findings").and_then(Json::as_arr).unwrap().len(),
+        1
+    );
+    let work = result.get("work").unwrap();
+    assert_eq!(number(work, "legs"), 3);
+    assert_eq!(number(work, "comparisons"), 8);
+
+    let mut bounded = args.to_vec();
+    bounded.extend(["--budget", "7"]);
+    let (exit, output, events) = call(&path, &bounded, None);
+    assert_eq!(exit, 3, "{output}");
+    assert_eq!(events.len(), 1, "{output}");
+    assert_eq!(text(&events[0], "event"), "error");
+    assert!(output.contains("8 > 7 work units"), "{output}");
+    assert!(!output.contains("\"findings\""), "{output}");
+    assert_eq!(head(), before);
+
+    bounded.pop();
+    bounded.push("11");
+    let sufficient = ok(&path, &bounded);
+    assert_eq!(
+        text(data(&sufficient[0]), "findings_digest"),
+        text(result, "findings_digest")
+    );
+    assert_eq!(
+        data(&sufficient[0]).get("work").unwrap(),
+        result.get("work").unwrap()
+    );
+    assert_eq!(head(), before);
+}
+
 #[path = "procedure_replay/extended.rs"]
 mod extended;

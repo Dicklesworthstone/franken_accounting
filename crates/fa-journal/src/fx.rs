@@ -584,9 +584,9 @@ pub fn plan_realized_fx_settlement(
         ));
     }
     let base_unit = settlement_rate_doc.base_unit;
-    if carrying_base_amount.unit != base_unit || carrying_base_amount.mantissa <= 0 {
+    if carrying_base_amount.unit != base_unit || carrying_base_amount.mantissa < 0 {
         return Err(fx_structure(
-            "carrying_base_amount must be a positive amount in settlement_rate_doc.base_unit",
+            "carrying_base_amount must be a nonnegative amount in settlement_rate_doc.base_unit",
         ));
     }
     if settled_account == conversion_account
@@ -626,18 +626,24 @@ pub fn plan_realized_fx_settlement(
     leg_conv_fx.base_amount = Some(carrying_base_amount);
     leg_conv_fx.dimension_set = dimensions.clone();
 
-    // 3. Paired functional-currency leg on conversion_account (opposite side to leg_conv_fx).
-    let mut leg_conv_base =
-        LegPayload::simple(settled_side, conversion_account, carrying_base_amount);
-    leg_conv_base.base_amount = Some(carrying_base_amount);
-    leg_conv_base.dimension_set = dimensions.clone();
+    let mut legs = vec![leg_settled, leg_conv_fx];
+    // 3. Pair the carrying base amount on conversion_account when nonzero.
+    // A rounded zero relief remains recorded on the two foreign legs; it
+    // must not invent a zero native posting, which the model forbids.
+    if carrying_base_amount.mantissa != 0 {
+        let mut leg_conv_base =
+            LegPayload::simple(settled_side, conversion_account, carrying_base_amount);
+        leg_conv_base.base_amount = Some(carrying_base_amount);
+        leg_conv_base.dimension_set = dimensions.clone();
+        legs.push(leg_conv_base);
+    }
 
     // 4. Settlement consideration leg on settlement_account in base_unit.
     let mut leg_settlement = LegPayload::simple(opp_side, settlement_account, settlement_base);
     leg_settlement.base_amount = Some(settlement_base);
     leg_settlement.dimension_set = dimensions.clone();
 
-    let mut legs = vec![leg_settled, leg_conv_fx, leg_conv_base, leg_settlement];
+    legs.push(leg_settlement);
 
     // 5. Realized FX gain/loss leg when settlement_base != carrying_base_amount.
     let diff = settlement_base
@@ -786,7 +792,10 @@ pub(crate) fn admit_structure(
         }
     }
 
-    // Every leg must carry a positive base_amount in spec.base_unit, and base-unit legs stay at par.
+    // Every leg carries its base amount, and base-unit legs stay at par.
+    // A source-bound application may round to zero functional relief while
+    // retaining a strictly positive foreign native amount. Its complete
+    // shape and journal-derived relief are checked separately.
     let mut sum_debits = 0i128;
     let mut sum_credits = 0i128;
     let mut by_entity: BTreeMap<Option<String>, (i128, i128)> = BTreeMap::new();
@@ -797,9 +806,15 @@ pub(crate) fn admit_structure(
                 "leg {idx} is missing base_amount while base_totals is present"
             )));
         };
-        if base_amt.unit != spec.base_unit || base_amt.mantissa <= 0 {
+        let zero_relief = law == FxLawId::SettlementCarryingBasis
+            && leg.amount.unit != spec.base_unit
+            && base_amt.mantissa == 0;
+        if base_amt.unit != spec.base_unit
+            || base_amt.mantissa < 0
+            || (base_amt.mantissa == 0 && !zero_relief)
+        {
             return Err(fx_structure(format!(
-                "leg {idx} base_amount must be a positive amount in the book's base_unit"
+                "leg {idx} base_amount must be positive in the book's base_unit, except for recorded zero foreign carrying relief"
             )));
         }
         if leg.amount.unit == spec.base_unit && base_amt != leg.amount {
@@ -1212,7 +1227,7 @@ fn verify_claim(
         FxLawId::SettlementCarryingBasis => {
             if let Err(r) = verify_realized_fx_settlement(
                 &mut budget,
-                proposal,
+                valuation,
                 spec,
                 units,
                 leg_entities,
@@ -1261,14 +1276,15 @@ impl FxConversionVerification {
 /// names (live or not now: history keeps the law it was posted under). A
 /// Reversal of a SpotClose or PeriodAverage valuation must be the exact
 /// side-swap of the entry it reverses, which is checked on its own row.
-/// Read-only.
+/// Book interpretation also comes from `at`; current authority admission
+/// remains the caller's responsibility. Read-only.
 pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
-    units: &UnitRegistry,
+    cx: &fgdb_types::context::PurposeContexts,
+    book: &crate::genesis::BookContext,
     at: CommitSeq,
 ) -> Result<FxConversionVerification, crate::KernelError> {
-    let spec = crate::genesis::read_book_spec(db)?
-        .ok_or_else(|| crate::KernelError::Corrupt("the book has no genesis".into()))?;
+    let spec = book_spec_at(db, book, at)?;
     let mut out = FxConversionVerification {
         known_at: at,
         checked: BTreeMap::new(),
@@ -1290,7 +1306,15 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
             .map_or("unregistered", FxLawId::name)
             .to_string();
         *out.checked.entry(law.clone()).or_default() += 1;
-        if let Err(problem) = verify_recorded(db, &spec, units, at, proposal)? {
+        let mut verification = verify_recorded(db, &spec, &book.units, at, proposal)?;
+        if verification.is_ok() && crate::carrying::is_source_bound(proposal) {
+            let prior = CommitSeq(row.created_at.0.checked_sub(1).ok_or_else(|| {
+                crate::KernelError::Corrupt("a settlement was recorded at sequence zero".into())
+            })?);
+            verification = crate::carrying::validate_post(db, cx, book, proposal, prior)?
+                .map_err(|refusal| refusal.message);
+        }
+        if let Err(problem) = verification {
             out.drift.push(FxConversionDrift {
                 entry: row.vid,
                 recorded_at: row.created_at,
@@ -1301,6 +1325,32 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
     }
     out.drift.sort_by_key(|d| (d.recorded_at, d.entry.0));
     Ok(out)
+}
+
+/// FX interpretation and carrying relief share the selected historical root.
+/// A later root cannot reinterpret a previously recorded valuation.
+pub(crate) fn book_spec_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &crate::genesis::BookContext,
+    at: CommitSeq,
+) -> Result<BookSpec, crate::KernelError> {
+    let root = db
+        .vertex_at(crate::rows::book_root(), at)?
+        .filter(|row| row.labels.contains(&label::BOOK))
+        .ok_or_else(|| {
+            crate::KernelError::Corrupt("FX book does not exist at the selected prefix".into())
+        })?;
+    let spec = BookSpec::decode(&crate::rows::bytes(
+        &root,
+        fa_model::symbols::property::FA_PAYLOAD,
+        "FX book payload",
+    )?)?;
+    if spec.book_id != book.book_id || spec.calendar != book.calendar {
+        return Err(crate::KernelError::Corrupt(
+            "FX book context disagrees with the selected root".into(),
+        ));
+    }
+    Ok(spec)
 }
 
 /// One recorded valued entry: `Err` names why its valuation does not
@@ -1329,7 +1379,10 @@ fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
     let mut read =
         |vid: VId| -> Result<Option<VertexRow>, crate::KernelError> { Ok(db.vertex_at(vid, at)?) };
     if proposal.class == EntryClass::REVERSAL
-        && matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage)
+        && matches!(
+            claim.law,
+            FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementCarryingBasis
+        )
     {
         let Some(target) = proposal
             .supersession
@@ -1555,13 +1608,52 @@ fn verify_realized_fx_settlement(
             "SettlementCarryingBasis requires exactly one Settlement FxRateDocument",
         ));
     };
-    if rate_doc.as_of > proposal.effective_date {
+    if rate_doc.as_of > proposal.effective_date || rate_doc.rounding != RoundingLaw::HalfEven {
         return Err(fx_structure(
-            "SettlementCarryingBasis rate document as_of cannot be after the entry's effective_date",
+            "SettlementCarryingBasis requires HalfEven and a rate document as_of no later than the entry's effective_date",
         ));
     }
     let quote_unit = rate_doc.quote_unit;
     let base_unit = spec.base_unit;
+
+    // Zero carrying relief omits the zero base conversion posting. The
+    // remaining four ordered legs still record every native effect, pair
+    // the foreign amount, and show the entire cash amount as realized FX.
+    if proposal
+        .legs
+        .first()
+        .is_some_and(|leg| leg.base_amount == Some(Amount::new(base_unit, 0)))
+    {
+        let [settled, conversion, cash, realized] = proposal.legs.as_slice() else {
+            return Err(fx_structure(
+                "zero carrying relief requires exactly four settlement legs",
+            ));
+        };
+        let rate = rate_doc.to_rate(budget)?;
+        let expected_cash = settled
+            .amount
+            .convert(budget, base_unit, &rate, RoundingLaw::HalfEven, units)
+            .map_err(fx_structure)?;
+        let distinct: BTreeSet<_> = proposal.legs.iter().map(|leg| leg.account_ref).collect();
+        if distinct.len() != 4
+            || settled.amount.unit != quote_unit
+            || conversion.amount != settled.amount
+            || conversion.side != opposite(settled.side)
+            || conversion.base_amount != settled.base_amount
+            || leg_entities[0] != leg_entities[1]
+            || cash.side != conversion.side
+            || cash.amount != expected_cash
+            || cash.base_amount != Some(expected_cash)
+            || realized.side != settled.side
+            || realized.amount != expected_cash
+            || realized.base_amount != Some(expected_cash)
+        {
+            return Err(fx_structure(
+                "zero carrying relief does not reproduce its complete paired foreign, cash, and realized-FX effects",
+            ));
+        }
+        return Ok(());
+    }
 
     // Group legs by account to find the paired conversion account (`FA-INV-01.realized-fx`):
     // A conversion account must have one leg in `quote_unit` and one leg in `base_unit`

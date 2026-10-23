@@ -33,8 +33,7 @@ pub(crate) enum Error<E> {
     Parameters,
     NonPositiveAmount,
     SearchLimit,
-    /// The caller's meter refused a step (its budget or cancellation).
-    Meter(E),
+    Interrupted(E),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +57,7 @@ struct Search<'a, E> {
     window_days: i64,
     steps: &'a mut u64,
     max_steps: u64,
-    meter: &'a mut dyn FnMut() -> Result<(), E>,
+    checkpoint: &'a mut dyn FnMut() -> Result<(), E>,
 }
 
 impl<E> Search<'_, E> {
@@ -73,7 +72,7 @@ impl<E> Search<'_, E> {
         let start = adjacent.partition_point(|i| self.edges[*i].time() <= last.time());
         let end = adjacent.len();
         for cursor in start..end {
-            charge(self.steps, self.max_steps, self.meter)?;
+            charge(self.steps, self.max_steps, self.checkpoint)?;
             let index = self.adjacent[&key][cursor];
             let edge = self.edges[index];
             // Widen BEFORE subtracting: valid DateDay values can span i32.
@@ -105,19 +104,17 @@ impl<E> Search<'_, E> {
     }
 }
 
-/// One search step: refused past the procedure's own bound, then charged to
-/// the caller's meter, so a run's budget and cancellation stop the search
-/// mid-way rather than after it returns.
 fn charge<E>(
     steps: &mut u64,
     limit: u64,
-    meter: &mut dyn FnMut() -> Result<(), E>,
+    checkpoint: &mut dyn FnMut() -> Result<(), E>,
 ) -> Result<(), Error<E>> {
     if *steps >= limit {
         return Err(Error::SearchLimit);
     }
+    checkpoint().map_err(Error::Interrupted)?;
     *steps += 1;
-    meter().map_err(Error::Meter)
+    Ok(())
 }
 
 /// Canonical, greedy, edge-disjoint simple cycles of 2..=max_hops transfers.
@@ -127,13 +124,12 @@ fn charge<E>(
 /// Every transfer must have the same amount, unit and legal entity. An entry
 /// cannot serve as two hops. Reaching the work bound refuses the WHOLE run;
 /// partial results must not masquerade as a complete successful report.
-/// `meter` is charged once per step; its refusal ends the search.
 pub(crate) fn find<E>(
     edges: &[Edge],
     max_hops: usize,
     window_days: i32,
     max_steps: u64,
-    meter: &mut dyn FnMut() -> Result<(), E>,
+    checkpoint: &mut dyn FnMut() -> Result<(), E>,
 ) -> Result<Cycles, Error<E>> {
     if !(2..=8).contains(&max_hops) || window_days < 0 || max_steps == 0 {
         return Err(Error::Parameters);
@@ -157,7 +153,7 @@ pub(crate) fn find<E>(
     let mut paths = Vec::new();
     let mut steps = 0;
     for start in order {
-        charge(&mut steps, max_steps, meter)?;
+        charge(&mut steps, max_steps, checkpoint)?;
         let origin = edges[start];
         if used[start] || origin.from == origin.to {
             continue;
@@ -174,7 +170,7 @@ pub(crate) fn find<E>(
             window_days: i64::from(window_days),
             steps: &mut steps,
             max_steps,
-            meter: &mut *meter,
+            checkpoint,
         }
         .extend()?;
         if let Some(path) = path {
@@ -191,9 +187,16 @@ pub(crate) fn find<E>(
 mod tests {
     use super::*;
 
-    /// The search with a meter that never refuses.
-    fn find(edges: &[Edge], hops: usize, window: i32, steps: u64) -> Result<Cycles, Error<()>> {
-        super::find(edges, hops, window, steps, &mut || Ok(()))
+    // The independent motif/oracle cases do not constrain runtime work.
+    // Production supplies the caller's meter; the interruption cases below
+    // exercise that same entry point with an actual bounded/cancellable meter.
+    fn find(
+        edges: &[Edge],
+        max_hops: usize,
+        window_days: i32,
+        max_steps: u64,
+    ) -> Result<Cycles, Error<core::convert::Infallible>> {
+        super::find(edges, max_hops, window_days, max_steps, &mut || Ok(()))
     }
 
     fn edge(entry: u128, from: u128, to: u128, day: i32) -> Edge {
@@ -300,45 +303,6 @@ mod tests {
         assert_eq!(find(&edges, 2, 1, 1000).unwrap().paths.len(), 1);
     }
 
-    /// fa-1tvm: every step is charged to the caller's meter as it is taken,
-    /// so a meter that refuses at its third charge ends the search there,
-    /// mid-way, with the meter's own refusal and no partial result.
-    #[test]
-    fn the_meter_is_charged_per_step_and_its_refusal_stops_the_search() {
-        let edges = [
-            edge(1, 10, 20, 1),
-            edge(2, 20, 30, 2),
-            edge(3, 30, 10, 3),
-            edge(4, 10, 40, 4),
-            edge(5, 40, 50, 5),
-            edge(6, 50, 60, 6),
-            edge(7, 60, 10, 7),
-        ];
-        let mut taken = 0u64;
-        let found = super::find(&edges, 4, 10, 1000, &mut || {
-            taken += 1;
-            Ok::<(), &str>(())
-        })
-        .unwrap();
-        assert_eq!(found.paths.len(), 2);
-        assert!(taken > 3, "the search took {taken} steps");
-        let mut charged = 0u64;
-        let stopped = super::find(&edges, 4, 10, 1000, &mut || {
-            charged += 1;
-            if charged == 3 { Err("budget") } else { Ok(()) }
-        });
-        assert_eq!(stopped, Err(Error::Meter("budget")));
-        assert_eq!(charged, 3);
-        // The procedure's own bound refuses before the meter is charged again.
-        let mut bounded = 0u64;
-        let limited = super::find(&edges, 4, 10, 2, &mut || {
-            bounded += 1;
-            Ok::<(), &str>(())
-        });
-        assert_eq!(limited, Err(Error::SearchLimit));
-        assert_eq!(bounded, 2);
-    }
-
     #[test]
     fn bounds_refuse_the_entire_run_even_after_a_cycle_was_found() {
         let edges = [edge(1, 10, 20, 1), edge(2, 20, 10, 2), edge(3, 30, 40, 3)];
@@ -351,6 +315,86 @@ mod tests {
         let mut bad = edges;
         bad[0].amount = 0;
         assert_eq!(find(&bad, 2, 10, 100), Err(Error::NonPositiveAmount));
+    }
+
+    #[test]
+    fn runtime_budget_interrupts_recursion_and_discards_already_found_cycles() {
+        let edges = [
+            edge(1, 10, 20, 1),
+            edge(2, 20, 10, 2),
+            edge(3, 30, 40, 3),
+            edge(4, 40, 50, 4),
+            edge(5, 50, 30, 5),
+        ];
+        let complete = find(&edges, 3, 10, 100).unwrap();
+        assert_eq!(complete.paths, vec![vec![0, 1], vec![2, 3, 4]]);
+
+        // Four steps have already found the first cycle and entered the
+        // second. The fifth charge must stop the recursive extension, not
+        // return that first motif as an apparently complete result.
+        let mut meter = crate::Meter::new("graph.round_trips", Some(4), None);
+        let result = super::find(&edges, 3, 10, 100, &mut || meter.compare(1));
+        assert!(matches!(
+            result,
+            Err(Error::Interrupted(crate::LanternError::BudgetExhausted {
+                used: 5,
+                budget: 4,
+                ..
+            }))
+        ));
+        assert_eq!(meter.work().comparisons, 5);
+        assert!(8 > meter.work().comparisons);
+
+        // No lost or duplicated work charge on a successful search.
+        let mut meter = crate::Meter::new("graph.round_trips", Some(8), None);
+        let metered = super::find(&edges, 3, 10, 100, &mut || meter.compare(1)).unwrap();
+        assert_eq!(metered, complete);
+        // Five roots plus one and two continuations in the two cycles.
+        assert_eq!(meter.work().comparisons, 8);
+    }
+
+    #[test]
+    fn runtime_cancellation_is_observed_within_recursive_search_interval() {
+        use std::cell::Cell;
+
+        struct Flag<'a>(&'a Cell<bool>);
+        impl crate::Cancellation for Flag<'_> {
+            fn cancelled(&self) -> bool {
+                self.0.get()
+            }
+        }
+
+        // One root has many chronological continuations, with no completing
+        // cycle. Cancellation therefore has to be consulted within extend(),
+        // before this root's entire search returns to the outer loop.
+        let mut edges = vec![edge(1, 10, 20, 1)];
+        edges.extend((2..2_100).map(|id| edge(id, 20, 30, 2)));
+        let mut complete_steps = 0u64;
+        let complete = super::find(&edges, 3, 10, 10_000, &mut || {
+            complete_steps += 1;
+            Ok::<(), core::convert::Infallible>(())
+        })
+        .unwrap();
+        assert!(complete.paths.is_empty());
+        let cancel = Cell::new(false);
+        let flag = Flag(&cancel);
+        let mut meter = crate::Meter::new("graph.round_trips", None, Some(&flag));
+        let mut visited = 0u64;
+        let result = super::find(&edges, 3, 10, 10_000, &mut || {
+            visited += 1;
+            if visited == 5 {
+                cancel.set(true);
+            }
+            meter.compare(1)
+        });
+        let Err(Error::Interrupted(crate::LanternError::Cancelled { used, .. })) = result else {
+            panic!("the recursive search did not propagate cancellation: {result:?}");
+        };
+        assert!((5..=5 + crate::CANCELLATION_INTERVAL).contains(&used));
+        assert_eq!(visited, used);
+        assert_eq!(meter.work().comparisons, used);
+        assert!(used < 2_099, "the first root was still being searched");
+        assert!(used < complete_steps);
     }
 
     /// Independent tiny-graph oracle: enumerate chronological subsets, check

@@ -17,6 +17,8 @@ struct Loop<'a> {
     steps: u64,
     taken: &'a Cell<u64>,
     cancel_after: Option<(u64, &'a Cell<bool>)>,
+    /// Test injection of the caller's real runtime cancellation during a run.
+    context_cancel_after: Option<(u64, &'a Cx)>,
     discard: bool,
 }
 
@@ -27,6 +29,7 @@ impl<'a> Loop<'a> {
             steps,
             taken,
             cancel_after: None,
+            context_cancel_after: None,
             discard: false,
         }
     }
@@ -53,6 +56,11 @@ impl Procedure for Loop<'_> {
                 && step == after
             {
                 cancel.set(true);
+            }
+            if let Some((after, root)) = self.context_cancel_after
+                && step == after
+            {
+                root.set_cancel_requested(true);
             }
             self.taken.set(self.taken.get() + 1);
             if self.discard {
@@ -84,6 +92,69 @@ impl Cancellation for Flag<'_> {
     fn cancelled(&self) -> bool {
         self.0.get()
     }
+}
+
+#[test]
+fn snapshot_cancellation_precedes_selection_and_returns_no_snapshot() {
+    let (h, _) = posted_corpus();
+    let before = h.db.frontier().unwrap();
+    let future = CommitSeq(before.0.checked_add(1).unwrap());
+    let cx = h.ctx().query();
+    assert!(matches!(
+        Snapshot::read(&h.db, &cx, &h.book, Some(future), None),
+        Err(LanternError::Register(
+            fa_registers::RegisterError::InvalidSelection(_)
+        ))
+    ));
+
+    h.root.set_cancel_requested(true);
+    for selection in [None, Some(future)] {
+        let error = Snapshot::read(&h.db, &cx, &h.book, selection, None)
+            .expect_err("cancelled acquisition must stop before selecting a storage prefix");
+        assert!(
+            matches!(
+                error,
+                LanternError::Kernel(KernelError::Txn(fgdb::WriteTxnError::Interrupted(_)))
+            ),
+            "{error:?}"
+        );
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    h.root.set_cancel_requested(false);
+    let snapshot = Snapshot::read(&h.db, &cx, &h.book, None, None).unwrap();
+    assert_eq!(snapshot.coordinate.known_at, before);
+    assert!(snapshot.entries.iter().any(|entry| entry.posts()));
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn direct_library_run_carries_context_cancellation_into_the_procedure() {
+    let (h, _) = posted_corpus();
+    let before = h.db.frontier().unwrap();
+    let cx = h.ctx().query();
+    let taken = Cell::new(0);
+    let mut procedure = Loop::new(20, &taken);
+    procedure.context_cancel_after = Some((5, &h.root));
+    let error = run(&h.db, &cx, &h.book, None, None, &procedure)
+        .expect_err("the direct read-and-run API must retain the caller's cancellation source");
+    assert!(
+        matches!(error, LanternError::Cancelled { used: 20, .. }),
+        "{error:?}"
+    );
+    assert_eq!(taken.get(), 20);
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    h.root.set_cancel_requested(false);
+    procedure.context_cancel_after = None;
+    taken.set(0);
+    let complete = run(&h.db, &cx, &h.book, None, None, &procedure).unwrap();
+    assert_eq!(taken.get(), 20);
+    let snapshot = Snapshot::read(&h.db, &cx, &h.book, None, None).unwrap();
+    let unmetered = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(complete.findings_digest, unmetered.findings_digest);
+    assert_eq!(complete.work, unmetered.work);
+    assert_eq!(h.db.frontier().unwrap(), before);
 }
 
 #[test]
@@ -146,7 +217,7 @@ fn cancellation_is_observed_inside_run() {
     let (h, _) = posted_corpus();
     let snapshot = h.snapshot();
 
-    // Cancelled before the run: the first charge observes it.
+    // Cancelled before the run: refuse before entering the procedure.
     let cancel = Cell::new(true);
     let taken = Cell::new(0);
     let err = run_over_metered(
@@ -158,10 +229,10 @@ fn cancellation_is_observed_inside_run() {
     )
     .expect_err("a cancelled caller stops the run");
     assert!(
-        matches!(&err, LanternError::Cancelled { procedure, used: 1 } if procedure == "jet.weekend"),
+        matches!(&err, LanternError::Cancelled { procedure, used: 0 } if procedure == "jet.weekend"),
         "{err:?}"
     );
-    assert_eq!(taken.get(), 1);
+    assert_eq!(taken.get(), 0);
 
     // Cancelled mid-run: observed within one checkpoint interval.
     let cancel = Cell::new(false);
@@ -191,4 +262,139 @@ fn cancellation_is_observed_inside_run() {
     )
     .expect("an uncancelled run completes");
     assert_eq!(run.findings.len(), 1);
+}
+
+#[test]
+fn cancellation_refuses_an_empty_native_procedure_without_a_work_charge() {
+    let h = harness();
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    assert!(!snapshot.entries.iter().any(|entry| entry.posts()));
+    let procedure = Weekend::new().unwrap();
+    let cancelled = Cell::new(true);
+    let error = run_over_metered(
+        &snapshot,
+        &h.book,
+        &procedure,
+        None,
+        Some(&Flag(&cancelled)),
+    )
+    .expect_err("an empty procedure must still observe its cancelled caller");
+    assert!(
+        matches!(error, LanternError::Cancelled { used: 0, .. }),
+        "{error:?}"
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    cancelled.set(false);
+    let complete = run_over_metered(
+        &snapshot,
+        &h.book,
+        &procedure,
+        None,
+        Some(&Flag(&cancelled)),
+    )
+    .unwrap();
+    assert!(complete.findings.is_empty());
+    assert_eq!(complete.work, fa_lantern::Work::default());
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn cancellation_after_the_last_interval_withholds_findings_and_preserves_first_refusal() {
+    let (h, _) = posted_corpus();
+    let snapshot = h.snapshot();
+    let cancel = Cell::new(false);
+    let taken = Cell::new(0);
+    let mut procedure = Loop::new(20, &taken);
+    procedure.cancel_after = Some((5, &cancel));
+    let error = run_over_metered(&snapshot, &h.book, &procedure, None, Some(&Flag(&cancel)))
+        .expect_err("cancellation after the last periodic check withholds the result");
+    assert!(
+        matches!(error, LanternError::Cancelled { used: 20, .. }),
+        "{error:?}"
+    );
+    assert_eq!(taken.get(), 20);
+
+    // A swallowed budget refusal precedes cancellation. The final checkpoint
+    // must retain that original cause and count, rather than overwrite it.
+    cancel.set(false);
+    taken.set(0);
+    procedure.discard = true;
+    let error = run_over_metered(
+        &snapshot,
+        &h.book,
+        &procedure,
+        Some(3),
+        Some(&Flag(&cancel)),
+    )
+    .expect_err("the original stopped charge remains the run's refusal");
+    assert!(
+        matches!(
+            error,
+            LanternError::BudgetExhausted {
+                used: 4,
+                budget: 3,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(cancel.get());
+    assert_eq!(taken.get(), 20);
+}
+
+#[test]
+fn round_trip_search_obeys_the_runtime_budget_before_finishing_its_search() {
+    let mut h = harness();
+    h.post(&Spec::simple(day(2026, 1, 5), "1010", "1000", 100));
+    h.post(&Spec::simple(day(2026, 1, 6), "1020", "1010", 100));
+    h.post(&Spec::simple(day(2026, 1, 7), "1000", "1020", 100));
+    let before = h.db.frontier().unwrap();
+    let snapshot = h.snapshot();
+    let procedure = RoundTrips::with(
+        Params::defaults(RoundTrips::ID)
+            .unwrap()
+            .set("max_hops", 3)
+            .unwrap(),
+    );
+    let complete = run_over_metered(&snapshot, &h.book, &procedure, None, None).unwrap();
+    assert_eq!(complete.findings.len(), 1);
+    assert_eq!(complete.work.legs, 3);
+    assert!(complete.work.total() > 8);
+
+    // Three flow legs and the three-unit sort estimate consume six units;
+    // the first root consumes seven. The recursive continuation's eighth
+    // charge must refuse immediately. Charging the complete search afterward
+    // reports a larger count and fails this assertion.
+    let error = run_over_metered(&snapshot, &h.book, &procedure, Some(7), None)
+        .expect_err("the caller's budget interrupts the native corpus search");
+    assert!(
+        matches!(
+            error,
+            LanternError::BudgetExhausted {
+                used: 8,
+                budget: 7,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        before,
+        "no partial finding is journaled"
+    );
+
+    let bounded = run_over_metered(
+        &snapshot,
+        &h.book,
+        &procedure,
+        Some(complete.work.total()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(bounded.findings_digest, complete.findings_digest);
+    assert_eq!(bounded.work, complete.work);
+    assert_eq!(h.db.frontier().unwrap(), before);
 }

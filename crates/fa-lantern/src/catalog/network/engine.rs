@@ -74,6 +74,8 @@ pub enum Error {
     Overflow(&'static str),
     Limit(&'static str),
     Allocation,
+    /// The caller's fallible work checkpoint stopped the computation.
+    Interrupted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,19 +85,20 @@ pub struct Report {
     pub steps: u64,
 }
 
-struct Meter {
+struct Meter<'a> {
     limits: Limits,
     steps: u64,
     fragments: usize,
+    checkpoint: &'a mut dyn FnMut(u64) -> Result<(), Error>,
 }
 
-impl Meter {
+impl Meter<'_> {
     fn step(&mut self, n: u64) -> Result<(), Error> {
         self.steps = self.steps.checked_add(n).ok_or(Error::Limit("max_steps"))?;
         if self.steps > self.limits.max_steps {
             return Err(Error::Limit("max_steps"));
         }
-        Ok(())
+        (self.checkpoint)(n)
     }
 
     fn fragment(&mut self) -> Result<(), Error> {
@@ -148,7 +151,7 @@ fn split<F>(
     amount: i128,
     capacities: &[i128],
     allocate: &mut F,
-    meter: &mut Meter,
+    meter: &mut Meter<'_>,
 ) -> Result<Vec<i128>, Error>
 where
     F: FnMut(i128, &[i128]) -> Result<Vec<i128>, Error>,
@@ -182,7 +185,12 @@ where
 }
 
 impl Account {
-    fn withdraw(&mut self, amount: i128, law: Law, meter: &mut Meter) -> Result<Vec<Lot>, Error> {
+    fn withdraw(
+        &mut self,
+        amount: i128,
+        law: Law,
+        meter: &mut Meter<'_>,
+    ) -> Result<Vec<Lot>, Error> {
         self.balance = self
             .balance
             .checked_sub(amount)
@@ -227,7 +235,7 @@ impl Account {
         lots: Vec<Lot>,
         terminal: &mut Vec<Position>,
         allocate: &mut F,
-        meter: &mut Meter,
+        meter: &mut Meter<'_>,
     ) -> Result<(), Error>
     where
         F: FnMut(i128, &[i128]) -> Result<Vec<i128>, Error>,
@@ -296,6 +304,7 @@ where
         IntradayOrder::StatementOrdinal,
         &BTreeSet::new(),
         limits,
+        &mut |_| Ok(()),
         allocate,
     )
 }
@@ -309,6 +318,7 @@ pub fn trace_with_options<F>(
     intraday: IntradayOrder,
     replenish_entries: &BTreeSet<u128>,
     limits: Limits,
+    checkpoint: &mut dyn FnMut(u64) -> Result<(), Error>,
     mut allocate: F,
 ) -> Result<Report, Error>
 where
@@ -335,6 +345,7 @@ where
         limits,
         steps: 0,
         fragments: 0,
+        checkpoint,
     };
     let n = transfers.len() as u64;
     meter.step(n.saturating_mul(u64::from(n.max(1).ilog2()) + 1))?;
@@ -542,7 +553,7 @@ fn add_rational_lot<C>(
     amount: Rate,
     path: Vec<Hop>,
     budget: &mut ArithmeticBudget<'_, C>,
-    meter: &mut Meter,
+    meter: &mut Meter<'_>,
 ) -> Result<(), Error> {
     if amount.is_zero() {
         return Ok(());
@@ -567,7 +578,7 @@ fn add_terminal_rational<C>(
     amount: Rate,
     path: Vec<Hop>,
     budget: &mut ArithmeticBudget<'_, C>,
-    meter: &mut Meter,
+    meter: &mut Meter<'_>,
 ) -> Result<(), Error> {
     if amount.is_zero() {
         return Ok(());
@@ -589,7 +600,7 @@ fn trace_pro_rata(
     ordered: &[Transfer],
     assets: &BTreeSet<u128>,
     source: (u128, u128),
-    meter: &mut Meter,
+    meter: &mut Meter<'_>,
 ) -> Result<Report, Error> {
     let (source_entry, source_account) = source;
     let cx = Cx::detached_cancel_context();
@@ -854,7 +865,7 @@ fn trace_libr(
     assets: &BTreeSet<u128>,
     source: (u128, u128),
     replenish_entries: &BTreeSet<u128>,
-    meter: &mut Meter,
+    meter: &mut Meter<'_>,
 ) -> Result<Report, Error> {
     let (source_entry, source_account) = source;
     let mut batches: Vec<&[Transfer]> = Vec::new();
@@ -1409,7 +1420,7 @@ fn shortest_augmenting_path(
     adj: &[Vec<usize>],
     rev_adj: &[Vec<usize>],
     allow_reverse: bool,
-    meter: &mut Meter,
+    meter: &mut Meter<'_>,
 ) -> Result<Option<AugmentingPath>, Error> {
     let mut dist = vec![i32::MAX; num_vertices];
     let mut parent: Vec<Option<(usize, usize, bool)>> = vec![None; num_vertices];
@@ -1547,6 +1558,67 @@ mod tests {
             .filter(|p| p.account == account && p.disposition == disposition)
             .map(|p| p.amount)
             .sum()
+    }
+
+    #[test]
+    fn caller_checkpoint_stops_each_law_and_success_preserves_work_and_positions() {
+        let edges = [t(10, 9, 1, 100), t(11, 1, 2, 80), t(12, 2, 3, 60)];
+        let assets = BTreeSet::from([1, 2, 3, 4]);
+        for law in [Law::Libr, Law::Fifo, Law::Lifo, Law::ProRata] {
+            let expected = run(&edges, law);
+            let mut calls = 0u64;
+            let mut charged = 0u64;
+            let actual = trace_with_options(
+                &edges,
+                &assets,
+                (10, 1),
+                law,
+                IntradayOrder::StatementOrdinal,
+                &BTreeSet::new(),
+                limits(),
+                &mut |steps| {
+                    calls = calls.checked_add(1).unwrap();
+                    charged = charged.checked_add(steps).unwrap();
+                    Ok(())
+                },
+                allocate,
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "{law:?}");
+            assert_eq!(
+                charged, expected.steps,
+                "no duplicate/missing charge: {law:?}"
+            );
+            assert!(calls > 10, "the stopped control must not finish: {law:?}");
+
+            calls = 0;
+            charged = 0;
+            let stopped = trace_with_options(
+                &edges,
+                &assets,
+                (10, 1),
+                law,
+                IntradayOrder::StatementOrdinal,
+                &BTreeSet::new(),
+                limits(),
+                &mut |steps| {
+                    calls = calls.checked_add(1).unwrap();
+                    charged = charged.checked_add(steps).unwrap();
+                    if calls == 10 {
+                        Err(Error::Interrupted)
+                    } else {
+                        Ok(())
+                    }
+                },
+                allocate,
+            );
+            assert_eq!(stopped, Err(Error::Interrupted), "{law:?}");
+            assert_eq!(calls, 10, "no later engine work: {law:?}");
+            assert!(
+                charged < expected.steps,
+                "stopped before completion: {law:?}"
+            );
+        }
     }
 
     #[test]
@@ -1875,6 +1947,7 @@ mod tests {
             IntradayOrder::StatementOrdinal,
             &BTreeSet::new(),
             limits(),
+            &mut |_| Ok(()),
             allocate,
         )
         .unwrap();
@@ -1892,6 +1965,7 @@ mod tests {
             IntradayOrder::StatementOrdinal,
             &BTreeSet::from([12]),
             limits(),
+            &mut |_| Ok(()),
             allocate,
         )
         .unwrap();
@@ -1935,6 +2009,7 @@ mod tests {
             IntradayOrder::StatementOrdinal,
             &BTreeSet::new(),
             limits(),
+            &mut |_| Ok(()),
             allocate,
         )
         .unwrap();
@@ -1948,6 +2023,7 @@ mod tests {
             IntradayOrder::WithdrawalsFirst,
             &BTreeSet::new(),
             limits(),
+            &mut |_| Ok(()),
             allocate,
         )
         .unwrap();

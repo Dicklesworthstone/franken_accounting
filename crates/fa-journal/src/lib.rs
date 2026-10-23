@@ -23,6 +23,7 @@ pub mod attestation;
 pub mod bank;
 pub mod batch;
 pub mod blob;
+pub mod carrying;
 pub mod case;
 pub mod chart;
 pub mod closing;
@@ -79,6 +80,10 @@ pub use batch::{
     post_batch, post_batch_with_crash, read_outcome, request_digest,
 };
 pub use blob::BlobStore;
+pub use carrying::{
+    CarryingOpenItem, FxSettlementRequest, PreparedFxSettlement, open_item_carrying_at,
+    prepare_fx_settlement, remaining_carrying_relief,
+};
 pub use case::{
     CaseApproval, CaseBody, CaseKind, CaseManifest, CaseMember, CaseRecorded, CaseRequest,
     CaseState, CaseTransition, CaseView, Determination, Disclosure, ManifestEntry, PostedEntry,

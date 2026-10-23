@@ -33,6 +33,8 @@ use fgdb_types::{CanonicalScalar, VId};
 
 #[path = "genesis/account_role.rs"]
 mod account_role_tests;
+#[path = "genesis/carrying.rs"]
+mod carrying_tests;
 #[path = "genesis/outcome_batch_integrity.rs"]
 mod outcome_batch_integrity_tests;
 #[path = "genesis/outcome_keys.rs"]
@@ -7319,6 +7321,50 @@ fn period_verification_detects_planted_state_and_topology_drift_without_mutation
 }
 
 #[test]
+fn instant_resolution_keeps_opening_date_at_its_saved_frontier() {
+    use fa_time::UtcInstant;
+
+    let mut h = harness();
+    let lower = UtcInstant::parse("2026-03-15T12:00:00Z").unwrap().unix_ns();
+    let upper = UtcInstant::parse("2026-03-16T12:00:00Z").unwrap().unix_ns();
+    let first = h.tick(lower, b"historical-instant-lower", 1);
+    let second = h.tick(upper, b"historical-instant-upper", 2);
+    let frontier = h.db.frontier().unwrap();
+    let selected = lower + 1;
+    let original = resolve_instant_at(&h.db, &h.ctx().query(), &h.book, selected, Some(frontier))
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.lower_entry, first.entry_ref.vid);
+    assert_eq!(original.upper_entry, Some(second.entry_ref.vid));
+
+    let mut spec = fa_journal::genesis::read_book_spec(&h.db).unwrap().unwrap();
+    spec.opening_date = Some(DateDay::from_ymd(2026, 4, 1).unwrap());
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.set_vertex_property(
+        book_root(),
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(spec.canonical_bytes().unwrap()).unwrap()),
+    );
+    h.write_raw(damage);
+    let april = UtcInstant::parse("2026-04-02T00:00:00Z").unwrap().unix_ns();
+    h.tick(april, b"later-instant", 3);
+    let head = h.db.frontier().unwrap();
+
+    let current = resolve_instant_at(&h.db, &h.ctx().query(), &h.book, selected, None)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((current.code, current.exit), ("FA-REF-151", exit::REFUSAL));
+    assert!(current.message.contains("BeforeBookGenesis"));
+    assert_eq!(
+        resolve_instant_at(&h.db, &h.ctx().query(), &h.book, selected, Some(frontier))
+            .unwrap()
+            .unwrap(),
+        original,
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
 fn instant_before_book_genesis_and_non_increasing_ticks_are_refused() {
     use fa_journal::genesis::BookSpec;
     use fa_journal::sweep::{SOURCE_DAEMON_CLOCK, TickRequest, latest_tick, record_tick};
@@ -8695,6 +8741,140 @@ fn unpaired_or_mismatched_replacement_is_refused_without_mutating_book() {
         .expect_err("identical replacement legs must be refused");
     assert_eq!((r.code, r.exit), ("FA-REF-051", exit::REFUSAL), "{r}");
     assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn chart_retry_keeps_its_birth_and_checks_semantics_and_authority() {
+    let mut h = harness();
+    let date = h.day();
+    let chart = vec![AccountSpec {
+        code: "1700".into(),
+        name: "Equipment".into(),
+        account_type: fa_model::AccountType::ASSET.0,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: None,
+    }];
+    let capability = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let install = |h: &mut Harness,
+                   accounts: &[AccountSpec],
+                   key: &[u8],
+                   text: &str,
+                   salt: u8,
+                   cap: &Capability| {
+        let cx = h.ctx();
+        let description = Erasable::seal(
+            &text.to_string(),
+            None,
+            &h.book.seal_key,
+            [salt; 32],
+            [salt; 24],
+        );
+        h.runtime.block_on(install_chart(
+            &mut h.db,
+            &cx,
+            &h.book,
+            accounts,
+            PRINCIPAL,
+            date,
+            key,
+            description,
+            cap,
+        ))
+    };
+    let first = install(
+        &mut h,
+        &chart,
+        b"retry-chart",
+        "equipment chart",
+        30,
+        &capability,
+    )
+    .unwrap()
+    .unwrap();
+    let cx = h.ctx();
+    let role = AccountRoleSpec {
+        account: account_vid(h.book.book_id, "1700"),
+        role: "fixed_asset".into(),
+        assigned: true,
+    };
+    let description = Erasable::seal(
+        &"equipment role".to_string(),
+        None,
+        &h.book.seal_key,
+        [31; 32],
+        [31; 24],
+    );
+    h.runtime
+        .block_on(record_account_role(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &role,
+            PRINCIPAL,
+            b"retry-chart-role",
+            description,
+            &capability,
+        ))
+        .unwrap()
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    assert!(head > first.recorded_at);
+    // Different encryption nonces for the same semantic request still retry.
+    let again = install(
+        &mut h,
+        &chart,
+        b"retry-chart",
+        "equipment chart",
+        32,
+        &capability,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(again, first);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let mut changed = chart.clone();
+    changed[0].name = "Changed equipment".into();
+    for (accounts, text) in [
+        (changed.as_slice(), "equipment chart"),
+        (chart.as_slice(), "a different reason"),
+    ] {
+        let refused = install(&mut h, accounts, b"retry-chart", text, 33, &capability)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, refusal::code::IDEMPOTENCY_CONFLICT);
+        assert_eq!(refused.exit, refusal::exit::CONFLICT);
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+    let duplicate = install(
+        &mut h,
+        &chart,
+        b"fresh-chart-key",
+        "equipment chart",
+        34,
+        &capability,
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(duplicate.code, refusal::code::STRUCTURE);
+    assert_eq!(duplicate.exit, refusal::exit::USAGE);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let denied = install(
+        &mut h,
+        &chart,
+        b"retry-chart",
+        "equipment chart",
+        35,
+        &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(denied.exit, refusal::exit::SAFETY);
+    assert_eq!(h.db.frontier().unwrap(), head);
 }
 
 #[test]

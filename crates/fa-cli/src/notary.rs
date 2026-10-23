@@ -8,9 +8,9 @@ mod expectations;
 mod procedure;
 
 pub(crate) use expectations::{
-    aging_expectation_json, cash_flow_expectation_json, indirect_expectation_json,
-    policy_cash_flow_expectation_json, portfolio_expectation_json, reconciliation_expectation_json,
-    split_cash_flow_expectation_json,
+    aging_expectation_json, cash_flow_expectation_json, equity_expectation_json,
+    indirect_expectation_json, policy_cash_flow_expectation_json, portfolio_expectation_json,
+    reconciliation_expectation_json, split_cash_flow_expectation_json,
 };
 
 use std::io::Read;
@@ -55,6 +55,24 @@ fn prepare_artifact_history(
         return Err(certificate_invalid(
             "report artifact belongs to another book",
         ));
+    }
+    if artifact.family() == ReportArtifactFamily::Native
+        && matches!(
+            artifact.source_certificate().selection,
+            ReportSelection::FunctionalStatement(_)
+        )
+    {
+        // Functional verification checks immutable Entry births and carrying
+        // sources even when the supplied file selects HEAD. A compacted book
+        // needs the complete retained history in that case too.
+        book.replay_report_artifact_for_with_history(
+            principal,
+            capability,
+            bytes,
+            Some(artifact.digest()),
+            fa::ReportArtifactExpectation::AsSupplied,
+        )??;
+        return Ok(());
     }
     if artifact.family() == ReportArtifactFamily::Procedure {
         let certificate = fa::ProcedureCertificate::decode(bytes)?;
@@ -1021,6 +1039,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else {
         None
     };
+    let equity = if artifact.family() == ReportArtifactFamily::EquityRollForward {
+        let expectations::Expected::Equity(request) = &expected else {
+            return Err(certificate_invalid(
+                "equity replay needs an independent equity-roll-forward expectation",
+            ));
+        };
+        let certificate = fa::EquityRollForwardCertificate::decode(&bytes)?;
+        Some(book.replay_equity_roll_forward(principal, &capability, &certificate, request)??)
+    } else {
+        None
+    };
     let procedure = if artifact.family() == ReportArtifactFamily::Procedure {
         Some(fa::procedure_certificate::ProcedureCertificate::decode(
             &bytes,
@@ -1070,6 +1099,10 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (ReportOutput::Statement(report), ReportSelection::Statement(_)) => {
                 crate::cli::render_statement(&ctx.out, &book, report, Some(&digest))?
             }
+            (
+                ReportOutput::FunctionalStatement(report),
+                ReportSelection::FunctionalStatement(_),
+            ) => crate::cli::render_functional_statement(&ctx.out, &book, report, Some(&digest))?,
             _ => {
                 return Err(certificate_invalid(
                     "replayed report kind differs from the retained certificate selector",
@@ -1107,6 +1140,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     } else if let Some(report) = aging {
         crate::cli::render_aging(&ctx.out, &book, &report, Some(&digest))?;
         true
+    } else if let Some(report) = equity {
+        crate::cli::render_equity_roll_forward(&ctx.out, &book, &report, Some(&digest))?;
+        true
     } else if let Some(certificate) = procedure {
         procedure::render(&ctx.out, certificate.report(), &digest);
         true
@@ -1132,6 +1168,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ReportArtifactFamily::Summary
                 | ReportArtifactFamily::RollForward
                 | ReportArtifactFamily::EffectiveDateAging
+                | ReportArtifactFamily::EquityRollForward
         )
     {
         ctx.out.known_at(replayed.known_at);
@@ -1319,7 +1356,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ctx.out.effective(format!("period:{period}"));
         }
         ReportSelection::OpenItems { .. } => {}
-        ReportSelection::Statement(selection) => {
+        ReportSelection::Statement(selection) | ReportSelection::FunctionalStatement(selection) => {
             ctx.out.effective(periods_selector(&selection.periods));
         }
     }

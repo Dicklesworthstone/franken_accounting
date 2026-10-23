@@ -2662,6 +2662,26 @@ impl Book {
         )))
     }
 
+    /// Derive a single foreign open item's exact remaining carrying basis,
+    /// producing an ordinary proposal for the existing plan/commit protocol.
+    pub fn prepare_fx_settlement(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: &crate::FxSettlementRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedFxSettlement> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement(
+            &purposes, capability, request, template, &mut budget,
+        )))
+    }
+
     /// Exact functional-currency period activity at a retained journal prefix.
     /// Pending holds stay separate. This is not cumulative stock or a certificate.
     pub fn functional_period_activity(
@@ -3347,6 +3367,51 @@ impl Book {
         with_store!(&self.store, core => core.statement(&self.purposes(), selection, known_at))
     }
 
+    /// Evaluate a statement in the historical book's functional currency.
+    /// The admitted whole-book reader receives exact retained valuations;
+    /// this hydrates history without publishing or revaluing any entry.
+    pub fn functional_statement(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_statement(
+            &purposes, principal, capability, selection, known_at,
+        )))
+    }
+
+    /// Certify functional stock/activity and comparative columns under
+    /// current whole-book Read and Produce authority.
+    pub fn certify_functional_statement(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: crate::StatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedStatement> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_statement(
+            &purposes, principal, capability, selection, known_at,
+        )))
+    }
+
+    /// Functional statement certification with retained TimeEvidence brackets.
+    pub fn certify_functional_statement_at_instant(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        selection: crate::StatementSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedStatement> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_statement_at_instant(
+            &purposes, principal, capability, selection, requested_utc_ns,
+        )))
+    }
+
     /// Certify the complete statement definition, chart partition, historical
     /// period columns and exact native-unit amounts without writing the book.
     pub fn certify_statement(
@@ -3944,6 +4009,31 @@ impl Book {
     ) -> Outcome<crate::EquityRollForwardReport> {
         with_store!(&self.store, core => core.equity_roll_forward(
             &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Certify the complete equity statement and its explicit classification roles.
+    pub fn certify_equity_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::EquityRollForwardRequest,
+    ) -> Outcome<crate::CertifiedEquityRollForward> {
+        with_store!(&self.store, core => core.certify_equity_roll_forward(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay only the independently expected equity scope and classification.
+    pub fn replay_equity_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::EquityRollForwardCertificate,
+        expected: &crate::EquityRollForwardRequest,
+    ) -> Outcome<crate::EquityRollForwardReport> {
+        with_store!(&self.store, core => core.replay_equity_roll_forward(
+            &self.purposes(), principal, capability, certificate, expected
         ))
     }
 
@@ -5561,7 +5651,9 @@ impl ReadScope<'_> {
                     fa_statements::Basis::Activity => self.authority.periods(book, seq, &reached),
                 }
             }
-            ReportSelection::OpenItems { .. } => self.authority.whole_book(seq),
+            ReportSelection::OpenItems { .. } | ReportSelection::FunctionalStatement(_) => {
+                self.authority.whole_book(seq)
+            }
         };
         Ok(admitted.map(|()| seq))
     }
