@@ -124,7 +124,7 @@ fn history() -> Vec<Record> {
             .bytes(code.as_bytes())
             .bytes(name.as_bytes())
             .u8(typ)
-            .u8(u8::from(matches!(typ, 2 | 3 | 4)))
+            .u8(u8::from(matches!(typ, 2..=4)))
             .u8(u8::from(leaf))
             .fixed(&0i64.to_le_bytes())
             .u8(0);
