@@ -666,14 +666,14 @@ example = "fa jet --book ./books/myco --json"
 
 [[verb]]
 name = "benford"
-summary = "The digit tests (plan §11.3): benford.first_digit, benford.second_digit and benford.first_two_digits at their registered defaults over every posting, each reported as fa procedure run reports it, then a procedure_family summary."
+summary = "The digit tests (plan §11.3): benford.first_digit, benford.second_digit and benford.first_two_digits at their registered defaults, over every posting or (--scope) the legs of one account type, each reported as fa procedure run reports it, then a procedure_family summary."
 writes = false
 subcommands = []
 flags = ["--known-at", "--budget", "--scope", "--grant"]
 switches = []
 events = ["procedure_run", "procedure_family"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["benford [--known-at HEAD|<seq>] [--budget <work units>]", "The digit tests take every posting: no population scope is registered for them yet, so --scope is refused rather than ignored. A pure read: fa finding record <id> retains a run."]
+usage = ["benford [--scope assets|liabilities|equity|revenue|expenses] [--known-at HEAD|<seq>] [--budget <work units>]", "--scope (plan §15.6, fa benford --scope expenses) runs every digit test over the legs of one registered account type (registries/account_types.toml; singular or plural, lowercase), as fa procedure run <id> --param account_type=<tag> would; without it the tests take every posting. An unregistered type is a usage error. A pure read: fa finding record <id> retains a run."]
 example = "fa benford --book ./books/myco --json"
 
 [[verb]]
@@ -4975,11 +4975,11 @@ name = "benford"
 verb = "benford"
 subcommands = []
 positionals = []
-flags = ["--known-at", "--budget"]
+flags = ["--known-at", "--budget", "--scope"]
 switches = []
 required = []
-dont = ["Don't treat a digit-test result as an accusation: it is a statistic over every posting.", "Don't ask for a population scope: none is registered for the digit tests yet."]
-mistakes = ["Passing scope: it is refused; the tests take every posting.", "Expecting retained findings: the family is a read."]
+dont = ["Don't treat a digit-test result as an accusation: it is a statistic over every posting.", "Use scope (assets, liabilities, equity, revenue or expenses) to test one account type's legs; omit it to test every posting."]
+mistakes = ["Passing a scope that names no registered account type (a code or an account name): it is refused; scope is a type such as expenses.", "Expecting retained findings: the family is a read."]
 
 [[mcp.tool]]
 cluster = "fa.forensics"

@@ -150,13 +150,13 @@ summary = "Gaps in the numeric tail of external ids per (system, prefix): the co
 
 [[procedure]]
 id = "benford.first_digit"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L10"
 tie_break = "none"
 complexity = "O(legs)"
 calibration = "planted"
-summary = "First-digit distribution of live posted leg magnitudes on one side (debit by default) in one registered currency unit (USD by default) of at least one whole unit against Benford's law: the mean absolute deviation (Nigrini's conformity ranges) and the chi-square statistic in fixed point, with the population stated. Excludes reversals, superseded entries, the opposite side, other currencies and non-currency quantity units."
+summary = "First-digit distribution of live posted leg magnitudes on one side (debit by default) in one registered currency unit (USD by default) of at least one whole unit against Benford's law: the mean absolute deviation (Nigrini's conformity ranges) and the chi-square statistic in fixed point, with the population stated. Excludes reversals, superseded entries, the opposite side, other currencies and non-currency quantity units. With account_type (version 2), only legs on accounts of that one registered type are examined (fa benford --scope)."
 
 [[parameter]]
 procedure = "benford.first_digit"
@@ -193,6 +193,12 @@ procedure = "benford.first_digit"
 name = "side"
 default = 0
 meaning = "Which side of each live posting entry is sampled so a balanced two-leg entry is counted once, never twice: 0 = debit legs, 1 = credit legs."
+
+[[parameter]]
+procedure = "benford.first_digit"
+name = "account_type"
+default = 0
+meaning = "0 examines legs on every account; a type tag registered in registries/account_types.toml (1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense, ...) examines only legs on accounts of that type, so a scoped population (fa benford --scope expenses) is never pooled with the rest. Version 2 adds this parameter; the default population is version 1's."
 
 # ---- Cutoff and aging (plan §11.7) -----------------------------------------
 
@@ -885,13 +891,13 @@ summary = "Live postings on accounts holding the `intercompany` account role (re
 
 [[procedure]]
 id = "benford.second_digit"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L30"
 tie_break = "none"
 complexity = "O(legs)"
 calibration = "planted"
-summary = "Second-digit (0..=9) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's second-digit law: Nigrini MAD conformity bands (0.008 / 0.010 / 0.012), per-digit Z-score, and 10-bucket chi-square (df=9) in fixed point."
+summary = "Second-digit (0..=9) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's second-digit law: Nigrini MAD conformity bands (0.008 / 0.010 / 0.012), per-digit Z-score, and 10-bucket chi-square (df=9) in fixed point. With account_type (version 2), only legs on accounts of that one registered type are examined (fa benford --scope)."
 
 [[parameter]]
 procedure = "benford.second_digit"
@@ -929,15 +935,21 @@ name = "side"
 default = 0
 meaning = "0 = debit legs, 1 = credit legs."
 
+[[parameter]]
+procedure = "benford.second_digit"
+name = "account_type"
+default = 0
+meaning = "0 examines legs on every account; a type tag registered in registries/account_types.toml (1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense, ...) examines only legs on accounts of that type, so a scoped population (fa benford --scope expenses) is never pooled with the rest. Version 2 adds this parameter; the default population is version 1's."
+
 [[procedure]]
 id = "benford.first_two_digits"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L31"
 tie_break = "none"
 complexity = "O(legs)"
 calibration = "planted"
-summary = "First-two-digits (10..=99) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's first-two-digits law: Nigrini 90-bucket MAD conformity bands (0.0012 / 0.0018 / 0.0022 in ten-thousandths), max per-bucket Z-score, and chi-square (df=89) in fixed point."
+summary = "First-two-digits (10..=99) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's first-two-digits law: Nigrini 90-bucket MAD conformity bands (0.0012 / 0.0018 / 0.0022 in ten-thousandths), max per-bucket Z-score, and chi-square (df=89) in fixed point. With account_type (version 2), only legs on accounts of that one registered type are examined (fa benford --scope)."
 
 [[parameter]]
 procedure = "benford.first_two_digits"
@@ -974,6 +986,12 @@ procedure = "benford.first_two_digits"
 name = "side"
 default = 0
 meaning = "0 = debit legs, 1 = credit legs."
+
+[[parameter]]
+procedure = "benford.first_two_digits"
+name = "account_type"
+default = 0
+meaning = "0 examines legs on every account; a type tag registered in registries/account_types.toml (1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense, ...) examines only legs on accounts of that type, so a scoped population (fa benford --scope expenses) is never pooled with the rest. Version 2 adds this parameter; the default population is version 1's."
 
 [[procedure]]
 id = "numbers.relative_size_factor"

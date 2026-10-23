@@ -20205,22 +20205,47 @@ fn jet_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     )
 }
 
-/// `fa benford [--known-at HEAD|<seq>] [--budget <units>]` (plan §15.3
-/// Forensics, §11.3 digit tests): the registered first-digit, second-digit
-/// and first-two-digits tests at their registered defaults, over every
-/// posting. A population scope is not registered for them yet, so `--scope`
-/// is refused rather than ignored.
+/// `fa benford [--scope <account type>] [--known-at HEAD|<seq>]
+/// [--budget <units>]` (plan §15.3 Forensics, §11.3 digit tests, §15.6): the
+/// registered first-digit, second-digit and first-two-digits tests at their
+/// registered defaults, over every posting, or with `--scope` over the legs
+/// of one registered account type (their `account_type` parameter).
 fn benford_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const FIX: &str = "fa benford [--known-at HEAD|<seq>] --json";
-    if let Some(scope) = args.flag("--scope") {
+    const FIX: &str = "fa benford [--scope assets|liabilities|equity|revenue|expenses] [--known-at HEAD|<seq>] --json";
+    let Some(scope) = args.flag("--scope") else {
+        return procedure_family(ctx, args, "benford", FIX);
+    };
+    if args.flag_all("--scope").len() > 1 || args.flag("--param").is_some() {
         return Err(usage(
-            format!(
-                "--scope {scope}: the digit tests register no population scope yet; they test every posting"
-            ),
+            "fa benford takes one --scope, and the scope is its only parameter",
             FIX,
         ));
     }
-    procedure_family(ctx, args, "benford", FIX)
+    // Plan §15.6 `fa benford --scope expenses`: every digit test over the
+    // legs of one registered account type (the procedures' `account_type`).
+    let tag = fa_model::AccountType::ALL
+        .iter()
+        .find(|(_, name, ..)| {
+            let name = name.to_ascii_lowercase();
+            let plural = match name.strip_suffix('y') {
+                Some(stem) if name != "equity" => format!("{stem}ies"),
+                _ => format!("{name}s"),
+            };
+            scope == name || scope == plural
+        })
+        .map(|(tag, ..)| *tag)
+        .ok_or_else(|| {
+            usage(
+                format!("--scope {scope} names no registered account type"),
+                FIX,
+            )
+        })?;
+    let mut scoped = args.clone();
+    scoped.flags.remove("--scope");
+    scoped
+        .flags
+        .insert("--param".into(), vec![format!("account_type={tag}")]);
+    procedure_family(ctx, &scoped, "benford", FIX)
 }
 
 /// Run every registered procedure of `family` in registry order, each

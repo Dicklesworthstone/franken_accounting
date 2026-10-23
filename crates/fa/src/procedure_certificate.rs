@@ -54,7 +54,7 @@ pub const CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("duplicates.same_same_same", 1),
     ("duplicates.same_same_different", 1),
     ("numbers.sequence_gaps", 1),
-    ("benford.first_digit", 1),
+    ("benford.first_digit", 2),
     ("cutoff.period_boundary", 1),
     ("aging.open_items", 1),
     ("graph.round_trips", 2),

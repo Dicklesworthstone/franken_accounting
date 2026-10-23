@@ -20964,11 +20964,48 @@ fn procedure_families_run_every_member_and_trace_is_procedure_run() -> std::io::
     assert_eq!(traced, run);
     assert_eq!(text(&traced, "procedure"), "trace.libr");
 
-    // Planted: a law no procedure registers, and an unregistered scope.
+    // Plan §15.6 `fa benford --scope expenses`: each digit test over the
+    // Expense type's legs (account_type 5), exactly as procedure run with
+    // that parameter reports it, at version 2.
+    let scoped = ok(&["benford", "--scope", "expenses"]);
+    let runs: Vec<Json> = scoped
+        .lines()
+        .map(|l| fa_cli::json::parse(l).expect("one JSON object a line"))
+        .filter(|l| text(l, "event") == "procedure_run")
+        .collect();
+    assert_eq!(runs.len(), 3, "{scoped}");
+    for run in &runs {
+        let data = run.get("data").expect("data");
+        let procedure = text(data, "procedure").to_string();
+        assert_eq!(int(data, "version"), Some(2), "{procedure}");
+        let direct = doc(&ok(&[
+            "procedure",
+            "run",
+            &procedure,
+            "--param",
+            "account_type=5",
+        ]));
+        assert_eq!(data, &direct, "{procedure}");
+        assert!(
+            arr(data, "parameters")
+                .iter()
+                .any(|p| p.render().contains("\"account_type\"") && p.render().contains('5')),
+            "{procedure}: {data:?}"
+        );
+    }
+    assert_eq!(
+        ok(&["benford", "--scope", "expense"]),
+        scoped,
+        "singular and plural name one type"
+    );
+
+    // Planted: a law no procedure registers, and a scope that names no
+    // registered account type.
     let (code, out, _) = fa(Some(&book), &["trace", "hindsight", "--json"]);
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("restitution-order"), "{out}");
-    let (code, out, _) = fa(Some(&book), &["benford", "--scope", "expenses", "--json"]);
+    let (code, out, _) = fa(Some(&book), &["benford", "--scope", "cash", "--json"]);
     assert_eq!(code, 2, "{out}");
+    assert!(out.contains("names no registered account type"), "{out}");
     Ok(())
 }

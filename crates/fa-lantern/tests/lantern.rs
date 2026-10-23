@@ -761,6 +761,84 @@ fn procedures_find_the_planted_anomalies_and_cite_only_resolving_handles() {
     assert_eq!(r.findings[0].statistic.value, 21);
 }
 
+/// fa-waow (plan §15.6 `fa benford --scope expenses`): `account_type`
+/// scopes a digit test's population to legs on accounts of one registered
+/// type. The scoped counts are the reference oracle's over exactly those
+/// accounts' legs; 0 is every account, as version 1 counted; an unregistered
+/// tag is refused rather than examining nothing.
+#[test]
+fn benford_scoped_to_an_account_type_counts_exactly_its_accounts_legs() {
+    use fa_lantern::digits::{FirstTwoDigits, SecondDigit};
+
+    let (h, c) = posted_corpus();
+    let rows = naive_rows(&h, &c);
+    // The harness chart's Expense accounts (type 5): 6000 Rent, 7000 Utilities.
+    let expenses: Vec<naive::Row> = rows
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            row.legs
+                .retain(|leg| leg.account == "6000" || leg.account == "7000");
+            row
+        })
+        .collect();
+    let scoped = naive::first_digit_counts_for(&expenses, h.usd.0, true);
+    let every: u64 = naive::first_digit_counts_for(&rows, h.usd.0, true)
+        .iter()
+        .sum();
+    let population: u64 = scoped.iter().sum();
+    assert!(
+        population > 0 && population < every,
+        "the corpus debits expense and other accounts: {population} of {every}"
+    );
+    let with = |account_type: i128| {
+        Params::defaults(FirstDigit::ID)
+            .unwrap()
+            .set("min_population", 1)
+            .unwrap()
+            .set("account_type", account_type)
+            .unwrap()
+    };
+    let r = h.run(&FirstDigit::with(with(5)));
+    assert_eq!(r.version, 2);
+    assert_eq!(r.findings.len(), 1);
+    let f = &r.findings[0];
+    assert_eq!(f.statistic.name, "mad");
+    assert_eq!(f.statistic.population, population);
+    assert_eq!(f.statistic.value, naive::benford_mad_1e9(&scoped));
+    assert!(
+        r.parameters.contains(&("account_type".to_string(), 5)),
+        "the scope is a recorded parameter: {:?}",
+        r.parameters
+    );
+    let all = h.run(&FirstDigit::with(with(0)));
+    assert_eq!(all.findings[0].statistic.population, every);
+    for procedure in [
+        Box::new(SecondDigit::with(
+            Params::defaults(SecondDigit::ID)
+                .unwrap()
+                .set("account_type", 5)
+                .unwrap(),
+        )) as Box<dyn Procedure>,
+        Box::new(FirstTwoDigits::with(
+            Params::defaults(FirstTwoDigits::ID)
+                .unwrap()
+                .set("account_type", 5)
+                .unwrap(),
+        )),
+    ] {
+        let scoped = h.run(procedure.as_ref());
+        assert_eq!(scoped.version, 2, "{}", scoped.procedure);
+    }
+    // Planted: a tag account_types.toml does not register.
+    let refused = run_over(&h.snapshot(), &h.book, &FirstDigit::with(with(9)))
+        .expect_err("an unregistered account type is refused");
+    assert!(
+        matches!(&refused, LanternError::Parameter { name, .. } if name == "account_type"),
+        "{refused:?}"
+    );
+}
+
 #[test]
 fn benford_claims_nothing_below_the_minimum_population_and_scores_above_it() {
     let (h, c) = posted_corpus();

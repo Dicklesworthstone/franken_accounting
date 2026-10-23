@@ -10,6 +10,7 @@
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_money::{Side, UnitKind};
+use fgdb_types::VId;
 
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{Finding, LanternError, Meter, Params, Procedure, Severity, Snapshot, Statistic};
@@ -194,6 +195,47 @@ pub fn ks_critical_1e9(n: u64, alpha_bps: u32) -> Result<i128, LanternError> {
 }
 
 /// `benford.first_digit`.
+/// The account type a digit test's population is scoped to: `None` (0)
+/// examines every account; a registered type tag (registries/account_types.toml,
+/// e.g. 5 = Expense) examines only legs on accounts of that type, so a scoped
+/// population (`fa benford --scope expenses`) is never pooled with the rest.
+fn account_type_scope(params: &Params, procedure: &str) -> Result<Option<u8>, LanternError> {
+    let tag = params.get("account_type")?;
+    if tag == 0 {
+        return Ok(None);
+    }
+    u8::try_from(tag)
+        .ok()
+        .filter(|tag| {
+            fa_model::AccountType::ALL
+                .iter()
+                .any(|(registered, ..)| registered == tag)
+        })
+        .map(Some)
+        .ok_or_else(|| LanternError::Parameter {
+            procedure: procedure.into(),
+            name: "account_type".into(),
+            message:
+                "must be 0 (every account) or a type tag registered in account_types.toml (1..=8)"
+                    .into(),
+        })
+}
+
+/// Whether a leg on `account` belongs to the scoped population. The chart is
+/// the snapshot's own, read at its coordinate; a leg on an account it lacks
+/// is a corrupt snapshot, never silently dropped.
+fn in_scope(snapshot: &Snapshot, account: VId, scope: Option<u8>) -> Result<bool, LanternError> {
+    let Some(tag) = scope else {
+        return Ok(true);
+    };
+    let row = snapshot.accounts.get(&account).ok_or_else(|| {
+        LanternError::from(KernelError::Corrupt(
+            "a leg names an account the snapshot's chart lacks".into(),
+        ))
+    })?;
+    Ok(row.account_type == tag)
+}
+
 pub struct FirstDigit {
     params: Params,
 }
@@ -204,7 +246,7 @@ impl Procedure for FirstDigit {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -233,6 +275,7 @@ impl Procedure for FirstDigit {
                 message: "must be an ISO 4217 numeric code in 1..=999".into(),
             });
         }
+        let scope = account_type_scope(&self.params, Self::ID)?;
         let target_side = match self.params.get("side")? {
             0 => Side::Debit,
             1 => Side::Credit,
@@ -256,6 +299,7 @@ impl Procedure for FirstDigit {
                 };
                 if leg.side != target_side
                     || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                    || !in_scope(snapshot, leg.account_ref, scope)?
                 {
                     continue;
                 }
@@ -473,7 +517,7 @@ impl Procedure for SecondDigit {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -502,6 +546,7 @@ impl Procedure for SecondDigit {
                 message: "must be an ISO 4217 numeric code in 1..=999".into(),
             });
         }
+        let scope = account_type_scope(&self.params, Self::ID)?;
         let target_side = match self.params.get("side")? {
             0 => Side::Debit,
             1 => Side::Credit,
@@ -525,6 +570,7 @@ impl Procedure for SecondDigit {
                 };
                 if leg.side != target_side
                     || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                    || !in_scope(snapshot, leg.account_ref, scope)?
                 {
                     continue;
                 }
@@ -603,7 +649,7 @@ impl Procedure for FirstTwoDigits {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -632,6 +678,7 @@ impl Procedure for FirstTwoDigits {
                 message: "must be an ISO 4217 numeric code in 1..=999".into(),
             });
         }
+        let scope = account_type_scope(&self.params, Self::ID)?;
         let target_side = match self.params.get("side")? {
             0 => Side::Debit,
             1 => Side::Credit,
@@ -655,6 +702,7 @@ impl Procedure for FirstTwoDigits {
                 };
                 if leg.side != target_side
                     || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                    || !in_scope(snapshot, leg.account_ref, scope)?
                 {
                     continue;
                 }

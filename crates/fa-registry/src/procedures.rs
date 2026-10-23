@@ -374,7 +374,9 @@ meaning = "power of ten"
         ] {
             assert!(p.get(id).is_some(), "{id} is registered");
             let row = p.get(id).unwrap();
-            assert_eq!(row.version, 1, "{id}");
+            // benford.first_digit gained its account_type scope at version 2.
+            let version = if id == "benford.first_digit" { 2 } else { 1 };
+            assert_eq!(row.version, version, "{id}");
             assert_eq!(
                 row.claim,
                 Claim::Statistical,
