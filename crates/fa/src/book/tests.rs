@@ -877,6 +877,41 @@ fn prepared_post_and_close_preserve_witnesses_under_16_lab_schedules() {
     );
 }
 
+/// fa-0fl: the same post-vs-close race under asupersync's DPOR-guided
+/// explorer instead of a fixed seed sweep: each next schedule is derived
+/// from the races the previous run's trace exhibited, with Foata-class
+/// fingerprints and sleep-set pruning. The explorer's own contract is
+/// guided coverage, not a certified-optimal DPOR proof, so this asserts
+/// what it observed: races detected, no violation in any explored run, and
+/// both outcomes (the post wins, the close wins) reached.
+#[test]
+fn prepared_post_and_close_preserve_witnesses_under_dpor_guided_exploration() {
+    use asupersync::lab::{DporExplorer, ExplorerConfig};
+    use std::cell::RefCell;
+
+    let winners = RefCell::new(std::collections::BTreeSet::new());
+    let mut explorer = DporExplorer::new(
+        ExplorerConfig::new(0, 32)
+            .worker_count(2)
+            .max_steps(100_000),
+    );
+    let report = explorer.explore(|runtime| {
+        winners
+            .borrow_mut()
+            .insert(prepared_post_close_race(runtime));
+    });
+    let coverage = explorer.dpor_coverage();
+    assert!(!report.has_violations(), "{report:?}");
+    assert!(coverage.total_races > 0, "{coverage:?}");
+    assert_eq!(
+        winners.into_inner(),
+        std::collections::BTreeSet::from([false, true]),
+        "runs {} classes {}",
+        report.total_runs,
+        report.unique_classes
+    );
+}
+
 async fn unrelated_document(book: &mut LabBook, cx: &PurposeContexts) {
     book.add_document(
         cx,
