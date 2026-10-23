@@ -1764,6 +1764,17 @@ fn dry_run_warnings_name_what_journal_entry_testing_would_flag() {
         "{message}"
     );
     assert!(warning_kinds(&f.plan(&documented("in-period", "2026-03-01"))).is_empty());
+    // The entry records its document date, and fa entry show reads it back.
+    let (code, recorded) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&drift, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", recorded.render());
+    let shown = ok(&f.book, &["entry", "show", text(&recorded, "vid")]);
+    assert_eq!(text(&shown, "document_date"), "2026-02-27");
+    let undated = ok(&f.book, &["entry", "show", &first_vid]);
+    assert_eq!(get(&undated, "document_date"), &Json::Null);
     // A document date is a YYYY-MM-DD string: anything else is a usage error
     // before any plan.
     let malformed = write(

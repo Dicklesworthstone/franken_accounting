@@ -19877,6 +19877,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     for absent in [
                         "class",
                         "effective_date",
+                        "document_date",
                         "recorded_at",
                         "entry_digest",
                         "proposal_digest",
@@ -19933,6 +19934,13 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("vid", s(vid_s)),
                         ("class", s(entry.proposal.class.name().unwrap_or("?"))),
                         ("effective_date", s(entry.proposal.effective_date.render())),
+                        (
+                            "document_date",
+                            entry
+                                .proposal
+                                .document_date
+                                .map_or(Json::Null, |day| s(day.render())),
+                        ),
                         ("recorded_at", Json::Int(i128::from(seq.0))),
                         ("entry_digest", s(hex(&entry.entry_digest))),
                         ("proposal_digest", s(hex(&entry.proposal_digest))),
@@ -19959,6 +19967,9 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         entry.proposal.legs.len(),
                         hex(&entry.entry_digest)
                     );
+                    if let Some(day) = entry.proposal.document_date {
+                        human.push_str(&format!("\ndocument dated {}", day.render()));
+                    }
                     for link in &entry.proposal.supersession {
                         let reason = reasons
                             .get("supersession", link.reason_code)

@@ -2316,8 +2316,8 @@ fields = ["period:string", "from:seq", "through:seq", "recorded_at:seq?", "entri
 [[event]]
 name = "entry"
 book = true
-doc = "One committed entry; when `found` is false every other field but `vid` is null."
-fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "description:untrusted_text?", "approvals:int?", "legs:[entry_leg]?", "supersedes:[lineage]?"]
+doc = "One committed entry; when `found` is false every other field but `vid` is null. document_date is the source document's own date when the entry records one."
+fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "document_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "description:untrusted_text?", "approvals:int?", "legs:[entry_leg]?", "supersedes:[lineage]?"]
 
 [[event]]
 name = "balance_explained"
