@@ -1114,7 +1114,11 @@ pub fn rule_derived_proposal(
 /// the entry is admitted only when its rule version is this book's and in
 /// force (by its name's witnessed bindings) on the entry's effective date,
 /// and re-running it over the witnessed cited event with the recorded
-/// inputs reproduces the entry's legs and effective date exactly.
+/// inputs reproduces everything a derivation determines: the legs, the
+/// effective date and the class, the cited event's evidence, and nothing a
+/// rule does not derive (no other extension, supersession, pending block,
+/// control, document date, period override, base totals, external ids or
+/// tags). Only the description, key and author are the poster's.
 pub(crate) fn verify_rule_origin<V: Vfs + Clone>(
     txn: &fgdb::WriteTxn,
     db: &Database<V>,
@@ -1219,6 +1223,41 @@ pub(crate) fn verify_rule_origin<V: Vfs + Clone>(
                 rule.produces().name()
             ),
             "derive the entry with fa rule derive, which posts the class the rule produces",
+        )));
+    }
+    let mut evidence = event.evidence.clone();
+    evidence.sort_unstable();
+    evidence.dedup();
+    let carried: Vec<&str> = [
+        (
+            proposal.evidence != evidence,
+            "evidence other than the cited event's",
+        ),
+        (
+            proposal.extensions.len() != 1,
+            "an extension besides its inputs",
+        ),
+        (!proposal.supersession.is_empty(), "supersession"),
+        (proposal.pending.is_some(), "a pending block"),
+        (proposal.control.is_some(), "a control"),
+        (proposal.document_date.is_some(), "a document date"),
+        (proposal.effective_period.is_some(), "a period override"),
+        (proposal.base_totals.is_some(), "base totals"),
+        (!proposal.external_ids.is_empty(), "external ids"),
+        (!proposal.tags.is_empty(), "tags"),
+    ]
+    .into_iter()
+    .filter_map(|(carries, what)| carries.then_some(what))
+    .collect();
+    if !carried.is_empty() {
+        return Ok(Err(derivation_refusal(
+            format!(
+                "rule {} v{} does not derive {}, which this entry carries",
+                rule.name(),
+                rule.version(),
+                carried.join(", ")
+            ),
+            "derive the entry with fa rule derive, which posts exactly what the rule derives",
         )));
     }
     Ok(Ok(()))

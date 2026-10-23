@@ -21159,8 +21159,21 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
     // rule that produces Original entries.
     let mut reclassed = propose(&derivation, b"tampered-class");
     reclassed.class = fa_model::EntryClass::ADJUSTING;
+    // Planted: the exact derivation with a document date the rule does not
+    // derive, and with no evidence where the event cites some. (An
+    // auto-reversal on an Original is refused earlier, at step 1f.)
+    let mut dated = propose(&derivation, b"tampered-date");
+    dated.document_date = Some(derivation.effective);
+    let mut cited = propose(&derivation, b"tampered-evidence");
+    cited.evidence.clear();
     let before = lib.head().unwrap();
-    for (what, proposal) in [("legs", moved), ("inputs", relabeled), ("class", reclassed)] {
+    for (what, proposal) in [
+        ("legs", moved),
+        ("inputs", relabeled),
+        ("class", reclassed),
+        ("document date", dated),
+        ("evidence", cited),
+    ] {
         let refused = lib
             .post(fa_journal::PostRequest {
                 proposal,

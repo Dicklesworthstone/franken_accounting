@@ -2955,7 +2955,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // 5a'. Canon provenance (plan §10.3, FA-INV-05 `rule-reproduction`): a
     //      rule-derived entry posts only when its version, in force on its
     //      effective date, re-run over the witnessed event with its recorded
-    //      inputs, reproduces its legs exactly.
+    //      inputs, reproduces everything a derivation determines.
     if let Err(refusal) = crate::rule::verify_rule_origin(&txn, db, book, proposal)? {
         txn.abort();
         return Ok(Err(refusal));
