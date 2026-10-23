@@ -149,10 +149,15 @@ fn decode_field(field: &str) -> Result<String, String> {
             Some('r') => '\r',
             Some('u') => {
                 let digits: String = input.by_ref().take(4).collect();
-                if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                if digits.len() != 4
+                    || !digits
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                {
                     return Err("invalid ADS v3 control escape".into());
                 }
-                let scalar = u32::from_str_radix(&digits, 16).map_err(|_| "invalid ADS v3 scalar")?;
+                let scalar =
+                    u32::from_str_radix(&digits, 16).map_err(|_| "invalid ADS v3 scalar")?;
                 let control = char::from_u32(scalar).ok_or("invalid ADS v3 scalar")?;
                 if !control.is_control() || matches!(control, '\n' | '\r') {
                     return Err("noncanonical ADS v3 control escape".into());
@@ -167,11 +172,18 @@ fn decode_field(field: &str) -> Result<String, String> {
 }
 
 fn fields(line: &str, escaped: bool, gl: bool) -> Result<Vec<String>, String> {
-    line.split('|').enumerate().map(|(i, s)| {
-        if escaped && gl && matches!(i, 11 | 12) && s == "\\N" {
-            Ok(String::new())
-        } else if escaped { decode_field(s) } else { Ok(s.into()) }
-    }).collect()
+    line.split('|')
+        .enumerate()
+        .map(|(i, s)| {
+            if escaped && gl && matches!(i, 11 | 12) && s == "\\N" {
+                Ok(String::new())
+            } else if escaped {
+                decode_field(s)
+            } else {
+                Ok(s.into())
+            }
+        })
+        .collect()
 }
 
 fn parse_row(line: &str, number: usize, escaped: bool) -> Result<Row, String> {
@@ -324,7 +336,8 @@ pub fn verify_ads(
         Some("aicpa_ads_gl_v3") => true,
         Some("aicpa_ads_gl_v2") | None => false,
         Some(other) => {
-            out.failures.push(format!("unsupported ADS format version {other:?}"));
+            out.failures
+                .push(format!("unsupported ADS format version {other:?}"));
             return Ok(out);
         }
     };
@@ -503,6 +516,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn v3_text_decodes_without_the_writer_and_rejects_noncanonical_escapes() {
+        assert_eq!(
+            decode_field(r"one\nline\rreturn\ppipe\\literal\u0009\u0000\u0085 café").unwrap(),
+            "one\nline\rreturn|pipe\\literal\t\0\u{85} café"
+        );
+        for bad in ["\\q", "\\", "\\uD800", "\\u000a", "\\u001F", "\t", "\\N"] {
+            assert!(decode_field(bad).is_err(), "bad text {bad:?}");
+        }
+        let gl = format!(
+            "{GL_HEADER}\nentry\\pid|1|2026-03-10|7|1|60\\p00|D|15.00|USD|2|one\\nline|\\N|\n"
+        );
+        let entries = extracted(&gl, true).unwrap();
+        assert_eq!(entries[0].journal_id, "entry|id");
+        assert_eq!(entries[0].rows[0].account, "60|00");
+        let tb = format!("{TB_HEADER}\n60\\p00|2026-03-31|D|15.00|USD|2\n");
+        assert_eq!(trial_balance_rows(&tb, &entries, "2026-03-31", true), Ok(1));
+        assert!(
+            trial_balance_rows(&tb.replace("15.00", "15.01"), &entries, "2026-03-31", true)
+                .is_err()
+        );
+        // A literal backslash in the existing v2 profile keeps its meaning.
+        let legacy = extracted(&gl, false).unwrap();
+        assert_eq!(legacy[0].journal_id, r"entry\pid");
+    }
+
+    #[test]
     fn amounts_are_exact_at_their_scale_and_nothing_else_parses() {
         assert_eq!(exact("1500.00", 2), Some(150_000));
         assert_eq!(exact("0.07", 2), Some(7));
@@ -536,7 +575,10 @@ mod tests {
         assert!(extracted(&skipped, false).is_err(), "line 2 is missing");
         let torn = gl.replace("|Rent||\n", "|Ren\nt||\n");
         assert!(extracted(&torn, false).is_err(), "a broken row is refused");
-        assert!(extracted("Journal_ID|x\n", false).is_err(), "not the ADS header");
+        assert!(
+            extracted("Journal_ID|x\n", false).is_err(),
+            "not the ADS header"
+        );
     }
 
     #[test]
@@ -555,7 +597,10 @@ mod tests {
              4000|2026-03-31|C|1.00|USD|2\n\
              6000|2026-03-31|D|15.00|USD|2\n"
         );
-        assert_eq!(trial_balance_rows(&tb, &extract, "2026-03-31", false), Ok(3));
+        assert_eq!(
+            trial_balance_rows(&tb, &extract, "2026-03-31", false),
+            Ok(3)
+        );
         for bad in [
             tb.replace("C|14.00", "C|14.01"),
             tb.replace("C|14.00", "D|14.00"),
