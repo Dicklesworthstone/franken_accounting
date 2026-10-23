@@ -935,6 +935,23 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::Read, Op::SchemaChange],
             Reaches,
         ),
+        // The retained fixture document is an Invoice, so exact authority
+        // reaches the feed's Workpaper-detail validation. Missing either
+        // operation must still refuse before that document is observed.
+        row(
+            &[
+                "subledger",
+                "feed",
+                "--document",
+                &format!("D:{document}"),
+                "--date",
+                DAY,
+                "--key",
+                "matrix-external-feed",
+            ],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
         row(
             &[
                 "party",
