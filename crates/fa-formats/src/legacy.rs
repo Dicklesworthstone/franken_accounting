@@ -162,6 +162,15 @@ pub struct LegacyColumnMap {
     pub debit_column: Option<String>,
     pub credit_column: Option<String>,
     pub signed_amount_column: Option<String>,
+    /// A debit/credit indicator column read with `amount_column`, an unsigned
+    /// amount: the shape of an export that writes `D`/`C` beside the amount
+    /// (FrankenAccounting's own csv-gl among them).
+    pub side_column: Option<String>,
+    pub amount_column: Option<String>,
+    /// The indicator values for a debit and a credit, compared ignoring case
+    /// (`D` and `C` unless declared).
+    pub debit_marker: String,
+    pub credit_marker: String,
     pub unit_column: Option<String>,
     pub description_column: Option<String>,
     pub memo_column: Option<String>,
@@ -231,10 +240,29 @@ impl LegacyColumnMap {
         let debit_column = opt("debit_column");
         let credit_column = opt("credit_column");
         let signed_amount_column = opt("signed_amount_column");
-        if (debit_column.is_none() || credit_column.is_none()) && signed_amount_column.is_none() {
+        let side_column = opt("side_column");
+        let amount_column = opt("amount_column");
+        if side_column.is_some() != amount_column.is_some() {
             return Err(FormatError::Parse {
                 format: FMT,
-                detail: "must declare either (`debit_column` and `credit_column`) or `signed_amount_column` in [columns]".to_owned(),
+                detail: "`side_column` and `amount_column` are declared together".to_owned(),
+            });
+        }
+        if (debit_column.is_none() || credit_column.is_none())
+            && signed_amount_column.is_none()
+            && side_column.is_none()
+        {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: "must declare either (`debit_column` and `credit_column`), `signed_amount_column`, or (`side_column` and `amount_column`) in [columns]".to_owned(),
+            });
+        }
+        let debit_marker = opt("debit_marker").unwrap_or_else(|| "D".to_owned());
+        let credit_marker = opt("credit_marker").unwrap_or_else(|| "C".to_owned());
+        if debit_marker.eq_ignore_ascii_case(&credit_marker) {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: format!("`debit_marker` and `credit_marker` are both `{debit_marker}`"),
             });
         }
 
@@ -248,6 +276,10 @@ impl LegacyColumnMap {
             debit_column,
             credit_column,
             signed_amount_column,
+            side_column,
+            amount_column,
+            debit_marker,
+            credit_marker,
             unit_column: opt("unit_column"),
             description_column: opt("description_column"),
             memo_column: opt("memo_column"),
@@ -1016,6 +1048,10 @@ pub fn parse_quickbooks_csv(
         debit_column: Some("Debit".to_owned()),
         credit_column: Some("Credit".to_owned()),
         signed_amount_column: None,
+        side_column: None,
+        amount_column: None,
+        debit_marker: "D".to_owned(),
+        credit_marker: "C".to_owned(),
         unit_column: Some("Currency".to_owned()),
         description_column: Some("Memo/Description".to_owned()),
         memo_column: Some("Memo/Description".to_owned()),
@@ -1053,6 +1089,10 @@ pub fn parse_xero_csv(
         debit_column: Some("Debit".to_owned()),
         credit_column: Some("Credit".to_owned()),
         signed_amount_column: Some("Gross".to_owned()),
+        side_column: None,
+        amount_column: None,
+        debit_marker: "D".to_owned(),
+        credit_marker: "C".to_owned(),
         unit_column: Some("Currency".to_owned()),
         description_column: Some("Description".to_owned()),
         memo_column: Some("Reference".to_owned()),
@@ -1084,6 +1124,10 @@ pub fn parse_netsuite_csv(
         debit_column: Some("Debit".to_owned()),
         credit_column: Some("Credit".to_owned()),
         signed_amount_column: None,
+        side_column: None,
+        amount_column: None,
+        debit_marker: "D".to_owned(),
+        credit_marker: "C".to_owned(),
         unit_column: Some("Currency".to_owned()),
         description_column: Some("Memo".to_owned()),
         memo_column: Some("Document Number".to_owned()),
@@ -1197,6 +1241,8 @@ fn parse_tabular_csv_with_format(
         let dr_str = get_opt(&column_map.debit_column);
         let cr_str = get_opt(&column_map.credit_column);
         let signed_str = get_opt(&column_map.signed_amount_column);
+        let side_str = get_opt(&column_map.side_column);
+        let amount_str = get_opt(&column_map.amount_column);
 
         let (side, mantissa) = if !dr_str.is_empty() || !cr_str.is_empty() {
             let dr = if dr_str.is_empty() {
@@ -1236,11 +1282,38 @@ fn parse_tabular_csv_with_format(
             } else {
                 (Side::Credit, -signed)
             }
+        } else if !side_str.is_empty() || !amount_str.is_empty() {
+            let side = if side_str.eq_ignore_ascii_case(&column_map.debit_marker) {
+                Side::Debit
+            } else if side_str.eq_ignore_ascii_case(&column_map.credit_marker) {
+                Side::Credit
+            } else {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {}: side `{side_str}` is neither the debit marker `{}` nor the credit marker `{}`",
+                        line_idx + 1,
+                        column_map.debit_marker,
+                        column_map.credit_marker
+                    ),
+                });
+            };
+            let amount = parse_exact_decimal(fmt_name, amount_str, scale)?;
+            if amount <= 0 {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {}: a side-indicated amount is positive (got `{amount_str}`); its side says which way it moves",
+                        line_idx + 1
+                    ),
+                });
+            }
+            (side, amount)
         } else {
             return Err(FormatError::Parse {
                 format: fmt_name,
                 detail: format!(
-                    "line {}: missing debit/credit or signed amount",
+                    "line {}: missing debit/credit, signed amount, or side and amount",
                     line_idx + 1
                 ),
             });
@@ -2209,6 +2282,79 @@ ENTRY-1,2025-12-31,,4000,-25.00,Revenue,,
                 FormatError::Parse { detail, .. }
                     if detail.contains("line 4") && detail.contains(field)
             ));
+        }
+    }
+
+    #[test]
+    fn a_side_column_reads_unsigned_amounts_by_their_indicator() {
+        let units = UnitCatalog::embedded().expect("units");
+        let accounts = test_account_map();
+        let toml = |extra: &str| {
+            format!(
+                "[columns]\nsource_system = \"csv-gl\"\nentry_id_column = \"entry_id\"\neffective_date_column = \"effective_date\"\naccount_column = \"account_code\"\nside_column = \"side\"\namount_column = \"amount\"\nunit_column = \"currency\"\n{extra}"
+            )
+        };
+        let columns = LegacyColumnMap::parse_toml(&toml("")).expect("columns");
+        // The shape of FrankenAccounting's own csv-gl: `#` metadata, then a
+        // D/C indicator beside an unsigned amount.
+        let source = "# fa_csv_gl_v1|book=x\nentry_id,effective_date,account_code,side,amount,currency\nE1,2025-12-31,1000,D,125.00,USD\nE1,2025-12-31,3000,c,125.00,USD\n";
+        let batch =
+            parse_generic_csv(source, &columns, &units, &accounts).expect("side and amount");
+        let legs: Vec<(&str, Side, i128)> = batch.chunks[0]
+            .legs
+            .iter()
+            .map(|l| (l.account_code.as_str(), l.side, l.amount.mantissa))
+            .collect();
+        assert_eq!(
+            legs,
+            [
+                ("1000", Side::Debit, 12_500),
+                ("3000", Side::Credit, 12_500)
+            ]
+        );
+        // Declared markers, compared ignoring case.
+        let dr_cr =
+            LegacyColumnMap::parse_toml(&toml("debit_marker = \"Dr\"\ncredit_marker = \"Cr\"\n"))
+                .expect("markers");
+        let read = parse_generic_csv(
+            &source.replace(",D,", ",Dr,").replace(",c,", ",CR,"),
+            &dr_cr,
+            &units,
+            &accounts,
+        )
+        .expect("declared markers");
+        assert_eq!(read.chunks[0].legs[1].side, Side::Credit);
+        // Planted negatives: an unknown indicator, and an amount that is not
+        // positive (the indicator, not the sign, says which way it moves).
+        for (rows, why) in [
+            (source.replace(",c,", ",X,"), "neither the debit marker"),
+            (
+                source
+                    .replace("1000,D,125.00", "1000,D,-125.00")
+                    .replace("3000,c,125.00", "3000,c,-125.00"),
+                "is positive",
+            ),
+            (source.replace(",D,125.00,", ",D,0.00,"), "is positive"),
+        ] {
+            let err = parse_generic_csv(&rows, &columns, &units, &accounts)
+                .expect_err(why)
+                .to_string();
+            assert!(err.contains(why), "{why}: {err}");
+        }
+        for (config, why) in [
+            (
+                toml("").replace("amount_column = \"amount\"\n", ""),
+                "declared together",
+            ),
+            (
+                toml("debit_marker = \"X\"\ncredit_marker = \"x\"\n"),
+                "are both",
+            ),
+        ] {
+            let err = LegacyColumnMap::parse_toml(&config)
+                .expect_err(why)
+                .to_string();
+            assert!(err.contains(why), "{why}: {err}");
         }
     }
 
