@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::process::Command;
 
 use asupersync::Budget;
-use asupersync::runtime::RuntimeBuilder;
+use asupersync::runtime::{Runtime, RuntimeBuilder};
 use fa_gen::{GenConfig, GeneratedCorpus, ScenarioKind, generate};
 use fa_journal::evidence::{Document, add_document};
 use fa_journal::policy::{ApprovalRequest, Approved, record_approval};
@@ -46,6 +46,8 @@ struct PostedScenario {
     corpus: GeneratedCorpus,
     posted_refs: Vec<EntryRef>,
     book_journal_digest: Oid,
+    // Keep the context's runtime alive through subsequent snapshot checks.
+    _runtime: Runtime,
 }
 
 impl PostedScenario {
@@ -454,6 +456,7 @@ fn post_corpus(corpus: GeneratedCorpus) -> PostedScenario {
         corpus,
         posted_refs,
         book_journal_digest,
+        _runtime: runtime,
     }
 }
 
