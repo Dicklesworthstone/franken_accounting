@@ -13562,6 +13562,130 @@ fn procedure_run_pairs_near_duplicate_invoices() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `graph.ponzi_motif` through the binary (fa-m35p, plan §11.4): with the
+/// cash and investor_capital roles assigned by `fa chart role`, a new
+/// investor's subscription that pays an earlier investor's distribution is
+/// flagged High, citing the payout and the new money. Without the cash role
+/// the procedure is refused, never run over nothing.
+#[test]
+fn procedure_run_flags_new_investor_money_paying_earlier_investors() -> std::io::Result<()> {
+    let dir = tmp("ponzi-motif")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Fund Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2000","name":"Investor capital","type":"Liability","unit":"USD"},{"code":"6000","name":"Distributions","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P01"]);
+    ok(&["period", "open", "FY2026-P02"]);
+    for code in ["INV-A", "INV-B"] {
+        let party = write(
+            &dir,
+            &format!("{code}.json"),
+            &format!(r#"{{"code":"{code}","kind":"Counterparty","name":"Investor {code}"}}"#),
+        );
+        ok(&["party", "add", &party]);
+    }
+    let path = write(&dir, "wire.txt", "WIRE CONFIRMATIONS (a person's upload)");
+    let added = ok(&[
+        "document",
+        "add",
+        &path,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = field(&added, "oid").unwrap_or_default().to_string();
+    // The investor is named on the leg that is not cash.
+    let post = |key: &str, date: &str, debit: &str, credit: &str, amount: &str, party: &str| {
+        let leg = |side: &str, account: &str| {
+            let named = if account == "1000" {
+                String::new()
+            } else {
+                format!(r#","party":"{party}""#)
+            };
+            format!(r#"{{"side":"{side}","account":"{account}"{named},"amount":"{amount} USD"}}"#)
+        };
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{},{}],"description":"{key}"}}"#,
+                leg("debit", debit),
+                leg("credit", credit)
+            ),
+        );
+        let posted = ok(&["post", "--intent", &intent, "--evidence", &evidence]);
+        field(&posted, "vid").unwrap_or_default().to_string()
+    };
+    // 30-day windows from Jan 5: A subscribes in the first; in the second, B
+    // subscribes 600.00 and A is paid 500.00, booked as an expense.
+    post("a-in", "2026-01-05", "1000", "2000", "1000.00", "INV-A");
+    let b_in = post("b-in", "2026-02-10", "1000", "2000", "600.00", "INV-B");
+    let a_paid = post("a-paid", "2026-02-15", "6000", "1000", "500.00", "INV-A");
+
+    let run = |extra: &[&str]| {
+        let mut argv = vec![
+            "procedure",
+            "run",
+            "graph.ponzi_motif",
+            "--param",
+            "window_days=30",
+        ];
+        argv.extend_from_slice(extra);
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    let (code, out, _) = run(&[]);
+    assert_eq!(code, 3, "no account holds the cash role yet: {out}");
+    assert!(out.contains("cash"), "{out}");
+
+    ok(&["chart", "role", "1000", "cash"]);
+    ok(&["chart", "role", "2000", "investor_capital"]);
+    let (code, out, err) = run(&[]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "graph.ponzi_motif");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "the second window only: {out}");
+    assert_eq!(
+        findings[0].get("severity").and_then(Json::as_str),
+        Some("High"),
+        "no operating cash came in to pay A: {out}"
+    );
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(
+        int(statistic, "value"),
+        Some(12_000),
+        "600.00 of 500.00: {out}"
+    );
+    assert_eq!(int(statistic, "population"), Some(3), "{out}");
+    let cited: Vec<&str> = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites")
+        .iter()
+        .filter_map(|c| c.get("entry").and_then(Json::as_str))
+        .collect();
+    assert_eq!(
+        cited,
+        vec![a_paid.as_str(), b_in.as_str()],
+        "the payout, then the new money: {out}"
+    );
+    Ok(())
+}
+
 /// `fa procedure list|run`: Lantern over a persisted book through the CLI
 /// (plan §11, Appendix D). The planted round amount is found and cited by
 /// its posted vid; a parameter override changes the result; the registry
