@@ -2307,10 +2307,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
     if proposal.class != EntryClass::REVERSAL
-        && proposal
-            .legs
-            .iter()
-            .any(|leg| leg.amount.unit != spec.base_unit && !leg.settles.is_empty())
+        && proposal.legs.iter().any(|leg| {
+            leg.amount.unit != spec.base_unit
+                    && !leg.settles.is_empty()
+                    // SHARE/commodity quantity relief follows its registered
+                    // lot law, not a foreign-currency rate law. An unknown
+                    // unit remains refused rather than gaining this exemption.
+                    && book.units.get(leg.amount.unit).is_none_or(|unit| {
+                        matches!(unit.kind, fa_money::UnitKind::Currency { .. })
+                    })
+        })
         && !crate::carrying::is_source_bound(proposal)
     {
         txn.abort();

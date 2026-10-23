@@ -451,6 +451,37 @@ fn a_batch_of_exact_undos_restores_both_recorded_reliefs_at_one_prefix() {
 }
 
 #[test]
+fn unvalued_foreign_application_cannot_bypass_the_carrying_law() {
+    let mut f = fixture(3, 10);
+    let amount = Amount::new(f.foreign, 1);
+    let mut applying =
+        LegPayload::simple(Side::Credit, account_vid(f.h.book.book_id, "1211"), amount);
+    applying.settles = vec![fa_model::Settlement {
+        target: f.target,
+        ordinal: 0,
+        amount,
+    }];
+    let proposal = f.h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, account_vid(f.h.book.book_id, "4011"), amount),
+            applying,
+        ],
+        b"unvalued-foreign-application",
+        EntryClass::ORIGINAL,
+    );
+    let before = f.h.db.frontier().unwrap();
+    let refusal = f.h.post(request(proposal)).unwrap_err();
+    assert_eq!(refusal.code, fa_journal::refusal::code::SETTLE_SHAPE);
+    assert!(refusal.message.contains("RemainingCarryingValue"));
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    let item = f.carrying();
+    assert_eq!(
+        (item.open_native.mantissa, item.open_base.mantissa),
+        (3, 10)
+    );
+}
+
+#[test]
 fn malformed_conversion_or_extra_foreign_effects_are_refused_atomically() {
     let mut f = fixture(3, 10);
     let valid = f.prepare(1, b"malformed-conversion").into_proposal();
