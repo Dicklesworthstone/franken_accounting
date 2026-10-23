@@ -121,6 +121,9 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("search", search_cmd),
     ("query", crate::query::query_cmd),
     ("procedure", procedure_cmd),
+    ("jet", jet_cmd),
+    ("benford", benford_cmd),
+    ("trace", trace_cmd),
     ("sample", crate::sample::sample_cmd),
     ("engagement", crate::engagement::engagement_cmd),
     ("adjustment", crate::engagement::adjustment_cmd),
@@ -11198,9 +11201,7 @@ pub(crate) fn diff_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // before anything is read (doctrine 8), never answered filtered.
     let book = ctx.books.open_admitted(args, |book| {
         fa_policy::admit_read(&read_cap, who, book.context().book_id)
-            .and_then(|()| {
-                fa_policy::reach(&read_cap, &fa_policy::Reach::whole_book(true), None)
-            })
+            .and_then(|()| fa_policy::reach(&read_cap, &fa_policy::Reach::whole_book(true), None))
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))
     })?;
     let before = book.trial_balance_at(&periods, from)?;
@@ -19891,6 +19892,133 @@ pub(crate) fn finding_json(f: &fa_lantern::Finding) -> Json {
 /// `fa procedure list` and `fa procedure run <id>`: Lantern's registered
 /// procedures over the book's trunk, a pure read (plan §11; FA-INV-04: a
 /// finding is derived, never authoritative).
+/// `fa trace <law> ...` (plan §15.3 Forensics, §11.5 tracing laws): `fa
+/// procedure run trace.<law> ...` under the plan's spelling. The law is a
+/// registered tracing procedure's suffix (`libr`, `pro-rata`,
+/// `network-fifo`, `restitution-order`, ...); every flag is procedure run's.
+fn trace_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str =
+        "fa trace libr --account 1000 --source <entry vid> --effective-through 2026-03-31 --json";
+    let [_, law] = args.positional.as_slice() else {
+        return Err(usage("fa trace takes one tracing law", FIX));
+    };
+    let id = format!("trace.{}", law.replace('-', "_"));
+    let laws: Vec<String> = fa_lantern::catalog::registered()
+        .map_err(lantern_usage)?
+        .into_iter()
+        .filter_map(|row| row.id.strip_prefix("trace.").map(|l| l.replace('_', "-")))
+        .collect();
+    if !laws
+        .iter()
+        .any(|l| l.replace('-', "_") == id["trace.".len()..])
+    {
+        return Err(usage(
+            format!("`{law}` is not a registered tracing law"),
+            format!(
+                "fa trace <{}> ... (fa procedure list --json)",
+                laws.join("|")
+            ),
+        ));
+    }
+    let mut run = args.clone();
+    run.positional = vec!["procedure".into(), "run".into(), id];
+    procedure_cmd(ctx, &run)
+}
+
+/// `fa jet [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]
+/// [--budget <units>]` (plan §15.3 Forensics, §11.2 journal-entry tests):
+/// every registered `jet.*` procedure at its registered defaults, at one
+/// coordinate.
+fn jet_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    procedure_family(
+        ctx,
+        args,
+        "jet",
+        "fa jet [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] --json",
+    )
+}
+
+/// `fa benford [--known-at HEAD|<seq>] [--budget <units>]` (plan §15.3
+/// Forensics, §11.3 digit tests): the registered first-digit, second-digit
+/// and first-two-digits tests at their registered defaults, over every
+/// posting. A population scope is not registered for them yet, so `--scope`
+/// is refused rather than ignored.
+fn benford_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa benford [--known-at HEAD|<seq>] --json";
+    if let Some(scope) = args.flag("--scope") {
+        return Err(usage(
+            format!(
+                "--scope {scope}: the digit tests register no population scope yet; they test every posting"
+            ),
+            FIX,
+        ));
+    }
+    procedure_family(ctx, args, "benford", FIX)
+}
+
+/// Run every registered procedure of `family` in registry order, each
+/// reported as `fa procedure run` reports it, then a `procedure_family`
+/// summary. A procedure this book cannot run (an account role no account
+/// holds, or a declared input) is listed as refused with its fix, and the
+/// rest still run; any other failure stops the run. A date reaches only the
+/// procedures that take one. A pure read: `fa finding record <id>` retains
+/// one run.
+fn procedure_family(ctx: &mut Ctx<'_>, args: &Args, family: &str, fix: &str) -> Result<(), Fail> {
+    if args.positional.len() != 1 {
+        return Err(usage(
+            format!("fa {family} takes no positional argument"),
+            fix,
+        ));
+    }
+    let procedures = fa_registry::procedures::Procedures::embedded()
+        .map_err(|e| usage(e.to_string(), "fa procedure list --json"))?;
+    let prefix = format!("{family}.");
+    let members: Vec<_> = procedures
+        .rows
+        .iter()
+        .filter(|row| row.id.starts_with(&prefix))
+        .collect();
+    let mut ran = Vec::new();
+    let mut refused = Vec::new();
+    for row in members {
+        let mut run = args.clone();
+        run.positional = vec!["procedure".into(), "run".into(), row.id.clone()];
+        if matches!(
+            row.effective_through,
+            fa_registry::procedures::EffectiveThrough::NotTaken
+        ) {
+            run.flags.remove("--effective-through");
+        }
+        match procedure_cmd(ctx, &run) {
+            Ok(()) => ran.push(s(&row.id)),
+            Err(Fail::Book(BookError::Lantern(
+                error @ (fa_lantern::LanternError::RoleUnassigned { .. }
+                | fa_lantern::LanternError::Parameter { .. }),
+            ))) => refused.push(obj(vec![
+                ("procedure", s(&row.id)),
+                ("message", s(error.to_string())),
+                ("fix", error.fix_hint().map_or(Json::Null, s)),
+            ])),
+            Err(other) => return Err(other),
+        }
+    }
+    let human = format!(
+        "fa {family}: {} procedure(s) ran, {} refused",
+        ran.len(),
+        refused.len()
+    );
+    ctx.out.event(
+        "procedure_family",
+        vec![
+            ("family", s(family)),
+            ("ran", Json::Arr(ran)),
+            ("refused", Json::Arr(refused)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
 fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let sub = args.positional.get(1).map(String::as_str);

@@ -7995,6 +7995,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(code, 0, "{evaluated}");
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
     assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
+    assert_eq!(run(true, &["jet"]).0, 0);
+    assert_eq!(run(true, &["benford"]).0, 0);
     // Recorded findings: the Sunday rent is a jet.weekend observation; a
     // second principal reviews it; the canonical workpaper replays.
     let (code, out) = run(true, &["finding", "record", "jet.weekend"]);
@@ -20620,6 +20622,98 @@ fn diff_lists_the_accounts_a_later_recording_moved() -> std::io::Result<()> {
     );
     assert_eq!(code, 2, "{out}");
     let (code, out, _) = fa(Some(&book), &["diff", "--from", &from, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// `fa jet`, `fa benford` and `fa trace` (plan §15.3 Forensics): a family
+/// runs every registered member, each reported as `fa procedure run`
+/// reports it, and its procedure_family summary accounts for every member
+/// as ran or refused. `fa trace <law>` is exactly `fa procedure run
+/// trace.<law>`. Planted: an unknown law, and a benford population scope
+/// that is not registered.
+#[test]
+fn procedure_families_run_every_member_and_trace_is_procedure_run() -> std::io::Result<()> {
+    let dir = tmp("procedure-families")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Families Co"]);
+    ok(&["chart", "import", "--template", "us-gaap-smb"]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    let funding = write(
+        &dir,
+        "funding.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"funding","legs":[{"side":"debit","account":"1010","amount":"100.00 USD"},{"side":"credit","account":"3000","amount":"100.00 USD"}]}"#,
+    );
+    let deposit = doc(&ok(&[
+        "post",
+        "--intent",
+        &funding,
+        "--evidence",
+        &evidence,
+    ]));
+    let deposit = text(&deposit, "vid").to_string();
+
+    for (family, members) in [("jet", 12), ("benford", 3)] {
+        let out = ok(&[family]);
+        let lines: Vec<Json> = out
+            .lines()
+            .map(|l| fa_cli::json::parse(l).expect("one JSON object a line"))
+            .collect();
+        let event = |l: &Json| text(l, "event").to_string();
+        let runs: Vec<&Json> = lines
+            .iter()
+            .filter(|l| event(l) == "procedure_run")
+            .collect();
+        let summary = lines.last().expect("a summary");
+        assert_eq!(event(summary), "procedure_family", "{out}");
+        let data = summary.get("data").expect("data");
+        assert_eq!(text(data, "family"), family);
+        let ran = arr(data, "ran");
+        let refused = arr(data, "refused");
+        assert_eq!(ran.len() + refused.len(), members, "{out}");
+        assert_eq!(runs.len(), ran.len(), "{out}");
+        let prefix = format!("{family}.");
+        for run in &runs {
+            let procedure = text(run.get("data").expect("data"), "procedure");
+            assert!(procedure.starts_with(&prefix), "{procedure}");
+        }
+        assert!(
+            refused.iter().all(
+                |r| text(r, "procedure").starts_with(&prefix) && !text(r, "message").is_empty()
+            ),
+            "{out}"
+        );
+    }
+
+    let tail = [
+        "--account",
+        "1010",
+        "--source",
+        deposit.as_str(),
+        "--effective-through",
+        "2026-03-31",
+    ];
+    let traced = doc(&ok(&[&["trace", "libr"][..], &tail[..]].concat()));
+    let run = doc(&ok(
+        &[&["procedure", "run", "trace.libr"][..], &tail[..]].concat()
+    ));
+    assert_eq!(traced, run);
+    assert_eq!(text(&traced, "procedure"), "trace.libr");
+
+    // Planted: a law no procedure registers, and an unregistered scope.
+    let (code, out, _) = fa(Some(&book), &["trace", "hindsight", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("restitution-order"), "{out}");
+    let (code, out, _) = fa(Some(&book), &["benford", "--scope", "expenses", "--json"]);
     assert_eq!(code, 2, "{out}");
     Ok(())
 }

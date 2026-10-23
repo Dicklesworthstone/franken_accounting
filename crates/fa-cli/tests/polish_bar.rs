@@ -600,7 +600,6 @@ fn bare_fa_prints_triage_and_exits_zero() {
 #[test]
 fn every_plan_leaf_present_or_registered() {
     const PENDING: &[(&str, &str)] = &[
-        ("fa benford", "fa-waow: today fa procedure run benford.*"),
         (
             "fa book open",
             "fa-waow: the plan gives it no meaning beyond fa book info",
@@ -618,14 +617,12 @@ fn every_plan_leaf_present_or_registered() {
             "fa-waow: today fa finding review --action dismiss",
         ),
         ("fa gen book", "fa-ykbp"),
-        ("fa jet", "fa-waow: today fa procedure run jet.*"),
         (
             "fa recon book-to-book",
             "fa-259c: the multi-book bridge; fa-statements reconcile_book_to_book has no surface",
         ),
         ("fa rule backtest", "fa-c34"),
         ("fa rule propose", "fa-c34"),
-        ("fa trace", "fa-waow: today fa procedure run trace.<law>"),
         ("fa unit add", "fa-waow"),
         (
             "fa verify bundle",

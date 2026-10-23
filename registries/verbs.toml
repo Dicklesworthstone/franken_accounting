@@ -649,6 +649,42 @@ usage = ["procedure list", "procedure run <procedure id> [--known-at HEAD|<seq>]
 example = "fa procedure run jet.round_amounts --book ./books/myco --json"
 
 [[verb]]
+name = "jet"
+summary = "The journal-entry tests (plan §11.2): every registered jet.* procedure at its registered defaults, at one coordinate, each reported as fa procedure run reports it, then a procedure_family summary."
+writes = false
+subcommands = []
+flags = ["--known-at", "--effective-through", "--budget", "--grant"]
+switches = []
+events = ["procedure_run", "procedure_family"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["jet [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--budget <work units>]", "A procedure this book cannot run (an account role no account holds, or a declared input it lacks) is listed under refused with its fix, and the others still run; any other failure stops the family. --effective-through reaches only the procedures that take one (fa procedure list --json). A pure read: fa finding record <id> retains a run; fa procedure run <id> --param ... runs one with other parameters."]
+example = "fa jet --book ./books/myco --json"
+
+[[verb]]
+name = "benford"
+summary = "The digit tests (plan §11.3): benford.first_digit, benford.second_digit and benford.first_two_digits at their registered defaults over every posting, each reported as fa procedure run reports it, then a procedure_family summary."
+writes = false
+subcommands = []
+flags = ["--known-at", "--budget", "--scope", "--grant"]
+switches = []
+events = ["procedure_run", "procedure_family"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["benford [--known-at HEAD|<seq>] [--budget <work units>]", "The digit tests take every posting: no population scope is registered for them yet, so --scope is refused rather than ignored. A pure read: fa finding record <id> retains a run."]
+example = "fa benford --book ./books/myco --json"
+
+[[verb]]
+name = "trace"
+summary = "Trace funds under a registered tracing law (plan §11.5): fa procedure run trace.<law> under the plan's spelling, with procedure run's flags."
+writes = false
+subcommands = []
+flags = ["--known-at", "--effective-through", "--param", "--account", "--source", "--budget", "--grant"]
+switches = []
+events = ["procedure_run"]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["trace <libr|fifo|lifo|pro-rata|network-libr|network-fifo|network-lifo|network-pro-rata|restitution-order> --account <code> --source <entry vid> --effective-through YYYY-MM-DD [--known-at HEAD|<seq>] [--param <name>=<integer>]... [--budget <work units>]", "--account is the commingled account and --source the deposit entry; every tracing law needs --effective-through. The result is exactly fa procedure run trace.<law>'s procedure_run event."]
+example = "fa trace libr --account 1000 --source <entry vid> --effective-through 2026-03-31 --book ./books/myco --json"
+
+[[verb]]
 name = "sample"
 summary = "Audit sampling (plan §11.7): a reproducible uniform, monetary-unit (MUS) or stratified sample of one account's open items at one recorded coordinate, from a declared seed, and the Stringer evaluation of an MUS sample's audited values. A stratified sample's strata are book-value bands the auditor declares. Nothing is written."
 writes = false
@@ -2548,6 +2584,12 @@ doc = "Every registered Lantern procedure (procedures.toml): id, version, claim 
 fields = ["procedures:[procedure_row]", "count:int"]
 
 [[event]]
+name = "procedure_family"
+book = true
+doc = "The summary after a procedure family run (fa jet, fa benford): ran lists the procedures that reported (each also emitted its procedure_run event), refused the ones this book cannot run, an account role no account holds or a declared input, each with its message and fix."
+fields = ["family:string", "ran:[string]", "refused:[procedure_refusal]"]
+
+[[event]]
 name = "procedure_run"
 book = true
 doc = "One Lantern procedure run over the trunk as known at `known_at` (and, for the historical folds, through `effective_through`): the parameters and inputs it ran with, the digests an opposing expert reproduces, the population and work counted, and the findings sorted by severity then statistic then citations. A finding is a statistic with typed citations, never a conclusion."
@@ -2941,6 +2983,11 @@ fields = ["unit_id:int", "max_mantissa:int"]
 name = "ledger_diff_row"
 doc = "One account in one unit whose balance moved between the two coordinates."
 fields = ["code:string", "name:string", "unit:string", "before_debits:amount", "before_credits:amount", "after_debits:amount", "after_credits:amount", "net_change:amount"]
+
+[[shape]]
+name = "procedure_refusal"
+doc = "A family member this book cannot run, and the fix that would let it."
+fields = ["procedure:string", "message:string", "fix:string?"]
 
 [[shape]]
 name = "tb_row"
@@ -4882,6 +4929,42 @@ mistakes = ["Omitting as_of: no date defaults to today.", "Expecting a percentag
 
 [[mcp.tool]]
 cluster = "fa.forensics"
+name = "jet"
+verb = "jet"
+subcommands = []
+positionals = []
+flags = ["--known-at", "--effective-through", "--budget"]
+switches = []
+required = []
+dont = ["Don't read a refused member as clean: refused lists the procedures this book cannot run, with the fix.", "Don't pass parameters: the family runs each test at its registered defaults; fa_forensics_procedure runs one with --param."]
+mistakes = ["Expecting retained findings: the family is a read; record a run with the finding tools.", "Giving a date every member ignores: only the procedures that take one receive it."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "benford"
+verb = "benford"
+subcommands = []
+positionals = []
+flags = ["--known-at", "--budget"]
+switches = []
+required = []
+dont = ["Don't treat a digit-test result as an accusation: it is a statistic over every posting.", "Don't ask for a population scope: none is registered for the digit tests yet."]
+mistakes = ["Passing scope: it is refused; the tests take every posting.", "Expecting retained findings: the family is a read."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
+name = "trace"
+verb = "trace"
+subcommands = []
+positionals = ["law"]
+flags = ["--known-at", "--effective-through", "--param", "--account", "--source", "--budget"]
+switches = []
+required = ["law", "--account", "--source", "--effective-through"]
+dont = ["Don't pick a law to get a number you want: each law (LIBR, FIFO, LIFO, pro rata) is a registered method with its own result.", "Don't name the source by its key: source is the deposit entry's vid."]
+mistakes = ["Writing the law with an underscore: pro-rata, network-fifo, restitution-order.", "Omitting effective_through: every tracing law is defined at a date."]
+
+[[mcp.tool]]
+cluster = "fa.forensics"
 name = "procedure"
 verb = "procedure"
 subcommands = ["list", "run"]
@@ -5435,7 +5518,7 @@ ops = ["read"]
 reach = "judged"
 
 [[bound]]
-verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor", "diff"]
+verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor", "diff", "jet", "benford", "trace"]
 ops = ["read"]
 
 # The access log names every principal's reads: the whole book.
