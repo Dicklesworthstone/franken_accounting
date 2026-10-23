@@ -19,6 +19,7 @@ use fa_registers::{entries_at, entry_period, resolve_known_at};
 use fa_time::{DateDay, PeriodState};
 use fgdb::Database;
 use fgdb_crypto::Hasher;
+use fgdb_types::context::QueryCx;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::{Coordinate, LanternError};
@@ -98,17 +99,23 @@ pub struct Snapshot {
 impl Snapshot {
     /// Read the trunk of `book` as known at `known_at` (the head when `None`)
     /// and, when `effective_through` is declared, fa-registers' historical
-    /// open-item fold through it.
+    /// open-item fold through it. Observe the caller before storage access,
+    /// between bulk reads, and while decoding the returned rows. Bulk reads
+    /// and sorts are still indivisible at this boundary.
     pub fn read<V: asupersync::fs::Vfs + Clone>(
         db: &Database<V>,
+        cx: &QueryCx,
         book: &BookContext,
         known_at: Option<CommitSeq>,
         effective_through: Option<DateDay>,
     ) -> Result<Self, LanternError> {
+        checkpoint(cx)?;
         let seq = resolve_known_at(db, known_at)?;
+        checkpoint(cx)?;
         let mut entries = Vec::new();
         let mut transitions: BTreeMap<String, Vec<Transition>> = BTreeMap::new();
         for (vid, entry, recorded_at) in entries_at(db, book, seq)? {
+            checkpoint(cx)?;
             if let Some(ControlPayload::PeriodTransition {
                 period_ref,
                 from,
@@ -140,6 +147,7 @@ impl Snapshot {
             };
             let mut approvals = Vec::with_capacity(entry.approvals.len());
             for a in &entry.approvals {
+                checkpoint(cx)?;
                 let Some(row) = db.vertex_at(a.approval_vid, seq)? else {
                     return Err(KernelError::Corrupt(
                         "an entry cites an approval the book does not hold".into(),
@@ -161,14 +169,18 @@ impl Snapshot {
                 approvals,
             });
         }
+        checkpoint(cx)?;
         entries.sort_by_key(|e| e.vid);
         for list in transitions.values_mut() {
+            checkpoint(cx)?;
             list.sort_by_key(|t| t.recorded_at);
         }
         let mut accounts = BTreeMap::new();
         let mut periods = BTreeMap::new();
         let mut attestations = BTreeMap::new();
+        checkpoint(cx)?;
         for row in db.vertices_at(seq)? {
+            checkpoint(cx)?;
             if row.labels.contains(&label::ACCOUNT) {
                 let same_book = matches!(
                     prop(&row, property::BOOK_ID),
@@ -195,6 +207,7 @@ impl Snapshot {
                 }
             }
         }
+        checkpoint(cx)?;
         let rea = match fa_journal::rea::read_rea_at(db, book, seq) {
             Ok(s) => s,
             Err(KernelError::Corrupt(msg)) if msg.contains("no book spec") => {
@@ -210,10 +223,12 @@ impl Snapshot {
             }
             Err(e) => return Err(e.into()),
         };
+        checkpoint(cx)?;
         let open_items_as_of = match effective_through {
             Some(through) => Some(open_items_as_of(db, book, None, through, Some(seq))?),
             None => None,
         };
+        checkpoint(cx)?;
         let inputs_digest = {
             let mut w = Writer::new();
             w.u64(seq.0).opt(effective_through.as_ref(), |w, d| {
@@ -229,7 +244,7 @@ impl Snapshot {
             h.update(&w.finish()?);
             h.finalize().0
         };
-        Self {
+        let snapshot = Self {
             coordinate: Coordinate {
                 book_id: book.book_id,
                 known_at: seq,
@@ -246,7 +261,9 @@ impl Snapshot {
             bank_reconciliations: None,
             inputs_digest,
         }
-        .with_roles()
+        .with_roles()?;
+        checkpoint(cx)?;
+        Ok(snapshot)
     }
 
     fn with_roles(mut self) -> Result<Self, LanternError> {
@@ -510,4 +527,11 @@ impl Snapshot {
         }
         s
     }
+}
+
+fn checkpoint(cx: &QueryCx) -> Result<(), LanternError> {
+    cx.checkpoint()
+        .map_err(fgdb::WriteTxnError::Interrupted)
+        .map_err(KernelError::from)?;
+    Ok(())
 }

@@ -304,6 +304,7 @@ impl Fixture {
         )?;
         fa_lantern::run(
             &self.db,
+            &PurposeContexts::narrow_runtime_root(&self.root).query(),
             &self.book,
             known_at,
             Some(day(cutoff)),
@@ -389,7 +390,14 @@ fn actual_postings_follow_full_paths_and_historical_cutoffs() {
             },
         )
         .unwrap();
-        let snapshot = fa_lantern::Snapshot::read(&f.db, &f.book, None, Some(day(31))).unwrap();
+        let snapshot = fa_lantern::Snapshot::read(
+            &f.db,
+            &PurposeContexts::narrow_runtime_root(&f.root).query(),
+            &f.book,
+            None,
+            Some(day(31)),
+        )
+        .unwrap();
         assert_eq!(
             r.findings_digest,
             fa_lantern::run_over(&snapshot.with_entries_reversed(), &f.book, p.as_ref())

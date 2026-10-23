@@ -62,6 +62,7 @@ use fa_registry::procedures::{Claim, Procedure as Row, Procedures};
 use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_crypto::Hasher;
+use fgdb_types::context::QueryCx;
 use fgdb_types::{CommitSeq, VId};
 
 pub use snapshot::{Snapshot, SnapshotEntry, Transition};
@@ -931,16 +932,19 @@ fn digest(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
 
 /// Run `procedure` over the trunk of `book` as known at `known_at` (the head
 /// when `None`), with the historical folds read through `effective_through`
-/// when one is declared.
+/// when one is declared. The query context checkpoints snapshot acquisition
+/// and supplies the procedure meter's cancellation source; procedures receive
+/// only the meter, not the storage context.
 pub fn run<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: &QueryCx,
     book: &BookContext,
     known_at: Option<CommitSeq>,
     effective_through: Option<DateDay>,
     procedure: &dyn Procedure,
 ) -> Result<ProcedureRun, LanternError> {
-    let snapshot = Snapshot::read(db, book, known_at, effective_through)?;
-    run_over(&snapshot, book, procedure)
+    let snapshot = Snapshot::read(db, cx, book, known_at, effective_through)?;
+    run_over_metered(&snapshot, book, procedure, None, Some(cx))
 }
 
 /// Run `procedure` over an already-read snapshot (the witness re-runs over a

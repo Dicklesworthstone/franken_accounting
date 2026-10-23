@@ -3792,7 +3792,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         budget: Option<u64>,
     ) -> Result<fa_lantern::ProcedureRun, BookError> {
         self.query(cx, |db, book| {
-            let snapshot = fa_lantern::Snapshot::read(db, book, known_at, effective_through)?;
+            let snapshot =
+                fa_lantern::Snapshot::read(db, &cx.query(), book, known_at, effective_through)?;
             Ok(fa_lantern::run_over_metered(
                 &snapshot,
                 book,

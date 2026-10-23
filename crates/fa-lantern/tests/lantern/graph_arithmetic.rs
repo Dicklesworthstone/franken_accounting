@@ -9,7 +9,7 @@ fn concentration_preserves_exact_basis_points_near_i128_max() {
     let mut h = harness();
     h.post(&Spec::simple(day(2026, 1, 5), "1010", "1000", i128::MAX));
     let before = h.db.frontier().unwrap();
-    let snapshot = Snapshot::read(&h.db, &h.book, None, None).unwrap();
+    let snapshot = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, None).unwrap();
     let result = run_over(&snapshot, &h.book, &Concentration::new().unwrap()).unwrap();
     assert_eq!(result.findings.len(), 2);
     assert!(result.findings.iter().all(|finding| {
@@ -30,7 +30,8 @@ fn concentration_preserves_exact_basis_points_near_i128_max() {
         "4000",
         i128::MAX / 2 + 1,
     ));
-    let snapshot = Snapshot::read(&split.db, &split.book, None, None).unwrap();
+    let snapshot =
+        Snapshot::read(&split.db, &split.ctx().query(), &split.book, None, None).unwrap();
     let procedure = Concentration::with(
         Params::defaults(Concentration::ID)
             .unwrap()
@@ -58,7 +59,7 @@ fn concentration_overflow_is_refused() {
     h.post(&Spec::simple(day(2026, 1, 5), "1010", "1000", i128::MAX));
     h.post(&Spec::simple(day(2026, 1, 6), "6000", "4000", 1));
     let before = h.db.frontier().unwrap();
-    let snapshot = Snapshot::read(&h.db, &h.book, None, None).unwrap();
+    let snapshot = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, None).unwrap();
     let error = run_over(&snapshot, &h.book, &Concentration::new().unwrap()).unwrap_err();
     assert!(matches!(
         error,
@@ -74,7 +75,7 @@ fn communities_refuse_undirected_edge_overflow() {
     // community procedure's single undirected edge must not clamp to MAX.
     h.post(&Spec::simple(day(2026, 1, 5), "1010", "1000", i128::MAX));
     h.post(&Spec::simple(day(2026, 1, 6), "1000", "1010", 1));
-    let snapshot = Snapshot::read(&h.db, &h.book, None, None).unwrap();
+    let snapshot = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, None).unwrap();
     let error = run_over(&snapshot, &h.book, &Communities::new().unwrap()).unwrap_err();
     assert!(matches!(
         error,

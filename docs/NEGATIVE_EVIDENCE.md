@@ -424,3 +424,25 @@ preserving any preceding budget refusal. These are source changes and
 unexecuted regression requirements; both the original-code request and the
 complete selected positive request on this resume timed out in RCH admission
 with exit 103 and executed zero tests. No runtime gate passed in this block.
+
+Snapshot acquisition is another source-observed gap at `7f215518`: it takes
+no context while reading and decoding the book, and the direct `run` API
+also drops the caller's cancellation source. The follow-on draft requires
+`QueryCx` for both entry points, checks before selecting a storage prefix,
+between bulk reads, during entry/approval/vertex decoding, and before returning
+the snapshot, and carries that same context into the procedure meter. The
+facade, certification/replay paths and native corpus callers pass their
+existing query context. Procedures still receive only the meter. Runtime
+context negatives and uncancelled digest/work controls are added but UNRUN.
+Bulk storage reads, sorts, hashing and role/open-item folds remain indivisible
+at this boundary; this is not a claim of bounded cancellation throughout
+snapshot acquisition or completion of `fa-1tvm`.
+
+Formatting and whitespace checks pass for this draft. The ten-file static
+scan exits 1 with one critical report and 1,149 warnings. Its critical is the
+unchanged `panic!("fresh late entry must commit")` in the bank-reconciliation
+test helper, also present at `7f215518`; the assertion and scanner are retained.
+This is a red static verdict, not a passing gate. Rust tests, clippy and the
+complete exact-tree gate remain UNRUN: the only disk-qualified Linux worker
+reports critical memory pressure even while its local slot is free. No
+pressure threshold, worker cap or acceptance criterion is weakened.

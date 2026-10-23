@@ -40,6 +40,7 @@ const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 
 struct PostedScenario {
+    ctx: PurposeContexts,
     db: Database<MemVfs>,
     book: BookContext,
     corpus: GeneratedCorpus,
@@ -51,6 +52,7 @@ impl PostedScenario {
     fn run_procedure(&self, p: &dyn Procedure) -> ProcedureRun {
         let mut snapshot = Snapshot::read(
             &self.db,
+            &self.ctx.query(),
             &self.book,
             None,
             Some(self.corpus.snapshot_cutoff),
@@ -446,6 +448,7 @@ fn post_corpus(corpus: GeneratedCorpus) -> PostedScenario {
     let book_journal_digest = Oid(h.finalize().0);
 
     PostedScenario {
+        ctx,
         db,
         book,
         corpus,

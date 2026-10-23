@@ -17,6 +17,8 @@ struct Loop<'a> {
     steps: u64,
     taken: &'a Cell<u64>,
     cancel_after: Option<(u64, &'a Cell<bool>)>,
+    /// Test injection of the caller's real runtime cancellation during a run.
+    context_cancel_after: Option<(u64, &'a Cx)>,
     discard: bool,
 }
 
@@ -27,6 +29,7 @@ impl<'a> Loop<'a> {
             steps,
             taken,
             cancel_after: None,
+            context_cancel_after: None,
             discard: false,
         }
     }
@@ -53,6 +56,11 @@ impl Procedure for Loop<'_> {
                 && step == after
             {
                 cancel.set(true);
+            }
+            if let Some((after, root)) = self.context_cancel_after
+                && step == after
+            {
+                root.set_cancel_requested(true);
             }
             self.taken.set(self.taken.get() + 1);
             if self.discard {
@@ -84,6 +92,69 @@ impl Cancellation for Flag<'_> {
     fn cancelled(&self) -> bool {
         self.0.get()
     }
+}
+
+#[test]
+fn snapshot_cancellation_precedes_selection_and_returns_no_snapshot() {
+    let (h, _) = posted_corpus();
+    let before = h.db.frontier().unwrap();
+    let future = CommitSeq(before.0.checked_add(1).unwrap());
+    let cx = h.ctx().query();
+    assert!(matches!(
+        Snapshot::read(&h.db, &cx, &h.book, Some(future), None),
+        Err(LanternError::Register(
+            fa_registers::RegisterError::InvalidSelection(_)
+        ))
+    ));
+
+    h.root.set_cancel_requested(true);
+    for selection in [None, Some(future)] {
+        let error = Snapshot::read(&h.db, &cx, &h.book, selection, None)
+            .expect_err("cancelled acquisition must stop before selecting a storage prefix");
+        assert!(
+            matches!(
+                error,
+                LanternError::Kernel(KernelError::Txn(fgdb::WriteTxnError::Interrupted(_)))
+            ),
+            "{error:?}"
+        );
+    }
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    h.root.set_cancel_requested(false);
+    let snapshot = Snapshot::read(&h.db, &cx, &h.book, None, None).unwrap();
+    assert_eq!(snapshot.coordinate.known_at, before);
+    assert!(snapshot.entries.iter().any(|entry| entry.posts()));
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
+#[test]
+fn direct_library_run_carries_context_cancellation_into_the_procedure() {
+    let (h, _) = posted_corpus();
+    let before = h.db.frontier().unwrap();
+    let cx = h.ctx().query();
+    let taken = Cell::new(0);
+    let mut procedure = Loop::new(20, &taken);
+    procedure.context_cancel_after = Some((5, &h.root));
+    let error = run(&h.db, &cx, &h.book, None, None, &procedure)
+        .expect_err("the direct read-and-run API must retain the caller's cancellation source");
+    assert!(
+        matches!(error, LanternError::Cancelled { used: 20, .. }),
+        "{error:?}"
+    );
+    assert_eq!(taken.get(), 20);
+    assert_eq!(h.db.frontier().unwrap(), before);
+
+    h.root.set_cancel_requested(false);
+    procedure.context_cancel_after = None;
+    taken.set(0);
+    let complete = run(&h.db, &cx, &h.book, None, None, &procedure).unwrap();
+    assert_eq!(taken.get(), 20);
+    let snapshot = Snapshot::read(&h.db, &cx, &h.book, None, None).unwrap();
+    let unmetered = run_over(&snapshot, &h.book, &procedure).unwrap();
+    assert_eq!(complete.findings_digest, unmetered.findings_digest);
+    assert_eq!(complete.work, unmetered.work);
+    assert_eq!(h.db.frontier().unwrap(), before);
 }
 
 #[test]

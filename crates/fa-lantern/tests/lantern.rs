@@ -287,11 +287,26 @@ impl Harness {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot::read(&self.db, &self.book, None, Some(day(2026, 4, 30))).expect("snapshot")
+        Snapshot::read(
+            &self.db,
+            &self.ctx().query(),
+            &self.book,
+            None,
+            Some(day(2026, 4, 30)),
+        )
+        .expect("snapshot")
     }
 
     fn run(&self, p: &dyn Procedure) -> ProcedureRun {
-        run(&self.db, &self.book, None, Some(day(2026, 4, 30)), p).expect("run")
+        run(
+            &self.db,
+            &self.ctx().query(),
+            &self.book,
+            None,
+            Some(day(2026, 4, 30)),
+            p,
+        )
+        .expect("run")
     }
 
     fn index_of(&self, vid: VId) -> usize {
@@ -789,8 +804,15 @@ fn benford_claims_nothing_below_the_minimum_population_and_scores_above_it() {
 fn undeclared_procedures_ignore_the_effective_date() {
     use fa_registry::procedures::EffectiveThrough;
     let (h, _) = posted_corpus();
-    let dated = Snapshot::read(&h.db, &h.book, None, Some(day(2026, 1, 31))).unwrap();
-    let undated = Snapshot::read(&h.db, &h.book, None, None).unwrap();
+    let dated = Snapshot::read(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        Some(day(2026, 1, 31)),
+    )
+    .unwrap();
+    let undated = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, None).unwrap();
     let outcome = |id: &str, snapshot: &Snapshot| {
         fa_lantern::catalog::build(id, Params::defaults(id).unwrap(), Default::default())
             .and_then(|p| run_over(snapshot, &h.book, p.as_ref()))
@@ -897,6 +919,7 @@ fn aging_buckets_open_items_to_the_declared_date() {
     assert!(matches!(
         run(
             &h.db,
+            &h.ctx().query(),
             &h.book,
             None,
             Some(day(2026, 4, 30)),
@@ -906,8 +929,15 @@ fn aging_buckets_open_items_to_the_declared_date() {
     ));
     // Without a declared effective date there is no historical fold to age:
     // the refusal names the coordinate to declare.
-    let err = run(&h.db, &h.book, None, None, &OpenItemsAging::new().unwrap())
-        .expect_err("aging without an effective date is refused");
+    let err = run(
+        &h.db,
+        &h.ctx().query(),
+        &h.book,
+        None,
+        None,
+        &OpenItemsAging::new().unwrap(),
+    )
+    .expect_err("aging without an effective date is refused");
     assert!(
         matches!(&err, LanternError::Parameter { name, message, .. }
             if name == "effective_through" && message.contains("effective date")),
@@ -993,7 +1023,15 @@ fn rankings_are_deterministic_and_an_order_dependent_ranking_fails_the_witness()
         );
         assert!(w.deterministic(), "{w:?}");
         // A fresh read of the same coordinate reproduces the digest.
-        let again = run(&h.db, &h.book, None, Some(day(2026, 4, 30)), p.as_ref()).unwrap();
+        let again = run(
+            &h.db,
+            &h.ctx().query(),
+            &h.book,
+            None,
+            Some(day(2026, 4, 30)),
+            p.as_ref(),
+        )
+        .unwrap();
         println!("{}", again.log_line());
         assert_eq!(again.findings_digest, w.digest);
         // Work stays inside the registered complexity bound.
@@ -1428,7 +1466,14 @@ fn graph_procedures_find_planted_round_trips_and_structuring_and_agree_with_the_
             .unwrap(),
     );
     assert!(matches!(
-        run(&h.db, &h.book, None, Some(day(2026, 4, 30)), &inverted),
+        run(
+            &h.db,
+            &h.ctx().query(),
+            &h.book,
+            None,
+            Some(day(2026, 4, 30)),
+            &inverted
+        ),
         Err(LanternError::Parameter { name, .. }) if name == "floor"
     ));
 }
@@ -1502,6 +1547,7 @@ fn tracing_laws_follow_the_planted_deposit_and_agree_with_the_oracle() {
     let stranger = h.posted[0].0;
     let err = run(
         &h.db,
+        &h.ctx().query(),
         &h.book,
         None,
         Some(claim),
@@ -1522,12 +1568,13 @@ fn tracing_laws_follow_the_planted_deposit_and_agree_with_the_oracle() {
         source_vid,
     );
     assert!(matches!(
-        run(&h.db, &h.book, None, Some(claim), &value_date),
+        run(&h.db, &h.ctx().query(), &h.book, None, Some(claim), &value_date),
         Err(LanternError::Parameter { name, .. }) if name == "intraday_order"
     ));
     assert!(matches!(
         run(
             &h.db,
+            &h.ctx().query(),
             &h.book,
             None,
             None,
@@ -1540,6 +1587,7 @@ fn tracing_laws_follow_the_planted_deposit_and_agree_with_the_oracle() {
     // withdrawal changes every law's answer.
     let early = run(
         &h.db,
+        &h.ctx().query(),
         &h.book,
         None,
         Some(day(2026, 4, 7)),
@@ -1562,7 +1610,15 @@ fn tracing_follows_recorded_same_day_order_and_repays_an_overdraft_first() {
             Some(p) => Trace::with(law, p, account, source),
             None => Trace::new(law, account, source).unwrap(),
         };
-        let r = run(&h.db, &h.book, None, Some(day(2026, 3, 31)), &procedure).unwrap();
+        let r = run(
+            &h.db,
+            &h.ctx().query(),
+            &h.book,
+            None,
+            Some(day(2026, 3, 31)),
+            &procedure,
+        )
+        .unwrap();
         println!("trace law={} {}", law.name(), r.findings[0].narrative);
         r.findings[0].statistic.value
     };
@@ -1702,7 +1758,14 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
             let snapshot = bank_reconciliation_tests::snapshot(&h, None, Some(day(2026, 4, 30)));
             run_over(&snapshot, &h.book, built.as_ref())
         } else {
-            run(&h.db, &h.book, None, Some(day(2026, 4, 30)), built.as_ref())
+            run(
+                &h.db,
+                &h.ctx().query(),
+                &h.book,
+                None,
+                Some(day(2026, 4, 30)),
+                built.as_ref(),
+            )
         }
         .expect("every catalog procedure runs with its complete admitted input closure");
         h.assert_cites_resolve(&r);
@@ -2893,7 +2956,8 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
             }
         }
 
-        let mut snapshot = Snapshot::read(&db, &book, None, Some(corpus.snapshot_cutoff)).unwrap();
+        let mut snapshot =
+            Snapshot::read(&db, &ctx.query(), &book, None, Some(corpus.snapshot_cutoff)).unwrap();
         for (idx, ge) in corpus.entries.iter().enumerate() {
             if ge.self_approve {
                 let target_vid = posted_vids[idx];
@@ -4795,6 +4859,7 @@ fn solvency_balance_sheet_preserves_signed_basis_and_temporal_selection() {
     assert_eq!(
         run(
             &h.db,
+            &h.ctx().query(),
             &h.book,
             Some(before_deduction),
             Some(day(2026, 4, 30)),
