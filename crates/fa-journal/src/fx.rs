@@ -21,7 +21,7 @@
 //!   functional balances to equity. Its saved source prefix supplies the
 //!   carrying amounts; it introduces no rate or conversion residual.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::Cx;
 use fa_model::symbols::{label, property};

@@ -156,6 +156,12 @@ impl ChartSnapshot {
         self.known_at
     }
 
+    /// The foreign-currency revaluation routes recorded at `known_at`.
+    #[must_use]
+    pub fn fx_revaluation_routes(&self) -> &[FxRevaluationRoutes] {
+        &self.fx_revaluation_routes
+    }
+
     #[must_use]
     pub fn accounts(&self) -> &BTreeMap<VId, AccountRow> {
         &self.accounts
