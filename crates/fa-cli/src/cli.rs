@@ -2416,10 +2416,11 @@ enum HostPath {
     /// An input file of `fa document import run`.
     ImportRun,
     /// An input file: a positional chart, account, party, instrument, entity,
-    /// statement, document, certificate or export (a file, or an ADS package
-    /// directory), or a saved-certificate source flag
+    /// statement, document, certificate, rule or export (a file, or an ADS
+    /// package directory), a saved-certificate source flag
     /// (`--before-certificate`, `--after-certificate`, `--from-diff`,
-    /// `--from-source`, `--aging-certificate`, `--control-certificate`).
+    /// `--from-source`, `--aging-certificate`, `--control-certificate`), or a
+    /// rule's golden corpus (`--golden`, a file or directory).
     Input,
 }
 
@@ -2468,6 +2469,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--from-source",
         "--aging-certificate",
         "--control-certificate",
+        "--golden",
     ] {
         for value in args.flag_all(flag) {
             let digits = value.strip_prefix("C:").unwrap_or(value);
@@ -2511,7 +2513,11 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         | ("chart", Some("open"))
         | ("party" | "instrument" | "entity", Some("add"))
         | ("certificate", Some("status"))
-        | ("finding", Some("replay")) => args.positional.get(2),
+        | ("finding", Some("replay"))
+        // A Canon rule's source (fa-c34).
+        | ("rule", Some("check" | "propose" | "eval" | "backtest" | "test")) => {
+            args.positional.get(2)
+        }
         ("replay", _) => args.positional.get(1),
         // The exported file, or the ADS package directory.
         ("verify", Some("export")) => args.positional.get(3),

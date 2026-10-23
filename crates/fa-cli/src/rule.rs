@@ -1,5 +1,5 @@
-//! `fa rule check|propose|list|show|activate|eval|derive|backtest` (plan
-//! §10.3, §10.5, §10.6, bead fa-c34). A Canon posting rule is a text file. `check` compiles it against
+//! `fa rule check|propose|list|show|activate|eval|derive|backtest|test`
+//! (plan §10.3, §10.5, §10.6, bead fa-c34). A Canon posting rule is a text file. `check` compiles it against
 //! the book's units: names, unit types, registered rounding laws and
 //! dimensions, and the per-unit balance proof. It reports the IR's content
 //! address and the rule's dependency set. `propose` journals the version
@@ -9,7 +9,7 @@
 //! its name from a date under dual control, and `derive` posts what the
 //! version in force derives from an event; the kernel re-derives it in the
 //! commit. `backtest` reports the events whose entries a candidate version
-//! would change.
+//! would change, and `test` runs a rule over its golden corpus.
 
 use fa::rule::{
     CompiledRule, Derivation, EvalError, InputType, InputValue, Inputs,
@@ -34,6 +34,8 @@ const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approv
 const DERIVE: &str =
     "fa rule derive [--rule <ir_digest> [--input <name>=<value>]... [--key K]] --event <code|vid>";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
+const TEST: &str = "fa rule test (<rule-file|-> | --rule <ir_digest>) --golden <file|dir>...";
+const GOLDEN: &str = "a golden case: [event] kind = \"sale\", occurred_on = \"2026-03-12\", resources = [\"net:40.00 USD\"]; optional [inputs] as_of = \"2026-03-31\"; [expect] legs = [\"debit 1000 40.00 USD\", \"credit 6000 40.00 USD region=EU\"] with an optional effective = \"2026-03-12\", or refused = \"<part of the refusal>\"";
 const BACKTEST: &str = "fa rule backtest (<rule-file|-> | --rule <ir_digest>) [--compare <ir_digest>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 
 pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -46,10 +48,11 @@ pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("eval") => eval(ctx, args),
         Some("derive") => derive(ctx, args),
         Some("backtest") => backtest(ctx, args),
+        Some("test") => test(ctx, args),
         _ => Err(usage(
-            "rule has the subcommands check, propose, list, show, activate, eval, derive and backtest",
+            "rule has the subcommands check, propose, list, show, activate, eval, derive, backtest and test",
             format!(
-                "{CHECK} | {PROPOSE} | {LIST} | {SHOW} | {ACTIVATE} | {EVAL} | {DERIVE} | {BACKTEST}"
+                "{CHECK} | {PROPOSE} | {LIST} | {SHOW} | {ACTIVATE} | {EVAL} | {DERIVE} | {BACKTEST} | {TEST}"
             ),
         )),
     }
@@ -1145,23 +1148,407 @@ fn backtest(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// Two derivations post the same entry: the same effective date and the
 /// same legs, in any order.
 fn same_entry(a: &Derivation, b: &Derivation, units: &fa_money::UnitRegistry) -> bool {
-    let legs = |derived: &Derivation| {
-        let mut legs: Vec<_> = derived
-            .legs
-            .iter()
-            .map(|leg| {
-                (
-                    leg.account.clone(),
-                    side_name(leg.side),
-                    leg.amount.render(units),
-                    leg.dims.clone(),
-                )
-            })
-            .collect();
-        legs.sort();
-        legs
+    a.effective == b.effective && leg_keys(&a.legs, units) == leg_keys(&b.legs, units)
+}
+
+/// `fa rule test (<rule-file|-> | --rule <ir_digest>) --golden <file|dir>...`
+/// (plan §10.5): run the rule over its golden corpus. Each case is one TOML
+/// file: an event, the inputs, and the entry or refusal the rule must
+/// derive (GOLDEN). A directory contributes its `*.toml` files in name
+/// order. Every case runs; unless all hold, the report is a verification
+/// failure (exit 8). Nothing is written.
+fn test(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let from_journal = match (args.flag("--rule"), args.positional.len()) {
+        (Some(digest), 2) => Some(digest_arg(digest, TEST)?),
+        (None, 3) => None,
+        _ => {
+            return Err(usage(
+                "rule test takes one rule file or `--rule <ir_digest>`, not both",
+                TEST,
+            ));
+        }
     };
-    a.effective == b.effective && legs(a) == legs(b)
+    let corpus = args.flag_all("--golden");
+    if corpus.is_empty() {
+        return Err(usage("rule test needs --golden <file|dir>", TEST));
+    }
+    let mut cases = Vec::new();
+    for path in &corpus {
+        let resolved = ctx.files.resolve(path);
+        if !resolved.is_dir() {
+            cases.push((path.to_string(), ctx.files.read_text(path)?));
+            continue;
+        }
+        let listing = |e: std::io::Error| usage(format!("--golden {path}: {e}"), TEST);
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(&resolved).map_err(listing)? {
+            let entry = entry.map_err(listing)?;
+            // Regular files only: a symlink could name a file outside a
+            // contained directory.
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().is_ok_and(|kind| kind.is_file()) && name.ends_with(".toml") {
+                names.push(name);
+            }
+        }
+        names.sort();
+        for name in names {
+            let file = format!("{}/{name}", path.trim_end_matches('/'));
+            let text = ctx.files.read_text(&file)?;
+            cases.push((file, text));
+        }
+    }
+    if cases.is_empty() {
+        return Err(usage(
+            format!("no golden case (*.toml) in {}", corpus.join(", ")),
+            GOLDEN,
+        ));
+    }
+    let text = match from_journal {
+        Some(_) => None,
+        None => Some(ctx.files.read_text(source(args, TEST)?)?),
+    };
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx.books.open_admitted(args, |book| {
+        let scope = book.read_scope(who, &cap)??;
+        let _admitted = scope.admit_whole_book(None)??;
+        Ok(())
+    })?;
+    let rule = match (&text, from_journal) {
+        (Some(text), _) => compile_rule(book.context(), text).map_err(Fail::Refusal)?,
+        (None, Some(digest)) => {
+            let (at, version) = book.rule_version(&digest, None, &cap)??;
+            ctx.out.known_at(at);
+            version
+                .ok_or_else(|| {
+                    usage(
+                        format!("this book holds no rule version {}", hex(&digest)),
+                        "fa rule list names the versions; fa rule propose <file> journals one",
+                    )
+                })?
+                .rule
+        }
+        (None, None) => return Err(Fail::Internal("rule test selected no rule".into())),
+    };
+    let units = &book.context().units;
+    let (mut passed, mut failed) = (0i128, 0i128);
+    let mut rows = Vec::new();
+    let mut human = Vec::new();
+    for (file, text) in &cases {
+        let case = golden_case(file, text, &rule, units, &book.context().seal_key)?;
+        let derived = fa::rule::evaluate(&rule, &case.event, &case.inputs);
+        let failure = match (&derived, &case.expect) {
+            (Ok(derived), Expect::Entry { effective, legs }) => {
+                let mut wrong = Vec::new();
+                if let Some(effective) = effective
+                    && *effective != derived.effective
+                {
+                    wrong.push(format!(
+                        "effective {} where the golden expects {}",
+                        derived.effective.render(),
+                        effective.render()
+                    ));
+                }
+                let actual = leg_keys(&derived.legs, units);
+                if actual != *legs {
+                    wrong.push(format!(
+                        "legs [{}] where the golden expects [{}]",
+                        render_keys(&actual),
+                        render_keys(legs)
+                    ));
+                }
+                (!wrong.is_empty()).then(|| wrong.join("; "))
+            }
+            (Ok(derived), Expect::Refused(expected)) => Some(format!(
+                "derived {} legs where the golden expects a refusal containing `{expected}`",
+                derived.legs.len()
+            )),
+            (Err(error), Expect::Refused(expected)) => (!error.to_string().contains(expected))
+                .then(|| format!("refused `{error}`, which does not contain `{expected}`")),
+            (Err(error), Expect::Entry { .. }) => Some(format!(
+                "refused `{error}` where the golden expects an entry"
+            )),
+        };
+        let outcome = match &failure {
+            None => {
+                passed += 1;
+                "pass"
+            }
+            Some(_) => {
+                failed += 1;
+                "fail"
+            }
+        };
+        human.push(format!(
+            "{outcome} {file}{}",
+            failure
+                .as_deref()
+                .map_or(String::new(), |why| format!(": {why}"))
+        ));
+        let ok = derived.as_ref().ok();
+        rows.push(obj(vec![
+            ("file", s(file)),
+            ("outcome", s(outcome)),
+            ("detail", failure.map_or(Json::Null, s)),
+            (
+                "effective",
+                ok.map_or(Json::Null, |derived| s(derived.effective.render())),
+            ),
+            (
+                "legs",
+                Json::Arr(ok.map_or_else(Vec::new, |derived| {
+                    derived
+                        .legs
+                        .iter()
+                        .map(|leg| leg_json(leg, units))
+                        .collect()
+                })),
+            ),
+            (
+                "refusal",
+                derived
+                    .as_ref()
+                    .err()
+                    .map_or(Json::Null, |error| s(error.to_string())),
+            ),
+        ]));
+    }
+    let summary = format!(
+        "rule {} v{}: {passed} of {} golden case{} hold",
+        rule.name(),
+        rule.version(),
+        cases.len(),
+        if cases.len() == 1 { "" } else { "s" },
+    );
+    let mut fields = rule_fields(&rule);
+    fields.extend([
+        ("cases", Json::Int(cases.len() as i128)),
+        ("passed", Json::Int(passed)),
+        ("failed", Json::Int(failed)),
+        ("rows", Json::Arr(rows)),
+    ]);
+    if failed > 0 {
+        return Err(Fail::Verification {
+            message: format!("{summary}; {failed} failed: {}", human.join("; ")),
+            detail: obj(fields),
+            cite: Some("plan §10.5: every rule version ships a golden corpus".into()),
+            fix: Some(
+                "fix the rule; if the change is intended, review the diff of golden outputs and update the case's [expect]"
+                    .into(),
+            ),
+        });
+    }
+    human.insert(0, summary);
+    ctx.out.event("rule_tested", fields, &human.join("\n"));
+    Ok(())
+}
+
+/// One leg as a golden case compares it: account, side, rendered amount,
+/// and its dimension tags in order.
+type LegKey = (String, &'static str, String, Vec<(String, String)>);
+
+/// The legs of an entry as a sorted list of keys: two entries with the same
+/// keys are the same entry, whatever order the rule wrote the legs in.
+fn leg_keys(legs: &[fa::rule::DerivedLeg], units: &fa_money::UnitRegistry) -> Vec<LegKey> {
+    let mut keys: Vec<LegKey> = legs
+        .iter()
+        .map(|leg| {
+            let mut dims = leg.dims.clone();
+            dims.sort();
+            (
+                leg.account.clone(),
+                side_name(leg.side),
+                leg.amount.render(units),
+                dims,
+            )
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+fn render_keys(keys: &[LegKey]) -> String {
+    keys.iter()
+        .map(|(account, side, amount, dims)| {
+            let tags: String = dims
+                .iter()
+                .map(|(dimension, code)| format!(" {dimension}={code}"))
+                .collect();
+            format!("{side} {account} {amount}{tags}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What a golden case expects: an entry (its legs, and its effective date
+/// when the case names one) or a refusal whose text contains a fragment.
+enum Expect {
+    Entry {
+        effective: Option<DateDay>,
+        legs: Vec<LegKey>,
+    },
+    Refused(String),
+}
+
+struct GoldenCase {
+    event: fa_model::EventSpec,
+    inputs: Inputs,
+    expect: Expect,
+}
+
+/// Parse one golden case. The event is built in memory, never recorded: its
+/// code is the file's stem, and it has no participants, evidence or
+/// description (no rule reads them).
+fn golden_case(
+    file: &str,
+    text: &str,
+    rule: &CompiledRule,
+    units: &fa_money::UnitRegistry,
+    seal: &fa_model::SealKey,
+) -> Result<GoldenCase, Fail> {
+    use fa_registry::toml::Value;
+    let bad = |what: String| usage(format!("golden case {file}: {what}"), GOLDEN);
+    let doc = fa_registry::toml::parse(text).map_err(|e| bad(e.to_string()))?;
+    let table = |name: &str| {
+        doc.tables
+            .get(name)
+            .ok_or_else(|| bad(format!("it has no [{name}] table")))
+    };
+    fn string<'t>(
+        table: &'t fa_registry::toml::Table,
+        key: &str,
+    ) -> Result<Option<&'t str>, String> {
+        table
+            .get(key)
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| format!("`{key}` is not a string"))
+            })
+            .transpose()
+    }
+    let day = |text: &str, key: &str| {
+        DateDay::parse(text).map_err(|e| bad(format!("{key} `{text}` is not a date ({e:?})")))
+    };
+    let event = table("event")?;
+    let kind_name = string(event, "kind")
+        .map_err(bad)?
+        .ok_or_else(|| bad("[event] has no kind".into()))?;
+    let kind = fa_model::EventKind::from_name(kind_name)
+        .ok_or_else(|| bad(format!("unknown event kind `{kind_name}`")))?;
+    let occurred_on = day(
+        string(event, "occurred_on")
+            .map_err(bad)?
+            .ok_or_else(|| bad("[event] has no occurred_on".into()))?,
+        "occurred_on",
+    )?;
+    let mut resources = Vec::new();
+    for item in event
+        .get("resources")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+    {
+        let raw = item
+            .as_str()
+            .ok_or_else(|| bad("resources are strings `<label>:<amount>`".into()))?;
+        let (label, amount) = raw
+            .split_once(':')
+            .ok_or_else(|| bad(format!("resource `{raw}` is not `<label>:<amount>`")))?;
+        let amount =
+            Amount::parse(amount, units).map_err(|e| bad(format!("resource `{raw}`: {e}")))?;
+        resources.push(fa_model::EventResource {
+            label: label.to_string(),
+            amount,
+            instrument: None,
+        });
+    }
+    let code = std::path::Path::new(file)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.is_empty())
+        .ok_or_else(|| bad("its file name has no stem".into()))?;
+    let event = fa_model::EventSpec {
+        code,
+        kind,
+        occurred_on,
+        description: fa_model::Erasable::seal(&String::new(), None, seal, [0; 32], [0; 24]),
+        participants: Vec::new(),
+        resources,
+        evidence: Vec::new(),
+        external_ids: Vec::new(),
+    };
+    let mut given = Vec::new();
+    if let Some(declared) = doc.tables.get("inputs") {
+        for (name, value) in declared {
+            let value = value
+                .as_str()
+                .ok_or_else(|| bad(format!("input `{name}` is not a string")))?;
+            given.push(format!("{name}={value}"));
+        }
+    }
+    let given: Vec<&str> = given.iter().map(String::as_str).collect();
+    let inputs = inputs(rule, &given, units)?;
+    let expect = table("expect")?;
+    let expect = match (expect.get("legs"), string(expect, "refused").map_err(bad)?) {
+        (Some(legs), None) => {
+            let mut keys = Vec::new();
+            for item in legs
+                .as_array()
+                .ok_or_else(|| bad("[expect] legs is not an array".into()))?
+            {
+                let raw = item
+                    .as_str()
+                    .ok_or_else(|| bad("[expect] legs are strings".into()))?;
+                keys.push(
+                    golden_leg(raw, units).map_err(|why| bad(format!("leg `{raw}`: {why}")))?,
+                );
+            }
+            keys.sort();
+            Expect::Entry {
+                effective: string(expect, "effective")
+                    .map_err(bad)?
+                    .map(|text| day(text, "effective"))
+                    .transpose()?,
+                legs: keys,
+            }
+        }
+        (None, Some(fragment)) => Expect::Refused(fragment.to_string()),
+        _ => {
+            return Err(bad(
+                "[expect] holds either legs = [...] or refused = \"...\"".into(),
+            ));
+        }
+    };
+    Ok(GoldenCase {
+        event,
+        inputs,
+        expect,
+    })
+}
+
+/// `debit 1000 40.00 USD [dimension=code]...`.
+fn golden_leg(raw: &str, units: &fa_money::UnitRegistry) -> Result<LegKey, String> {
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    let [side, account, number, unit, tags @ ..] = words.as_slice() else {
+        return Err(
+            "expected `<debit|credit> <account> <amount> <unit> [dimension=code]...`".into(),
+        );
+    };
+    let side = match *side {
+        "debit" => side_name(Side::Debit),
+        "credit" => side_name(Side::Credit),
+        other => return Err(format!("side `{other}` is not debit or credit")),
+    };
+    let amount = Amount::parse(&format!("{number} {unit}"), units).map_err(|e| e.to_string())?;
+    let mut dims = Vec::new();
+    for tag in tags {
+        let (dimension, code) = tag
+            .split_once('=')
+            .ok_or_else(|| format!("tag `{tag}` is not dimension=code"))?;
+        dims.push((dimension.to_string(), code.to_string()));
+    }
+    dims.sort();
+    Ok(((*account).to_string(), side, amount.render(units), dims))
 }
 
 fn day_arg(flag: &str, text: &str) -> Result<DateDay, Fail> {

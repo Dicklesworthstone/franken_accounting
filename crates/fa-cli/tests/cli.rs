@@ -9999,6 +9999,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     run2(&["rule", "derive", "--event", "EV-1001"]);
     run2(&["rule", "backtest", &fee_rule]);
+    let fee_golden = write(
+        &dir,
+        "fee_golden.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-15\"\n\n[expect]\nlegs = [\"debit 1000 1.00 USD\", \"credit 4000 1.00 USD\"]\n",
+    );
+    run2(&["rule", "test", &fee_rule, "--golden", &fee_golden]);
     run2(&[
         "rule",
         "activate",
@@ -21109,6 +21115,80 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
         assert_eq!(refused.code, "FA-REF-196", "{what}: {refused:?}");
     }
     assert_eq!(lib.head().unwrap(), before, "the refusals write nothing");
+    Ok(())
+}
+
+/// fa-c34 slice 8: `fa rule test` runs a rule over its golden corpus (plan
+/// §10.5). Every case holding is `rule_tested`; a case that does not hold is
+/// a verification failure (exit 8) naming the case and the difference; a
+/// malformed case is a usage error naming it.
+#[test]
+fn a_rule_golden_corpus_holds_or_fails_verification() -> std::io::Result<()> {
+    let (book, _ev, dir) = envelope_book("canon-golden")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let source = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    let golden = dir.join("golden");
+    std::fs::create_dir_all(&golden)?;
+    write(
+        &golden,
+        "a_sale.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"net:40.00 USD\"]\n\n[expect]\neffective = \"2026-03-12\"\n# Legs compare in any order.\nlegs = [\"credit 6000 40.00 USD\", \"debit 1000 40.00 USD\"]\n",
+    );
+    write(
+        &golden,
+        "b_no_net.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"gross:9.00 USD\"]\n\n[expect]\nrefused = \"no resource labeled `net`\"\n",
+    );
+    write(&golden, "notes.txt", "not a case");
+    let corpus = golden.display().to_string();
+    let (code, out, err) = run(&["rule", "test", &source, "--golden", &corpus, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(out.contains("\"event\":\"rule_tested\""), "{out}");
+    let tested = doc(&out);
+    assert_eq!(
+        ["cases", "passed", "failed"].map(|key| int(&tested, key)),
+        [Some(2), Some(2), Some(0)],
+        "{}",
+        tested.render()
+    );
+    let rows = arr(&tested, "rows");
+    assert_eq!(arr(&rows[0], "legs").len(), 2);
+    assert!(
+        text(&rows[1], "refusal").contains("`net`"),
+        "{}",
+        tested.render()
+    );
+
+    // A case that does not hold fails verification, naming it and the difference.
+    let wrong = write(
+        &dir,
+        "c_wrong.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"net:40.00 USD\"]\n\n[expect]\nlegs = [\"debit 1000 41.00 USD\", \"credit 6000 41.00 USD\"]\n",
+    );
+    let (code, out, _) = run(&[
+        "rule", "test", &source, "--golden", &corpus, "--golden", &wrong, "--json",
+    ]);
+    assert_eq!(code, 8, "{out}");
+    assert!(
+        out.contains("c_wrong.toml") && out.contains("where the golden expects"),
+        "{out}"
+    );
+    // A malformed case is a usage error naming it.
+    let malformed = write(&dir, "d_bad.toml", "[event]\nkind = \"sale\"\n");
+    let (code, out, _) = run(&["rule", "test", &source, "--golden", &malformed, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("d_bad.toml") && out.contains("occurred_on"),
+        "{out}"
+    );
     Ok(())
 }
 
