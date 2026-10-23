@@ -985,8 +985,10 @@ fn prepared_post_rechecks_its_capability_expiry_without_rejecting_unrelated_comm
 /// fa-0fl, the crash-point matrix for one post: the prepared rent post's
 /// publication crashes at each of the substrate's seven registered commit
 /// crash points, the fault VFS then loses every unsynced byte, and the book
-/// reopens. A crash before the commit marker leaves no entry. After the
-/// marker the commit may or may not have reached disk, but never partly:
+/// reopens. A crash before the commit marker leaves no entry; a crash point
+/// the commit's write path never passes leaves an ordinary commit, which
+/// must survive. After the marker the commit may or may not have reached
+/// disk, but never partly:
 /// the entry is whole (read back, folded into its cells, registers verified)
 /// or absent, the earlier journal is untouched, and a retry of the same
 /// intent records it exactly once. The no-crash control commits.
@@ -1028,11 +1030,14 @@ fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
             let before = journal_entries(&book, &cx);
             let prepared = prepare_fixture_post(&mut book, &cx, request.clone());
             let outcome = prepared.commit_with_crash(&mut book.db, &cx, point).await;
-            assert_eq!(
-                matches!(outcome, Ok(Ok(_))),
-                point.is_none(),
-                "{point:?}: the publication fails iff a crash is injected: {outcome:?}"
-            );
+            // A crash point this publication's write path never passes (a
+            // parent directory that needs no sync, say) leaves an ordinary
+            // commit; one it passes fails the publication. Either way, a
+            // completed publication must survive the crash below.
+            let published = matches!(outcome, Ok(Ok(_)));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
             drop(book);
             cx.commit()
                 .with_restriction_async(vfs.crash())
@@ -1057,7 +1062,9 @@ fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
                 Some(1) => true,
                 other => panic!("{point:?}: {other:?} new entries"),
             };
-            if let Some(expected) = expected {
+            if published {
+                assert!(committed, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
                 assert_eq!(committed, expected, "{point:?}");
             }
             let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
@@ -1149,11 +1156,14 @@ fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
                 point,
             )
             .await;
-            assert_eq!(
-                matches!(outcome, Ok(Ok(_))),
-                point.is_none(),
-                "{point:?}: the publication fails iff a crash is injected: {outcome:?}"
-            );
+            // A crash point this publication's write path never passes (a
+            // parent directory that needs no sync, say) leaves an ordinary
+            // commit; one it passes fails the publication. Either way, a
+            // completed publication must survive the crash below.
+            let published = matches!(outcome, Ok(Ok(_)));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
             drop(book);
             cx.commit()
                 .with_restriction_async(vfs.crash())
@@ -1178,7 +1188,9 @@ fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
                 Some(3) => true,
                 other => panic!("{point:?}: {other:?} of the batch's 3 members survived"),
             };
-            if let Some(expected) = expected {
+            if published {
+                assert!(kept, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
                 assert_eq!(kept, expected, "{point:?}");
             }
             let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
@@ -1238,7 +1250,8 @@ fn period_state(book: &LabBook, cx: &PurposeContexts, code: &str) -> fa_time::Pe
 /// transition, or the reverse. A crash before the commit marker leaves
 /// March Open; the control closes it. A retried soft close lands exactly
 /// once, and the period law holds after it: the fixture's plain post into
-/// March is refused (FA-REF-010, exit 7).
+/// March is refused (FA-REF-011, exit 7: the soft-closed period needs
+/// post_softclosed, which the fixture's capability lacks).
 #[test]
 fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
     use fgdb::CrashPoint;
@@ -1283,11 +1296,14 @@ fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() 
                 &close,
             );
             let outcome = prepared.commit_with_crash(&mut book.db, &cx, point).await;
-            assert_eq!(
-                matches!(outcome, Ok(Ok(_))),
-                point.is_none(),
-                "{point:?}: the publication fails iff a crash is injected: {outcome:?}"
-            );
+            // A crash point this publication's write path never passes (a
+            // parent directory that needs no sync, say) leaves an ordinary
+            // commit; one it passes fails the publication. Either way, a
+            // completed publication must survive the crash below.
+            let published = matches!(outcome, Ok(Ok(_)));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
             drop(book);
             cx.commit()
                 .with_restriction_async(vfs.crash())
@@ -1312,7 +1328,9 @@ fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() 
                 Some(1) => true,
                 other => panic!("{point:?}: {other:?} new transitions"),
             };
-            if let Some(expected) = expected {
+            if published {
+                assert!(closed, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
                 assert_eq!(closed, expected, "{point:?}");
             }
             assert_eq!(
@@ -1346,7 +1364,9 @@ fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() 
                 before + 1
             );
             let refusal = book.post(&cx, request).await.unwrap().unwrap_err();
-            assert_eq!((refusal.code, refusal.exit), ("FA-REF-010", 7), "{point:?}");
+            // The soft-closed period admits an Original entry only under
+            // post_softclosed, which the fixture's capability lacks.
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7), "{point:?}");
             assert_journal_verifies(&book, &cx, point);
         });
     }
