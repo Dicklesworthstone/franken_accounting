@@ -23,11 +23,13 @@ use fgdb_types::CommitSeq;
 use fgdb_types::context::PurposeContexts;
 
 use crate::evidence::{
-    Document, DocumentAdded, document_vid, drift, intake_check, stage_document, verify_row,
+    Document, DocumentAdded, derivation_sources, document_vid, drift, intake_check, stage_document,
+    verify_row,
 };
 use crate::genesis::BookContext;
 use crate::policy;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
+use crate::rows::edge_id;
 
 pub mod external;
 pub use external::{prepare_external_upload, upload_document_in_store, upload_external_document};
@@ -140,6 +142,9 @@ struct AdmittedUpload {
     kind: String,
     source: IntakeSource,
     summary: UploadSummary,
+    /// The sources a derived document's `DERIVED_FROM` lineage names,
+    /// read in this transaction.
+    derived_from: Vec<Oid>,
 }
 
 enum UploadAdmission {
@@ -153,7 +158,22 @@ impl AdmittedUpload {
         db: &mut Database<V>,
         batch: WriteBatch,
     ) -> Result<Box<PreparedUpload>, KernelError> {
-        if let Err(error) = self.txn.write_ordered(db, vec![batch]) {
+        let mut batches = vec![batch];
+        if !self.derived_from.is_empty() {
+            let child = document_vid(&self.summary.oid);
+            let mut lineage = WriteBatch::new(relation::DERIVED_FROM);
+            for parent in &self.derived_from {
+                let target = document_vid(parent);
+                lineage.add_edge(
+                    edge_id(relation::DERIVED_FROM, child, target),
+                    child,
+                    target,
+                    vec![],
+                );
+            }
+            batches.push(lineage);
+        }
+        if let Err(error) = self.txn.write_ordered(db, batches) {
             self.txn.abort();
             return Err(error.into());
         }
@@ -267,6 +287,15 @@ fn admit_upload<V: asupersync::fs::Vfs + Clone>(
             already_recorded: true,
         })));
     }
+    let derived_from = match derivation_sources(&document, &oid, &policy, book, |parent| {
+        Ok(txn.vertex(db, parent)?)
+    })? {
+        Ok(parents) => parents,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
     let summary = UploadSummary {
         oid,
         doc_commit: document.doc_commit(),
@@ -282,6 +311,7 @@ fn admit_upload<V: asupersync::fs::Vfs + Clone>(
         kind,
         source,
         summary,
+        derived_from,
     }))))
 }
 
