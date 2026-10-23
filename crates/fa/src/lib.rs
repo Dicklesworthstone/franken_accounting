@@ -90,6 +90,7 @@ pub mod query;
 pub mod recurring;
 pub mod report_artifact;
 pub mod roll_forward;
+pub mod rule;
 pub mod scenario;
 pub mod search;
 pub mod settlement;

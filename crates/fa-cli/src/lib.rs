@@ -49,6 +49,7 @@ mod query;
 mod rea;
 mod recurring;
 mod refusal_object;
+mod rule;
 mod sample;
 mod scenario;
 mod subledger;
