@@ -16,9 +16,9 @@ use crate::bank_reconciliation::BankStatementDrift;
 use crate::cutoff::{
     ConfirmCoverage, DamagesButFor, DistributionProRata, DistributionRisingTide,
     ExpenseCapitalization, LookbackFraudulentTransfer, LookbackPreferences, PartyMasterChanges,
-    PayrollGhost, PeriodBoundary, PonziNetInvestment, ReconBookToBook, ReconIntercompany,
-    ReconLapping, ReversalPatterns, SolvencyBalanceSheetTest, SolvencyCashFlowTest,
-    SubsequentEvents, UnrecordedLiabilities,
+    PayrollGhost, PeriodBoundary, PonziMotif, PonziNetInvestment, ReconBookToBook,
+    ReconIntercompany, ReconLapping, ReversalPatterns, SolvencyBalanceSheetTest,
+    SolvencyCashFlowTest, SubsequentEvents, UnrecordedLiabilities,
 };
 use crate::digits::{FirstDigit, FirstTwoDigits, SecondDigit};
 use crate::duplicates::{Near, SameSameDifferent, SameSameSame};
@@ -98,6 +98,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         LookbackPreferences::ID => Box::new(LookbackPreferences::with(params)),
         LookbackFraudulentTransfer::ID => Box::new(LookbackFraudulentTransfer::with(params)),
         PonziNetInvestment::ID => Box::new(PonziNetInvestment::with(params)),
+        PonziMotif::ID => Box::new(PonziMotif::with(params)),
         DistributionRisingTide::ID => Box::new(DistributionRisingTide::with(params)),
         DistributionProRata::ID => Box::new(DistributionProRata::with(params)),
         DamagesButFor::ID => Box::new(DamagesButFor::with(params)),
