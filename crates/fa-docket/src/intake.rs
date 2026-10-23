@@ -1340,7 +1340,7 @@ pub fn extract_pdf_text_string(pdf_bytes: &[u8]) -> Result<String, Refusal> {
     if !pdf_bytes.starts_with(b"%PDF-") {
         return Err(intake_refusal(
             "pdf_extract.invalid_header: document does not start with %PDF-",
-            "supply a valid PDF document or route image documents through run_focr_extraction",
+            "the text layer needs a PDF; OCR an image or a scan instead (fa document extract <oid> --tool focr)",
         ));
     }
 
@@ -1413,7 +1413,7 @@ pub fn extract_pdf_text_string(pdf_bytes: &[u8]) -> Result<String, Refusal> {
     if extracted.is_empty() {
         return Err(intake_refusal(
             "pdf_extract.empty_text_layer: PDF contains no extractable text-layer operators",
-            "route image-only scanned PDFs through run_focr_extraction (which grades the output AgentUpload)",
+            "an image-only scan has no text layer; OCR it (fa document extract <oid> --tool focr), whose text is not replayable and is graded by who ran it",
         ));
     }
 
@@ -1775,7 +1775,7 @@ pub fn run_focr_extraction(
         tool_name: "focr".to_string(),
         tool_version,
         model_artifact_hash: parsed_hash,
-        command_line: argv,
+        command_line: recorded_command_line(argv, input_path, &source_oid),
         replayable: false,
         extracted_text,
         raw_tool_output: output.stdout,
@@ -1794,6 +1794,25 @@ pub fn run_focr_extraction(
         metadata,
         source_oid,
     }))
+}
+
+/// The command line a derived document records: `argv` with the host path
+/// of the tool's input replaced by the source's handle `D:<oid>`. Provenance
+/// names what was read, not where a temporary copy of it happened to live,
+/// so the same source and tool record the same invocation on any host.
+fn recorded_command_line(
+    mut argv: Vec<String>,
+    input_path: &Path,
+    source_oid: &Oid,
+) -> Vec<String> {
+    let shown = input_path.display().to_string();
+    let handle = format!("D:{}", fa_journal::evidence::hex(&source_oid.0));
+    for arg in &mut argv {
+        if *arg == shown {
+            arg.clone_from(&handle);
+        }
+    }
+    argv
 }
 
 /// Run `franken_whisper` (`fw`) as a subprocess grader on `input_path`,
@@ -1887,7 +1906,7 @@ pub fn run_fw_extraction(
         tool_name: "fw".to_string(),
         tool_version,
         model_artifact_hash: parsed_hash,
-        command_line: argv,
+        command_line: recorded_command_line(argv, input_path, &source_oid),
         replayable: false,
         extracted_text,
         raw_tool_output: output.stdout,
