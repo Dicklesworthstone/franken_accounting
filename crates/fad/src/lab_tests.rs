@@ -141,6 +141,61 @@ fn server_wakes_configured_registers_only_when_a_request_commits() {
         scheduled,
         "an idempotent retry never wakes itself"
     );
+
+    // Exercise the actual framing/timer arbitration too. No test calls
+    // tick here, and the regular timer is an hour away. A request which
+    // commits must wake maintenance before the following status/Stop.
+    let mut status = run(&["--json"]);
+    status.op = Op::Status;
+    let mut stop = run(&["--json"]);
+    stop.op = Op::Stop;
+    stop.stdin = Some(server.book.owner_token().to_vec());
+    let requests = [
+        run(&["period", "create", "--fiscal-year", "2027", "--json"]),
+        status,
+        stop,
+    ];
+    let bytes: Vec<u8> = requests.iter().flat_map(frame).collect();
+    let (mut stream, mut client) = VirtualTcpStream::pair(addr(163), addr(164));
+    let received = runtime.block_on(async {
+        client.write_all(&bytes).await.unwrap();
+        assert_eq!(
+            serve_connection_with(&cx, &mut stream, LIMITS, Path::new(BOOK), &mut server).await,
+            Ended::Stop
+        );
+        drop(stream);
+        let mut received = Vec::new();
+        client.read_to_end(&mut received).await.unwrap();
+        received
+    });
+    let mut decoder = Decoder::new(MAX);
+    decoder.push(&received);
+    let mut frames = Vec::new();
+    while let Some(frame) = decoder.next_frame().unwrap() {
+        frames.push(frame);
+    }
+    schema_checked(&frames);
+    let replies = responses(&frames);
+    assert_eq!(
+        replies.len(),
+        3,
+        "every request receives its whole response"
+    );
+    for reply in &replies {
+        assert_eq!(reply.exit, 0, "{}{}", reply.stdout, reply.stderr);
+    }
+    let status = fa_cli::wire::canonical(replies[1].stdout.trim().as_bytes()).unwrap();
+    let maintenance = status
+        .get("data")
+        .unwrap()
+        .get("register_maintenance")
+        .unwrap();
+    assert_eq!(maintenance.get("attempts"), Some(&Json::Int(2)));
+    let work = server.timed.as_ref().unwrap();
+    assert_eq!(work.register_maintenance().unwrap().attempts(), 2);
+    assert_eq!(work.deadline(), scheduled);
+    assert!(!work.timing_enabled());
+    assert!(server.book.latest_tick().unwrap().is_none());
 }
 
 /// Feed `bytes` to a fresh connection, serve it with an echo handler, and
