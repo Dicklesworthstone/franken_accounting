@@ -649,6 +649,8 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
         assert_eq!(replayed, original, "{name}: complete robot line replays");
         assert_eq!(ok(&["replay", oid, "--json"]), original);
         assert_eq!(ok(&["replay", &format!("C:{oid}"), "--json"]), original);
+        // fa-waow: the plan's `fa verify certificate` is that replay.
+        assert_eq!(ok(&["verify", "certificate", &path, "--json"]), original);
         let status = ok(&["certificate", "status", &path, "--json"]);
         let status = doc(&status);
         assert_eq!(text(&status, "status"), "Current");

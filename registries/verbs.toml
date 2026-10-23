@@ -1090,6 +1090,13 @@ expands = ["checkpoint", "create"]
 name = "checkpoint sign"
 expands = ["checkpoint", "create"]
 
+# Plan §15.3 Proofs: verifying a certificate is replaying it. fa replay
+# checks the complete artifact and reproduces its report byte for byte,
+# exit 8 when it does not.
+[[alias]]
+name = "verify certificate"
+expands = ["replay"]
+
 # Plan §15.6 "an audit-ready artifact in one command": a recorded run's
 # numbered workpaper.
 [[alias]]

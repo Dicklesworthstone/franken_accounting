@@ -627,10 +627,6 @@ fn every_plan_leaf_present_or_registered() {
             "fa verify bundle",
             "fa-waow: the standalone fa-verify verifies a bundle",
         ),
-        (
-            "fa verify certificate",
-            "fa-waow: today fa certificate status and fa replay",
-        ),
     ];
     let plan = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
