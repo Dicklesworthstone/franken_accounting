@@ -2091,6 +2091,120 @@ fn kernel_and_oracle_agree_on_generated_histories_across_seeds() {
     total.assert_minimums(&format!("{seeds} seeds"));
 }
 
+/// Delta debugging (Zeller and Hildebrandt's ddmin, complements first) over
+/// a failing schedule: a subset of its steps that still `fails`, from which
+/// removing any one chunk at the final granularity no longer fails.
+fn ddmin(mut steps: Vec<TraceStep>, fails: &dyn Fn(&[TraceStep]) -> bool) -> Vec<TraceStep> {
+    let mut n = 2usize;
+    while steps.len() >= 2 {
+        let chunk = steps.len().div_ceil(n);
+        // The first chunk whose removal still fails, as its complement.
+        let reduced = (0..n).find_map(|i| {
+            let start = i * chunk;
+            if start >= steps.len() {
+                return None;
+            }
+            let end = (start + chunk).min(steps.len());
+            let complement: Vec<TraceStep> = steps[..start]
+                .iter()
+                .chain(&steps[end..])
+                .copied()
+                .collect();
+            (!complement.is_empty() && fails(&complement)).then_some(complement)
+        });
+        match reduced {
+            Some(complement) => {
+                steps = complement;
+                n = n.saturating_sub(1).max(2);
+            }
+            None => {
+                if n >= steps.len() {
+                    break;
+                }
+                n = (n * 2).min(steps.len());
+            }
+        }
+    }
+    steps
+}
+
+/// The panic message of a campaign that failed, or `None` when it passed.
+fn campaign_failure(
+    seed: u64,
+    schedule: Schedule<'_>,
+    plant: Option<&'static str>,
+) -> Option<String> {
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        campaign(seed, schedule, plant)
+    }));
+    run.err().map(|payload| {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default()
+    })
+}
+
+/// fa-2ihd acceptance (found and shrunk): a planted divergence, the harness
+/// treating the period law's closed-period refusal (FA-REF-011) as a
+/// disagreement, which is what a kernel admitting an Original in a Closed
+/// period produces (registries/mutants.toml MUT-035 is that kernel
+/// mutation), is found on the canonical seed's history and shrunk by ddmin
+/// to at most 10 steps that still diverge at the same step. The reproducer
+/// (seed and steps) is printed.
+#[test]
+fn planted_mutation_found_and_shrunk() {
+    let seed = 0x9E37_79B9_7F4A_7C15;
+    let plant = Some("FA-REF-011");
+    let trace = campaign(seed, Schedule::All, None).trace;
+    assert_eq!(trace.len(), 640);
+    let full = campaign_failure(seed, Schedule::Steps(&trace), plant)
+        .expect("the canonical history reaches a closed-period refusal");
+    let at = full
+        .split("step ")
+        .nth(1)
+        .and_then(|rest| rest.split(':').next())
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("no step in {full}"));
+    assert!(full.contains("planted divergence: FA-REF-011"), "{full}");
+    let marker = format!("step {at}: planted divergence: FA-REF-011");
+    let fails = |kept: &[TraceStep]| {
+        campaign_failure(seed, Schedule::Steps(kept), plant).is_some_and(|m| m.contains(&marker))
+    };
+    let prefix: Vec<TraceStep> = trace.iter().copied().filter(|s| s.step <= at).collect();
+    assert!(fails(&prefix), "the replayed prefix reproduces {marker}");
+    let shrunk = ddmin(prefix, &fails);
+    let steps: Vec<u64> = shrunk.iter().map(|s| s.step).collect();
+    eprintln!("fa-2ihd reproducer: seed {seed:#x}, steps {steps:?} ({marker})");
+    assert!(
+        shrunk.len() <= 10,
+        "shrunk to {} steps: {steps:?}",
+        shrunk.len()
+    );
+    assert!(fails(&shrunk), "the shrunk schedule still diverges");
+    assert!(steps.contains(&at), "{steps:?}");
+}
+
+/// ddmin over a synthetic predicate: the steps it needs, and only those.
+#[test]
+fn ddmin_keeps_exactly_the_steps_a_failure_needs() {
+    let steps: Vec<TraceStep> = (0..100u64)
+        .map(|step| TraceStep {
+            step,
+            state: step,
+            plant: None,
+        })
+        .collect();
+    let needed = [3u64, 41, 97];
+    let fails = |kept: &[TraceStep]| needed.iter().all(|n| kept.iter().any(|s| s.step == *n));
+    let shrunk = ddmin(steps, &fails);
+    assert_eq!(
+        shrunk.iter().map(|s| s.step).collect::<Vec<_>>(),
+        needed.to_vec()
+    );
+}
+
 /// What one generated history exercised, so that agreement is not vacuous.
 #[derive(Debug, Default)]
 struct Coverage {
@@ -2106,6 +2220,8 @@ struct Coverage {
     march_cash_history: usize,
     open_item_legs: usize,
     corruption_planted: u32,
+    /// The steps run, for replay and shrinking (never summed).
+    trace: Vec<TraceStep>,
 }
 
 impl Coverage {
@@ -2206,6 +2322,35 @@ fn splitmix(i: u64) -> u64 {
 /// each compared with the reference oracle, then the registers, open items
 /// and planted corruption. Returns what it exercised.
 fn generated_history_campaign(seed: u64) -> Coverage {
+    campaign(seed, Schedule::All, None)
+}
+
+/// Which steps a campaign runs. `All` is the full 640-step history and
+/// records each step in `Coverage::trace`. `Steps` replays chosen steps of
+/// such a trace, each from its recorded generator state and with the plant
+/// it fired then, so a subset is the same history less the skipped steps:
+/// the input the shrinker reduces.
+#[derive(Clone, Copy)]
+enum Schedule<'a> {
+    All,
+    Steps(&'a [TraceStep]),
+}
+
+/// One step of a full run: its index, the generator state it started from,
+/// and the deterministic plant it fired (a planted refusal fires at the first
+/// step its precondition holds, so a replay fires it only where it fired).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TraceStep {
+    step: u64,
+    state: u64,
+    plant: Option<&'static str>,
+}
+
+/// The campaign under `schedule`. `plant` names a refusal code the harness
+/// treats as a divergence (`step N: planted divergence`), standing in for a
+/// kernel that admits what the oracle refuses, so the shrinker can be
+/// exercised without mutating the kernel.
+fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> Coverage {
     let (mut k, mut oracle, periods) = setup();
     let usd = k.book.units.lookup("USD").unwrap();
     let mut rng = Rng(seed);
@@ -2302,7 +2447,27 @@ fn generated_history_campaign(seed: u64) -> Coverage {
     let mut evidence_refused: BTreeMap<&'static str, u32> = BTreeMap::new();
     let mut evidence_plants = 0u32;
 
-    for step in 0..640u64 {
+    let steps: Vec<(u64, Option<TraceStep>)> = match schedule {
+        Schedule::All => (0..640u64).map(|s| (s, None)).collect(),
+        Schedule::Steps(kept) => kept.iter().map(|s| (s.step, Some(*s))).collect(),
+    };
+    let mut trace: Vec<TraceStep> = Vec::with_capacity(steps.len());
+    for (step, replay) in steps {
+        if let Some(r) = replay {
+            rng.0 = r.state;
+        }
+        trace.push(TraceStep {
+            step,
+            state: rng.0,
+            plant: None,
+        });
+        // A full run plants each refusal at the first step its precondition
+        // holds (`needed`); a replay plants only where the full run did.
+        let wants = |code: &str| match replay {
+            None => needed.contains(code),
+            Some(r) => r.plant == Some(code),
+        };
+        let mut fired: Option<&'static str> = None;
         if rng.chance(15) {
             let code = periods[1 + rng.below(3) as usize].clone(); // Feb, Mar, Apr
             // Closed and Locked are absorbing until restatement cases land
@@ -2364,7 +2529,7 @@ fn generated_history_campaign(seed: u64) -> Coverage {
             entity: None,
             mantissa,
         };
-        if needed.contains("FA-REF-032")
+        if wants("FA-REF-032")
             && let Some(plain) = posted_intents
                 .iter()
                 .find(|i| i.reverses.is_none() && i.resolves.is_none() && i.settles.is_empty())
@@ -2377,7 +2542,8 @@ fn generated_history_campaign(seed: u64) -> Coverage {
                 dates[0]
             };
             planted = Some(again);
-        } else if needed.contains("FA-REF-073")
+            fired = Some("FA-REF-032");
+        } else if wants("FA-REF-073")
             && let Some((i, _)) = invoices
                 .iter()
                 .filter_map(|i| open_now.get(&(*i, 0)).map(|(_, a, _)| (*i, *a)))
@@ -2385,6 +2551,7 @@ fn generated_history_campaign(seed: u64) -> Coverage {
         {
             // Reversing an invoice with a live application.
             let original = oracle.entry(i).expect("posted invoice");
+            fired = Some("FA-REF-073");
             planted = Some(Intent {
                 class: "Reversal".into(),
                 date: dates[1],
@@ -2402,16 +2569,18 @@ fn generated_history_campaign(seed: u64) -> Coverage {
                 resolves: None,
                 settles: Vec::new(),
             });
-        } else if (needed.contains("FA-REF-072") || needed.contains("FA-REF-071"))
+        } else if (wants("FA-REF-072") || wants("FA-REF-071"))
             && let Some((i, open)) = invoices
                 .iter()
                 .filter_map(|i| open_now.get(&(*i, 0)).map(|(o, a, out)| (*i, o - out - a)))
                 .find(|(_, open)| *open > 0)
         {
             // Over the open amount (072) or against the revenue leg (071).
-            let (amount, ordinal) = if needed.contains("FA-REF-072") {
+            let (amount, ordinal) = if wants("FA-REF-072") {
+                fired = Some("FA-REF-072");
                 (open + 1, 0)
             } else {
+                fired = Some("FA-REF-071");
                 (1, 1)
             };
             planted = Some(Intent {
@@ -2435,10 +2604,11 @@ fn generated_history_campaign(seed: u64) -> Coverage {
                     mantissa: amount,
                 }],
             });
-        } else if needed.contains("FA-REF-070")
+        } else if wants("FA-REF-070")
             && let Some(h) = holds.first()
         {
             // A hold is not an open item.
+            fired = Some("FA-REF-070");
             planted = Some(Intent {
                 class: "Original".into(),
                 date: dates[1],
@@ -2582,7 +2752,14 @@ fn generated_history_campaign(seed: u64) -> Coverage {
                     .copied()
                     .filter(|i| !resolved_targets.contains(i))
                     .collect();
-                let force_shape = !planted_shape && !open.is_empty();
+                let shape_due = match replay {
+                    None => !planted_shape,
+                    Some(r) => r.plant == Some("FA-REF-061"),
+                };
+                let force_shape = shape_due && !open.is_empty();
+                if force_shape {
+                    fired = Some("FA-REF-061");
+                }
                 let target = if force_shape || (!open.is_empty() && rng.chance(80)) {
                     open[rng.below(open.len() as u64) as usize]
                 } else {
@@ -2762,6 +2939,9 @@ fn generated_history_campaign(seed: u64) -> Coverage {
             }
         };
         history.push(intent.clone());
+        if let Some(last) = trace.last_mut() {
+            last.plant = fired;
+        }
 
         let kernel = kernel_post(&mut k, &intent, usd, &refs);
         let model = oracle.post(&intent);
@@ -2814,6 +2994,10 @@ fn generated_history_campaign(seed: u64) -> Coverage {
             }
             (Err(r), Verdict::Refused { code }) => {
                 assert_eq!(r.code, *code, "step {step}: refusal code for {intent:?}");
+                assert!(
+                    plant != Some(*code),
+                    "step {step}: planted divergence: {code} on {intent:?}"
+                );
                 *refused.entry(code).or_insert(0) += 1;
                 if *code == "FA-REF-061" {
                     planted_shape = true;
@@ -2893,6 +3077,7 @@ fn generated_history_campaign(seed: u64) -> Coverage {
         applications_posted,
         undone,
         resolutions: posted_resolutions,
+        trace,
         ..Coverage::default()
     };
     // FA-REF-102: a registered class this slice does not post. Replacement
