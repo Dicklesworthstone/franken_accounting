@@ -71,6 +71,9 @@ mod duplicates;
 #[path = "lantern/numbers.rs"]
 mod numbers;
 
+#[path = "lantern/ponzi_motif.rs"]
+mod ponzi_motif;
+
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 
@@ -935,7 +938,7 @@ fn undeclared_procedures_ignore_the_effective_date() {
     println!(
         "{undeclared} undeclared procedures ignore the date; {declared} declare it; optional ones that move on this corpus: {moved:?}"
     );
-    assert_eq!(declared, 21);
+    assert_eq!(declared, 22);
     assert!(undeclared >= 40, "{undeclared}");
     // The comparison can see a date: declared procedures do move with it here.
     assert!(!moved.is_empty(), "the corpus exercises no effective date");
@@ -1885,7 +1888,7 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
             .expect("registered role and account type admitted");
     }
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 64, "every registry row is listed");
+    assert_eq!(rows.len(), 65, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();

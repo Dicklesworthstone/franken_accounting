@@ -16,7 +16,7 @@ use crate::bank_reconciliation::BankStatementDrift;
 use crate::cutoff::{
     ConfirmCoverage, DamagesAttestedBaseline, DistributionProRata, DistributionRisingTide,
     ExpenseCapitalization, LookbackFraudulentTransfer, LookbackPreferences, PartyMasterChanges,
-    PayrollGhost, PeriodBoundary, PonziNetInvestment, ReconAttestedRegisterCompare,
+    PayrollGhost, PeriodBoundary, PonziMotif, PonziNetInvestment, ReconAttestedRegisterCompare,
     ReconIntercompany, ReconLapping, ReversalPatterns, SolvencyBalanceSheetTest,
     SolvencyCashFlowTest, SubsequentEvents, UnrecordedLiabilities,
 };
@@ -98,6 +98,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         LookbackPreferences::ID => Box::new(LookbackPreferences::with(params)),
         LookbackFraudulentTransfer::ID => Box::new(LookbackFraudulentTransfer::with(params)),
         PonziNetInvestment::ID => Box::new(PonziNetInvestment::with(params)),
+        PonziMotif::ID => Box::new(PonziMotif::with(params)),
         DistributionRisingTide::ID => Box::new(DistributionRisingTide::with(params)),
         DistributionProRata::ID => Box::new(DistributionProRata::with(params)),
         DamagesAttestedBaseline::ID => Box::new(DamagesAttestedBaseline::with(params)),

@@ -1553,6 +1553,29 @@ default = 90
 meaning = "Investor cohort bucket width in civil days from the earliest investor inflow."
 
 [[procedure]]
+id = "graph.ponzi_motif"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L65"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Windows in which new investors' money funds payouts to earlier investors (plan §11.4). Cash is the accounts holding the `cash` account role; a subscription is cash in against an Equity account or one holding the `investor_capital` account role, in an entry naming exactly one party, and an investor's cohort is the window_days window of its first subscription, counted from the unit's first. Per window and unit: new money is what investors in that window's cohort subscribed in it, and redemptions are the cash paid in it to investors of earlier cohorts, whatever the contra account. A window is flagged when new money is at least min_coverage_bps of its redemptions: High when the window's operating cash in (cash in that is not a capital movement) is less than the redemptions, otherwise Medium. The statistic is new money over redemptions in basis points, and the finding cites the redemption entries, then the new-money entries. Refused when no account holds the cash role."
+effective_through = "optional"
+
+[[parameter]]
+procedure = "graph.ponzi_motif"
+name = "window_days"
+default = 90
+meaning = "The cohort and comparison window in civil days, counted from the unit's first subscription; at least 1."
+
+[[parameter]]
+procedure = "graph.ponzi_motif"
+name = "min_coverage_bps"
+default = 10000
+meaning = "The least new money, as basis points of the window's redemptions to earlier investors, that flags it (10000 = new money covers every redemption); at least 1."
+
+[[procedure]]
 id = "distribution.rising_tide"
 version = 2
 claim = "statistical"

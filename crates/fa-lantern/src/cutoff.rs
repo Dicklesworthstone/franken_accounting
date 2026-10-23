@@ -2518,6 +2518,261 @@ impl Procedure for PonziNetInvestment {
     }
 }
 
+/// One party's cash in one entry and unit, for `graph.ponzi_motif`.
+struct InvestorMovement {
+    day: DateDay,
+    vid: VId,
+    party: VId,
+    unit: u32,
+    cash_in: i128,
+    cash_out: i128,
+    /// A leg in the same unit is on an Equity account or one holding the
+    /// `investor_capital` role: a subscription or redemption of capital.
+    capital: bool,
+}
+
+/// Per window and unit, for `graph.ponzi_motif`.
+#[derive(Default)]
+struct MotifWindow {
+    new_money: i128,
+    redemptions: i128,
+    operating_in: i128,
+    new_investors: BTreeSet<VId>,
+    paid_investors: BTreeSet<VId>,
+    new_entries: BTreeSet<VId>,
+    redemption_entries: BTreeSet<VId>,
+}
+
+/// `graph.ponzi_motif` (plan §11.4, `FA-EVID-L65`): inflows from new
+/// investors in a window funding outflows to earlier investors, with the
+/// new-money-to-redemptions ratio by window, and investor cohorts by
+/// first-subscription date.
+pub struct PonziMotif {
+    params: Params,
+}
+procedure_boilerplate!(PonziMotif, "graph.ponzi_motif");
+
+impl Procedure for PonziMotif {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        _book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let window_days = self.params.get_u32("window_days")?;
+        if window_days == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "window_days".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+        let window =
+            i32::try_from(window_days).map_err(|_| LanternError::Overflow("window_days"))?;
+        let min_coverage_bps = i128::from(self.params.get_u32("min_coverage_bps")?);
+        if min_coverage_bps == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "min_coverage_bps".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+        let cash = snapshot.required_role(Self::ID, "cash")?;
+        let investor_capital = snapshot.role_accounts(Self::ID, "investor_capital")?;
+        let (pval_to_party, party_codes) = party_lookup_tables(snapshot);
+        let mut live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
+        live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
+
+        // Cash in and out per entry and unit; an entry naming exactly one
+        // known party attributes its cash to that party, and cash in that is
+        // not a capital movement is the book's operating inflow.
+        let mut movements: Vec<InvestorMovement> = Vec::new();
+        let mut operating: Vec<(DateDay, u32, i128)> = Vec::new();
+        for e in &live {
+            work.entry()?;
+            let mut parties: BTreeSet<VId> = BTreeSet::new();
+            let mut by_unit: BTreeMap<u32, (i128, i128, bool)> = BTreeMap::new();
+            for leg in &e.entry.proposal.legs {
+                work.leg()?;
+                for &(dimension, value) in &leg.dimension_set {
+                    if dimension == fa_model::PARTY_DIMENSION
+                        && let Some(&party) = pval_to_party.get(&value)
+                    {
+                        parties.insert(party);
+                    }
+                }
+                let slot = by_unit.entry(leg.amount.unit.0).or_default();
+                let magnitude = amount_magnitude(leg.amount.mantissa, "leg magnitude")?;
+                if cash.contains(&leg.account_ref) {
+                    match leg.side {
+                        Side::Debit => slot.0 = amount_sum(slot.0, magnitude, "motif cash in")?,
+                        Side::Credit => slot.1 = amount_sum(slot.1, magnitude, "motif cash out")?,
+                    }
+                } else if investor_capital.contains(&leg.account_ref)
+                    || snapshot
+                        .accounts
+                        .get(&leg.account_ref)
+                        .is_some_and(|account| {
+                            AccountType(account.account_type) == AccountType::EQUITY
+                        })
+                {
+                    slot.2 = true;
+                }
+            }
+            let party = (parties.len() == 1)
+                .then(|| parties.first().copied())
+                .flatten();
+            for (unit, (cash_in, cash_out, capital)) in by_unit {
+                if cash_in == 0 && cash_out == 0 {
+                    continue;
+                }
+                if !capital && cash_in > 0 {
+                    operating.push((e.entry.proposal.effective_date, unit, cash_in));
+                }
+                if let Some(party) = party {
+                    movements.push(InvestorMovement {
+                        day: e.entry.proposal.effective_date,
+                        vid: e.vid,
+                        party,
+                        unit,
+                        cash_in,
+                        cash_out,
+                        capital,
+                    });
+                }
+            }
+        }
+
+        // An investor subscribed capital; its cohort starts at its first
+        // subscription. Windows are counted from the unit's first one.
+        let mut first: BTreeMap<(VId, u32), DateDay> = BTreeMap::new();
+        for m in movements.iter().filter(|m| m.capital && m.cash_in > 0) {
+            first
+                .entry((m.party, m.unit))
+                .and_modify(|day| *day = (*day).min(m.day))
+                .or_insert(m.day);
+        }
+        let mut start: BTreeMap<u32, DateDay> = BTreeMap::new();
+        for (&(_, unit), &day) in &first {
+            start
+                .entry(unit)
+                .and_modify(|d| *d = (*d).min(day))
+                .or_insert(day);
+        }
+        let window_of = |unit: u32, day: DateDay| -> Option<i32> {
+            let origin = *start.get(&unit)?;
+            (day >= origin).then(|| (day.0 - origin.0) / window)
+        };
+
+        let population = movements.len() as u64;
+        let mut windows: BTreeMap<(u32, i32), MotifWindow> = BTreeMap::new();
+        for m in &movements {
+            work.compare(1)?;
+            let Some(&joined) = first.get(&(m.party, m.unit)) else {
+                continue;
+            };
+            let (Some(k), Some(cohort)) = (window_of(m.unit, m.day), window_of(m.unit, joined))
+            else {
+                continue;
+            };
+            let w = windows.entry((m.unit, k)).or_default();
+            if m.capital && m.cash_in > 0 && cohort == k {
+                w.new_money = amount_sum(w.new_money, m.cash_in, "motif new money")?;
+                w.new_investors.insert(m.party);
+                w.new_entries.insert(m.vid);
+            }
+            if m.cash_out > 0 && cohort < k {
+                w.redemptions = amount_sum(w.redemptions, m.cash_out, "motif redemptions")?;
+                w.paid_investors.insert(m.party);
+                w.redemption_entries.insert(m.vid);
+            }
+        }
+        for &(day, unit, cash_in) in &operating {
+            work.compare(1)?;
+            if let Some(k) = window_of(unit, day)
+                && let Some(w) = windows.get_mut(&(unit, k))
+            {
+                w.operating_in = amount_sum(w.operating_in, cash_in, "motif operating in")?;
+            }
+        }
+
+        let mut out = Vec::new();
+        for ((unit, k), w) in windows {
+            work.compare(1)?;
+            if w.redemptions == 0 || w.new_money == 0 {
+                continue;
+            }
+            let coverage = amount_share_bps(w.new_money, w.redemptions, "motif coverage")?;
+            if coverage < min_coverage_bps {
+                continue;
+            }
+            // Returns the book's own operating cash could not have paid.
+            let severity = if w.operating_in < w.redemptions {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            let origin = start.get(&unit).copied().unwrap_or(DateDay(0));
+            let from = DateDay(origin.0 + k * window);
+            let through = DateDay(from.0 + window - 1);
+            let mut cites: Vec<Cite> = w
+                .redemption_entries
+                .iter()
+                .copied()
+                .map(Cite::Entry)
+                .collect();
+            for vid in &w.new_entries {
+                if cites.len() < MAX_CITES && !w.redemption_entries.contains(vid) {
+                    cites.push(Cite::Entry(*vid));
+                }
+            }
+            cites.truncate(MAX_CITES);
+            let code = |party: &VId| {
+                party_codes
+                    .get(party)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{:032x}", party.0))
+            };
+            let joined: Vec<String> = w.new_investors.iter().map(code).collect();
+            let paid: Vec<String> = w.paid_investors.iter().map(code).collect();
+            out.push(finding(
+                Self::ID,
+                severity,
+                Statistic {
+                    name: "new_money_to_redemptions_bps".into(),
+                    value: coverage,
+                    scale: 0,
+                    population,
+                },
+                cites,
+                format!(
+                    "window {k} ({from}..={through}, unit {unit}): new investors [{}] paid in {}; earlier investors [{}] received {}; new money is {coverage} bps of those redemptions (min {min_coverage_bps}); operating cash in {}{}",
+                    joined.join(", "),
+                    w.new_money,
+                    paid.join(", "),
+                    w.redemptions,
+                    w.operating_in,
+                    if severity == Severity::High {
+                        ", less than the redemptions"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
+        }
+        Ok(out)
+    }
+}
+
 /// `distribution.rising_tide` (plan §11.5, `FA-EVID-L57`):
 /// Rising-tide receivership distribution (*SEC v. Huber*, 702 F.3d 903).
 /// Equalizes cumulative recovery rates `(cash_out + distribution) / cash_in`
