@@ -668,8 +668,9 @@ pub struct Server<'a> {
     /// When `None`, socket requests may not read or write any host filesystem paths.
     pub files_root: Option<PathBuf>,
     pub requests: u64,
-    /// Present only after the local launcher explicitly authorizes a
-    /// book-key System bootstrap. Wire requests never construct this.
+    /// Owned work explicitly selected by the local launcher. Register
+    /// maintenance alone grants no System authority. Wire requests never
+    /// construct this or broaden its configured periods.
     pub timed: Option<timed::TimedWork>,
     /// Kernel-certified effective UID of this daemon process (`SO_PEERCRED` / `LOCAL_PEERCRED`).
     pub daemon_uid: Option<u32>,
