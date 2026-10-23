@@ -629,6 +629,18 @@ usage = ["diff --from <seq|RFC3339> [--to HEAD|<seq>|<RFC3339>] --period <code>.
 example = "fa diff --from 40 --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
+name = "consolidate"
+summary = "Consolidate a multi-entity book's legal entities for one period (plan §12.3): eliminations derived from the journaled OWNS edges and account roles, the noncontrolling interest, the consolidated balance sheet and income statement, and the proof that consolidated equity equals the members' equity plus the eliminations and the NCI. Nothing is posted."
+writes = false
+subcommands = []
+flags = ["--period", "--as-known-at", "--known-at"]
+switches = []
+events = ["consolidation_run"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["consolidate --period <code> [--as-known-at HEAD|<seq>|<RFC3339>]   (a book created with two or more --entity members sharing its base unit; each member's posted stock through the period's last day is consolidated)", "The group is the book's legal entities; a member is a subsidiary of the group entity whose OWNS edge (fa party relate <owner> <owned> --kind owns --pct <bps>/10000) is active on the period's last day, one parent per subsidiary. Accounts are read by role (fa chart role <account> <role>; fa chart roles lists them), never by code or name: investment_in_subsidiary (the parent's investment at cost), contributed_capital (eliminated against it), noncontrolling_interest and noncontrolling_interest_income (required when a subsidiary is partly owned), intercompany (due-from and due-to balances) and intercompany_activity (intercompany revenue and expense).", "Eliminations: the group's intercompany balances, and separately its intercompany revenue and expense, are reversed and must each net to zero per unit; each subsidiary's contributed capital is eliminated against the controlling share of the parent's investment, the rest is NCI; a partly owned subsidiary's NCI also takes its share of the subsidiary's reserves (reclassified within equity) and of its unclosed earnings (charged to noncontrolling_interest_income). The income statement is the period's activity with Closing entries excluded, as fa statement income-statement reads it, with its own intercompany eliminations and the NCI's share of the period's earnings charged to noncontrolling_interest_income, so net_income is the parent's. Shares round under HalfEven. Refused (exit 3, FA-REF-194): a book with fewer than two entities, an unmatched intercompany balance or charge, an investment that is not the controlling share of capital (goodwill and pre-acquisition retained earnings are not modeled), a missing role, a stake that is not whole basis points, several group parents, an OWNS cycle, or a partly owned subsidiary that owns another member. run_digest is a function of the journal prefix: the same --as-known-at reruns to the same digest. A whole-book read: a token carrying any scope caveat is refused."]
+example = "fa consolidate --period FY2026-P03 --book ./books/group --json"
+
+[[verb]]
 name = "query"
 summary = "Run a GQL statement in the FrankenAccounting profile (plan §15.5): native GQL plus AS KNOWN AT, FOR PERIOD, EFFECTIVE BETWEEN and AT BRANCH, compiled onto one certified native read at one recorded sequence; CALL fa.trial_balance is fa tb itself."
 writes = false
@@ -1960,6 +1972,12 @@ doc = "A trial-balance selection at two recorded frontiers (fa diff): from and t
 fields = ["from:seq", "to:seq", "periods:[string]", "effective_through:date?", "activity:bool", "changes:[ledger_change]", "entries_total:int", "entries:[recorded_entry]"]
 
 [[event]]
+name = "consolidation_run"
+book = true
+doc = "A consolidation of a multi-entity book's legal entities for one period (fa consolidate): members with each subsidiary's group parent and stake; the balance sheet's eliminations, derived from each member's stock through the period's last day (ELIM-IC-GROUP for intercompany balances and transactions, ELIM-EQ for capital against investment with NCI on it, ELIM-NCI-RES for the NCI's share of reserves, ELIM-NCI for its share of unclosed earnings); the income statement's eliminations, derived from each member's activity in the period (intercompany transactions and the NCI's share of the period's earnings); the equity reconciliation per unit (parent + subsidiaries + eliminations + NCI = consolidated, of which controlling); and the consolidated balance sheet (stock plus its eliminations) and income statement (the period's activity, Closing entries excluded, plus its eliminations). run_digest names the run; nothing is posted."
+fields = ["period:string", "known_at:seq", "effective_through:date", "rounding_law:string", "run_digest:hex", "members:[group_member]", "eliminations:[elimination_entry]", "income_eliminations:[elimination_entry]", "equity:[consolidated_equity]", "balance_sheet:consolidated_statement", "income_statement:consolidated_statement"]
+
+[[event]]
 name = "query_rows"
 book = true
 doc = "A profile query's result (fa query): the statement as written, the native statement it compiled to and ran, the recorded sequence it read (an omitted or HEAD known-at resolved before the read), the FOR PERIOD code when given, the column names and each row's values in the native read's order. A vertex or edge is its 32-hex id, a decimal (an amount mirror or an exact sum of them) is exact text without trailing zeros (1000, 0.5), an exact average is {numerator, denominator}, bytes are hex. result_digest is the substrate's digest of the native read's ordered result under its plan (for an amount aggregate, the rows the profile aggregated): the same statement at the same sequence gives the same digest. Under fa query --certify, or replayed by fa replay, the envelope's certificate is the query certificate's oid."
@@ -3224,6 +3242,31 @@ doc = "One ranked search hit: kind (entry, document or finding), id (an entry's 
 fields = ["kind:string", "id:hex", "recorded_at:seq", "score_micro:int", "matched_terms:[string]", "snippet:string"]
 
 [[shape]]
+name = "group_member"
+doc = "One legal entity of a consolidated group: its code and name, and, for a subsidiary, the group entity that owns it on the period's last day and that stake in basis points."
+fields = ["code:string", "name:string", "parent:string?", "ownership_bps:int?"]
+
+[[shape]]
+name = "elimination_entry"
+doc = "One consolidation elimination, derived and never posted: its code, what it eliminates, its unit and its balanced legs."
+fields = ["code:string", "description:string", "unit:string", "legs:[elimination_leg]"]
+
+[[shape]]
+name = "elimination_leg"
+doc = "One leg of an elimination: the member entity it adjusts, the account (vid and code), and its debit and credit."
+fields = ["entity:string", "account:hex", "code:string", "debits:amount", "credits:amount"]
+
+[[shape]]
+name = "consolidated_equity"
+doc = "The consolidated equity reconciliation in one unit (FA-INV-13): parent_total_equity + subsidiaries_total_equity + equity_eliminations + non_controlling_interest_equity = consolidated_total_equity, which is the consolidated balance sheet's total_equity, and controlling_interest_equity is what remains after the NCI. Equity counts unclosed earnings."
+fields = ["unit:string", "parent_total_equity:amount", "subsidiaries_total_equity:amount", "equity_eliminations:amount", "non_controlling_interest_equity:amount", "controlling_interest_equity:amount", "consolidated_total_equity:amount"]
+
+[[shape]]
+name = "consolidated_statement"
+doc = "A consolidated statement under the registered definition, laid out as the statement event: one column for the period, lines in native units, the mappings, and scope multi-entity-book-consolidated."
+fields = ["name:string", "definition_version:int", "definition_digest:hex", "known_at:seq", "columns:[statement_column]", "lines:[statement_line]", "mappings:[statement_mapping]", "scope:string", "functional:bool?", "base_unit:string?", "valuation_basis:string?"]
+
+[[shape]]
 name = "ledger_change"
 doc = "One account and unit whose balance differs between a diff's two frontiers: debits and credits before and after, posted and pending (reserved, unposted) apart, and the signed change in each net (debits - credits) balance."
 fields = ["account:hex", "code:string", "name:string", "before_debits:amount", "before_credits:amount", "after_debits:amount", "after_credits:amount", "delta:amount", "before_debits_pending:amount", "before_credits_pending:amount", "after_debits_pending:amount", "after_credits_pending:amount", "pending_delta:amount"]
@@ -3669,7 +3712,7 @@ doc = "Bank source intake, exact matches and corrections, immutable decision his
 [[mcp.cluster]]
 name = "fa.close"
 on_demand = true
-doc = "Rehearse an existing draft atomically and retain its exact balance comparison, inspect journaled closing routes, and verify the last mechanical close. Actual routing changes, year-end close publication and draft promotion remain independently authorized host operations."
+doc = "Rehearse an existing draft atomically and retain its exact balance comparison, inspect journaled closing routes, verify the last mechanical close, and consolidate a multi-entity book's legal entities for a period. Actual routing changes, year-end close publication and draft promotion remain independently authorized host operations."
 
 [[mcp.cluster]]
 name = "fa.notary"
@@ -4885,6 +4928,18 @@ mistakes = ["Treating hypothetical entry references as trunk membership or a per
 
 [[mcp.tool]]
 cluster = "fa.close"
+name = "consolidate"
+verb = "consolidate"
+subcommands = []
+positionals = []
+flags = ["--period", "--as-known-at"]
+switches = []
+required = ["--period"]
+dont = ["Don't expect a consolidation across books: the group is one book's legal entities, which share its functional unit.", "Don't post a balancing entry to make a refused consolidation pass; an unmatched intercompany balance needs its counterparty's side, and an investment mismatch its stake or roles corrected. Nothing this tool returns is posted."]
+mistakes = ["Selecting accounts by name: the investment, capital, NCI and intercompany accounts are the ones holding those roles (fa_roles_assign assigns them).", "Reading net_income as the group's: it is the parent's, after the NCI's share is charged to noncontrolling_interest_income; equity carries the NCI."]
+
+[[mcp.tool]]
+cluster = "fa.close"
 name = "routes"
 verb = "close"
 subcommands = ["routes"]
@@ -5609,6 +5664,11 @@ ops = ["read"]
 # A ledger diff lists every entry in its window: the whole book.
 [[bound]]
 verbs = ["diff"]
+ops = ["read"]
+
+# A consolidation folds every entity's stock: the whole book.
+[[bound]]
+verbs = ["consolidate"]
 ops = ["read"]
 
 # A query reads the whole graph.

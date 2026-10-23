@@ -10288,6 +10288,28 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     ]);
     assert_eq!(fed.get("reconciled"), Some(&Json::Bool(true)));
 
+    // A consolidation needs a book of two legal entities.
+    let group = dir.join("group");
+    let chart = write(
+        &dir,
+        "group-chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"}]}"#,
+    );
+    for args in [
+        vec![
+            "book", "create", "--name", "Group Co", "--entity", "A:Alpha", "--entity", "B:Beta",
+        ],
+        vec!["chart", "import", &chart],
+        vec!["period", "create", "--fiscal-year", "2026"],
+        vec!["consolidate", "--period", "FY2026-P03"],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(group.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+    }
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
@@ -20447,6 +20469,484 @@ fn verify_entities_proves_each_legal_entitys_register_by_refold() -> std::io::Re
     let (code, out, _) = run(&["verify", "entities", "--period", "FY2099-P01"]);
     assert_ne!(code, 0, "{out}");
     Ok(())
+}
+
+/// fa-76hy, plan §12.3: `fa consolidate` over a three-entity book. P owns
+/// 80% of S1 and all of S2 (journaled OWNS edges); the accounts are read by
+/// role. The intercompany fee eliminates, each subsidiary's capital
+/// eliminates against the one investment account, and the NCI takes 20% of
+/// S1's capital and of its 40.00 of unclosed earnings on the balance sheet.
+/// The income statement is March's activity alone (S1's February sale stays
+/// out of it), with 20% of S1's 30.00 of March earnings charged to the NCI,
+/// and consolidated equity is proved. A missing role, a one-sided charge, a
+/// one-entity book and an unknown period are refused; the earlier prefix
+/// reruns to the same digest.
+#[test]
+fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_the_nci()
+-> std::io::Result<()> {
+    let dir = tmp("consolidate")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        eprintln!("$ fa {} -> {code}\n{out}{err}", argv.join(" "));
+        (code, out)
+    };
+    let (code, out) = run(&[
+        "book",
+        "create",
+        "--name",
+        "Group Co",
+        "--base-unit",
+        "USD",
+        "--entity",
+        "P:Parent Co",
+        "--entity",
+        "S1:Sub One",
+        "--entity",
+        "S2:Sub Two",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    // Every consolidation role but the NCI income allocation, which is
+    // assigned after the first run is refused for it.
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+{"code":"1300","name":"Due from affiliates","type":"Asset","unit":"USD","roles":["intercompany"]},
+{"code":"1500","name":"Investments in subsidiaries","type":"Asset","unit":"USD","roles":["investment_in_subsidiary"]},
+{"code":"2300","name":"Due to affiliates","type":"Liability","unit":"USD","roles":["intercompany"]},
+{"code":"3000","name":"Share capital","type":"Equity","unit":"USD","roles":["contributed_capital"]},
+{"code":"3200","name":"Noncontrolling interest","type":"Equity","unit":"USD","roles":["noncontrolling_interest"]},
+{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},
+{"code":"4300","name":"Intercompany fees","type":"Revenue","unit":"USD","roles":["intercompany_activity"]},
+{"code":"5000","name":"Operating expense","type":"Expense","unit":"USD"},
+{"code":"5300","name":"Intercompany fee expense","type":"Expense","unit":"USD","roles":["intercompany_activity"]},
+{"code":"5900","name":"Net income attributable to NCI","type":"Expense","unit":"USD"}]}"#,
+    );
+    let (code, out) = run(&["chart", "import", &chart]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P02"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "group.txt", "Group capital, investments and fees");
+    let (code, out) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let evidence = text(&doc(&out), "oid").to_string();
+    // legs: (side, account, amount, entity)
+    let post = |key: &str, date: &str, legs: &[(&str, &str, &str, &str)]| {
+        let legs: Vec<String> = legs
+            .iter()
+            .map(|(side, account, amount, entity)| {
+                format!(
+                    r#"{{"side":"{side}","account":"{account}","amount":"{amount} USD","entity":"{entity}"}}"#
+                )
+            })
+            .collect();
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"idempotency_key":"{key}","effective_date":"{date}","legs":[{}]}}"#,
+                legs.join(",")
+            ),
+        );
+        run(&["post", "--intent", &intent, "--evidence", &evidence])
+    };
+    for (key, legs) in [
+        (
+            "p-capital",
+            vec![
+                ("debit", "1000", "1000.00", "P"),
+                ("credit", "3000", "1000.00", "P"),
+            ],
+        ),
+        // P pays 400.00 for 80% of S1; outside holders pay 100.00.
+        (
+            "s1-formed",
+            vec![
+                ("debit", "1500", "400.00", "P"),
+                ("credit", "1000", "400.00", "P"),
+                ("debit", "1000", "500.00", "S1"),
+                ("credit", "3000", "500.00", "S1"),
+            ],
+        ),
+        (
+            "s2-formed",
+            vec![
+                ("debit", "1500", "200.00", "P"),
+                ("credit", "1000", "200.00", "P"),
+                ("debit", "1000", "200.00", "S2"),
+                ("credit", "3000", "200.00", "S2"),
+            ],
+        ),
+        (
+            "s1-trade",
+            vec![
+                ("debit", "1000", "60.00", "S1"),
+                ("debit", "5000", "40.00", "S1"),
+                ("credit", "4000", "100.00", "S1"),
+            ],
+        ),
+        // P charges S1 a 30.00 fee, booked by both.
+        (
+            "ic-fee",
+            vec![
+                ("debit", "1300", "30.00", "P"),
+                ("credit", "4300", "30.00", "P"),
+                ("debit", "5300", "30.00", "S1"),
+                ("credit", "2300", "30.00", "S1"),
+            ],
+        ),
+        (
+            "s2-loss",
+            vec![
+                ("debit", "5000", "25.00", "S2"),
+                ("credit", "1000", "25.00", "S2"),
+            ],
+        ),
+    ] {
+        let (code, out) = post(key, "2026-03-10", &legs);
+        assert_eq!(code, 0, "{key}: {out}");
+    }
+    // S1's February sale: on the balance sheet, not in March's income.
+    let (code, out) = post(
+        "s1-february",
+        "2026-02-15",
+        &[
+            ("debit", "1000", "10.00", "S1"),
+            ("credit", "4000", "10.00", "S1"),
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    for (owned, pct) in [("S1", "8000/10000"), ("S2", "10000/10000")] {
+        let (code, out) = run(&[
+            "party",
+            "relate",
+            "P",
+            owned,
+            "--kind",
+            "owns",
+            "--basis",
+            "equity_voting",
+            "--valid-from",
+            "2026-01-01",
+            "--pct",
+            pct,
+        ]);
+        assert_eq!(code, 0, "{out}");
+    }
+
+    // Planted: S1 is partly owned and no account holds the NCI income role.
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 3, "{out}");
+    let refused = doc(&out);
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-194", "{out}");
+    assert!(
+        out.contains("noncontrolling_interest_income")
+            && text(&refused, "fix").contains("fa chart role"),
+        "{out}"
+    );
+    let (code, out) = run(&["chart", "role", "5900", "noncontrolling_interest_income"]);
+    assert_eq!(code, 0, "{out}");
+
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(r#""event":"consolidation_run""#), "{out}");
+    let group = doc(&out);
+    let at = int(&group, "known_at").unwrap_or_default();
+    let digest = text(&group, "run_digest").to_string();
+    assert_eq!(digest.len(), 64, "{out}");
+    assert_eq!(text(&group, "effective_through"), "2026-03-31");
+    assert_eq!(text(&group, "rounding_law"), "HalfEven");
+    let members: Vec<(String, String, Option<i128>)> = arr(&group, "members")
+        .iter()
+        .map(|m| {
+            (
+                text(m, "code").to_string(),
+                text(m, "parent").to_string(),
+                int(m, "ownership_bps"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        members,
+        vec![
+            ("P".into(), String::new(), None),
+            ("S1".into(), "P".into(), Some(8000)),
+            ("S2".into(), "P".into(), Some(10000)),
+        ]
+    );
+    let eliminations = arr(&group, "eliminations");
+    let legs = |prefix: &str| -> Vec<(String, String, String, String)> {
+        eliminations
+            .iter()
+            .find(|e| text(e, "code").starts_with(prefix))
+            .map(|e| {
+                arr(e, "legs")
+                    .iter()
+                    .map(|l| {
+                        (
+                            text(l, "entity").to_string(),
+                            text(l, "code").to_string(),
+                            text(l, "debits").to_string(),
+                            text(l, "credits").to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let leg = |e: &str, a: &str, d: &str, c: &str| {
+        (e.to_string(), a.to_string(), d.to_string(), c.to_string())
+    };
+    assert_eq!(eliminations.len(), 4, "{out}");
+    assert_eq!(
+        legs("ELIM-IC-GROUP-"),
+        vec![
+            leg("P", "1300", "0.00 USD", "30.00 USD"),
+            leg("S1", "2300", "30.00 USD", "0.00 USD"),
+            leg("P", "4300", "30.00 USD", "0.00 USD"),
+            leg("S1", "5300", "0.00 USD", "30.00 USD"),
+        ]
+    );
+    let s1 = |kind: &str| {
+        eliminations
+            .iter()
+            .filter(|e| text(e, "code").starts_with(kind))
+            .map(|e| text(e, "code").to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(s1("ELIM-EQ-").len(), 2, "{out}");
+    assert_eq!(s1("ELIM-NCI-").len(), 1, "only S1 is partly owned: {out}");
+    // S1's 500.00 of capital: 400.00 against P's investment, 100.00 NCI.
+    let capital: Vec<_> = eliminations
+        .iter()
+        .filter(|e| text(e, "code").starts_with("ELIM-EQ-"))
+        .map(|e| {
+            arr(e, "legs")
+                .iter()
+                .map(|l| {
+                    (
+                        text(l, "entity").to_string(),
+                        text(l, "code").to_string(),
+                        text(l, "debits").to_string(),
+                        text(l, "credits").to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        capital.contains(&vec![
+            leg("S1", "3000", "500.00 USD", "0.00 USD"),
+            leg("P", "1500", "0.00 USD", "400.00 USD"),
+            leg("S1", "3200", "0.00 USD", "100.00 USD"),
+        ]),
+        "{out}"
+    );
+    assert!(
+        capital.contains(&vec![
+            leg("S2", "3000", "200.00 USD", "0.00 USD"),
+            leg("P", "1500", "0.00 USD", "200.00 USD"),
+        ]),
+        "{out}"
+    );
+    // 20% of S1's 40.00 of unclosed earnings is the NCI's.
+    assert_eq!(
+        legs("ELIM-NCI-"),
+        vec![
+            leg("S1", "5900", "8.00 USD", "0.00 USD"),
+            leg("S1", "3200", "0.00 USD", "8.00 USD"),
+        ]
+    );
+    // March's income carries the fee both ways and 20% of S1's 30.00.
+    let income: Vec<Vec<(String, String, String, String)>> = arr(&group, "income_eliminations")
+        .iter()
+        .map(|e| {
+            arr(e, "legs")
+                .iter()
+                .map(|l| {
+                    (
+                        text(l, "entity").to_string(),
+                        text(l, "code").to_string(),
+                        text(l, "debits").to_string(),
+                        text(l, "credits").to_string(),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        income,
+        vec![
+            vec![
+                leg("P", "4300", "30.00 USD", "0.00 USD"),
+                leg("S1", "5300", "0.00 USD", "30.00 USD"),
+            ],
+            vec![
+                leg("S1", "5900", "6.00 USD", "0.00 USD"),
+                leg("S1", "3200", "0.00 USD", "6.00 USD"),
+            ],
+        ],
+        "{out}"
+    );
+    let equity = &arr(&group, "equity")[0];
+    for (key, value) in [
+        ("parent_total_equity", "1030.00 USD"),
+        ("subsidiaries_total_equity", "715.00 USD"),
+        ("equity_eliminations", "-708.00 USD"),
+        ("non_controlling_interest_equity", "108.00 USD"),
+        ("controlling_interest_equity", "1037.00 USD"),
+        ("consolidated_total_equity", "1145.00 USD"),
+    ] {
+        assert_eq!(text(equity, key), value, "{key}: {out}");
+    }
+    let line = |statement: &str, code: &str| {
+        group
+            .get(statement)
+            .map(|s| arr(s, "lines"))
+            .unwrap_or_default()
+            .iter()
+            .find(|l| text(l, "code") == code)
+            .and_then(|l| arr(l, "amounts").first())
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    // Cash 400.00 + 570.00 + 175.00; the intercompany balances and the
+    // investments eliminate.
+    assert_eq!(line("balance_sheet", "assets"), "1145.00 USD", "{out}");
+    assert_eq!(line("balance_sheet", "liabilities"), "0.00 USD", "{out}");
+    assert_eq!(
+        line("balance_sheet", "total_equity"),
+        "1145.00 USD",
+        "{out}"
+    );
+    assert_eq!(line("balance_sheet", "balance_check"), "0.00 USD", "{out}");
+    // March alone: S1's 100.00, without its February 10.00.
+    assert_eq!(line("income_statement", "revenue"), "100.00 USD", "{out}");
+    // 40.00 + 25.00 of operating expense and the NCI's 6.00: 29.00 is the parent's.
+    assert_eq!(line("income_statement", "expense"), "71.00 USD", "{out}");
+    assert_eq!(line("income_statement", "net_income"), "29.00 USD", "{out}");
+    assert_eq!(
+        group
+            .get("balance_sheet")
+            .map(|s| text(s, "scope").to_string()),
+        Some("multi-entity-book-consolidated".to_string())
+    );
+    let column = group
+        .get("income_statement")
+        .map(|s| arr(s, "columns").to_vec())
+        .unwrap_or_default();
+    assert_eq!(
+        column
+            .iter()
+            .map(|c| (
+                text(c, "mode").to_string(),
+                text(c, "effective_from").to_string(),
+                text(c, "effective_through").to_string()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            "activity".to_string(),
+            "2026-03-01".to_string(),
+            "2026-03-31".to_string()
+        )],
+        "{out}"
+    );
+
+    // The same prefix reruns to the same run.
+    let (code, again) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(text(&doc(&again), "run_digest"), digest);
+
+    // Planted: a charge P books alone leaves the group's balances 5.00 out.
+    let (code, out) = post(
+        "p-alone",
+        "2026-03-10",
+        &[
+            ("debit", "1300", "5.00", "P"),
+            ("credit", "4300", "5.00", "P"),
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-194", "{out}");
+    assert!(
+        out.contains("5.00 USD out of balance") && out.contains("P carries 35.00 USD on 1300"),
+        "the refusal names the entity and the account: {out}"
+    );
+    // The prefix before it still consolidates, to the same run.
+    let earlier = at.to_string();
+    let (code, out) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &earlier,
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(text(&doc(&out), "run_digest"), digest, "{out}");
+
+    // Planted: an unknown period, a missing --period, and a one-entity book.
+    let (code, out) = run(&[
+        "consolidate",
+        "--period",
+        "FY2099-P01",
+        "--as-known-at",
+        &earlier,
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-194", "{out}");
+    assert_eq!(run(&["consolidate"]).0, 2);
+    let solo = dir.join("solo");
+    let (code, out, _) = fa(Some(&solo), &["book", "create", "--name", "Solo", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = fa(
+        Some(&solo),
+        &["consolidate", "--period", "FY2026-P03", "--json"],
+    );
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("needs a group"), "{out}");
+    Ok(())
+}
+
+/// A role's `verbs` (registries/account_roles.toml) name registered verbs,
+/// and the roles that list `consolidate` are exactly the roles its code
+/// reads, as Lantern's role populations are held to `consumers`.
+#[test]
+fn roles_read_by_a_verb_are_the_roles_its_code_reads() {
+    let reg = registry().expect("verbs.toml");
+    let roles = fa_registry::account_roles::AccountRoles::embedded().expect("account_roles.toml");
+    for role in &roles.rows {
+        for verb in &role.verbs {
+            assert!(
+                reg.verbs.iter().any(|v| &v.name == verb),
+                "role `{}` names unregistered verb `{verb}`",
+                role.name
+            );
+        }
+    }
+    let mut listed: Vec<&str> = roles
+        .rows
+        .iter()
+        .filter(|r| r.verbs.iter().any(|v| v == "consolidate"))
+        .map(|r| r.name.as_str())
+        .collect();
+    listed.sort_unstable();
+    assert_eq!(listed, fa::consolidation::CONSOLIDATION_ROLES);
 }
 
 /// Explaining a summary account names the command that answers it: the

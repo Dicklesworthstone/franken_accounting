@@ -959,6 +959,19 @@ impl Book {
         ))
     }
 
+    /// Consolidate the book's legal entities for `period` at `known_at` (the
+    /// head when `None`) under current whole-book read authority (plan §12.3).
+    pub fn consolidation(
+        &self,
+        period: &str,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::consolidation::Consolidation> {
+        with_store!(&self.store, core => core.consolidation(
+            &self.purposes(), period, known_at, capability,
+        ))
+    }
+
     /// Read journaled native subledgers at one prefix under current authority.
     pub fn native_subledgers(
         &self,
