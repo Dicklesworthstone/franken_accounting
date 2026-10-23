@@ -332,9 +332,9 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
 /// unknown entry, an unknown document and a missing --evidence are refused.
 /// `fa assert-balance` (plan §9.4, Appendix B AssertBalance): an
 /// assertion equal to the cell's net (debits minus credits) records a
-/// RegisterEquals attestation that holds, and recording it again is the
-/// recorded one; a false one is refused FA-REF-140, exit 3, naming both
-/// amounts and the difference, and records nothing.
+/// RegisterEquals attestation that holds (asserting again later is a new
+/// assertion at the later sequence); a false one is refused FA-REF-140,
+/// exit 3, naming both amounts and the difference, and records nothing.
 #[test]
 fn assert_balance_records_a_true_assertion_and_refuses_a_false_one() -> std::io::Result<()> {
     let dir = tmp("assert-balance")?;
@@ -410,9 +410,12 @@ fn assert_balance_records_a_true_assertion_and_refuses_a_false_one() -> std::io:
     assert_eq!(field(&cash, "claim"), Some("RegisterEquals"), "{cash}");
     assert_eq!(field(&cash, "holds"), Some("true"), "{cash}");
     assert_eq!(field(&cash, "already_recorded"), Some("false"), "{cash}");
+    // Asserting again later is a new assertion at the later sequence (the
+    // claim binds the sequence it was evaluated at); it holds too.
     let again = ok(&book, &args(&assert("1000", "-1500.00 USD")));
-    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
-    assert_eq!(
+    assert_eq!(field(&again, "holds"), Some("true"), "{again}");
+    assert_eq!(field(&again, "already_recorded"), Some("false"), "{again}");
+    assert_ne!(
         field(&again, "attestation_vid"),
         field(&cash, "attestation_vid")
     );
