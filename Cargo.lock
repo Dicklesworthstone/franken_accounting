@@ -789,6 +789,7 @@ name = "fa"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-canon",
  "fa-docket",
  "fa-escrow",
  "fa-formats",
@@ -840,6 +841,15 @@ dependencies = [
  "fgdb",
  "fgdb-crypto",
  "fgdb-types",
+]
+
+[[package]]
+name = "fa-canon"
+version = "0.0.1"
+dependencies = [
+ "fa-model",
+ "fa-money",
+ "fa-time",
 ]
 
 [[package]]

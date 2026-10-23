@@ -138,6 +138,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
     ("dimension", crate::dimension::dimension_cmd),
+    ("rule", crate::rule::rule_cmd),
     ("finding", crate::finding::finding_cmd),
     ("fx", crate::fx::fx_cmd),
     ("bank", crate::bank::bank_cmd),
@@ -21539,6 +21540,29 @@ fn event_summary_json(ev: &fa_journal::EventRow) -> Json {
     ])
 }
 
+/// The recorded event `target` names in `rea`: its 32-hex vid (optionally
+/// `EV:`-prefixed) or its code.
+pub(crate) fn find_event<'a>(
+    rea: &'a fa_journal::ReaSnapshot,
+    book_id: fa_model::Id128,
+    target: &str,
+) -> Option<&'a fa_journal::EventRow> {
+    let stripped = target.strip_prefix("EV:").unwrap_or(target);
+    if stripped.len() == 32
+        && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(raw) = u128::from_str_radix(stripped, 16)
+    {
+        rea.events
+            .get(&VId(raw))
+            .or_else(|| rea.events.values().find(|e| e.spec.code == target))
+    } else {
+        let derived = fa_model::event_vid(book_id, stripped);
+        rea.events
+            .get(&derived)
+            .or_else(|| rea.events.values().find(|e| e.spec.code == stripped))
+    }
+}
+
 fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fail> {
     let seal_key = &book.context().seal_key;
     let units = &book.context().units;
@@ -21992,21 +22016,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?;
             let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
             ctx.out.known_at(rea.known_at);
-            let stripped = target.strip_prefix("EV:").unwrap_or(target);
-            let ev_row = if stripped.len() == 32
-                && stripped.bytes().all(|b| b.is_ascii_hexdigit())
-                && let Ok(raw) = u128::from_str_radix(stripped, 16)
-            {
-                rea.events
-                    .get(&VId(raw))
-                    .or_else(|| rea.events.values().find(|e| e.spec.code == target))
-            } else {
-                let derived = fa_model::event_vid(book.context().book_id, stripped);
-                rea.events
-                    .get(&derived)
-                    .or_else(|| rea.events.values().find(|e| e.spec.code == stripped))
-            }
-            .ok_or_else(|| {
+            let ev_row = find_event(&rea, book.context().book_id, target).ok_or_else(|| {
                 usage(
                     format!("no event `{target}` in this book at {}", rea.known_at.0),
                     "fa event list --book <dir> --json",

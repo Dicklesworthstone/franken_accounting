@@ -949,6 +949,19 @@ fa dimension require cost_center 6100 --book acme.fabook --json
 fa dimension close cost_center CC10 --on 2026-07-01 --book acme.fabook --json
 fa dimension list cost_center --book acme.fabook --json
 fa tb --period FY2026-P03 --dimension cost_center=CC --book acme.fabook --json
+
+# A Canon posting rule (plan §10.3): a small, total, typed language from an REA event and declared inputs to legs. fa rule check compiles it against the book's units, resolves every rounding law and dimension, and refuses it unless its debits provably equal its credits in every unit; it reports the content address of its IR. fa rule eval shows the legs it derives from a recorded event, posting nothing (available today; journaled rule versions, dual-control activation and rule-derived posting are next, fa-c34).
+#   rule sale_with_tax v1 for event Sale {
+#     inputs { as_of: date }
+#     let net = event.resource("net", "USD")
+#     let tax = net * 7 / 100 round HalfEven
+#     debit "1200" net + tax dims { cost_center = "CC10" }
+#     credit "4000" net
+#     credit "2300" tax
+#     effective as_of
+#   }
+fa rule check sale_with_tax.rule --book acme.fabook --json
+fa rule eval sale_with_tax.rule --event EV-1001 --input as_of=2026-03-31 --book acme.fabook --json
 ```
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.

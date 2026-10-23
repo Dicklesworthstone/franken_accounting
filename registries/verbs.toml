@@ -653,6 +653,18 @@ usage = ["query \"<statement>\" [--certify] [--certificate-out <new-file>] [--br
 example = "fa query \"MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, l.side, SUM(l.amount) AS total FOR PERIOD 'FY2026-P03'\" --book ./books/myco --json"
 
 [[verb]]
+name = "rule"
+summary = "Check a Canon posting rule (plan §10.3): parse it, type its units, resolve its rounding laws and dimensions and prove its debits equal its credits in every unit; or evaluate it over a recorded REA event. Nothing is journaled or posted."
+writes = false
+subcommands = ["check", "eval"]
+flags = ["--event", "--input", "--as-known-at"]
+switches = []
+events = ["rule_checked", "rule_evaluated"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["rule check <rule-file|->   (compile the rule against the book's units and report the content address of its IR (ir_digest) and its dependency set: the accounts it posts to, units, rounding laws, event resources and dimension tags; a refused rule is FA-REF-196, naming the line and column)", "rule eval <rule-file|-> --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]   (the legs the rule derives from that recorded event and the inputs it declares, with the effective date and the rule, event and inputs digests; a leg that evaluates to zero is omitted; nothing is posted)", "A rule: rule <name> v<N> for event <Kind> { [inputs { <name>: date | amount(\"<UNIT>\"), ... }] <statements> }. Statements: let <name> = <amount>; debit|credit \"<account code>\" <amount> [dims { <dimension> = \"<code>\", ... }]; effective event.occurred_on | <date input> (default event.occurred_on). Amounts: \"12.50 USD\", event.resource(\"<label>\", \"<UNIT>\"), a let or amount input, + and -, * N, and / D round <law> (every division names a registered rounding law). # and // start a comment. A rule reads no clock: one that needs today declares a date input.", "check refuses a rule whose debits minus credits are not provably zero in every unit as exact linear forms (each distinct rounded division is one opaque term, so a rounding that does not appear on both sides cannot balance), a unit mismatch, an unregistered unit, law, dimension or event kind, and an undeclared name; Canon never adds a residual leg. The IR digest is independent of let names and layout. eval refuses with FA-REF-196 an event of another kind, a missing or repeated resource, a resource in another unit, a negative leg and an amount outside the exact i128 range. Journaled rule versions, their activation and posting rule-derived entries are not in this slice."]
+example = "fa rule eval rules/sale_with_tax.rule --event EV-1001 --input as_of=2026-03-31 --book ./books/myco --json"
+
+[[verb]]
 name = "procedure"
 summary = "Lantern (plan §11): list the registered forensic and audit procedures, or run one over the book's trunk at a recorded sequence and, for a procedure that takes one (its effective_through in procedure list), through an effective date; a date given to any other procedure is refused. A finding is a statistic with typed citations, never an accusation."
 writes = false
@@ -2169,6 +2181,18 @@ doc = "One REA control journaled (plan §4.1, §4.5): object is party, instrumen
 fields = ["object:string", "code:string", "target:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
+name = "rule_checked"
+book = true
+doc = "A Canon rule that compiled: its name, version and event kind, the content address of its canonical fa:canon-ir:v1 bytes (ir_digest) and their length, its declared inputs (\"name: date\" or \"name: amount UNIT\"), and its dependency set: the account codes it posts to, its units, the rounding laws it applies, the event resources it reads (\"label:UNIT\") and the dimension tags it writes (\"dimension=code\"). Its debits equal its credits in every unit for every event and input. Nothing is written."
+fields = ["rule:string", "version:int", "event_kind:string", "ir_digest:hex", "ir_bytes:int", "inputs:[string]", "accounts:[string]", "units:[string]", "laws:[string]", "resources:[string]", "dimensions:[string]"]
+
+[[event]]
+name = "rule_evaluated"
+book = true
+doc = "The legs one checked rule derives from one recorded REA event and the inputs it declares: the rule's name, version, event kind and ir_digest; the event's code, vid and event digest; the digest of the inputs; the effective date; and the legs, in the rule's order, a zero leg omitted. The rule, event and inputs digests are the three a rule-derived entry's origin names. Nothing is journaled or posted, and an account code is resolved only when an entry posts."
+fields = ["rule:string", "version:int", "event_kind:string", "ir_digest:hex", "event_code:string", "event_vid:hex", "event_digest:hex", "inputs_digest:hex", "effective:date", "legs:[rule_leg]"]
+
+[[event]]
 name = "dimension_value_recorded"
 book = true
 doc = "One dimension value journaled by its SchemaChange control (plan §4.1): value is its declaration (dimension, code, name, parent, valid_from inclusive, valid_to exclusive), the dimension id legs carry it under, its DimensionValue vid and the sequence it was recorded at; already_recorded is true when an exact retry of the same key wrote nothing."
@@ -3651,6 +3675,11 @@ name = "lineage_net_cell"
 doc = "Net economic effect `(debit - credit)` of a `SUPERSEDES` lineage component on one `(account, unit)` cell."
 fields = ["account:string", "account_vid:hex", "account_name:string", "unit:string", "debits:amount", "credits:amount", "net:amount"]
 
+[[shape]]
+name = "rule_leg"
+doc = "One leg a Canon rule derives: side (debit or credit), the account code as the rule names it, a positive amount, and its dimension tags as dimension=code."
+fields = ["side:string", "account:string", "amount:amount", "dimensions:[string]"]
+
 # ---------------------------------------------------------------------------
 # MCP (plan §15.4, bead fa-xex): this registry as tool clusters.
 # ---------------------------------------------------------------------------
@@ -3691,7 +3720,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected"]
+repeat_flags = ["--evidence", "--approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--budget"]
 
@@ -5737,6 +5766,10 @@ verbs = ["query"]
 ops = ["read"]
 
 [[bound]]
+verbs = ["rule"]
+ops = ["read"]
+
+[[bound]]
 verbs = ["verify", "registers"]
 ops = ["read", "verify"]
 
@@ -6237,6 +6270,27 @@ switches = ["--remove"]
 required = ["dimension", "account"]
 dont = ["Require a dimension on posting leaves only (expense accounts, for example); a summary account is refused.", "Don't require a dimension before it has a value: the refusal names fa dimension add."]
 mistakes = ["Naming the account by name instead of its chart code.", "Expecting remove to write when the account was never required: it writes nothing."]
+
+[[mcp.cluster]]
+name = "fa.rules"
+on_demand = true
+doc = "Canon posting rules (plan §10.3, fa-c34): check a rule's units, laws and balance proof, or evaluate it over a recorded event. Read-only. On demand (fa-mcp --cluster fa.rules): the default surface is at its 40-tool budget."
+
+[[mcp.tool]]
+cluster = "fa.rules"
+name = "rule"
+verb = "rule"
+subcommands = ["check", "eval"]
+selector = "action"
+positionals = ["file?"]
+stdin_property = "source"
+stdin_kind = "string"
+stdin_via = "file"
+flags = ["--event", "--input", "--as-known-at"]
+switches = []
+required = []
+dont = ["Don't balance a rule with a plug: a rule compiles only when its debits equal its credits in every unit, and Canon never adds a residual leg.", "Don't read today's date inside a rule: declare a date input and supply it (input as_of=2026-03-31)."]
+mistakes = ["Passing a host path as `file`: supply the rule text inline as `source`.", "Dividing without naming a rounding law: write `x * 7 / 100 round HalfEven`.", "Rounding one side and not the other: the same rounded term must appear on both sides."]
 
 [[mcp.cluster]]
 name = "fa.subledger"

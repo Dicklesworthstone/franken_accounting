@@ -1,0 +1,52 @@
+# Canon evaluates amount mantissas as i128 (and their magnitudes and products
+# as u128), so the crate's `deny(clippy::arithmetic_side_effects)` exempts
+# every narrower integer (counts, indices, days, bounds) and bites only on
+# 128-bit arithmetic. Saturating and wrapping 128-bit methods are disallowed:
+# an amount that leaves the range is a typed refusal (FA-INV-06; fa-4aym).
+arithmetic-side-effects-allowed = ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"]
+disallowed-methods = [
+    { path = "i128::saturating_add", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::saturating_sub", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::saturating_mul", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::saturating_neg", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::saturating_abs", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "i128::wrapping_add", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "i128::wrapping_sub", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "i128::wrapping_mul", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "i128::wrapping_neg", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "u128::saturating_add", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "u128::saturating_sub", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "u128::saturating_mul", reason = "amounts overflow to a typed refusal, never a clamp (FA-INV-06)" },
+    { path = "u128::wrapping_add", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "u128::wrapping_sub", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    { path = "u128::wrapping_mul", reason = "amounts overflow to a typed refusal, never wrap (FA-INV-06)" },
+    # Doctrine 3 (fa-c34): a rule is evaluated with no
+    # clock, entropy, network, filesystem, environment, process or thread.
+    # "Today" and every other input are declared parameters.
+    { path = "std::time::SystemTime::now", reason = "a rule reads no clock; a date is a declared input (doctrine 3)" },
+    { path = "std::time::Instant::now", reason = "a rule reads no clock; its work is bounded by its IR, not timed (doctrine 3)" },
+    { path = "std::fs::read", reason = "a rule reads only its event and declared inputs (doctrine 3)" },
+    { path = "std::fs::read_to_string", reason = "a rule reads only its event and declared inputs (doctrine 3)" },
+    { path = "std::fs::read_dir", reason = "a rule reads only its event and declared inputs (doctrine 3)" },
+    { path = "std::fs::metadata", reason = "a rule reads only its event and declared inputs (doctrine 3)" },
+    { path = "std::fs::write", reason = "a rule writes nothing (doctrine 3)" },
+    { path = "std::fs::create_dir_all", reason = "a rule writes nothing (doctrine 3)" },
+    { path = "std::fs::remove_file", reason = "a rule writes nothing (doctrine 3)" },
+    { path = "std::env::var", reason = "a rule's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::env::var_os", reason = "a rule's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::env::vars", reason = "a rule's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::env::args", reason = "a rule's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::env::current_dir", reason = "a rule's inputs are declared, never ambient (doctrine 3)" },
+    { path = "std::thread::spawn", reason = "no detached thread; a rule runs inside its caller's region (doctrine 3, 9)" },
+]
+disallowed-types = [
+    { path = "std::time::SystemTime", reason = "a rule reads no clock; a date is a declared input (doctrine 3)" },
+    { path = "std::time::Instant", reason = "a rule reads no clock; its work is bounded by its IR, not timed (doctrine 3)" },
+    { path = "std::fs::File", reason = "a rule reads only its event and declared inputs, and writes nothing (doctrine 3)" },
+    { path = "std::fs::OpenOptions", reason = "a rule reads only its event and declared inputs, and writes nothing (doctrine 3)" },
+    { path = "std::net::TcpStream", reason = "a rule has no network (doctrine 3)" },
+    { path = "std::net::TcpListener", reason = "a rule has no network (doctrine 3)" },
+    { path = "std::net::UdpSocket", reason = "a rule has no network (doctrine 3)" },
+    { path = "std::process::Command", reason = "a rule runs no process (doctrine 3)" },
+    { path = "std::thread::Builder", reason = "no detached thread; a rule runs inside its caller's region (doctrine 3, 9)" },
+]

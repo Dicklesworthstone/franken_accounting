@@ -9952,6 +9952,14 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     run2(&["event", "show", "EV-1001"]);
     run2(&["event", "list"]);
+    // fa-c34: a Canon rule checked against the book, then evaluated over EV-1001.
+    let fee_rule = write(
+        &dir,
+        "fee.rule",
+        r#"rule fee v1 for event Sale { debit "1000" "1.00 USD" credit "4000" "1.00 USD" }"#,
+    );
+    run2(&["rule", "check", &fee_rule]);
+    run2(&["rule", "eval", &fee_rule, "--event", "EV-1001"]);
     run2(&["verify", "periods"]);
     run2(&[
         "capability",
@@ -20272,6 +20280,175 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
         "a discarded scenario's certificate still replays: {out}"
     );
     assert_eq!(doc(&out), certified);
+    Ok(())
+}
+
+/// fa-c34: `fa rule check` compiles a Canon rule against the book's units
+/// and proves it balances in every unit; `fa rule eval` derives its legs
+/// from a recorded event and writes nothing. An unbalanced rule, a rule for
+/// another event kind, a missing or undeclared input and an unknown event
+/// are refused.
+#[test]
+fn a_canon_rule_is_checked_against_the_book_and_derives_legs_from_a_recorded_event()
+-> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("canon-rule")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let (code, out, err) = run(&[
+        "event",
+        "record",
+        "--code",
+        "EV-7",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:100.50 USD",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}{err}");
+    let rule = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale_with_tax v1 for event Sale {
+  inputs { as_of: date }
+  let net = event.resource("net", "USD")
+  let tax = net * 7 / 100 round HalfEven   # 7.035 is a tie: HalfEven gives 7.04
+  debit  "1000" net + tax dims { cost_center = "CC1" }
+  credit "6000" net
+  credit "2300" tax
+  effective as_of
+}"#,
+    );
+    let strs = |j: &Json, key: &str| -> Vec<String> {
+        arr(j, key)
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+
+    let (code, out, _) = run(&["rule", "check", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let checked = doc(&out);
+    assert_eq!(text(&checked, "event"), "rule_checked");
+    assert_eq!(text(&checked, "rule"), "sale_with_tax");
+    assert_eq!(text(&checked, "event_kind"), "sale");
+    let digest = text(&checked, "ir_digest").to_string();
+    assert_eq!(digest.len(), 64, "{out}");
+    assert_eq!(strs(&checked, "accounts"), ["1000", "2300", "6000"]);
+    assert_eq!(strs(&checked, "laws"), ["HalfEven"]);
+    assert_eq!(strs(&checked, "inputs"), ["as_of: date"]);
+    assert_eq!(strs(&checked, "resources"), ["net:USD"]);
+    assert_eq!(strs(&checked, "dimensions"), ["cost_center=CC1"]);
+
+    let (_, before, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    let (code, out, _) = run(&[
+        "rule",
+        "eval",
+        &rule,
+        "--event",
+        "EV-7",
+        "--input",
+        "as_of=2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let derived = doc(&out);
+    assert_eq!(text(&derived, "ir_digest"), digest);
+    assert_eq!(text(&derived, "event_code"), "EV-7");
+    assert_eq!(text(&derived, "effective"), "2026-03-31");
+    let legs: Vec<(String, String, String, Vec<String>)> = arr(&derived, "legs")
+        .iter()
+        .map(|leg| {
+            (
+                text(leg, "side").to_string(),
+                text(leg, "account").to_string(),
+                text(leg, "amount").to_string(),
+                strs(leg, "dimensions"),
+            )
+        })
+        .collect();
+    let leg = |side: &str, account: &str, amount: &str, dims: &[&str]| {
+        (
+            side.to_string(),
+            account.to_string(),
+            amount.to_string(),
+            dims.iter().map(|d| (*d).to_string()).collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(
+        legs,
+        [
+            leg("debit", "1000", "107.54 USD", &["cost_center=CC1"]),
+            leg("credit", "6000", "100.50 USD", &[]),
+            leg("credit", "2300", "7.04 USD", &[]),
+        ],
+        "{out}"
+    );
+    // Evaluation posts nothing: the trial balance is unchanged.
+    let (_, after, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(arr(&doc(&after), "rows"), arr(&doc(&before), "rows"));
+
+    // Refusals: each names its law or the usage that fixes it.
+    let unbalanced = write(
+        &dir,
+        "unbalanced.rule",
+        r#"rule short v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net + net * 7 / 100 round HalfEven
+  credit "6000" net
+}"#,
+    );
+    let (code, out, _) = run(&["rule", "check", &unbalanced, "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("does not balance in USD"), "{out}");
+    let purchase = write(
+        &dir,
+        "purchase.rule",
+        r#"rule bill v1 for event Purchase { debit "6000" "1.00 USD" credit "1000" "1.00 USD" }"#,
+    );
+    let (code, out, _) = run(&["rule", "eval", &purchase, "--event", "EV-7", "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("purchase events"), "{out}");
+    for args in [
+        vec!["rule", "eval", rule.as_str(), "--event", "EV-7"],
+        vec![
+            "rule",
+            "eval",
+            rule.as_str(),
+            "--event",
+            "EV-7",
+            "--input",
+            "as_of=2026-03-31",
+            "--input",
+            "today=2026-03-31",
+        ],
+        vec![
+            "rule",
+            "eval",
+            rule.as_str(),
+            "--event",
+            "EV-404",
+            "--input",
+            "as_of=2026-03-31",
+        ],
+        vec!["rule", "lint", rule.as_str()],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
     Ok(())
 }
 
