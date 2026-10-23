@@ -520,3 +520,36 @@ Logs are `snapshot-aggregate-positive-5492f2c6-20261023.log`,
 `admitted-repairs-bb5a0485-20261023.log` under the verification-output directory.
 Whole static scanning and the complete canonical exact-tree gate remain
 unqualified; no Bead is closed from these selected results.
+
+## 2026-10-23 — Network tracing charges the caller after completion (fa-1tvm)
+
+The exact `836009e9` workspace-built CLI, SHA256
+`ebc3e3998f9082f947fdfde1dd479476bf6f8e5e483b2d5d40dfcb425c5e65e2`,
+reproduces the remaining charge-after-return defect on a separately retained,
+explicitly synthetic book. A source100.00USD and transfer80.00USD leave the
+literal expected20.00/80.00 under all four network laws. Budget6 is refused
+only after520 work units for every law; budget520 is refused after1636 for
+FIFO/LIFO,625 for LIBR, and623 for pro rata. Every refusal is one error event,
+exit3, and the complete before/after book-info envelopes are unchanged.
+The executable was copied and hash-checked before and after the probe, while
+the original exact-source workspace campaign retained its own source bytes.
+The manifest and all command/stdout/stderr records are retained under
+`franken_accounting-verification-output/network-runtime-probe-836009e9-20261023/`.
+This is a current compiled CLI counterexample; it is not a passing repaired
+Rust test or a canonical gate verdict.
+
+The draft correction charges each projection cell estimate before allocating
+its matrix, then forwards the caller's fallible meter to every existing engine
+step. It retains the independent `max_*` limits and preserves the original
+typed caller refusal without returning a partial report. A successful engine's
+reported work must reconcile exactly to the caller's counter delta; it is not
+charged a second time. Native regressions require projection refusal at260
+with budget6, engine refusal at524 with budget520, unchanged exact-budget
+findings/work, all four literal20/80 schedules, and deterministic cancellation
+injection. Pure-law controls compare the complete unchanged schedules and work
+counts and stop each law at its tenth callback. The repaired runtime results
+remain unrun at this checkpoint. Indivisible sorts, arbitrary-precision
+arithmetic, bulk storage readers, registered per-procedure budgets, structural
+stripped-context admission, and full complexity coverage are still separate
+unmet acceptance within the original open fa-1tvm; this callback wiring does
+not establish a universal wall-time checkpoint bound.
