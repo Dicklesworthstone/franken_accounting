@@ -292,16 +292,22 @@ fn selected_entity(spec: &BookSpec, entity: Option<VId>) -> Result<Option<VId>, 
 }
 
 fn leg_entity(spec: &BookSpec, leg: &LegPayload) -> Result<Option<VId>, Refusal> {
-    if leg
-        .dimension_set
-        .iter()
-        .any(|(dimension, _)| *dimension != LEGAL_ENTITY_DIMENSION)
-    {
+    // An analytic value is revalued with its account, as it closes with it
+    // (fa-ficc); a fund or a party has no revaluation treatment yet.
+    if leg.dimension_set.iter().any(|(dimension, _)| {
+        *dimension != LEGAL_ENTITY_DIMENSION && !crate::dimension::closes_with_account(*dimension)
+    }) {
         return Err(unsupported(
             "an exposure or valuation leg uses a dimension without an implemented revaluation treatment",
         ));
     }
-    selected_entity(spec, leg.dimension_set.first().map(|(_, value)| *value))
+    selected_entity(
+        spec,
+        leg.dimension_set
+            .iter()
+            .find(|(dimension, _)| *dimension == LEGAL_ENTITY_DIMENSION)
+            .map(|(_, value)| *value),
+    )
 }
 
 fn route_accounts<'a>(

@@ -933,6 +933,31 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::Read, Op::SchemaChange],
             Succeeds,
         ),
+        // fa-ficc: a dimension value is a schema control legs then tag.
+        row(
+            &["dimension", "add", "cost_center", "CC10", "--name", "Ops"],
+            &[Op::SchemaChange],
+            Succeeds,
+        ),
+        // --remove on an account never required writes nothing, so the
+        // later rows' legs on 6100 need no cost center.
+        row(
+            &["dimension", "require", "cost_center", "6100", "--remove"],
+            &[Op::Read, Op::SchemaChange],
+            Reaches,
+        ),
+        row(
+            &[
+                "dimension",
+                "close",
+                "cost_center",
+                "CC10",
+                "--on",
+                "2027-01-01",
+            ],
+            &[Op::SchemaChange],
+            Reaches,
+        ),
         row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],

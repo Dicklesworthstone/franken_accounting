@@ -6997,6 +6997,378 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     Ok(())
 }
 
+/// Dimensions (plan §4.1, fa-ficc): a cost-center value with a parent and a
+/// valid time is a journaled schema control; a leg tags it in its intent's
+/// `dimensions`, and the kernel refuses a value the book does not hold or
+/// one outside its window, writing nothing.
+#[test]
+fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::io::Result<()> {
+    let dir = tmp("dimension")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert!(
+            code == 0 || !out.is_empty(),
+            "{argv:?} wrote no robot line\n{err}"
+        );
+        (code, out)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Dimension Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivable","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"},{"code":"6200","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "cost_center",
+        "CC",
+        "--name",
+        "All operations",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let top = doc(&out);
+    let value = top.get("value").unwrap();
+    assert_eq!(text(value, "dimension"), "cost_center");
+    assert_eq!(int(value, "dimension_id"), Some(2));
+    assert_eq!(top.get("already_recorded"), Some(&Json::Bool(false)));
+    // An exact retry of the default key writes nothing.
+    let head = |run: &dyn Fn(&[&str]) -> (i32, String)| {
+        let (_, out) = run(&["book", "info"]);
+        out.lines()
+            .last()
+            .and_then(|line| json::parse(line).ok())
+            .and_then(|line| line.get("coordinate").and_then(|c| int(c, "known_at")))
+    };
+    let before = head(&run);
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "cost_center",
+        "CC",
+        "--name",
+        "All operations",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&run), before);
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "cost_center",
+        "CC10",
+        "--name",
+        "Warehouse",
+        "--parent",
+        "CC",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-20",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let warehouse = doc(&out).get("value").unwrap().clone();
+    assert_eq!(text(&warehouse, "parent"), "CC");
+    assert_eq!(text(&warehouse, "valid_from"), "2026-03-01");
+    assert_eq!(text(&warehouse, "valid_to"), "2026-03-20");
+    // Planted: an unregistered dimension, a missing parent, a code taken in
+    // its dimension and an empty window are usage errors.
+    for args in [
+        vec!["dimension", "add", "cost_centre", "CC30", "--name", "X"],
+        vec![
+            "dimension",
+            "add",
+            "cost_center",
+            "CC20",
+            "--name",
+            "X",
+            "--parent",
+            "NOPE",
+        ],
+        vec![
+            "dimension",
+            "add",
+            "cost_center",
+            "CC10",
+            "--name",
+            "Other",
+            "--key",
+            "other",
+        ],
+        vec![
+            "dimension",
+            "add",
+            "project",
+            "P-1",
+            "--name",
+            "X",
+            "--from",
+            "2026-03-20",
+            "--to",
+            "2026-03-20",
+        ],
+    ] {
+        let (code, out) = run(&args);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    let (code, out) = run(&["dimension", "list", "cost_center"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    let codes: Vec<&str> = arr(&listed, "values")
+        .iter()
+        .map(|v| text(v, "code"))
+        .collect();
+    assert_eq!(codes, ["CC", "CC10"]);
+    assert!(arr(&doc(&run(&["dimension", "list", "project"]).1), "values").is_empty());
+
+    let intent = |key: &str, date: &str, dimensions: &str| {
+        write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6100","amount":"42.00 USD","dimensions":{dimensions}}},{{"side":"credit","account":"1000","amount":"42.00 USD"}}]}}"#
+            ),
+        )
+    };
+    let post = |key: &str, date: &str, dimensions: &str| {
+        run(&[
+            "post",
+            "--intent",
+            &intent(key, date, dimensions),
+            "--evidence",
+            &ev,
+        ])
+    };
+    let (code, out) = post("tagged", "2026-03-15", r#"{"cost_center":"CC10"}"#);
+    assert_eq!(code, 0, "{out}");
+    let vid = text(&doc(&out), "vid").to_string();
+    let (code, out) = run(&["entry", "show", &vid]);
+    assert_eq!(code, 0, "{out}");
+    let shown = doc(&out);
+    let legs = arr(&shown, "legs");
+    let tags = arr(&legs[0], "dimensions");
+    assert_eq!(tags.len(), 1, "{out}");
+    assert_eq!(text(&tags[0], "dimension"), "cost_center");
+    assert_eq!(text(&tags[0], "value"), text(&warehouse, "vid"));
+    assert!(arr(&legs[1], "dimensions").is_empty());
+
+    // Planted, each writing nothing: a value the book does not hold, a value
+    // outside its window (FA-REF-195), a dimension with no values, and
+    // dimensions the leg names elsewhere or not at all.
+    let before = head(&run);
+    let (code, out) = post("unknown", "2026-03-15", r#"{"cost_center":"CC99"}"#);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("does not exist"), "{out}");
+    let (code, out) = post("late", "2026-03-25", r#"{"cost_center":"CC10"}"#);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
+    assert!(out.contains("2026-03-20"), "{out}");
+    for (key, dimensions) in [
+        ("department", r#"{"department":"D1"}"#),
+        ("entity", r#"{"legal_entity":"ACME"}"#),
+        ("color", r#"{"color":"red"}"#),
+        ("twice", r#"{"cost_center":"CC","cost_center":"CC10"}"#),
+    ] {
+        let (code, out) = post(key, "2026-03-15", dimensions);
+        assert_eq!(code, 2, "{key}: {out}");
+    }
+    assert_eq!(head(&run), before);
+    // The parent is always effective, so it tags a leg the child cannot.
+    let (code, out) = post("late-parent", "2026-03-25", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 0, "{out}");
+
+    // fa tb --dimension folds only the tagged legs, a value's descendants
+    // included; the untagged cash legs are left out, so it does not balance.
+    let tb = |filter: &str, extra: &[&str]| {
+        let mut argv = vec!["tb", "--period", "FY2026-P03", "--dimension", filter];
+        argv.extend_from_slice(extra);
+        run(&argv)
+    };
+    let (code, out) = tb("cost_center=CC", &[]);
+    assert_eq!(code, 0, "{out}");
+    let report = doc(&out);
+    let rows = arr(&report, "rows");
+    assert_eq!(rows.len(), 1, "{out}");
+    assert_eq!(text(&rows[0], "code"), "6100");
+    assert_eq!(text(&rows[0], "debits"), "84.00 USD");
+    assert_eq!(report.get("balanced"), Some(&Json::Bool(false)), "{out}");
+    let filter = report.get("dimension").unwrap();
+    assert_eq!(text(filter, "value"), "CC");
+    let included: Vec<&str> = arr(filter, "values")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(included, ["CC", "CC10"]);
+    let (code, out) = tb("cost_center=CC10", &["--activity"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(text(&arr(&doc(&out), "rows")[0], "debits"), "42.00 USD");
+    let (code, out) = run(&["tb", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    let whole = doc(&out);
+    assert_eq!(whole.get("dimension"), Some(&Json::Null));
+    assert_eq!(whole.get("balanced"), Some(&Json::Bool(true)));
+    // Planted: an unknown value, an unregistered dimension, no value, and a
+    // certificate, which a dimension report does not take.
+    for (filter, extra) in [
+        ("cost_center=NOPE", &[][..]),
+        ("nope=CC", &[][..]),
+        ("cost_center", &[][..]),
+        ("cost_center=CC", &["--certify"][..]),
+    ] {
+        let (code, out) = tb(filter, extra);
+        assert_eq!(code, 2, "{filter} {extra:?}: {out}");
+    }
+
+    // An untagged leg on 6100 before any requirement.
+    let (code, out) = post("untagged-before", "2026-03-25", "{}");
+    assert_eq!(code, 0, "{out}");
+    let untagged_before = text(&doc(&out), "vid").to_string();
+    // fa dimension require: from now on every leg on 6100 names a cost
+    // center; requiring it again writes nothing.
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(false)));
+    let before = head(&run);
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&run), before);
+    let listed = doc(&run(&["dimension", "list", "cost_center"]).1);
+    let requirements = arr(&listed, "requirements");
+    assert_eq!(requirements.len(), 1, "{listed:?}");
+    let accounts: Vec<&str> = arr(&requirements[0], "accounts")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(accounts, ["6100"]);
+    // A leg on 6100 naming no cost center is refused (FA-REF-005) with the
+    // values effective that day, CC only (CC10's window has closed), and
+    // nothing is written; the untagged cash leg needs none.
+    let (code, out) = post("untagged", "2026-03-25", "{}");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-005"), "{out}");
+    assert!(out.contains("fa dimension list cost_center"), "{out}");
+    assert_eq!(head(&run), before);
+    let (code, out) = post("required-tagged", "2026-03-25", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 0, "{out}");
+    // An exact reversal carries its target's values as dictated: neither the
+    // requirement nor CC10's closed window blocks reversing the untagged
+    // entry posted before it, or the CC10 entry dated after the window.
+    let (code, out) = run(&["reverse", &untagged_before, "--reason", "WrongAmount"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&[
+        "reverse",
+        &vid,
+        "--reason",
+        "WrongAmount",
+        "--effective",
+        "2026-03-25",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    // A Reclassification's destination is the preparer's: moving an
+    // untagged rent amount onto 6100 is refused like any untagged leg there.
+    let rent = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-25","idempotency_key":"rent","legs":[{"side":"debit","account":"6200","amount":"30.00 USD"},{"side":"credit","account":"1000","amount":"30.00 USD"}]}"#,
+    );
+    let (code, out) = run(&["post", "--intent", &rent, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    let rent_vid = text(&doc(&out), "vid").to_string();
+    let before = head(&run);
+    let (code, out) = run(&[
+        "reclass",
+        &rent_vid,
+        "--from",
+        "6200",
+        "--to",
+        "6100",
+        "--amount",
+        "10.00 USD",
+        "--reason",
+        "WrongAccount",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-005"), "{out}");
+    assert_eq!(head(&run), before);
+    // Removed, an untagged leg is admitted again.
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100", "--remove"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("required"), Some(&Json::Bool(false)));
+    let (code, out) = post("untagged-after", "2026-03-25", "{}");
+    assert_eq!(code, 0, "{out}");
+    // fa dimension close: CC's last tagged leg is effective 2026-03-25, so a
+    // close that day is refused (FA-REF-195) naming the next day; a later
+    // close ends its window, again writes nothing, and never extends it.
+    let close = |on: &str| run(&["dimension", "close", "cost_center", "CC", "--on", on]);
+    let (code, out) = close("2026-03-25");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
+    assert!(out.contains("2026-03-26"), "{out}");
+    let (code, out) = close("2026-03-28");
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        text(doc(&out).get("value").unwrap(), "valid_to"),
+        "2026-03-28"
+    );
+    let before = head(&run);
+    let (code, out) = close("2026-03-28");
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&run), before);
+    let (code, out) = close("2026-03-30");
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = post("after-close", "2026-03-29", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
+    // An applying leg carries its open item's values as dictated: a receipt
+    // dated after P-7's window still settles the P-7 invoice, carrying P-7.
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "project",
+        "P-7",
+        "--name",
+        "Warehouse fit-out",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-20",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let invoice = write(
+        &dir,
+        "invoice.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"invoice","legs":[{"side":"debit","account":"1200","amount":"100.00 USD","dimensions":{"project":"P-7"}},{"side":"credit","account":"4000","amount":"100.00 USD"}]}"#,
+    );
+    let (code, out) = run(&["post", "--intent", &invoice, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    let invoice_vid = text(&doc(&out), "vid").to_string();
+    let receipt = write(
+        &dir,
+        "receipt.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-25","idempotency_key":"receipt","legs":[{{"side":"debit","account":"1000","amount":"100.00 USD"}},{{"side":"credit","account":"1200","amount":"100.00 USD","dimensions":{{"project":"P-7"}},"settles":[{{"entry":"{invoice_vid}","ordinal":0,"amount":"100.00 USD"}}]}}]}}"#
+        ),
+    );
+    let (code, out) = run(&["post", "--intent", &receipt, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    // Planted: an account the chart lacks, and a dimension with no value.
+    let (code, out) = run(&["dimension", "require", "cost_center", "9999"]);
+    assert_eq!(code, 3, "{out}");
+    let (code, out) = run(&["dimension", "require", "department", "6100"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // fa-9xt: the verb registry, the robot-mode schema, and `fa explain balance`
 // ---------------------------------------------------------------------------
@@ -7754,6 +8126,29 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     // fa-kxc4: an account role, then every registered role and its holders.
     assert_eq!(run(true, &["chart", "role", "1000", "suspense"]).0, 0);
     assert_eq!(run(true, &["chart", "roles"]).0, 0);
+    // fa-ficc: a dimension value, then the values.
+    assert_eq!(
+        run(
+            true,
+            &["dimension", "add", "cost_center", "CC10", "--name", "Ops"]
+        )
+        .0,
+        0
+    );
+    // Required, then not, so the posts below need no cost center.
+    assert_eq!(
+        run(true, &["dimension", "require", "cost_center", "6000"]).0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &["dimension", "require", "cost_center", "6000", "--remove"]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["dimension", "list"]).0, 0);
     // fa-waow: no drafts or scenarios yet; trunk is implicit.
     let (code, out) = run(true, &["branch", "list"]);
     assert_eq!(code, 0, "{out}");

@@ -959,6 +959,83 @@ impl Book {
         ))
     }
 
+    /// Create one value of a registered dimension (bead fa-ficc) under
+    /// SchemaChange authority; an identical retry writes nothing.
+    pub fn create_dimension_value(
+        &mut self,
+        spec: &crate::dimension::DimensionValueSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionValueRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_dimension_value(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Every registered kind's dimension value at `known_at` (the head when
+    /// `None`), with the prefix read, under current whole-book read authority.
+    pub fn dimension_values(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(
+        CommitSeq,
+        Vec<crate::dimension::DimensionValueRow>,
+        crate::dimension::DimensionRequirements,
+    )> {
+        with_store!(&self.store, core => core.dimension_values(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
+    /// Close one dimension value from a date (bead fa-ficc) under
+    /// SchemaChange authority; a value already closed then writes nothing.
+    pub fn close_dimension_value(
+        &mut self,
+        spec: &crate::dimension::DimensionCloseSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionValueRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.close_dimension_value(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Require, or stop requiring, a dimension on one account's legs
+    /// (bead fa-ficc) under SchemaChange authority.
+    pub fn record_dimension_requirement(
+        &mut self,
+        spec: &crate::dimension::DimensionRequirementSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionRequirementRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_dimension_requirement(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// `selection` over only the legs tagged with `dimension`'s `value` or a
+    /// value under it (`fa tb --dimension`), folded literally under current
+    /// whole-book read authority.
+    pub fn dimension_trial_balance(
+        &self,
+        selection: &crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+        dimension: &str,
+        value: &str,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionTrialBalance> {
+        with_store!(&self.store, core => core.dimension_trial_balance(
+            &self.purposes(), selection, known_at, dimension, value, capability,
+        ))
+    }
+
     /// Read journaled native subledgers at one prefix under current authority.
     pub fn native_subledgers(
         &self,
@@ -2194,6 +2271,17 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(
             core.plan_with_history(&purposes, intent, capability)
         ))
+    }
+
+    /// The dry-run warnings about `plan` (plan §5.1; see
+    /// [`crate::plan_warnings`]), read at its snapshot. `capability` is the
+    /// one that planned it; the duplicate check needs it to read the book.
+    pub fn plan_warnings(
+        &self,
+        plan: &fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Result<crate::PlanWarnings, BookError> {
+        with_store!(&self.store, core => core.plan_warnings(&self.purposes(), plan, capability))
     }
 
     /// Commit the exact rehearsed intent under the caller's current authority.

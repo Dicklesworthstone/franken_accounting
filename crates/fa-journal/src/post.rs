@@ -1362,11 +1362,21 @@ pub(crate) fn reconciliation_edges(
 pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
+    class: EntryClass,
     effective_date: fa_time::DateDay,
     legs: &[fa_model::LegPayload],
     mut read_vertex: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
 ) -> Outcome<Vec<AccountRow>> {
     let mut accounts: Vec<AccountRow> = Vec::with_capacity(legs.len());
+    // Each registered dimension's requiring accounts, by one point read of
+    // its Dimension vertex per entry (fa-ficc); none bind legs the law
+    // dictates.
+    let chooses = crate::dimension::preparer_chooses_legs(class);
+    let required = if chooses {
+        crate::dimension::required_dimensions(book, &mut read_vertex)?
+    } else {
+        std::collections::BTreeMap::new()
+    };
     for (i, leg) in legs.iter().enumerate() {
         let Some(row) = read_vertex(leg.account_ref)? else {
             return Ok(Err(Refusal::new(
@@ -1505,6 +1515,30 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
                     )));
                 }
             }
+        }
+        // An applying leg carries its open item's values as dictated
+        // (they must match the target's), so like a dictated class it is not
+        // judged against windows or requirements; each value must exist.
+        let chosen = chooses && leg.settles.is_empty();
+        if let Some(refusal) = crate::dimension::admit_leg_dimensions(
+            leg,
+            i,
+            effective_date,
+            chosen,
+            &mut read_vertex,
+        )? {
+            return Ok(Err(refusal));
+        }
+        if chosen
+            && let Some(refusal) = crate::dimension::admit_required_dimensions(
+                leg,
+                i,
+                &account.code,
+                effective_date,
+                &required,
+            )
+        {
+            return Ok(Err(refusal));
         }
         accounts.push(account);
     }
@@ -2984,9 +3018,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
 
     // 6. Account and native subledger laws are shared with automatic effects.
-    let accounts = match admit_accounts(db, book, proposal.effective_date, &proposal.legs, |vid| {
-        Ok(txn.vertex(db, vid)?)
-    })? {
+    let accounts = match admit_accounts(
+        db,
+        book,
+        proposal.class,
+        proposal.effective_date,
+        &proposal.legs,
+        |vid| Ok(txn.vertex(db, vid)?),
+    )? {
         Ok(accounts) => accounts,
         Err(refusal) => {
             txn.abort();

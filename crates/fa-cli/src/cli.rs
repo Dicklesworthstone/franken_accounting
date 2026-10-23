@@ -136,6 +136,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
+    ("dimension", crate::dimension::dimension_cmd),
     ("finding", crate::finding::finding_cmd),
     ("fx", crate::fx::fx_cmd),
     ("bank", crate::bank::bank_cmd),
@@ -6696,7 +6697,8 @@ fn parse_legs(
         leg.settles = parse_settles(l, &what, ctx, book, earlier)?;
         // A leg names its legal entity (required in a multi-entity book)
         // and its counterparty by code; the kernel checks both exist
-        // (plan §4.1, §4.5). Dimension ids ascend: entity 1, party 12.
+        // (plan §4.1, §4.5). Dimension ids ascend: entity 1, the registered
+        // kinds 2..=9, party 12.
         let code_field = |field: &str| -> Result<Option<&str>, Fail> {
             match l.get(field) {
                 None | Some(Json::Null) => Ok(None),
@@ -6719,6 +6721,11 @@ fn parse_legs(
                 fa_model::party_value_vid(ctx.book_id, code),
             ));
         }
+        // The registered dimensions (cost center, project, ...; fa-ficc),
+        // kept ascending by dimension id as the model requires.
+        leg.dimension_set
+            .extend(crate::dimension::leg_dimensions(l, &what, ctx.book_id)?);
+        leg.dimension_set.sort_by_key(|(dimension, _)| *dimension);
         legs.push((leg, ordinal));
     }
     Ok(legs)
@@ -7557,6 +7564,23 @@ fn build_post_request_with_prior(
     let mut target_period = None;
     let key = req_str(doc, "idempotency_key", "intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
+    // The source document's own date (Appendix A `document_date`): recorded
+    // on the entry, and judged against its period for cutoff (plan §5.1).
+    let document_date = match doc.get("document_date") {
+        None | Some(Json::Null) => None,
+        Some(Json::Str(text)) => Some(DateDay::parse(text).map_err(|e| {
+            usage(
+                format!("document_date `{text}`: {e:?}"),
+                "document_date: \"YYYY-MM-DD\", the source document's own date",
+            )
+        })?),
+        Some(_) => {
+            return Err(usage(
+                "intent: `document_date` must be a string",
+                "document_date: \"YYYY-MM-DD\"",
+            ));
+        }
+    };
     // A Reversal names its target; its legs are the exact side-swap of the
     // target's, derived here so an agent never has to retype amounts. A
     // Resolution names the hold it resolves and either posts a sub-vector
@@ -8065,7 +8089,7 @@ fn build_post_request_with_prior(
         branch_id: Id128::TRUNK,
         class,
         effective_date,
-        document_date: None,
+        document_date,
         description: book.seal_text(description)?,
         effective_period,
         legs,
@@ -8207,7 +8231,7 @@ pub(crate) fn post_document(
             )
         })?;
         let plan = book.plan(intent, &req.capability)??;
-        return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        return emit_post_plan(out, &book, &ctx.files, args, &plan, &req.capability);
     }
     // `--balancing <leg>` (post and reserve): the leg moves at most what its
     // account's limit admits, decided inside the posting transaction; the
@@ -8527,6 +8551,7 @@ pub(crate) fn emit_post_plan(
     files: &Files,
     args: &Args,
     plan: &PostPlan,
+    capability: &Capability,
 ) -> Result<(), Fail> {
     let certificate = plan.certificate();
     let proposal = plan.proposal();
@@ -8616,6 +8641,48 @@ pub(crate) fn emit_post_plan(
         Json::Null
     };
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
+    // What journal-entry testing would flag, said before the commit (plan
+    // §5.1, fa-d5un): data only, never a refusal or a change to the plan.
+    let warned = book.plan_warnings(plan, capability)?;
+    let warnings = Json::Arr(
+        warned
+            .warnings
+            .iter()
+            .map(|warning| {
+                obj(vec![
+                    ("kind", s(warning.kind.name())),
+                    (
+                        "legs",
+                        Json::Arr(
+                            warning
+                                .legs
+                                .iter()
+                                .map(|leg| Json::Int(i128::from(*leg)))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "entries",
+                        Json::Arr(
+                            warning
+                                .entries
+                                .iter()
+                                .map(|vid| s(format!("{:032x}", vid.0)))
+                                .collect(),
+                        ),
+                    ),
+                    ("message", s(&warning.message)),
+                ])
+            })
+            .collect(),
+    );
+    let unchecked = Json::Arr(
+        warned
+            .unchecked
+            .iter()
+            .map(|(kind, reason)| obj(vec![("kind", s(kind.name())), ("reason", s(reason))]))
+            .collect(),
+    );
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     let resolves = proposal
@@ -8737,6 +8804,12 @@ pub(crate) fn emit_post_plan(
     if let Some(path) = args.flag("--plan-out") {
         write_post_plan(files, path, &bytes)?;
     }
+    for warning in &warned.warnings {
+        out.warn(format!("{}: {}", warning.kind.name(), warning.message));
+    }
+    for (kind, reason) in &warned.unchecked {
+        out.warn(format!("{} not checked: {reason}", kind.name()));
+    }
     if bound_void || rehearsal {
         out.warn(&commit_guidance);
     }
@@ -8812,6 +8885,8 @@ pub(crate) fn emit_post_plan(
                 net_effect.map_or(Json::Null, |(json, _)| json),
             ),
             ("approvals", Json::Int(plan.approvals().len() as i128)),
+            ("warnings", warnings),
+            ("unchecked", unchecked),
             ("bytes", s(encoded)),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
             ("scope", s("same-snapshot-post")),
@@ -9995,7 +10070,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             book.plan_allocation_review(&review, digest, approvals, &capability)??
         };
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10156,7 +10231,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let plan =
             book.plan_balance_allocation(&review, review_digest, approvals, &capability)??;
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10280,7 +10355,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let plan =
             book.plan_allocation_review(&review, review_digest, approvals, &capability)??;
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10528,7 +10603,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (single_plan.into_post_plan(), class_name)
         };
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10670,7 +10745,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .plan_prepared_settlement_group(prepared, approvals, &capability)??
             .into_post_plan();
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10747,7 +10822,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .plan_prepared_settlement(prepared, approvals, &capability)??
             .into_post_plan();
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10962,6 +11037,11 @@ fn prepare_native_certificate_history(
 }
 
 pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    // A dimension-filtered report is its own uncertified literal fold
+    // (fa-ficc); it refuses the flags of every other mode.
+    if args.flag("--dimension").is_some() {
+        return crate::dimension::tb(ctx, args);
+    }
     const RENDER_EXAMPLE: &str = "fa tb --period FY2026-P03 --render pdf --out trial-balance.pdf";
     let render = render_request(args, RENDER_EXAMPLE)?;
     if render.is_some()
@@ -13138,6 +13218,46 @@ fn render_trial_balance_with_units(
     certificate: Option<&str>,
     served: Option<&fa_registers::Served>,
 ) -> Result<(), Fail> {
+    render_trial_balance_filtered(out, units, tb, selection, certificate, served, None)
+}
+
+/// The dimension filter a `trial_balance` names (`tb_dimension`, fa-ficc).
+pub(crate) struct TbDimension<'a> {
+    pub dimension: &'a str,
+    pub value: &'a str,
+    /// The value and its descendants, whose tagged legs the report folds.
+    pub values: &'a [String],
+}
+
+/// A trial balance over only the legs tagged with `dimension`'s values
+/// (`fa tb --dimension`).
+pub(crate) fn render_tagged_trial_balance(
+    out: &Out,
+    book: &Book,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    dimension: &TbDimension<'_>,
+) -> Result<(), Fail> {
+    render_trial_balance_filtered(
+        out,
+        &book.context().units,
+        tb,
+        selection,
+        None,
+        None,
+        Some(dimension),
+    )
+}
+
+fn render_trial_balance_filtered(
+    out: &Out,
+    units: &fa_money::UnitRegistry,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    certificate: Option<&str>,
+    served: Option<&fa_registers::Served>,
+    dimension: Option<&TbDimension<'_>>,
+) -> Result<(), Fail> {
     validate_trial_balance_units(tb, units)?;
     let periods: &[String] = match selection {
         TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
@@ -13215,6 +13335,19 @@ fn render_trial_balance_with_units(
                 ("pending_unit_totals", Json::Arr(pending_totals)),
                 ("balanced", Json::Bool(tb.is_balanced())),
                 ("served", served.map_or(Json::Null, served_json)),
+                (
+                    "dimension",
+                    dimension.map_or(Json::Null, |dimension| {
+                        obj(vec![
+                            ("dimension", s(dimension.dimension)),
+                            ("value", s(dimension.value)),
+                            (
+                                "values",
+                                Json::Arr(dimension.values.iter().map(s).collect()),
+                            ),
+                        ])
+                    }),
+                ),
             ],
             "",
             certificate,
@@ -13230,6 +13363,14 @@ fn render_trial_balance_with_units(
                 "period activity · {} · known at {}",
                 periods.join(", "),
                 tb.known_at.0
+            ));
+        }
+        if let Some(dimension) = dimension {
+            out.line(format!(
+                "only legs tagged {} {} ({}); the other legs of their entries are left out, so the totals need not balance",
+                dimension.dimension,
+                dimension.value,
+                dimension.values.join(", ")
             ));
         }
         out.line(out.style().header(&format!(
@@ -19809,6 +19950,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     for absent in [
                         "class",
                         "effective_date",
+                        "document_date",
                         "recorded_at",
                         "entry_digest",
                         "proposal_digest",
@@ -19857,6 +19999,23 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                                 ("account", s(format!("{:032x}", l.account_ref.0))),
                                 ("amount", s(render_amount(l.amount, units)?)),
                                 ("memo", memo),
+                                (
+                                    "dimensions",
+                                    Json::Arr(
+                                        l.dimension_set
+                                            .iter()
+                                            .map(|(dimension, value)| {
+                                                obj(vec![
+                                                    (
+                                                        "dimension",
+                                                        s(crate::dimension::code_of(*dimension)),
+                                                    ),
+                                                    ("value", s(format!("{:032x}", value.0))),
+                                                ])
+                                            })
+                                            .collect(),
+                                    ),
+                                ),
                             ]))
                         })
                         .collect::<Result<_, Fail>>()?;
@@ -19865,6 +20024,13 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("vid", s(vid_s)),
                         ("class", s(entry.proposal.class.name().unwrap_or("?"))),
                         ("effective_date", s(entry.proposal.effective_date.render())),
+                        (
+                            "document_date",
+                            entry
+                                .proposal
+                                .document_date
+                                .map_or(Json::Null, |day| s(day.render())),
+                        ),
                         ("recorded_at", Json::Int(i128::from(seq.0))),
                         ("entry_digest", s(hex(&entry.entry_digest))),
                         ("proposal_digest", s(hex(&entry.proposal_digest))),
@@ -19891,6 +20057,9 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         entry.proposal.legs.len(),
                         hex(&entry.entry_digest)
                     );
+                    if let Some(day) = entry.proposal.document_date {
+                        human.push_str(&format!("\ndocument dated {}", day.render()));
+                    }
                     for link in &entry.proposal.supersession {
                         let reason = reasons
                             .get("supersession", link.reason_code)

@@ -524,11 +524,11 @@ name = "tb"
 summary = "Trial balance: native leaf or summary stock/activity, or exact functional-currency stock and period activity, at a known-at frontier. Native reports support retained certification."
 writes = true
 subcommands = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch", "--as-issued-to", "--as-reported-in", "--render", "--out"]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--certificate-out", "--branch", "--as-issued-to", "--as-reported-in", "--render", "--out", "--dimension"]
 switches = ["--activity", "--summary", "--certify", "--as-originally-reported", "--as-currently-stated", "--functional"]
 events = ["trial_balance", "summary_trial_balance", "report_certificate", "functional_trial_balance", "functional_stock_balance", "rendered"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "tb --functional --activity --period <one code> [--as-known-at HEAD|<seq>|<RFC3339>]   (exact functional-currency movement from immutable committed valuations, with posted and pending columns separate; requires current whole-book read authority; refuses unvalued foreign legs)", "tb --functional (--period <one code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>]   (cumulative functional stock through the period end or civil date, including opening history across fiscal years; no rate is selected or recalculated at report time)", "Functional --activity requires exactly one period; without --activity select one period end or one --as-of date. Both preserve committed valuations, separate pending holds, require current whole-book read authority, and refuse unvalued foreign contributions. Functional reports do not provide summary, fiscal-year, scenario, original-report or certificate selections. Use retained Rate evidence in intent.fx when posting foreign-currency entries; fa fx --help describes source intake and the admitted valuation laws.", "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported: at the known-at of the certificate its first StatementIssuance issued, else at its first Lock transition; never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)", "tb ((--period <code>)... | --fiscal-year N) --as-currently-stated [--activity] [--certify]   (plan §7.4 AS CURRENTLY STATED: the head, with every correction recorded since a period was reported; the read every other restatement view departs from. It excludes those views and --as-known-at.)", "tb --period <code> (--as-issued-to board|auditor|lender|regulator|sec|tax-authority|other | --as-reported-in C:<oid>) [--activity] [--certify]   (plan §7.4: the period as issued to that audience, at the certificate of its first issuance to it (FA-REF-173 when it never was), or as reported in that retained trunk statement certificate, which must report the period in a current or comparative column (FA-REF-174 otherwise). One restatement view at a time; none combines with --as-known-at.)", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk; --branch draft:<name> reads a draft's rehearsal (trunk at the head with every planned intent posted together, as promotion would; fa draft new|plan, under whole-book read). Either is uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "Add --render md|html|svg|pdf|pdfa to also render the trial balance as a document (stock, activity or as-of; not --summary, --functional or --branch) (fa-cet): md returns the Markdown inline unless --out <new-file> names a file; html, svg, pdf and pdfa write --out <new-file> (never overwriting) and are dated by the latest corroborated TimeEvidence tick known at the report's frontier, never the wall clock, so the same report renders to the same bytes whenever it is rendered; a book with no such tick renders md only (exit 4 otherwise). pdfa is checked by the built-in PDF/A-2b validator before it is written. The rendered event names the IR digest, the file digest and the tick."]
+usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "tb ((--period <code>)... | --fiscal-year N | --as-of YYYY-MM-DD) [--activity] --dimension <dimension>=<value> [--as-known-at HEAD|<seq>]   (only the legs tagged with that value or a value under it, folded literally from the journal; the other legs of their entries are left out, so the totals need not balance; needs whole-book read; uncertified, and not with --summary, --functional, --branch, --render or a restatement view; fa dimension list names the values)", "tb --functional --activity --period <one code> [--as-known-at HEAD|<seq>|<RFC3339>]   (exact functional-currency movement from immutable committed valuations, with posted and pending columns separate; requires current whole-book read authority; refuses unvalued foreign legs)", "tb --functional (--period <one code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>]   (cumulative functional stock through the period end or civil date, including opening history across fiscal years; no rate is selected or recalculated at report time)", "Functional --activity requires exactly one period; without --activity select one period end or one --as-of date. Both preserve committed valuations, separate pending holds, require current whole-book read authority, and refuse unvalued foreign contributions. Functional reports do not provide summary, fiscal-year, scenario, original-report or certificate selections. Use retained Rate evidence in intent.fx when posting foreign-currency entries; fa fx --help describes source intake and the admitted valuation laws.", "tb --period <code> --as-originally-reported [--activity] [--certify]   (plan §7.4: one period as first reported: at the known-at of the certificate its first StatementIssuance issued, else at its first Lock transition; never its first Close, never HEAD. A period with neither is refused with FA-REF-161. Cannot be combined with --as-known-at.)", "tb ((--period <code>)... | --fiscal-year N) --as-currently-stated [--activity] [--certify]   (plan §7.4 AS CURRENTLY STATED: the head, with every correction recorded since a period was reported; the read every other restatement view departs from. It excludes those views and --as-known-at.)", "tb --period <code> (--as-issued-to board|auditor|lender|regulator|sec|tax-authority|other | --as-reported-in C:<oid>) [--activity] [--certify]   (plan §7.4: the period as issued to that audience, at the certificate of its first issuance to it (FA-REF-173 when it never was), or as reported in that retained trunk statement certificate, which must report the period in a current or comparative column (FA-REF-174 otherwise). One restatement view at a time; none combines with --as-known-at.)", "tb --as-of YYYY-MM-DD [--summary [--root <code>]...] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]", "Add --certify to retain a content-addressed certificate in the book and emit its complete canonical bytes as hex; --certificate-out <new-file> implies certification and also saves canonical binary bytes without replacing any existing file. Uncertified reports do not write; retention advances the metadata frontier while the report's known-at remains fixed. --summary --certify binds the selected roots and exact group membership as well as the leaf source; it requires read and produce, and a sequence selector (HEAD or <seq>).", "Stock balances include opening history; --activity is selected-period movement. --summary folds disjoint leaf subtrees under each root account (all roots by default, or --root <code>...). Known-at instants resolve from retained TimeEvidence and report the observed frontier and tick brackets; as-of remains a civil date. Native certificates preserve the original instant resolution; the summary certificate format currently binds sequences only. Replay scope is fa-fold-over-prefix; no witness signature or physical timestamp claim.", "--branch scenario:<name> reads a scenario's materialization (trunk replayed at its fork plus its intents; fa scenario fork|run) instead of trunk; --branch draft:<name> reads a draft's rehearsal (trunk at the head with every planned intent posted together, as promotion would; fa draft new|plan, under whole-book read). Either is uncertified, and the coordinate's known_at is the replay's own sequence. It cannot be combined with --certify, --certificate-out, --as-originally-reported or a known-at selector.", "Add --render md|html|svg|pdf|pdfa to also render the trial balance as a document (stock, activity or as-of; not --summary, --functional or --branch) (fa-cet): md returns the Markdown inline unless --out <new-file> names a file; html, svg, pdf and pdfa write --out <new-file> (never overwriting) and are dated by the latest corroborated TimeEvidence tick known at the report's frontier, never the wall clock, so the same report renders to the same bytes whenever it is rendered; a book with no such tick renders md only (exit 4 otherwise). pdfa is checked by the built-in PDF/A-2b validator before it is written. The rendered event names the IR digest, the file digest and the tick."]
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
@@ -832,6 +832,18 @@ events = ["rea_recorded", "legal_entities"]
 exits = [0, 2, 3, 4, 5, 6, 7]
 usage = ["entity add <entity.json|->   ({\"code\": \"ACME-DE\", \"name\": \"Acme GmbH\", \"jurisdiction\": \"DE\", \"functional_unit\": \"USD\", \"formed\": \"2019-04-01\", \"dissolved\": null, \"external_ids\": [{\"system\": \"lei\", \"id\": \"5299001ABCDEF\"}]}; a code declared with fa book create --entity keeps its declared name)", "entity list", "add is a journaled SchemaChange control under schema_change authority; the default key is entity:<code>. Parties and legal entities are what fa party relate names.", "functional_unit must be the book's base unit: one functional currency per book (plan §0.4); a subsidiary in another currency is its own book, consolidated."]
 example = "fa entity add acme-de.json --book ./books/myco --json"
+
+[[verb]]
+name = "dimension"
+summary = "Dimension values (plan §4.1): create a value of a registered dimension (cost_center, department, project, product, region, fund, grant, segment) with its name, parent and valid time, or list them. A post intent's leg tags values with \"dimensions\": {\"cost_center\": \"CC10\"}; the kernel refuses a value the book does not hold or one not effective on the entry's date."
+writes = true
+subcommands = ["add", "list", "require", "close"]
+flags = ["--name", "--parent", "--from", "--to", "--key", "--as-known-at", "--on"]
+switches = ["--remove"]
+events = ["dimension_value_recorded", "dimension_values", "dimension_requirement_recorded"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]   (a journaled SchemaChange control under schema_change authority; the code is unique in its dimension; a parent is an existing value of the same dimension; the value is effective from --from (inclusive) and before --to (exclusive), always when they are omitted; the default key is dimension:<dimension>:<code>, so an exact retry returns the recorded value)", "dimension close <dimension> <code> --on YYYY-MM-DD [--key K]   (from that date the value tags no leg: its window ends there; a journaled SchemaChange control under schema_change; it only shortens a window, never empties it, and is refused with FA-REF-195 while a leg it tags is effective on or after the date; a value already closed then writes nothing; the default key is dimension-close:<dimension>:<code>:<date>)", "dimension list [<dimension>] [--as-known-at HEAD|<seq>]   (every value, or one dimension's, and the accounts each dimension is required on; needs read)", "dimension require <dimension> <account> [--remove] [--key K]   (from now on every leg on that posting leaf must name a value of the dimension, or with --remove need not; a journaled SchemaChange control under read and schema_change; the dimension needs a value first; an account already in (or out of) the requirement writes nothing; a leg that omits a required dimension is refused with FA-REF-005, naming fa dimension list for the values; an applying leg (settles) and a class whose legs the law dictates (Reversal, Resolution, Closing, Revaluation, Elimination, Migration) carry their values as dictated)", "A leg tags values in its intent: \"dimensions\": {\"cost_center\": \"CC10\", \"project\": \"P-7\"}. The legal entity and the party keep the leg's entity and party fields. An unknown value is a usage error; a value outside its valid time is FA-REF-195."]
+example = "fa dimension add cost_center CC10 --name Operations --book ./books/myco --json"
 
 [[verb]]
 name = "finding"
@@ -1859,8 +1871,8 @@ fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "per
 [[event]]
 name = "plan"
 book = true
-doc = "A successful rehearsal of the actual posting pipeline, with its staged transaction aborted and no journal or metadata writes. bytes is the complete canonical PostEntry plan as hex; file is an optional new external binary copy. The exact sealed proposal, original request and supplied approvals are retained. Leg amounts and lineage preview that proposal; a Reclassification's net_effect is its target plus this entry's delta per account and unit (earlier reclassifications of the target are netted only by fa explain lineage), null for every other class; effects_digest binds all staged native writes before the plan's own Certificate and CITES retention metadata is added. Book-key authentication binds the certificate, current caller capability, security epoch and snapshot. Any intervening publication requires a new plan. Scope is same-snapshot-post; authority names the actual embedded-owner or mcp-launch-config posture, with principal/profile/ops in the envelope. Agent profiles remain unable to plan trunk posts. Drafts, issued tokens, newly gathered approval quorums and saturating balancing remain unfinished. idempotency_key is exact key bytes in hex. The envelope certificate stays null: these public digests are not native object-store OIDs."
-fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "valuation:plan_valuation?", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "net_effect:[lineage_net_cell]?", "evidence:[evidence_head]", "approvals:int", "bytes:hex", "file:string?", "scope:string", "authority:string"]
+doc = "A successful rehearsal of the actual posting pipeline, with its staged transaction aborted and no journal or metadata writes. bytes is the complete canonical PostEntry plan as hex; file is an optional new external binary copy. The exact sealed proposal, original request and supplied approvals are retained. Leg amounts and lineage preview that proposal; a Reclassification's net_effect is its target plus this entry's delta per account and unit (earlier reclassifications of the target are netted only by fa explain lineage), null for every other class; effects_digest binds all staged native writes before the plan's own Certificate and CITES retention metadata is added. Book-key authentication binds the certificate, current caller capability, security epoch and snapshot. Any intervening publication requires a new plan. Scope is same-snapshot-post; authority names the actual embedded-owner or mcp-launch-config posture, with principal/profile/ops in the envelope. Agent profiles remain unable to plan trunk posts. Drafts, issued tokens, newly gathered approval quorums and saturating balancing remain unfinished. idempotency_key is exact key bytes in hex. warnings are what journal-entry testing would flag about an Original or Adjusting entry (RoundAmount, SoftClosedPeriod, PossibleDuplicate citing the earlier entries, CutoffDrift), read at the plan's snapshot; they never refuse or change the plan, and each also appears in the envelope warnings. unchecked names a check that did not run and why (PossibleDuplicate needs a capability that reads the whole book). The envelope certificate stays null: these public digests are not native object-store OIDs."
+fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "valuation:plan_valuation?", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "net_effect:[lineage_net_cell]?", "evidence:[evidence_head]", "approvals:int", "warnings:[plan_warning]", "unchecked:[plan_unchecked]", "bytes:hex", "file:string?", "scope:string", "authority:string"]
 
 [[event]]
 name = "plan_committed"
@@ -1919,8 +1931,8 @@ fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "requested:amount?",
 [[event]]
 name = "trial_balance"
 book = true
-doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot."
-fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool", "served:tb_served?"]
+doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot. dimension is null except for fa tb --dimension, whose report folds only the legs tagged with that value or one of its descendants (values lists them); the other legs of those entries are left out, so balanced is usually false."
+fields = ["periods:[string]", "known_at:seq", "effective_through:date?", "activity:bool", "mode:string", "rows:[tb_row]", "unit_totals:[unit_total]", "pending_unit_totals:[pending_unit_total]", "balanced:bool", "served:tb_served?", "dimension:tb_dimension?"]
 
 [[event]]
 name = "functional_trial_balance"
@@ -2139,6 +2151,24 @@ doc = "One REA control journaled (plan §4.1, §4.5): object is party, instrumen
 fields = ["object:string", "code:string", "target:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
+name = "dimension_value_recorded"
+book = true
+doc = "One dimension value journaled by its SchemaChange control (plan §4.1): value is its declaration (dimension, code, name, parent, valid_from inclusive, valid_to exclusive), the dimension id legs carry it under, its DimensionValue vid and the sequence it was recorded at; already_recorded is true when an exact retry of the same key wrote nothing."
+fields = ["value:dimension_value", "control_entry:hex", "already_recorded:bool"]
+
+[[event]]
+name = "dimension_values"
+book = true
+doc = "Every value of the registered dimensions the book holds at known_at, by dimension id then code; dimension is the one asked for, or null for all."
+fields = ["known_at:seq", "dimension:string?", "values:[dimension_value]", "requirements:[dimension_requirement]"]
+
+[[event]]
+name = "dimension_requirement_recorded"
+book = true
+doc = "One account now requires (or no longer requires) a value of a dimension on every leg; control_entry and recorded_at are null when the account already was (or was not) required and nothing was written (already_recorded true)."
+fields = ["dimension:string", "account:string", "required:bool", "control_entry:hex?", "recorded_at:seq?", "already_recorded:bool"]
+
+[[event]]
 name = "legal_entities"
 book = true
 doc = "The book's legal entities at known_at, in code order: each with its jurisdiction, functional unit, life span and the number of external ids it was created with."
@@ -2316,8 +2346,8 @@ fields = ["period:string", "from:seq", "through:seq", "recorded_at:seq?", "entri
 [[event]]
 name = "entry"
 book = true
-doc = "One committed entry; when `found` is false every other field but `vid` is null."
-fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "description:untrusted_text?", "approvals:int?", "legs:[entry_leg]?", "supersedes:[lineage]?"]
+doc = "One committed entry; when `found` is false every other field but `vid` is null. document_date is the source document's own date when the entry records one."
+fields = ["found:bool", "vid:string", "class:string?", "effective_date:date?", "document_date:date?", "recorded_at:seq?", "entry_digest:hex?", "proposal_digest:hex?", "description:untrusted_text?", "approvals:int?", "legs:[entry_leg]?", "supersedes:[lineage]?"]
 
 [[event]]
 name = "balance_explained"
@@ -2917,6 +2947,21 @@ doc = "One chart row; the bounds and `limit_scope` (lifetime: the account's whol
 fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string", "lower_bound:amount?", "upper_bound:amount?", "limit_scope:string?"]
 
 [[shape]]
+name = "tb_dimension"
+doc = "The dimension filter of fa tb --dimension: the dimension, the value named, and every value whose tagged legs the report folds (the value and its descendants, by code)."
+fields = ["dimension:string", "value:string", "values:[string]"]
+
+[[shape]]
+name = "dimension_requirement"
+doc = "A dimension that has values, and the account codes whose every leg must name one of them (empty when none does)."
+fields = ["dimension:string", "accounts:[string]"]
+
+[[shape]]
+name = "dimension_value"
+doc = "One value of a registered dimension (plan §4.1): its dimension and code, name, parent value (null at the top), valid time [valid_from, valid_to) with null for unbounded, the dimension id a leg's dimension_set carries it under, its DimensionValue vid and the sequence that recorded it."
+fields = ["dimension:string", "code:string", "name:string", "parent:string?", "valid_from:date?", "valid_to:date?", "dimension_id:int", "vid:hex", "recorded_at:seq"]
+
+[[shape]]
 name = "period"
 doc = "One period with its current state."
 fields = ["code:string", "state:string", "kind:string", "start:date", "end:date", "fiscal_year:int"]
@@ -3345,8 +3390,23 @@ fields = ["untrusted_content:text", "source:string"]
 
 [[shape]]
 name = "entry_leg"
-doc = "One leg of a committed entry."
-fields = ["side:string", "account:hex", "amount:amount", "memo:untrusted_text?"]
+doc = "One leg of a committed entry; dimensions are its dimension_set in ascending dimension id: legal_entity, a registered kind (cost_center, department, project, product, region, fund, grant, segment) or party, each with the DimensionValue vid it names."
+fields = ["side:string", "account:hex", "amount:amount", "memo:untrusted_text?", "dimensions:[leg_dimension]"]
+
+[[shape]]
+name = "leg_dimension"
+doc = "One value a leg tags: its dimension's code and the DimensionValue vid."
+fields = ["dimension:string", "value:hex"]
+
+[[shape]]
+name = "plan_warning"
+doc = "One dry-run warning (plan §5.1): kind is RoundAmount, SoftClosedPeriod, PossibleDuplicate or CutoffDrift; legs are the planned legs it concerns; entries are the recorded entries it cites; message says what to check."
+fields = ["kind:string", "legs:[int]", "entries:[hex]", "message:string"]
+
+[[shape]]
+name = "plan_unchecked"
+doc = "A dry-run warning check that did not run, and why."
+fields = ["kind:string", "reason:string"]
 
 [[shape]]
 name = "plan_leg"
@@ -4742,7 +4802,7 @@ name = "trial_balance"
 verb = "tb"
 subcommands = []
 positionals = []
-flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--branch", "--as-issued-to", "--as-reported-in", "--render"]
+flags = ["--period", "--fiscal-year", "--as-of", "--as-known-at", "--root", "--branch", "--as-issued-to", "--as-reported-in", "--render", "--dimension"]
 required = []
 dont = ["Don't pass an instant to `as_of`: a civil date, never a timestamp; instants are unsupported here.", "Don't mix `as_of` with `period`, `fiscal_year` or `activity`.", "Use certify: true to retain the certificate in the book and receive the report and complete certificate as two data items. Replay accepts its oid or bytes string. Certification writes metadata only; MCP exposes no certificate_out host-file write.", "For functional currency, supply functional: true with one period or as_of civil date for cumulative stock; add activity: true with one period for movement only. Both use committed base valuations and refuse unvalued foreign legs. Functional reports cannot combine with certify, summary, fiscal_year, branch or as_originally_reported. as_of cannot combine with period or activity. Reporting does not recalculate valuations at current rates.", "Use render: md to also receive the trial balance as Markdown inline (a rendered item after the report). html, svg, pdf and pdfa write files and are host-only: MCP exposes no out host-file write."]
 mistakes = ["Reading `activity` rows as stock: stock includes opening history, `activity: true` is the selected periods' movement.", "Treating a known-at instant as an exact physical commit timestamp: it is a retained TimeEvidence bucket, with its frontier and brackets in the coordinate."]
@@ -5987,6 +6047,26 @@ subcommands = ["list"]
 ops = ["read"]
 
 [[bound]]
+verbs = ["dimension"]
+subcommands = ["add"]
+ops = ["schema_change"]
+
+[[bound]]
+verbs = ["dimension"]
+subcommands = ["list"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["dimension"]
+subcommands = ["require"]
+ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["dimension"]
+subcommands = ["close"]
+ops = ["schema_change"]
+
+[[bound]]
 verbs = ["party"]
 subcommands = ["ownership"]
 ops = ["read"]
@@ -6067,6 +6147,36 @@ mistakes = ["A role the registry does not list (the refusal names the registered
 verbs = ["chart"]
 subcommands = ["role"]
 ops = ["read", "schema_change"]
+
+[[mcp.cluster]]
+name = "fa.dimensions"
+on_demand = true
+doc = "Dimension values (plan §4.1, fa-ficc): create a cost center, department, project or other registered dimension's value, or list them; a posting leg tags values in its intent's dimensions object. On demand (fa-mcp --cluster fa.dimensions): the default surface is at its 40-tool budget."
+
+[[mcp.tool]]
+cluster = "fa.dimensions"
+name = "dimension"
+verb = "dimension"
+subcommands = ["add", "list", "close"]
+selector = "action"
+positionals = ["dimension?", "code?"]
+flags = ["--name", "--parent", "--from", "--to", "--key", "--as-known-at", "--on"]
+switches = []
+required = []
+dont = ["Name the dimension by its registered code (cost_center, department, project, product, region, fund, grant, segment); the legal entity and the party are not created here.", "Don't recreate a value to change its window or name: a value's declaration is fixed when it is created.", "Don't tag a leg with a value outside its valid time: the post is refused (FA-REF-195); date the entry inside the window or pick an effective value."]
+mistakes = ["Calling add without dimension, code and name.", "A parent that is not yet a value of the same dimension.", "valid_to on or before valid_from."]
+
+[[mcp.tool]]
+cluster = "fa.dimensions"
+name = "require"
+verb = "dimension"
+subcommands = ["require"]
+positionals = ["dimension", "account"]
+flags = ["--key"]
+switches = ["--remove"]
+required = ["dimension", "account"]
+dont = ["Require a dimension on posting leaves only (expense accounts, for example); a summary account is refused.", "Don't require a dimension before it has a value: the refusal names fa dimension add."]
+mistakes = ["Naming the account by name instead of its chart code.", "Expecting remove to write when the account was never required: it writes nothing."]
 
 [[mcp.cluster]]
 name = "fa.subledger"

@@ -939,6 +939,14 @@ fa entity add acme-de.json --book acme.fabook --json
 fa party bind V-17 --external-id qbo:55 --book acme.fabook --json
 fa party identifiers V-17 --identifier bank_routing=<routing> --identifier bank_account=<account> --key chg-2026-03-17 --book acme.fabook --json
 fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
+
+# Dimensions beside the legal entity and the party: a cost center (also department, project, product, region, fund, grant, segment) with a parent and valid time, which a leg tags with "dimensions": {"cost_center": "CC10"}; the kernel refuses a value the book does not hold, or one outside its window (FA-REF-195). An account may require a dimension on every leg: a leg that names none is refused (FA-REF-005); reversals, closings and settlements carry the values their source dictates, and a cost center closes with its account at year end. fa tb --dimension folds only the legs tagged with a value or one under it (available today; certified reports by dimension are not yet, fa-ficc).
+fa dimension add cost_center CC --name "All operations" --book acme.fabook --json
+fa dimension add cost_center CC10 --name Warehouse --parent CC --from 2026-01-01 --book acme.fabook --json
+fa dimension require cost_center 6100 --book acme.fabook --json
+fa dimension close cost_center CC10 --on 2026-07-01 --book acme.fabook --json
+fa dimension list cost_center --book acme.fabook --json
+fa tb --period FY2026-P03 --dimension cost_center=CC --book acme.fabook --json
 ```
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.

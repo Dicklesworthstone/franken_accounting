@@ -372,6 +372,28 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                 crate::account_role::AccountRoleSpec::decode(canonical_bytes)?;
                 continue;
             }
+            // A dimension value tags legs without changing the chart.
+            Some(ControlPayload::SchemaChange {
+                kind: crate::dimension::SCHEMA_CHANGE_DIMENSION_VALUE,
+                canonical_bytes,
+            }) => {
+                crate::dimension::DimensionValueSpec::decode(canonical_bytes)?;
+                continue;
+            }
+            Some(ControlPayload::SchemaChange {
+                kind: crate::dimension::SCHEMA_CHANGE_DIMENSION_REQUIREMENT,
+                canonical_bytes,
+            }) => {
+                crate::dimension::DimensionRequirementSpec::decode(canonical_bytes)?;
+                continue;
+            }
+            Some(ControlPayload::SchemaChange {
+                kind: crate::dimension::SCHEMA_CHANGE_DIMENSION_CLOSE,
+                canonical_bytes,
+            }) => {
+                crate::dimension::DimensionCloseSpec::decode(canonical_bytes)?;
+                continue;
+            }
             Some(ControlPayload::SchemaChange {
                 kind,
                 canonical_bytes,
