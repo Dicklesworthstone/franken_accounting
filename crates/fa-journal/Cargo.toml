@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 fa-escrow = { path = "../fa-escrow", version = "=0.0.1" }
+fa-canon = { path = "../fa-canon", version = "=0.0.1" }
 fa-intents = { path = "../fa-intents", version = "=0.0.1" }
 fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }

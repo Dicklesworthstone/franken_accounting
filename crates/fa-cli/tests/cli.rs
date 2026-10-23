@@ -9952,6 +9952,69 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     run2(&["event", "show", "EV-1001"]);
     run2(&["event", "list"]);
+    // fa-c34: a Canon rule checked against the book, then evaluated over EV-1001.
+    let fee_rule = write(
+        &dir,
+        "fee.rule",
+        r#"rule fee v1 for event Sale { debit "1000" "1.00 USD" credit "4000" "1.00 USD" }"#,
+    );
+    run2(&["rule", "check", &fee_rule]);
+    run2(&["rule", "eval", &fee_rule, "--event", "EV-1001"]);
+    let (_, proposed) = run2(&["rule", "propose", &fee_rule]);
+    let fee_digest = field(&proposed, "ir_digest")
+        .unwrap_or_default()
+        .to_string();
+    run2(&["rule", "list"]);
+    run2(&["rule", "show", &fee_digest]);
+    // fa-c34: the version activated under dual control.
+    let (_, planned_rule) = run2(&[
+        "rule",
+        "activate",
+        &fee_digest,
+        "--from",
+        "2026-04-01",
+        "--dry-run",
+    ]);
+    let rule_proposal = field(&planned_rule, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let rule_plan = write(
+        &dir,
+        "fee-activate.plan",
+        field(&planned_rule, "bytes").unwrap_or_default(),
+    );
+    let (_, first) = run2(&[
+        "approve",
+        "--proposal",
+        &rule_proposal,
+        "--as",
+        "rule-approver-a",
+    ]);
+    let (_, second) = run2(&[
+        "approve",
+        "--proposal",
+        &rule_proposal,
+        "--as",
+        "rule-approver-b",
+    ]);
+    run2(&["rule", "derive", "--event", "EV-1001"]);
+    run2(&["rule", "backtest", &fee_rule]);
+    let fee_golden = write(
+        &dir,
+        "fee_golden.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-15\"\n\n[expect]\nlegs = [\"debit 1000 1.00 USD\", \"credit 4000 1.00 USD\"]\n",
+    );
+    run2(&["rule", "test", &fee_rule, "--golden", &fee_golden]);
+    run2(&[
+        "rule",
+        "activate",
+        "--plan",
+        &rule_plan,
+        "--approval",
+        field(&first, "approval_vid").unwrap_or_default(),
+        "--approval",
+        field(&second, "approval_vid").unwrap_or_default(),
+    ]);
     run2(&["verify", "periods"]);
     run2(&[
         "capability",
@@ -20272,6 +20335,1171 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
         "a discarded scenario's certificate still replays: {out}"
     );
     assert_eq!(doc(&out), certified);
+    Ok(())
+}
+
+/// fa-c34: `fa rule check` compiles a Canon rule against the book's units
+/// and proves it balances in every unit; `fa rule eval` derives its legs
+/// from a recorded event and writes nothing. An unbalanced rule, a rule for
+/// another event kind, a missing or undeclared input and an unknown event
+/// are refused.
+#[test]
+fn a_canon_rule_is_checked_against_the_book_and_derives_legs_from_a_recorded_event()
+-> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("canon-rule")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let (code, out, err) = run(&[
+        "event",
+        "record",
+        "--code",
+        "EV-7",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:100.50 USD",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}{err}");
+    let rule = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale_with_tax v1 for event Sale {
+  inputs { as_of: date }
+  let net = event.resource("net", "USD")
+  let tax = net * 7 / 100 round HalfEven   # 7.035 is a tie: HalfEven gives 7.04
+  debit  "1000" net + tax dims { cost_center = "CC1" }
+  credit "6000" net
+  credit "2300" tax
+  effective as_of
+}"#,
+    );
+    let strs = |j: &Json, key: &str| -> Vec<String> {
+        arr(j, key)
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+
+    let (code, out, _) = run(&["rule", "check", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let checked = doc(&out);
+    assert!(out.contains("\"event\":\"rule_checked\""), "{out}");
+    assert_eq!(text(&checked, "rule"), "sale_with_tax");
+    assert_eq!(text(&checked, "event_kind"), "sale");
+    let digest = text(&checked, "ir_digest").to_string();
+    assert_eq!(digest.len(), 64, "{out}");
+    assert_eq!(strs(&checked, "accounts"), ["1000", "2300", "6000"]);
+    assert_eq!(strs(&checked, "laws"), ["HalfEven"]);
+    assert_eq!(strs(&checked, "inputs"), ["as_of: date"]);
+    assert_eq!(strs(&checked, "resources"), ["net:USD"]);
+    assert_eq!(strs(&checked, "dimensions"), ["cost_center=CC1"]);
+
+    let (_, before, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    let (code, out, _) = run(&[
+        "rule",
+        "eval",
+        &rule,
+        "--event",
+        "EV-7",
+        "--input",
+        "as_of=2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let derived = doc(&out);
+    assert_eq!(text(&derived, "ir_digest"), digest);
+    assert_eq!(text(&derived, "event_code"), "EV-7");
+    assert_eq!(text(&derived, "effective"), "2026-03-31");
+    let legs: Vec<(String, String, String, Vec<String>)> = arr(&derived, "legs")
+        .iter()
+        .map(|leg| {
+            (
+                text(leg, "side").to_string(),
+                text(leg, "account").to_string(),
+                text(leg, "amount").to_string(),
+                strs(leg, "dimensions"),
+            )
+        })
+        .collect();
+    let leg = |side: &str, account: &str, amount: &str, dims: &[&str]| {
+        (
+            side.to_string(),
+            account.to_string(),
+            amount.to_string(),
+            dims.iter().map(|d| (*d).to_string()).collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(
+        legs,
+        [
+            leg("debit", "1000", "107.54 USD", &["cost_center=CC1"]),
+            leg("credit", "6000", "100.50 USD", &[]),
+            leg("credit", "2300", "7.04 USD", &[]),
+        ],
+        "{out}"
+    );
+    // Evaluation posts nothing: the trial balance is unchanged.
+    let (_, after, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(arr(&doc(&after), "rows"), arr(&doc(&before), "rows"));
+
+    // Refusals: each names its law or the usage that fixes it.
+    let unbalanced = write(
+        &dir,
+        "unbalanced.rule",
+        r#"rule short v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net + net * 7 / 100 round HalfEven
+  credit "6000" net
+}"#,
+    );
+    let (code, out, _) = run(&["rule", "check", &unbalanced, "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("does not balance in USD"), "{out}");
+    let purchase = write(
+        &dir,
+        "purchase.rule",
+        r#"rule bill v1 for event Purchase { debit "6000" "1.00 USD" credit "1000" "1.00 USD" }"#,
+    );
+    let (code, out, _) = run(&["rule", "eval", &purchase, "--event", "EV-7", "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("purchase events"), "{out}");
+    for args in [
+        vec!["rule", "eval", rule.as_str(), "--event", "EV-7"],
+        vec![
+            "rule",
+            "eval",
+            rule.as_str(),
+            "--event",
+            "EV-7",
+            "--input",
+            "as_of=2026-03-31",
+            "--input",
+            "today=2026-03-31",
+        ],
+        vec![
+            "rule",
+            "eval",
+            rule.as_str(),
+            "--event",
+            "EV-404",
+            "--input",
+            "as_of=2026-03-31",
+        ],
+        vec!["rule", "lint", rule.as_str()],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    Ok(())
+}
+
+/// fa-c34: `fa rule propose` journals a rule version addressed by its IR
+/// digest under rule_change; the same IR again writes nothing whatever its
+/// key; `fa rule list|show` read the versions and `fa rule eval --rule`
+/// evaluates the journaled version exactly as its source file evaluates. A
+/// refused source journals nothing, and proposing needs rule_change.
+#[test]
+fn a_rule_version_is_journaled_by_its_content_and_evaluates_from_the_journal() -> std::io::Result<()>
+{
+    let (book, ev, dir) = envelope_book("canon-propose")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let (code, out, err) = run(&[
+        "event",
+        "record",
+        "--code",
+        "EV-8",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:40.00 USD",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}{err}");
+    let source = r#"rule fee_split v2 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net / 4 round HalfEven
+  credit "6000" net - net / 4 round HalfEven
+}"#;
+    let rule = write(&dir, "split.rule", source);
+    let head = |out: &str| -> i128 {
+        let envelope = doc(out);
+        let coordinate = envelope.get("coordinate").expect("book coordinate");
+        int(coordinate, "known_at").expect("coordinate known_at")
+    };
+
+    let (code, out, _) = run(&["rule", "propose", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let proposed = doc(&out);
+    assert!(out.contains("\"event\":\"rule_proposed\""), "{out}");
+    assert_eq!(proposed.get("already_recorded"), Some(&Json::Bool(false)));
+    let digest = text(&proposed, "ir_digest").to_string();
+    let (_, checked, _) = run(&["rule", "check", &rule, "--json"]);
+    assert_eq!(
+        text(&doc(&checked), "ir_digest"),
+        digest,
+        "check and propose agree"
+    );
+    let (_, tb_after_propose, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+
+    // The same text again is a retry of its default key; the same IR under
+    // another key (reformatted source) is the same version: nothing written.
+    let (code, out, _) = run(&["rule", "propose", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    let reflowed = write(&dir, "reflowed.rule", &source.replace('\n', " "));
+    let (code, out, _) = run(&["rule", "propose", &reflowed, "--key", "other", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(text(&doc(&out), "ir_digest"), digest);
+    assert_eq!(doc(&out).get("control_entry"), Some(&Json::Null), "{out}");
+
+    let (code, out, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    assert_eq!(int(&listed, "count"), Some(1), "{out}");
+    let row = &arr(&listed, "versions")[0];
+    assert_eq!(
+        (
+            text(row, "rule"),
+            int(row, "version"),
+            text(row, "ir_digest")
+        ),
+        ("fee_split", Some(2), digest.as_str())
+    );
+    let (code, out, _) = run(&["rule", "show", &digest, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let shown = doc(&out);
+    assert_eq!(text(&shown, "source"), source);
+    assert_eq!(
+        arr(&shown, "laws")
+            .iter()
+            .filter_map(Json::as_str)
+            .collect::<Vec<_>>(),
+        ["HalfEven"]
+    );
+
+    // From the journal or from the file: the same derivation.
+    let (code, from_file, _) = run(&["rule", "eval", &rule, "--event", "EV-8", "--json"]);
+    assert_eq!(code, 0, "{from_file}");
+    let (code, from_journal, _) = run(&[
+        "rule", "eval", "--rule", &digest, "--event", "EV-8", "--json",
+    ]);
+    assert_eq!(code, 0, "{from_journal}");
+    assert_eq!(
+        arr(&doc(&from_journal), "legs"),
+        arr(&doc(&from_file), "legs")
+    );
+    assert_eq!(arr(&doc(&from_journal), "legs").len(), 3);
+
+    // Proposing posts nothing.
+    let (_, tb_now, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(
+        arr(&doc(&tb_now), "rows"),
+        arr(&doc(&tb_after_propose), "rows")
+    );
+
+    // A refused source journals nothing.
+    let (_, before, _) = run(&["rule", "list", "--json"]);
+    let bad = write(
+        &dir,
+        "bad.rule",
+        r#"rule bad v1 for event Sale { debit "1000" "1.00 USD" credit "6000" "2.00 USD" }"#,
+    );
+    let (code, out, _) = run(&["rule", "propose", &bad, "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    let (_, after, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(
+        head(&after),
+        head(&before),
+        "a refused proposal writes nothing"
+    );
+
+    // Unknown and malformed addresses are usage errors.
+    for args in [
+        vec!["rule", "show", "00"],
+        vec![
+            "rule",
+            "show",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ],
+        vec![
+            "rule",
+            "eval",
+            "--rule",
+            digest.as_str(),
+            rule.as_str(),
+            "--event",
+            "EV-8",
+        ],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    Ok(())
+}
+
+/// fa-c34: `fa rule activate` plans binding a proposed version's rule name
+/// to it from a date, writing nothing; two independent Human approvers
+/// approve its proposal; the commit journals the PolicyControl and the
+/// name's binding, which `fa rule list` reports. The planner's own approval,
+/// one approval alone, an activation at or before the name's last one and
+/// the version already in force are refused.
+#[test]
+fn a_rule_version_is_activated_from_a_date_under_dual_control() -> std::io::Result<()> {
+    let (book, _ev, dir) = envelope_book("canon-activate")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let head = |out: &str| -> i128 {
+        let envelope = doc(out);
+        let coordinate = envelope.get("coordinate").expect("book coordinate");
+        int(coordinate, "known_at").expect("coordinate known_at")
+    };
+    let propose = |name: &str, text: &str| -> String {
+        let file = write(&dir, name, text);
+        let (code, out, _) = run(&["rule", "propose", &file, "--json"]);
+        assert_eq!(code, 0, "{out}");
+        text_of(&out, "ir_digest")
+    };
+    let v1 = propose(
+        "fee1.rule",
+        r#"rule fee v1 for event Sale { debit "1000" "1.00 USD" credit "6000" "1.00 USD" }"#,
+    );
+    let v2 = propose(
+        "fee2.rule",
+        r#"rule fee v2 for event Sale { debit "1000" "2.00 USD" credit "6000" "2.00 USD" }"#,
+    );
+    let plan_for = |digest: &str, from: &str| -> (i32, String) {
+        let (code, out, _) = run(&[
+            "rule",
+            "activate",
+            digest,
+            "--from",
+            from,
+            "--dry-run",
+            "--json",
+        ]);
+        (code, out)
+    };
+    let (_, before, _) = run(&["rule", "list", "--json"]);
+    let (code, out) = plan_for(v1.as_str(), "2026-04-01");
+    assert_eq!(code, 0, "{out}");
+    let planned = doc(&out);
+    assert_eq!(text(&planned, "rule"), "fee");
+    assert_eq!(text(&planned, "effective_from"), "2026-04-01");
+    let proposal = text(&planned, "proposal_digest").to_string();
+    let plan = write(&dir, "fee1.plan", text(&planned, "bytes"));
+    let (_, after_plan, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(head(&after_plan), head(&before), "planning writes nothing");
+    assert!(arr(&doc(&after_plan), "bindings").is_empty());
+
+    let approve = |who: Option<&str>, digest: &str| -> String {
+        let mut argv = vec!["approve", "--proposal", digest];
+        if let Some(who) = who {
+            argv.extend(["--as", who]);
+        }
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 0, "{out}");
+        text_of(&out, "approval_vid")
+    };
+    let own = approve(None, proposal.as_str());
+    let a = approve(Some("controller-a"), proposal.as_str());
+    let b = approve(Some("controller-b"), proposal.as_str());
+    let commit = |plan: &str, approvals: &[&str]| -> (i32, String) {
+        let mut argv = vec!["rule", "activate", "--plan", plan];
+        for approval in approvals {
+            argv.extend(["--approval", approval]);
+        }
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        (code, out)
+    };
+    // The planner's own approval and one approval alone are refused.
+    let (code, out) = commit(plan.as_str(), &[own.as_str(), a.as_str()]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-008")),
+        "{out}"
+    );
+    let (code, out) = commit(plan.as_str(), &[a.as_str()]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-012")),
+        "{out}"
+    );
+    let (_, unchanged, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(
+        head(&unchanged),
+        head(&after_plan),
+        "refusals write nothing"
+    );
+
+    // Two independent approvers: the activation commits, and a retry of the
+    // same plan returns it.
+    let (code, out) = commit(plan.as_str(), &[a.as_str(), b.as_str()]);
+    assert_eq!(code, 0, "{out}");
+    let activated = doc(&out);
+    assert!(out.contains("\"event\":\"rule_activated\""), "{out}");
+    assert_eq!(int(&activated, "approvals"), Some(2));
+    assert_eq!(activated.get("already_recorded"), Some(&Json::Bool(false)));
+    let (code, out) = commit(plan.as_str(), &[a.as_str(), b.as_str()]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    let (_, listed, _) = run(&["rule", "list", "--json"]);
+    let bindings = arr(&doc(&listed), "bindings").to_vec();
+    assert_eq!(bindings.len(), 1, "{listed}");
+    assert_eq!(
+        (
+            text(&bindings[0], "rule"),
+            text(&bindings[0], "effective_from"),
+            text(&bindings[0], "ir_digest")
+        ),
+        ("fee", "2026-04-01", v1.as_str())
+    );
+
+    // Activations move forward: the same version again, and another
+    // version at or before the last date, are refused at planning.
+    for (digest, from) in [
+        (v1.as_str(), "2026-05-01"),
+        (v2.as_str(), "2026-04-01"),
+        (v2.as_str(), "2026-03-01"),
+    ] {
+        let (code, out) = plan_for(digest, from);
+        assert_eq!(
+            (code, field(&out, "refusal_id")),
+            (3, Some("FA-REF-196")),
+            "{digest} from {from}: {out}"
+        );
+    }
+    // A later version from a later date plans.
+    let (code, out) = plan_for(v2.as_str(), "2026-05-01");
+    assert_eq!(code, 0, "{out}");
+    // An unknown version is a usage error.
+    let (code, out) = plan_for("0".repeat(64).as_str(), "2026-06-01");
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// The string field `key` of the last line's data.
+fn text_of(out: &str, key: &str) -> String {
+    text(&doc(out), key).to_string()
+}
+
+/// fa-c34, FA-INV-05 `rule-reproduction`: `fa rule derive` posts the entry
+/// an activated version derives from a recorded event, and the kernel
+/// re-runs the derivation inside the commit. A version not in force on the
+/// entry's date, legs other than the derivation's (posted through the
+/// library) and recorded inputs that do not digest to the entry's
+/// inputs_digest are refused, and none of them writes.
+#[test]
+fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+    let (book, ev, dir) = envelope_book("canon-derive")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-9",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:40.00 USD",
+        "--json",
+    ]);
+    let source = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    let digest = text(
+        &doc(&ok(&["rule", "propose", &source, "--json"])),
+        "ir_digest",
+    )
+    .to_string();
+    // Proposed is not active: the kernel refuses the derivation.
+    let (code, out, _) = run(&[
+        "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("not in force"), "{out}");
+    // Nor does any rule derive from the event by its kind.
+    let none = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    assert!(
+        arr(&none, "derived").is_empty() && arr(&none, "skipped").is_empty(),
+        "{}",
+        none.render()
+    );
+    let planned = doc(&ok(&[
+        "rule",
+        "activate",
+        &digest,
+        "--from",
+        "2026-03-01",
+        "--dry-run",
+        "--json",
+    ]));
+    let plan = write(&dir, "sale.plan", text(&planned, "bytes"));
+    let proposal = text(&planned, "proposal_digest").to_string();
+    let approval = |who: &str| -> String {
+        let out = ok(&["approve", "--proposal", &proposal, "--as", who, "--json"]);
+        field(&out, "approval_vid").unwrap_or_default().to_string()
+    };
+    let (a, b) = (approval("controller-a"), approval("controller-b"));
+    ok(&[
+        "rule",
+        "activate",
+        "--plan",
+        &plan,
+        "--approval",
+        &a,
+        "--approval",
+        &b,
+        "--json",
+    ]);
+
+    // Every active rule in force on the event's date derives its entry.
+    let all = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    let derived = arr(&all, "derived");
+    assert_eq!(
+        (derived.len(), arr(&all, "skipped").len()),
+        (1, 0),
+        "{}",
+        all.render()
+    );
+    assert_eq!(text(&derived[0], "rule"), "sale");
+    assert_eq!(text(&derived[0], "ir_digest"), digest);
+    assert_eq!(derived[0].get("already_recorded"), Some(&Json::Bool(false)));
+    let entry = text(&derived[0], "vid").to_string();
+    // Deriving it by version is a retry of the same derivation: one key.
+    let posted = ok(&[
+        "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
+    ]);
+    assert!(posted.contains("\"event\":\"recorded\""), "{posted}");
+    assert_eq!(text(&doc(&posted), "vid"), entry);
+    let shown = ok(&["entry", "show", &entry, "--json"]);
+    assert!(shown.contains("40.00 USD"), "{shown}");
+    let again = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    assert_eq!(text(&arr(&again, "derived")[0], "vid"), entry);
+    assert_eq!(
+        arr(&again, "derived")[0].get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    // Its lineage: GENERATED_BY to the version that derived it.
+    let lineage = doc(&ok(&[
+        "query",
+        "MATCH (e:Entry)-[:GENERATED_BY]->(r:RuleVersion) RETURN r.name",
+        "--json",
+    ]));
+    assert_eq!(int(&lineage, "row_count"), Some(1), "{}", lineage.render());
+
+    // Backtest (plan §10.6): v2 adds a dollar to both legs. EV-8 precedes
+    // v1's activation and carries no `net` resource.
+    let v2 = write(
+        &dir,
+        "sale2.rule",
+        r#"rule sale v2 for event Sale {
+  let net = event.resource("net", "USD") + "1.00 USD"
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-8",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-02-20",
+        "--evidence",
+        &ev,
+        "--resource",
+        "gross:9.00 USD",
+        "--json",
+    ]);
+    let tested = doc(&ok(&["rule", "backtest", &v2, "--json"]));
+    let counts =
+        |j: &Json| ["events", "same", "differs", "refused", "no_baseline"].map(|key| int(j, key));
+    assert_eq!(
+        counts(&tested),
+        [Some(2), Some(0), Some(1), Some(0), Some(1)],
+        "{}",
+        tested.render()
+    );
+    let rows = arr(&tested, "rows");
+    assert_eq!(
+        (text(&rows[0], "event_code"), text(&rows[0], "outcome")),
+        ("EV-8", "no_baseline")
+    );
+    assert!(
+        text(&rows[0], "detail").contains("`net`"),
+        "{}",
+        tested.render()
+    );
+    assert_eq!(
+        (text(&rows[1], "event_code"), text(&rows[1], "outcome")),
+        ("EV-9", "differs")
+    );
+    assert_eq!(text(&rows[1], "baseline"), digest);
+    assert_eq!(text(&arr(&rows[1], "legs")[1], "amount"), "41.00 USD");
+    assert_eq!(
+        text(&arr(&rows[1], "baseline_legs")[1], "amount"),
+        "40.00 USD"
+    );
+    // The version in force against itself changes nothing; --from narrows.
+    let itself = doc(&ok(&[
+        "rule",
+        "backtest",
+        "--rule",
+        &digest,
+        "--from",
+        "2026-03-01",
+        "--json",
+    ]));
+    assert_eq!(
+        counts(&itself),
+        [Some(1), Some(1), Some(0), Some(0), Some(0)],
+        "{}",
+        itself.render()
+    );
+    assert!(arr(&itself, "rows").is_empty());
+    // --compare names the baseline on every date, active or not.
+    let compared = doc(&ok(&[
+        "rule",
+        "backtest",
+        &v2,
+        "--compare",
+        &digest,
+        "--to",
+        "2026-02-28",
+        "--json",
+    ]));
+    assert_eq!(
+        counts(&compared),
+        [Some(1), Some(0), Some(0), Some(1), Some(0)],
+        "{}",
+        compared.render()
+    );
+    assert_eq!(text(&arr(&compared, "rows")[0], "outcome"), "both_refused");
+    let (code, out, _) = run(&[
+        "rule",
+        "backtest",
+        &v2,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-03-01",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+
+    // Lantern reads the derivations' origin: with three rule-derived
+    // entries on 1000 and 6000, a manual entry on them is a
+    // jet.manual_vs_rule finding (3 of 4 postings = 7500 bps >= 6000).
+    for (code, day) in [("EV-10", "2026-03-14"), ("EV-11", "2026-03-16")] {
+        ok(&[
+            "event",
+            "record",
+            "--code",
+            code,
+            "--kind",
+            "sale",
+            "--occurred-on",
+            day,
+            "--evidence",
+            &ev,
+            "--resource",
+            "net:12.00 USD",
+            "--json",
+        ]);
+        let all = doc(&ok(&["rule", "derive", "--event", code, "--json"]));
+        assert_eq!(arr(&all, "derived").len(), 1, "{}", all.render());
+    }
+    let manual = write(
+        &dir,
+        "manual.json",
+        r#"{"effective_date":"2026-03-20","idempotency_key":"manual-sale","legs":[{"side":"debit","account":"1000","amount":"5.00 USD"},{"side":"credit","account":"6000","amount":"5.00 USD"}],"description":"hand-keyed sale"}"#,
+    );
+    let manual = field(
+        &ok(&["post", "--intent", &manual, "--evidence", &ev, "--json"]),
+        "vid",
+    )
+    .unwrap_or_default()
+    .to_string();
+    let jet = doc(&ok(&["procedure", "run", "jet.manual_vs_rule", "--json"]));
+    let findings = arr(&jet, "findings");
+    assert_eq!(findings.len(), 1, "only the manual entry: {}", jet.render());
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(
+        (int(statistic, "value"), int(statistic, "population")),
+        (Some(7500), Some(4)),
+        "{}",
+        jet.render()
+    );
+    assert!(
+        findings[0]
+            .get("cites")
+            .and_then(Json::as_arr)
+            .is_some_and(|cites| cites
+                .iter()
+                .any(|c| c.get("entry").and_then(Json::as_str) == Some(manual.as_str()))),
+        "the finding cites the manual entry: {}",
+        jet.render()
+    );
+
+    // A live rule's account cannot be closed out from under it (plan §10.3).
+    let (code, out, _) = run(&["chart", "close", "6000", "--on", "2026-12-31", "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("rule sale v1"), "{out}");
+
+    // Through the library: what the kernel re-derives is what posts.
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let mut lib = Book::open_dir(&book, keys, Entropy::deterministic(0xc3)).unwrap();
+    let operator = fa_model::principal_vid("operator");
+    let cap = fa::Capability::embedded(operator, &["read", "post"]).unwrap();
+    let mut ir = [0u8; 32];
+    for (i, byte) in ir.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&digest[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    let rule = lib
+        .rule_version(&ir, None, &cap)
+        .unwrap()
+        .unwrap()
+        .1
+        .unwrap()
+        .rule;
+    let event = lib
+        .read_event(fa_model::event_vid(lib.context().book_id, "EV-9"), None)
+        .unwrap()
+        .unwrap();
+    let inputs = fa::rule::Inputs::new();
+    let inputs_bytes = fa::rule::encode_inputs(&rule, &inputs).unwrap();
+    let derivation = fa::rule::evaluate(&rule, &event.spec, &inputs).unwrap();
+    let propose = |derivation: &fa::rule::Derivation, key: &[u8]| {
+        let description = fa_model::Erasable::seal(
+            &"tampered".to_string(),
+            None,
+            &lib.context().seal_key,
+            [1u8; 32],
+            [2u8; 24],
+        );
+        fa::rule::rule_derived_proposal(
+            lib.context(),
+            &fa::rule::RuleDerivation {
+                rule: &rule,
+                event: event.vid,
+                inputs: &inputs_bytes,
+                derivation,
+                evidence: &event.spec.evidence,
+            },
+            operator,
+            key,
+            description,
+        )
+        .unwrap()
+    };
+    // Planted: both legs moved by one cent, still balanced.
+    let mut tampered = derivation.clone();
+    for leg in &mut tampered.legs {
+        leg.amount.mantissa += 1;
+    }
+    let moved = propose(&tampered, b"tampered-legs");
+    // Planted: the derivation's legs, with inputs that do not digest to the
+    // entry's inputs_digest.
+    let mut relabeled = propose(&derivation, b"tampered-inputs");
+    relabeled.extensions = vec![(fa_model::entry::RULE_INPUTS_EXTENSION, vec![0])];
+    // Planted: the derivation's legs and inputs, posted as Adjusting by a
+    // rule that produces Original entries.
+    let mut reclassed = propose(&derivation, b"tampered-class");
+    reclassed.class = fa_model::EntryClass::ADJUSTING;
+    // Planted: the exact derivation with a document date the rule does not
+    // derive, and with no evidence where the event cites some. (An
+    // auto-reversal on an Original is refused earlier, at step 1f.)
+    let mut dated = propose(&derivation, b"tampered-date");
+    dated.document_date = Some(derivation.effective);
+    let mut cited = propose(&derivation, b"tampered-evidence");
+    cited.evidence.clear();
+    let before = lib.head().unwrap();
+    for (what, proposal) in [
+        ("legs", moved),
+        ("inputs", relabeled),
+        ("class", reclassed),
+        ("document date", dated),
+        ("evidence", cited),
+    ] {
+        let refused = lib
+            .post(fa_journal::PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                capability: cap.clone(),
+                plan_certificate: None,
+            })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, "FA-REF-196", "{what}: {refused:?}");
+    }
+    assert_eq!(lib.head().unwrap(), before, "the refusals write nothing");
+    Ok(())
+}
+
+/// fa-c34: a rule that `produces Adjusting` (plan §10.2's adjusting family)
+/// derives Adjusting entries. The admissibility matrix admits those into a
+/// soft-closed period and refuses the same derivation as an Original.
+#[test]
+fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> {
+    // A book that declares its civil-day policy, so an entry can schedule
+    // its reversal (plan §7.7).
+    let dir = tmp("canon-adjusting")?;
+    let book = dir.join("book");
+    for args in [
+        &[
+            "book",
+            "create",
+            "--name",
+            "Accrual Co",
+            "--time-zone",
+            "UTC",
+            "--json",
+        ][..],
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+        &["period", "open", "FY2026-P03", "--json"],
+    ] {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        if args[0] == "book" {
+            let chart = write(
+                &dir,
+                "chart.json",
+                r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+            );
+            let (code, out, err) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+            assert_eq!(code, 0, "{out}\n{err}");
+        }
+    }
+    let ev = source_doc(&dir, &book);
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-RENT",
+        "--kind",
+        "accrual",
+        "--occurred-on",
+        "2026-03-31",
+        "--evidence",
+        &ev,
+        "--resource",
+        "rent:100.00 USD",
+        "--json",
+    ]);
+    let activate = |name: &str, header: &str, reverses: &str| -> (String, String) {
+        let source = write(
+            &dir,
+            &format!("{name}.rule"),
+            &format!(
+                r#"rule {name} v1 for event Accrual {header} {{
+  inputs {{ back: date }}
+  let rent = event.resource("rent", "USD")
+  debit "6000" rent
+  credit "1000" rent
+  {reverses}
+}}"#
+            ),
+        );
+        let checked = doc(&ok(&["rule", "check", &source, "--json"]));
+        let digest = text(
+            &doc(&ok(&["rule", "propose", &source, "--json"])),
+            "ir_digest",
+        )
+        .to_string();
+        let planned = doc(&ok(&[
+            "rule",
+            "activate",
+            &digest,
+            "--from",
+            "2026-03-01",
+            "--dry-run",
+            "--json",
+        ]));
+        let plan = write(&dir, &format!("{name}.plan"), text(&planned, "bytes"));
+        let proposal = text(&planned, "proposal_digest").to_string();
+        let approval = |who: &str| -> String {
+            let out = ok(&["approve", "--proposal", &proposal, "--as", who, "--json"]);
+            field(&out, "approval_vid").unwrap_or_default().to_string()
+        };
+        let (a, b) = (approval("controller-a"), approval("controller-b"));
+        ok(&[
+            "rule",
+            "activate",
+            "--plan",
+            &plan,
+            "--approval",
+            &a,
+            "--approval",
+            &b,
+            "--json",
+        ]);
+        (text(&checked, "produces").to_string(), digest)
+    };
+    let (accrue_class, accrue) = activate("accrue_rent", "produces Adjusting", "reverses back");
+    let (plain_class, plain) = activate("plain_rent", "", "");
+    assert_eq!(
+        (accrue_class.as_str(), plain_class.as_str()),
+        ("Adjusting", "Original")
+    );
+    let listed = ok(&["rule", "list", "--json"]);
+    assert!(listed.contains("\"produces\":\"Adjusting\""), "{listed}");
+
+    ok(&["period", "soft-close", "FY2026-P03", "--json"]);
+    // The Original derivation is the period law's refusal (exit 7), not
+    // Canon's.
+    let (code, out, _) = run(&[
+        "rule",
+        "derive",
+        "--rule",
+        &plain,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-04-01",
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert_ne!(field(&out, "refusal_id"), Some("FA-REF-196"), "{out}");
+    assert!(
+        out.contains("is not admissible") && out.contains("SoftClosed"),
+        "{out}"
+    );
+    // A reversal date on or before the effective date is Canon's refusal.
+    let (code, out, _) = run(&[
+        "rule",
+        "derive",
+        "--rule",
+        &accrue,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    let posted = ok(&[
+        "rule",
+        "derive",
+        "--rule",
+        &accrue,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-04-01",
+        "--json",
+    ]);
+    assert!(posted.contains("\"event\":\"posted\""), "{posted}");
+    assert_eq!(text(&doc(&posted), "class"), "Adjusting");
+    let entry = text(&doc(&posted), "vid").to_string();
+    let shown = ok(&["entry", "show", &entry, "--json"]);
+    assert!(
+        shown.contains("Adjusting") && shown.contains("100.00 USD"),
+        "{shown}"
+    );
+
+    // The entry carries the exact-negation reversal the rule scheduled, and
+    // the kernel refuses a derivation whose reversal was moved.
+    let keys = fa::BookKeys::load(&book.join("book.keys")).unwrap();
+    let mut lib = fa::Book::open_dir(&book, keys, fa::Entropy::deterministic(0xad)).unwrap();
+    let vid = fgdb_types::VId(u128::from_str_radix(&entry, 16).unwrap());
+    let (posted_entry, _) = lib.read_entry(vid).unwrap().unwrap();
+    let april = fa_time::DateDay::parse("2026-04-01").unwrap();
+    assert_eq!(
+        fa_journal::schedule::auto_reverse(&posted_entry.proposal).unwrap(),
+        Some((april, fa_journal::schedule::RULE_EXACT_NEGATION))
+    );
+    let operator = fa_model::principal_vid("operator");
+    let cap = fa::Capability::embedded(operator, &["read", "post"]).unwrap();
+    let mut ir = [0u8; 32];
+    for (i, byte) in ir.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&accrue[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    let rule = lib
+        .rule_version(&ir, None, &cap)
+        .unwrap()
+        .unwrap()
+        .1
+        .unwrap()
+        .rule;
+    let event = lib
+        .read_event(fa_model::event_vid(lib.context().book_id, "EV-RENT"), None)
+        .unwrap()
+        .unwrap();
+    let mut inputs = fa::rule::Inputs::new();
+    inputs.set("back", fa::rule::InputValue::Date(april));
+    let inputs_bytes = fa::rule::encode_inputs(&rule, &inputs).unwrap();
+    let mut moved = fa::rule::evaluate(&rule, &event.spec, &inputs).unwrap();
+    moved.reverse_on = fa_time::DateDay::parse("2026-04-15").ok();
+    let description = fa_model::Erasable::seal(
+        &"moved".to_string(),
+        None,
+        &lib.context().seal_key,
+        [3u8; 32],
+        [4u8; 24],
+    );
+    let proposal = fa::rule::rule_derived_proposal(
+        lib.context(),
+        &fa::rule::RuleDerivation {
+            rule: &rule,
+            event: event.vid,
+            inputs: &inputs_bytes,
+            derivation: &moved,
+            evidence: &event.spec.evidence,
+        },
+        operator,
+        b"moved-reversal",
+        description,
+    )
+    .unwrap();
+    let before = lib.head().unwrap();
+    let refused = lib
+        .post(fa_journal::PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            capability: cap,
+            plan_certificate: None,
+        })
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-196", "{refused:?}");
+    assert_eq!(lib.head().unwrap(), before);
+    Ok(())
+}
+
+/// fa-c34 slice 8: `fa rule test` runs a rule over its golden corpus (plan
+/// §10.5). Every case holding is `rule_tested`; a case that does not hold is
+/// a verification failure (exit 8) naming the case and the difference; a
+/// malformed case is a usage error naming it.
+#[test]
+fn a_rule_golden_corpus_holds_or_fails_verification() -> std::io::Result<()> {
+    let (book, _ev, dir) = envelope_book("canon-golden")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let source = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    let golden = dir.join("golden");
+    std::fs::create_dir_all(&golden)?;
+    write(
+        &golden,
+        "a_sale.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"net:40.00 USD\"]\n\n[expect]\neffective = \"2026-03-12\"\n# Legs compare in any order.\nlegs = [\"credit 6000 40.00 USD\", \"debit 1000 40.00 USD\"]\n",
+    );
+    write(
+        &golden,
+        "b_no_net.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"gross:9.00 USD\"]\n\n[expect]\nrefused = \"no resource labeled `net`\"\n",
+    );
+    write(&golden, "notes.txt", "not a case");
+    let corpus = golden.display().to_string();
+    let (code, out, err) = run(&["rule", "test", &source, "--golden", &corpus, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(out.contains("\"event\":\"rule_tested\""), "{out}");
+    let tested = doc(&out);
+    assert_eq!(
+        ["cases", "passed", "failed"].map(|key| int(&tested, key)),
+        [Some(2), Some(2), Some(0)],
+        "{}",
+        tested.render()
+    );
+    let rows = arr(&tested, "rows");
+    assert_eq!(arr(&rows[0], "legs").len(), 2);
+    assert!(
+        text(&rows[1], "refusal").contains("`net`"),
+        "{}",
+        tested.render()
+    );
+
+    // A case that does not hold fails verification, naming it and the difference.
+    let wrong = write(
+        &dir,
+        "c_wrong.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"net:40.00 USD\"]\n\n[expect]\nlegs = [\"debit 1000 41.00 USD\", \"credit 6000 41.00 USD\"]\n",
+    );
+    let (code, out, _) = run(&[
+        "rule", "test", &source, "--golden", &corpus, "--golden", &wrong, "--json",
+    ]);
+    assert_eq!(code, 8, "{out}");
+    assert!(
+        out.contains("c_wrong.toml") && out.contains("where the golden expects"),
+        "{out}"
+    );
+    // A malformed case is a usage error naming it.
+    let malformed = write(&dir, "d_bad.toml", "[event]\nkind = \"sale\"\n");
+    let (code, out, _) = run(&["rule", "test", &source, "--golden", &malformed, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("d_bad.toml") && out.contains("occurred_on"),
+        "{out}"
+    );
     Ok(())
 }
 

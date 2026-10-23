@@ -394,6 +394,14 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                 crate::dimension::DimensionCloseSpec::decode(canonical_bytes)?;
                 continue;
             }
+            // A rule version is policy data; it changes no account.
+            Some(ControlPayload::SchemaChange {
+                kind: crate::rule::SCHEMA_CHANGE_RULE_VERSION,
+                canonical_bytes,
+            }) => {
+                crate::rule::validate_control(canonical_bytes)?;
+                continue;
+            }
             Some(ControlPayload::SchemaChange {
                 kind,
                 canonical_bytes,
@@ -1493,6 +1501,56 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
     // Check committed entries at txn.basis() for close preconditions.
     let basis = txn.basis();
     let snapshot_rows = db.vertices_at(basis)?;
+
+    // Plan §10.3: a chart change that removes an account a live rule
+    // references is refused with the rule's name. A binding is live on or
+    // after the close date unless the name's next binding starts on or
+    // before it; each live version is a point witness of this transaction.
+    for vrow in &snapshot_rows {
+        let Some(name) = crate::rule::RuleNameRow::decode(vrow)? else {
+            continue;
+        };
+        let bindings = &name.bindings.0;
+        for (i, binding) in bindings.iter().enumerate() {
+            if bindings
+                .get(i + 1)
+                .is_some_and(|next| next.effective_from <= closed_on)
+            {
+                continue;
+            }
+            let version_vid = fa_model::rule_version_vid(book.book_id, &binding.ir_digest);
+            let version = match txn.vertex(db, version_vid)? {
+                Some(row) => crate::rule::RuleVersionRow::decode(&row, book)?,
+                None => None,
+            };
+            let Some(version) = version else {
+                txn.abort();
+                return Err(KernelError::Corrupt(format!(
+                    "rule {} binds a version this book does not hold",
+                    name.name
+                )));
+            };
+            if version.rule.dependencies().accounts.contains(code_str) {
+                txn.abort();
+                return Ok(Err(Refusal::new(
+                    code::CANON_RULE,
+                    exit::REFUSAL,
+                    format!(
+                        "account `{code_str}` is posted to by rule {} v{} ({}), in force from {}; closing it on {closed_on} would remove an account a live rule references",
+                        name.name,
+                        version.rule.version(),
+                        crate::evidence::hex(&binding.ir_digest),
+                        binding.effective_from.render()
+                    ),
+                    "plan §10.3 (a chart change that removes an account a live rule references is refused with the rule's name)",
+                    format!(
+                        "activate a version of rule {} that does not post to `{code_str}` from a date on or before {closed_on} (fa rule propose, fa rule activate), then close the account",
+                        name.name
+                    ),
+                )));
+            }
+        }
+    }
     let mut all_entries: Vec<(VId, Entry)> = Vec::new();
     let mut resolved_holds: BTreeSet<VId> = BTreeSet::new();
     let mut reversed_targets: BTreeSet<VId> = BTreeSet::new();

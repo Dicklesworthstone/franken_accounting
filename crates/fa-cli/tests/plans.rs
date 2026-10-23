@@ -1695,21 +1695,47 @@ fn dry_run_warnings_name_what_journal_entry_testing_would_flag() {
         &Json::Arr(vec![Json::Str(first_vid.clone())])
     );
     assert!(text(warning, "message").contains(&first_vid));
-    // A capability that does not read the book is never shown the earlier
-    // entry, and the plan says the check did not run.
-    let narrow = ok(
+    // A session whose token does not read the book is never shown the
+    // earlier entry, and the plan says the check did not run. (The embedded
+    // posture's operator reads as the owner.)
+    let token = f.dir.join("post-only.token").display().to_string();
+    ok(
         &f.book,
         &[
+            "capability",
+            "issue",
+            "--holder",
+            "post-only-planner",
+            "--profile",
+            "human",
+            "--op",
+            "post",
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "post",
+            "--out",
+            &token,
+        ],
+    );
+    // A token-bound session reads no host path outside a launch files root,
+    // so the intent travels on stdin.
+    let narrow_intent = std::fs::read(f.intent("narrow", "125.37")).expect("narrow intent");
+    let (code, narrow) = run(
+        &f.book,
+        &[
+            "--token",
+            &token,
             "post",
             "--intent",
-            &f.intent("narrow", "125.37"),
+            "-",
             "--evidence",
             &f.evidence,
             "--dry-run",
-            "--grant",
-            "post",
         ],
+        Some(&narrow_intent),
     );
+    assert_eq!(code, 0, "{}", narrow.render());
     assert!(warning_kinds(&narrow).is_empty(), "{}", narrow.render());
     let unchecked = get(&narrow, "unchecked").as_arr().unwrap();
     assert_eq!(unchecked.len(), 1, "{}", narrow.render());

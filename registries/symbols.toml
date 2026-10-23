@@ -527,3 +527,15 @@ name = "RecurringSchedule"
 [[label]]
 id = 55
 name = "ExternalSubledgerBatch"
+
+# A Canon posting rule version (plan §10.3, bead fa-c34): content-addressed
+# by its IR digest, carrying its source and canonical IR.
+[[label]]
+id = 56
+name = "RuleVersion"
+
+# A Canon rule's name (plan §10.3, bead fa-c34): which version is in force
+# from which date, a projection of its activation controls.
+[[label]]
+id = 57
+name = "RuleName"

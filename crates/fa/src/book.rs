@@ -974,6 +974,108 @@ impl Book {
         )))
     }
 
+    /// Admit `capability` to change rules before anything is observed.
+    pub fn admit_rule_change(
+        &self,
+        principal: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.admit_rule_change(&self.purposes(), principal, capability))
+    }
+
+    /// Journal a Canon rule version (bead fa-c34) under `rule_change`
+    /// authority; the kernel compiles the source itself.
+    pub fn propose_rule_version(
+        &mut self,
+        source: &str,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::rule::RuleVersionRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.propose_rule_version(
+            &purposes, source, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Plan activating a rule version from a date (bead fa-c34); nothing is
+    /// written. Two independent Human approvers approve its proposal.
+    pub fn plan_rule_activation(
+        &self,
+        capability: &fa_journal::Capability,
+        ir_digest: &[u8; 32],
+        effective_from: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<crate::rule::RuleActivationPlan> {
+        with_store!(&self.store, core => core.plan_rule_activation(
+            &self.purposes(), capability, ir_digest, effective_from, idempotency_key,
+        ))
+    }
+
+    /// Commit a planned rule activation under the cited approvals.
+    pub fn activate_rule_version(
+        &mut self,
+        capability: &fa_journal::Capability,
+        plan: crate::rule::RuleActivationPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<crate::rule::RuleActivated> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.activate_rule_version(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Derive and post a rule version's entry over a recorded event (bead
+    /// fa-c34); the kernel re-runs the derivation in the commit.
+    pub fn derive_rule_entry(
+        &mut self,
+        capability: &fa_journal::Capability,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &crate::rule::Inputs,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::Posted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.derive_rule_entry(
+            &purposes, capability, ir_digest, event, inputs, idempotency_key,
+        )))
+    }
+
+    /// Every activated rule name and its bindings at `known_at`.
+    pub fn rule_names(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::rule::RuleNameRow>)> {
+        with_store!(&self.store, core => core.rule_names(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
+    /// Every rule version at `known_at` (the head when `None`), with the
+    /// prefix read, under current whole-book read authority.
+    pub fn rule_versions(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::rule::RuleVersionRow>)> {
+        with_store!(&self.store, core => core.rule_versions(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
+    /// The rule version addressed by `ir_digest` at `known_at`, if any.
+    pub fn rule_version(
+        &self,
+        ir_digest: &[u8; 32],
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Option<crate::rule::RuleVersionRow>)> {
+        with_store!(&self.store, core => core.rule_version(
+            &self.purposes(), ir_digest, known_at, capability,
+        ))
+    }
+
     /// Every registered kind's dimension value at `known_at` (the head when
     /// `None`), with the prefix read, under current whole-book read authority.
     pub fn dimension_values(

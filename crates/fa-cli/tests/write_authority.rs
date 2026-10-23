@@ -958,6 +958,33 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::SchemaChange],
             Reaches,
         ),
+        // fa-c34: a rule version is policy data under rule_change.
+        row(
+            &["rule", "propose", "fee.rule"],
+            &[Op::RuleChange],
+            Succeeds,
+        ),
+        // Deriving from an address the book does not hold reaches the
+        // kernel under read and post alone.
+        row(
+            &[
+                "rule",
+                "derive",
+                "--rule",
+                ZERO_DIGEST,
+                "--event",
+                "EV-NONE",
+            ],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        // Planning an activation of an address the book does not hold
+        // reaches the kernel under rule_change alone.
+        row(
+            &["rule", "activate", ZERO_DIGEST, "--from", DAY, "--dry-run"],
+            &[Op::RuleChange],
+            Reaches,
+        ),
         row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],
@@ -1250,6 +1277,10 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
             (
                 "party.json",
                 r#"{"code":"V-17","kind":"Vendor","name":"Acme Supplies"}"#,
+            ),
+            (
+                "fee.rule",
+                r#"rule fee v1 for event Sale { debit "1200" "1.00 USD" credit "4000" "1.00 USD" }"#,
             ),
             ("junk.json", "{}"),
             ("junk.plan", "not a plan"),

@@ -62,7 +62,7 @@ planned = false
 name = "fa-canon"
 layer = "laws"
 path = "crates/fa-canon"
-planned = true
+planned = false
 
 [[crate]]
 name = "fa-policy"

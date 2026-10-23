@@ -138,6 +138,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
     ("dimension", crate::dimension::dimension_cmd),
+    ("rule", crate::rule::rule_cmd),
     ("finding", crate::finding::finding_cmd),
     ("fx", crate::fx::fx_cmd),
     ("bank", crate::bank::bank_cmd),
@@ -2415,10 +2416,11 @@ enum HostPath {
     /// An input file of `fa document import run`.
     ImportRun,
     /// An input file: a positional chart, account, party, instrument, entity,
-    /// statement, document, certificate or export (a file, or an ADS package
-    /// directory), or a saved-certificate source flag
+    /// statement, document, certificate, rule or export (a file, or an ADS
+    /// package directory), a saved-certificate source flag
     /// (`--before-certificate`, `--after-certificate`, `--from-diff`,
-    /// `--from-source`, `--aging-certificate`, `--control-certificate`).
+    /// `--from-source`, `--aging-certificate`, `--control-certificate`), or a
+    /// rule's golden corpus (`--golden`, a file or directory).
     Input,
 }
 
@@ -2467,6 +2469,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--from-source",
         "--aging-certificate",
         "--control-certificate",
+        "--golden",
     ] {
         for value in args.flag_all(flag) {
             let digits = value.strip_prefix("C:").unwrap_or(value);
@@ -2510,7 +2513,11 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         | ("chart", Some("open"))
         | ("party" | "instrument" | "entity", Some("add"))
         | ("certificate", Some("status"))
-        | ("finding", Some("replay")) => args.positional.get(2),
+        | ("finding", Some("replay"))
+        // A Canon rule's source (fa-c34).
+        | ("rule", Some("check" | "propose" | "eval" | "backtest" | "test")) => {
+            args.positional.get(2)
+        }
         ("replay", _) => args.positional.get(1),
         // The exported file, or the ADS package directory.
         ("verify", Some("export")) => args.positional.get(3),
@@ -7328,6 +7335,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
     const FIELDS: &[&str] = &[
         "class",
         "effective_date",
+        "document_date",
         "effective_period",
         "idempotency_key",
         "description",
@@ -8653,7 +8661,18 @@ pub(crate) fn emit_post_plan(
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
     // What journal-entry testing would flag, said before the commit (plan
     // §5.1, fa-d5un): data only, never a refusal or a change to the plan.
-    let warned = book.plan_warnings(plan, capability)?;
+    // The duplicate scan reads other entries. A launch-bound session's own
+    // token decides whether it may; the embedded posture's operator acts
+    // with the owner's authority, so it reads as the planning principal.
+    let embedded_reader;
+    let reader = if out.is_bound() {
+        capability
+    } else {
+        embedded_reader = Capability::embedded(capability.holder(), &["read"])
+            .map_err(|e| Fail::Internal(format!("the embedded read capability: {e}")))?;
+        &embedded_reader
+    };
+    let warned = book.plan_warnings(plan, reader)?;
     let warnings = Json::Arr(
         warned
             .warnings
@@ -21548,6 +21567,29 @@ fn event_summary_json(ev: &fa_journal::EventRow) -> Json {
     ])
 }
 
+/// The recorded event `target` names in `rea`: its 32-hex vid (optionally
+/// `EV:`-prefixed) or its code.
+pub(crate) fn find_event<'a>(
+    rea: &'a fa_journal::ReaSnapshot,
+    book_id: fa_model::Id128,
+    target: &str,
+) -> Option<&'a fa_journal::EventRow> {
+    let stripped = target.strip_prefix("EV:").unwrap_or(target);
+    if stripped.len() == 32
+        && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(raw) = u128::from_str_radix(stripped, 16)
+    {
+        rea.events
+            .get(&VId(raw))
+            .or_else(|| rea.events.values().find(|e| e.spec.code == target))
+    } else {
+        let derived = fa_model::event_vid(book_id, stripped);
+        rea.events
+            .get(&derived)
+            .or_else(|| rea.events.values().find(|e| e.spec.code == stripped))
+    }
+}
+
 fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fail> {
     let seal_key = &book.context().seal_key;
     let units = &book.context().units;
@@ -22001,21 +22043,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?;
             let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
             ctx.out.known_at(rea.known_at);
-            let stripped = target.strip_prefix("EV:").unwrap_or(target);
-            let ev_row = if stripped.len() == 32
-                && stripped.bytes().all(|b| b.is_ascii_hexdigit())
-                && let Ok(raw) = u128::from_str_radix(stripped, 16)
-            {
-                rea.events
-                    .get(&VId(raw))
-                    .or_else(|| rea.events.values().find(|e| e.spec.code == target))
-            } else {
-                let derived = fa_model::event_vid(book.context().book_id, stripped);
-                rea.events
-                    .get(&derived)
-                    .or_else(|| rea.events.values().find(|e| e.spec.code == stripped))
-            }
-            .ok_or_else(|| {
+            let ev_row = find_event(&rea, book.context().book_id, target).ok_or_else(|| {
                 usage(
                     format!("no event `{target}` in this book at {}", rea.known_at.0),
                     "fa event list --book <dir> --json",

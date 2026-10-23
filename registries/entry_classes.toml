@@ -391,3 +391,9 @@ id = 18
 name = "recurring_schedule"
 class = "ScheduleControl"
 minted_by = "fa-journal recurring::create_recurring and cancel_recurring"
+
+[[control_kind]]
+id = 19
+name = "rule_activation"
+class = "PolicyControl"
+minted_by = "fa-journal rule::activate_rule_version"

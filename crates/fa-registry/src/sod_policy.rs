@@ -29,7 +29,7 @@ pub const EXCLUSIONS: &[&str] = &["preparer", "duplicate", "case_preparer", "ses
 /// Every PeriodControl transition has a row (`transition_period` refuses
 /// one that does not), so the vocabulary is the state machine's.
 const PERIOD_TRANSITIONS: &[&str] = &["Open", "SoftClose", "Close", "Lock", "Reopen"];
-const POLICY_TRANSITIONS: &[&str] = &["Activate"];
+const POLICY_TRANSITIONS: &[&str] = &["Activate", "ActivateRule"];
 /// Chart and fiscal-calendar declarations are authorized book controls.
 const SCHEMA_TRANSITIONS: &[&str] = &["ChartInstall", "CreatePeriods"];
 /// A TimeEvidence tick (plan §7.1a).
