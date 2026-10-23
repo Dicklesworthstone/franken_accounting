@@ -1,12 +1,14 @@
-//! `fa rule check|propose|list|show|eval` (plan §10.3, §10.5, §10.6, bead
-//! fa-c34). A Canon posting rule is a text file. `check` compiles it against
+//! `fa rule check|propose|list|show|activate|eval|derive` (plan §10.3,
+//! §10.5, §10.6, bead fa-c34). A Canon posting rule is a text file. `check` compiles it against
 //! the book's units: names, unit types, registered rounding laws and
 //! dimensions, and the per-unit balance proof. It reports the IR's content
 //! address and the rule's dependency set. `propose` journals the version
 //! under `rule_change`; `list` and `show` read the versions the book holds;
 //! `eval` runs a rule, from a file or a journaled version, over one recorded
-//! REA event and reports the legs it derives. Only `propose` writes, and
-//! nothing posts an entry.
+//! REA event and reports the legs it derives. `activate` binds a version to
+//! its name from a date under dual control, and `derive` posts what the
+//! version in force derives from an event; the kernel re-derives it in the
+//! commit.
 
 use fa::rule::{
     CompiledRule, Derivation, EvalError, InputType, InputValue, Inputs,
@@ -29,7 +31,7 @@ const SHOW: &str = "fa rule show <ir_digest> [--as-known-at HEAD|<seq>]";
 const ACTIVATE: &str = "fa rule activate <ir_digest> --from YYYY-MM-DD [--key K] --dry-run";
 const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approval <vid>";
 const DERIVE: &str =
-    "fa rule derive --rule <ir_digest> --event <code|vid> [--input <name>=<value>]... [--key K]";
+    "fa rule derive [--rule <ir_digest> [--input <name>=<value>]... [--key K]] --event <code|vid>";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 
 pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -415,13 +417,13 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             DERIVE,
         ));
     }
-    let Some(rule) = args.flag("--rule") else {
-        return Err(usage("rule derive needs --rule <ir_digest>", DERIVE));
-    };
-    let digest = digest_arg(rule, DERIVE)?;
     let Some(target) = args.flag("--event") else {
         return Err(usage("rule derive needs --event", DERIVE));
     };
+    let Some(rule) = args.flag("--rule") else {
+        return derive_all(ctx, args, target);
+    };
+    let digest = digest_arg(rule, DERIVE)?;
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read", "post"])?;
     let mut selected = None;
@@ -451,20 +453,132 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let given = inputs(&rule, args, &book.context().units)?;
     let key = match args.flag("--key") {
         Some(key) => key.to_string(),
-        // The request itself, within the 64-byte key bound: deriving the
-        // same version over the same event with the same inputs is a retry.
-        None => hex(&fa_model::domain_digest(
-            b"fa-cli:rule-derive-key:v1",
-            &[
-                &digest,
-                &event_vid.0.to_le_bytes(),
-                &fa_canon_inputs_digest(&rule, &given)?,
-            ],
-        )),
+        None => default_key(&digest, event_vid, &rule, &given)?,
     };
     let posted = book.derive_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??;
     ctx.out.at_book(&book)?;
     crate::cli::emit_posted(&ctx.out, posted, "Original", false, None, None)
+}
+
+/// The request itself, within the 64-byte key bound: deriving the same
+/// version over the same event with the same inputs is a retry.
+fn default_key(
+    digest: &[u8; 32],
+    event: fgdb_types::VId,
+    rule: &CompiledRule,
+    inputs: &Inputs,
+) -> Result<String, Fail> {
+    Ok(hex(&fa_model::domain_digest(
+        b"fa-cli:rule-derive-key:v1",
+        &[
+            digest,
+            &event.0.to_le_bytes(),
+            &fa_canon_inputs_digest(rule, inputs)?,
+        ],
+    )))
+}
+
+/// `fa rule derive --event <code|vid>` without `--rule`: every activated
+/// rule whose version in force on the event's date reads this event's kind
+/// derives its entry (plan §10.2 RecordEvent: the book's rules derive
+/// entries from an event). A rule that declares inputs is reported as
+/// skipped: derive it with `--rule` and `--input`. Each derivation is its
+/// own entry under its default key; on a refusal the command stops with
+/// it, and running it again is a retry of the derivations already posted.
+fn derive_all(ctx: &mut Ctx<'_>, args: &Args, target: &str) -> Result<(), Fail> {
+    if !args.flag_all("--input").is_empty() || args.flag("--key").is_some() {
+        return Err(usage(
+            "--input and --key name one rule's derivation: give --rule with them",
+            DERIVE,
+        ));
+    }
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read", "post"])?;
+    let mut selected = None;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        let scope = book.read_scope(who, &cap)??;
+        let seq = scope.admit_whole_book(None)??;
+        selected = Some(book.rea_snapshot(Some(seq))?);
+        Ok(())
+    })?;
+    let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
+    let event = find_event(&rea, book.context().book_id, target).ok_or_else(|| {
+        usage(
+            format!("no event `{target}` in this book at {}", rea.known_at.0),
+            "fa event list --book <dir> --json",
+        )
+    })?;
+    let (_, names) = book.rule_names(Some(rea.known_at), &cap)??;
+    let mut derived = Vec::new();
+    let mut skipped = Vec::new();
+    for name in &names {
+        let Some(digest) = name.bindings.in_force(event.spec.occurred_on) else {
+            continue;
+        };
+        let (_, version) = book.rule_version(&digest, Some(rea.known_at), &cap)??;
+        let rule = version
+            .ok_or_else(|| {
+                Fail::Internal(format!(
+                    "rule {} binds a version the book does not hold",
+                    name.name
+                ))
+            })?
+            .rule;
+        if rule.event() != event.spec.kind {
+            continue;
+        }
+        if !rule.inputs().is_empty() {
+            skipped.push(obj(vec![
+                ("rule", s(&name.name)),
+                ("ir_digest", s(hex(&digest))),
+                (
+                    "reason",
+                    s("it declares inputs: derive it with --rule and --input"),
+                ),
+            ]));
+            continue;
+        }
+        let none = Inputs::new();
+        let key = default_key(&digest, event.vid, &rule, &none)?;
+        let posted = book.derive_rule_entry(&cap, &digest, event.vid, &none, key.as_bytes())??;
+        let (entry_ref, recorded_at, already) = match posted {
+            fa_journal::Posted::Committed {
+                entry_ref,
+                recorded_at,
+                ..
+            } => (entry_ref, recorded_at, false),
+            fa_journal::Posted::AlreadyRecorded {
+                entry_ref,
+                recorded_at,
+            } => (entry_ref, recorded_at, true),
+        };
+        derived.push(obj(vec![
+            ("rule", s(&name.name)),
+            ("ir_digest", s(hex(&digest))),
+            ("vid", s(format!("{:032x}", entry_ref.vid.0))),
+            ("recorded_at", Json::Int(i128::from(recorded_at.0))),
+            ("already_recorded", Json::Bool(already)),
+        ]));
+    }
+    ctx.out.at_book(&book)?;
+    let human = format!(
+        "event {}: {} rule-derived entr{} posted or already recorded, {} rule{} skipped",
+        event.spec.code,
+        derived.len(),
+        if derived.len() == 1 { "y" } else { "ies" },
+        skipped.len(),
+        if skipped.len() == 1 { "" } else { "s" },
+    );
+    ctx.out.event(
+        "rule_derivations",
+        vec![
+            ("event_code", s(&event.spec.code)),
+            ("derived", Json::Arr(derived)),
+            ("skipped", Json::Arr(skipped)),
+        ],
+        &human,
+    );
+    Ok(())
 }
 
 /// The inputs' digest, for a default key: deriving the same version over

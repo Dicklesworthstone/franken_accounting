@@ -9997,6 +9997,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "--as",
         "rule-approver-b",
     ]);
+    run2(&["rule", "derive", "--event", "EV-1001"]);
     run2(&[
         "rule",
         "activate",
@@ -20856,6 +20857,13 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
         "{out}"
     );
     assert!(out.contains("not in force"), "{out}");
+    // Nor does any rule derive from the event by its kind.
+    let none = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    assert!(
+        arr(&none, "derived").is_empty() && arr(&none, "skipped").is_empty(),
+        "{}",
+        none.render()
+    );
     let planned = doc(&ok(&[
         "rule",
         "activate",
@@ -20884,19 +20892,33 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
         "--json",
     ]);
 
+    // Every active rule in force on the event's date derives its entry.
+    let all = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    let derived = arr(&all, "derived");
+    assert_eq!(
+        (derived.len(), arr(&all, "skipped").len()),
+        (1, 0),
+        "{}",
+        all.render()
+    );
+    assert_eq!(text(&derived[0], "rule"), "sale");
+    assert_eq!(text(&derived[0], "ir_digest"), digest);
+    assert_eq!(derived[0].get("already_recorded"), Some(&Json::Bool(false)));
+    let entry = text(&derived[0], "vid").to_string();
+    // Deriving it by version is a retry of the same derivation: one key.
     let posted = ok(&[
         "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
     ]);
-    assert!(posted.contains("\"event\":\"posted\""), "{posted}");
-    assert_eq!(text(&doc(&posted), "class"), "Original");
-    let entry = text(&doc(&posted), "vid").to_string();
+    assert!(posted.contains("\"event\":\"recorded\""), "{posted}");
+    assert_eq!(text(&doc(&posted), "vid"), entry);
     let shown = ok(&["entry", "show", &entry, "--json"]);
     assert!(shown.contains("40.00 USD"), "{shown}");
-    // Deriving the same version over the same event again is a retry.
-    let again = ok(&[
-        "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
-    ]);
-    assert_eq!(text(&doc(&again), "vid"), entry);
+    let again = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    assert_eq!(text(&arr(&again, "derived")[0], "vid"), entry);
+    assert_eq!(
+        arr(&again, "derived")[0].get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
     // Its lineage: GENERATED_BY to the version that derived it.
     let lineage = doc(&ok(&[
         "query",
