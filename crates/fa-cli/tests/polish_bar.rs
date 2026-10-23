@@ -610,6 +610,10 @@ fn every_plan_leaf_present_or_registered() {
         ),
         ("fa close run", "fa-4o0: the CloseRun task DAG"),
         ("fa close status", "fa-4o0: the CloseRun task DAG"),
+        (
+            "fa diff",
+            "fa-waow: MaroonCat's f2e776c3 (fa diff --from --to, with the recorded entries)",
+        ),
         ("fa exhibit mark", "fa-6l9"),
         (
             "fa finding dismiss",
