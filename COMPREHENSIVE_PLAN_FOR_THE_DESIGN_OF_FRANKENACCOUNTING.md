@@ -1271,6 +1271,223 @@ W2 takes the real first fa-intents slice needed by Genesis before Folio's first 
 
 ---
 
+### 20.1 Reality check and bridge plan — 2026-10-23
+
+**Assessment: a substantial accounting implementation, with a useful demonstrated
+slice, but the six-bet system and G0–G4 acceptance are not yet established.**
+This section records an audit and remaining work; it neither changes the target
+contracts above nor closes implementation beads. The generated workflow scoreboard
+is a sample of commands, not a percentage of the complete product delivered.
+
+#### Source, execution, and claim boundaries
+
+The primary inspected cut was `32bed7d723d9d533eb925a8cb8f03830c10930ed`.
+Shared main advanced during inspection to
+`c7b5eb5853523f2f606f8c8373443def235150d8`; the additional carrying-close CLI,
+external-subledger and monthly recurring-entry sources were then inspected too.
+Concurrent `.beads/issues.jsonl`, `crates/fad/src/main.rs`, and `.ee/` work was
+preserved. The complete project AGENTS and README were read, followed by the
+plan's subsystem contracts and appendices, threat model, negative evidence,
+conformance matrices, maintenance/proof notes and downstream dashboard contracts.
+The cited `/data/projects/AGENTS.md` is absent on this Mac; the local parent rules
+and the project's stated fallback summary apply. No missing rule was invented.
+
+Evidence retained under
+`/Users/jemanuel/.codex/artifacts/fa-reality-check-20261023.Nemi4F`:
+
+- **Fresh execution, older binaries:** all 21 `Try it today` commands exit 0 on a
+  new synthetic book. The certified trial-balance line replays byte-for-byte,
+  including after later backdated entries; its status then names those entries
+  as `SupersededBy`. Signed prefix, account balance and inline-document bundle
+  with detached receipt verify offline. The older bundle verifier explicitly
+  trusts the signed scope index rather than independently deriving it from the
+  journal; that predicate remains distinct from prefix membership and amount
+  recomputation. A changed bundle exits 8, imbalance
+  exits 3 with FA-REF-001, and an Original in a genuinely Closed period exits 7
+  with FA-REF-010. The close first requires confirmation and a reason, and those
+  refusal attempts remain in the transcript. These are synthetic test inputs,
+  not real invoices or approvals.
+- The executable hashes are
+  `fa=5da52e3660586a140482405a9fa99e6267fb3c23477e5fcf691a1d3e50786078`
+  and
+  `fa-verify=445de3b74e96a92aa2e0cb759213170661dcbd3b9612bee3989ef55a4b7f2903`.
+  They predate the inspected source. Their results do **not** qualify new
+  carrying-close, recurrence, external-feed or portable-report code.
+- **Current-source shell counterexample:** invoking `install.sh --offline`
+  with a new empty artifact directory, a new empty destination and `--verify`
+  exits 0 and prints `self-verification passed`, installing no binaries. The
+  artifact-directory path also skips checksum verification when SHA256SUMS is
+  absent. `install.sh` therefore cannot yet establish successful verified
+  installation. No existing executable or destination was overwritten.
+- **Current lightweight checks:** formatting and the six mechanical doctrine
+  lint checks exit 0; the latter's graph fallback inspects Cargo.lock, not fresh
+  resolved posture receipts. Shell syntax and the gate's warning-level
+  ShellCheck invocation pass for the installer/reproducibility scripts.
+  Seventy registry/workspace/stack
+  TOML files parse; the narrow facade document-byte signature guard passes both
+  Book adapters; the initial active Beads graph has no cycles. Parsing and this
+  source guard are not substitutes for registry-check, compiler, tests or runtime
+  authorization. No local or origin `refs/notes/*` were advertised when checked.
+  UBS v5.5 exits 3 on the changed Markdown/JSONL, explicitly reporting that no
+  scanner ran; this is UNRUN, not a static-analysis pass.
+- **Retained exact-source runtime:** the complete no-overlay workspace run at
+  `836009e9` has 197 target summaries, 3,075 passed, 31 failed, zero ignored,
+  remote exit 101. Nineteen MCP discovery cases, eleven daemon integration cases
+  and one daemon version assertion failed. The repair sources exist; subsequent
+  repaired campaigns are UNRUN, not green. See the exact logs and later repair
+  attempts in `docs/NEGATIVE_EVIDENCE.md`.
+- **Retained focused evidence:** the solvency repair has seven passing focused
+  tests at base `1b1c1853` plus the named overlay; aggregate guards have 159
+  passing substrate/genesis tests at `95c6239d`, an actual failing original-code
+  control at `522f2979`, and later selected repair results at other stated cuts.
+  These do not compose into a verdict for current main. The older network-trace
+  budget counterexample and still-unrun repair remain separately identified.
+- **Current full gate: UNRUN.** `sbh check --need 20G` exits 1, reporting critical
+  Data-volume pressure (about 3.82% free). Heavy compilation, `cargo test`,
+  Clippy and `scripts/check.sh` were not launched past this admission failure.
+  No fallback, pressure-threshold change, gate relaxation or cleanup deletion
+  was attempted. No implementation bead is eligible for closure from this audit.
+
+The earlier evidence retractions are present, not pending discoveries: all 20
+SLO rows are inactive; all 11 formal/model lanes are dormant;
+`FA-INV-06.proofs` is dormant; the external binary probe returns `Present`,
+not verified balances. At the inspected cut 68 of 82 invariant clauses are
+declared live and 14 dormant. Every dormant clause names an open activating
+bead. A `live` registry declaration is not a freshly passing checker result.
+
+#### Testable vision checklist and gap ownership
+
+`DEMONSTRATED` below means the precisely bounded older-binary run above;
+`PARTIAL` means inspected code serves a subset of the target; `UNPROVEN` means
+source exists but acceptance for the inspected cut has not executed. None of
+these labels promotes a sampled command into a passed integration gate.
+
+| Goal | Source reality and remaining acceptance | Bridge owners |
+|---|---|---|
+| V01 Immutable N-leg posting with lawful refusals | DEMONSTRATED basic book/post/refusal path; cumulative gross register capacity still requires pre-publication admission, including activation paths | fa-apdv, fa-ys52, fa-4aym |
+| V02 One posting universe, derived projections | DEMONSTRATED registers/projections/book verification; source has recovery and phantom-cell negatives; certify every supported measure against the payload fold | fa-jmh, fa-0fl |
+| V03 Fast native and functional register reads | PARTIAL native delta maintainer and launch-selected daemon scheduling; reports still use literal folds; historical RegisterCheckpoints, bounded tail reads and cadence remain | fa-715, fa-9xf9 |
+| V04 Period/calendar law and prepared races | PARTIAL real state machine, matrix, prepared witnesses and both-order tests; complete lab campaign, custom calendar/time-zone/effectivity closure and typed conflict remain | fa-0fl, fa-94qd, fa-7uhr |
+| V05 Bitemporal reports and issuance selectors | DEMONSTRATED sequence-pinned TB/replay; PARTIAL retained ticks, issuance, audience and certificate views; full GQL/restatement composition remains | fa-wrrw, fa-5c1, fa-vdc |
+| V06 Supersession and complete restatement | PARTIAL reversal/replacement/reclass and case lifecycle; Restatement-class post still waits for principal/session SoD, complete manifest and disclosure/table acceptance | fa-75j4, fa-651f, fa-nl7 |
+| V07 Mechanical year-end close and CloseRun DAG | UNPROVEN latest native/functional carrying-close sources and CLI review; a correct YearEndClose is not the CloseTask DAG, task approvals, restart/rehearsal and reclose campaign | fa-4o0, fa-r19j |
+| V08 Holds, releases and limited availability | PARTIAL unique resolutions, full hold release, LimitCell and committed-tick expiry; arbitrary per-procedure work bounds and complete race/crash campaign remain | fa-0fl, fa-gpd4, fa-7mhm |
+| V09 Accrual, reversal and recurrence | PARTIAL scheduled reversals; UNPROVEN new approved fixed monthly recurrence at `83efdee3`; broader rule-driven schedules and timing/revocation/crash acceptance remain | fa-0bi, fa-c34, fa-0fl |
+| V10 Atomic batches and durable retries | PARTIAL successful PostBatch and keyed posting outcomes; dedicated control writers, admitted durable refusals and the full ordered effect/approval protocol remain | fa-nl7, fa-we7 |
+| V11 Staged migration at declared scale | PARTIAL opening/detail/period-balance visibility and tie-out; complete activation/capacity/open-item and large-object/loader campaign remain | fa-zddh, fa-nd7g, fa-ys52 |
+| V12 Exact arithmetic, law-bound FX and units | PARTIAL exact wide/rational arithmetic, valuations, carrying relief and revaluation; complete application policies, unit evolution and all amount-path overflow acceptance remain | fa-pvt7, fa-3ock, fa-thp, fa-4aym |
+| V13 Dimensions and native/external control detail | PARTIAL native party-qualified control leaves; UNPROVEN reviewed external batch summaries at `0867169a`; both FA-INV-12 clauses remain dormant, so source landing is not clause activation or gate acceptance; full dimension kinds/hierarchy remain | fa-ficc, fa-03s, fa-vz7e |
+| V14 Full provenance and retained external evidence | DEMONSTRATED original-cited document bundle subset; complete events/rules/approvals/session/supplement/retention closure and rule reproduction remain | fa-ge0y, fa-81lu, fa-c34, fa-v6di |
+| V15 Reconciliation and truthful aging | PARTIAL bank formats, retained layouts, matching/confirmation, assertions and effective-date aging; drift monitoring, continuity findings and due-date obligations remain | fa-d22b, fa-nwgf, fa-5dpd |
+| V16 Independent portable report verification | UNPROVEN new complete-prefix, sequence-selected native TB bundle at `ffd012fb`; independent decoder explicitly refuses instant and statement certificates; full statement and scenario closure remain | fa-70h4, fa-0m9r |
+| V17 Witnessed history with explicit trust | DEMONSTRATED book-key signatures over a limited checkpoint; source has cosigning; quorum/policy/rotation and independent index derivation remain separate predicates | fa-qtfd, fa-u3zf, fa-7uhr |
+| V18 Governed privacy, holds and erasure | PARTIAL privileged separation and holds; subject-key lifecycle/crypto-erasure is explicitly unavailable pending foundation cooperation; do not advertise erasure from an enum arm | fa-v74, fa-v6di |
+| V19 Authenticated agent authority and real SoD | PARTIAL issued tokens and bound MCP launch; owner CLI assertions are not independent human authentication; principal signatures, full caveats, expiry and every-write authorization remain | fa-yok, fa-z46b, fa-651f, fa-0x0, fa-mg2j |
+| V20 Access audit before disclosure | PARTIAL read-only Human bound sessions; Agent/writing sessions, protected findings/documents and stream admission require full policy coverage | fa-7dw, fa-ohe |
+| V21 Typed pure Canon rules | NOT_STARTED as a rule compiler/evaluator crate; explicit typed posting sugar is useful but does not implement journaled total rules, reproduction, activation or backtesting | fa-c34 |
+| V22 Safe plans, drafts and counterfactuals | PARTIAL real plans, intent-log promotion, scratch replay and certified diff; all manifest/approval bindings, generic lifecycle and offline counterfactual replay remain | fa-we7, fa-s7x, fa-k07b, fa-0m9r |
+| V23 All three surfaces on one authority | PARTIAL broad CLI/library and launch-bound MCP; MCP still takes its own lease rather than being hosted on fad's one book/session; discovery repair lacks repaired runtime pass | fa-z5u, fa-y9ug, fa-b295, fa-ze0y |
+| V24 Executable agent guidance and ergonomics | DEMONSTRATED walkthrough and teaching refusals; complete refusal-fix, fresh-agent, non-TTY and schema-level parity campaigns remain | fa-wgsj, fa-y6eu, fa-nmk4, fa-6his |
+| V25 Query profile over native certified reads | PARTIAL selectors, exact amount aggregation and native replay; per-row CALL composition, full selectors, scoped tokens and complete runtime graph remain | fa-5c1 |
+| V26 Statements and journaled definitions | PARTIAL native/functional statements, certified GL/aging/roll-forward/cash-flow families and rendering; custom-definition activation/lint, presentation rounding and full family parity remain | fa-qh60, fa-nzix, fa-y1vr, fa-oimc, fa-cet |
+| V27 Multi-book and consolidation | PARTIAL library algorithms; FA-INV-13.core is declared live on library Concordat tests, which do not establish the full commit-time and operator workflow for basis layers, matched intercompany, eliminations/NCI/CTA, translation and certified consolidation | fa-259c, fa-22v5, fa-76hy, fa-bwri |
+| V28 Reproducible forensic observations | PARTIAL broad registered procedures, tracing, findings and sampling; signed solvency screen is not documented fair value, posting dates are not maturities, and remaining network work must be charged inside execution | fa-8j3g, fa-5dpd, fa-6l8g, fa-1tvm, fa-v0m2 |
+| V29 Calibrated graph and sampling methods | PARTIAL role-driven populations, algorithms and seeded sampling; kiting and measured labeled-corpus precision/recall, method assumptions and complexity locks remain | fa-m35p, fa-4psc, fa-b6xs, fa-kxc4, fa-k1ts |
+| V30 Audit and litigation work products | PARTIAL engagement/SUD, confirmations, Bates/privilege/load files and receipt bundles; exhibit marks, carry-forward limits and complete closure remain | fa-zgn, fa-6l9, fa-ge0y |
+| V31 Real standards and regulatory delivery | PARTIAL self round trips, own linkbase and ordinary ADS proofs; real Beancount/hledger comparisons, published ADS/SAF-T/XBRL validation, Part 370 data inputs and schedule edits remain | fa-sa4w, fa-ipom, fa-w3n6, fa-p370, fa-doa9 |
+| V32 Independent reference and full simulation | PARTIAL isolated reference arithmetic/state machine, prepared substrate tests and lab smoke; model-generated histories, all registered crashes/interleavings and 1,000-seed Genesis campaign remain | fa-2ihd, fa-0fl, fa-eid6 |
+| V33 Formal/model and fuzz evidence | PARTIAL source hygiene and bounded Rust models; actual Lean/TLC execution with theorem/state inventory, trace conformance and coverage-guided decoder campaigns remain | fa-09q8, fa-dj6j, fa-apde, fa-yrhb |
+| V34 Measured performance and bounded costs | UNPROVEN all §17 targets; 20 rows correctly inactive; execute actual workloads, count work, measure barriers/memory/endurance, compare an independent incumbent in the same invocation | fa-ykbp, fa-vtzt, fa-7mhm |
+| V35 Exact-tree gates, truthful closure and scoreboard | PARTIAL drivers exist, current full verdict absent; sample scoreboard reports 32/33 workflows and 17/18 active criteria while omitting substantial §19 obligations | fa-1qk0, fa-j1fc, fa-8jcr, fa-ubl0, fa-ldfy, fa-abhg |
+| V36 Delivered release and matching publications | UNPROVEN release recipe/installer/repro script exist under closed fa-eqk; empty installation currently reports success; final composed five-reader campaign, distributed release acceptance and four scoped papers now have explicit remaining-work owners | fa-nfq2, fa-o3zg, fa-wwip, fa-q5kx, fa-rdid |
+| V37 Quantity lots and scheduled asset costs | PARTIAL `fa-registers/src/lots.rs` folds paired quantity/cost open items and `fa gl lots` plans FIFO/LIFO/SpecificId/weighted-average relief with regime checks; lot certification explicitly refuses. Depreciation/amortization rule families remain owned by Canon/close comments, not established by a fixed recurring entry | fa-y1vr, fa-oimc, fa-c34, fa-4o0, fa-4aym |
+
+#### Bridge sequence and success criteria
+
+1. **Recover one trustworthy baseline (W10/G0–G1).** fa-abhg supplies admitted
+   canonical worker capacity; fa-ze0y proves repaired MCP discovery and daemon
+   fixtures at one committed candidate. Run Tier 0, the complete test inventory,
+   Clippy and `scripts/check.sh`, then verify and publish its exact-tree manifest.
+   Keep prior red runs and expected-failure controls. fa-1qk0/fa-j1fc/fa-8jcr must
+   make that path govern main and closure; fa-ubl0 transcribes every §19 criterion
+   without equating a CLI sample with lab, oracle, proof or measurement evidence.
+2. **Protect admitted accounting (W2–W3/G1–G2).** Finish capacity/overflow,
+   aggregate basis, idempotent outcomes, principal/approval bindings and timing
+   laws before adding throughput. Tests must cover both prepared commit orders,
+   intervening metadata/ticks/AccessEvents, crash before and after publication,
+   same-key changed-content refusal, exact uncertain-ack retry and unchanged
+   accounting state on refusal. Include batch, draft/case, recurring effects and
+   migration Finalize; the latest two source additions create no exemption.
+3. **Complete the operator workflows (W3–W8/G2–G3).** Extend the existing
+   CloseRun/case, Canon, authority, report and Concordat owners in the table,
+   retaining code and its unit/real-binary tests together. Promote a checklist
+   row only after its real CLI/fad/MCP consumer works under the intended profile.
+   No duplicate reporting engine, mutable register truth, substitute storage or
+   blanket global lock is introduced. Unit evolution, privacy and foundation
+   switch-overs retain their explicit version/admission rules.
+4. **Prove the evidence joins (W4/W8–W10/G2–G4).** Complete offline statement
+   and scenario closure, independent scope derivation, actual external oracles,
+   labeled forensic calibration, generated-history differentials, crash matrix,
+   real Lean/TLC, fuzzing and measured workloads. Companion acceptance campaigns
+   independently test the implementation; ordinary unit and e2e tests still ship
+   in each implementation bead. Log source/tree, seed, coordinate, capability
+   commitment, work counters, artifact hashes and verdict; never log secrets.
+5. **Deliver the inspected artifact (G4).** Repair installer false success and
+   fail-closed checksums; validate reproducibility on distinct builders and
+   verify each target's actual linkage rather than calling std-only “static.”
+   The current reproducibility script does two same-host `rustc` builds, declares
+   but never invokes a perturbation control, and has a deletion trap; it was not
+   executed in this session. Final delivery uses DSR and a new destination for
+   installation/air-gap tests, binds all results to the exact artifacts, and
+   publishes only the four §16.10 reports' supported predicates. No live release
+   is authorized merely by creating these planning beads.
+
+Each implementation owner retains its normal tests, negative controls and full
+gate obligation. A release-wide acceptance task cannot close its implementation
+dependencies, and a document change cannot substitute for them. Most product
+gaps already have detailed open beads; the new coverage gap is the **final
+acceptance and delivery join** after previously closed release engineering, plus
+the reproduced installer bug. Completing old issue titles alone would miss it.
+
+#### Plan-space review record
+
+The reality-check skill's frozen bead-generation and refinement prompts were
+applied without dropping scope. Two ambition passes improved the bridge in place:
+
+- **Ambition 1 — compose all six bets for each reader.** Replace the tempting
+  “one missing Part 370 command” conclusion with V01–V37, including standalone
+  verifier trust, authenticated human approvals, multi-book and evidence closure.
+- **Ambition 2 — require independent falsification.** Separate scope membership
+  from scope derivation, current source from older binaries, a focused pass from
+  a full red run, and std-only from static linkage. Add final release composition
+  and installer acceptance rather than adding new product scope.
+
+Five refinement passes: (1) mapped every checklist gap to existing owners and
+all dormant clauses to open activators; (2) sequenced baseline → safety → operator
+workflow → independent evidence → release and kept production tests with code;
+(3) corrected stale retraction/solvency and unified-certificate descriptions from
+current source and retained logs; (4) ran the positive walkthrough and negative
+controls, discovered the installer counterexample and priced it as real follow-up;
+(5) reviewed moving-head additions, preserving their source-only classification.
+Final Beads edges, exact export attribution and `bv --robot-triage` / cycle
+validation are recorded on fa-hlnd; no percentage or bead closure is inferred
+from this planning work.
+
+The additive graph join is fa-nfq2, depending on installer repair
+fa-o3zg, composed six-workflow acceptance fa-wwip, actual
+DSR/build/linkage/offline-install qualification fa-q5kx, and publication
+scope validation fa-rdid. The campaign depends on the existing
+component owners above; release qualification also waits for real measurements,
+oracles, formal/model/fuzz/metamorphic evidence, exact-tree verdicts and
+evidence-bound closure. Fifty-six blocking edges were added; the final dependency
+review explicitly gates the reader campaign on red-main repair, Tier 0,
+published verdicts and admitted worker capacity. No existing
+dependency, feature, test or acceptance condition was removed.
+The final graph has 319 issues: 110 open, 25 in progress and 184 closed;
+`br ready` reports 40 ready and 72 blocked. Both `br dep cycles` and the
+computed `bv --robot-insights` cycle result are empty; robot triage and plan
+exit 0. A final review found no additional gap within this audited source cut.
+
 ## Appendix A — Canonical Object Schemas (normative contract)
 
 All durable FrankenAccounting objects are properties and payloads of substrate elements and therefore inherit the substrate's Appendix A encoding laws: declared format major/minor; little-endian fixed integers; canonical unsigned LEB128 only where a field says varint; length-before-allocation; checked arithmetic; per-kind maximum sizes; unknown additive-minor fields length-delimited and skipped only under a registered `canonical_default_law_id`; unknown required flags fail closed. Every `BodyDigest<T>` row declares `{domain_separator, schema_major, included_field_tags, excluded_field_tags}` and uses the substrate's recipe `BLAKE3(domain_separator ‖ canonical(schema_major, T excluding exactly the one BodyDigest field))`. The pseudo-schemas below are checked renderings of `registries/object_schemas/*.toml`; a field absent from the registry is unencodable.
