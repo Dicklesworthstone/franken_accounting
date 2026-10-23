@@ -2,10 +2,13 @@
 //!
 //! Every tool call and every resource read becomes an `fa … --json` command
 //! line run by [`fa_cli::entry::fa_with_authority`] under the authority fixed
-//! at trusted launch. It takes the book's writer lease and never forwards
-//! to the unauthenticated `fad` protocol. The forwarded
-//! stdin is the call's inline document; a call that forwarded none gets
-//! [`Stdin::Missing`], so `-` can never read the server's own transport.
+//! at trusted launch. When the session is bound to an issued capability token
+//! (`--token`, `fa-r3q`/`fa-z5u`) and `fad` holds the book's writer lease, the
+//! call routes through `<dir>/fad.sock` with the session token; otherwise it
+//! takes the book's writer lease directly and refuses unauthenticated daemon
+//! forwarding. The forwarded stdin is the call's inline document; a call that
+//! forwarded none gets [`Stdin::Missing`], so `-` can never read the server's
+//! own transport.
 //!
 //! The reply is read line by line against the robot schema
 //! ([`fa_cli::verbs::Registry::check_line`]): a line outside it is a
@@ -53,7 +56,7 @@ pub fn run(
     authority: &LaunchAuthority,
 ) -> Result<Reply, String> {
     let files = Files {
-        cwd: None,
+        cwd: authority.files().map(std::path::Path::to_path_buf),
         stdin: match &invocation.stdin {
             Some(bytes) => Stdin::Forwarded(bytes.clone()),
             None => Stdin::Missing,

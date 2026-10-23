@@ -12,6 +12,12 @@
 //!   in an argument, naming the tool that returns the real value;
 //! - [`summary_account`]: a posting leg on an account the chart marks
 //!   `leaf: false`, with its leaves listed;
+//! - [`broadcast_scope`]: a write call naming a wildcard or broadcast scope
+//!   (`*`, `all`, `everything`, `6*`) where an explicit target identifier is
+//!   required;
+//! - [`looks_like_reversal`]: an `Original` entry whose legs are the exact
+//!   mirror image of an entry posted in this session without supersession
+//!   lineage (`FA-REF-006`), naming `fa_post_reverse`;
 //! - [`redated_intent`]: the same intent re-submitted with a different
 //!   effective date after a period-law (safety) refusal in this session —
 //!   the one thing a period-law fix never means;
@@ -22,6 +28,7 @@
 //! [`remember`] after every dispatch.
 
 use fa_cli::json::Json;
+use fa_cli::verbs::Registry;
 use fastmcp_rust::{JsonValue, json};
 
 use crate::dispatch::Reply;
@@ -45,6 +52,15 @@ pub struct Planned {
     pub principal: String,
 }
 
+/// An entry posted in this session, for catching unlinked manual mirror-image
+/// reversals (`FA-REF-006`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostedEntry {
+    pub vid: String,
+    /// Normalized `(side, account, amount)` tuples sorted canonically.
+    pub legs: Vec<(String, String, String)>,
+}
+
 /// Third-party-authored text observed in a tool reply in this session
 /// (`{"untrusted_content": ..., "source": ...}`, plan §9.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +74,7 @@ pub struct UntrustedSeen {
 pub struct Memory {
     pub refused: Vec<RefusedIntent>,
     pub planned: Vec<Planned>,
+    pub posted: Vec<PostedEntry>,
     pub untrusted: Vec<UntrustedSeen>,
 }
 
@@ -425,6 +442,216 @@ pub fn summary_account(
     None
 }
 
+fn is_write_call(tool: &ToolSpec, reg: &Registry, arguments: &JsonValue) -> bool {
+    let Some(verb) = reg.verb(&tool.verb) else {
+        return false;
+    };
+    if !verb.writes {
+        return false;
+    }
+    if tool.verb == "close" && matches!(tool.subcommands.as_slice(), [sub] if sub == "routes") {
+        return false;
+    }
+    if let Some(sel) = &tool.selector
+        && let Some(sub) = arguments.get(sel).and_then(JsonValue::as_str)
+        && matches!(
+            sub,
+            "list"
+                | "show"
+                | "status"
+                | "templates"
+                | "routes"
+                | "verify"
+                | "history"
+                | "diff"
+                | "runs"
+                | "read"
+                | "document"
+        )
+    {
+        return false;
+    }
+    true
+}
+
+/// A write call naming a wildcard or broadcast scope (`*`, `all`, `everything`,
+/// `6*`) where an explicit target identifier is required (plan §15.4).
+#[must_use]
+pub fn broadcast_scope(
+    tool: &ToolSpec,
+    reg: &Registry,
+    arguments: &JsonValue,
+) -> Option<StructuredError> {
+    if !is_write_call(tool, reg, arguments) {
+        return None;
+    }
+    walk(arguments, &mut Vec::new(), &mut |path, v| {
+        let JsonValue::String(s) = v else { return None };
+        if is_content(tool, path) {
+            return None;
+        }
+        let key = last_key(path);
+        if matches!(
+            key,
+            "description"
+                | "memo"
+                | "note"
+                | "name"
+                | "summary"
+                | "authority"
+                | "text"
+                | "idempotency_key"
+        ) {
+            return None;
+        }
+        if tool.verb == "hold" && key == "scope" && s == "book" {
+            return None;
+        }
+        let trimmed = s.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let is_id_key = matches!(
+            key,
+            "account"
+                | "code"
+                | "period"
+                | "entry"
+                | "vid"
+                | "resolves"
+                | "reverses"
+                | "target"
+                | "party"
+                | "entity"
+                | "unit"
+                | "scope"
+        );
+        let is_broadcast = matches!(
+            lower.as_str(),
+            "*"
+                | "all"
+                | "everything"
+                | "all accounts"
+                | "all_accounts"
+                | "all periods"
+                | "all_periods"
+                | "all entries"
+                | "all_entries"
+                | "every account"
+                | "every period"
+        ) || (is_id_key && trimmed.contains('*'));
+        if !is_broadcast {
+            return None;
+        }
+        let calls = producer(key, path);
+        let who = calls
+            .first()
+            .map(|c| format!("; `{}` lists the valid identifiers", c.tool))
+            .unwrap_or_default();
+        Some(StructuredError::detected(
+            "broadcast_scope",
+            format!(
+                "{} is the broadcast scope {trimmed:?}; write operations require an explicit target identifier, never a wildcard or broadcast scope",
+                spell(path)
+            ),
+            format!(
+                "replace {} with one explicit identifier{who}; write tools never broadcast over `*` or `all`",
+                spell(path)
+            ),
+            calls,
+        ))
+    })
+}
+
+fn normalize_side(side: &str) -> Option<&'static str> {
+    match side {
+        "debit" | "dr" | "Debit" => Some("debit"),
+        "credit" | "cr" | "Credit" => Some("credit"),
+        _ => None,
+    }
+}
+
+fn parse_intent_legs(intent: &JsonValue) -> Option<Vec<(String, String, String)>> {
+    let arr = intent.get("legs")?.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for leg in arr {
+        let side = normalize_side(leg.get("side")?.as_str()?)?;
+        let account = leg.get("account")?.as_str()?.trim().to_string();
+        let amount = leg.get("amount")?.as_str()?.trim().to_string();
+        out.push((side.to_string(), account, amount));
+    }
+    out.sort();
+    Some(out)
+}
+
+fn invert_legs(legs: &[(String, String, String)]) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = legs
+        .iter()
+        .map(|(side, account, amount)| {
+            let flipped = if side == "debit" { "credit" } else { "debit" };
+            (flipped.to_string(), account.clone(), amount.clone())
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// An `Original` post whose legs are the exact mirror image (`debit` <-> `credit`)
+/// of an entry posted earlier in this session, without supersession lineage
+/// (plan §15.4, Appendix D `FA-REF-006`).
+#[must_use]
+pub fn looks_like_reversal(
+    tool: &ToolSpec,
+    arguments: &JsonValue,
+    memory: &Memory,
+) -> Option<StructuredError> {
+    if tool.verb != "post" {
+        return None;
+    }
+    let intent = intent_of(tool, arguments)?;
+    let class = intent
+        .get("class")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("Original");
+    if class != "Original" || intent.get("reverses").is_some() {
+        return None;
+    }
+    let candidate = parse_intent_legs(intent)?;
+    let inverted = invert_legs(&candidate);
+    let prior = memory.posted.iter().rev().find(|p| p.legs == inverted)?;
+    let date = intent
+        .get("effective_date")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("<YYYY-MM-DD>");
+    Some(
+        StructuredError::detected(
+            "looks_like_reversal",
+            format!(
+                "intent posts an `Original` entry whose legs are the exact mirror image of entry `{}` without supersession lineage (FA-REF-006)",
+                prior.vid
+            ),
+            format!(
+                "do not reverse an entry by posting an unlinked `Original` mirror entry; use `fa_post_reverse` (`fa reverse --entry {} --reason DataEntryError --date {date}`) so the `SUPERSEDES (Reversal)` edge is recorded",
+                prior.vid
+            ),
+            vec![ToolCall {
+                tool: "fa_post_reverse".into(),
+                arguments: json!({
+                    "entry": prior.vid,
+                    "reason": "DataEntryError",
+                    "date": date,
+                }),
+                command: format!(
+                    "fa reverse --entry {} --reason DataEntryError --date {date} --json",
+                    prior.vid
+                ),
+            }],
+        )
+        .with_refusal_id("FA-REF-006"),
+    )
+}
+
 fn legs_text(intent: &JsonValue) -> Option<String> {
     intent.get("legs").map(JsonValue::to_string)
 }
@@ -660,6 +887,7 @@ pub fn remember(
         });
     }
     if reply.exit == 0 {
+        let intent_legs = intent_of(tool, arguments).and_then(parse_intent_legs);
         for line in &reply.lines {
             collect_untrusted(&line.data, &mut memory.untrusted);
             if matches!(
@@ -671,6 +899,18 @@ pub fn remember(
                     digest: digest.to_string(),
                     principal: principal.to_string(),
                 });
+            }
+            if line.event == "entry_posted"
+                && let Some(vid) = line.data.get("vid").and_then(Json::as_str)
+                && let Some(legs) = &intent_legs
+            {
+                let posted = PostedEntry {
+                    vid: vid.to_string(),
+                    legs: legs.clone(),
+                };
+                if !memory.posted.contains(&posted) {
+                    memory.posted.push(posted);
+                }
             }
         }
     }
@@ -1119,6 +1359,96 @@ mod tests {
                 &doc_import,
                 &json!({"text": payload, "kind": "Invoice"}),
                 &memory,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn broadcast_scope_catches_wildcard_and_all_on_write_tools() {
+        let reg = fa_cli::verbs::registry().expect("verbs.toml");
+        let post = tool("fa_post_post");
+        let mut bad_post = intent("2026-03-15", "k", json!("10.00 USD"));
+        bad_post["intent"]["legs"][0]["account"] = json!("*");
+        let e = broadcast_scope(&post, reg, &bad_post).expect("wildcard account on write");
+        assert_eq!(e.detector.as_deref(), Some("broadcast_scope"));
+        assert!(
+            e.message.contains("intent.legs[0].account") && e.message.contains("\"*\""),
+            "{}",
+            e.message
+        );
+        assert_eq!(e.suggested_tool_calls[0].tool, "fa_chart_list_accounts");
+
+        let transition = tool("fa_time_period_transition");
+        for scope in ["*", "all", "everything", "FY2026-*"] {
+            let e = broadcast_scope(
+                &transition,
+                reg,
+                &json!({"transition": "close", "code": scope, "reason": "Scheduled"}),
+            )
+            .expect("broadcast period transition");
+            assert_eq!(e.detector.as_deref(), Some("broadcast_scope"));
+            assert_eq!(e.suggested_tool_calls[0].tool, "fa_time_period_status");
+        }
+
+        // Descriptive free-text fields and read-only tools are never refused as broadcast_scope.
+        let mut ok_post = intent("2026-03-15", "k", json!("10.00 USD"));
+        ok_post["intent"]["description"] = json!("all");
+        assert!(broadcast_scope(&post, reg, &ok_post).is_none());
+        let tb = tool("fa_read_trial_balance");
+        assert!(broadcast_scope(&tb, reg, &json!({"period": "all"})).is_none());
+    }
+
+    #[test]
+    fn looks_like_reversal_catches_unlinked_mirror_image_original_post() {
+        let post = tool("fa_post_post");
+        let mut memory = Memory::default();
+        let original = intent("2026-03-15", "inv-100", json!("1500.00 USD"));
+        let vid = "11".repeat(16);
+        remember(
+            &mut memory,
+            &post,
+            &original,
+            &reply(
+                0,
+                "entry_posted",
+                &format!(
+                    r#"{{"vid":"{vid}","commit_seq":4,"class":"Original","effective_date":"2026-03-15","period":"FY2026-P03","legs":2,"entry_digest":"aa"}}"#
+                ),
+            ),
+            "preparer",
+        );
+        assert_eq!(memory.posted.len(), 1);
+
+        let mirror = json!({"intent": {
+            "effective_date": "2026-03-16",
+            "idempotency_key": "inv-100-undo",
+            "description": "reverse rent manually",
+            "legs": [
+                {"side": "credit", "account": "6000", "amount": "1500.00 USD"},
+                {"side": "debit", "account": "1000", "amount": "1500.00 USD"}
+            ]
+        }});
+        let e = looks_like_reversal(&post, &mirror, &memory).expect("mirror image caught");
+        assert_eq!(e.detector.as_deref(), Some("looks_like_reversal"));
+        assert_eq!(e.refusal_id.as_deref(), Some("FA-REF-006"));
+        assert!(e.message.contains(&vid), "{}", e.message);
+        assert_eq!(e.suggested_tool_calls[0].tool, "fa_post_reverse");
+        assert_eq!(
+            e.suggested_tool_calls[0].arguments,
+            json!({
+                "entry": vid,
+                "reason": "DataEntryError",
+                "date": "2026-03-16",
+            })
+        );
+
+        // Same direction (a second rent payment) or a different amount is allowed.
+        assert!(
+            looks_like_reversal(
+                &post,
+                &intent("2026-03-16", "inv-101", json!("1500.00 USD")),
+                &memory
             )
             .is_none()
         );

@@ -24,7 +24,7 @@ use asupersync::runtime::reactor::create_reactor;
 use fa_cli::authority::LaunchProfile;
 use fa_mcp::server::{ServerConfig, build_server};
 
-const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)\n\nusage\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] [--principal <name>]\n         [--profile agent|preparer] [--grant <op>]...\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] --token <file>\n  (either form) [--cluster <on-demand cluster>]...   e.g. --cluster fa.draft\n  fa-mcp --help\n  fa-mcp --version\n\nFA_BOOK may supply the launch book. The default principal is mcp-agent and the\ndefault profile is agent. Default operations are read, post, verify; an explicit\n--grant list narrows the session to the named operations within its profile.\nIdentity, profile, operations, book, keys and optional --files containment root\nare fixed at launch. Tool arguments cannot override them or confirm dangerous\noperations. Agent writes to trunk are refused by the kernel; drafts remain\npending (fa-s7x). Launch configuration is trusted operator input, not\nauthenticated issuance (fa-v62/fa-r3q). A running fad causes a lease refusal\nuntil it can preserve this session's authority.\n";
+const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)\n\nusage\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] [--principal <name>]\n         [--profile agent|preparer] [--grant <op>]...\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] --token <file>\n  (either form) [--cluster <on-demand cluster|all>]...   e.g. --cluster fa.draft\n  fa-mcp --help\n  fa-mcp --version\n\nFA_BOOK may supply the launch book; FA_TOKEN may supply --token <file> when no\n--principal/--profile/--grant flags are passed. The default principal is\nmcp-agent and the default profile is agent. Default operations are read, post,\nverify; an explicit --grant list narrows the session to the named operations\nwithin its profile. Identity, profile, operations, book, keys and optional\n--files containment root are fixed at launch. Tool arguments cannot override\nthem or confirm dangerous operations. Agent writes to trunk are refused by the\nkernel; drafts remain pending (fa-s7x). When launched with --token <file> (or\nhosted by `fad serve --book <dir> --mcp stdio --token <file>`), requests route\nthrough a running fad over `<dir>/fad.sock` with the session's issued token.\n";
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -92,6 +92,17 @@ fn serve(argv: &[String]) -> ExitCode {
         && !dir.is_empty()
     {
         config.book = Some(PathBuf::from(dir));
+    }
+    if config.token.is_none()
+        && config.principal == "mcp-agent"
+        && config.profile == LaunchProfile::Agent
+        && config.grants.is_empty()
+        && let Ok(token_file) = std::env::var("FA_TOKEN")
+        && !token_file.is_empty()
+        && let Err(e) = set_option(&mut config, "--token", &token_file)
+    {
+        eprintln!("usage: {e}\n  fix: fa-mcp --help");
+        return ExitCode::from(2);
     }
     if config.book.is_none() {
         eprintln!(

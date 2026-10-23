@@ -12,17 +12,22 @@
 //!   the verb rows, the `[[dangerous]]` rows and the `[[next_action]]` rows;
 //! - [`dispatch`] runs every call through [`fa_cli::entry::fa_with_authority`]
 //!   under one principal, profile, capability and book fixed at trusted launch.
-//!   The accounting handlers and kernel are shared with the CLI, while the
-//!   bound entrypoint refuses unauthenticated daemon forwarding;
+//!   The accounting handlers and kernel are shared with the CLI; token-bound
+//!   sessions (`--token`) route through a running `fad` over `<dir>/fad.sock`,
+//!   while launch-config sessions take the writer lease directly;
 //! - [`errors`] maps the envelope's one `error` event into the structured
-//!   error `{type, message, recoverable, fix_hint, suggested_tool_calls, …}`:
-//!   the exit class is the type, the refusal's `fix` the hint, and every
-//!   `fa …` command that needs no caller authority override becomes a tool call;
+//!   error `{type, message, recoverable, fix_hint, suggested_tool_calls,
+//!   available_options, …}`: the exit class is the type, the refusal's `fix`
+//!   the hint, and every `fa …` command that needs no caller authority
+//!   override becomes a tool call;
 //! - [`detect`] runs the mistake detectors before anything is dispatched:
 //!   a JSON number where an amount string is required, an instant where a
-//!   civil date is required, a posting leg on a summary account, an intent
-//!   re-dated after a period-law refusal (never a suggestion to re-date), a
-//!   self-approval, and placeholder text;
+//!   civil date is required (`FA-REF-100`), a posting leg on a summary account
+//!   (`FA-REF-002`), a wildcard/broadcast scope on a write call, an unlinked
+//!   mirror-image `Original` entry (`FA-REF-006`), an intent re-dated after a
+//!   period-law refusal (never a suggestion to re-date), a self-approval,
+//!   third-party `untrusted_content` copied into control arguments, and
+//!   placeholder text;
 //! - [`server`] wires the tools, the 4 workflow macros (`fa.macro.prepare_close`,
 //!   `fa.macro.inspect_cash_matching`, `fa.macro.investigate_account`,
 //!   `fa.macro.certify_period_reports`), and the 11 resources (`resource://fa/book`,
@@ -31,7 +36,8 @@
 //!   `resource://fa/open-items/{book}/{party}`, `resource://fa/findings/{book}`,
 //!   `resource://fa/drafts/{book}`, `resource://fa/certificates/{id}`,
 //!   `resource://fa/capabilities/{token}`)
-//!   into a fastmcp server; the `fa-mcp` binary serves it over stdio.
+//!   into a fastmcp server; the `fa-mcp` binary serves it over stdio directly
+//!   or hosted by `fad serve --book <dir> --mcp stdio --token <file>`.
 //!
 //! A successful call returns the robot envelope's `data` as the first text
 //! content block (canonical JSON, exactly the bytes `fa --json` prints under
@@ -49,18 +55,19 @@
 //!
 //! This crate proves parity of the exposed verbs with the CLI (the parity
 //! test: every verb and subcommand is a tool in exactly one cluster or a
-//! registered exclusion) and the error contract (the mapping from the
-//! envelope's `error` event, with planted refusals). It does not prove MCP
-//! conformance beyond what fastmcp's own suite proves, and it is not yet
-//! hosted by `fad`: the binary is a sibling of `fa` that takes the book's
-//! writer lease and refuses when another process holds it. Launch configuration
-//! is trusted operator input, not authenticated capability issuance or a
-//! filesystem sandbox. Agent is the default profile and its accounting writes
-//! to trunk reach the kernel's FA-REF-013. The explicitly selected Preparer
-//! template permits ordinary posting. Both templates have bounded operations;
-//! neither accepts per-call identity, grants, book/key selection or dangerous
-//! confirmation. Authenticated daemon sessions and separate dangerous-operation
-//! confirmation remain follow-ups.
+//! registered exclusion, with argument schema parity) and the error contract
+//! (the mapping from the envelope's `error` event, with planted refusals). It
+//! does not prove MCP conformance beyond what fastmcp's own suite proves.
+//! When started with `--token <file>`, `fa-mcp` routes every call through the
+//! running `fad` daemon (`fad serve --book <dir> --mcp stdio|socket`) over
+//! `<dir>/fad.sock`; when started with launch configuration (`--profile`,
+//! `--principal`), `fa-mcp` takes the book's writer lease directly and refuses
+//! when another process holds it. Launch configuration is trusted operator
+//! input, not authenticated capability issuance or a filesystem sandbox.
+//! Agent is the default profile and its accounting writes to trunk reach the
+//! kernel's FA-REF-013. The explicitly selected Preparer template permits
+//! ordinary posting. Both templates have bounded operations; neither accepts
+//! per-call identity, grants, book/key selection or dangerous confirmation.
 
 #![forbid(unsafe_code)]
 

@@ -290,6 +290,7 @@ impl Adapter {
         if let Some(e) = detect::floats(arguments)
             .or_else(|| detect::instants(tool, arguments))
             .or_else(|| detect::placeholders(tool, arguments))
+            .or_else(|| detect::broadcast_scope(tool, self.reg, arguments))
         {
             return Err(e);
         }
@@ -316,6 +317,7 @@ impl Adapter {
                 .lock()
                 .map_err(|_| StructuredError::foundation("the session memory is poisoned"))?;
             if let Some(e) = detect::redated_intent(tool, arguments, &memory)
+                .or_else(|| detect::looks_like_reversal(tool, arguments, &memory))
                 .or_else(|| {
                     detect::self_approval(tool, arguments, &memory, self.authority.principal())
                 })

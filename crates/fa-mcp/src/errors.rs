@@ -232,6 +232,16 @@ impl StructuredError {
         self
     }
 
+    /// Record the catalog refusal id on a detector error.
+    ///
+    /// The flat field is what clients already read. It does not replace the
+    /// CLI refusal object when the dispatcher has one.
+    #[must_use]
+    pub fn with_refusal_id(mut self, id: impl Into<String>) -> Self {
+        self.refusal_id = Some(id.into());
+        self
+    }
+
     /// Add what a period-law refusal never means.
     #[must_use]
     pub fn never(mut self, what: &str) -> Self {
