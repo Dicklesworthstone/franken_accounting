@@ -849,45 +849,24 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = validate_post_coordinate(book, proposal) {
         return Ok(Err(refusal));
     }
-    let explicit: Vec<(fa_money::UnitId, i128)> = proposal
-        .legs
-        .iter()
-        .map(|leg| (leg.amount.unit, leg.amount.mantissa))
-        .collect();
-    // A dry run writes nothing, so an Agent may rehearse a trunk post
-    // (plan §15.3); a promoted intent reaches trunk on its Human promoter's
-    // authority (§15.2). An owned scratch draft publishes only a rehearsal.
-    // Every other admission check still runs with the unchanged capability.
-    let admit_base = match admission {
-        Admission::Commit
-        | Admission::Recurring(_)
-        | Admission::VerifiedBatch(_)
-        | Admission::Case(_)
-        | Admission::ScratchScenario(_) => fa_policy::admit_base,
-        Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_) => {
-            fa_policy::admit_base_for_plan
-        }
-    };
-    if let Err(denial) = admit_base(
+    // Human promotion and scratch rehearsal preserve every capability
+    // check except the Agent trunk prohibition. The effect admission is also
+    // used by the automatic reversal executor, whose attribution is System.
+    let planning = matches!(
+        admission,
+        Admission::Plan | Admission::Promote(_) | Admission::ScratchDraft(_)
+    );
+    let scope = match authorize_effects(
+        db,
+        book,
         &req.capability,
-        &fa_policy::Intent {
-            principal: proposal.principal_ref,
-            trunk: proposal.branch_id == Id128::TRUNK,
-            op: fa_policy::Op::Post,
-            book: book.book_id,
-            legs: &explicit,
-        },
-    ) {
-        return Ok(Err(policy::refusal(&denial)));
-    }
-    let current = match policy::current_at(db, book, &req.capability)? {
-        Ok(current) => current,
+        proposal.principal_ref,
+        proposal,
+        planning,
+    )? {
+        Ok(scope) => scope,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let scope = policy::account_scope(db, book, &current)?;
-    if let Err(denial) = policy::payload_reach(&req.capability, book, proposal, scope.as_ref()) {
-        return Ok(Err(policy::refusal(&denial)));
-    }
     if matches!(
         admission,
         Admission::Commit | Admission::Case(_) | Admission::Recurring(_)
@@ -898,6 +877,50 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
             caveat: "requires_dry_run",
             value: "a direct commit without a verified plan certificate".into(),
         })));
+    }
+    Ok(Ok(scope))
+}
+
+/// Admit the actual native effects before reading accounting metadata.
+/// Automatic System attribution does not grant authority: its executor is
+/// the capability holder, including the Human opening a period atomically.
+pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    principal: VId,
+    proposal: &EntryPayload,
+    planning: bool,
+) -> Outcome<Option<fa_policy::AccountScope>> {
+    let explicit: Vec<(fa_money::UnitId, i128)> = proposal
+        .legs
+        .iter()
+        .map(|leg| (leg.amount.unit, leg.amount.mantissa))
+        .collect();
+    let admit_base = if planning {
+        fa_policy::admit_base_for_plan
+    } else {
+        fa_policy::admit_base
+    };
+    if let Err(denial) = admit_base(
+        capability,
+        &fa_policy::Intent {
+            principal,
+            trunk: proposal.branch_id == Id128::TRUNK,
+            op: fa_policy::Op::Post,
+            book: book.book_id,
+            legs: &explicit,
+        },
+    ) {
+        return Ok(Err(policy::refusal(&denial)));
+    }
+    let current = match policy::current_at(db, book, capability)? {
+        Ok(current) => current,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let scope = policy::account_scope(db, book, &current)?;
+    if let Err(denial) = policy::payload_reach(capability, book, proposal, scope.as_ref()) {
+        return Ok(Err(policy::refusal(&denial)));
     }
     Ok(Ok(scope))
 }
@@ -1317,6 +1340,161 @@ pub(crate) fn reconciliation_edges(
         );
     }
     Some(batch)
+}
+
+/// Ordinary and automatic postings share every account, unit and native
+/// subledger law. Callers supply transaction point reads for publication;
+/// retained Open retries supply the exact pre-transition prefix instead.
+pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    effective_date: fa_time::DateDay,
+    legs: &[fa_model::LegPayload],
+    mut read_vertex: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
+) -> Outcome<Vec<AccountRow>> {
+    let mut accounts: Vec<AccountRow> = Vec::with_capacity(legs.len());
+    for (i, leg) in legs.iter().enumerate() {
+        let Some(row) = read_vertex(leg.account_ref)? else {
+            return Ok(Err(Refusal::new(
+                code::UNKNOWN_ACCOUNT,
+                exit::REFUSAL,
+                format!("leg {i} names an account this book does not have"),
+                "plan §4.3",
+                "fa chart list --json to find the account, or fa chart import to add it",
+            )
+            .at("leg", i)));
+        };
+        // A caller-supplied vid that names some other vertex (an entry, a
+        // period, a document) is the same lawful mistake as a missing one,
+        // never a corrupt Account row (fa-l93 D9).
+        if !row.labels.contains(&label::ACCOUNT) {
+            return Ok(Err(Refusal::new(
+                code::UNKNOWN_ACCOUNT,
+                exit::REFUSAL,
+                format!("leg {i} names a vertex that is not an account of this book"),
+                "plan §4.3",
+                "fa chart list --json to find the account, or fa chart import to add it",
+            )
+            .at("leg", i)));
+        }
+        let account = AccountRow::decode(&row)?;
+        if !account.is_leaf {
+            let leaves = leaf_suggestions(db, &account, effective_date)?;
+            let fix = match leaves.first() {
+                Some(nearest) => format!(
+                    "post to a leaf under `{}`: `{nearest}` is the nearest by name (fa chart list --json lists them all)",
+                    account.code
+                ),
+                None => format!(
+                    "post to a leaf under `{}`; none is open on {} (fa chart list --json)",
+                    account.code, effective_date
+                ),
+            };
+            return Ok(Err(Refusal::new(
+                code::NOT_A_LEAF,
+                exit::REFUSAL,
+                format!("leg {i} posts to `{}`, a summary account", account.code),
+                "plan §4.3 (only leaves accept legs)",
+                fix,
+            )
+            .at("leg", i)
+            .at("account", account.code.clone())
+            .because(Why::Law("FA-INV-01.leaf-only".to_string()))
+            .or_field_change(format!("legs[{i}].account"), leaves)));
+        }
+        let effectivity = crate::chart::AccountEffectivity::decode_from_row(&row)?;
+        if !effectivity.is_effective_at(effective_date) {
+            return Ok(Err(Refusal::new(
+                code::NOT_A_LEAF,
+                exit::REFUSAL,
+                format!(
+                    "leg {i} posts to `{}` on {}, outside its effective interval [opened: {:?}, closed: {:?})",
+                    account.code, effective_date, effectivity.opened, effectivity.closed
+                ),
+                "FA-INV-01.account-effective (plan §4.3, §5.6: every leg's account is open at the entry's effective date)",
+                format!(
+                    "choose an effective date within `{}`'s open interval or post to an open leaf account",
+                    account.code
+                ),
+            )));
+        }
+        if book.units.get(leg.amount.unit).is_none() {
+            return Ok(Err(Refusal::new(
+                code::UNIT_UNREGISTERED,
+                exit::REFUSAL,
+                format!(
+                    "leg {i}: unit id {} is not registered in this book",
+                    leg.amount.unit.0
+                ),
+                "plan §4.4 (amounts are mantissas at a registered unit version's scale)",
+                "post in a unit registered in registries/units.toml (fa book info --json reports units_registered)",
+            )
+            .at("leg", i)));
+        }
+        if !admits_unit(book, account.unit_policy, leg.amount.unit) {
+            let unit_code = |u: fa_money::UnitId| {
+                book.units
+                    .get(u)
+                    .map_or_else(|| u.0.to_string(), |unit| unit.code.clone())
+            };
+            let admits = match account.unit_policy {
+                UnitPolicy::Single(u) => unit_code(u),
+                UnitPolicy::AnyCurrency => "any currency".to_string(),
+                UnitPolicy::AnyUnit => "any unit".to_string(),
+            };
+            // Changing one leg's unit would unbalance the entry; the
+            // field that fixes it is the leg's account.
+            let accounts =
+                unit_account_suggestions(db, book, &account, leg.amount.unit, effective_date)?;
+            return Ok(Err(Refusal::new(
+                code::UNIT_POLICY,
+                exit::REFUSAL,
+                format!(
+                    "leg {i}: account `{}` does not accept unit {}",
+                    account.code,
+                    unit_code(leg.amount.unit)
+                ),
+                "plan §4.3 unit_policy",
+                format!(
+                    "post in the account's unit ({admits}) or choose an account whose policy admits {}",
+                    unit_code(leg.amount.unit)
+                ),
+            )
+            .at("leg", i)
+            .at("account", account.code.clone())
+            .at("unit", unit_code(leg.amount.unit))
+            .because(Why::Law("FA-INV-01.unit-policy".to_string()))
+            .or_field_change(format!("legs[{i}].account"), accounts)));
+        }
+        if let Some(refusal) =
+            crate::subledger::validate_leg_with(&mut read_vertex, book, &row, leg, i)?
+        {
+            return Ok(Err(refusal));
+        }
+        for (dim_id, dim_val_vid) in &leg.dimension_set {
+            if *dim_id == fa_model::PARTY_DIMENSION {
+                let valid_party_dim = read_vertex(*dim_val_vid)?.is_some_and(|drow| {
+                    drow.labels.contains(&label::DIMENSION_VALUE)
+                        && prop(&drow, property::DIMENSION_ID)
+                            == Some(&CanonicalScalar::Int(i64::from(fa_model::PARTY_DIMENSION)))
+                });
+                if !valid_party_dim {
+                    return Ok(Err(Refusal::new(
+                        code::STRUCTURE,
+                        exit::USAGE,
+                        format!(
+                            "leg {i} names party dimension value {:032x}, which does not exist in this book",
+                            dim_val_vid.0
+                        ),
+                        "plan §4.1, §4.5 (Party dimension values are bound to created Party vertices)",
+                        "create the Party first (`fa party add <party.json>`) or use party_value_vid(book_id, party_code)",
+                    )));
+                }
+            }
+        }
+        accounts.push(account);
+    }
+    Ok(Ok(accounts))
 }
 
 /// Prepare the actual class over an optional already-staged reversal.
@@ -2791,160 +2969,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal));
     }
 
-    // 6. Accounts: exist, leaf-only, unit policy (plan §4.3).
-    let mut accounts: Vec<AccountRow> = Vec::with_capacity(proposal.legs.len());
-    for (i, leg) in proposal.legs.iter().enumerate() {
-        let Some(row) = txn.vertex(db, leg.account_ref)? else {
-            txn.abort();
-            return Ok(Err(Refusal::new(
-                code::UNKNOWN_ACCOUNT,
-                exit::REFUSAL,
-                format!("leg {i} names an account this book does not have"),
-                "plan §4.3",
-                "fa chart list --json to find the account, or fa chart import to add it",
-            )
-            .at("leg", i)));
-        };
-        // A caller-supplied vid that names some other vertex (an entry, a
-        // period, a document) is the same lawful mistake as a missing one,
-        // never a corrupt Account row (fa-l93 D9).
-        if !row.labels.contains(&label::ACCOUNT) {
-            txn.abort();
-            return Ok(Err(Refusal::new(
-                code::UNKNOWN_ACCOUNT,
-                exit::REFUSAL,
-                format!("leg {i} names a vertex that is not an account of this book"),
-                "plan §4.3",
-                "fa chart list --json to find the account, or fa chart import to add it",
-            )
-            .at("leg", i)));
-        }
-        let account = AccountRow::decode(&row)?;
-        if !account.is_leaf {
-            txn.abort();
-            let leaves = leaf_suggestions(db, &account, proposal.effective_date)?;
-            let fix = match leaves.first() {
-                Some(nearest) => format!(
-                    "post to a leaf under `{}`: `{nearest}` is the nearest by name (fa chart list --json lists them all)",
-                    account.code
-                ),
-                None => format!(
-                    "post to a leaf under `{}`; none is open on {} (fa chart list --json)",
-                    account.code, proposal.effective_date
-                ),
-            };
-            return Ok(Err(Refusal::new(
-                code::NOT_A_LEAF,
-                exit::REFUSAL,
-                format!("leg {i} posts to `{}`, a summary account", account.code),
-                "plan §4.3 (only leaves accept legs)",
-                fix,
-            )
-            .at("leg", i)
-            .at("account", account.code.clone())
-            .because(Why::Law("FA-INV-01.leaf-only".to_string()))
-            .or_field_change(format!("legs[{i}].account"), leaves)));
-        }
-        let effectivity = crate::chart::AccountEffectivity::decode_from_row(&row)?;
-        if !effectivity.is_effective_at(proposal.effective_date) {
-            txn.abort();
-            return Ok(Err(Refusal::new(
-                code::NOT_A_LEAF,
-                exit::REFUSAL,
-                format!(
-                    "leg {i} posts to `{}` on {}, outside its effective interval [opened: {:?}, closed: {:?})",
-                    account.code, proposal.effective_date, effectivity.opened, effectivity.closed
-                ),
-                "FA-INV-01.account-effective (plan §4.3, §5.6: every leg's account is open at the entry's effective date)",
-                format!(
-                    "choose an effective date within `{}`'s open interval or post to an open leaf account",
-                    account.code
-                ),
-            )));
-        }
-        if book.units.get(leg.amount.unit).is_none() {
-            txn.abort();
-            return Ok(Err(Refusal::new(
-                code::UNIT_UNREGISTERED,
-                exit::REFUSAL,
-                format!(
-                    "leg {i}: unit id {} is not registered in this book",
-                    leg.amount.unit.0
-                ),
-                "plan §4.4 (amounts are mantissas at a registered unit version's scale)",
-                "post in a unit registered in registries/units.toml (fa book info --json reports units_registered)",
-            )
-            .at("leg", i)));
-        }
-        if !admits_unit(book, account.unit_policy, leg.amount.unit) {
-            txn.abort();
-            let unit_code = |u: fa_money::UnitId| {
-                book.units
-                    .get(u)
-                    .map_or_else(|| u.0.to_string(), |unit| unit.code.clone())
-            };
-            let admits = match account.unit_policy {
-                UnitPolicy::Single(u) => unit_code(u),
-                UnitPolicy::AnyCurrency => "any currency".to_string(),
-                UnitPolicy::AnyUnit => "any unit".to_string(),
-            };
-            // Changing one leg's unit would unbalance the entry; the
-            // field that fixes it is the leg's account.
-            let accounts = unit_account_suggestions(
-                db,
-                book,
-                &account,
-                leg.amount.unit,
-                proposal.effective_date,
-            )?;
-            return Ok(Err(Refusal::new(
-                code::UNIT_POLICY,
-                exit::REFUSAL,
-                format!(
-                    "leg {i}: account `{}` does not accept unit {}",
-                    account.code,
-                    unit_code(leg.amount.unit)
-                ),
-                "plan §4.3 unit_policy",
-                format!(
-                    "post in the account's unit ({admits}) or choose an account whose policy admits {}",
-                    unit_code(leg.amount.unit)
-                ),
-            )
-            .at("leg", i)
-            .at("account", account.code.clone())
-            .at("unit", unit_code(leg.amount.unit))
-            .because(Why::Law("FA-INV-01.unit-policy".to_string()))
-            .or_field_change(format!("legs[{i}].account"), accounts)));
-        }
-        if let Some(refusal) = crate::subledger::validate_leg(&txn, db, book, &row, leg, i)? {
+    // 6. Account and native subledger laws are shared with automatic effects.
+    let accounts = match admit_accounts(db, book, proposal.effective_date, &proposal.legs, |vid| {
+        Ok(txn.vertex(db, vid)?)
+    })? {
+        Ok(accounts) => accounts,
+        Err(refusal) => {
             txn.abort();
             return Ok(Err(refusal));
         }
-        for (dim_id, dim_val_vid) in &leg.dimension_set {
-            if *dim_id == fa_model::PARTY_DIMENSION {
-                let valid_party_dim = txn.vertex(db, *dim_val_vid)?.is_some_and(|drow| {
-                    drow.labels.contains(&label::DIMENSION_VALUE)
-                        && prop(&drow, property::DIMENSION_ID)
-                            == Some(&CanonicalScalar::Int(i64::from(fa_model::PARTY_DIMENSION)))
-                });
-                if !valid_party_dim {
-                    txn.abort();
-                    return Ok(Err(Refusal::new(
-                        code::STRUCTURE,
-                        exit::USAGE,
-                        format!(
-                            "leg {i} names party dimension value {:032x}, which does not exist in this book",
-                            dim_val_vid.0
-                        ),
-                        "plan §4.1, §4.5 (Party dimension values are bound to created Party vertices)",
-                        "create the Party first (`fa party add <party.json>`) or use party_value_vid(book_id, party_code)",
-                    )));
-                }
-            }
-        }
-        accounts.push(account);
-    }
+    };
     if accounts
         .iter()
         .any(|a| fa_model::AccountType(a.account_type).is_memo())

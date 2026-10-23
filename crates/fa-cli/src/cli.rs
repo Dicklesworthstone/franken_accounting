@@ -4964,7 +4964,15 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .ok_or_else(|| {
                     Fail::Internal(format!("no PeriodControl {t} rule in sod_policy.toml"))
                 })?;
-            let capability = ctx.capability(args, &[op.name()])?;
+            // Opening may publish due scheduled reversals atomically with the
+            // period transition. The embedded owner authorizes both effects;
+            // a launch-bound capability remains unchanged in `capability`.
+            let implied_ops = if matches!(transition, PeriodTransition::Open) {
+                vec![op.name(), "post"]
+            } else {
+                vec![op.name()]
+            };
+            let capability = ctx.capability(args, &implied_ops)?;
             let mut book = ctx.books.open(args)?;
             let current = book
                 .periods()?
@@ -5002,7 +5010,7 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     String::new()
                 } else {
                     format!(
-                        " The open mints {} scheduled reversal(s) dated by tick {}.",
+                        " The open has {} scheduled reversal candidate(s) dated by tick {}; publication requires current account, permission, availability, and budget checks.",
                         scheduled.len(),
                         reversal_tick.map_or(String::new(), |t| format!("{:032x}", t.0))
                     )

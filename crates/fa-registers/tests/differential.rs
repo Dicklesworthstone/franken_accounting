@@ -2003,7 +2003,7 @@ fn kernel_transition(
         t,
         step,
         1,
-        &Capability::embedded(PRINCIPAL, &["close", "reopen"]).expect("ops"),
+        &Capability::embedded(PRINCIPAL, &["close", "reopen", "post"]).expect("ops"),
         &approvals,
     )
 }
