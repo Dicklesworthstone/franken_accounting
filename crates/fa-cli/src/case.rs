@@ -560,6 +560,23 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// case not yet rehearsed has none (FA-REF-176).
 fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let ordinal = ordinal(args, "diff", DIFF_EXAMPLE)?;
+    // The case verb's flags belong to its writing subcommands; diff takes
+    // only the case number, so each is refused rather than passed to a
+    // replay that would ignore it (--grant still names the session's ops).
+    if let Some(verb) = fa_verbs::registry().ok().and_then(|reg| reg.verb("case")) {
+        let flag = verb
+            .flags
+            .iter()
+            .filter(|flag| flag.as_str() != "--grant")
+            .find(|flag| !args.flag_all(flag.as_str()).is_empty())
+            .or_else(|| verb.switches.iter().find(|switch| args.switch(switch)));
+        if let Some(flag) = flag {
+            return Err(usage(
+                format!("`fa case diff` takes only the case number, not {flag}"),
+                DIFF_EXAMPLE,
+            ));
+        }
+    }
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read"])?;
     let view = ctx

@@ -420,6 +420,14 @@ fn a_production_journals_continuing_bates_numbers_and_writes_its_volume() {
         "FA-REF-081",
     );
     assert_eq!(run(&f.book, &["document", "show"]).0, 2);
+    // Show reads the head: a list's known-at selector, or any other
+    // document flag, is refused rather than ignored.
+    for flag in [["--as-known-at", "1"], ["--kind", "Invoice"]] {
+        let mut args = vec!["document", "show", order.as_str()];
+        args.extend(flag);
+        let (code, out) = run(&f.book, &args);
+        assert_eq!(code, 2, "{args:?}: {}", out.render());
+    }
 }
 
 #[test]

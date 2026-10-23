@@ -981,6 +981,38 @@ fn functional_activity_requires_its_explicit_scope_and_refuses_unvalued_foreign_
             "2026-03-05",
         ],
         vec!["--functional", "--activity", "--fiscal-year", "2026"],
+        // The restatement views pin a native report's known-at; a functional
+        // report takes none of them, never silently ignoring one (fa-wrrw).
+        vec![
+            "--functional",
+            "--activity",
+            "--period",
+            "FY2026-P03",
+            "--as-currently-stated",
+            "--as-known-at",
+            "1",
+        ],
+        vec![
+            "--functional",
+            "--period",
+            "FY2026-P03",
+            "--as-currently-stated",
+        ],
+        vec![
+            "--functional",
+            "--period",
+            "FY2026-P03",
+            "--as-issued-to",
+            "board",
+        ],
+        vec![
+            "--functional",
+            "--activity",
+            "--period",
+            "FY2026-P03",
+            "--as-reported-in",
+            "C:0000000000000000000000000000000000000000000000000000000000000000",
+        ],
     ] {
         let mut args = vec!["tb"];
         args.extend(selection);

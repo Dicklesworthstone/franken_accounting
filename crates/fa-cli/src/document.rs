@@ -243,6 +243,25 @@ fn show_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         oid_text.strip_prefix("D:").unwrap_or(oid_text),
         "document oid",
     )?);
+    // Show reads the document at the head and takes none of the document
+    // verb's own flags: each is refused, never ignored (--as-known-at, say,
+    // which `fa document list` honours).
+    let verb_flags = fa_verbs::registry()
+        .ok()
+        .and_then(|reg| reg.verb("document"))
+        .map(|verb| verb.flags.clone())
+        .unwrap_or_default();
+    // --grant names the session's ops, as on every read.
+    if let Some(flag) = verb_flags
+        .iter()
+        .filter(|flag| flag.as_str() != "--grant")
+        .find(|flag| !args.flag_all(flag.as_str()).is_empty())
+    {
+        return Err(usage(
+            format!("`fa document show` reads the document at the head and takes no {flag}"),
+            "fa document show <oid> --json, or fa document list --as-known-at <seq> --json for the documents held then",
+        ));
+    }
     let policy = policy()?;
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read"])?;
@@ -1564,7 +1583,12 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let known_at = head_or_seq(args)?;
             let evidence = sorted_evidence(args)?;
             let capability = ctx.capability(args, &["reconcile"])?;
-            let mut book = ctx.books.open(args)?;
+            // Authority precedes observation: the record law's admission,
+            // decided from the capability alone, runs before the cell is
+            // evaluated, so a refused caller learns nothing about the book.
+            let mut book = ctx
+                .books
+                .open_admitted(args, |book| admit_reconciler(book, &capability))?;
             let unit_id = match args.flag("--unit") {
                 Some(u) => {
                     book.context()
@@ -1592,6 +1616,14 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa attest review|manual|register-equals ...",
         )),
     }
+}
+
+/// The balance-assertion authority (plan §9.4, fa-journal's
+/// `admit_reconciler`): the holder's own capability with `reconcile`, not an
+/// Agent's on trunk. The record law decides it again before its refold.
+fn admit_reconciler(book: &mut fa::Book, capability: &fa::Capability) -> Result<(), Fail> {
+    fa_journal::attestation::admit_reconciler(capability, book.context().book_id)
+        .map_err(Fail::Refusal)
 }
 
 /// `--as-known-at HEAD|<seq>`: `None` is the head.
@@ -1671,7 +1703,10 @@ pub(crate) fn assert_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), F
     let known_at = head_or_seq(args)?;
     let evidence = sorted_evidence(args)?;
     let capability = ctx.capability(args, &["reconcile"])?;
-    let mut book = ctx.books.open(args)?;
+    // Admitted before the balance is parsed or the cell evaluated.
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_reconciler(book, &capability))?;
     let balance = fa_money::Amount::parse(balance_text, &book.context().units)
         .map_err(|e| usage(format!("--balance `{balance_text}`: {e}"), FIX))?;
     let key = fa::EntityCellKey {

@@ -458,6 +458,54 @@ fn assert_balance_records_a_true_assertion_and_refuses_a_false_one() -> std::io:
     assert_eq!(head(&after), head(&before), "a false assertion wrote");
     let (code, _, _) = fa(&book, &["assert-balance", "--account", "1000", "--json"]);
     assert_eq!(code, 2);
+
+    // Authority precedes observation: an Agent token holding reconcile
+    // passes the bound route, and the balance-assertion law refuses it on
+    // trunk before the cell is read, so an existing and a nonexistent period
+    // get the same refusal and the book learns nothing.
+    let token = dir.join("agent.token").display().to_string();
+    ok(
+        &book,
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "assert-agent",
+            "--profile",
+            "agent",
+            "--op",
+            "read",
+            "--op",
+            "reconcile",
+            "--grant",
+            "issue_capability",
+            "--out",
+            &token,
+            "--json",
+        ],
+    );
+    let mut refusals = Vec::new();
+    for period in ["FY2026-P03", "FY2099-P01"] {
+        let (code, out, err) = fa(
+            &book,
+            &[
+                "--token",
+                &token,
+                "assert-balance",
+                "--account",
+                "1000",
+                "--period",
+                period,
+                "--balance",
+                "-1500.00 USD",
+                "--json",
+            ],
+        );
+        assert_eq!(code, 7, "{period}: {out}\n{err}");
+        refusals.push(field(&out, "refusal_id").map(str::to_string));
+    }
+    assert!(refusals[0].is_some(), "{refusals:?}");
+    assert_eq!(refusals[0], refusals[1], "the period was observed first");
     Ok(())
 }
 

@@ -4299,6 +4299,11 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         Some(retained.as_str()),
         "{replayed:?}"
     );
+    // The diff is the retained one: naming another certificate is refused,
+    // never ignored.
+    let (code, out) = run(&["case", "diff", "1", "--certificate", &rehearsal, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("takes only the case number"), "{out}");
     // fa-g8em: triage counts the rehearsed case among pending approvals and
     // points at it.
     let triage = ok(&["triage", "--json"]);
