@@ -1859,8 +1859,8 @@ fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "per
 [[event]]
 name = "plan"
 book = true
-doc = "A successful rehearsal of the actual posting pipeline, with its staged transaction aborted and no journal or metadata writes. bytes is the complete canonical PostEntry plan as hex; file is an optional new external binary copy. The exact sealed proposal, original request and supplied approvals are retained. Leg amounts and lineage preview that proposal; a Reclassification's net_effect is its target plus this entry's delta per account and unit (earlier reclassifications of the target are netted only by fa explain lineage), null for every other class; effects_digest binds all staged native writes before the plan's own Certificate and CITES retention metadata is added. Book-key authentication binds the certificate, current caller capability, security epoch and snapshot. Any intervening publication requires a new plan. Scope is same-snapshot-post; authority names the actual embedded-owner or mcp-launch-config posture, with principal/profile/ops in the envelope. Agent profiles remain unable to plan trunk posts. Drafts, issued tokens, newly gathered approval quorums and saturating balancing remain unfinished. idempotency_key is exact key bytes in hex. The envelope certificate stays null: these public digests are not native object-store OIDs."
-fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "valuation:plan_valuation?", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "net_effect:[lineage_net_cell]?", "evidence:[evidence_head]", "approvals:int", "bytes:hex", "file:string?", "scope:string", "authority:string"]
+doc = "A successful rehearsal of the actual posting pipeline, with its staged transaction aborted and no journal or metadata writes. bytes is the complete canonical PostEntry plan as hex; file is an optional new external binary copy. The exact sealed proposal, original request and supplied approvals are retained. Leg amounts and lineage preview that proposal; a Reclassification's net_effect is its target plus this entry's delta per account and unit (earlier reclassifications of the target are netted only by fa explain lineage), null for every other class; effects_digest binds all staged native writes before the plan's own Certificate and CITES retention metadata is added. Book-key authentication binds the certificate, current caller capability, security epoch and snapshot. Any intervening publication requires a new plan. Scope is same-snapshot-post; authority names the actual embedded-owner or mcp-launch-config posture, with principal/profile/ops in the envelope. Agent profiles remain unable to plan trunk posts. Drafts, issued tokens, newly gathered approval quorums and saturating balancing remain unfinished. idempotency_key is exact key bytes in hex. warnings are what journal-entry testing would flag about an Original or Adjusting entry (RoundAmount, SoftClosedPeriod, PossibleDuplicate citing the earlier entries, CutoffDrift), read at the plan's snapshot; they never refuse or change the plan, and each also appears in the envelope warnings. unchecked names a check that did not run and why (PossibleDuplicate needs a capability that reads the whole book). The envelope certificate stays null: these public digests are not native object-store OIDs."
+fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "valuation:plan_valuation?", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "net_effect:[lineage_net_cell]?", "evidence:[evidence_head]", "approvals:int", "warnings:[plan_warning]", "unchecked:[plan_unchecked]", "bytes:hex", "file:string?", "scope:string", "authority:string"]
 
 [[event]]
 name = "plan_committed"
@@ -3347,6 +3347,16 @@ fields = ["untrusted_content:text", "source:string"]
 name = "entry_leg"
 doc = "One leg of a committed entry."
 fields = ["side:string", "account:hex", "amount:amount", "memo:untrusted_text?"]
+
+[[shape]]
+name = "plan_warning"
+doc = "One dry-run warning (plan §5.1): kind is RoundAmount, SoftClosedPeriod, PossibleDuplicate or CutoffDrift; legs are the planned legs it concerns; entries are the recorded entries it cites; message says what to check."
+fields = ["kind:string", "legs:[int]", "entries:[hex]", "message:string"]
+
+[[shape]]
+name = "plan_unchecked"
+doc = "A dry-run warning check that did not run, and why."
+fields = ["kind:string", "reason:string"]
 
 [[shape]]
 name = "plan_leg"

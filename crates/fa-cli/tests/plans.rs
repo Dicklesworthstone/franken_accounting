@@ -1601,6 +1601,206 @@ fn period_plan_out_never_overwrites_existing_files_or_book_keys() {
     );
 }
 
+/// The kinds of a plan's dry-run warnings, in order.
+fn warning_kinds(plan: &Json) -> Vec<&str> {
+    get(plan, "warnings")
+        .as_arr()
+        .expect("warnings")
+        .iter()
+        .map(|warning| text(warning, "kind"))
+        .collect()
+}
+
+/// The envelope's warnings beside the data.
+fn envelope_warnings(line: &Json) -> Vec<&str> {
+    line.get("warnings")
+        .and_then(Json::as_arr)
+        .expect("envelope warnings")
+        .iter()
+        .map(|warning| warning.as_str().expect("warning text"))
+        .collect()
+}
+
+/// Dry-run warnings (plan §5.1, fa-d5un) name what journal-entry testing
+/// would flag about the planned entry, read at the plan's snapshot. They are
+/// data: they never refuse, and a warned plan commits.
+#[test]
+fn dry_run_warnings_name_what_journal_entry_testing_would_flag() {
+    let f = Fixture::new();
+    let legs = |amount: &str| {
+        format!(
+            r#"[{{"side":"debit","account":"1000","amount":"{amount} USD"}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}]"#
+        )
+    };
+    // A plain amount draws no warning, and every check ran.
+    let plain = f.plan(&f.intent("plain", "125.37"));
+    assert!(warning_kinds(&plain).is_empty(), "{}", plain.render());
+    assert_eq!(get(&plain, "unchecked"), &Json::Arr(Vec::new()));
+    assert!(envelope_warnings(&plain).is_empty(), "{}", plain.render());
+
+    // RoundAmount: both legs are whole multiples of 1,000.00 USD
+    // (jet.round_amounts' registered round_power 3).
+    let round = f.plan(&f.intent("round", "2000.00"));
+    assert_eq!(warning_kinds(&round), ["RoundAmount"]);
+    let warning = &get(&round, "warnings").as_arr().unwrap()[0];
+    assert_eq!(
+        get(warning, "legs"),
+        &Json::Arr(vec![Json::Int(0), Json::Int(1)])
+    );
+    assert!(text(warning, "message").contains("jet.round_amounts"));
+    assert!(
+        envelope_warnings(&round)
+            .iter()
+            .any(|w| w.starts_with("RoundAmount: ")),
+        "{}",
+        round.render()
+    );
+    // A warning never refuses: the warned plan commits.
+    let (code, committed) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&round, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", committed.render());
+    // A derived entry is not judged: reversing the round entry draws none.
+    let reversal = ok(
+        &f.book,
+        &[
+            "reverse",
+            text(&committed, "vid"),
+            "--reason",
+            "WrongAmount",
+            "--dry-run",
+        ],
+    );
+    assert!(warning_kinds(&reversal).is_empty(), "{}", reversal.render());
+
+    // PossibleDuplicate: the same legs, recorded under another key.
+    let first = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("first", "125.37"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let first_vid = text(&first, "vid").to_string();
+    let again = f.plan(&f.intent("again", "125.37"));
+    assert_eq!(warning_kinds(&again), ["PossibleDuplicate"]);
+    let warning = &get(&again, "warnings").as_arr().unwrap()[0];
+    assert_eq!(
+        get(warning, "entries"),
+        &Json::Arr(vec![Json::Str(first_vid.clone())])
+    );
+    assert!(text(warning, "message").contains(&first_vid));
+    // A capability that does not read the book is never shown the earlier
+    // entry, and the plan says the check did not run.
+    let narrow = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("narrow", "125.37"),
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+            "--grant",
+            "post",
+        ],
+    );
+    assert!(warning_kinds(&narrow).is_empty(), "{}", narrow.render());
+    let unchecked = get(&narrow, "unchecked").as_arr().unwrap();
+    assert_eq!(unchecked.len(), 1, "{}", narrow.render());
+    assert_eq!(text(&unchecked[0], "kind"), "PossibleDuplicate");
+    assert!(
+        envelope_warnings(&narrow)
+            .iter()
+            .any(|w| w.starts_with("PossibleDuplicate not checked: ")),
+        "{}",
+        narrow.render()
+    );
+    // Planted: another amount is no duplicate.
+    assert!(warning_kinds(&f.plan(&f.intent("other", "125.38"))).is_empty());
+    // The registered 30-day window holds across a period boundary: 30 days
+    // after the first is a duplicate, 31 days is not.
+    ok(&f.book, &["period", "open", "FY2026-P04"]);
+    let dated = |key: &str, date: &str| {
+        write(
+            &f.dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":{}}}"#,
+                legs("125.37")
+            ),
+        )
+    };
+    assert_eq!(
+        warning_kinds(&f.plan(&dated("edge", "2026-04-09"))),
+        ["PossibleDuplicate"]
+    );
+    assert!(warning_kinds(&f.plan(&dated("beyond", "2026-04-10"))).is_empty());
+    // A reversed entry is no longer a duplicate.
+    ok(&f.book, &["reverse", &first_vid, "--reason", "Duplicate"]);
+    assert!(warning_kinds(&f.plan(&f.intent("again", "125.37"))).is_empty());
+
+    // CutoffDrift: the document date lies outside the entry's period.
+    let documented = |key: &str, date: &str| {
+        write(
+            &f.dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-12","document_date":"{date}","idempotency_key":"{key}","legs":{}}}"#,
+                legs("77.10")
+            ),
+        )
+    };
+    let drift = f.plan(&documented("drift", "2026-02-27"));
+    assert_eq!(warning_kinds(&drift), ["CutoffDrift"]);
+    let message = text(&get(&drift, "warnings").as_arr().unwrap()[0], "message");
+    assert!(
+        message.contains("2026-02-27") && message.contains("FY2026-P03"),
+        "{message}"
+    );
+    assert!(warning_kinds(&f.plan(&documented("in-period", "2026-03-01"))).is_empty());
+    // A document date is a YYYY-MM-DD string: anything else is a usage error
+    // before any plan.
+    let malformed = write(
+        &f.dir,
+        "malformed.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-12","document_date":20260227,"idempotency_key":"malformed","legs":{}}}"#,
+            legs("77.10")
+        ),
+    );
+    let (code, error) = run(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &malformed,
+            "--evidence",
+            &f.evidence,
+            "--dry-run",
+        ],
+        None,
+    );
+    assert_eq!(code, 2, "{}", error.render());
+
+    // SoftClosedPeriod: an Adjusting entry after the period's soft close.
+    ok(&f.book, &["period", "soft-close", "FY2026-P03"]);
+    let adjusting = write(
+        &f.dir,
+        "adjusting.json",
+        &format!(
+            r#"{{"class":"Adjusting","effective_date":"2026-03-20","idempotency_key":"late","legs":{}}}"#,
+            legs("33.33")
+        ),
+    );
+    assert_eq!(warning_kinds(&f.plan(&adjusting)), ["SoftClosedPeriod"]);
+}
+
 fn scan_truncating_writes(source: &str) -> Vec<(usize, String)> {
     let non_test = source.split("#[cfg(test)]").next().unwrap_or(source);
     let mut hits = Vec::new();

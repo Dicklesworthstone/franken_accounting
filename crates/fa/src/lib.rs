@@ -79,6 +79,7 @@ pub mod intake;
 pub mod interop;
 pub mod ledger_diff;
 pub mod outcome_recovery;
+pub mod plan_warnings;
 pub mod procedure_certificate;
 pub mod production;
 pub mod projections;
@@ -250,6 +251,7 @@ pub use indirect_cash_flow::{
 pub use intake::IntakeAction;
 pub use ledger_diff::{LedgerDiff, RecordedEntry, TrialBalanceChange};
 pub use outcome_recovery::{OutcomeRebuild, OutcomeRebuildPreview, PreparedOutcomeRebuild};
+pub use plan_warnings::{PlanWarning, PlanWarningKind, PlanWarnings};
 pub use procedure_certificate::{
     BANK_PROCEDURE_CERTIFICATE_FORMAT, CERTIFIABLE_PROCEDURES, CertifiedProcedure,
     MAX_PROCEDURE_CERTIFICATE_BYTES, PROCEDURE_CERTIFICATE_FORMAT, PROCEDURE_OUTPUT_FORMAT,

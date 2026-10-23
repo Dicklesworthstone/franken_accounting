@@ -2196,6 +2196,17 @@ impl Book {
         ))
     }
 
+    /// The dry-run warnings about `plan` (plan §5.1; see
+    /// [`crate::plan_warnings`]), read at its snapshot. `capability` is the
+    /// one that planned it; the duplicate check needs it to read the book.
+    pub fn plan_warnings(
+        &self,
+        plan: &fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Result<crate::PlanWarnings, BookError> {
+        with_store!(&self.store, core => core.plan_warnings(&self.purposes(), plan, capability))
+    }
+
     /// Commit the exact rehearsed intent under the caller's current authority.
     ///
     /// The kernel authenticates the plan, repeats its accounting and authority

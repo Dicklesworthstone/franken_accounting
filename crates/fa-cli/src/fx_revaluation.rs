@@ -527,7 +527,7 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let intent = with_approvals(review, args)?;
         if args.switch("--dry-run") {
             let plan = book.plan(intent, &capability)??;
-            return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.post(fa_journal::PostRequest {
             proposal: intent.proposal().clone(),
@@ -684,7 +684,7 @@ pub(crate) fn revalue(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     if args.switch("--dry-run") {
         let plan = book.plan(intent, &capability)??;
-        return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan);
+        return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);
     }
     let posted = book.post(fa_journal::PostRequest {
         proposal: intent.proposal().clone(),

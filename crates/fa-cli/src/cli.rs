@@ -7557,6 +7557,23 @@ fn build_post_request_with_prior(
     let mut target_period = None;
     let key = req_str(doc, "idempotency_key", "intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
+    // The source document's own date (Appendix A `document_date`): recorded
+    // on the entry, and judged against its period for cutoff (plan §5.1).
+    let document_date = match doc.get("document_date") {
+        None | Some(Json::Null) => None,
+        Some(Json::Str(text)) => Some(DateDay::parse(text).map_err(|e| {
+            usage(
+                format!("document_date `{text}`: {e:?}"),
+                "document_date: \"YYYY-MM-DD\", the source document's own date",
+            )
+        })?),
+        Some(_) => {
+            return Err(usage(
+                "intent: `document_date` must be a string",
+                "document_date: \"YYYY-MM-DD\"",
+            ));
+        }
+    };
     // A Reversal names its target; its legs are the exact side-swap of the
     // target's, derived here so an agent never has to retype amounts. A
     // Resolution names the hold it resolves and either posts a sub-vector
@@ -8065,7 +8082,7 @@ fn build_post_request_with_prior(
         branch_id: Id128::TRUNK,
         class,
         effective_date,
-        document_date: None,
+        document_date,
         description: book.seal_text(description)?,
         effective_period,
         legs,
@@ -8207,7 +8224,7 @@ pub(crate) fn post_document(
             )
         })?;
         let plan = book.plan(intent, &req.capability)??;
-        return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        return emit_post_plan(out, &book, &ctx.files, args, &plan, &req.capability);
     }
     // `--balancing <leg>` (post and reserve): the leg moves at most what its
     // account's limit admits, decided inside the posting transaction; the
@@ -8527,6 +8544,7 @@ pub(crate) fn emit_post_plan(
     files: &Files,
     args: &Args,
     plan: &PostPlan,
+    capability: &Capability,
 ) -> Result<(), Fail> {
     let certificate = plan.certificate();
     let proposal = plan.proposal();
@@ -8616,6 +8634,48 @@ pub(crate) fn emit_post_plan(
         Json::Null
     };
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
+    // What journal-entry testing would flag, said before the commit (plan
+    // §5.1, fa-d5un): data only, never a refusal or a change to the plan.
+    let warned = book.plan_warnings(plan, capability)?;
+    let warnings = Json::Arr(
+        warned
+            .warnings
+            .iter()
+            .map(|warning| {
+                obj(vec![
+                    ("kind", s(warning.kind.name())),
+                    (
+                        "legs",
+                        Json::Arr(
+                            warning
+                                .legs
+                                .iter()
+                                .map(|leg| Json::Int(i128::from(*leg)))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "entries",
+                        Json::Arr(
+                            warning
+                                .entries
+                                .iter()
+                                .map(|vid| s(format!("{:032x}", vid.0)))
+                                .collect(),
+                        ),
+                    ),
+                    ("message", s(&warning.message)),
+                ])
+            })
+            .collect(),
+    );
+    let unchecked = Json::Arr(
+        warned
+            .unchecked
+            .iter()
+            .map(|(kind, reason)| obj(vec![("kind", s(kind.name())), ("reason", s(reason))]))
+            .collect(),
+    );
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     let resolves = proposal
@@ -8737,6 +8797,12 @@ pub(crate) fn emit_post_plan(
     if let Some(path) = args.flag("--plan-out") {
         write_post_plan(files, path, &bytes)?;
     }
+    for warning in &warned.warnings {
+        out.warn(format!("{}: {}", warning.kind.name(), warning.message));
+    }
+    for (kind, reason) in &warned.unchecked {
+        out.warn(format!("{} not checked: {reason}", kind.name()));
+    }
     if bound_void || rehearsal {
         out.warn(&commit_guidance);
     }
@@ -8812,6 +8878,8 @@ pub(crate) fn emit_post_plan(
                 net_effect.map_or(Json::Null, |(json, _)| json),
             ),
             ("approvals", Json::Int(plan.approvals().len() as i128)),
+            ("warnings", warnings),
+            ("unchecked", unchecked),
             ("bytes", s(encoded)),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
             ("scope", s("same-snapshot-post")),
@@ -9995,7 +10063,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             book.plan_allocation_review(&review, digest, approvals, &capability)??
         };
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10156,7 +10224,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let plan =
             book.plan_balance_allocation(&review, review_digest, approvals, &capability)??;
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10280,7 +10348,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let plan =
             book.plan_allocation_review(&review, review_digest, approvals, &capability)??;
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10528,7 +10596,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (single_plan.into_post_plan(), class_name)
         };
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10670,7 +10738,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .plan_prepared_settlement_group(prepared, approvals, &capability)??
             .into_post_plan();
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10747,7 +10815,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .plan_prepared_settlement(prepared, approvals, &capability)??
             .into_post_plan();
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
