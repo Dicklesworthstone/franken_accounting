@@ -1849,12 +1849,20 @@ impl ToolSpec {
                 let via_prop = self.via_property(spec);
                 let has_path = allow_files && obj.get(&via_prop).is_some_and(|v| !v.is_null());
                 if stdin.is_none() && !has_path {
-                    return Err(ArgError {
-                        message: format!("{wire}: inline `{}` is required", spec.property),
-                        fix: format!(
+                    let fix = if allow_files {
+                        format!(
+                            "pass the complete content in `{}`, or a relative path inside the launch --files root in `{via_prop}`",
+                            spec.property
+                        )
+                    } else {
+                        format!(
                             "pass the complete content in `{}`; host filesystem paths are not accepted",
                             spec.property
-                        ),
+                        )
+                    };
+                    return Err(ArgError {
+                        message: format!("{wire}: inline `{}` is required", spec.property),
+                        fix,
                     });
                 }
                 continue;

@@ -1063,10 +1063,14 @@ fn forbidden_macro_argument(spec: &MacroSpec, arguments: &JsonValue) -> Option<S
         })
 }
 
-/// Preserve the structured refusal when required inline content is absent.
-/// The framework rejects that schema before entering the tool handler. Only
-/// its exact error content is enriched; schemas, requests, successful results
-/// and protected response metadata stay under the framework's admission.
+/// Preserve the structured refusal when the framework rejects a call's
+/// arguments against the declared schema before entering the tool handler:
+/// a forbidden argument or path, else the tool's own argument mapping error,
+/// which names a missing required property and its fix. The mapping only
+/// builds an argv; nothing is dispatched. Only the exact error content is
+/// enriched; schemas, requests, successful results and protected response
+/// metadata stay under the framework's admission, and when the mapping
+/// accepts the arguments the framework's text stands.
 struct ToolArgumentErrors {
     adapter: Arc<Adapter>,
 }
@@ -1099,13 +1103,20 @@ impl Middleware for ToolArgumentErrors {
         let Some(arguments) = params.get("arguments").filter(|args| args.is_object()) else {
             return Ok(response);
         };
-        let error = self
-            .adapter
-            .mcp
-            .tool_by_wire(name)
-            .and_then(|tool| forbidden_tool_argument(tool, arguments, &self.adapter.authority))
+        let adapter = &self.adapter;
+        let tool = adapter.mcp.tool_by_wire(name);
+        let error = tool
+            .and_then(|tool| forbidden_tool_argument(tool, arguments, &adapter.authority))
             .or_else(|| {
                 macro_by_wire(name).and_then(|mac| forbidden_macro_argument(mac, arguments))
+            })
+            .or_else(|| {
+                let allow_files = adapter.authority.files().is_some();
+                tool.and_then(|tool| {
+                    tool.invocation_with_files(&adapter.mcp, adapter.reg, arguments, allow_files)
+                        .err()
+                })
+                .map(|e| StructuredError::arguments(e.message, e.fix))
             });
         if let Some(error) = error {
             response["content"] = json!([{
