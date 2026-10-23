@@ -3392,8 +3392,18 @@ fields = ["ordinal:int", "side:string", "account:string", "account_vid:hex", "ac
 
 [[shape]]
 name = "explained_document"
-doc = "One cited document in an entry's evidence closure, with its metadata, reviews, supplements, and whether it counts toward the class minimum."
-fields = ["document_oid:hex", "doc_commit:hex", "role:int", "role_name:string?", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "reviews:[explained_review]", "supplements:[explained_supplement]", "counts_toward_minimum:bool"]
+doc = "One cited document in an entry's evidence closure, with its metadata, reviews, supplements, and whether it counts toward the class minimum. A derived text document (`fa document extract`) names how it was extracted (`extraction`) and every document it derives from, ancestors included (`derived_from`, from the sources its bytes bind); otherwise `extraction` is null and `derived_from` empty."
+fields = ["document_oid:hex", "doc_commit:hex", "role:int", "role_name:string?", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "reviews:[explained_review]", "supplements:[explained_supplement]", "extraction:extraction_info?", "derived_from:[derived_source]", "counts_toward_minimum:bool"]
+
+[[shape]]
+name = "extraction_info"
+doc = "How a derived text document was extracted (plan §9.1): `method` (`pdf_text_layer`, `franken_ocr` or `franken_whisper`), the tool and version, whether re-running it reproduces the text, and the text's length in bytes (`fa document read` shows the text)."
+fields = ["method:string", "tool_name:string", "tool_version:string", "replayable:bool", "text_bytes:int"]
+
+[[shape]]
+name = "derived_source"
+doc = "A document a cited derived document derives from (DERIVED_FROM lineage, plan §9.1): its metadata, how it was itself extracted when it is a derivation, and its own sources."
+fields = ["document_oid:hex", "doc_commit:hex", "kind:string", "mime:string", "grade:string", "size:int", "recorded_at:seq", "extraction:extraction_info?", "derived_from:[hex]"]
 
 [[shape]]
 name = "explained_review"

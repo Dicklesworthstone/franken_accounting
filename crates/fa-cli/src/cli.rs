@@ -18250,6 +18250,20 @@ pub(crate) fn untrusted_text_json(content: Option<String>, source: String) -> Js
     }
 }
 
+/// The `extraction_info` shape: how a derived text document was extracted
+/// (fa-646), without its text (`fa document read` shows that).
+fn extraction_info_json(info: Option<&fa_journal::evidence::DerivedExtractionInfo>) -> Json {
+    info.map_or(Json::Null, |x| {
+        obj(vec![
+            ("method", s(&x.method)),
+            ("tool_name", s(&x.tool_name)),
+            ("tool_version", s(&x.tool_version)),
+            ("replayable", Json::Bool(x.replayable)),
+            ("text_bytes", Json::Int(i128::from(x.extracted_text_bytes))),
+        ])
+    })
+}
+
 fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let example = "fa explain evidence <entry-vid> --book <dir>";
@@ -18351,6 +18365,38 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             }
         }
+        // fa-646: a derived text document names how it was extracted and
+        // the documents it derives from, ancestors included.
+        let lineage: Vec<Json> = doc
+            .derived_from
+            .iter()
+            .map(|src| {
+                let kind = policy
+                    .kinds
+                    .iter()
+                    .find(|k| k.tag == src.kind)
+                    .map_or("?", |k| k.name.as_str());
+                let grade = policy
+                    .grades
+                    .iter()
+                    .find(|g| g.tag == src.grade)
+                    .map_or("?", |g| g.name.as_str());
+                obj(vec![
+                    ("document_oid", s(hex(&src.document_oid.0))),
+                    ("doc_commit", s(hex(&src.doc_commit))),
+                    ("kind", s(kind)),
+                    ("mime", s(&src.mime)),
+                    ("grade", s(grade)),
+                    ("size", Json::Int(i128::from(src.size))),
+                    ("recorded_at", Json::Int(i128::from(src.recorded_at.0))),
+                    ("extraction", extraction_info_json(src.extraction.as_ref())),
+                    (
+                        "derived_from",
+                        Json::Arr(src.derived_from.iter().map(|o| s(hex(&o.0))).collect()),
+                    ),
+                ])
+            })
+            .collect();
         docs_json.push(obj(vec![
             ("document_oid", s(hex(&doc.document_oid.0))),
             ("doc_commit", s(hex(&doc.doc_commit))),
@@ -18363,6 +18409,8 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("recorded_at", Json::Int(i128::from(doc.recorded_at.0))),
             ("reviews", Json::Arr(reviews)),
             ("supplements", Json::Arr(supplements)),
+            ("extraction", extraction_info_json(doc.extraction.as_ref())),
+            ("derived_from", Json::Arr(lineage)),
             ("counts_toward_minimum", Json::Bool(counts)),
         ]));
     }
