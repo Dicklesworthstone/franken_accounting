@@ -1439,3 +1439,74 @@ fn an_effective_date_is_refused_where_a_procedure_would_ignore_it() {
     assert_eq!(declared("lookback.preferences"), "optional");
     assert_eq!(declared("aging.open_items"), "required");
 }
+
+/// fa-qip: `fa search` indexes each finding of every run recorded at the
+/// frontier by its procedure and narrative, replayed from the run's
+/// certificate. `--kind finding` keeps only findings, and `--kind document`
+/// none; a frontier before the run was recorded finds none of them.
+#[test]
+fn search_finds_recorded_findings_by_their_procedure_and_narrative() {
+    let f = Fixture::new();
+    let search = |args: &[&str]| {
+        let mut argv = vec!["search"];
+        argv.extend_from_slice(args);
+        ok(&f.book, &argv)
+    };
+    let hits = |found: &Json| -> Vec<(String, String)> {
+        data(found)
+            .get("hits")
+            .and_then(Json::as_arr)
+            .unwrap()
+            .iter()
+            .map(|hit| (text(hit, "kind").to_string(), text(hit, "id").to_string()))
+            .collect()
+    };
+    let before = f.head().to_string();
+    assert_eq!(number(data(&search(&["weekend"])), "total"), 0);
+    let recorded = ok(
+        &f.book,
+        &[
+            "finding",
+            "record",
+            "jet.weekend",
+            "--as",
+            "run-investigator",
+        ],
+    );
+    let mut ids: Vec<String> = data(&recorded)
+        .get("finding_ids")
+        .and_then(Json::as_arr)
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    assert!(!ids.is_empty(), "{recorded:?}");
+
+    // The procedure's name finds every finding of the run, and only them.
+    let found = search(&["weekend", "--kind", "finding"]);
+    let mut found_ids: Vec<String> = hits(&found)
+        .into_iter()
+        .map(|(kind, id)| {
+            assert_eq!(kind, "finding", "{found:?}");
+            id
+        })
+        .collect();
+    found_ids.sort();
+    assert_eq!(found_ids, ids, "{found:?}");
+    // "Saturday" is in the fixture's document and in the narrative.
+    let kinds: Vec<String> = hits(&search(&["saturday"]))
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect();
+    assert!(kinds.iter().any(|kind| kind == "finding"), "{kinds:?}");
+    assert!(kinds.iter().any(|kind| kind == "document"), "{kinds:?}");
+    assert!(
+        hits(&search(&["saturday", "--kind", "document"]))
+            .iter()
+            .all(|(kind, _)| kind == "document")
+    );
+    // Before the run was recorded there is nothing to find.
+    let early = search(&["weekend", "--as-known-at", &before]);
+    assert_eq!(number(data(&early), "total"), 0, "{early:?}");
+}
