@@ -232,15 +232,36 @@ fn a_template_imports_once_and_a_chart_must_be_a_forest_of_unique_codes() {
     let dir = fixture();
     let book = dir.join("book");
     ok(&book, &["book", "create", "--name", "Forest Co", "--json"]);
-    ok(
+    let installed = ok(
         &book,
         &["chart", "import", "--template", "us-gaap-smb", "--json"],
     );
 
-    // Its identity exists: a second import is refused, never doubled.
-    let (code, id, message) = refused(
+    // The exact retry returns the original outcome without importing twice.
+    let before = ok(&book, &["book", "info", "--json"]);
+    let again = ok(
         &book,
         &["chart", "import", "--template", "us-gaap-smb", "--json"],
+    );
+    assert_eq!(
+        data(&again, "control_entry"),
+        data(&installed, "control_entry")
+    );
+    assert_eq!(data(&again, "recorded_at"), data(&installed, "recorded_at"));
+    assert_eq!(ok(&book, &["book", "info", "--json"]), before);
+
+    // A new request key cannot install existing account identities again.
+    let (code, id, message) = refused(
+        &book,
+        &[
+            "chart",
+            "import",
+            "--template",
+            "us-gaap-smb",
+            "--key",
+            "different-chart-install",
+            "--json",
+        ],
     );
     assert_eq!((code, id.as_str()), (2, "FA-REF-100"), "{message}");
     assert!(message.contains("already exists"), "{message}");

@@ -8698,6 +8698,140 @@ fn unpaired_or_mismatched_replacement_is_refused_without_mutating_book() {
 }
 
 #[test]
+fn chart_retry_keeps_its_birth_and_checks_semantics_and_authority() {
+    let mut h = harness();
+    let date = h.day();
+    let chart = vec![AccountSpec {
+        code: "1700".into(),
+        name: "Equipment".into(),
+        account_type: fa_model::AccountType::ASSET.0,
+        normal_balance: 0,
+        is_leaf: true,
+        unit_policy: UnitPolicy::Single(h.usd),
+        parent_code: None,
+        limit: None,
+    }];
+    let capability = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    let install = |h: &mut Harness,
+                   accounts: &[AccountSpec],
+                   key: &[u8],
+                   text: &str,
+                   salt: u8,
+                   cap: &Capability| {
+        let cx = h.ctx();
+        let description = Erasable::seal(
+            &text.to_string(),
+            None,
+            &h.book.seal_key,
+            [salt; 32],
+            [salt; 24],
+        );
+        h.runtime.block_on(install_chart(
+            &mut h.db,
+            &cx,
+            &h.book,
+            accounts,
+            PRINCIPAL,
+            date,
+            key,
+            description,
+            cap,
+        ))
+    };
+    let first = install(
+        &mut h,
+        &chart,
+        b"retry-chart",
+        "equipment chart",
+        30,
+        &capability,
+    )
+    .unwrap()
+    .unwrap();
+    let cx = h.ctx();
+    let role = AccountRoleSpec {
+        account: account_vid(h.book.book_id, "1700"),
+        role: "fixed_asset".into(),
+        assigned: true,
+    };
+    let description = Erasable::seal(
+        &"equipment role".to_string(),
+        None,
+        &h.book.seal_key,
+        [31; 32],
+        [31; 24],
+    );
+    h.runtime
+        .block_on(record_account_role(
+            &mut h.db,
+            &cx,
+            &h.book,
+            &role,
+            PRINCIPAL,
+            b"retry-chart-role",
+            description,
+            &capability,
+        ))
+        .unwrap()
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    assert!(head > first.recorded_at);
+    // Different encryption nonces for the same semantic request still retry.
+    let again = install(
+        &mut h,
+        &chart,
+        b"retry-chart",
+        "equipment chart",
+        32,
+        &capability,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(again, first);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let mut changed = chart.clone();
+    changed[0].name = "Changed equipment".into();
+    for (accounts, text) in [
+        (changed.as_slice(), "equipment chart"),
+        (chart.as_slice(), "a different reason"),
+    ] {
+        let refused = install(&mut h, accounts, b"retry-chart", text, 33, &capability)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, refusal::code::IDEMPOTENCY_CONFLICT);
+        assert_eq!(refused.exit, refusal::exit::CONFLICT);
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+    let duplicate = install(
+        &mut h,
+        &chart,
+        b"fresh-chart-key",
+        "equipment chart",
+        34,
+        &capability,
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(duplicate.code, refusal::code::STRUCTURE);
+    assert_eq!(duplicate.exit, refusal::exit::USAGE);
+    assert_eq!(h.db.frontier().unwrap(), head);
+
+    let denied = install(
+        &mut h,
+        &chart,
+        b"retry-chart",
+        "equipment chart",
+        35,
+        &Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(denied.exit, refusal::exit::SAFETY);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}
+
+#[test]
 fn account_lifecycle_open_close_promote_and_historical_chart_replay_match_oracle() {
     let mut h = harness();
     let mut oracle = fa_reference::Oracle::new(h.book.calendar.clone());
