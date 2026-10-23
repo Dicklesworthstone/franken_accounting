@@ -222,7 +222,7 @@ fn usd(mantissa: i128) -> naive::Input {
     naive::Input::Amount("USD".into(), mantissa)
 }
 
-fn day(y: i32, m: u32, d: u32) -> naive::Input {
+fn day(y: i32, m: u8, d: u8) -> naive::Input {
     naive::Input::Date(DateDay::from_ymd(y, m, d).unwrap().0)
 }
 
