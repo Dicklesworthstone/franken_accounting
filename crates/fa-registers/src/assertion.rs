@@ -161,6 +161,12 @@ pub async fn record_register_equals<V: asupersync::fs::Vfs + Clone>(
     if let Err(r) = admit_reconciler(capability, book.book_id) {
         return Ok(Err(r));
     }
+    // Currency (expiry, revocation, the books caveat) is decided before the
+    // refold too: a claim's falsity names the cell's value, which a token
+    // that is no longer current must not learn.
+    if let Err(r) = fa_journal::policy::current_at(db, book, capability)? {
+        return Ok(Err(r));
+    }
     if let Some(why) = differences(db, book, claim)? {
         return Ok(Err(claim_false(why)));
     }

@@ -1618,10 +1618,13 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-/// The balance-assertion authority (plan §9.4, fa-journal's
-/// `admit_reconciler`): the holder's own capability with `reconcile`, not an
-/// Agent's on trunk. The record law decides it again before its refold.
+/// The balance-assertion authority (plan §9.4): the capability is current
+/// (not expired or revoked, its books caveat admits this book, as `open`
+/// checks for a bound session), and fa-journal's `admit_reconciler` admits
+/// it (the holder's own, with `reconcile`, not an Agent's on trunk). The
+/// record law decides both again before its refold.
 fn admit_reconciler(book: &mut fa::Book, capability: &fa::Capability) -> Result<(), Fail> {
+    book.admit_current(capability)??;
     fa_journal::attestation::admit_reconciler(capability, book.context().book_id)
         .map_err(Fail::Refusal)
 }
