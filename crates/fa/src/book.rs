@@ -3778,6 +3778,23 @@ impl Book {
         ))
     }
 
+    /// Produce a portable native trial balance for `fa-verify report`.
+    /// Replays the certificate under current whole-book read/produce authority,
+    /// then exports every payload in a signed checkpoint covering its prefix.
+    /// Returns `None` if the selected recorded checkpoint is unavailable.
+    pub fn produce_report_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_report_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the

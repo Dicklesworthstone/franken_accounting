@@ -100,6 +100,8 @@ commands:
   doc-commit   <document> --kind N [--expect H] a document's public commitment from its bytes
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
+  report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
+                                                independently recompute every native trial-balance row
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
                                                 proves through the certificate's cutoff and
@@ -128,7 +130,7 @@ expectations) and the document and redacted-view commands: fa-verify --help.
 exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
 ";
 
-const COMMANDS: [&str; 10] = [
+const COMMANDS: [&str; 11] = [
     "state",
     "checkpoint",
     "inclusion",
@@ -138,6 +140,7 @@ const COMMANDS: [&str; 10] = [
     "consistency",
     "doc-commit",
     "bundle",
+    "report",
     "ads",
 ];
 
@@ -192,6 +195,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
         ],
         "doc-commit" => &["--kind", "--expect"],
         "bundle" | "ads" => &["--key", "--receipt"],
+        "report" => &["--key", "--receipt", "--checkpoint", "--expect"],
         _ => &[],
     }
 }
@@ -1255,6 +1259,125 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 Ok(report) => bundle_checks(&report),
             })
         }
+        "report" => {
+            let file = subject(args, "a report bundle file")?;
+            let keys = args.all("--key");
+            if keys.is_empty() {
+                return Err(usage(
+                    "no trusted key: report verification needs recipient-owned checkpoint keys",
+                    "pass --key <64 hex> from an independent trusted source",
+                ));
+            }
+            let keys: Vec<[u8; 32]> = keys.into_iter().map(key).collect::<Result<_, _>>()?;
+            let expected_digest: Option<[u8; 32]> = args
+                .one("--expect")
+                .map(|raw| {
+                    unhex(raw)
+                        .and_then(|bytes| bytes.try_into().ok())
+                        .ok_or_else(|| {
+                            usage(
+                                format!("`--expect {raw}` is not 64 hex characters"),
+                                "pass the independently selected native report certificate digest",
+                            )
+                        })
+                })
+                .transpose()?;
+            let mut checks = Vec::new();
+            let expected_checkpoint = if let Some(path) = args.one("--checkpoint") {
+                let bytes = load(read, path, args.hex)?;
+                let signed = verify_checkpoint(&bytes, &keys);
+                checks.push(checkpoint_check(&signed));
+                match signed {
+                    Ok(signed) => Some(signed.checkpoint),
+                    Err(_) => return Ok(checks),
+                }
+            } else {
+                None
+            };
+            let bytes = load(read, file, args.hex)?;
+            let receipt = args
+                .one("--receipt")
+                .map(|p| load(read, p, args.hex))
+                .transpose()?;
+            match crate::report::verify_report(
+                &bytes,
+                &keys,
+                expected_checkpoint.as_ref(),
+                receipt.as_deref(),
+            ) {
+                Err(error) => checks.push(Check {
+                    name: error.predicate,
+                    scope: "recomputation",
+                    verdict: Verdict::Fail,
+                    detail: Vec::new(),
+                    reason: Some(error.detail),
+                }),
+                Ok(report) => {
+                    if expected_digest.is_some_and(|expected| expected != report.certificate_digest)
+                    {
+                        checks.push(Check {
+                            name: "recipient_certificate",
+                            scope: "recomputation",
+                            verdict: Verdict::Fail,
+                            detail: Vec::new(),
+                            reason: Some(
+                                "report uses another certificate than --expect requested".into(),
+                            ),
+                        });
+                        return Ok(checks);
+                    }
+                    checks.push(Check::pass(
+                        "report_bundle",
+                        "recomputation",
+                        vec![
+                            ("bundle_digest", h(&report.bundle_digest)),
+                            ("certificate_digest", h(&report.certificate_digest)),
+                            ("output_digest", h(&report.output_digest)),
+                            ("known_at", n(report.known_at)),
+                            ("effective_through", day(report.effective_through)),
+                            (
+                                "report_mode",
+                                s(if report.activity { "activity" } else { "stock" }),
+                            ),
+                            ("records", n(report.checked_records as u64)),
+                            ("rows", n(report.rows.len() as u64)),
+                            (
+                                "native_read_attestations",
+                                s("retained; not used as outsider proofs"),
+                            ),
+                        ],
+                    ));
+                    for row in &report.rows {
+                        checks.push(Check::pass(
+                            "trial_balance_row",
+                            "recomputation",
+                            vec![
+                                ("account", s(format!("{:032x}", row.account))),
+                                ("code", s(&row.code)),
+                                ("unit", n(u64::from(row.unit))),
+                                ("debits", s(row.debits.to_string())),
+                                ("credits", s(row.credits.to_string())),
+                                ("debits_pending", s(row.debits_pending.to_string())),
+                                ("credits_pending", s(row.credits_pending.to_string())),
+                            ],
+                        ));
+                    }
+                    checks.push(Check::pass(
+                        "canonical_report",
+                        "recomputation",
+                        vec![("output_digest", h(&report.output_digest))],
+                    ));
+                    if let Some(receipt) = report.receipt {
+                        checks.push(Check::pass(
+                            "production_receipt",
+                            "signature",
+                            vec![("signed_by", h(&receipt.signed_by))],
+                        ));
+                    }
+                }
+            }
+            Ok(checks)
+        }
         "ads" => {
             let dir = subject(args, "an ADS package directory")?;
             let keys = args.all("--key");
@@ -1717,6 +1840,33 @@ mod tests {
             &fs,
         );
         assert!(balance.stdout.contains("\"scope\":\"membership_only\""));
+    }
+
+    #[test]
+    fn report_expectation_is_a_digest_and_invalid_syntax_precedes_io() {
+        let key = key_hex();
+        // This digest is a small-order curve encoding. Digests are not keys:
+        // successful syntax admission must reach the nonexistent bundle file.
+        let digest = "00".repeat(32);
+        let missing = |_: &str| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "fixture"));
+        let args = [
+            "report", "missing", "--key", &key, "--expect", &digest, "--json",
+        ]
+        .map(str::to_string);
+        assert_eq!(run(&args, &missing).exit, EXIT_IO);
+        let no_read = |_: &str| -> std::io::Result<Vec<u8>> {
+            panic!("invalid report digest must refuse before any file read")
+        };
+        let malformed = [
+            "report",
+            "missing",
+            "--key",
+            &key,
+            "--expect",
+            "not-a-digest",
+        ]
+        .map(str::to_string);
+        assert_eq!(run(&malformed, &no_read).exit, EXIT_USAGE);
     }
 
     /// A tampered artifact, an untrusted key, or a question the proof does
