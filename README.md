@@ -235,6 +235,32 @@ in the on-demand `fa.subledger` MCP cluster, with launch authority enforced.
 This native reconciliation does not retain a report certificate or validate
 external summary-feed detail digests; those remain open work under `fa-03s`.
 
+### ADS export text versions
+
+The writer retains literal `aicpa_ads_gl_v2` bytes for representable ordinary
+text. Text containing pipes, backslashes, quotes or control characters selects
+`aicpa_ads_gl_v3`, named explicitly in the coordinate certificate. Both versions
+remain readable. This is this repository's ADS-shaped profile, not a claim about
+an external AICPA escaping standard.
+
+In v3 every table text field uses `\\` for a backslash, `\p` for a pipe,
+`\n` and `\r` for line endings, and `\u` followed by four lowercase hex digits
+for other Unicode control characters. Every other character remains literal.
+Noncanonical and unknown escapes are refused. In GL_Detail's two optional text
+columns, the whole field `\N` means absent; an empty field means present but
+empty. Literal `\N` text therefore starts with an escaped backslash. Coordinate
+names use `book_name_utf8_hex` and `base_unit_code_utf8_hex`, preserving UTF-8
+without depending on the small TOML parser's supported escape subset.
+
+The same text law applies to identifiers in the chart, GL and trial balance.
+The std-only offline verifier has its own decoder and continues to verify the
+same proven selection, accounts, units, amounts and trial-balance refold. It
+does not authenticate description/memo text or chart names; escaping does not
+raise that proof class. The executable regression names and their limited
+proof class are recorded in [the conformance matrix](docs/conformance/ads_saft_xbrl.md).
+Current-source execution status must be taken from the corresponding gate,
+not from this format description.
+
 ### Bank CSV downloads
 
 Bank downloads can use an explicit column, date and amount declaration:

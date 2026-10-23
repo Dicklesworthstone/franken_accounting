@@ -874,6 +874,13 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
                 reason: "Byte-identical FormatJournal and FA-INV-04 refold digest after fa-formats' ADS-shaped export and its own re-import (asserted in aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negative).".to_owned(),
             },
             ConformanceRow {
+                fixture: "aicpa_ads_gl_v3_exact_text".to_owned(),
+                expected: "round_trip_identity=true, refold_equal=true".to_owned(),
+                observed: "round_trip_identity=true, refold_equal=true".to_owned(),
+                divergence: "none".to_owned(),
+                reason: "Exact canonical text and FA-INV-04 refold survive escaped delimiters, Unicode controls and absent versus empty optional fields (asserted in ads_v3_preserves_delimiters_controls_unicode_and_empty_optional_text); not an external AICPA escaping standard.".to_owned(),
+            },
+            ConformanceRow {
                 fixture: "oecd_saft_v2_acme_fy2026_p03".to_owned(),
                 expected: "round_trip_identity=true, refold_equal=true".to_owned(),
                 observed: "round_trip_identity=true, refold_equal=true".to_owned(),

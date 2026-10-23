@@ -17,7 +17,10 @@ fn socket() -> (PathBuf, UnixListener) {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("fa-client-{}-{n}", std::process::id()));
+        // RCH's retained TMPDIR can exceed sockaddr_un's path limit before
+        // this suffix is added. Only these Unix socket fixtures need a short
+        // root; the request/response and watchdog assertions stay unchanged.
+        let dir = PathBuf::from("/tmp").join(format!("fa-client-{}-{n}", std::process::id()));
         if std::fs::create_dir(&dir).is_ok() {
             let path = dir.join("fad.sock");
             let listener = UnixListener::bind(&path).expect("listen");

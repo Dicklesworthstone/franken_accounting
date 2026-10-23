@@ -530,12 +530,7 @@ mod tests {
         // fourteen omitted its registered `foundations` fingerprint.
         let names: Vec<&str> = epochs
             .iter()
-            .map(|epoch| {
-                epoch
-                    .get("name")
-                    .and_then(Json::as_str)
-                    .expect("epoch name")
-            })
+            .map(|epoch| epoch.get("name").and_then(Json::as_str).expect("epoch name"))
             .collect();
         assert_eq!(
             names,

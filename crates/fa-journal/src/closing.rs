@@ -843,7 +843,7 @@ fn observe<V: Vfs + Clone>(
                 .is_effective_at(end);
         if inactive && !cell.total.is_zero() {
             return Ok(Err(unsupported(format!(
-                "nominal account {} has a nonzero fiscal-year carrying balance but is not a posting leaf effective at fiscal-year end",
+                "nominal account {} has a nonzero fiscal-year balance at carrying value but is not a posting leaf effective at fiscal-year end",
                 row.code,
             ))));
         }

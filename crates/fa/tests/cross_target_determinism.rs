@@ -546,7 +546,8 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     assert_eq!(book_run_1.is_cert_digest, book_run_2.is_cert_digest);
     assert_eq!(book_run_1.bundle_digest, book_run_2.bundle_digest);
 
-    // Pinned cross-target digests (identical on x86_64 and aarch64).
+    // Expected cross-target digests; qualification requires executing this
+    // corpus on both supported architectures, not only the current host.
     assert_eq!(
         amount_rounding,
         "0fc41aafedf010f2eff7bbe9d1a9e090347f6ca459364e84804faa55118eaedc",
@@ -622,6 +623,22 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // records, which the generation root each certificate binds and the
     // bundle's checkpoint cover. The fold and every report-byte pin are
     // unchanged.
+    // fa-0bi (83efdee3) and fa-03s (0867169a) then add the recurring control
+    // kind (18) to entry_classes and labels RecurringSchedule (54) and
+    // ExternalSubledgerBatch (55) to symbols. Relative to the previous pin
+    // commit 44ba657ec these are the only changes to the four bound report
+    // registries and genesis symbols; account_types, units and the actual
+    // foundations input (franken-stack.lock) are byte-identical. The unrelated
+    // foundation_dependencies conformance-test row is not a report input.
+    // The new pins below were measured together on exact e33994e0, x86_64,
+    // after both complete fixture executions agreed. Arithmetic, folds and
+    // report bytes remain pinned unchanged, as does the planted encoding
+    // negative. This does not supply the still-unrun aarch64 qualification.
+    // Prior tb/bs/is certificate and bundle pins (44ba657ec), retained here:
+    // fbe59166052682072c9e58222e958e6a621dffc7d2356342108d19eb103e67ad
+    // cf2727ad7174d97f6f4f2ea9de10d2281297b555a1065810ce4c9fde14c7839b
+    // 0ad296674b33c56ee993dc03cd380fd82b089919c07641eb7b9d63bbc0290969
+    // d2d4b608ae07aff1d772c748c034cf7d62d84f0beafa3cd4198edc8c4dd55e43
     eprintln!(
         "cross-target book digests on {}: fold {} tb_bytes {} tb_cert {} bs_bytes {} bs_cert {} is_bytes {} is_cert {} bundle {}",
         std::env::consts::ARCH,
@@ -648,7 +665,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "fbe59166052682072c9e58222e958e6a621dffc7d2356342108d19eb103e67ad",
+        "261fac98b23103fe450443e0d38b6673fbcdac12ce304432733d32754132b622",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -660,7 +677,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "cf2727ad7174d97f6f4f2ea9de10d2281297b555a1065810ce4c9fde14c7839b",
+        "45d27ea0598a7e3943a90589674d8fea420a2df94473756dbf9f204290d75b20",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -672,13 +689,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "0ad296674b33c56ee993dc03cd380fd82b089919c07641eb7b9d63bbc0290969",
+        "f54864c6ce9e387e5831ee12df35ab990d9b6d0b4314a5b976d81f6a6cd69954",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "d2d4b608ae07aff1d772c748c034cf7d62d84f0beafa3cd4198edc8c4dd55e43",
+        "dce41781c311c5dc8533ba5b5de91a6a4d481b2d854b6502f332b83498123134",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );
