@@ -9492,6 +9492,29 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     run2(&["explain", "entry", &fee_vid]);
     run2(&["explain", "lineage", &fee_vid]);
     run2(&["document", "attach", &fee_vid, "--evidence", &bank_oid]);
+    // fa-lzrn: a PDF's text layer as a derived document.
+    let pdf_stream = "BT /F1 12 Tf (EVENTS INVOICE) Tj ET";
+    let pdf_path = write(
+        &dir,
+        "events.pdf",
+        &format!(
+            "%PDF-1.7\n1 0 obj\n<< /Length {} >>\nstream\n{pdf_stream}\nendstream\nendobj\n%%EOF\n",
+            pdf_stream.len()
+        ),
+    );
+    let (_, added_pdf) = run2(&[
+        "document",
+        "add",
+        &pdf_path,
+        "--kind",
+        "Invoice",
+        "--mime",
+        "application/pdf",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let pdf_oid = field(&added_pdf, "oid").unwrap_or_default().to_string();
+    run2(&["document", "extract", &pdf_oid]);
     run2(&["explain", "evidence", &fee_vid]);
     run2(&["explain", "period", "FY2026-P03"]);
     run2(&["explain", "refusal", "FA-REF-001"]);
