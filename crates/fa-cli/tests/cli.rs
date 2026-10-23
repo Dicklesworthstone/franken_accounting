@@ -7019,7 +7019,7 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     let chart = write(
         &dir,
         "chart.json",
-        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"}]}"#,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivable","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"},{"code":"6200","name":"Rent","type":"Expense","unit":"USD"}]}"#,
     );
     assert_eq!(run(&["chart", "import", &chart]).0, 0);
     assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
@@ -7255,7 +7255,7 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     let (code, out) = post("untagged", "2026-03-25", "{}");
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-005"), "{out}");
-    assert!(out.contains("one of: CC") && !out.contains("CC10"), "{out}");
+    assert!(out.contains("fa dimension list cost_center"), "{out}");
     assert_eq!(head(&run), before);
     let (code, out) = post("required-tagged", "2026-03-25", r#"{"cost_center":"CC"}"#);
     assert_eq!(code, 0, "{out}");
@@ -7273,16 +7273,74 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
         "2026-03-25",
     ]);
     assert_eq!(code, 0, "{out}");
+    // A Reclassification's destination is the preparer's: moving an
+    // untagged rent amount onto 6100 is refused like any untagged leg there.
+    let rent = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-25","idempotency_key":"rent","legs":[{"side":"debit","account":"6200","amount":"30.00 USD"},{"side":"credit","account":"1000","amount":"30.00 USD"}]}"#,
+    );
+    let (code, out) = run(&["post", "--intent", &rent, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    let rent_vid = text(&doc(&out), "vid").to_string();
+    let before = head(&run);
+    let (code, out) = run(&[
+        "reclass",
+        &rent_vid,
+        "--from",
+        "6200",
+        "--to",
+        "6100",
+        "--amount",
+        "10.00 USD",
+        "--reason",
+        "WrongAccount",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-005"), "{out}");
+    assert_eq!(head(&run), before);
     // Removed, an untagged leg is admitted again.
     let (code, out) = run(&["dimension", "require", "cost_center", "6100", "--remove"]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(doc(&out).get("required"), Some(&Json::Bool(false)));
     let (code, out) = post("untagged-after", "2026-03-25", "{}");
     assert_eq!(code, 0, "{out}");
+    // An applying leg carries its open item's values as dictated: a receipt
+    // dated after P-7's window still settles the P-7 invoice, carrying P-7.
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "project",
+        "P-7",
+        "--name",
+        "Warehouse fit-out",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-20",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let invoice = write(
+        &dir,
+        "invoice.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"invoice","legs":[{"side":"debit","account":"1200","amount":"100.00 USD","dimensions":{"project":"P-7"}},{"side":"credit","account":"4000","amount":"100.00 USD"}]}"#,
+    );
+    let (code, out) = run(&["post", "--intent", &invoice, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    let invoice_vid = text(&doc(&out), "vid").to_string();
+    let receipt = write(
+        &dir,
+        "receipt.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-25","idempotency_key":"receipt","legs":[{{"side":"debit","account":"1000","amount":"100.00 USD"}},{{"side":"credit","account":"1200","amount":"100.00 USD","dimensions":{{"project":"P-7"}},"settles":[{{"entry":"{invoice_vid}","ordinal":0,"amount":"100.00 USD"}}]}}]}}"#
+        ),
+    );
+    let (code, out) = run(&["post", "--intent", &receipt, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
     // Planted: an account the chart lacks, and a dimension with no value.
     let (code, out) = run(&["dimension", "require", "cost_center", "9999"]);
     assert_eq!(code, 3, "{out}");
-    let (code, out) = run(&["dimension", "require", "project", "6100"]);
+    let (code, out) = run(&["dimension", "require", "department", "6100"]);
     assert_eq!(code, 2, "{out}");
     Ok(())
 }

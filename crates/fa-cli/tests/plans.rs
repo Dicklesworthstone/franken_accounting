@@ -1742,8 +1742,27 @@ fn dry_run_warnings_name_what_journal_entry_testing_would_flag() {
     );
     assert!(warning_kinds(&f.plan(&dated("beyond", "2026-04-10"))).is_empty());
     // A reversed entry is no longer a duplicate.
-    ok(&f.book, &["reverse", &first_vid, "--reason", "Duplicate"]);
+    let reversal = ok(&f.book, &["reverse", &first_vid, "--reason", "Duplicate"]);
     assert!(warning_kinds(&f.plan(&f.intent("again", "125.37"))).is_empty());
+    // Reversing that reversal reinstates the first entry, and the warning.
+    ok(
+        &f.book,
+        &[
+            "reverse",
+            text(&reversal, "vid"),
+            "--reason",
+            "DataEntryError",
+        ],
+    );
+    let reinstated = f.plan(&f.intent("again", "125.37"));
+    assert_eq!(warning_kinds(&reinstated), ["PossibleDuplicate"]);
+    assert_eq!(
+        get(
+            &get(&reinstated, "warnings").as_arr().unwrap()[0],
+            "entries"
+        ),
+        &Json::Arr(vec![Json::Str(first_vid.clone())])
+    );
 
     // CutoffDrift: the document date lies outside the entry's period.
     let documented = |key: &str, date: &str| {

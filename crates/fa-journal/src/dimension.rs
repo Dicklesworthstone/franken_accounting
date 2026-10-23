@@ -854,25 +854,31 @@ pub async fn record_dimension_requirement<V: Vfs + Clone>(
     }
 }
 
+/// Whether dimension `id` is analytic and closes with its account: a
+/// registered kind other than the fund. A year-end close or an FX
+/// revaluation transfers an account's net per unit and entity and carries no
+/// analytic value; fund balance per fund (plan §7.5) has no closing
+/// treatment yet, so a fund-tagged nominal leg is still refused.
+#[must_use]
+pub fn closes_with_account(id: u32) -> bool {
+    dimension_kind_of(id).is_some_and(|kind| kind.code != "fund")
+}
+
 /// Whether an entry of `class` has legs a preparer chooses, so dimension
 /// requirements and value effectivity bind them; a class whose legs the law
-/// dictates (an exact negation, a hold's posted sub-vector, a
-/// reclassification's target buckets, a close, a revaluation, an
-/// elimination or a legacy import) carries its values as dictated, so a
-/// requirement or a closed window never blocks reversing or closing what
-/// was posted before.
+/// dictates (an exact negation, a hold's posted sub-vector, a close, a
+/// revaluation, an elimination or a legacy import) carries its values as
+/// dictated, so a requirement or a closed window never blocks reversing or
+/// closing what was posted before. A Reclassification's destination legs
+/// are the preparer's, so it is judged whole: an outgoing leg that would
+/// carry a value past its window is refused, and the target is reversed and
+/// replaced instead.
 #[must_use]
 pub fn preparer_chooses_legs(class: fa_model::EntryClass) -> bool {
     use fa_model::EntryClass as C;
     !matches!(
         class,
-        C::REVERSAL
-            | C::RESOLUTION
-            | C::RECLASSIFICATION
-            | C::CLOSING
-            | C::REVALUATION
-            | C::ELIMINATION
-            | C::MIGRATION
+        C::REVERSAL | C::RESOLUTION | C::CLOSING | C::REVALUATION | C::ELIMINATION | C::MIGRATION
     )
 }
 
@@ -895,57 +901,39 @@ pub(crate) fn required_dimensions(
 }
 
 /// Refuse leg `i` when its account requires a dimension it names no value
-/// of (FA-REF-005), naming the values effective on `effective_date`. The
-/// values are read only on this refusal path.
-pub(crate) fn admit_required_dimensions<V: Vfs + Clone>(
-    db: &Database<V>,
+/// of (FA-REF-005). The refusal names the command that lists the values
+/// effective on `effective_date` rather than reading them: inside a posting
+/// transaction only its witnessed point reads observe the book, and the
+/// list is a whole-book read the posting capability may not hold.
+pub(crate) fn admit_required_dimensions(
     leg: &LegPayload,
     i: usize,
     account_code: &str,
     effective_date: DateDay,
     required: &BTreeMap<VId, Vec<DimensionKind>>,
-) -> Result<Option<Refusal>, KernelError> {
-    let Some(kinds) = required.get(&leg.account_ref) else {
-        return Ok(None);
-    };
-    for kind in kinds {
-        if leg.dimension_set.iter().any(|(id, _)| *id == kind.id) {
-            continue;
-        }
-        let allowed: Vec<String> = dimension_values_at(db, db.frontier()?)?
-            .into_iter()
-            .filter(|row| row.dimension_id == kind.id && row.spec.is_effective_at(effective_date))
-            .map(|row| row.spec.code)
-            .collect();
-        return Ok(Some(
-            Refusal::new(
-                code::DIMENSION_MISSING,
-                exit::REFUSAL,
-                format!(
-                    "leg {i} posts to `{account_code}`, which requires a {} value; the leg names none",
-                    kind.code
-                ),
-                "plan §4.3 (dimension_requirements: the kernel rejects a leg missing a required dimension with the list of allowed values)",
-                if allowed.is_empty() {
-                    format!(
-                        "no {0} value is effective on {1}; create one (fa dimension add {0} <code> --name <name>) or date the entry inside a value's window",
-                        kind.code,
-                        effective_date.render()
-                    )
-                } else {
-                    format!(
-                        "add \"dimensions\": {{\"{}\": \"<code>\"}} to leg {i}, naming one of: {}",
-                        kind.code,
-                        allowed.join(", ")
-                    )
-                },
-            )
-            .at("leg", i)
-            .at("account", account_code.to_string())
-            .or_field_change(format!("legs[{i}].dimensions.{}", kind.code), allowed),
-        ));
-    }
-    Ok(None)
+) -> Option<Refusal> {
+    let kinds = required.get(&leg.account_ref)?;
+    let kind = kinds
+        .iter()
+        .find(|kind| !leg.dimension_set.iter().any(|(id, _)| *id == kind.id))?;
+    Some(
+        Refusal::new(
+            code::DIMENSION_MISSING,
+            exit::REFUSAL,
+            format!(
+                "leg {i} posts to `{account_code}`, which requires a {} value; the leg names none",
+                kind.code
+            ),
+            "plan §4.3 (dimension_requirements: a leg on a requiring account names a value of the dimension)",
+            format!(
+                "add \"dimensions\": {{\"{0}\": \"<code>\"}} to leg {i} with a {0} value effective on {1} (fa dimension list {0} shows each value's window)",
+                kind.code,
+                effective_date.render()
+            ),
+        )
+        .at("leg", i)
+        .at("account", account_code.to_string()),
+    )
 }
 
 #[cfg(test)]

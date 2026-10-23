@@ -61,3 +61,17 @@ appendix_a = "Account roles: what an account is for (plan §11.9, bead fa-kxc4)"
 code_type = "fa-journal::account_role::AccountRoleSpec; SchemaChange subkind 16"
 rationale = "One immutable canonical version-1 body (fa:account-role:v1) names an account, a role registered in registries/account_roles.toml and whether the control assigns or removes it. The control changes no account row and no chart projection; chart replay decodes and skips it. The roles held at a recorded prefix are the fold of these controls in recorded order, the latest control for an (account, role) deciding, so no mutable role table exists. Assignment requires current whole-book SchemaChange authority, a posting leaf and an account type the role admits. Lantern selects procedure populations from this fold."
 tracking_bead = "fa-kxc4"
+
+[[decision]]
+field = "SchemaChange.kind=17"
+appendix_a = "Dimension / DimensionValue (plan §4.1, bead fa-ficc)"
+code_type = "fa-journal::dimension::DimensionValueSpec; SchemaChange subkind 17"
+rationale = "One immutable canonical version-1 body (fa:dimension-value:v1) declares a value of a registered dimension kind (fa_model::DIMENSION_KINDS, fixed dimension ids 2..=9): kind, code, name, optional parent within the same dimension and valid time [valid_from, valid_to). The same transaction materializes its DimensionValue vertex carrying that body (and the kind's Dimension vertex on its first value) with a CHILD_OF edge to its parent, as party values are materialized. It changes no account row; chart replay decodes and skips it, and fa-verify's fold skips it. The posting kernel judges a tagged value by one witnessed point read of its vertex."
+tracking_bead = "fa-ficc"
+
+[[decision]]
+field = "SchemaChange.kind=18"
+appendix_a = "Account.dimension_requirements (plan §4.3, bead fa-ficc)"
+code_type = "fa-journal::dimension::DimensionRequirementSpec; SchemaChange subkind 18"
+rationale = "One immutable canonical version-1 body (fa:dimension-requirement:v1) names a registered dimension, a posting leaf and whether the leaf now requires a value of it. The same transaction compare-and-sets the dimension's Dimension vertex payload (fa:dimension-required-accounts:v1, strictly ascending account ids), a projection rebuildable from these controls in recorded order. It changes no account row; chart replay decodes and skips it. Posting reads each registered dimension's vertex once per entry; requirements and value windows bind only legs a preparer chooses."
+tracking_bead = "fa-ficc"

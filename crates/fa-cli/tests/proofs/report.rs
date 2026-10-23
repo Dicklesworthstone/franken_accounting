@@ -467,3 +467,55 @@ fn certified_income_statement_exports_a_recipient_bound_offline_command() {
     assert!(refused.stdout.contains("statement_units"));
     assert!(!refused.stdout.contains("\"verdict\":\"verified\""));
 }
+
+/// fa-ficc: dimension values (SchemaChange kind 17) and requirements (18)
+/// change no account or period. A statement certified before them keeps a
+/// valid status, and the independent fold recomputes a certified report
+/// whose journal holds them.
+#[test]
+fn dimension_controls_keep_certificate_status_and_offline_recomputation() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    ok(
+        &f.book,
+        &["dimension", "add", "cost_center", "CC10", "--name", "Ops"],
+    );
+    ok(&f.book, &["dimension", "require", "cost_center", "4000"]);
+    ok(
+        &f.book,
+        &["dimension", "require", "cost_center", "4000", "--remove"],
+    );
+    f.post("dimension-sale", "2026-03-10", "12.34", &evidence);
+    let known_at = f.head();
+    let (statement, _) = certify_statement(&f, "income-statement", known_at);
+    let (locator, certificate) = certify(&f, known_at);
+    // Dimension controls recorded after both certifications.
+    ok(
+        &f.book,
+        &["dimension", "add", "cost_center", "CC20", "--name", "Sales"],
+    );
+    ok(&f.book, &["dimension", "require", "cost_center", "4000"]);
+    let status = ok(&f.book, &["certificate", "status", &statement]);
+    assert_eq!(text(&status, "event"), "certificate_status");
+    let state = f.checkpoint();
+    let produced = ok(
+        &f.book,
+        &[
+            "bundle",
+            "produce",
+            "--certificate",
+            &locator,
+            "--state",
+            text(&state, "oid"),
+        ],
+    );
+    let key: [u8; 32] = unhex(text(&produced, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let bundle = bytes(&produced);
+    let receipt = unhex(text(&produced, "receipt"));
+    let verified = fa_verify::report::verify_report(&bundle, &[key], None, Some(&receipt))
+        .expect("the independent fold applies dimension controls as chart no-ops");
+    assert_eq!(verified.output, certificate.output);
+    assert_eq!(verified.rows.len(), 2);
+}

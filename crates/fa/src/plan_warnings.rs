@@ -172,9 +172,22 @@ fn plan_period<V: Vfs + Clone>(
         .map_err(BookError::from)
 }
 
-/// Whether `vid` is still in force at `at`: no recorded entry reverses or
-/// replaces it.
+/// Whether `vid` is still in force at `at`: no standing Reversal reverses
+/// it. A reversed reversal restores its target, as the kernel judges it; a
+/// Replacement's target is reversed by the pair's Reversal.
 fn in_force<V: Vfs + Clone>(db: &Database<V>, vid: VId, at: CommitSeq) -> Result<bool, BookError> {
+    in_force_on(db, vid, at, &mut BTreeSet::new())
+}
+
+fn in_force_on<V: Vfs + Clone>(
+    db: &Database<V>,
+    vid: VId,
+    at: CommitSeq,
+    path: &mut BTreeSet<VId>,
+) -> Result<bool, BookError> {
+    if !path.insert(vid) {
+        return Err(corrupt("a supersession lineage cycles"));
+    }
     for superseder in db
         .in_neighbours_at(vid, relation::SUPERSEDES, at)
         .map_err(KernelError::from)?
@@ -182,16 +195,18 @@ fn in_force<V: Vfs + Clone>(db: &Database<V>, vid: VId, at: CommitSeq) -> Result
         let Some((entry, _)) = fa_journal::post::read_entry_at(db, superseder, at)? else {
             continue;
         };
-        if entry.proposal.supersession.iter().any(|link| {
-            link.target.vid == vid
-                && matches!(
-                    link.kind,
-                    SupersessionKind::Reverses | SupersessionKind::Replaces
-                )
-        }) {
+        let reverses = entry.proposal.class == EntryClass::REVERSAL
+            && entry
+                .proposal
+                .supersession
+                .iter()
+                .any(|link| link.target.vid == vid && link.kind == SupersessionKind::Reverses);
+        if reverses && in_force_on(db, superseder, at, path)? {
+            path.remove(&vid);
             return Ok(false);
         }
     }
+    path.remove(&vid);
     Ok(true)
 }
 

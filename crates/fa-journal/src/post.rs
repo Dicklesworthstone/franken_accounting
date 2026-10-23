@@ -1516,23 +1516,28 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
                 }
             }
         }
+        // An applying leg carries its open item's values as dictated
+        // (they must match the target's), so like a dictated class it is not
+        // judged against windows or requirements; each value must exist.
+        let chosen = chooses && leg.settles.is_empty();
         if let Some(refusal) = crate::dimension::admit_leg_dimensions(
             leg,
             i,
             effective_date,
-            chooses,
+            chosen,
             &mut read_vertex,
         )? {
             return Ok(Err(refusal));
         }
-        if let Some(refusal) = crate::dimension::admit_required_dimensions(
-            db,
-            leg,
-            i,
-            &account.code,
-            effective_date,
-            &required,
-        )? {
+        if chosen
+            && let Some(refusal) = crate::dimension::admit_required_dimensions(
+                leg,
+                i,
+                &account.code,
+                effective_date,
+                &required,
+            )
+        {
             return Ok(Err(refusal));
         }
         accounts.push(account);
