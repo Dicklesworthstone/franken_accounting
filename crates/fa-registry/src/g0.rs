@@ -2689,6 +2689,7 @@ impl Formats {
             "ledger_cli_journal",
             "tigerbeetle_corpus_v1",
             "aicpa_ads_gl_v2",
+            "aicpa_ads_gl_v3",
             "oecd_saft_v2",
             "xbrl_gl_instance_v1",
             "csv_gl_v1",
@@ -2790,7 +2791,7 @@ mod tests {
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");
-        assert_eq!(formats.rows.len(), 23);
+        assert_eq!(formats.rows.len(), 24);
     }
 
     #[test]

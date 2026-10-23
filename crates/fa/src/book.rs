@@ -3933,8 +3933,9 @@ impl Book {
     /// Replays the certificate under current whole-book read/produce authority,
     /// then exports every payload in a signed checkpoint covering its prefix.
     /// Returns `None` if the selected recorded checkpoint is unavailable.
-    /// Statement verification requires the recipient's complete unit-ID list;
-    /// the checkpoint does not authenticate genesis unit-table membership.
+    /// Native statements carry authenticated registry inputs when the exact
+    /// closure is available. Legacy bundles retain recipient-supplied unit
+    /// premises and require the complete unit-ID list for verification.
     pub fn produce_report_bundle(
         &mut self,
         principal: VId,

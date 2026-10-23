@@ -1,4 +1,4 @@
-//! Portable native trial balances and statements over a complete checkpoint.
+//! Portable native trial balances and statements over a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
 //! independent verifier derives selectors from every record, reconstructs the
@@ -26,7 +26,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a sequence-selected native trial-balance or statement certificate and a checkpoint at or after its known-at; preserve the complete historical schema and migration bodies",
+        "use a sequence-selected native v1 trial-balance or v4 statement certificate and a checkpoint at or after its known-at; preserve the complete historical schema and migration bodies",
     )
 }
 
@@ -52,8 +52,10 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
         .map(|bodies| needed.into_iter().zip(bodies).collect()))
 }
 
-/// Package an already replayed, sequence-selected native trial-balance or statement
-/// certificate. The facade performs current authority and retained-history
+/// Package an already replayed, sequence-selected native trial balance or statement.
+/// Legacy v1 statements require the recipient to supply the complete unit-ID
+/// universe; use `assemble_with_registries` for an authenticated registry closure.
+/// The facade performs current authority and retained-history
 /// checks first. The returned bytes are deterministic, and their digest can
 /// be signed by the existing detached `ProductionReceipt` format.
 ///
@@ -68,11 +70,63 @@ pub fn assemble(
     known_at: CommitSeq,
     bodies: &BTreeMap<VId, RunBody>,
 ) -> Outcome<Bundle> {
-    if !certificate.starts_with(b"fa:report-certificate:v1")
-        && !certificate.starts_with(b"fa:report-certificate:v4")
+    assemble_inner(journal, checkpoint, certificate, known_at, bodies, &[])
+}
+
+/// Package a sequence-selected native statement with the exact canonical
+/// registry documents bound by its source certificate. The facade verifies
+/// their closure and the book's complete unit table before calling this API.
+/// V2 appends a list of (registry name, canonical registry document) frames;
+/// existing v1 trial-balance bytes remain unchanged.
+pub fn assemble_with_registries(
+    journal: &Journal,
+    checkpoint: &StoredCheckpoint,
+    certificate: &[u8],
+    known_at: CommitSeq,
+    bodies: &BTreeMap<VId, RunBody>,
+    registries: &[(String, Vec<u8>)],
+) -> Outcome<Bundle> {
+    if !certificate.starts_with(b"fa:report-certificate:v4")
+        || registries.iter().map(|(name, _)| name.as_str()).ne([
+            "account_types",
+            "entry_classes",
+            "units",
+            "foundations",
+        ])
+        || registries
+            .iter()
+            .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "offline report bundles require a v1 native trial-balance or v4 native statement certificate",
+            "native statements require all four canonical registry documents in closure order",
+        )));
+    }
+    assemble_inner(
+        journal,
+        checkpoint,
+        certificate,
+        known_at,
+        bodies,
+        registries,
+    )
+}
+
+fn assemble_inner(
+    journal: &Journal,
+    checkpoint: &StoredCheckpoint,
+    certificate: &[u8],
+    known_at: CommitSeq,
+    bodies: &BTreeMap<VId, RunBody>,
+    registries: &[(String, Vec<u8>)],
+) -> Outcome<Bundle> {
+    let major = if registries.is_empty() { 1 } else { 2 };
+    if !(major == 1
+        && (certificate.starts_with(b"fa:report-certificate:v1")
+            || certificate.starts_with(b"fa:report-certificate:v4"))
+        || major == 2 && certificate.starts_with(b"fa:report-certificate:v4"))
+    {
+        return Ok(Err(refused(
+            "offline report bundles require a native v1 trial balance or v4 statement",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -85,6 +139,15 @@ pub fn assemble(
     let mut budget = 4usize + REPORT_BUNDLE_FORMAT.len() + 4 + 4 * 3 + 4 * 2;
     for len in [certificate.len(), checkpoint.bytes.len(), prefix.len()] {
         budget = budget.saturating_add(len);
+    }
+    if major == 2 {
+        budget = budget.saturating_add(4);
+        for (name, canonical) in registries {
+            budget = budget
+                .saturating_add(8)
+                .saturating_add(name.len())
+                .saturating_add(canonical.len());
+        }
     }
     let mut ordered = Vec::new();
     let mut supplied = BTreeSet::new();
@@ -130,7 +193,7 @@ pub fn assemble(
     }
     let mut w = Writer::with_capacity(budget);
     w.bytes(REPORT_BUNDLE_FORMAT)
-        .u16(1)
+        .u16(major)
         .u16(0)
         .bytes(certificate)
         .bytes(&checkpoint.bytes)
@@ -142,6 +205,11 @@ pub fn assemble(
         .list(&ordered, |w, (index, bytes)| {
             w.u64(*index).bytes(bytes);
         });
+    if major == 2 {
+        w.list(registries, |w, (name, canonical)| {
+            w.str(name).bytes(canonical);
+        });
+    }
     let bytes = w.finish().map_err(fa_model::EntryError::from)?;
     if bytes.len() > MAX_REPORT_BUNDLE_BYTES {
         return Ok(Err(refused("the complete report closure exceeds 64 MiB")));

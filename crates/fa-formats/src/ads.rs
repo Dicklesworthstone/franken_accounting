@@ -14,6 +14,7 @@ use crate::{
 };
 
 const FMT: &str = "aicpa_ads_gl_v2";
+const ESCAPED_FMT: &str = "aicpa_ads_gl_v3";
 
 /// An AICPA Audit Data Standards General Ledger export package.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +31,29 @@ pub struct AdsPackage {
 
 /// Write a [`FormatJournal`] as an AICPA Audit Data Standards [`AdsPackage`].
 pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatError> {
+    // v2 has literal fields. Keep its existing bytes only when every field
+    // is representable; lossless escaped text is a distinct durable version.
+    let unsafe_text = |s: &str| {
+        s.chars()
+            .any(|c| matches!(c, '|' | '\\' | '"') || c.is_control())
+    };
+    let escaped = unsafe_text(&journal.coordinate.book_name)
+        || unsafe_text(&journal.coordinate.base_unit_code)
+        || journal.accounts.iter().any(|a| unsafe_text(&a.code) || unsafe_text(&a.name))
+        || journal.entries.iter().any(|e| {
+            unsafe_text(&e.entry_id)
+                || unsafe_text(&e.description)
+                || e.migrated_from.as_deref().is_some_and(|s| s.is_empty() || unsafe_text(s))
+                || e.legs.iter().any(|l| {
+                    unsafe_text(&l.account_code)
+                        || unsafe_text(&l.unit_code)
+                        || l.memo.as_deref().is_some_and(|s| s.is_empty() || unsafe_text(s))
+                })
+        })
+        || journal.assertions.iter().any(|a| {
+            unsafe_text(&a.account_code) || unsafe_text(&a.unit_code)
+        });
+    let text = |s: &str| encode_text(s, escaped);
     let mut chart = String::from("GL_Account_Number|GL_Account_Name|Account_Type|Normal_Balance\n");
     for acct in &journal.accounts {
         let side_str = match acct.normal_side {
@@ -38,8 +62,8 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
         };
         chart.push_str(&format!(
             "{}|{}|{}|{}\n",
-            acct.code,
-            sanitize_pipe(&acct.name),
+            text(&acct.code),
+            text(&acct.name),
             format_account_type(acct.account_type),
             side_str
         ));
@@ -50,7 +74,7 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
     );
     for entry in &journal.entries {
         let date_str = format_date_iso(entry.effective_date);
-        let mig = entry.migrated_from.as_deref().unwrap_or("");
+        let mig = optional_text(entry.migrated_from.as_deref(), escaped);
         for (idx, leg) in entry.legs.iter().enumerate() {
             let line_no = idx + 1;
             let dc = match leg.side {
@@ -58,22 +82,22 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
                 Side::Credit => "C",
             };
             let amt_str = format_exact_decimal(leg.amount.mantissa, leg.unit_scale);
-            let memo = leg.memo.as_deref().unwrap_or("");
+            let memo = optional_text(leg.memo.as_deref(), escaped);
             gl.push_str(&format!(
                 "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
-                sanitize_pipe(&entry.entry_id),
+                text(&entry.entry_id),
                 line_no,
                 date_str,
                 entry.recorded_seq,
                 entry.class.0,
-                leg.account_code,
+                text(&leg.account_code),
                 dc,
                 amt_str,
-                leg.unit_code,
+                text(&leg.unit_code),
                 leg.unit_scale,
-                sanitize_pipe(&entry.description),
-                sanitize_pipe(mig),
-                sanitize_pipe(memo),
+                text(&entry.description),
+                mig,
+                memo,
             ));
         }
     }
@@ -101,11 +125,11 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
             let amt_str = format_exact_decimal(asrt.amount.mantissa, asrt.unit_scale);
             tb.push_str(&format!(
                 "{}|{}|{}|{}|{}|{}\n",
-                asrt.account_code,
+                text(&asrt.account_code),
                 format_date_iso(asrt.as_of),
                 dc,
                 amt_str,
-                asrt.unit_code,
+                text(&asrt.unit_code),
                 asrt.unit_scale
             ));
         }
@@ -120,20 +144,28 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
             let amt_str = format_exact_decimal(mag, scale);
             tb.push_str(&format!(
                 "{}|{}|{}|{}|{}|{}\n",
-                acct_code,
+                text(acct_code),
                 format_date_iso(journal.coordinate.effective_through),
                 dc,
                 amt_str,
-                unit_code,
+                text(unit_code),
                 scale
             ));
         }
     }
 
+    // Hex metadata is ordinary TOML ASCII and preserves *all* UTF-8 names,
+    // including control characters the registry's small TOML reader omits.
+    let (format, book_key, unit_key, book_name, unit_code) = if escaped {
+        (ESCAPED_FMT, "book_name_utf8_hex", "base_unit_code_utf8_hex",
+         hex_encode(journal.coordinate.book_name.as_bytes()),
+         hex_encode(journal.coordinate.base_unit_code.as_bytes()))
+    } else {
+        (FMT, "book_name", "base_unit_code", journal.coordinate.book_name.clone(),
+         journal.coordinate.base_unit_code.clone())
+    };
     let cert = format!(
-        "schema_version = 1\nformat = \"aicpa_ads_gl_v2\"\nbook_name = \"{}\"\nbase_unit_code = \"{}\"\nbase_unit_scale = {}\neffective_through = \"{}\"\nknown_at_seq = {}\nentry_count = {}\ncontent_digest = \"{}\"\ncertificate_digest = \"{}\"\n",
-        journal.coordinate.book_name,
-        journal.coordinate.base_unit_code,
+        "schema_version = 1\nformat = \"{format}\"\n{book_key} = \"{book_name}\"\n{unit_key} = \"{unit_code}\"\nbase_unit_scale = {}\neffective_through = \"{}\"\nknown_at_seq = {}\nentry_count = {}\ncontent_digest = \"{}\"\ncertificate_digest = \"{}\"\n",
         journal.coordinate.base_unit_scale,
         format_date_iso(journal.coordinate.effective_through),
         journal.coordinate.known_at_seq,
@@ -162,24 +194,31 @@ pub fn read_ads_package(
             format: FMT,
             detail: format!("certificate_toml: {e}"),
         })?;
+    let escaped = match cert_doc.root.get("format").and_then(|v| v.as_str()) {
+        Some(FMT) => false,
+        Some(ESCAPED_FMT) => true,
+        _ => return Err(text_error("unknown or absent ADS format version")),
+    };
     let book_name = cert_doc
         .root
-        .get("book_name")
+        .get(if escaped { "book_name_utf8_hex" } else { "book_name" })
         .and_then(|v| v.as_str())
         .ok_or_else(|| FormatError::Parse {
             format: FMT,
             detail: "missing book_name in ADS certificate".to_owned(),
         })?
         .to_owned();
+    let book_name = if escaped { decode_hex_text(&book_name)? } else { book_name };
     let base_unit_code = cert_doc
         .root
-        .get("base_unit_code")
+        .get(if escaped { "base_unit_code_utf8_hex" } else { "base_unit_code" })
         .and_then(|v| v.as_str())
         .ok_or_else(|| FormatError::Parse {
             format: FMT,
             detail: "missing base_unit_code in ADS certificate".to_owned(),
         })?
         .to_owned();
+    let base_unit_code = if escaped { decode_hex_text(&base_unit_code)? } else { base_unit_code };
     let base_unit_scale = cert_doc
         .root
         .get("base_unit_scale")
@@ -233,7 +272,8 @@ pub fn read_ads_package(
         if idx == 0 || line.trim().is_empty() {
             continue;
         }
-        let cols: Vec<&str> = line.split('|').collect();
+        let decoded = decode_row(line, escaped, false)?;
+        let cols: Vec<&str> = decoded.iter().map(String::as_str).collect();
         if cols.len() != 4 {
             return Err(FormatError::Parse {
                 format: FMT,
@@ -265,7 +305,9 @@ pub fn read_ads_package(
         if idx == 0 || line.trim().is_empty() {
             continue;
         }
-        let cols: Vec<&str> = line.split('|').collect();
+        let raw: Vec<&str> = line.split('|').collect();
+        let decoded = decode_row(line, escaped, true)?;
+        let cols: Vec<&str> = decoded.iter().map(String::as_str).collect();
         if cols.len() != 13 {
             return Err(FormatError::Parse {
                 format: FMT,
@@ -303,12 +345,13 @@ pub fn read_ads_package(
                 })?;
         let mantissa = parse_exact_decimal(FMT, cols[7], unit_scale)?;
         let description = cols[10].to_owned();
-        let migrated_from = if cols[11].is_empty() {
+        let absent = |index: usize| if escaped { raw[index] == "\\N" } else { cols[index].is_empty() };
+        let migrated_from = if absent(11) {
             None
         } else {
             Some(cols[11].to_owned())
         };
-        let memo = if cols[12].is_empty() {
+        let memo = if absent(12) {
             None
         } else {
             Some(cols[12].to_owned())
@@ -346,7 +389,8 @@ pub fn read_ads_package(
         if idx == 0 || line.trim().is_empty() {
             continue;
         }
-        let cols: Vec<&str> = line.split('|').collect();
+        let decoded = decode_row(line, escaped, false)?;
+        let cols: Vec<&str> = decoded.iter().map(String::as_str).collect();
         if cols.len() != 6 {
             return Err(FormatError::Parse {
                 format: FMT,
@@ -417,6 +461,87 @@ pub fn read_ads_package(
     Ok(journal)
 }
 
-fn sanitize_pipe(s: &str) -> String {
-    s.replace('|', "/")
+fn text_error(detail: impl Into<String>) -> FormatError {
+    FormatError::Parse { format: ESCAPED_FMT, detail: detail.into() }
+}
+
+fn encode_text(s: &str, escaped: bool) -> String {
+    if !escaped {
+        return s.to_owned();
+    }
+    let mut out = String::new();
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '|' => out.push_str("\\p"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn decode_text(s: &str) -> Result<String, FormatError> {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        out.push(match chars.next() {
+            Some('\\') => '\\',
+            Some('p') => '|',
+            Some('n') => '\n',
+            Some('r') => '\r',
+            Some('u') => {
+                let mut scalar = 0_u32;
+                for _ in 0..4 {
+                    let digit = chars.next().and_then(|c| c.to_digit(16))
+                        .ok_or_else(|| text_error("invalid ADS text Unicode escape"))?;
+                    scalar = scalar.checked_mul(16).and_then(|v| v.checked_add(digit))
+                        .ok_or_else(|| text_error("ADS text scalar overflow"))?;
+                }
+                char::from_u32(scalar).ok_or_else(|| text_error("invalid ADS text scalar"))?
+            }
+            _ => return Err(text_error("unknown or incomplete ADS text escape")),
+        });
+    }
+    if encode_text(&out, true) != s {
+        return Err(text_error("noncanonical ADS text encoding"));
+    }
+    Ok(out)
+}
+
+fn optional_text(value: Option<&str>, escaped: bool) -> String {
+    match value {
+        None if escaped => "\\N".to_owned(),
+        None => String::new(),
+        Some(s) => encode_text(s, escaped),
+    }
+}
+
+fn decode_row(line: &str, escaped: bool, gl: bool) -> Result<Vec<String>, FormatError> {
+    line.split('|').enumerate().map(|(i, s)| {
+        if escaped && gl && matches!(i, 11 | 12) && s == "\\N" {
+            Ok(String::new())
+        } else if escaped { decode_text(s) } else { Ok(s.to_owned()) }
+    }).collect()
+}
+
+fn decode_hex_text(s: &str) -> Result<String, FormatError> {
+    if s.len() % 2 != 0 || !s.is_ascii() {
+        return Err(text_error("invalid ADS UTF-8 hex metadata"));
+    }
+    let bytes = s.as_bytes().chunks_exact(2).map(|pair| {
+        let high = char::from(pair[0]).to_digit(16);
+        let low = char::from(pair[1]).to_digit(16);
+        match (high, low) {
+            (Some(h), Some(l)) => u8::try_from(h * 16 + l).map_err(|_| text_error("invalid ADS hex byte")),
+            _ => Err(text_error("invalid ADS UTF-8 hex metadata")),
+        }
+    }).collect::<Result<Vec<_>, _>>()?;
+    String::from_utf8(bytes).map_err(|_| text_error("ADS metadata is not UTF-8"))
 }

@@ -306,3 +306,16 @@ round_trip_identity = false
 certified_coordinate = false
 plan_ref = "§9.5, §15.3"
 summary = "Bank CSV with an explicit retained JSON layout: exact ordered headers, column mappings, ISO/MDY/DMY dates, declared delimiter and decimal separator, signed or separate debit/credit amounts, registered currency and statement balances. Manifest v3 binds the layout and original bytes; matching reparses the retained interpretation, and opening plus activity must equal closing exactly."
+
+[[format]]
+id = 24
+name = "aicpa_ads_gl_v3"
+kind = "audit_data_standard"
+direction = "both"
+mime = "text/tab-separated-values"
+extension = "ads"
+oracle_tool = "none"
+round_trip_identity = true
+certified_coordinate = true
+plan_ref = "§8.6, §16.3"
+summary = "ADS-shaped GL package with lossless canonical backslash text escapes and UTF-8 hex coordinate names. Selected when literal v2 text is unrepresentable. Preserves descriptions, memos and identifiers; this repository profile is not external AICPA conformance evidence."

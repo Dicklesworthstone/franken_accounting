@@ -12,7 +12,7 @@
 # not installed) is `UNRUN` + `FAIL`, never a silent green. The contract is
 # scripts/lib/gate_verdict.sh, adopted verbatim from FrankenGraphDB.
 #
-# STEPS (26 in full mode):
+# STEPS (27 in full mode):
 #   fmt, check, clippy (-D warnings), test-list + test, gate-evidence
 #   (completion markers, test-inventory witness, per-crate ratchet, fa-czx)
 #   and its planted negative, invariants (fa-37f) and its planted negative,
@@ -20,7 +20,7 @@
 #   conformance-mutation (fa-zy1), deny, ubs, shellcheck, registries-embedded,
 #   registry-check (tools/registry-check: schema validation, claims lint,
 #   foundation API consumption, negative-checker disjointness, fa-szi / fa-r3d),
-#   forbidden-deps, foundations (resolved-foundation-graph, fa-c23) and its
+#   installer-integration (fa-o3zg), forbidden-deps, foundations (resolved-foundation-graph, fa-c23) and its
 #   planted negative, doctrine (fa-598p) and its planted negative,
 #   reference-boundary, and topology (fa-37f) and its planted negative.
 #   Scoreboards (crates/fa-cli/tests/scoreboard.rs, fa-e9z / fa-7s6d) and verb
@@ -365,6 +365,10 @@ if [ "$QUICK" -eq 0 ]; then
 fi
 
 # ---- Non-Rust gates ----------------------------------------------------------
+if [ "$QUICK" -eq 0 ]; then
+  run_gate "installer-integration" "$ROOT/scripts/tests/installer_integration.sh"
+fi
+
 # ubs: the bug scanner as a whole-project STATIC scan. It compiles nothing
 # (`--no-cargo`): the compiler, clippy, test and deny verdicts are the
 # explicit steps above, so this step never launches a bare cargo. Scanning
@@ -408,6 +412,7 @@ fi
 
 # Lint our scripts with shellcheck (the gate library is adopted verbatim and exempt).
 mapfile -t SHELL_FILES < <(git ls-files --cached --others --exclude-standard -- 'scripts/*.sh' | grep -v 'scripts/lib/gate_verdict.sh')
+SHELL_FILES=(install.sh "${SHELL_FILES[@]}")
 if [ "${#SHELL_FILES[@]}" -gt 0 ]; then
   run_step "shellcheck" shellcheck -S warning "${SHELL_FILES[@]}"
 fi

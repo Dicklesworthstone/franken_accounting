@@ -1142,6 +1142,80 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
     assert_eq!(cli(&gl, false).exit, 2);
 }
 
+#[test]
+fn ads_text_survives_real_post_export_reimport_and_offline_verification() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    let description = "line one\nline two\rpipe | slash \\ tab\t café";
+    let memo = "memo | with\nnew line and literal \\n";
+    let intent = format!(
+        "{{\"effective_date\":\"2026-03-10\",\"description\":{},\"idempotency_key\":\"ads-text\",\"legs\":[{{\"side\":\"debit\",\"account\":\"1000\",\"amount\":\"12.34 USD\",\"memo\":{}}},{{\"side\":\"credit\",\"account\":\"4000\",\"amount\":\"12.34 USD\"}}]}}",
+        Json::Str(description.into()).render(),
+        Json::Str(memo.into()).render(),
+    );
+    let path = write(&f.dir, "ads-text.json", &intent);
+    ok(
+        &f.book,
+        &["post", "--intent", &path, "--evidence", &evidence],
+    );
+    f.checkpoint();
+    let dir = f.dir.join("escaped-ads");
+    let export = ok(
+        &f.book,
+        &[
+            "export",
+            "ads",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            dir.to_str().unwrap(),
+            "--with-proofs",
+        ],
+    );
+    let key = text(get(&export, "proof"), "checkpoint_public_key");
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+    let package = fa_formats::ads::AdsPackage {
+        chart_of_accounts: read("Chart_of_Accounts.txt"),
+        gl_detail: read("GL_Detail.txt"),
+        trial_balance: read("Trial_Balance.txt"),
+        certificate_toml: read("ADS_Coordinate_Certificate.toml"),
+    };
+    assert!(package.certificate_toml.contains("aicpa_ads_gl_v3"));
+    assert_eq!(
+        package.gl_detail.lines().count(),
+        3,
+        "two legs, no split text rows"
+    );
+    let restored =
+        fa_formats::ads::read_ads_package(&package, &fa_formats::UnitCatalog::embedded().unwrap())
+            .unwrap();
+    assert_eq!(restored.entries[0].description, description);
+    assert_eq!(restored.entries[0].legs[0].memo.as_deref(), Some(memo));
+    assert_eq!(
+        fa_formats::hex_encode(&restored.coordinate.content_digest),
+        text(&export, "content_digest")
+    );
+    let args = vec![
+        "ads".into(),
+        dir.to_str().unwrap().into(),
+        "--key".into(),
+        key.into(),
+        "--json".into(),
+    ];
+    let verified = fa_verify::cli::run(&args, &|path| std::fs::read(path));
+    assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
+    // A bad escape is a format failure even in an unauthenticated memo field.
+    let corrupt = package.gl_detail.replacen("\\p", "\\q", 1);
+    let rejected = fa_verify::cli::run(&args, &|path| {
+        if path.ends_with("/GL_Detail.txt") {
+            Ok(corrupt.as_bytes().to_vec())
+        } else {
+            std::fs::read(path)
+        }
+    });
+    assert_eq!(rejected.exit, 8, "{}{}", rejected.stdout, rejected.stderr);
+}
+
 /// fa-qtfd (plan §13.5): a witness cosigns a recorded checkpoint with its
 /// own key, a second witness adds its signature onto the first's, and
 /// fa-verify meets a quorum of two named witnesses but not three. A witness

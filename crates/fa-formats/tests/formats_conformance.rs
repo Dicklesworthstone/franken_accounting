@@ -239,7 +239,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
 #[test]
 fn embedded_formats_registry_matches_fa_formats_surface() {
     let formats = Formats::embedded().expect("registries/formats.toml must parse");
-    assert_eq!(formats.rows.len(), 23);
+    assert_eq!(formats.rows.len(), 24);
     assert!(
         formats
             .by_name("aicpa_ads_gl_v2")
@@ -247,6 +247,12 @@ fn embedded_formats_registry_matches_fa_formats_surface() {
             .round_trip_identity
     );
     assert!(formats.by_name("oecd_saft_v2").unwrap().round_trip_identity);
+    assert!(
+        formats
+            .by_name("aicpa_ads_gl_v3")
+            .unwrap()
+            .round_trip_identity
+    );
     assert!(formats.by_name("csv_gl_v1").unwrap().round_trip_identity);
     assert_eq!(
         formats.by_name("beancount_v3").unwrap().oracle_tool,
@@ -363,6 +369,11 @@ fn aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negati
 
     // 1. AICPA ADS export -> import round-trip identity + FA-INV-04 refold
     let ads_pkg = write_ads_package(&journal).expect("write_ads_package");
+    assert!(
+        ads_pkg
+            .certificate_toml
+            .contains("format = \"aicpa_ads_gl_v2\"")
+    );
     let ads_reimported = read_ads_package(&ads_pkg, &units).expect("read_ads_package");
     let ads_proof = verify_round_trip_identity("aicpa_ads_gl_v2", &journal, &ads_reimported)
         .expect("ADS export-import identity");
@@ -427,6 +438,88 @@ fn aicpa_ads_and_oecd_saft_and_csv_gl_round_trip_identity_and_dropped_leg_negati
     let ndjson = write_ndjson_gl_stream(&journal).expect("write_ndjson_gl_stream");
     let streamed_rows = verify_ndjson_gl_stream(&ndjson).expect("verify_ndjson_gl_stream");
     assert_eq!(streamed_rows, 8);
+}
+
+#[test]
+fn ads_v3_preserves_delimiters_controls_unicode_and_empty_optional_text() {
+    let mut input = sample_multi_unit_journal();
+    let text = "one\nline\rreturn|pipe\\literal \"quote\"\t nul:\0 C1:\u{85} café";
+    input.accounts[0].name = text.into();
+    input.entries[0].description = text.into();
+    input.entries[0].entry_id.push_str(text);
+    input.entries[0].migrated_from = Some(text.into());
+    input.entries[0].legs[0].memo = Some(text.into());
+    input.entries[1].migrated_from = Some(String::new());
+    input.entries[1].legs[0].memo = Some(String::new());
+    let input = FormatJournal::new(
+        text,
+        &input.coordinate.base_unit_code,
+        input.coordinate.base_unit_scale,
+        input.coordinate.effective_through,
+        input.coordinate.known_at_seq,
+        input.accounts,
+        input.entries,
+        input.assertions,
+    )
+    .expect("valid exact-text source");
+    let package = write_ads_package(&input).expect("lossless ADS writer");
+    assert!(
+        package
+            .certificate_toml
+            .contains("format = \"aicpa_ads_gl_v3\"")
+    );
+    assert!(package.certificate_toml.contains("book_name_utf8_hex = \""));
+    assert_eq!(
+        package.chart_of_accounts.lines().count(),
+        input.accounts.len() + 1
+    );
+    assert_eq!(
+        package.gl_detail.lines().count(),
+        input.entries.iter().map(|e| e.legs.len()).sum::<usize>() + 1
+    );
+    for line in package.gl_detail.lines().skip(1) {
+        assert_eq!(
+            line.split('|').count(),
+            13,
+            "one physical row per leg: {line:?}"
+        );
+        assert!(
+            !line.chars().any(char::is_control),
+            "escaped controls: {line:?}"
+        );
+    }
+    let units = UnitCatalog::embedded().unwrap();
+    let restored = read_ads_package(&package, &units).expect("decode v3");
+    verify_round_trip_identity("aicpa_ads_gl_v3", &input, &restored)
+        .expect("all canonical source bytes, not only amounts, survive");
+    assert_eq!(restored.coordinate.book_name, text);
+    assert_eq!(restored.accounts[0].name, text);
+    assert_eq!(restored.entries[0].description, text);
+    assert_eq!(restored.entries[0].legs[0].memo.as_deref(), Some(text));
+    assert_eq!(restored.entries[1].migrated_from.as_deref(), Some(""));
+    assert_eq!(restored.entries[1].legs[0].memo.as_deref(), Some(""));
+    assert_eq!(
+        write_ads_package(&restored).unwrap(),
+        package,
+        "canonical re-export"
+    );
+
+    for bad in ["\\q", "\\uD800", "\\u000a", "\\u001F", "\t", "\\N"] {
+        let mut corrupt = package.clone();
+        corrupt.gl_detail = corrupt.gl_detail.replacen("\\p", bad, 1);
+        assert!(
+            matches!(
+                read_ads_package(&corrupt, &units),
+                Err(FormatError::Parse { .. })
+            ),
+            "malformed/noncanonical escape must fail before certificate comparison: {bad:?}"
+        );
+    }
+    let mut unknown = package;
+    unknown.certificate_toml = unknown
+        .certificate_toml
+        .replace("aicpa_ads_gl_v3", "aicpa_ads_gl_v999");
+    assert!(read_ads_package(&unknown, &units).is_err());
 }
 
 #[test]

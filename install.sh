@@ -13,7 +13,7 @@
 #   --dest DIR         Install to DIR (default: ~/.local/bin)
 #   --system           Install to /usr/local/bin (requires sudo)
 #   --from-source      Build from local source or git checkout
-#   --verify           Run `fa --version`, `fad --version`, and `fa-verify --help`
+#   --verify           Repeat all four executable probes after installation
 #   --offline          Install from pre-downloaded archive via --artifact-dir
 #   --artifact-dir DIR Directory containing release binaries and SHA256SUMS
 #   --no-verify        Skip SHA256SUMS verification (NOT recommended)
@@ -31,6 +31,8 @@ OFFLINE=0
 ARTIFACT_DIR=""
 SKIP_HASH_CHECK="${FA_SKIP_VERIFY:-0}"
 QUIET=0
+BINS=(fa fad fa-mcp fa-verify)
+USER_AGENT='franken_accounting-installer (+https://github.com/Dicklesworthstone/franken_accounting)'
 
 log() {
   if [ "$QUIET" -eq 0 ]; then
@@ -98,18 +100,79 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-mkdir -p "$DEST"
+case "$SKIP_HASH_CHECK" in
+  0|1) ;;
+  *) err "FA_SKIP_VERIFY must be 0 or 1" ;;
+esac
+[ "$FROM_SOURCE" -eq 0 ] || [ -z "$ARTIFACT_DIR" ] || err "choose --from-source or --artifact-dir, not both"
+if [ "$OFFLINE" -eq 1 ] && [ -z "$ARTIFACT_DIR" ] && [ "$FROM_SOURCE" -eq 0 ]; then
+  err "--offline requires --artifact-dir <dir> or --from-source"
+fi
+
+# Keep staging evidence on failure and success. Never remove a caller's files.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/fa-install.XXXXXX")"
+STAGE="$WORK/candidate"
+mkdir "$STAGE"
+log "staging retained at $WORK"
+
+digest() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    err "SHA-256 requires sha256sum or shasum"
+  fi
+}
+
+check_digest() {
+  local manifest="$1" name="$2" path="$3" expected actual
+  [ -f "$manifest" ] && [ -r "$manifest" ] || err "missing readable SHA256SUMS: $manifest"
+  # Check only the named artifact; never execute paths supplied by a manifest.
+  # Reject duplicate rows as well as missing rows, even if their hashes agree.
+  expected="$(awk -v name="$name" '
+    { file = $2; sub(/^\*/, "", file) }
+    file == name { count++; hash = $1; if (NF != 2) bad = 1 }
+    END { if (count != 1 || bad) exit 1; print hash }
+  ' "$manifest")" || err "SHA256SUMS must contain exactly one valid row for $name"
+  [ "${#expected}" -eq 64 ] || err "invalid SHA-256 for $name"
+  case "$expected" in *[!0-9a-fA-F]*) err "invalid SHA-256 for $name" ;; esac
+  expected="$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')"
+  actual="$(digest "$path")"
+  [ "$expected" = "$actual" ] || err "SHA-256 mismatch for $name"
+  log "checksum passed: $name sha256=$actual"
+}
+
+stage_binaries() {
+  local source="$1" bin
+  for bin in "${BINS[@]}"; do
+    [ -f "$source/$bin" ] && [ ! -L "$source/$bin" ] && [ -x "$source/$bin" ] \
+      || err "missing regular executable: $source/$bin"
+    cp "$source/$bin" "$STAGE/$bin"
+  done
+}
+
+probe_binaries() {
+  local dir="$1" phase="$2" bin flag output
+  for bin in "${BINS[@]}"; do
+    flag=--version
+    [ "$bin" != fa-verify ] || flag=--help
+    output="$WORK/$phase-$bin.stdout"
+    "$dir/$bin" "$flag" >"$output" \
+      || err "executable probe failed: $bin $flag (stdout retained at $output)"
+    if [ "$QUIET" -eq 0 ] && [ "$bin" != fa-verify ]; then
+      cat "$output"
+    fi
+    log "probe passed: $bin $flag"
+  done
+}
 
 if [ -n "$ARTIFACT_DIR" ]; then
   [ -d "$ARTIFACT_DIR" ] || err "artifact directory does not exist: $ARTIFACT_DIR"
-  if [ "$SKIP_HASH_CHECK" -eq 0 ] && [ -f "$ARTIFACT_DIR/SHA256SUMS" ]; then
-    log "verifying SHA256SUMS in $ARTIFACT_DIR"
-    (cd "$ARTIFACT_DIR" && sha256sum -c SHA256SUMS)
-  fi
-  for bin in fa fad fa-mcp fa-verify; do
-    if [ -f "$ARTIFACT_DIR/$bin" ]; then
-      install -m 0755 "$ARTIFACT_DIR/$bin" "$DEST/$bin"
-      log "installed $DEST/$bin"
+  stage_binaries "$ARTIFACT_DIR"
+  for bin in "${BINS[@]}"; do
+    if [ "$SKIP_HASH_CHECK" -eq 0 ]; then
+      check_digest "$ARTIFACT_DIR/SHA256SUMS" "$bin" "$STAGE/$bin"
     fi
   done
 elif [ "$FROM_SOURCE" -eq 1 ]; then
@@ -118,26 +181,17 @@ elif [ "$FROM_SOURCE" -eq 1 ]; then
   (
     cd "$ROOT" || exit 1
     cargo build --release --locked --bins
-    for bin in fa fad fa-mcp fa-verify; do
-      if [ -f "target/release/$bin" ]; then
-        install -m 0755 "target/release/$bin" "$DEST/$bin"
-        log "installed $DEST/$bin"
-      fi
-    done
   )
+  stage_binaries "$ROOT/target/release"
 else
-  if [ "$OFFLINE" -eq 1 ]; then
-    err "--offline requires --artifact-dir <dir> or --from-source"
-  fi
   OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  case "$OS" in linux|darwin) ;; *) err "unsupported operating system: $OS" ;; esac
   ARCH="$(uname -m)"
   case "$ARCH" in
     x86_64|amd64) ARCH="amd64" ;;
     aarch64|arm64) ARCH="arm64" ;;
     *) err "unsupported architecture: $ARCH" ;;
   esac
-  WORK="$(mktemp -d "${TMPDIR:-/tmp}/fa-install.XXXXXX")"
-  trap 'rm -rf "$WORK"' EXIT
   BASE_URL="https://github.com/Dicklesworthstone/franken_accounting/releases"
   if [ "$VERSION" = "latest" ]; then
     URL_PREFIX="$BASE_URL/latest/download"
@@ -146,29 +200,47 @@ else
   fi
   ARCHIVE="franken_accounting-${OS}-${ARCH}.tar.gz"
   log "downloading $URL_PREFIX/$ARCHIVE"
-  curl -fsSL "$URL_PREFIX/$ARCHIVE" -o "$WORK/$ARCHIVE"
+  curl -fsSL --user-agent "$USER_AGENT" "$URL_PREFIX/$ARCHIVE" -o "$WORK/$ARCHIVE"
   if [ "$SKIP_HASH_CHECK" -eq 0 ]; then
-    curl -fsSL "$URL_PREFIX/SHA256SUMS" -o "$WORK/SHA256SUMS"
-    (cd "$WORK" && grep " $ARCHIVE\$" SHA256SUMS | sha256sum -c -)
+    curl -fsSL --user-agent "$USER_AGENT" "$URL_PREFIX/SHA256SUMS" -o "$WORK/SHA256SUMS"
+    check_digest "$WORK/SHA256SUMS" "$ARCHIVE" "$WORK/$ARCHIVE"
   fi
-  tar -xzf "$WORK/$ARCHIVE" -C "$WORK"
-  for bin in fa fad fa-mcp fa-verify; do
-    if [ -f "$WORK/$bin" ]; then
-      install -m 0755 "$WORK/$bin" "$DEST/$bin"
-      log "installed $DEST/$bin"
-    fi
-  done
+  mkdir "$WORK/extracted"
+  tar -xzf "$WORK/$ARCHIVE" -C "$WORK/extracted" -- "${BINS[@]}"
+  stage_binaries "$WORK/extracted"
 fi
 
+# Wrong-target and broken binaries must fail before changing the destination,
+# even without --verify. Checksums alone cannot establish executability.
+if [ "$SKIP_HASH_CHECK" -eq 1 ]; then
+  printf '[fa-install] UNVERIFIED: SHA256SUMS checks explicitly disabled\n' >&2
+fi
+probe_binaries "$STAGE" candidate
+
+# Preflight the whole destination before replacing any member. Publication is
+# four ordinary installs, not an atomic multi-file upgrade or rollback.
+if [ -e "$DEST" ] || [ -L "$DEST" ]; then
+  [ -d "$DEST" ] && [ -w "$DEST" ] || err "destination is not a writable directory: $DEST"
+fi
+for bin in "${BINS[@]}"; do
+  if [ -e "$DEST/$bin" ] || [ -L "$DEST/$bin" ]; then
+    [ -f "$DEST/$bin" ] && [ ! -L "$DEST/$bin" ] && [ -w "$DEST/$bin" ] \
+      || err "destination member is not a writable regular file: $DEST/$bin"
+  fi
+done
+mkdir -p "$DEST"
+for bin in "${BINS[@]}"; do
+  install -m 0755 "$STAGE/$bin" "$DEST/$bin"
+  log "installed $DEST/$bin"
+done
+
 if [ "$RUN_VERIFY" -eq 1 ]; then
-  if [ -x "$DEST/fa" ]; then
-    "$DEST/fa" --version
+  probe_binaries "$DEST" installed
+  if [ "$SKIP_HASH_CHECK" -eq 1 ]; then
+    log "UNVERIFIED installation: all four executable probes passed; checksums were skipped"
+  elif [ "$FROM_SOURCE" -eq 1 ]; then
+    log "source installation: all four executable probes passed (no release checksum claim)"
+  else
+    log "self-verification passed: fa fad fa-mcp fa-verify (checksums and executable probes)"
   fi
-  if [ -x "$DEST/fad" ]; then
-    "$DEST/fad" --version
-  fi
-  if [ -x "$DEST/fa-verify" ]; then
-    "$DEST/fa-verify" --help >/dev/null
-  fi
-  log "self-verification passed"
 fi

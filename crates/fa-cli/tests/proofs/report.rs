@@ -200,6 +200,140 @@ fn report_production_admits_authority_before_observing_certificate_files() {
     assert!(!missing_book.exists());
 }
 
+fn certify_statement(f: &Fixture, name: &str, known_at: u64) -> (String, fa::ReportCertificate) {
+    let at = known_at.to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&f.book)
+        .args([
+            "statement",
+            name,
+            "--for",
+            "FY2026-P03",
+            "--compare",
+            "FY2026-P02",
+            "--as-known-at",
+            &at,
+            "--certify",
+            "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .output()
+        .expect("certify native statement");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let registry = fa_cli::verbs::registry().unwrap();
+    let events: Vec<_> = stdout
+        .lines()
+        .map(|line| {
+            registry.check_line(line).unwrap();
+            json::parse(line).unwrap()
+        })
+        .collect();
+    let metadata = events
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .expect("statement certificate event");
+    let certificate = fa::ReportCertificate::decode(&unhex(text(metadata, "bytes"))).unwrap();
+    assert_eq!(certificate.known_at.0, known_at);
+    assert!(matches!(
+        &certificate.selection,
+        fa::ReportSelection::Statement(_)
+    ));
+    (format!("C:{}", text(metadata, "oid")), certificate)
+}
+
+#[test]
+fn native_statements_and_zero_comparatives_recompute_from_a_later_complete_checkpoint() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    f.post("statement-first-sale", "2026-03-10", "12.34", &evidence);
+    let known_at = f.head();
+    let certificates = ["balance-sheet", "income-statement"]
+        .map(|name| (name, certify_statement(&f, name, known_at)));
+    // A later backdated posting is inside the signed checkpoint but outside
+    // each report's known-at. The comparative column is authentically zero.
+    f.post("statement-later-sale", "2026-03-10", "2.00", &evidence);
+    let state = f.checkpoint();
+    let before = f.head();
+    for (name, (locator, certificate)) in certificates {
+        let produced = ok(
+            &f.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--state",
+                text(&state, "oid"),
+            ],
+        );
+        let key: [u8; 32] = unhex(text(&produced, "checkpoint_public_key"))
+            .try_into()
+            .unwrap();
+        let bundle = bytes(&produced);
+        let receipt = unhex(text(&produced, "receipt"));
+        let verified = fa_verify::report::verify_report(&bundle, &[key], None, Some(&receipt))
+            .expect("independent native statement recomputation");
+        assert_eq!(verified.output, certificate.output, "{name}");
+        assert_eq!(verified.certificate_digest, certificate.digest);
+        assert_eq!(verified.known_at, known_at);
+        assert!(verified.rows.is_empty());
+        let statement = verified.statement.as_ref().expect("statement result");
+        assert_eq!(statement.definition_name, name);
+        assert_eq!(statement.columns.len(), 2);
+        assert_eq!(statement.columns[0].periods, ["FY2026-P03"]);
+        assert_eq!(statement.columns[1].periods, ["FY2026-P02"]);
+        let expected_line = if name == "balance-sheet" {
+            "assets"
+        } else {
+            "revenue"
+        };
+        let actual = statement
+            .lines
+            .iter()
+            .find(|line| line.code == expected_line && line.unit == 0)
+            .expect("USD statement line");
+        assert_eq!(actual.amounts, [1234, 0]);
+        let expected_units = fa_money::UnitRegistry::embedded().unwrap().iter().count();
+        assert_eq!(
+            statement
+                .lines
+                .iter()
+                .filter(|line| line.code == expected_line)
+                .count(),
+            expected_units
+        );
+        for line in &statement.lines {
+            assert_eq!(
+                line.amounts[1], 0,
+                "comparative {} {}",
+                line.code, line.unit
+            );
+            if line.unit != 0 {
+                assert_eq!(line.amounts, [0, 0]);
+            }
+        }
+        let inline_again = ok(
+            &f.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--state",
+                text(&state, "oid"),
+            ],
+        );
+        assert_eq!(bytes(&inline_again), bundle, "deterministic {name} export");
+    }
+    assert_eq!(f.head(), before, "statement bundle production is read-only");
+}
+
 #[test]
 fn certified_income_statement_exports_a_recipient_bound_offline_command() {
     let f = Fixture::new();
@@ -311,7 +445,24 @@ fn certified_income_statement_exports_a_recipient_bound_offline_command() {
         .enumerate()
         .filter_map(|(index, arg)| (!matches!(index, 10 | 11)).then_some(arg.clone()))
         .collect();
-    let refused = fa_verify::cli::run(&without_units, &|path| std::fs::read(path));
+    // V2 carries the complete registry closure; explicit units remain an
+    // optional equality check, while the pin or receipt authenticates inputs.
+    let verified = fa_verify::cli::run(&without_units, &|path| std::fs::read(path));
+    assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
+    assert!(verified.stdout.contains("\"verdict\":\"verified\""));
+    assert!(verified.stdout.contains("authenticated-registry"));
+    let without_authority: Vec<_> = args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, arg)| (!matches!(index, 6 | 7 | 8 | 9)).then_some(arg.clone()))
+        .collect();
+    let refused = fa_verify::cli::run(&without_authority, &|path| std::fs::read(path));
+    assert_eq!(refused.exit, 8, "{}{}", refused.stdout, refused.stderr);
+    assert!(refused.stdout.contains("report_input_authority"));
+    assert!(!refused.stdout.contains("\"verdict\":\"verified\""));
+    let mut wrong_units = args.clone();
+    wrong_units[11] = "4294967295".into();
+    let refused = fa_verify::cli::run(&wrong_units, &|path| std::fs::read(path));
     assert_eq!(refused.exit, 8, "{}{}", refused.stdout, refused.stderr);
     assert!(refused.stdout.contains("statement_units"));
     assert!(!refused.stdout.contains("\"verdict\":\"verified\""));
