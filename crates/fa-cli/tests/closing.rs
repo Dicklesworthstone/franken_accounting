@@ -13,6 +13,8 @@ use fa_cli::json::{self, Json};
 mod draft_review;
 #[path = "closing/equity_certificate.rs"]
 mod equity_certificate;
+#[path = "closing/functional.rs"]
+mod functional;
 
 fn run(book: &Path, args: &[&str]) -> (i32, Json) {
     let result = Command::new(env!("CARGO_BIN_EXE_fa"))
@@ -92,6 +94,10 @@ impl Fixture {
     }
 
     fn with_chart(with_routes: bool, chart: &str) -> Self {
+        Self::with_chart_and_keys(with_routes, chart, None)
+    }
+
+    fn with_chart_and_keys(with_routes: bool, chart: &str, development_keys: Option<u8>) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let next = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -104,17 +110,41 @@ impl Fixture {
             }
         };
         let book = dir.join("book");
-        ok(
-            &book,
-            &[
-                "book",
-                "create",
-                "--name",
-                "Closing Co",
-                "--opening-date",
-                "2026-01-01",
-            ],
-        );
+        if let Some(seed) = development_keys {
+            let keys = fa::BookKeys::for_development(seed);
+            let created = fa::Book::create_dir(
+                &book,
+                keys.clone(),
+                fa_journal::BookSpec {
+                    book_id: fa_model::Id128([seed; 16]),
+                    name: "Closing Co".into(),
+                    base_unit: fa_money::UnitRegistry::embedded()
+                        .unwrap()
+                        .lookup("USD")
+                        .unwrap(),
+                    calendar: fa_time::FiscalCalendar::monthly("closing-functional", 1, 1).unwrap(),
+                    time_zone_policy: None,
+                    entities: Vec::new(),
+                    opening_date: Some(fa_time::DateDay::from_ymd(2026, 1, 1).unwrap()),
+                },
+                fa::Entropy::deterministic(u64::from(seed)),
+            )
+            .unwrap();
+            keys.save(&book.join("book.keys")).unwrap();
+            drop(created);
+        } else {
+            ok(
+                &book,
+                &[
+                    "book",
+                    "create",
+                    "--name",
+                    "Closing Co",
+                    "--opening-date",
+                    "2026-01-01",
+                ],
+            );
+        }
         let chart = write(&dir, "chart.json", chart);
         ok(&book, &["chart", "import", &chart]);
         ok(&book, &["period", "create", "--fiscal-year", "2026"]);

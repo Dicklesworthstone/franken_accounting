@@ -8497,8 +8497,13 @@ pub(crate) fn emit_post_plan(
             })?;
             let amount = render_amount(leg.amount, &book.context().units)?;
             let side = side_name(leg.side);
+            let base = leg
+                .base_amount
+                .map(|amount| render_amount(amount, &book.context().units))
+                .transpose()?
+                .map_or_else(String::new, |amount| format!("; functional {amount}"));
             human_legs.push(format!(
-                "  {ordinal}: {side} {} ({}) {amount}",
+                "  {ordinal}: {side} {} ({}) {amount}{base}",
                 account.code, account.name
             ));
             Ok(obj(vec![
@@ -8510,6 +8515,53 @@ pub(crate) fn emit_post_plan(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let valuation = if let Some(totals) = &proposal.base_totals {
+        let unit = fa_money::UnitId(totals.unit_id);
+        let law = fa::FxLawId::from_oid(&totals.fx_law_oid)
+            .ok_or_else(|| Fail::Internal("admitted plan has an unknown FX law".into()))?;
+        let amounts = proposal
+            .legs
+            .iter()
+            .enumerate()
+            .map(|(ordinal, leg)| {
+                let amount = leg.base_amount.ok_or_else(|| {
+                    Fail::Internal("admitted valued plan has an unvalued leg".into())
+                })?;
+                Ok(obj(vec![
+                    ("ordinal", Json::Int(ordinal as i128)),
+                    (
+                        "base_amount",
+                        s(render_amount(amount, &book.context().units)?),
+                    ),
+                ]))
+            })
+            .collect::<Result<Vec<_>, Fail>>()?;
+        obj(vec![
+            (
+                "base_unit",
+                s(registered_unit_code(unit, &book.context().units)?),
+            ),
+            ("law", s(law.name())),
+            ("law_oid", s(hex(&totals.fx_law_oid.0))),
+            (
+                "debits",
+                s(render_amount(
+                    Amount::new(unit, totals.debits),
+                    &book.context().units,
+                )?),
+            ),
+            (
+                "credits",
+                s(render_amount(
+                    Amount::new(unit, totals.credits),
+                    &book.context().units,
+                )?),
+            ),
+            ("legs", Json::Arr(amounts)),
+        ])
+    } else {
+        Json::Null
+    };
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
@@ -8670,6 +8722,7 @@ pub(crate) fn emit_post_plan(
             ("certificate_digest", s(certificate_digest)),
             ("plan_digest", s(plan_digest)),
             ("legs", Json::Arr(legs)),
+            ("valuation", valuation),
             (
                 "resolves",
                 resolves.map_or(Json::Null, |entry| s(format!("{:032x}", entry.vid.0))),

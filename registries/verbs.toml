@@ -176,7 +176,7 @@ flags = ["--route","--effective-from","--as-of","--as-known-at","--fiscal-year",
 switches = ["--dry-run","--review-only","--certify"]
 events = ["closing_routes_recorded","closing_routes","closing_reviewed","closing_noop","posted","recorded","plan","draft_diff","report_certificate"]
 exits = [0,2,3,4,5,6,7,8]
-usage = ["close dry-run --period <code> --draft <name> [--certify | --certificate-out <new-file>]   (rehearse the exact retained plans as one atomic scratch batch; show stock trial-balance changes, posted and pending separately; real trunk and draft state remain unchanged)", "Draft rehearsal preserves original planner capabilities, approvals and publication coordinates. CLI review and retained-locator replay require current whole-book read authority. --certify retains a complete replayable review under read and produce; fa replay C:<oid> reproduces its selected source prefix after later plans, promotion or discard. This supplied-draft review does not generate close tasks or issue statements; unsupported draft member classes refuse.", "close map --route <nominal-code>:<equity-code>... --effective-from YYYY-MM-DD --key K [--description TEXT]   (journal a complete routing version; Revenue and Expense posting leaves route to Equity posting leaves)","close routes --as-of YYYY-MM-DD [--as-known-at <sequence>]","close year-end --fiscal-year N --period FY<N>-CLOSE --key K [--description TEXT] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --yes]","close year-end --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>] | --yes]","A review preserves the exact sealed PostIntent and intrinsic source basis; approve its proposal_digest with fa approve --proposal <digest> --as <independent-approver>. Then restore the review and cite that approval. Relevant journal or routing changes require a new review; approval publications alone do not.","A native --dry-run plan writes nothing. Commit its exact bytes with fa commit --plan <file|-> --grant read --grant close and the same --as/--grant. A first close zeros current fiscal-year nominal balances; a reclose includes prior Closing legs and transfers only the residual; a zero residual publishes no entry.","This intrinsic close supports the native base unit and undimensioned or legal-entity-only balances. Unsupported FX or general dimensions refuse. Closed periods retain their independent approval requirement; Locked case-bound reclose and the full CloseTask DAG remain unavailable."]
+usage = ["close dry-run --period <code> --draft <name> [--certify | --certificate-out <new-file>]   (rehearse the exact retained plans as one atomic scratch batch; show stock trial-balance changes, posted and pending separately; real trunk and draft state remain unchanged)", "Draft rehearsal preserves original planner capabilities, approvals and publication coordinates. CLI review and retained-locator replay require current whole-book read authority. --certify retains a complete replayable review under read and produce; fa replay C:<oid> reproduces its selected source prefix after later plans, promotion or discard. This supplied-draft review does not generate close tasks or issue statements; unsupported draft member classes refuse.", "close map --route <nominal-code>:<equity-code>... --effective-from YYYY-MM-DD --key K [--description TEXT]   (journal a complete routing version; Revenue and Expense posting leaves route to Equity posting leaves)","close routes --as-of YYYY-MM-DD [--as-known-at <sequence>]","close year-end --fiscal-year N --period FY<N>-CLOSE --key K [--description TEXT] [--evidence <oid>]... [--review-only | --review-out <new-file> | --dry-run [--plan-out <new-file>] | --yes]","close year-end --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>] | --yes]","A review preserves the exact sealed PostIntent and intrinsic source basis; approve its proposal_digest with fa approve --proposal <digest> --as <independent-approver>. Then restore the review and cite that approval. Relevant journal or routing changes require a new review; approval publications alone do not.","A native --dry-run plan writes nothing. Commit its exact bytes with fa commit --plan <file|-> --grant read --grant close and the same --as/--grant. A first close zeros current fiscal-year nominal balances in both native units and functional currency; a reclose includes prior Closing legs and transfers only the residual. A zero native balance with a nonzero functional balance still needs a close; a residual of zero in both bases publishes no entry.","Foreign-currency closing preserves the exact retained functional amounts under YearEndCloseCarrying, without selecting a new rate. Review residuals show native net and base_net; each proposed valued leg shows base_amount. The Equity destination must accept the native units being transferred. Unvalued foreign activity, general dimensions and balance-limited accounts refuse. Undimensioned and legal-entity balances are supported. Closed periods retain their independent approval requirement; Locked case-bound reclose and the full CloseTask DAG remain unavailable."]
 example = "fa close year-end --fiscal-year 2026 --period FY2026-CLOSE --key close-2026 --review-only --book ./books/myco --json"
 
 [[verb]]
@@ -1783,7 +1783,7 @@ fields = ["class:string", "vid:hex", "entry_digest:hex", "recorded_at:seq", "per
 name = "plan"
 book = true
 doc = "A successful rehearsal of the actual posting pipeline, with its staged transaction aborted and no journal or metadata writes. bytes is the complete canonical PostEntry plan as hex; file is an optional new external binary copy. The exact sealed proposal, original request and supplied approvals are retained. Leg amounts and lineage preview that proposal; a Reclassification's net_effect is its target plus this entry's delta per account and unit (earlier reclassifications of the target are netted only by fa explain lineage), null for every other class; effects_digest binds all staged native writes before the plan's own Certificate and CITES retention metadata is added. Book-key authentication binds the certificate, current caller capability, security epoch and snapshot. Any intervening publication requires a new plan. Scope is same-snapshot-post; authority names the actual embedded-owner or mcp-launch-config posture, with principal/profile/ops in the envelope. Agent profiles remain unable to plan trunk posts. Drafts, issued tokens, newly gathered approval quorums and saturating balancing remain unfinished. idempotency_key is exact key bytes in hex. The envelope certificate stays null: these public digests are not native object-store OIDs."
-fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "net_effect:[lineage_net_cell]?", "evidence:[evidence_head]", "approvals:int", "bytes:hex", "file:string?", "scope:string", "authority:string"]
+fields = ["intent_kind:string", "class:string", "effective_date:date", "period:string", "principal:hex", "idempotency_key:hex", "intent_digest:hex", "proposal_digest:hex", "effects_digest:hex", "snapshot_seq:seq", "security_policy_epoch:int", "expires_at:seq?", "capability_commitment:hex", "certificate_digest:hex", "plan_digest:hex", "legs:[plan_leg]", "valuation:plan_valuation?", "resolves:hex?", "disposition:string?", "supersedes:[lineage]", "net_effect:[lineage_net_cell]?", "evidence:[evidence_head]", "approvals:int", "bytes:hex", "file:string?", "scope:string", "authority:string"]
 
 [[event]]
 name = "plan_committed"
@@ -3225,6 +3225,16 @@ fields = ["side:string", "account:hex", "amount:amount", "memo:untrusted_text?"]
 name = "plan_leg"
 doc = "One proposed leg after actual admission, with the resolved account code and immutable account identity. Its amount is an exact decimal string with the book's unit."
 fields = ["ordinal:int", "account:string", "account_vid:hex", "side:string", "amount:amount"]
+
+[[shape]]
+name = "plan_valuation"
+doc = "The exact functional-currency amounts retained by a valued proposal, alongside its native plan legs. The registered law and its content-addressed identity govern these amounts; the preview neither selects a new rate nor grants authority. Null on an unvalued native plan."
+fields = ["base_unit:string", "law:string", "law_oid:hex", "debits:amount", "credits:amount", "legs:[plan_base_leg]"]
+
+[[shape]]
+name = "plan_base_leg"
+doc = "One retained functional amount, linked by ordinal to its native proposed leg."
+fields = ["ordinal:int", "base_amount:amount"]
 
 [[shape]]
 name = "replacement_plan_member"
@@ -4757,7 +4767,7 @@ positionals = ["fiscal_year"]
 flags = ["--as-known-at"]
 switches = []
 required = ["fiscal_year"]
-dont = ["Don't treat historical nominal_zero_at_close as proof that later activity is closed; needs_reclose reports residual activity at the selected prefix.", "Don't post a balancing entry to change the verification result; the operator prepares and reviews the complete intrinsic close. Current read and verify authority applies even to historical queries."]
+dont = ["Don't treat historical nominal_zero_at_close as proof that later activity is closed; needs_reclose reports residual activity at the selected prefix in both native units and functional currency. A zero native net can retain a nonzero base_net after postings at different rates.", "Don't post a balancing entry to change the verification result; the operator prepares and reviews the complete intrinsic close. Current read and verify authority applies even to historical queries. Retained carrying amounts are verified from their sources, never revalued at a new rate."]
 mistakes = ["Passing a date or period code as fiscal_year; supply a year such as FY2026 or 2026.", "Passing a period filter; this target checks the complete fiscal year and creates no Closing entry."]
 
 # ---- fa.evidence ------------------------------------------------------------
@@ -4963,7 +4973,7 @@ fields = ["as_of:date","known_at:seq","found:bool","effective_from:date?","contr
 name = "closing_reviewed"
 book = true
 doc = "An unexecuted exact year-end Closing proposal encoded as the existing canonical PostIntent. Its intrinsic basis binds the complete selected source contributions and journaled routing map. Review bytes preserve sealed fields across approval commits; approvals bind proposal_digest, while review_digest authenticates the complete retained artifact to its reviewer. Revalidation recomputes the native source; this event is neither a PostPlan nor a certification or posting permit."
-fields = ["fiscal_year:int","period:string","closing_date:date","known_at:seq","routes_entry:hex","routes_digest:hex","source_digest:hex","latest_close:hex?","residuals:[closing_residual]","legs:[plan_leg]","review_digest:hex","proposal_digest:hex","bytes:hex","file:string?","scope:string"]
+fields = ["fiscal_year:int","period:string","closing_date:date","known_at:seq","routes_entry:hex","routes_digest:hex","source_digest:hex","base_unit:string","valuation_basis:string","latest_close:hex?","residuals:[closing_residual]","legs:[closing_leg]","review_digest:hex","proposal_digest:hex","bytes:hex","file:string?","scope:string"]
 
 [[event]]
 name = "closing_noop"
@@ -4974,8 +4984,8 @@ fields = ["fiscal_year:int","period:string","known_at:seq","latest_close:hex?","
 [[event]]
 name = "close_verified"
 book = true
-doc = "Native verification refolded nominal balances at the latest Closing and at the current selected prefix. Success requires nominal_zero_at_close=true and needs_reclose=false. Missing closing evidence, invalid closing balances or later residuals instead produce an exit-8 verification error carrying the same detail."
-fields = ["fiscal_year:int","known_at:seq","latest_close:hex?","last_closed_at:seq?","nominal_zero_at_close:bool?","needs_reclose:bool","residuals:[closing_residual]"]
+doc = "Verification refolded native and retained functional nominal balances at the latest Closing and at the selected prefix. Success requires nominal_zero_at_close=true in both bases and needs_reclose=false. Missing closing evidence, invalid closing balances or later native or functional residuals instead produce an exit-8 verification error carrying the same detail."
+fields = ["fiscal_year:int","known_at:seq","base_unit:string","valuation_basis:string","latest_close:hex?","last_closed_at:seq?","nominal_zero_at_close:bool?","needs_reclose:bool","residuals:[closing_residual]"]
 
 [[shape]]
 name = "closing_route"
@@ -4984,8 +4994,13 @@ fields = ["account:string","account_vid:hex","closes_to:string","equity_vid:hex"
 
 [[shape]]
 name = "closing_residual"
-doc = "An exact debit-minus-credit nominal balance before close, preserving the native unit and optional legal entity. closes_to is the destination Equity account VID; a positive net requires a credit to the nominal account."
-fields = ["account:string","account_vid:hex","closes_to:hex","entity:hex?","unit_id:int","net:amount"]
+doc = "Exact debit-minus-credit nominal balances before close, preserving native unit, retained functional amount and optional legal entity. closes_to is the destination Equity account VID. Native net and base_net can have different signs or one can be zero; the source-derived closing legs preserve both balances without choosing a new rate."
+fields = ["account:string","account_vid:hex","closes_to:hex","entity:hex?","unit_id:int","net:amount","base_net:amount"]
+
+[[shape]]
+name = "closing_leg"
+doc = "One exact proposed closing leg, with its native amount and retained functional amount. base_amount is null for legacy native-only closing; the native base currency then folds at par. Multiple source carrying buckets can require opposite sides on the same account even when its aggregate native residual is zero."
+fields = ["ordinal:int","account:string","account_vid:hex","side:string","amount:amount","base_amount:amount?"]
 
 [[shape]]
 name = "bank_import_predecessor"

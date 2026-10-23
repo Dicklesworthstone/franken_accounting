@@ -14,14 +14,14 @@ use fa_model::{
     ApprovalRef, EntryClass, EntryOrigin, EntryPayload, Id128, Oid, PeriodRef, account_vid,
     domain_digest,
 };
-use fa_money::{Amount, Side};
+use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::args::Args;
 use crate::cli::{
     Ctx, Fail, check_post_planning_options, emit_post_plan, emit_posted, hex, parse_digest,
-    parse_vid, read_review_bytes, render_amount, usage, write_review_file,
+    parse_vid, read_review_bytes, registered_unit_code, render_amount, usage, write_review_file,
 };
 use crate::json::{Json, obj, s};
 
@@ -307,7 +307,7 @@ fn show_routes(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-fn residuals(rows: &[ClosingResidual], book: &Book) -> Result<Json, Fail> {
+fn residuals(rows: &[ClosingResidual], base_unit: UnitId, book: &Book) -> Result<Json, Fail> {
     Ok(Json::Arr(
         rows.iter()
             .map(|row| {
@@ -325,6 +325,13 @@ fn residuals(rows: &[ClosingResidual], book: &Book) -> Result<Json, Fail> {
                         "net",
                         s(render_amount(
                             Amount::new(row.unit, row.net),
+                            &book.context().units,
+                        )?),
+                    ),
+                    (
+                        "base_net",
+                        s(render_amount(
+                            Amount::new(base_unit, row.base_net),
                             &book.context().units,
                         )?),
                     ),
@@ -363,6 +370,13 @@ fn leg_preview(proposal: &EntryPayload, book: &Book) -> Result<Json, Fail> {
                     (
                         "amount",
                         s(render_amount(leg.amount, &book.context().units)?),
+                    ),
+                    (
+                        "base_amount",
+                        leg.base_amount
+                            .map(|amount| render_amount(amount, &book.context().units).map(s))
+                            .transpose()?
+                            .unwrap_or(Json::Null),
                     ),
                 ]))
             })
@@ -553,7 +567,7 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .proposal_digest()
             .map_err(|error| Fail::Internal(error.to_string()))?;
         let legs = leg_preview(intent.proposal(), &book)?;
-        let balances = residuals(prepared.residuals(), &book)?;
+        let balances = residuals(prepared.residuals(), prepared.unit(), &book)?;
         if let Some(path) = args.flag("--review-out") {
             write_review_file(&ctx.files, path, &bytes)?;
         }
@@ -571,6 +585,11 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("routes_digest", s(hex(&prepared.routes_digest()))),
                 ("source_digest", s(hex(&prepared.source_digest()))),
                 (
+                    "base_unit",
+                    s(registered_unit_code(prepared.unit(), &book.context().units)?),
+                ),
+                ("valuation_basis", s("retained-carrying-amounts")),
+                (
                     "latest_close",
                     prepared.latest_close().map_or(Json::Null, |close| {
                         s(format!("{:032x}", close.entry_ref.vid.0))
@@ -585,7 +604,7 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ("scope", s("year-end-close-proposal")),
             ],
             &format!(
-                "review FY{} closing proposal {}; nothing was published",
+                "review FY{} closing proposal {}; native and retained functional amounts; nothing was published",
                 request.fiscal_year,
                 hex(&proposal_digest)
             ),
@@ -659,6 +678,14 @@ pub(crate) fn verify_close(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("fiscal_year", Json::Int(i128::from(year))),
         ("known_at", Json::Int(i128::from(verification.known_at.0))),
         (
+            "base_unit",
+            s(registered_unit_code(
+                verification.base_unit,
+                &book.context().units,
+            )?),
+        ),
+        ("valuation_basis", s("retained-carrying-amounts")),
+        (
             "latest_close",
             verification
                 .latest_close
@@ -683,7 +710,10 @@ pub(crate) fn verify_close(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .map_or(Json::Null, Json::Bool),
         ),
         ("needs_reclose", Json::Bool(verification.needs_reclose)),
-        ("residuals", residuals(&verification.residuals, &book)?),
+        (
+            "residuals",
+            residuals(&verification.residuals, verification.base_unit, &book)?,
+        ),
     ];
     if !verification.is_green() || verification.needs_reclose {
         return Err(Fail::Verification {
@@ -698,7 +728,7 @@ pub(crate) fn verify_close(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     ctx.out.event(
         "close_verified",
         fields,
-        &format!("FY{year}: nominal accounts were zero at the last close and remain zero"),
+        &format!("FY{year}: nominal native and functional balances were zero at the last close and remain zero"),
     );
     Ok(())
 }
