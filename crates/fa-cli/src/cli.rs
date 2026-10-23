@@ -4310,9 +4310,13 @@ fn chart_lifecycle(ctx: &mut Ctx<'_>, args: &Args, action: &str) -> Result<(), F
                     role: role.clone(),
                     assigned: true,
                 };
-                let role_key = format!("{key}:role:{role}");
-                let held =
-                    book.record_account_role(&role_spec, who, role_key.as_bytes(), &capability)??;
+                let role_key = crate::chart_role::seeded_role_key(
+                    format!("{key}:role:{role}").into_bytes(),
+                    key.as_bytes(),
+                    code,
+                    role,
+                );
+                let held = book.record_account_role(&role_spec, who, &role_key, &capability)??;
                 role_items.push(crate::chart_role::account_role_json(&held.control, code));
             }
             out.at_book(&book)?;
@@ -4578,7 +4582,12 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     role: role.clone(),
                     assigned: true,
                 };
-                let role_key = [key.as_slice(), format!(":role:{code}:{role}").as_bytes()].concat();
+                let role_key = crate::chart_role::seeded_role_key(
+                    [key.as_slice(), format!(":role:{code}:{role}").as_bytes()].concat(),
+                    &key,
+                    code,
+                    role,
+                );
                 let recorded = book.record_account_role(&spec, who, &role_key, &capability)??;
                 role_items.push(crate::chart_role::account_role_json(
                     &recorded.control,
