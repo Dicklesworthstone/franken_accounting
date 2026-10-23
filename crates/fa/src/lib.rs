@@ -157,7 +157,7 @@ pub use fa_docket::intake::{
     DerivedDocumentResult, ExternalToolOutcome, FocrConfig, FwConfig, extract_pdf_text_layer,
     run_focr_extraction, run_fw_extraction,
 };
-pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
+pub use fa_docket::search::{SearchHit, SearchIndexableRecord, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
     BatchPlan, BatchPlanCertificate, IntentError, MAX_BATCH_BYTES, MAX_BATCH_PLAN_BYTES,
     MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan, ReplacementPlan,
@@ -284,7 +284,7 @@ pub use scenario::{
     SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
     ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
-pub use search::SearchResults;
+pub use search::{SearchResults, document_search_text};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
