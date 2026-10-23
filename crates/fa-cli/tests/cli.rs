@@ -20904,6 +20904,14 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
         "--json",
     ]));
     assert_eq!(int(&lineage, "row_count"), Some(1), "{}", lineage.render());
+    // A live rule's account cannot be closed out from under it (plan §10.3).
+    let (code, out, _) = run(&["chart", "close", "6000", "--on", "2026-12-31", "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("rule sale v1"), "{out}");
 
     // Through the library: what the kernel re-derives is what posts.
     let keys = BookKeys::load(&book.join("book.keys")).unwrap();
