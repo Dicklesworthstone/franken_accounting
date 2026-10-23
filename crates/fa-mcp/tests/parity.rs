@@ -474,8 +474,9 @@ fn the_gate_fails_on_planted_defects() {
 fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
     let (mcp, reg) = embedded();
     assert!(mcp.cluster("fa.close").unwrap().on_demand);
-    // routes, verify, and the draft review (5082454) are the closing reads.
-    assert_eq!(mcp.tools_of("fa.close").count(), 3);
+    // routes, verify, the draft review (5082454) and the consolidation
+    // (fa-76hy) are the closing reads.
+    assert_eq!(mcp.tools_of("fa.close").count(), 4);
     assert_eq!(
         mcp.tool_for("close", Some("dry-run")).unwrap().wire_name(),
         "fa_close_dry_run"
@@ -526,9 +527,30 @@ fn closing_reads_lower_to_exact_history_and_mutations_remain_host_only() {
     assert_eq!(translated.tool, "fa_close_verify");
     assert_eq!(translated.arguments, verify_args);
 
+    let consolidate = mcp.tool_for("consolidate", None).unwrap();
+    assert_eq!(consolidate.wire_name(), "fa_close_consolidate");
+    let consolidate_args = json!({"period": "FY2026-P03", "as_known_at": "17"});
+    let consolidation = consolidate
+        .invocation(&mcp, reg, &consolidate_args)
+        .unwrap();
+    assert_eq!(
+        consolidation.argv,
+        vec![
+            "consolidate",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            "17",
+            "--json"
+        ]
+    );
+    assert!(consolidation.stdin.is_none());
+    assert!(consolidate.invocation(&mcp, reg, &json!({})).is_err());
+
     for (call, operations) in [
         (&route_call, &["read"][..]),
         (&verification, &["read", "verify"][..]),
+        (&consolidation, &["read"][..]),
     ] {
         let parsed = fa_cli::args::parse(&call.argv, &reg.value_flags(), &reg.switches()).unwrap();
         let admitted = fa_cli::cli::bound_command_ops(&call.argv[0], &parsed).unwrap();
