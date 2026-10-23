@@ -82,7 +82,7 @@ fa tb --book ./books/acme --as-of 2026-03-15 --as-known-at 42 --json
 fa verify registers --book ./books/acme --period FY2026-P03 --json
 # A multi-entity book: each legal entity's register refolds against the journal.
 fa verify entities --book ./books/acme --period FY2026-P03 --json
-# Find entries by their description or leg memos (an index rebuilt from the journal per query).
+# Find entries by their description or leg memos, and documents by their (extracted) text: one index rebuilt from the journal per query.
 fa search "office rent" --book ./books/acme --json
 # GQL over the book's graph: March's legs summed per unit and side, as known at sequence 42.
 # --certify retains the result's certificate; fa replay C:<oid> reproduces the rows byte for byte.

@@ -4922,15 +4922,17 @@ impl Book {
     }
 
     /// Rank the entries visible at `known_at` (the head when `None`) whose
-    /// description or memos match `query` (`fa search`; see
-    /// [`crate::search`]): an index rebuilt from the journal for this query
-    /// and never stored.
-    pub fn search_entries(
+    /// description or memos match `query`, with the caller's `documents`
+    /// records in the same index (`fa search`; see [`crate::search`]): an
+    /// index rebuilt from the journal for this query and never stored.
+    pub fn search(
         &self,
         query: &str,
         known_at: Option<CommitSeq>,
+        documents: &[crate::SearchIndexableRecord],
+        kind: Option<crate::SearchRecordKind>,
     ) -> Result<crate::SearchResults, BookError> {
-        with_store!(&self.store, core => core.search_entries(&self.purposes(), query, known_at))
+        with_store!(&self.store, core => core.search(&self.purposes(), query, known_at, documents, kind))
     }
 
     /// Run a compiled profile query at `known_at` (`fa query`; see

@@ -903,6 +903,117 @@ fn extract_records_a_pdf_text_layer_as_a_derived_document() -> std::io::Result<(
     Ok(())
 }
 
+/// fa-qip: `fa search` indexes documents beside entries, in one index. A text
+/// document is found by its own bytes; a PDF only through the text `fa
+/// document extract` derives from it, never its raw bytes (ASCII here, so
+/// they would decode). `--kind` keeps one kind of hit. A document recorded
+/// after a frontier is not found at it; an unknown kind is usage.
+#[test]
+fn search_finds_documents_by_their_own_or_extracted_text() -> std::io::Result<()> {
+    let dir = tmp("search-docs")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Search Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let add = |name: &str, bytes: &[u8], mime: &str| -> String {
+        let path = write(&dir, name, bytes);
+        let out = ok(
+            &book,
+            &[
+                "document",
+                "add",
+                &path,
+                "--kind",
+                "Invoice",
+                "--mime",
+                mime,
+                "--grade",
+                "HumanUpload",
+                "--json",
+            ],
+        );
+        field(&out, "oid").unwrap().to_string()
+    };
+    let memo = add(
+        "memo.txt",
+        b"Harbor Street lease renewal memo",
+        "text/plain",
+    );
+    let intent = write(
+        &dir,
+        "rent.json",
+        br#"{"idempotency_key":"rent","effective_date":"2026-03-10","description":"Office rent for March","legs":[{"side":"debit","account":"6000","amount":"9.00 USD","memo":"Harbor Street lease"},{"side":"credit","account":"1000","amount":"9.00 USD"}]}"#,
+    );
+    let out = ok(
+        &book,
+        &["post", "--intent", &intent, "--evidence", &memo, "--json"],
+    );
+    let rent = field(&out, "vid").unwrap().to_string();
+    let search = |args: &[&str]| -> String {
+        let mut argv = vec!["search"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        let out = ok(&book, &argv);
+        assert_eq!(field(&out, "event"), Some("search_results"), "{out}");
+        out
+    };
+    let hit = |out: &str, id: &str| out.contains(&format!("\"id\":\"{id}\""));
+
+    // One query finds the document by its bytes and the entry by its memo;
+    // --kind searches one kind only, and `all` is the default's index.
+    let both = search(&["harbor"]);
+    assert!(hit(&both, &memo) && hit(&both, &rent), "{both}");
+    let documents = search(&["harbor", "--kind", "document"]);
+    assert!(
+        hit(&documents, &memo) && !hit(&documents, &rent),
+        "{documents}"
+    );
+    let entries = search(&["harbor", "--kind", "entry"]);
+    assert!(hit(&entries, &rent) && !hit(&entries, &memo), "{entries}");
+    assert_eq!(field(&documents, "records"), Some("1"), "{documents}");
+    let all = search(&["harbor", "--kind", "all"]);
+    assert_eq!(field(&all, "index_digest"), field(&both, "index_digest"));
+    assert_eq!(field(&all, "total"), field(&both, "total"), "{all}");
+    let frontier = field(&both, "known_at").unwrap().to_string();
+
+    // A PDF's raw bytes are never indexed; the text extracted from it is.
+    let stream = b"BT /F1 12 Tf (ACME SUPPLIES INC.) Tj T* (TOTAL DUE: 1,234.56 USD) Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.7\n1 0 obj\n<< /Length {} >>\nstream\n",
+        stream.len()
+    )
+    .into_bytes();
+    pdf.extend_from_slice(stream);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF\n");
+    let invoice = add("invoice.pdf", &pdf, "application/pdf");
+    let unextracted = search(&["acme"]);
+    assert_eq!(field(&unextracted, "total"), Some("0"), "{unextracted}");
+    let out = ok(&book, &["document", "extract", &invoice, "--json"]);
+    let derived = field(&out, "oid").unwrap().to_string();
+    let found = search(&["acme", "--kind", "document"]);
+    assert!(hit(&found, &derived) && !hit(&found, &invoice), "{found}");
+    assert!(
+        found.contains("[ACME] SUPPLIES"),
+        "the snippet is the extracted text: {found}"
+    );
+
+    // At the earlier frontier the derived document is not there to be found.
+    let early = search(&["acme", "--as-known-at", &frontier]);
+    assert_eq!(field(&early, "total"), Some("0"), "{early}");
+    let (code, out, _) = fa(&book, &["search", "harbor", "--kind", "invoice", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
 /// fa-lzrn (plan §9.1, fa-646's subprocess graders): `fa document extract
 /// --tool focr` OCRs an image through the owner's `focr`, resolved in PATH,
 /// over a private copy of the source that is removed afterwards. The derived
