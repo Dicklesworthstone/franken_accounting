@@ -606,14 +606,14 @@ example = "fa explain balance 1000 --period FY2026-P03 --book ./books/myco --jso
 
 [[verb]]
 name = "search"
-summary = "Full-text search over entry descriptions and leg memos and document text at a recorded frontier, ranked by exact fixed-point BM25 from an index rebuilt from the journal for each query and never stored (plan §9)."
+summary = "Full-text search over entry descriptions and leg memos, document text and finding narratives at a recorded frontier, ranked by exact fixed-point BM25 from an index rebuilt from the journal for each query and never stored (plan §9)."
 writes = false
 subcommands = []
 flags = ["--as-known-at", "--limit", "--kind"]
 switches = []
 events = ["search_results"]
 exits = [0, 2, 3, 4, 5, 7]
-usage = ["search <query> [--kind entry|document|all] [--as-known-at HEAD|<seq>|<RFC3339>] [--limit N]   (quote a phrase; terms match whole tokens; hits are best first, at most --limit of them, default 20, 1..=200; --kind searches one kind of record, default all)", "The index is rebuilt from the journal at the frontier for this query alone (never stored, so it cannot drift from the journal; index_digest names it). Each committed entry's description and leg memos are indexed, opened with the book's key: erased text, or text sealed under a subject's own key, is never indexed and never appears in a snippet. Each document this capability reads whole is indexed by its own UTF-8 text, or a derived document by its extracted text (fa document extract; a PDF or image is found through its derived text); a document seen only redacted contributes nothing. Entries and documents share one index under --kind all (the default), so their scores are comparable; a kind indexes only its own records. Findings are not indexed yet. A whole-book read: a token carrying any scope caveat is refused. No amount is parsed from a hit; fa entry show <id> reads an entry, fa document read <oid> a document."]
+usage = ["search <query> [--kind entry|document|finding|all] [--as-known-at HEAD|<seq>|<RFC3339>] [--limit N]   (quote a phrase; terms match whole tokens; hits are best first, at most --limit of them, default 20, 1..=200; --kind searches one kind of record, default all)", "The index is rebuilt from the journal at the frontier for this query alone (never stored, so it cannot drift from the journal; index_digest names it). Each committed entry's description and leg memos are indexed, opened with the book's key: erased text, or text sealed under a subject's own key, is never indexed and never appears in a snippet. Each document this capability reads whole is indexed by its own UTF-8 text, or a derived document by its extracted text (fa document extract; a PDF or image is found through its derived text); a document seen only redacted contributes nothing, and one that fails its own proof fails the search (exit 8). Each finding of every run recorded at the frontier is indexed by its procedure and narrative, replayed from the run's certificate (a run that does not replay fails the search). Entries, documents and findings share one index under --kind all (the default), so their scores are comparable; a kind indexes only its own records. A whole-book read: a token carrying any scope caveat is refused. No amount is parsed from a hit; fa entry show <id> reads an entry, fa document read <oid> a document, fa finding show <id> a finding."]
 example = "fa search \"office rent\" --book ./books/myco --json"
 
 [[verb]]
@@ -1938,7 +1938,7 @@ fields = ["format:string", "ir_digest:hex", "digest:hex", "bytes:int", "out:stri
 [[event]]
 name = "search_results"
 book = true
-doc = "A full-text search at known_at (fa search): records is how many entries and documents carried searchable text, index_digest names the index rebuilt from that journal prefix over the kinds searched (the same prefix and kind rebuild the same index), total counts every hit and hits holds the first --limit of them, best first. A hit's snippet is the matched text; its score is exact fixed-point BM25 (micro-units), a ranking and never a finding."
+doc = "A full-text search at known_at (fa search): records is how many entries, documents and findings carried searchable text, index_digest names the index rebuilt from that journal prefix over the kinds searched (the same prefix and kind rebuild the same index), total counts every hit and hits holds the first --limit of them, best first. A hit's snippet is the matched text; its score is exact fixed-point BM25 (micro-units), a ranking and never a finding."
 fields = ["query:string", "known_at:seq", "records:int", "index_digest:hex", "total:int", "hits:[search_hit]"]
 
 [[event]]
@@ -3202,7 +3202,7 @@ fields = ["period:string", "green:bool", "known_at:seq", "cells_checked:int", "e
 
 [[shape]]
 name = "search_hit"
-doc = "One ranked search hit: kind (entry or document), id (an entry's vid as 32-hex, for fa entry show, or a document's oid as 64-hex, for fa document read), recorded_at (its creating sequence), score_micro (BM25 in micro-units), the query terms it matched, and a snippet of its text."
+doc = "One ranked search hit: kind (entry, document or finding), id (an entry's vid as 32-hex, for fa entry show; a document's oid as 64-hex, for fa document read; or a finding's vid as 32-hex, for fa finding show), recorded_at (its creating sequence), score_micro (BM25 in micro-units), the query terms it matched, and a snippet of its text."
 fields = ["kind:string", "id:hex", "recorded_at:seq", "score_micro:int", "matched_terms:[string]", "snippet:string"]
 
 [[shape]]
@@ -3801,7 +3801,7 @@ doc = "Lantern: the registered forensic and audit procedures (journal-entry test
 [[mcp.cluster]]
 name = "fa.search"
 on_demand = true
-doc = "Full-text search over entry descriptions and leg memos and document text at a recorded frontier, ranked by exact fixed-point BM25 from one index rebuilt from the journal per query. A pure read. On demand (fa-mcp --cluster fa.search): the default surface is at its 40-tool limit."
+doc = "Full-text search over entry descriptions and leg memos, document text and finding narratives at a recorded frontier, ranked by exact fixed-point BM25 from one index rebuilt from the journal per query. A pure read. On demand (fa-mcp --cluster fa.search): the default surface is at its 40-tool limit."
 
 [[mcp.cluster]]
 name = "fa.query"
@@ -5004,8 +5004,8 @@ subcommands = []
 positionals = ["query"]
 flags = ["--as-known-at", "--limit", "--kind"]
 required = ["query"]
-dont = ["Don't read a high score as evidence of anything: BM25 ranks text, it states no finding, and no amount is parsed from a hit.", "Use the hit's id with the read tools (show entry, explain lineage, or the steward tool's read for a document) to read the record itself; the snippet is only its matched text."]
-mistakes = ["Expecting findings among the hits: this build indexes entry descriptions, leg memos and document text.", "Expecting a scanned image or PDF to match before its text is extracted: run the steward tool's extract action first.", "Expecting erased or subject-sealed text, or a document this session sees only redacted, to match: it is never indexed."]
+dont = ["Don't read a high score as evidence of anything: BM25 ranks text, it states no finding, and no amount is parsed from a hit.", "Use the hit's id with the read tools (show entry, explain lineage, the steward tool's read for a document, or the findings show tool for a finding) to read the record itself; the snippet is only its matched text."]
+mistakes = ["Expecting a computed but unrecorded procedure run among the hits: only findings recorded at the frontier are indexed (record them first).", "Expecting a scanned image or PDF to match before its text is extracted: run the steward tool's extract action first.", "Expecting erased or subject-sealed text, or a document this session sees only redacted, to match: it is never indexed."]
 
 [[mcp.tool]]
 cluster = "fa.query"
