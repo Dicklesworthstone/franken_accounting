@@ -29,6 +29,9 @@ const LEGACY_REVENUE: &str = "Private legacy revenue";
 const LEGACY_EXPENSE: &str = "Private legacy expense";
 const BEAN_CASH: &str = "Assets:Legacy:Checking";
 const BEAN_EQUITY: &str = "Equity:Legacy:Opening";
+const HLEDGER_CASH: &str = "assets:legacy:checking";
+const HLEDGER_EQUITY: &str = "equity:legacy opening";
+const HLEDGER: &str = "; A legacy hledger journal, as hledger print writes it.\naccount assets:legacy:checking\ncommodity USD 1,000.00\n\n2025-12-20 * (A-1) Legacy bank | Private retained opening deposit  ; migration\n    assets:legacy:checking    USD 100.00  ; private retained cash memo\n    equity:legacy opening\n\n2025/12/29 Private second deposit\n    assets:legacy:checking      25.50 USD = USD 125.50\n    equity:legacy opening      -25.50 USD\n";
 const BEANCOUNT: &str = "option \"operating_currency\" \"USD\"\n2025-01-01 open Assets:Legacy:Checking USD\n2025-01-01 open Equity:Legacy:Opening USD\n\n2025-12-20 * \"Legacy bank\" \"Private retained opening deposit\" #migration\n  Assets:Legacy:Checking   100.00 USD ; private retained cash memo\n  Equity:Legacy:Opening\n\n2025-12-29 txn \"Private second deposit\"\n  Assets:Legacy:Checking    25.50 USD\n  Equity:Legacy:Opening    -25.50 USD\n\n2025-12-31 balance Assets:Legacy:Checking 125.50 USD\n";
 const QB: &str = "Transaction ID,Date,Account,Debit,Credit,Currency,Memo/Description,Created At,Created By\nprivate-source-entry-one,2025-12-20,Private legacy checking account,100.00,,USD,Private retained cash memo,2025-12-20T12:30:00Z,private-legacy-author\nprivate-source-entry-one,2025-12-20,Private legacy opening equity,,100.00,USD,Private retained equity memo,2025-12-20T12:30:00Z,private-legacy-author\nprivate-source-entry-two,2025-12-29,Private legacy checking account,25.50,,USD,Second cash memo,2025-12-29T09:00:00Z,private-legacy-author\nprivate-source-entry-two,2025-12-29,Private legacy opening equity,,25.50,USD,Second equity memo,2025-12-29T09:00:00Z,private-legacy-author\n";
 const COLUMNS: &str = "[columns]\nsource_system = \"legacy-csv\"\nentry_id_column = \"entry\"\neffective_date_column = \"date\"\nrecorded_at_column = \"recorded\"\naccount_column = \"account\"\nsigned_amount_column = \"amount\"\ndescription_column = \"description\"\nmemo_column = \"memo\"\nentered_by_column = \"entered\"\napproved_by_column = \"approved\"\n";
@@ -520,10 +523,10 @@ impl Fixture {
     }
 
     fn intent(&self) -> Json {
-        let (cash, equity) = if self.format == "beancount" {
-            (BEAN_CASH, BEAN_EQUITY)
-        } else {
-            (LEGACY_CASH, LEGACY_EQUITY)
+        let (cash, equity) = match self.format.as_str() {
+            "beancount" => (BEAN_CASH, BEAN_EQUITY),
+            "hledger" => (HLEDGER_CASH, HLEDGER_EQUITY),
+            _ => (LEGACY_CASH, LEGACY_EQUITY),
         };
         let mut mappings = vec![(cash, s("1000")), (equity, s("3000"))];
         if self.opening_entries.is_some() || self.entry_periods.is_some() {
@@ -2031,6 +2034,16 @@ fn a_beancount_ledger_completes_the_approved_opening_workflow() {
     Fixture::new("beancount", BEANCOUNT, "USD", "Other", "2026-07-01").complete();
 }
 
+/// fa-waow: an hledger journal is a legacy source the same way. Its
+/// account names (one with a space) map through account_map, the posting
+/// without an amount takes the remainder, commodities stand before or after
+/// the number, the assertion is not re-checked, and the approved opening
+/// workflow completes.
+#[test]
+fn an_hledger_journal_completes_the_approved_opening_workflow() {
+    Fixture::new("hledger", HLEDGER, "USD", "Other", "2026-07-01").complete();
+}
+
 #[test]
 fn generic_csv_uses_the_book_base_unit_without_an_implicit_usd_fallback() {
     let fixture = Fixture::new("csv", GENERIC, "EUR", "Spreadsheet", "2026-07-01");
@@ -2744,6 +2757,17 @@ fn stock_lines(book: &Path, period: &str) -> Vec<(String, String)> {
 /// longer ties to its period's trial balance and publishes nothing.
 #[test]
 fn a_books_beancount_export_imports_as_history_with_identical_period_balances() {
+    export_import_identity("beancount");
+}
+
+/// The same identity through the book's hledger export and the hledger
+/// reader (fa-waow).
+#[test]
+fn a_books_hledger_export_imports_as_history_with_identical_period_balances() {
+    export_import_identity("hledger");
+}
+
+fn export_import_identity(format: &str) {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let dir = loop {
         let path = std::env::temp_dir().join(format!(
@@ -2859,13 +2883,13 @@ fn a_books_beancount_export_imports_as_history_with_identical_period_balances() 
     );
 
     // Its Beancount export.
-    let exported = dir.join("export.beancount");
+    let exported = dir.join(format!("export.{format}"));
     let exported_path = exported.display().to_string();
     let written = ok(
         &source,
         &[
             "export",
-            "beancount",
+            format,
             "--as-of",
             "2025-12-31",
             "--out",
@@ -2897,7 +2921,7 @@ fn a_books_beancount_export_imports_as_history_with_identical_period_balances() 
         source: String::new(),
         trial_balance: String::new(),
         run_vid: String::new(),
-        format: "beancount".into(),
+        format: format.into(),
         opening_entries: None,
         entry_periods: None,
         period_trial_balances: Vec::new(),
@@ -2931,7 +2955,7 @@ fn a_books_beancount_export_imports_as_history_with_identical_period_balances() 
     }
     let run_body = obj(vec![
         ("run_key", s("export-identity")),
-        ("source_system", s("beancount")),
+        ("source_system", s(format)),
         ("mode", s("FullDetail")),
         ("trial_balance", s(&opening)),
         ("opening_date", s("2026-01-01")),
@@ -2947,7 +2971,7 @@ fn a_books_beancount_export_imports_as_history_with_identical_period_balances() 
         obj(vec![
             ("run", s(format!("MR:{run_vid}"))),
             ("source", s(format!("D:{source_oid}"))),
-            ("format", s("beancount")),
+            ("format", s(format)),
             (
                 "account_map",
                 obj(vec![
@@ -2966,7 +2990,7 @@ fn a_books_beancount_export_imports_as_history_with_identical_period_balances() 
         .replace("  250.00 USD\n", "  251.00 USD\n")
         .replace("  -250.00 USD\n", "  -251.00 USD\n");
     assert_ne!(tampered, ledger, "the planted edit applies");
-    let tampered_oid = fixture.document("tampered.beancount", &tampered, "Other");
+    let tampered_oid = fixture.document(&format!("tampered.{format}"), &tampered, "Other");
     let tampered_intent = fixture.file("tampered-import.json", &import(&tampered_oid).render());
     let before = head(&fixture.book);
     let (status, refused) = run(
@@ -2989,7 +3013,7 @@ fn a_books_beancount_export_imports_as_history_with_identical_period_balances() 
     );
 
     // The true export imports and folds to the source in every period.
-    let source_oid = fixture.document("export.beancount", &ledger, "Other");
+    let source_oid = fixture.document(&format!("export.{format}"), &ledger, "Other");
     let intent = fixture.file("import.json", &import(&source_oid).render());
     let prepared = ok(
         &fixture.book,

@@ -279,6 +279,7 @@ fn format_name(format: LegacyFormat) -> &'static str {
         LegacyFormat::NetSuiteCsv => "netsuite-csv",
         LegacyFormat::GenericCsv => "csv",
         LegacyFormat::Beancount => "beancount",
+        LegacyFormat::Hledger => "hledger",
     }
 }
 
@@ -315,10 +316,11 @@ impl ImportRequest {
             "netsuite-csv" => LegacyFormat::NetSuiteCsv,
             "csv" => LegacyFormat::GenericCsv,
             "beancount" => LegacyFormat::Beancount,
+            "hledger" => LegacyFormat::Hledger,
             _ => {
                 return Err(usage(
                     "unsupported legacy source format",
-                    "format: quickbooks-iif | quickbooks-csv | xero-csv | netsuite-csv | csv | beancount",
+                    "format: quickbooks-iif | quickbooks-csv | xero-csv | netsuite-csv | csv | beancount | hledger",
                 ));
             }
         };
@@ -836,6 +838,7 @@ fn parse_source(
         LegacyFormat::Beancount => {
             legacy::parse_beancount_ledger(source_text, &units, &account_map)?
         }
+        LegacyFormat::Hledger => legacy::parse_hledger_journal(source_text, &units, &account_map)?,
     };
     if batch.chunks.len() > MAX_CHUNKS {
         return Err(usage(
