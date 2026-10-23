@@ -267,7 +267,7 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
     // per-item allocation. Refuse instead of assigning it to this invoice.
     let chart = crate::chart::read_at(db, book, at)?;
     let valuation_accounts: BTreeSet<_> = chart
-        .fx_revaluation_routes
+        .fx_revaluation_routes()
         .iter()
         .filter_map(|routes| {
             routes

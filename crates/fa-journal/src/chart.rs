@@ -182,6 +182,13 @@ impl ChartSnapshot {
         &self.children
     }
 
+    /// Every FX revaluation routes map recorded at this frontier;
+    /// `chart::fx` selects the one effective on a date.
+    #[must_use]
+    pub fn fx_revaluation_routes(&self) -> &[FxRevaluationRoutes] {
+        &self.fx_revaluation_routes
+    }
+
     /// Exactly the posting leaves below `root`, including `root` itself if
     /// it is a leaf. An empty summary has an empty set, not a missing balance.
     /// The walk is iterative: valid deep charts never consume the call stack.
