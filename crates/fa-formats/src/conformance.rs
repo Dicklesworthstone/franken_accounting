@@ -26,6 +26,9 @@ pub struct ConformanceMatrix {
     pub oracle: String,
     pub proof_class: String,
     pub no_claim_boundary: String,
+    /// Markdown prose rendered between the header and the table, without a
+    /// trailing newline; empty renders nothing.
+    pub notes: String,
     pub rows: Vec<ConformanceRow>,
 }
 
@@ -115,6 +118,10 @@ impl ConformanceMatrix {
             "- **No-Claim Boundary:** {}\n\n",
             self.no_claim_boundary
         ));
+        if !self.notes.is_empty() {
+            md.push_str(&self.notes);
+            md.push_str("\n\n");
+        }
         md.push_str("| Fixture | Expected | Observed | Divergence | Reason |\n");
         md.push_str("|---|---|---|---|---|\n");
         for row in &self.rows {

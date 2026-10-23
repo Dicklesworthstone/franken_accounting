@@ -12,7 +12,11 @@
 
 #![forbid(unsafe_code)]
 // 128-bit (amount) arithmetic only: clippy.toml exempts the narrower integers.
-#![deny(clippy::arithmetic_side_effects, clippy::disallowed_methods)]
+#![deny(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::disallowed_methods
+)]
 
 pub mod assertion;
 pub mod availability;
@@ -188,6 +192,9 @@ pub struct Fold {
 
 /// `vid(Register) = H("fa:vid:register:v1" ‖ book ‖ account ‖ unit ‖ period)`.
 #[must_use]
+// The period code's length prefix: a period ref is at most
+// MAX_PERIOD_REF_BYTES (32) bytes, far inside u32.
+#[allow(clippy::cast_possible_truncation)]
 pub fn register_vid(book: Id128, key: &CellKey) -> VId {
     let mut h = Hasher::new();
     h.update(b"fa:vid:register:v1");

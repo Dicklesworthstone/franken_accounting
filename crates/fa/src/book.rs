@@ -3837,6 +3837,20 @@ impl Book {
         with_store!(&self.store, core => core.export_proof(&self.purposes(), principal, capability, request))
     }
 
+    /// Export the complete record-bearing suffix from the recorded state
+    /// the recipient retained to a later one (default: the latest), under
+    /// current read and produce authority, as [`crate::SuffixArtifact`]:
+    /// every appended record is disclosed, controls and evidence records
+    /// included. Export never mutates the book.
+    pub fn export_suffix(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: crate::SuffixRequest,
+    ) -> Outcome<crate::SuffixArtifact> {
+        with_store!(&self.store, core => core.export_suffix(&self.purposes(), principal, capability, request))
+    }
+
     /// Cosign the recorded state `state` (default: the latest) with a
     /// witness's key (plan §13.5, fa-qtfd): the state's signed checkpoint
     /// with the witness's signature added, an attestation that this root was

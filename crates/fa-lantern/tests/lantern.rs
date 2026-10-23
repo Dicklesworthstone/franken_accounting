@@ -62,6 +62,9 @@ mod meter_tests;
 #[path = "lantern/roles.rs"]
 mod roles;
 
+#[path = "lantern/jet.rs"]
+mod jet;
+
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 
@@ -1874,7 +1877,7 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
             .expect("registered role and account type admitted");
     }
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 61, "every registry row is listed");
+    assert_eq!(rows.len(), 62, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();

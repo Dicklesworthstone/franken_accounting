@@ -23,7 +23,11 @@
 
 #![forbid(unsafe_code)]
 // 128-bit (amount) arithmetic only: clippy.toml exempts the narrower integers.
-#![deny(clippy::arithmetic_side_effects, clippy::disallowed_methods)]
+#![deny(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::disallowed_methods
+)]
 
 pub mod allocation;
 pub mod amount;

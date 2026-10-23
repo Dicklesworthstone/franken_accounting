@@ -728,12 +728,12 @@ example = "fa checkpoint create --grant witness --book ./books/myco --json"
 name = "proof"
 summary = "Export a recorded checkpoint (signed TransparencyCheckpoint or raw 80-byte statement) or a portable accounting proof for independent fa-verify verification."
 writes = false
-subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance", "evidence-disclosure"]
+subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "suffix", "prefix", "balance", "evidence-disclosure"]
 flags = ["--state", "--next-state", "--entry", "--document", "--role", "--chunk", "--account", "--unit", "--as-of", "--out", "--grant"]
 switches = ["--with-record"]
-events = ["proof_exported", "evidence_disclosure_exported"]
+events = ["proof_exported", "proof_suffix_exported", "evidence_disclosure_exported"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["proof signed-checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]   (the TransparencyCheckpoint signed by the book's key; checkpoint_public_key names the key)", "proof checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]", "proof inclusion --entry <vid|E:vid> [--with-record] [--state <oid|latest>] [--out <new-file>]", "proof consistency --state <old-oid> --next-state <new-oid> [--out <new-file>]", "proof prefix [--state <oid|latest>] [--out <new-file>]", "proof balance --account <code> --unit <CODE> [--as-of YYYY-MM-DD] [--state <oid|latest>] [--out <new-file>]", "proof evidence-disclosure --entry <vid|E:vid> --document <oid> [--role <name>] [--chunk <idx>]... [--state <oid|latest>] [--out <new-file>]", "Export never creates a checkpoint or changes the book. Missing --state selects the latest recorded state. --out writes a new raw binary file; otherwise bytes is complete hex. Checkpoints are exact 80-byte statements. Binary proofs are limited to 64 MiB; inline output has the smaller daemon frame bound.", "fa-verify <kind> --proof <file> --checkpoint <signed-checkpoint-file> --key <checkpoint_public_key> --json, or --checkpoint <raw-80-byte-file> --unsigned-checkpoint once that statement is trusted outside the proof; consistency also takes --next-checkpoint <claimed-file>. Prefix verifies all envelopes, inclusion optionally recomputes a payload, and balance recomputes exact posted debits/credits for one account/unit through an inclusive effective cutoff. No signatures, document receipts, FX or general statement replay are claimed."]
+usage = ["proof signed-checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]   (the TransparencyCheckpoint signed by the book's key; checkpoint_public_key names the key)", "proof checkpoint [--state <64-hex-oid|latest>] [--out <new-file>]", "proof inclusion --entry <vid|E:vid> [--with-record] [--state <oid|latest>] [--out <new-file>]", "proof consistency --state <old-oid> --next-state <new-oid> [--out <new-file>]", "proof suffix --state <retained-oid> [--next-state <oid|latest>] [--out <new-directory>]   (plan §13.2: everything a recipient who kept the retained state needs to extend it: the consistency proof and one record-bearing inclusion proof per leaf appended since, controls and evidence records included, in leaf order; --out makes a new directory with consistency.bin and record-<leaf>.bin, otherwise inline hex. Every appended record is disclosed: whole-book read and produce)", "proof prefix [--state <oid|latest>] [--out <new-file>]", "proof balance --account <code> --unit <CODE> [--as-of YYYY-MM-DD] [--state <oid|latest>] [--out <new-file>]", "proof evidence-disclosure --entry <vid|E:vid> --document <oid> [--role <name>] [--chunk <idx>]... [--state <oid|latest>] [--out <new-file>]", "Export never creates a checkpoint or changes the book. Missing --state selects the latest recorded state. --out writes a new raw binary file; otherwise bytes is complete hex. Checkpoints are exact 80-byte statements. Binary proofs are limited to 64 MiB; inline output has the smaller daemon frame bound.", "fa-verify <kind> --proof <file> --checkpoint <signed-checkpoint-file> --key <checkpoint_public_key> --json, or --checkpoint <raw-80-byte-file> --unsigned-checkpoint once that statement is trusted outside the proof; consistency also takes --next-checkpoint <claimed-file>. Prefix verifies all envelopes, inclusion optionally recomputes a payload, and balance recomputes exact posted debits/credits for one account/unit through an inclusive effective cutoff. No signatures, document receipts, FX or general statement replay are claimed."]
 example = "fa proof balance --account 1000 --unit USD --state latest --book ./books/myco --json"
 
 [[verb]]
@@ -2168,6 +2168,12 @@ name = "proof_exported"
 book = true
 doc = "A raw portable proof from an existing recomputed checkpoint, the exact 80-byte checkpoint statement itself (kind checkpoint), or the state's TransparencyCheckpoint signed by the book's key (kind signed-checkpoint; signatures ed25519, trust checkpoint_public_key). checkpoint_bytes and next_checkpoint_bytes are hex statements; the latter is a consistency claim, not a trust anchor. checkpoint_public_key is the book's Ed25519 checkpoint key, the --key fa-verify judges a signed checkpoint with. bytes is full proof hex for inline output, otherwise null with a new binary file. No book write occurs. A raw statement needs external trust (signatures unsigned, trust external_checkpoint_required); scope and claim name the exact inclusion, prefix-completeness or balance predicate."
 fields = ["kind:string", "scope:string", "state_oid:hex", "recorded_at:seq", "through_seq:seq", "leaf_count:int", "root:hex", "checkpoint_bytes:hex", "next_state_oid:hex?", "next_checkpoint_bytes:hex?", "signatures:string", "trust:string", "checkpoint_public_key:hex", "claim:object", "byte_len:int", "bytes:hex?", "file:string?"]
+
+[[event]]
+name = "proof_suffix_exported"
+book = true
+doc = "`fa proof suffix` (plan §13.2): the complete record-bearing suffix from the recorded state the recipient retained (state_oid, leaf from_leaf) to next_state_oid (leaf to_leaf). consistency is the proof that next extends the retained root, records one record-bearing inclusion proof at next per leaf in [from_leaf, to_leaf), in leaf order, controls and evidence records included (inline hex; null when written to directory, then files lists consistency.bin and the record files in leaf order). checkpoint_bytes and next_checkpoint_bytes are the raw statements; judge both proofs against the two signed checkpoints (fa proof signed-checkpoint) with checkpoint_public_key, as verify says. Every appended record is disclosed; nothing is written to the book."
+fields = ["state_oid:hex", "next_state_oid:hex", "from_leaf:int", "to_leaf:int", "through_seq:seq", "checkpoint_bytes:hex", "next_checkpoint_bytes:hex", "checkpoint_public_key:hex", "record_count:int", "byte_len:int", "consistency:hex?", "records:[hex]?", "directory:string?", "files:[string]?", "verify:string"]
 
 [[event]]
 name = "bundle_produced"
@@ -4413,14 +4419,14 @@ mistakes = ["Expecting signatures or witnesses here: the listing names each stat
 cluster = "fa.notary"
 name = "export"
 verb = "proof"
-subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "prefix", "balance", "evidence-disclosure"]
+subcommands = ["signed-checkpoint", "checkpoint", "inclusion", "consistency", "suffix", "prefix", "balance", "evidence-disclosure"]
 selector = "kind"
 positionals = []
 flags = ["--state", "--next-state", "--entry", "--document", "--role", "--chunk", "--account", "--unit", "--as-of"]
 switches = ["--with-record"]
 required = []
 dont = ["The launch capability must include read and produce. Per-call grants, book selection and output paths are forbidden. Proofs and checkpoint bytes are returned as complete hex.", "Judge proofs against the signed checkpoint (kind signed-checkpoint) with fa-verify --key <checkpoint_public_key>, or establish trust in the raw checkpoint independently and pass --unsigned-checkpoint; the proof never authenticates its own anchor. Complete-prefix and balance formats disclose every journal envelope and require whole-book read authority.", "A balance proof checks posted debits and credits for one account/unit from inception through an optional inclusive as_of date. It is not a financial-statement, FX, signatures or document-receipt proof."]
-mistakes = ["Using entry or with_record outside inclusion; omitting entry for inclusion.", "Omitting next_state for consistency or account and unit for balance.", "Passing out to write a host file: MCP has inline output only.", "Using a state oid from another book, or expecting export to create a new checkpoint."]
+mistakes = ["Using entry or with_record outside inclusion; omitting entry for inclusion.", "Omitting next_state for consistency or account and unit for balance.", "Omitting state for suffix: it names the state you retained; the suffix runs from there to next_state (default latest) and its records come back inline.", "Passing out to write a host file: MCP has inline output only.", "Using a state oid from another book, or expecting export to create a new checkpoint."]
 
 [[mcp.tool]]
 cluster = "fa.rea"

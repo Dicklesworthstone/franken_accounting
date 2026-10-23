@@ -35,6 +35,8 @@ pub const MAX_POPULATION: u64 = 1_000_000;
 
 /// The leading decimal digit of a positive magnitude.
 #[must_use]
+// The loop leaves m < 10, so the narrowing keeps every bit.
+#[allow(clippy::cast_possible_truncation)]
 pub fn first_digit(mut m: u128) -> u8 {
     while m >= 10 {
         m /= 10;
@@ -95,7 +97,8 @@ pub fn expected_counts_1e9(n: u64, expected_1e9: &[i128]) -> Result<Vec<u64>, La
         remainders.push((r, idx));
     }
 
-    let deficit = n.saturating_sub(floor_sum) as usize;
+    let deficit = usize::try_from(n.saturating_sub(floor_sum))
+        .map_err(|_| LanternError::Overflow("benford expected count deficit"))?;
     remainders.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     for &(_, idx) in remainders.iter().take(deficit) {
         floors[idx] += 1;
@@ -399,6 +402,8 @@ pub const BENFORD_FIRST_TWO_1E9: [i128; 90] = [
 
 /// The first two decimal digits (`10..=99`) of a magnitude `>= 10`.
 #[must_use]
+// The loop leaves m < 100, so the narrowing keeps every bit.
+#[allow(clippy::cast_possible_truncation)]
 pub fn first_two_digits(mut m: u128) -> u8 {
     while m >= 100 {
         m /= 10;
@@ -804,11 +809,13 @@ mod tests {
         assert_eq!(second_digit(98_765), 8);
         // A population distributed exactly per the table (scaled by 1e9
         // legs) deviates by nothing but the table's own rounding.
-        let counts: [u64; 9] = core::array::from_fn(|d| BENFORD_1E9[d] as u64);
+        let counts: [u64; 9] = core::array::from_fn(|d| u64::try_from(BENFORD_1E9[d]).unwrap());
         assert_eq!(mad_1e9(&counts).unwrap(), 0);
-        let counts2: [u64; 10] = core::array::from_fn(|d| BENFORD_SECOND_1E9[d] as u64);
+        let counts2: [u64; 10] =
+            core::array::from_fn(|d| u64::try_from(BENFORD_SECOND_1E9[d]).unwrap());
         assert_eq!(mad_table_1e9(&counts2, &BENFORD_SECOND_1E9).unwrap(), 0);
-        let counts12: [u64; 90] = core::array::from_fn(|d| BENFORD_FIRST_TWO_1E9[d] as u64);
+        let counts12: [u64; 90] =
+            core::array::from_fn(|d| u64::try_from(BENFORD_FIRST_TWO_1E9[d]).unwrap());
         assert_eq!(mad_table_1e9(&counts12, &BENFORD_FIRST_TWO_1E9).unwrap(), 0);
         // A uniform population is far from Benford: MAD = Σ|1/9 − P_d| / 9
         // ≈ 0.0597 (0.53745 / 9), exactly 59_717_035e-9 in this arithmetic.

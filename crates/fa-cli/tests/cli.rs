@@ -7735,6 +7735,14 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["recover", "projections", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["recover", "outcomes", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
+    // The suffix from the only state to the latest (itself): an explicit
+    // consistency proof and no records.
+    let state_oid = states[0]
+        .get("oid")
+        .and_then(Json::as_str)
+        .expect("a state oid")
+        .to_string();
+    assert_eq!(run(true, &["proof", "suffix", "--state", &state_oid]).0, 0);
     assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
         &dir,
@@ -13346,6 +13354,103 @@ fn concentration_refuses_overflow_from_individually_valid_posts() -> std::io::Re
     Ok(())
 }
 
+/// `jet.self_sourced_evidence` through the binary (fa-81lu, plan §9.3): an
+/// entry supported only by an agent's upload (reviewed by another principal,
+/// so it can post) is flagged Medium, citing the entry and the document; an
+/// entry with a person's upload beside the agent's is not flagged.
+#[test]
+fn procedure_run_flags_an_entry_whose_only_evidence_is_an_agent_upload() -> std::io::Result<()> {
+    let dir = tmp("self-sourced")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Self-sourced Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let add = |name: &str, text: &str, grade: &str| -> String {
+        let path = write(&dir, name, text);
+        let added = ok(&[
+            "document", "add", &path, "--kind", "Invoice", "--grade", grade,
+        ]);
+        field(&added, "oid").unwrap_or_default().to_string()
+    };
+    let agent = add("agent.txt", "RECEIPT (an agent's upload)", "AgentUpload");
+    let person = add("person.txt", "INVOICE (a person's upload)", "HumanUpload");
+    ok(&["attest", "review", &agent, "--as", "reviewer"]);
+    let intent = |name: &str, key: &str, cents: &str| {
+        write(
+            &dir,
+            name,
+            &format!(
+                r#"{{"effective_date":"2026-03-10","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"{cents} USD"}},{{"side":"credit","account":"1000","amount":"{cents} USD"}}],"description":"March rent"}}"#
+            ),
+        )
+    };
+    let own = ok(&[
+        "post",
+        "--intent",
+        &intent("own.json", "own", "42.00"),
+        "--evidence",
+        &agent,
+    ]);
+    let own_vid = field(&own, "vid").unwrap_or_default().to_string();
+    let mixed = intent("mixed.json", "mixed", "43.00");
+    ok(&[
+        "post",
+        "--intent",
+        &mixed,
+        "--evidence",
+        &agent,
+        "--evidence",
+        &person,
+    ]);
+
+    let out = ok(&["procedure", "run", "jet.self_sourced_evidence"]);
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "jet.self_sourced_evidence");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "only the agent-only entry: {out}");
+    // The run's population is every snapshot entry; the procedure's own is
+    // the postings that cite a document, in the finding's statistic.
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(int(statistic, "population"), Some(2), "{out}");
+    assert_eq!(int(statistic, "value"), Some(1), "{out}");
+    assert_eq!(
+        findings[0].get("severity").and_then(Json::as_str),
+        Some("Medium"),
+        "{out}"
+    );
+    let cites = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites");
+    assert!(
+        cites
+            .iter()
+            .any(|c| c.get("kind").and_then(Json::as_str) == Some("entry")
+                && c.get("entry").and_then(Json::as_str) == Some(own_vid.as_str())),
+        "the finding cites the entry by vid: {out}"
+    );
+    assert!(
+        cites
+            .iter()
+            .any(|c| c.get("kind").and_then(Json::as_str) == Some("document")),
+        "the finding cites the agent's document: {out}"
+    );
+    Ok(())
+}
+
 /// `fa procedure list|run`: Lantern over a persisted book through the CLI
 /// (plan §11, Appendix D). The planted round amount is found and cited by
 /// its posted vid; a parameter override changes the result; the registry
@@ -13407,7 +13512,7 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     let listed = ok(&["procedure", "list"]);
     let listed_doc = doc(&listed);
     let rows = arr(&listed_doc, "procedures");
-    assert_eq!(rows.len(), 61, "{listed}");
+    assert_eq!(rows.len(), 62, "{listed}");
     for id in [
         "jet.round_amounts",
         "solvency.balance_sheet_test",
@@ -20968,7 +21073,7 @@ fn procedure_families_run_every_member_and_trace_is_procedure_run() -> std::io::
     ]));
     let deposit = text(&deposit, "vid").to_string();
 
-    for (family, members) in [("jet", 12), ("benford", 3)] {
+    for (family, members) in [("jet", 13), ("benford", 3)] {
         let out = ok(&[family]);
         let lines: Vec<Json> = out
             .lines()

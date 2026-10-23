@@ -25,6 +25,7 @@
 // APIs a procedure must never reach (doctrine 3, fa-1tvm).
 #![deny(
     clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
     clippy::disallowed_methods,
     clippy::disallowed_types
 )]
@@ -813,6 +814,27 @@ impl Work {
                 self.entries == 0
                     && self.legs == 0
                     && self.comparisons <= attestations.saturating_mul(legs.saturating_add(1))
+            }
+            // jet.self_sourced_evidence: one comparison per attestation it
+            // indexes, then at most one per document an entry cites or is
+            // supplemented with.
+            "O(entries + documents + attestations)" => {
+                let documents = snapshot
+                    .entries
+                    .iter()
+                    .map(|e| e.entry.proposal.evidence.len() as u64)
+                    .chain(
+                        snapshot
+                            .supplements
+                            .values()
+                            .flatten()
+                            .map(|s| s.documents.len() as u64),
+                    )
+                    .fold(0_u64, u64::saturating_add);
+                self.entries <= entries
+                    && self.legs == 0
+                    && self.comparisons
+                        <= documents.saturating_add(snapshot.attestations.len() as u64)
             }
             "O(entries)" => self.entries <= entries && self.legs == 0 && self.comparisons == 0,
             "O(legs)" => self.entries <= entries && self.legs <= legs && self.comparisons == 0,

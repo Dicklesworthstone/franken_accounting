@@ -225,6 +225,8 @@ impl Pcg64Dxsm {
 
     /// Return the split state form used by portable journals and manifests.
     #[must_use]
+    // Taking each 128-bit word's low 64 bits is the split itself.
+    #[allow(clippy::cast_possible_truncation)]
     pub const fn split_state(&self) -> ([u64; 2], [u64; 2]) {
         (
             [(self.state >> 64) as u64, self.state as u64],
@@ -260,6 +262,8 @@ impl Pcg64Dxsm {
 
     /// Generate the next raw 64-bit DXSM word, then advance the state.
     #[inline]
+    // DXSM's output function takes the state's low 64 bits by definition.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn next_u64(&mut self) -> u64 {
         let low = (self.state as u64) | 1;
         let mut high = (self.state >> 64) as u64;
@@ -325,6 +329,8 @@ pub fn lcg_advance_128(state: u128, mut delta: u128, mult: u128, inc: u128) -> u
     acc_mult.wrapping_mul(state).wrapping_add(acc_plus)
 }
 
+// The seed's 32-bit words, low first: each narrowing takes a word.
+#[allow(clippy::cast_possible_truncation)]
 fn entropy_words(seed: u64) -> Vec<u32> {
     if seed == 0 {
         return vec![0];
@@ -1476,6 +1482,83 @@ mod tests {
             uni.certificate.selected_item_ids,
             vec!["AR-001", "AR-005", "AR-006"]
         );
+
+        // Pinned against `np.random.PCG64DXSM(42)` driving the snippet's
+        // bounded draw through one partial Fisher-Yates per stratum, in
+        // stratum-name order, at the allocation the strata record. Both
+        // allocations give large 2 of 3 (sigma 12_247) and small 2 of 3
+        // (sigma 5_312) here: the Neyman shares' largest remainder goes to
+        // small.
+        let epoch = [0x55; 32];
+        for policy in [Some(epoch), None] {
+            let strat =
+                sample_stratified_neyman(&pop, 42, 4, "fixture", policy, epoch, VId(99)).unwrap();
+            let strata: Vec<(&str, usize, i128, usize)> = strat
+                .strata
+                .iter()
+                .map(|s| {
+                    (
+                        s.stratum.as_str(),
+                        s.population_count,
+                        s.std_dev_mantissa,
+                        s.allocated_sample_size,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                strata,
+                vec![("large", 3, 12_247, 2), ("small", 3, 5_312, 2)]
+            );
+            assert_eq!(
+                strat.certificate.selected_item_ids,
+                vec!["AR-004", "AR-005", "AR-002", "AR-003"]
+            );
+        }
+
+        // Where the two allocations disagree, each is pinned the same way:
+        // a widely spread stratum and a nearly constant one, seed 7, size 5.
+        let item = |id: &str, vid: u128, stratum: &str, mantissa: i128| PopulationItem {
+            item_id: id.into(),
+            reference_vid: VId(vid),
+            stratum: Some(stratum.into()),
+            book_value: Amount::new(usd, mantissa),
+        };
+        let divergent = SamplePopulation::new(
+            "divergent",
+            usd,
+            vec![
+                item("D-01", 1, "hi", 10_000),
+                item("D-02", 2, "hi", 100_000),
+                item("D-03", 3, "hi", 190_000),
+                item("D-04", 4, "lo", 50_000),
+                item("D-05", 5, "lo", 50_001),
+                item("D-06", 6, "lo", 50_002),
+                item("D-07", 7, "lo", 50_003),
+                item("D-08", 8, "lo", 50_004),
+            ],
+        )
+        .unwrap();
+        for (policy, allocated, selected) in [
+            (
+                Some(epoch),
+                [3, 2],
+                ["D-01", "D-02", "D-03", "D-06", "D-08"],
+            ),
+            (None, [2, 3], ["D-01", "D-03", "D-05", "D-06", "D-08"]),
+        ] {
+            let strat =
+                sample_stratified_neyman(&divergent, 7, 5, "fixture", policy, epoch, VId(99))
+                    .unwrap();
+            let sigmas: Vec<i128> = strat.strata.iter().map(|s| s.std_dev_mantissa).collect();
+            assert_eq!(sigmas, vec![73_484, 1]);
+            let sizes: Vec<usize> = strat
+                .strata
+                .iter()
+                .map(|s| s.allocated_sample_size)
+                .collect();
+            assert_eq!(sizes, allocated);
+            assert_eq!(strat.certificate.selected_item_ids, selected);
+        }
     }
 
     fn big(value: u128) -> BigInt {
