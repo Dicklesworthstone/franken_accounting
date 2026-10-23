@@ -398,7 +398,9 @@ fn assert_balance_records_a_true_assertion_and_refuses_a_false_one() -> std::io:
         .map(|a| (*a).to_string())
         .collect()
     };
-    let args = |v: &[String]| v.iter().map(String::as_str).collect::<Vec<_>>();
+    fn args(v: &[String]) -> Vec<&str> {
+        v.iter().map(String::as_str).collect()
+    }
     let cash = ok(&book, &args(&assert("1000", "-1500.00 USD")));
     assert_eq!(
         field(&cash, "event"),
