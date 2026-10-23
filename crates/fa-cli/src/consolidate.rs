@@ -16,11 +16,11 @@ use fa_money::{Amount, UnitId};
 use crate::args::Args;
 use crate::cli::{
     Ctx, Fail, Out, admit_whole_book_read, hex, known_at_flag, registered_unit_code, render_amount,
-    statement_presentation, usage,
+    statement_presentation_basis, usage,
 };
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa consolidate --period FY2026-P03 [--as-known-at HEAD|<seq>|<RFC3339>] [--certify] [--certificate-out <new-file>] --book <dir> --json";
+const EXAMPLE: &str = "fa consolidate --period FY2026-P03 [--functional] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify] [--certificate-out <new-file>] --book <dir> --json";
 
 pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 1 {
@@ -43,6 +43,7 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     }
     let period = args.flag("--period").unwrap_or_default().to_string();
     let who = ctx.principal(args);
+    let functional = args.switch("--functional");
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let capability = ctx.capability(
         args,
@@ -65,7 +66,7 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         )
     })?;
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
-    let (group, certificate) = if certify {
+    let (group, functional_unit, certificate) = if certify {
         if requested_utc_ns.is_some() {
             return Err(usage(
                 "a consolidation certificate binds a recorded sequence; an instant's TimeEvidence is not part of its format",
@@ -75,23 +76,43 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                 ),
             ));
         }
-        // Admission precedes loading, and the requested prefix (not merely
-        // HEAD) decides whether cold retained native history is required.
-        book.prepare_report_history(who, &capability, known_at)??;
-        let selection = fa::ReportSelection::Consolidation {
-            period: period.clone(),
+        let certified = if functional {
+            book.certify_functional_consolidation(who, &capability, &period, known_at)??
+        } else {
+            // Admission precedes loading, and the requested prefix (not merely
+            // HEAD) decides whether cold retained native history is required.
+            book.prepare_report_history(who, &capability, known_at)??;
+            let selection = fa::ReportSelection::Consolidation {
+                period: period.clone(),
+            };
+            book.read_scope(who, &capability)??
+                .admit_report(&selection, known_at)??;
+            book.certify_report(selection, known_at)??
         };
-        book.read_scope(who, &capability)??
-            .admit_report(&selection, known_at)??;
-        let certified = book.certify_report(selection, known_at)??;
-        let fa::ReportOutput::Consolidation(group) = certified.report else {
-            return Err(Fail::Internal(
-                "consolidation certification returned another report kind".into(),
-            ));
-        };
-        (*group, Some(certified.certificate))
+        match certified.report {
+            fa::ReportOutput::Consolidation(group) if !functional => {
+                (*group, None, Some(certified.certificate))
+            }
+            fa::ReportOutput::FunctionalConsolidation(report) if functional => (
+                report.group,
+                Some(report.base_unit),
+                Some(certified.certificate),
+            ),
+            _ => {
+                return Err(Fail::Internal(
+                    "consolidation certification returned another report kind".into(),
+                ));
+            }
+        }
+    } else if functional {
+        let report = book.functional_consolidation(who, &capability, &period, known_at)??;
+        (report.group, Some(report.base_unit), None)
     } else {
-        (book.consolidation(&period, known_at, &capability)??, None)
+        (
+            book.consolidation(&period, known_at, &capability)??,
+            None,
+            None,
+        )
     };
     let retained = certificate
         .as_ref()
@@ -108,7 +129,7 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     let digest = certificate
         .as_ref()
         .map(|certificate| hex(&certificate.digest));
-    render_consolidation(&ctx.out, &book, &group, digest.as_deref())?;
+    render_consolidation_basis(&ctx.out, &book, &group, digest.as_deref(), functional_unit)?;
     if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
         crate::notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
     }
@@ -122,6 +143,31 @@ pub(crate) fn render_consolidation(
     book: &Book,
     group: &Consolidation,
     certificate: Option<&str>,
+) -> Result<(), Fail> {
+    render_consolidation_basis(out, book, group, certificate, None)
+}
+
+pub(crate) fn render_functional_consolidation(
+    out: &Out,
+    book: &Book,
+    report: &fa::FunctionalConsolidation,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    render_consolidation_basis(
+        out,
+        book,
+        &report.group,
+        certificate,
+        Some(report.base_unit),
+    )
+}
+
+fn render_consolidation_basis(
+    out: &Out,
+    book: &Book,
+    group: &Consolidation,
+    certificate: Option<&str>,
+    functional_unit: Option<UnitId>,
 ) -> Result<(), Fail> {
     out.known_at(group.known_at);
     let units = &book.context().units;
@@ -252,12 +298,20 @@ pub(crate) fn render_consolidation(
     }
 
     let mut statement = |statement: &fa::Statement| -> Result<Json, Fail> {
-        let (fields, text) = statement_presentation(statement, units)?;
+        let (fields, text) =
+            statement_presentation_basis(statement, units, functional_unit.is_some())?;
         human.push(text);
         Ok(obj(fields
             .into_iter()
             .map(|(key, value)| match key {
-                "scope" => (key, s("multi-entity-book-consolidated")),
+                "scope" => (
+                    key,
+                    s(if functional_unit.is_some() {
+                        "multi-entity-book-functional-consolidated"
+                    } else {
+                        "multi-entity-book-consolidated"
+                    }),
+                ),
                 _ => (key, value),
             })
             .collect()))
@@ -265,23 +319,26 @@ pub(crate) fn render_consolidation(
     let balance_sheet = statement(&group.run.balance_sheet)?;
     let income_statement = statement(&group.run.income_statement)?;
 
-    out.event_with_certificate(
-        "consolidation_run",
-        vec![
-            ("period", s(&group.period)),
-            ("known_at", Json::Int(i128::from(group.known_at.0))),
-            ("effective_through", s(group.effective_through.render())),
-            ("rounding_law", s(group.rounding_law.name())),
-            ("run_digest", s(hex(&group.run_digest))),
-            ("members", Json::Arr(members)),
-            ("eliminations", eliminations),
-            ("income_eliminations", income_eliminations),
-            ("equity", Json::Arr(equity)),
-            ("balance_sheet", balance_sheet),
-            ("income_statement", income_statement),
-        ],
-        &human.join("\n"),
-        certificate,
-    );
+    let mut fields = vec![
+        ("period", s(&group.period)),
+        ("known_at", Json::Int(i128::from(group.known_at.0))),
+        ("effective_through", s(group.effective_through.render())),
+        ("rounding_law", s(group.rounding_law.name())),
+        ("run_digest", s(hex(&group.run_digest))),
+        ("members", Json::Arr(members)),
+        ("eliminations", eliminations),
+        ("income_eliminations", income_eliminations),
+        ("equity", Json::Arr(equity)),
+        ("balance_sheet", balance_sheet),
+        ("income_statement", income_statement),
+    ];
+    if let Some(base_unit) = functional_unit {
+        fields.extend([
+            ("functional", Json::Bool(true)),
+            ("base_unit", s(registered_unit_code(base_unit, units)?)),
+            ("valuation_basis", s("retained-base-amounts")),
+        ]);
+    }
+    out.event_with_certificate("consolidation_run", fields, &human.join("\n"), certificate);
     Ok(())
 }

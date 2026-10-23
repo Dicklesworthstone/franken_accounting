@@ -56,6 +56,10 @@ pub const FUNCTIONAL_STATEMENT_OUTPUT_FORMAT: &str = "fa:functional-statement:v1
 /// tag in its own format version, so earlier certificates keep their bytes.
 pub const CONSOLIDATION_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v6";
 pub const CONSOLIDATION_OUTPUT_FORMAT: &str = "fa:consolidation:v1";
+/// A consolidation in the book's functional currency, with retained FX evidence.
+/// Native v6 consolidation bytes and valuation semantics remain unchanged.
+pub const FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v7";
+pub const FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT: &str = "fa:functional-consolidation:v1";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -195,6 +199,11 @@ pub enum ReportSelection {
     Consolidation {
         period: String,
     },
+    /// Group stock and activity in the shared functional unit, from verified
+    /// retained base amounts. No current-rate translation is performed.
+    FunctionalConsolidation {
+        period: String,
+    },
 }
 
 impl From<TrialBalanceSelection> for ReportSelection {
@@ -218,7 +227,9 @@ impl ReportSelection {
             Self::Statement(selection) | Self::FunctionalStatement(selection) => {
                 selection.is_canonical()
             }
-            Self::Consolidation { period } => !period.is_empty() && period.len() <= 128,
+            Self::Consolidation { period } | Self::FunctionalConsolidation { period } => {
+                !period.is_empty() && period.len() <= 128
+            }
         }
     }
 
@@ -233,6 +244,16 @@ impl ReportSelection {
         }
     }
 
+    /// Functional reports require the retained Rate documents and complete
+    /// Entry creation history used to verify each immutable base valuation.
+    #[must_use]
+    pub const fn uses_functional_valuations(&self) -> bool {
+        matches!(
+            self,
+            Self::FunctionalStatement(_) | Self::FunctionalConsolidation { .. }
+        )
+    }
+
     #[must_use]
     pub const fn output_format(&self) -> &'static str {
         match self {
@@ -242,6 +263,7 @@ impl ReportSelection {
             Self::Statement(_) => "fa:statement:v1",
             Self::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_OUTPUT_FORMAT,
             Self::Consolidation { .. } => CONSOLIDATION_OUTPUT_FORMAT,
+            Self::FunctionalConsolidation { .. } => FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT,
         }
     }
 
@@ -268,6 +290,9 @@ impl ReportSelection {
             Self::Consolidation { period } => {
                 w.u8(4).str(period);
             }
+            Self::FunctionalConsolidation { period } => {
+                w.u8(5).str(period);
+            }
         }
         Ok(())
     }
@@ -292,6 +317,9 @@ impl ReportSelection {
             ))),
             4 if version == 6 => Ok(Self::Consolidation {
                 period: r.str(128, "consolidation period")?.to_string(),
+            }),
+            5 if version == 7 => Ok(Self::FunctionalConsolidation {
+                period: r.str(128, "functional consolidation period")?.to_string(),
             }),
             tag => Err(r.bad_tag("report selector", tag)),
         }
@@ -330,6 +358,10 @@ impl ReportSelection {
                 Ok(crate::consolidation::consolidate_at(db, book, period, at)?
                     .map(|run| ReportOutput::Consolidation(Box::new(run))))
             }
+            Self::FunctionalConsolidation { period } => Ok(
+                crate::consolidation::consolidate_functional_at(db, book, period, at)?
+                    .map(|run| ReportOutput::FunctionalConsolidation(Box::new(run))),
+            ),
         }
     }
 }
@@ -344,6 +376,7 @@ pub enum ReportOutput {
     Statement(Box<fa_statements::Statement>),
     FunctionalStatement(Box<fa_statements::Statement>),
     Consolidation(Box<crate::consolidation::Consolidation>),
+    FunctionalConsolidation(Box<crate::consolidation::FunctionalConsolidation>),
 }
 
 impl ReportOutput {
@@ -357,6 +390,7 @@ impl ReportOutput {
                 CommitSeq(report.known_at)
             }
             Self::Consolidation(report) => report.known_at,
+            Self::FunctionalConsolidation(report) => report.group.known_at,
         }
     }
 
@@ -372,6 +406,7 @@ impl ReportOutput {
                 report.known_at = known_at.0;
             }
             Self::Consolidation(report) => report.set_known_at(known_at),
+            Self::FunctionalConsolidation(report) => report.set_known_at(known_at),
         }
     }
 
@@ -389,6 +424,7 @@ impl ReportOutput {
                 w.finish()
             }
             Self::Consolidation(report) => report.canonical_bytes(),
+            Self::FunctionalConsolidation(report) => report.canonical_bytes(),
         }
     }
 }
@@ -550,17 +586,21 @@ fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static
     }
     // Account roles select the run's accounts, and the NCI rounds under a
     // registered law.
-    if matches!(selection, ReportSelection::Consolidation { .. }) {
-        sources.extend([
-            (
-                "account_roles",
-                include_str!("../../../registries/account_roles.toml"),
-            ),
-            (
-                "rounding_laws",
-                include_str!("../../../registries/rounding_laws.toml"),
-            ),
-        ]);
+    if matches!(
+        selection,
+        ReportSelection::Consolidation { .. } | ReportSelection::FunctionalConsolidation { .. }
+    ) {
+        sources.push((
+            "account_roles",
+            include_str!("../../../registries/account_roles.toml"),
+        ));
+        if selection.uses_functional_valuations() {
+            sources.push(("fx_laws", include_str!("../../../registries/fx_laws.toml")));
+        }
+        sources.push((
+            "rounding_laws",
+            include_str!("../../../registries/rounding_laws.toml"),
+        ));
     }
     sources
 }
@@ -778,7 +818,7 @@ fn statements(at: CommitSeq, selection: &ReportSelection) -> Vec<String> {
             )
         })
         .collect();
-    if matches!(selection, ReportSelection::FunctionalStatement(_)) {
+    if selection.uses_functional_valuations() {
         // Restrict the payload closure to Rate documents. Unrelated documents
         // can require additional disclosure authority (for example bank data).
         // Every cited OID and the Rate mirror are independently bound below.
@@ -858,6 +898,9 @@ impl ReportCertificate {
             ReportSelection::Statement(_) => STATEMENT_CERTIFICATE_FORMAT,
             ReportSelection::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT,
             ReportSelection::Consolidation { .. } => CONSOLIDATION_CERTIFICATE_FORMAT,
+            ReportSelection::FunctionalConsolidation { .. } => {
+                FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
+            }
             _ => REPORT_CERTIFICATE_FORMAT,
         }
     }
@@ -889,6 +932,7 @@ impl ReportCertificate {
             || self.format() == STATEMENT_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
             || self.format() == CONSOLIDATION_CERTIFICATE_FORMAT
+            || self.format() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -924,6 +968,8 @@ impl ReportCertificate {
                 5
             } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
                 6
+            } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
+                7
             } else {
                 return Err(r.invalid("report certificate format"));
             };
@@ -943,7 +989,8 @@ impl ReportCertificate {
             let registry_digest = r.fixed("registry closure")?;
             let journal_root = r.fixed("journal root")?;
             let journal_leaves = r.u64("journal leaves")?;
-            let required_inputs = INPUTS.len() + usize::from(version == 5);
+            let required_inputs =
+                INPUTS.len() + usize::from(selection.uses_functional_valuations());
             let count = r.count(required_inputs, "native inputs")?;
             if count != required_inputs {
                 return Err(r.invalid("complete native input closure"));
@@ -1307,7 +1354,7 @@ fn certify_selected<V: Vfs + Clone>(
     // Empty as-of/open-item folds must not certify a coordinate before genesis,
     // or fold with a calendar/units context that the native closure never read.
     context_at(db, book, at)?;
-    if matches!(&selection, ReportSelection::FunctionalStatement(_))
+    if selection.uses_functional_valuations()
         && let Err(refusal) = functional::verify_sources(db, cx, book, at)?
     {
         return Ok(Err(refusal));
@@ -1466,7 +1513,9 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         && !pre_carrying
         && (matches!(
             &certificate.selection,
-            ReportSelection::FunctionalStatement(_) | ReportSelection::Consolidation { .. }
+            ReportSelection::FunctionalStatement(_)
+                | ReportSelection::Consolidation { .. }
+                | ReportSelection::FunctionalConsolidation { .. }
         ) || (certificate.registry_digest != legacy_v2
             && certificate.registry_digest != legacy_registry_digest(&certificate.selection)))
     {
@@ -1547,10 +1596,8 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             }
         }
     }
-    if matches!(
-        &certificate.selection,
-        ReportSelection::FunctionalStatement(_)
-    ) && let Err(refusal) = functional::verify_sources(db, cx, book, certificate.known_at)?
+    if certificate.selection.uses_functional_valuations()
+        && let Err(refusal) = functional::verify_sources(db, cx, book, certificate.known_at)?
     {
         return Ok(Err(refusal));
     }
@@ -2178,6 +2225,10 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
         ReportOutput::Consolidation(report) => {
             statement_account_metadata([&report.run.balance_sheet, &report.run.income_statement])
         }
+        ReportOutput::FunctionalConsolidation(report) => statement_account_metadata([
+            &report.group.run.balance_sheet,
+            &report.group.run.income_statement,
+        ]),
     };
     for (vid, expected) in accounts {
         cx.checkpoint().map_err(BookError::Context)?;
@@ -2328,6 +2379,14 @@ pub(crate) fn selected(
                     entry.proposal.control.as_ref(),
                 )
             }
+            (
+                ReportSelection::FunctionalConsolidation { .. },
+                ReportOutput::FunctionalConsolidation(report),
+            ) => consolidation_control_selected(
+                report.group.effective_through,
+                &report.group.entity_codes,
+                entry.proposal.control.as_ref(),
+            ),
             _ => Ok(false),
         };
     }
@@ -2337,6 +2396,13 @@ pub(crate) fn selected(
         (ReportSelection::Consolidation { .. }, ReportOutput::Consolidation(report)) => {
             return Ok(entry.proposal.class != EntryClass::PENDING
                 && entry.proposal.effective_date <= report.effective_through);
+        }
+        (
+            ReportSelection::FunctionalConsolidation { .. },
+            ReportOutput::FunctionalConsolidation(report),
+        ) => {
+            return Ok(entry.proposal.class != EntryClass::PENDING
+                && entry.proposal.effective_date <= report.group.effective_through);
         }
         (ReportSelection::OpenItems { account }, ReportOutput::OpenItems(_)) => {
             return open_item_selected(entry, entries, *account);
@@ -3081,6 +3147,88 @@ mod tests {
         assert!(selected(&book, &selection, &report, &entry, &BTreeMap::new()).unwrap());
         entry.proposal.effective_period.as_mut().unwrap().code = "FY2026-P12".into();
         assert!(!selected(&book, &selection, &report, &entry, &BTreeMap::new()).unwrap());
+    }
+
+    #[test]
+    fn functional_consolidation_v7_preserves_native_v6_and_binds_fx_sources() {
+        let native = ReportSelection::Consolidation {
+            period: "FY2026-P03".into(),
+        };
+        let functional = ReportSelection::FunctionalConsolidation {
+            period: "FY2026-P03".into(),
+        };
+        for (selection, version, tag) in [(&native, 6, 4), (&functional, 7, 5)] {
+            let mut writer = Writer::new();
+            selection.write(&mut writer).unwrap();
+            let bytes = writer.finish().unwrap();
+            assert_eq!(bytes[0], tag);
+            let mut reader = Reader::new(&bytes);
+            assert_eq!(
+                &ReportSelection::read(&mut reader, version).unwrap(),
+                selection
+            );
+            reader.finish().unwrap();
+            for other_version in (1..=7).filter(|candidate| *candidate != version) {
+                assert!(ReportSelection::read(&mut Reader::new(&bytes), other_version).is_err());
+            }
+        }
+        let native_inputs = statements(CommitSeq(7), &native);
+        let functional_inputs = statements(CommitSeq(7), &functional);
+        assert_eq!(functional_inputs[..INPUTS.len()], native_inputs);
+        assert_eq!(functional_inputs.len(), INPUTS.len() + 1);
+        assert!(
+            functional_inputs
+                .last()
+                .unwrap()
+                .contains("WHERE n.code = 'Rate'")
+        );
+        assert_eq!(
+            report_registries(&native)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            [
+                "account_types",
+                "entry_classes",
+                "units",
+                "foundations",
+                "account_roles",
+                "rounding_laws"
+            ]
+        );
+        assert_eq!(
+            report_registries(&functional)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            [
+                "account_types",
+                "entry_classes",
+                "units",
+                "foundations",
+                "account_roles",
+                "fx_laws",
+                "rounding_laws"
+            ]
+        );
+        assert_ne!(
+            registry_digest(&native).unwrap(),
+            registry_digest(&functional).unwrap()
+        );
+        assert_eq!(
+            wire_fixture(native, None).format(),
+            CONSOLIDATION_CERTIFICATE_FORMAT
+        );
+        let certificate = wire_fixture(functional, None);
+        assert_eq!(
+            certificate.format(),
+            FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
+        );
+        assert_eq!(
+            certificate.output_format(),
+            FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT
+        );
+        assert_eq!(certificate.body_bytes().unwrap().last(), Some(&0));
     }
 
     #[test]

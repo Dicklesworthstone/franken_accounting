@@ -615,7 +615,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         if matches!(&artifact.inner, Artifact::Native(certificate)
-            if matches!(&certificate.selection, crate::ReportSelection::FunctionalStatement(_)))
+            if certificate.selection.uses_functional_valuations())
             && let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await?
         {
             // Functional replay checks every native Entry birth and original

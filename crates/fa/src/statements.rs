@@ -613,7 +613,7 @@ pub(crate) fn certified_functional(
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
-    fn admit_functional_statement(
+    pub(crate) fn admit_functional_report(
         &self,
         cx: &PurposeContexts,
         principal: VId,
@@ -627,7 +627,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     fa_policy::require(
                         capability,
                         fa_policy::Op::Produce,
-                        "certifying a functional statement",
+                        "certifying a functional report",
                     )
                 } else {
                     Ok(())
@@ -652,7 +652,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
-    async fn prepare_functional_statement(
+    pub(crate) async fn prepare_functional_report(
         &mut self,
         cx: &PurposeContexts,
         principal: VId,
@@ -661,14 +661,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certify: bool,
     ) -> Outcome<CommitSeq> {
         let head =
-            match self.admit_functional_statement(cx, principal, capability, known_at, certify)? {
+            match self.admit_functional_report(cx, principal, capability, known_at, certify)? {
                 Ok(head) => head,
                 Err(refusal) => return Ok(Err(refusal)),
             };
         let at = known_at.unwrap_or(head);
         if at > head {
             return Ok(Err(invalid(format!(
-                "statement known-at {} is beyond book head {}",
+                "functional report known-at {} is beyond book head {}",
                 at.0, head.0
             ))));
         }
@@ -676,7 +676,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         if let Err(refusal) =
-            self.admit_functional_statement(cx, principal, capability, Some(at), certify)?
+            self.admit_functional_report(cx, principal, capability, Some(at), certify)?
         {
             return Ok(Err(refusal));
         }
@@ -696,7 +696,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Outcome<Statement> {
         let at = match self
-            .prepare_functional_statement(cx, principal, capability, known_at, false)
+            .prepare_functional_report(cx, principal, capability, known_at, false)
             .await?
         {
             Ok(at) => at,
@@ -714,7 +714,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             report_functional_at(db, book, &selection, at)
         })?;
         if let Err(refusal) =
-            self.admit_functional_statement(cx, principal, capability, Some(at), false)?
+            self.admit_functional_report(cx, principal, capability, Some(at), false)?
         {
             return Ok(Err(refusal));
         }
@@ -732,7 +732,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Outcome<CertifiedStatement> {
         let at = match self
-            .prepare_functional_statement(cx, principal, capability, known_at, true)
+            .prepare_functional_report(cx, principal, capability, known_at, true)
             .await?
         {
             Ok(at) => at,
@@ -746,7 +746,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )?
             .and_then(certified_functional);
         if let Err(refusal) =
-            self.admit_functional_statement(cx, principal, capability, Some(at), true)?
+            self.admit_functional_report(cx, principal, capability, Some(at), true)?
         {
             return Ok(Err(refusal));
         }
@@ -764,7 +764,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         requested_utc_ns: u64,
     ) -> Outcome<CertifiedStatement> {
         if let Err(refusal) = self
-            .prepare_functional_statement(cx, principal, capability, None, true)
+            .prepare_functional_report(cx, principal, capability, None, true)
             .await?
         {
             return Ok(Err(refusal));
@@ -776,9 +776,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 requested_utc_ns,
             )?
             .and_then(certified_functional);
-        if let Err(refusal) =
-            self.admit_functional_statement(cx, principal, capability, None, true)?
-        {
+        if let Err(refusal) = self.admit_functional_report(cx, principal, capability, None, true)? {
             return Ok(Err(refusal));
         }
         Ok(result)

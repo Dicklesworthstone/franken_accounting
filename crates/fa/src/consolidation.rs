@@ -25,6 +25,7 @@ use fa_journal::refusal::{Refusal, exit};
 use fa_journal::rows::{AccountRow, PeriodRow, bytes};
 use fa_model::symbols::{label, property};
 use fa_model::{Id128, RelationshipKind, Writer, legal_entity_vid, period_vid};
+use fa_money::UnitId;
 use fa_money::rounding::RoundingLaw;
 use fa_policy::Capability;
 use fa_statements::concordat::{
@@ -87,6 +88,32 @@ pub struct Consolidation {
     pub entity_codes: BTreeMap<Id128, String>,
     /// Every account of the chart at `known_at`: id → (code, name).
     pub accounts: BTreeMap<u128, (String, String)>,
+}
+
+/// A group report in the historical book's shared functional currency.
+/// Amounts are the journal's independently verified retained valuations;
+/// this report neither selects new rates nor translates another book.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionalConsolidation {
+    pub base_unit: UnitId,
+    pub group: Consolidation,
+}
+
+impl FunctionalConsolidation {
+    /// Bind the valuation posture and functional unit separately from the
+    /// native consolidation output, whose existing encoding is unchanged.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(crate::certificate::FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT.as_bytes())
+            .u32(self.base_unit.0)
+            .str("retained-base-amounts")
+            .bytes(&self.group.canonical_bytes()?);
+        w.finish()
+    }
+
+    pub(crate) fn set_known_at(&mut self, known_at: CommitSeq) {
+        self.group.set_known_at(known_at);
+    }
 }
 
 fn refusal(why: impl Into<String>, fix: impl Into<String>) -> Refusal {
@@ -207,8 +234,31 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
     period: &str,
     at: CommitSeq,
 ) -> Outcome<Consolidation> {
+    Ok(consolidate_at_basis(db, book, period, at, false)?.map(|(_, group)| group))
+}
+
+pub(crate) fn consolidate_functional_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    at: CommitSeq,
+) -> Outcome<FunctionalConsolidation> {
+    Ok(consolidate_at_basis(db, book, period, at, true)?
+        .map(|(base_unit, group)| FunctionalConsolidation { base_unit, group }))
+}
+
+fn consolidate_at_basis<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    at: CommitSeq,
+    functional: bool,
+) -> Outcome<(UnitId, Consolidation)> {
     crate::certificate::context_at(db, book, at)?;
     let spec = fa_journal::genesis::read_book_spec_at(db, at)?.ok_or(BookError::NoBook)?;
+    if functional && let Err(refusal) = spec.validate_functional_units(&book.units) {
+        return Ok(Err(refusal));
+    }
     if spec.entities.len() < 2 {
         return Ok(Err(refusal(
             format!(
@@ -399,8 +449,33 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
     intercompany.extend(role("intercompany_activity"));
 
     // Each member's posted stock through the period's last day.
-    let stock =
-        fa_registers::stock_by_entity(db, book, through, Some(at)).map_err(BookError::from)?;
+    let stock = if functional {
+        let stock = fa_registers::fold_functional_stock(db, book, through, Some(at))
+            .map_err(BookError::from)?;
+        if stock.base_unit != spec.base_unit {
+            return Err(KernelError::Corrupt(
+                "functional group stock differs from the historical book's base unit".into(),
+            )
+            .into());
+        }
+        fa_registers::entity::EntityStock {
+            known_at: stock.known_at,
+            through: stock.effective_through,
+            cells: stock
+                .cells
+                .into_iter()
+                .map(|cell| fa_registers::entity::EntityBalance {
+                    entity: cell.key.entity,
+                    account: cell.key.account,
+                    unit_id: cell.key.unit_id,
+                    debits: cell.debits,
+                    credits: cell.credits,
+                })
+                .collect(),
+        }
+    } else {
+        fa_registers::stock_by_entity(db, book, through, Some(at)).map_err(BookError::from)?
+    };
     let mut balances: BTreeMap<String, Vec<AccountBalance>> = spec
         .entities
         .iter()
@@ -433,21 +508,25 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
             .ok_or(fa_registers::RegisterError::Overflow)
             .map_err(BookError::from)?;
     }
-    // The members partition the book: their stock sums to its posted stock.
-    let whole =
-        fa_registers::balance_as_of(db, book, through, Some(at)).map_err(BookError::from)?;
-    let plain: BTreeMap<(u128, u32), (i128, i128)> = whole
-        .rows
-        .iter()
-        .filter(|r| r.debits != 0 || r.credits != 0)
-        .map(|r| ((r.account.0, r.unit_id), (r.debits, r.credits)))
-        .collect();
-    summed.retain(|_, (d, c)| *d != 0 || *c != 0);
-    if summed != plain {
-        return Err(KernelError::Corrupt(
-            "the members' stock does not sum to the book's posted stock".into(),
-        )
-        .into());
+    // Native entity stock is checked against the independent native book
+    // fold. Functional stock already checks each entry's balance by entity;
+    // every one of its posted cells is assigned to exactly one member above.
+    if !functional {
+        let whole =
+            fa_registers::balance_as_of(db, book, through, Some(at)).map_err(BookError::from)?;
+        let plain: BTreeMap<(u128, u32), (i128, i128)> = whole
+            .rows
+            .iter()
+            .filter(|r| r.debits != 0 || r.credits != 0)
+            .map(|r| ((r.account.0, r.unit_id), (r.debits, r.credits)))
+            .collect();
+        summed.retain(|_, (d, c)| *d != 0 || *c != 0);
+        if summed != plain {
+            return Err(KernelError::Corrupt(
+                "the members' stock does not sum to the book's posted stock".into(),
+            )
+            .into());
+        }
     }
 
     // Each member's activity in the period, outside the classes the income
@@ -457,8 +536,40 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
         .map_err(|e| KernelError::Corrupt(format!("embedded income statement: {e}")))?;
     let excluded = income_definition.excluded_classes();
     let periods = [period.to_string()];
-    let activity = fa_registers::period_activity_by_entity(db, book, &periods, Some(at), excluded)
+    let activity = if functional {
+        let activity = fa_registers::fold_period_functional_excluding_classes(
+            db,
+            book,
+            period,
+            Some(at),
+            excluded,
+        )
         .map_err(BookError::from)?;
+        if activity.base_unit != spec.base_unit {
+            return Err(KernelError::Corrupt(
+                "functional group activity differs from the historical book's base unit".into(),
+            )
+            .into());
+        }
+        fa_registers::entity::EntityActivity {
+            known_at: activity.known_at,
+            periods: vec![activity.period],
+            cells: activity
+                .cells
+                .into_iter()
+                .map(|cell| fa_registers::entity::EntityBalance {
+                    entity: cell.key.entity,
+                    account: cell.key.account,
+                    unit_id: cell.key.unit_id,
+                    debits: cell.debits,
+                    credits: cell.credits,
+                })
+                .collect(),
+        }
+    } else {
+        fa_registers::period_activity_by_entity(db, book, &periods, Some(at), excluded)
+            .map_err(BookError::from)?
+    };
     let mut activity_of: BTreeMap<String, Vec<AccountBalance>> = spec
         .entities
         .iter()
@@ -495,21 +606,23 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
             .ok_or(fa_registers::RegisterError::Overflow)
             .map_err(BookError::from)?;
     }
-    let whole =
-        fa_registers::period_activity_excluding_classes(db, book, &periods, Some(at), excluded)
-            .map_err(BookError::from)?;
-    let plain: BTreeMap<(u128, u32), (i128, i128)> = whole
-        .rows
-        .iter()
-        .filter(|r| r.debits != 0 || r.credits != 0)
-        .map(|r| ((r.account.0, r.unit_id), (r.debits, r.credits)))
-        .collect();
-    summed.retain(|_, (d, c)| *d != 0 || *c != 0);
-    if summed != plain {
-        return Err(KernelError::Corrupt(
-            "the members' activity does not sum to the book's posted activity".into(),
-        )
-        .into());
+    if !functional {
+        let whole =
+            fa_registers::period_activity_excluding_classes(db, book, &periods, Some(at), excluded)
+                .map_err(BookError::from)?;
+        let plain: BTreeMap<(u128, u32), (i128, i128)> = whole
+            .rows
+            .iter()
+            .filter(|r| r.debits != 0 || r.credits != 0)
+            .map(|r| ((r.account.0, r.unit_id), (r.debits, r.credits)))
+            .collect();
+        summed.retain(|_, (d, c)| *d != 0 || *c != 0);
+        if summed != plain {
+            return Err(KernelError::Corrupt(
+                "the members' activity does not sum to the book's posted activity".into(),
+            )
+            .into());
+        }
     }
 
     let entity_codes: BTreeMap<Id128, String> = spec
@@ -564,7 +677,11 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
         period: period.to_string(),
         effective_through: through,
         accounts: chart,
-        units: book.units.iter().map(|(id, _)| id.0).collect(),
+        units: if functional {
+            vec![spec.base_unit.0]
+        } else {
+            book.units.iter().map(|(id, _)| id.0).collect()
+        },
         members: spec
             .entities
             .iter()
@@ -619,17 +736,20 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
         })
         .collect();
     members.sort_by(|a, b| a.code.cmp(&b.code));
-    Ok(Ok(Consolidation {
-        period: period.to_string(),
-        known_at: at,
-        effective_through: through,
-        members,
-        rounding_law: CONSOLIDATION_ROUNDING,
-        run,
-        run_digest,
-        entity_codes,
-        accounts,
-    }))
+    Ok(Ok((
+        spec.base_unit,
+        Consolidation {
+            period: period.to_string(),
+            known_at: at,
+            effective_through: through,
+            members,
+            rounding_law: CONSOLIDATION_ROUNDING,
+            run,
+            run_digest,
+            entity_codes,
+            accounts,
+        },
+    )))
 }
 
 impl Consolidation {
@@ -685,5 +805,72 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             };
             consolidate_at(db, book, period, at)
         })
+    }
+
+    /// Consolidate the group's retained functional carrying values after
+    /// verifying their rate documents and registered valuation laws. Current
+    /// whole-book Read authority is checked before history is loaded and again
+    /// before returning the report. No posting or rate selection occurs.
+    pub async fn functional_consolidation(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<FunctionalConsolidation> {
+        let at = match self
+            .prepare_functional_report(cx, principal, capability, known_at, false)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let result = self.query(cx, |db, book| {
+            crate::certificate::context_at(db, book, at)?;
+            if let Err(refusal) = crate::certificate::verify_functional_sources(db, cx, book, at)? {
+                return Ok(Err(refusal));
+            }
+            consolidate_functional_at(db, book, period, at)
+        })?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, Some(at), false)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Certify a functional consolidation with the native Rate projection,
+    /// retained source history and exact group output. Read and Produce
+    /// authority precede history loading; the report never changes the book.
+    pub async fn certify_functional_consolidation(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let at = match self
+            .prepare_functional_report(cx, principal, capability, known_at, true)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let result = self.certify_report(
+            cx,
+            crate::ReportSelection::FunctionalConsolidation {
+                period: period.to_string(),
+            },
+            Some(at),
+        )?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, Some(at), true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
     }
 }

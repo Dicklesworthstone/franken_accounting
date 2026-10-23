@@ -140,6 +140,7 @@ pub use certificate::{
     ReportSelection, TrialBalanceSelection,
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
+pub use consolidation::FunctionalConsolidation;
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use draft_review::{
     CertifiedDraftDiff, DRAFT_DIFF_CERTIFICATE_FORMAT, DRAFT_DIFF_OUTPUT_FORMAT, DraftDiff,

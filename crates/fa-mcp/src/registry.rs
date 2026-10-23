@@ -2456,6 +2456,11 @@ mod tests {
                 json!({"period": "FY2026-P03", "as_known_at": "42", "certify": true}),
                 "consolidate",
             ),
+            (
+                "fa_close_consolidate",
+                json!({"period": "FY2026-P03", "functional": true, "certify": true}),
+                "consolidate",
+            ),
         ] {
             let tool = mcp.tool_by_wire(wire).expect("certifiable report");
             let schema = tool.input_schema(&mcp, reg);

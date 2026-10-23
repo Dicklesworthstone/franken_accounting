@@ -12637,7 +12637,7 @@ fn functional_statement_unit(
     registered_unit_code(fa_money::UnitId(unit), units)
 }
 
-fn statement_presentation_basis(
+pub(crate) fn statement_presentation_basis(
     statement: &Statement,
     units: &fa_money::UnitRegistry,
     functional: bool,

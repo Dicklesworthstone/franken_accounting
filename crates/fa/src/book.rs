@@ -1151,6 +1151,37 @@ impl Book {
         ))
     }
 
+    /// Consolidate in the historical book's shared functional currency,
+    /// using independently verified retained valuations. Whole-book Read
+    /// authority is required before loading complete source history.
+    pub fn functional_consolidation(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::consolidation::FunctionalConsolidation> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_consolidation(
+            &purposes, principal, capability, period, known_at,
+        )))
+    }
+
+    /// Certify the exact functional group report, its Rate sources and
+    /// valuation laws under current whole-book Read and Produce authority.
+    pub fn certify_functional_consolidation(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_consolidation(
+            &purposes, principal, capability, period, known_at,
+        )))
+    }
+
     /// Read journaled native subledgers at one prefix under current authority.
     pub fn native_subledgers(
         &self,
@@ -6055,7 +6086,8 @@ impl ReadScope<'_> {
             }
             ReportSelection::OpenItems { .. }
             | ReportSelection::FunctionalStatement(_)
-            | ReportSelection::Consolidation { .. } => self.authority.whole_book(seq),
+            | ReportSelection::Consolidation { .. }
+            | ReportSelection::FunctionalConsolidation { .. } => self.authority.whole_book(seq),
         };
         Ok(admitted.map(|()| seq))
     }

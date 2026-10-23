@@ -57,10 +57,10 @@ fn prepare_artifact_history(
         ));
     }
     if artifact.family() == ReportArtifactFamily::Native
-        && matches!(
-            artifact.source_certificate().selection,
-            ReportSelection::FunctionalStatement(_)
-        )
+        && artifact
+            .source_certificate()
+            .selection
+            .uses_functional_valuations()
     {
         // Functional verification checks immutable Entry births and carrying
         // sources even when the supplied file selects HEAD. A compacted book
@@ -1121,6 +1121,15 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (ReportOutput::Consolidation(report), ReportSelection::Consolidation { .. }) => {
                 crate::consolidate::render_consolidation(&ctx.out, &book, report, Some(&digest))?
             }
+            (
+                ReportOutput::FunctionalConsolidation(report),
+                ReportSelection::FunctionalConsolidation { .. },
+            ) => crate::consolidate::render_functional_consolidation(
+                &ctx.out,
+                &book,
+                report,
+                Some(&digest),
+            )?,
             _ => {
                 return Err(certificate_invalid(
                     "replayed report kind differs from the retained certificate selector",
@@ -1381,7 +1390,8 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         ReportSelection::Statement(selection) | ReportSelection::FunctionalStatement(selection) => {
             ctx.out.effective(periods_selector(&selection.periods));
         }
-        ReportSelection::Consolidation { period } => {
+        ReportSelection::Consolidation { period }
+        | ReportSelection::FunctionalConsolidation { period } => {
             ctx.out.effective(format!("period:{period}"));
         }
     }
