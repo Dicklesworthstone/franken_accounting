@@ -77,6 +77,7 @@ pub mod general_ledger;
 pub mod indirect_cash_flow;
 pub mod intake;
 pub mod interop;
+pub mod ledger_diff;
 pub mod outcome_recovery;
 pub mod procedure_certificate;
 pub mod production;
@@ -247,6 +248,7 @@ pub use indirect_cash_flow::{
     MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use intake::IntakeAction;
+pub use ledger_diff::{LedgerDiff, RecordedEntry, TrialBalanceChange};
 pub use outcome_recovery::{OutcomeRebuild, OutcomeRebuildPreview, PreparedOutcomeRebuild};
 pub use procedure_certificate::{
     BANK_PROCEDURE_CERTIFICATE_FORMAT, CERTIFIABLE_PROCEDURES, CertifiedProcedure,

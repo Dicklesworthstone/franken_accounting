@@ -8107,6 +8107,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["search", "rent"]).0, 0);
     assert_eq!(
+        run(true, &["diff", "--from", "HEAD", "--period", "FY2026-P03"]).0,
+        0
+    );
+    assert_eq!(
         run(
             true,
             &[
@@ -20950,6 +20954,170 @@ fn search_finds_entries_by_their_text_at_a_recorded_frontier() -> std::io::Resul
     assert!(ids(&search(&["zeppelin"])).is_empty());
     assert_eq!(run(&["search"]).0, 2);
     assert_eq!(run(&["search", "rent", "--limit", "0"]).0, 2);
+    Ok(())
+}
+
+/// `fa diff --from … --to …` (plan §15.3): one trial-balance selection at
+/// two recorded frontiers. An entry dated into February but recorded after
+/// the frontier is listed in the window it was recorded in and moves
+/// February's activity; an empty window changes nothing; `--limit` caps
+/// the listed entries, never the total. A missing `--from` or selection,
+/// and `--from` after `--to`, are usage.
+#[test]
+fn diff_shows_what_changed_between_two_recorded_frontiers() -> std::io::Result<()> {
+    let dir = tmp("ledger-diff")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Diff Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P02"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "evidence.txt", "Diff evidence");
+    let (code, out, _) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let evidence = text(&doc(&out), "oid").to_string();
+    let post = |key: &str, date: &str, debit: &str, credit: &str, amount: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"idempotency_key":"{key}","effective_date":"{date}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount}"}},{{"side":"credit","account":"{credit}","amount":"{amount}"}}]}}"#
+            ),
+        );
+        let (code, out, _) = run(&["post", "--intent", &intent, "--evidence", &evidence]);
+        assert_eq!(code, 0, "{out}");
+        text(&doc(&out), "vid").to_string()
+    };
+    post("rent", "2026-03-10", "6000", "1000", "9.00 USD");
+    let (_, info, _) = run(&["book", "info"]);
+    let frontier = json::parse(info.lines().last().unwrap_or_default())
+        .ok()
+        .and_then(|line| line.get("coordinate").and_then(|c| int(c, "known_at")))
+        .unwrap_or_default()
+        .to_string();
+    let sale = post("sale", "2026-03-12", "1000", "4000", "25.00 USD");
+    let late = post("late", "2026-02-20", "6000", "1000", "4.00 USD");
+
+    let diff = |args: &[&str]| -> Json {
+        let mut argv = vec!["diff"];
+        argv.extend_from_slice(args);
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 0, "{argv:?}: {out}");
+        doc(&out)
+    };
+    let deltas = |found: &Json| -> Vec<(String, String)> {
+        arr(found, "changes")
+            .iter()
+            .map(|row| {
+                (
+                    text(row, "code").to_string(),
+                    text(row, "delta").to_string(),
+                )
+            })
+            .collect()
+    };
+    let owned = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
+        rows.iter()
+            .map(|(code, delta)| ((*code).to_string(), (*delta).to_string()))
+            .collect()
+    };
+    // March's stock moves by both later entries; both are listed, in
+    // recorded order, the late one under the period it is dated in.
+    let march = diff(&["--from", &frontier, "--period", "FY2026-P03"]);
+    assert_eq!(
+        deltas(&march),
+        owned(&[
+            ("1000", "21.00 USD"),
+            ("4000", "-25.00 USD"),
+            ("6000", "4.00 USD")
+        ]),
+        "{march:?}"
+    );
+    let entries = arr(&march, "entries");
+    let listed: Vec<&str> = entries.iter().map(|e| text(e, "vid")).collect();
+    assert_eq!(listed, [sale.as_str(), late.as_str()], "{march:?}");
+    assert_eq!(text(&entries[1], "period"), "FY2026-P02");
+    assert_eq!(text(&entries[1], "effective_date"), "2026-02-20");
+    assert_eq!(int(&march, "entries_total"), Some(2));
+    assert!(int(&march, "to") > int(&march, "from"), "{march:?}");
+    // February's activity moves by the late entry alone, recorded after
+    // the frontier although it is dated before it.
+    let february = diff(&["--from", &frontier, "--period", "FY2026-P02", "--activity"]);
+    assert_eq!(
+        deltas(&february),
+        owned(&[("1000", "-4.00 USD"), ("6000", "4.00 USD")]),
+        "{february:?}"
+    );
+    // An empty window changes nothing and lists nothing.
+    let empty = diff(&[
+        "--from",
+        &frontier,
+        "--to",
+        &frontier,
+        "--period",
+        "FY2026-P03",
+    ]);
+    assert!(arr(&empty, "changes").is_empty(), "{empty:?}");
+    assert_eq!(int(&empty, "entries_total"), Some(0));
+    // --limit caps the listing, never the total.
+    let limited = diff(&[
+        "--from",
+        &frontier,
+        "--period",
+        "FY2026-P03",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(arr(&limited, "entries").len(), 1);
+    assert_eq!(int(&limited, "entries_total"), Some(2));
+    // Usage: no --from, no selection, --from after --to, a bad --limit.
+    let head = int(&march, "to").unwrap_or_default().to_string();
+    assert_eq!(run(&["diff", "--period", "FY2026-P03"]).0, 2);
+    assert_eq!(run(&["diff", "--from", &frontier]).0, 2);
+    assert_eq!(
+        run(&[
+            "diff",
+            "--from",
+            &head,
+            "--to",
+            &frontier,
+            "--period",
+            "FY2026-P03"
+        ])
+        .0,
+        2
+    );
+    assert_eq!(
+        run(&[
+            "diff",
+            "--from",
+            &frontier,
+            "--period",
+            "FY2026-P03",
+            "--limit",
+            "0"
+        ])
+        .0,
+        2
+    );
     Ok(())
 }
 

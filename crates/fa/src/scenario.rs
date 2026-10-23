@@ -16,8 +16,6 @@
 //! replay`). No-claim boundary: a read of the materialization (`--branch
 //! scenario:<name>`) is not certified.
 
-use std::collections::BTreeMap;
-
 use fa_journal::refusal::{Refusal, code, exit};
 use fa_journal::{PostRequest, ScenarioRecorded, ScenarioView, SeqMap};
 use fa_model::{Oid, domain_digest};
@@ -143,12 +141,6 @@ fn in_scenario(name: &str, fork_at: CommitSeq, ordinal: usize, refusal: Refusal)
         ),
         ..refusal
     }
-}
-
-fn overflow(what: &str) -> BookError {
-    BookError::Kernel(fa_journal::KernelError::Corrupt(format!(
-        "scenario diff {what} exceeds the exact i128 range"
-    )))
 }
 
 impl Book {
@@ -417,75 +409,38 @@ fn scratch_request(
 }
 
 /// Every (account, unit) whose debits or credits differ, by account code
-/// then unit, with the exact change in its net balance.
+/// then unit, with the exact change in its net balance: trunk is the
+/// before side and the scenario the after side of
+/// [`crate::ledger_diff::trial_balance_changes`].
 fn diff_rows(
     trunk: &TrialBalance,
     scenario: &TrialBalance,
 ) -> Result<Vec<ScenarioDiffRow>, BookError> {
-    let mut cells: BTreeMap<(String, u32, u128), ScenarioDiffRow> = BTreeMap::new();
-    for (side, tb) in [(false, trunk), (true, scenario)] {
-        for row in &tb.rows {
-            let cell = cells
-                .entry((row.code.clone(), row.unit_id, row.account.0))
-                .or_insert_with(|| ScenarioDiffRow {
-                    account: row.account,
-                    code: row.code.clone(),
-                    name: row.name.clone(),
-                    unit_id: row.unit_id,
-                    trunk_debits: 0,
-                    trunk_credits: 0,
-                    scenario_debits: 0,
-                    scenario_credits: 0,
-                    delta: 0,
-                    trunk_debits_pending: 0,
-                    trunk_credits_pending: 0,
-                    scenario_debits_pending: 0,
-                    scenario_credits_pending: 0,
-                    pending_delta: 0,
-                });
-            if side {
-                cell.scenario_debits = row.debits;
-                cell.scenario_credits = row.credits;
-                cell.scenario_debits_pending = row.debits_pending;
-                cell.scenario_credits_pending = row.credits_pending;
-            } else {
-                cell.trunk_debits = row.debits;
-                cell.trunk_credits = row.credits;
-                cell.trunk_debits_pending = row.debits_pending;
-                cell.trunk_credits_pending = row.credits_pending;
-            }
-        }
-    }
-    let change = |scenario: (i128, i128), trunk: (i128, i128), what: &str| {
-        let scenario_net = scenario.0.checked_sub(scenario.1);
-        let trunk_net = trunk.0.checked_sub(trunk.1);
-        scenario_net
-            .zip(trunk_net)
-            .and_then(|(s, t)| s.checked_sub(t))
-            .ok_or_else(|| overflow(what))
-    };
-    let mut rows = Vec::new();
-    for mut cell in cells.into_values() {
-        let posted = (
-            (cell.scenario_debits, cell.scenario_credits),
-            (cell.trunk_debits, cell.trunk_credits),
-        );
-        let pending = (
-            (cell.scenario_debits_pending, cell.scenario_credits_pending),
-            (cell.trunk_debits_pending, cell.trunk_credits_pending),
-        );
-        if posted.0 == posted.1 && pending.0 == pending.1 {
-            continue;
-        }
-        cell.delta = change(posted.0, posted.1, "delta")?;
-        cell.pending_delta = change(pending.0, pending.1, "pending delta")?;
-        rows.push(cell);
-    }
-    Ok(rows)
+    Ok(crate::ledger_diff::trial_balance_changes(trunk, scenario)?
+        .into_iter()
+        .map(|change| ScenarioDiffRow {
+            account: change.account,
+            code: change.code,
+            name: change.name,
+            unit_id: change.unit_id,
+            trunk_debits: change.before_debits,
+            trunk_credits: change.before_credits,
+            scenario_debits: change.after_debits,
+            scenario_credits: change.after_credits,
+            delta: change.delta,
+            trunk_debits_pending: change.before_debits_pending,
+            trunk_credits_pending: change.before_credits_pending,
+            scenario_debits_pending: change.after_debits_pending,
+            scenario_credits_pending: change.after_credits_pending,
+            pending_delta: change.pending_delta,
+        })
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use fa_model::AccountType;
     use fa_registers::TbRow;

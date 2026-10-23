@@ -23,6 +23,7 @@ mod chart_role;
 pub mod cli;
 pub mod client;
 mod closing;
+mod diff;
 mod document;
 mod engagement;
 pub mod entry;

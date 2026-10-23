@@ -84,6 +84,8 @@ fa verify registers --book ./books/acme --period FY2026-P03 --json
 fa verify entities --book ./books/acme --period FY2026-P03 --json
 # Find entries by their description or leg memos, documents by their (extracted) text, and recorded findings by their narrative: one index rebuilt from the journal per query.
 fa search "office rent" --book ./books/acme --json
+# What changed since sequence 40: March balances then and now, and every entry recorded since, whatever date it carries.
+fa diff --from 40 --period FY2026-P03 --book ./books/acme --json
 # GQL over the book's graph: March's legs summed per unit and side, as known at sequence 42.
 # --certify retains the result's certificate; fa replay C:<oid> reproduces the rows byte for byte.
 fa query "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, l.side, SUM(l.amount) AS total FOR PERIOD 'FY2026-P03' AS KNOWN AT 42" --certify --book ./books/acme --json
@@ -871,7 +873,8 @@ fa case determine 1 --on 2025-03-03 --authority <minutes-oid> --book acme.fabook
 
 # Rehearse the close on a draft, diff it, let a human promote it (available today: close dry-run posts the draft's
 # plans as one scratch batch and shows the stock trial-balance change; --branch draft:<name> reads that rehearsal in
-# tb, statement, explain and gl; the generic fa diff verb is target fa-s7x).
+# tb, statement, explain and gl; fa diff compares two recorded frontiers of trunk today, and comparing a branch is
+# target fa-s7x).
 fa draft new close-2026-03 --book acme.fabook --json
 fa close dry-run --period FY2026-P03 --draft close-2026-03 --json
 # Target (fa-s7x):

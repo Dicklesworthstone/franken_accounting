@@ -4935,6 +4935,18 @@ impl Book {
         with_store!(&self.store, core => core.search(&self.purposes(), query, known_at, documents, kind))
     }
 
+    /// `selection` at `from` and at `to` (the head when `None`), what
+    /// changed between them, and every entry recorded after `from` through
+    /// `to` (`fa diff`; see [`crate::ledger_diff`]).
+    pub fn ledger_diff(
+        &self,
+        selection: &crate::TrialBalanceSelection,
+        from: CommitSeq,
+        to: Option<CommitSeq>,
+    ) -> Result<crate::LedgerDiff, BookError> {
+        with_store!(&self.store, core => core.ledger_diff(&self.purposes(), selection, from, to))
+    }
+
     /// Run a compiled profile query at `known_at` (`fa query`; see
     /// [`crate::query`]): one certified native read of the graph as recorded
     /// at that sequence. With `period`, the period must exist there.
