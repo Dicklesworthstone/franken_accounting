@@ -13,7 +13,13 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{AsyncBook, Outcome, TrialBalanceSelection};
 
-pub use fa_journal::dimension::{DimensionValueRecorded, DimensionValueRow, DimensionValueSpec};
+pub use fa_journal::dimension::{
+    DimensionRequirementRecorded, DimensionRequirementSpec, DimensionValueRecorded,
+    DimensionValueRow, DimensionValueSpec,
+};
+
+/// Each registered dimension's requiring accounts (dimensions with a value only).
+pub type DimensionRequirements = Vec<(fa_model::DimensionKind, BTreeSet<VId>)>;
 
 /// A trial balance over the legs tagged with one dimension value or one of
 /// its descendants (`fa tb --dimension`).
@@ -51,15 +57,45 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
-    /// Every registered kind's value at `known_at` (the head when `None`)
-    /// under current whole-book read authority, with the prefix they were
-    /// read at.
+    /// Require, or stop requiring, a dimension on one account's legs under
+    /// SchemaChange authority; an account already in (or out of) the
+    /// requirement writes nothing.
+    pub async fn record_dimension_requirement(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &DimensionRequirementSpec,
+        principal: VId,
+        key: &[u8],
+        capability: &Capability,
+    ) -> Outcome<DimensionRequirementRecorded> {
+        let verb = if spec.required {
+            "require"
+        } else {
+            "stop requiring"
+        };
+        let description = self.seal_text(cx, &format!("{verb} {}", spec.dimension))?;
+        Ok(fa_journal::dimension::record_dimension_requirement(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    /// Every registered kind's value at `known_at` (the head when `None`),
+    /// and each dimension's requiring accounts, under current whole-book
+    /// read authority, with the prefix they were read at.
     pub fn dimension_values(
         &self,
         cx: &PurposeContexts,
         known_at: Option<CommitSeq>,
         capability: &Capability,
-    ) -> Outcome<(CommitSeq, Vec<DimensionValueRow>)> {
+    ) -> Outcome<(CommitSeq, Vec<DimensionValueRow>, DimensionRequirements)> {
         self.query(cx, |db, book| {
             let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
                 Ok(at) => at,
@@ -68,6 +104,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(Ok((
                 at,
                 fa_journal::dimension::dimension_values_at(db, at)?,
+                fa_journal::dimension::requirements_at(db, book, at)?,
             )))
         })
     }

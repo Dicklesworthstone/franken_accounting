@@ -1367,6 +1367,9 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
     mut read_vertex: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
 ) -> Outcome<Vec<AccountRow>> {
     let mut accounts: Vec<AccountRow> = Vec::with_capacity(legs.len());
+    // Each registered dimension's requiring accounts, by one point read of
+    // its Dimension vertex per entry (fa-ficc).
+    let required = crate::dimension::required_dimensions(book, &mut read_vertex)?;
     for (i, leg) in legs.iter().enumerate() {
         let Some(row) = read_vertex(leg.account_ref)? else {
             return Ok(Err(Refusal::new(
@@ -1509,6 +1512,16 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
         if let Some(refusal) =
             crate::dimension::admit_leg_dimensions(leg, i, effective_date, &mut read_vertex)?
         {
+            return Ok(Err(refusal));
+        }
+        if let Some(refusal) = crate::dimension::admit_required_dimensions(
+            db,
+            leg,
+            i,
+            &account.code,
+            effective_date,
+            &required,
+        )? {
             return Ok(Err(refusal));
         }
         accounts.push(account);

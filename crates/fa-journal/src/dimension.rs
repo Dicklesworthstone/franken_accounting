@@ -11,6 +11,16 @@
 //! with a `CHILD_OF` edge to its parent. The posting kernel judges a leg's
 //! value by one point read of that vertex, never a scan (plan §5.1): it must
 //! be a value of the leg's dimension, effective on the entry's date.
+//!
+//! An account requires a dimension (plan §4.3 `dimension_requirements`) by
+//! another schema control naming the dimension, the account and whether it
+//! is now required. The same transaction keeps the dimension's Dimension
+//! vertex payload equal to the sorted accounts that require it, so posting
+//! reads each registered dimension once per entry, by point read, and a leg
+//! on a requiring account that names no value of it is refused (FA-REF-005)
+//! with the values it may name.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_model::rea::{MAX_REA_CODE_BYTES, MAX_REA_NAME_BYTES};
@@ -22,17 +32,20 @@ use fa_model::{
 };
 use fa_policy::Capability;
 use fa_time::DateDay;
-use fgdb::{Database, VertexRow, WriteBatch, WriteTxnError};
+use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
 use crate::chart::{admit_schema_change, schema_control_proposal};
 use crate::genesis::BookContext;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{book_root, bytes, edge_id, prop, scalar_bytes, scalar_text};
+use crate::rows::{AccountRow, book_root, bytes, edge_id, prop, scalar_bytes, scalar_text};
 
 pub const SCHEMA_CHANGE_DIMENSION_VALUE: u16 = 17;
+pub const SCHEMA_CHANGE_DIMENSION_REQUIREMENT: u16 = 18;
 const FORMAT: &[u8] = b"fa:dimension-value:v1";
+const REQUIREMENT_FORMAT: &[u8] = b"fa:dimension-requirement:v1";
+const REQUIRED_FORMAT: &[u8] = b"fa:dimension-required-accounts:v1";
 
 /// One dimension value's declaration, the canonical body of its control.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -559,6 +572,357 @@ fn unknown_value(kind: DimensionKind, value: VId, i: usize) -> Refusal {
         ),
     )
     .at("leg", i)
+}
+
+/// One requirement control's canonical body: from now on `account`'s legs
+/// must (or need no longer) name a value of `dimension`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionRequirementSpec {
+    pub dimension: String,
+    pub account: VId,
+    pub required: bool,
+}
+
+impl DimensionRequirementSpec {
+    pub fn encode(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(REQUIREMENT_FORMAT)
+            .str(&self.dimension)
+            .u128(self.account.0)
+            .bool(self.required);
+        w.finish()
+    }
+
+    pub fn decode(encoded: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(encoded);
+        let bad = |error: fa_model::DecodeError| corrupt(error.to_string());
+        if r.fixed::<{ REQUIREMENT_FORMAT.len() }>("dimension requirement format")
+            .map_err(bad)?
+            .as_slice()
+            != REQUIREMENT_FORMAT
+        {
+            return Err(corrupt("unknown dimension requirement encoding"));
+        }
+        let dimension = r
+            .str(MAX_REA_CODE_BYTES, "required dimension")
+            .map_err(bad)?
+            .to_string();
+        let account = VId(r.u128("requiring account").map_err(bad)?);
+        let required = r.bool("required").map_err(bad)?;
+        r.finish().map_err(bad)?;
+        if dimension_kind(&dimension).is_none() {
+            return Err(corrupt(format!(
+                "a requirement names unregistered dimension `{dimension}`"
+            )));
+        }
+        Ok(Self {
+            dimension,
+            account,
+            required,
+        })
+    }
+}
+
+/// The accounts a Dimension vertex's payload says require it, ascending.
+fn encode_required(accounts: &BTreeSet<VId>) -> Result<Vec<u8>, fa_model::EncodeError> {
+    let accounts: Vec<VId> = accounts.iter().copied().collect();
+    let mut w = Writer::new();
+    w.fixed(REQUIRED_FORMAT).list(&accounts, |w, account| {
+        w.u128(account.0);
+    });
+    w.finish()
+}
+
+fn decode_required(row: &VertexRow) -> Result<BTreeSet<VId>, KernelError> {
+    let Some(scalar) = prop(row, property::FA_PAYLOAD) else {
+        return Ok(BTreeSet::new());
+    };
+    let CanonicalScalar::Bytes(raw) = scalar else {
+        return Err(corrupt("a dimension's required accounts are not bytes"));
+    };
+    let mut r = Reader::new(raw.as_slice());
+    let bad = |error: fa_model::DecodeError| corrupt(error.to_string());
+    if r.fixed::<{ REQUIRED_FORMAT.len() }>("required accounts format")
+        .map_err(bad)?
+        .as_slice()
+        != REQUIRED_FORMAT
+    {
+        return Err(corrupt("unknown required accounts encoding"));
+    }
+    let accounts = r
+        .list(usize::MAX, "required accounts", |r| {
+            Ok(VId(r.u128("required account")?))
+        })
+        .map_err(bad)?;
+    r.finish().map_err(bad)?;
+    let set: BTreeSet<VId> = accounts.iter().copied().collect();
+    if set.len() != accounts.len() || !accounts.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(corrupt("required accounts are not strictly ascending"));
+    }
+    Ok(set)
+}
+
+/// Each registered dimension's requiring accounts at `at`, in id order;
+/// a dimension with no value yet requires nothing.
+pub fn requirements_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    at: CommitSeq,
+) -> Result<Vec<(DimensionKind, BTreeSet<VId>)>, KernelError> {
+    let mut out = Vec::new();
+    for kind in DIMENSION_KINDS {
+        if let Some(row) = db.vertex_at(dimension_vid(book.book_id, kind.code), at)? {
+            out.push((kind, decode_required(&row)?));
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionRequirementRecorded {
+    pub spec: DimensionRequirementSpec,
+    /// The control that set this state; `None` when the account already
+    /// was (or was not) required and nothing was written.
+    pub control_entry: Option<VId>,
+    pub recorded_at: Option<CommitSeq>,
+    pub already_recorded: bool,
+}
+
+/// Require, or stop requiring, `spec.dimension` on `spec.account`'s legs
+/// under current whole-book SchemaChange authority. The dimension must have
+/// a value, and the account must be a posting leaf. An account already in
+/// (or already out of) the requirement writes nothing.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_dimension_requirement<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    spec: &DimensionRequirementSpec,
+    principal: VId,
+    key: &[u8],
+    description: Erasable<String>,
+    capability: &Capability,
+) -> Outcome<DimensionRequirementRecorded> {
+    if let Some(refusal) = admit_schema_change(db, book, principal, capability)? {
+        return Ok(Err(refusal));
+    }
+    let Some(kind) = dimension_kind(&spec.dimension) else {
+        return Ok(Err(usage_refusal(
+            format!(
+                "`{}` is not a registered dimension; the dimensions are {}",
+                spec.dimension,
+                kinds_listing()
+            ),
+            "fa dimension require <dimension> <account> [--remove]",
+        )));
+    };
+    let proposal = schema_control_proposal(
+        book,
+        SCHEMA_CHANGE_DIMENSION_REQUIREMENT,
+        spec.encode()?,
+        principal,
+        DateDay(0),
+        key,
+        description,
+    );
+    let entry = proposal.clone().seal(Vec::new(), None)?;
+    let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), key);
+    let dim_vid = dimension_vid(book.book_id, kind.code);
+    let mut txn = db.begin(&ctx.txn())?;
+    if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        if stored.proposal.semantic_digest(&book.seal_key)?
+            != proposal.semantic_digest(&book.seal_key)?
+        {
+            return Ok(Err(Refusal::new(
+                code::IDEMPOTENCY_CONFLICT,
+                exit::CONFLICT,
+                "this idempotency key already records different content",
+                "FA-INV-09",
+                "retry the original requirement change or use a new key",
+            )));
+        }
+        return Ok(Ok(DimensionRequirementRecorded {
+            spec: spec.clone(),
+            control_entry: Some(evid),
+            recorded_at: Some(row.created_at),
+            already_recorded: true,
+        }));
+    }
+    let Some(dimension) = txn.vertex(db, dim_vid)? else {
+        txn.abort();
+        return Ok(Err(usage_refusal(
+            format!("{} has no value yet, so no leg could name one", kind.code),
+            format!(
+                "create a value first: fa dimension add {} <code> --name <name>",
+                kind.code
+            ),
+        )));
+    };
+    let account = match txn.vertex(db, spec.account)? {
+        Some(row) if row.labels.contains(&label::ACCOUNT) => AccountRow::decode(&row)?,
+        _ => {
+            txn.abort();
+            return Ok(Err(Refusal::new(
+                code::UNKNOWN_ACCOUNT,
+                exit::REFUSAL,
+                "the account does not exist",
+                "plan §4.3 (the chart of accounts)",
+                "name an account of this book's chart (fa chart list)",
+            )));
+        }
+    };
+    if !account.is_leaf {
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::NOT_A_LEAF,
+            exit::REFUSAL,
+            format!(
+                "account `{}` is a summary; a requirement binds the legs of posting leaves",
+                account.code
+            ),
+            "plan §4.3 (only leaves accept legs)",
+            "require the dimension on each posting leaf under it",
+        )));
+    }
+    let mut required = decode_required(&dimension)?;
+    if required.contains(&spec.account) == spec.required {
+        txn.abort();
+        return Ok(Ok(DimensionRequirementRecorded {
+            spec: spec.clone(),
+            control_entry: None,
+            recorded_at: None,
+            already_recorded: true,
+        }));
+    }
+    if spec.required {
+        required.insert(spec.account);
+    } else {
+        required.remove(&spec.account);
+    }
+    let witnessed = txn.vertex_property(db, dim_vid, property::FA_PAYLOAD)?;
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.compare_and_set_vertex_property(
+        dim_vid,
+        property::FA_PAYLOAD,
+        witnessed,
+        scalar_bytes("dimension._fa_payload", encode_required(&required)?)?,
+        WriteMismatchPolicy::AbortWrite,
+    );
+    if let Err(error) = txn.write(db, batch) {
+        txn.abort();
+        return Err(error.into());
+    }
+    if let Err(denial) = fa_policy::current(capability, db.frontier()?) {
+        txn.abort();
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(recorded_at) => Ok(Ok(DimensionRequirementRecorded {
+            spec: spec.clone(),
+            control_entry: Some(evid),
+            recorded_at: Some(recorded_at),
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!("a dimension requirement witness changed: {detail}"),
+                "FG-LAW-FCW-01",
+                "retry against the current frontier",
+            )))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => Ok(Err(Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            "a dimension requirement control collided on a derived identity",
+            "FA-INV-09",
+            "retry its original key",
+        ))),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The dimensions each account requires, read once per entry: one point
+/// read of each registered dimension's Dimension vertex (plan §5.1).
+pub(crate) fn required_dimensions(
+    book: &BookContext,
+    mut read_vertex: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
+) -> Result<BTreeMap<VId, Vec<DimensionKind>>, KernelError> {
+    let mut by_account: BTreeMap<VId, Vec<DimensionKind>> = BTreeMap::new();
+    for kind in DIMENSION_KINDS {
+        let Some(row) = read_vertex(dimension_vid(book.book_id, kind.code))? else {
+            continue;
+        };
+        for account in decode_required(&row)? {
+            by_account.entry(account).or_default().push(kind);
+        }
+    }
+    Ok(by_account)
+}
+
+/// Refuse leg `i` when its account requires a dimension it names no value
+/// of (FA-REF-005), naming the values effective on `effective_date`. The
+/// values are read only on this refusal path.
+pub(crate) fn admit_required_dimensions<V: Vfs + Clone>(
+    db: &Database<V>,
+    leg: &LegPayload,
+    i: usize,
+    account_code: &str,
+    effective_date: DateDay,
+    required: &BTreeMap<VId, Vec<DimensionKind>>,
+) -> Result<Option<Refusal>, KernelError> {
+    let Some(kinds) = required.get(&leg.account_ref) else {
+        return Ok(None);
+    };
+    for kind in kinds {
+        if leg.dimension_set.iter().any(|(id, _)| *id == kind.id) {
+            continue;
+        }
+        let allowed: Vec<String> = dimension_values_at(db, db.frontier()?)?
+            .into_iter()
+            .filter(|row| row.dimension_id == kind.id && row.spec.is_effective_at(effective_date))
+            .map(|row| row.spec.code)
+            .collect();
+        return Ok(Some(
+            Refusal::new(
+                code::DIMENSION_MISSING,
+                exit::REFUSAL,
+                format!(
+                    "leg {i} posts to `{account_code}`, which requires a {} value; the leg names none",
+                    kind.code
+                ),
+                "plan §4.3 (dimension_requirements: the kernel rejects a leg missing a required dimension with the list of allowed values)",
+                if allowed.is_empty() {
+                    format!(
+                        "no {0} value is effective on {1}; create one (fa dimension add {0} <code> --name <name>) or date the entry inside a value's window",
+                        kind.code,
+                        effective_date.render()
+                    )
+                } else {
+                    format!(
+                        "add \"dimensions\": {{\"{}\": \"<code>\"}} to leg {i}, naming one of: {}",
+                        kind.code,
+                        allowed.join(", ")
+                    )
+                },
+            )
+            .at("leg", i)
+            .at("account", account_code.to_string())
+            .or_field_change(format!("legs[{i}].dimensions.{}", kind.code), allowed),
+        ));
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

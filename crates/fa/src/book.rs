@@ -980,10 +980,29 @@ impl Book {
         &self,
         known_at: Option<CommitSeq>,
         capability: &fa_journal::Capability,
-    ) -> Outcome<(CommitSeq, Vec<crate::dimension::DimensionValueRow>)> {
+    ) -> Outcome<(
+        CommitSeq,
+        Vec<crate::dimension::DimensionValueRow>,
+        crate::dimension::DimensionRequirements,
+    )> {
         with_store!(&self.store, core => core.dimension_values(
             &self.purposes(), known_at, capability,
         ))
+    }
+
+    /// Require, or stop requiring, a dimension on one account's legs
+    /// (bead fa-ficc) under SchemaChange authority.
+    pub fn record_dimension_requirement(
+        &mut self,
+        spec: &crate::dimension::DimensionRequirementSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionRequirementRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_dimension_requirement(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
     }
 
     /// `selection` over only the legs tagged with `dimension`'s `value` or a

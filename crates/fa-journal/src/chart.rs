@@ -381,6 +381,13 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                 continue;
             }
             Some(ControlPayload::SchemaChange {
+                kind: crate::dimension::SCHEMA_CHANGE_DIMENSION_REQUIREMENT,
+                canonical_bytes,
+            }) => {
+                crate::dimension::DimensionRequirementSpec::decode(canonical_bytes)?;
+                continue;
+            }
+            Some(ControlPayload::SchemaChange {
                 kind,
                 canonical_bytes,
             }) if fa_model::ReaControlOp::is_rea_schema_change_kind(*kind) => {

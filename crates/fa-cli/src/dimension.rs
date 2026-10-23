@@ -6,8 +6,8 @@
 //! value exists in its dimension and is effective on the entry's date.
 
 use fa::TrialBalanceSelection;
-use fa::dimension::{DimensionValueRow, DimensionValueSpec};
-use fa_model::{Id128, dimension_kind, dimension_value_vid};
+use fa::dimension::{DimensionRequirementSpec, DimensionValueRow, DimensionValueSpec};
+use fa_model::{Id128, account_vid, dimension_kind, dimension_value_vid};
 use fa_time::DateDay;
 use fgdb_types::VId;
 
@@ -20,6 +20,7 @@ use crate::json::{Json, obj, s};
 
 const ADD: &str = "fa dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]";
 const LIST: &str = "fa dimension list [<dimension>] [--as-known-at HEAD|<seq>]";
+const REQUIRE: &str = "fa dimension require <dimension> <account> [--remove] [--key K]";
 
 fn kinds() -> String {
     fa_journal::dimension::kinds_listing()
@@ -38,9 +39,10 @@ pub(crate) fn dimension_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     match args.positional.get(1).map(String::as_str) {
         Some("add") => add(ctx, args),
         Some("list") => list(ctx, args),
+        Some("require") => require(ctx, args),
         _ => Err(usage(
-            "dimension has the subcommands add and list",
-            format!("{ADD} | {LIST}"),
+            "dimension has the subcommands add, list and require",
+            format!("{ADD} | {LIST} | {REQUIRE}"),
         )),
     }
 }
@@ -156,6 +158,75 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// `fa dimension require <dimension> <account> [--remove] [--key K]`.
+fn require(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let [_, _, dimension, account] = args.positional.as_slice() else {
+        return Err(usage(
+            "dimension require names one dimension and one account",
+            REQUIRE,
+        ));
+    };
+    registered(dimension, REQUIRE)?;
+    let required = !args.switch("--remove");
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read", "schema_change"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &cap)??;
+        crate::rea::admit_read(book, who, &cap)
+    })?;
+    let spec = DimensionRequirementSpec {
+        dimension: dimension.clone(),
+        account: account_vid(book.context().book_id, account),
+        required,
+    };
+    // A change already in place writes nothing, so the head names each
+    // change exactly and an exact retry finds it.
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        None => format!(
+            "dimension-require:{dimension}:{account}:{required}:{}",
+            book.head()?.0
+        ),
+    };
+    let recorded = book.record_dimension_requirement(&spec, who, key.as_bytes(), &cap)??;
+    ctx.out.at_book(&book)?;
+    let state = if required {
+        "requires"
+    } else {
+        "no longer requires"
+    };
+    ctx.out.event(
+        "dimension_requirement_recorded",
+        vec![
+            ("dimension", s(dimension)),
+            ("account", s(account)),
+            ("required", Json::Bool(required)),
+            (
+                "control_entry",
+                recorded
+                    .control_entry
+                    .map_or(Json::Null, |vid| s(format!("{:032x}", vid.0))),
+            ),
+            (
+                "recorded_at",
+                recorded
+                    .recorded_at
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
+            ("already_recorded", Json::Bool(recorded.already_recorded)),
+        ],
+        &format!(
+            "{account} {state} a {dimension} value on every leg{}",
+            if recorded.already_recorded {
+                "; nothing was written"
+            } else {
+                ""
+            }
+        ),
+    );
+    Ok(())
+}
+
 /// `fa dimension list [<dimension>] [--as-known-at …]`.
 fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let only = match args.positional.as_slice() {
@@ -174,7 +245,31 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .books
         .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
     let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
-    let (at, values) = book.dimension_values(known_at, &cap)??;
+    let (at, values, requirements) = book.dimension_values(known_at, &cap)??;
+    let codes: std::collections::BTreeMap<VId, String> = book
+        .accounts_at(at, &cap)??
+        .into_iter()
+        .map(|account| (account.vid, account.code))
+        .collect();
+    let mut requirement_items = Vec::new();
+    let mut requirement_lines = Vec::new();
+    for (kind, accounts) in &requirements {
+        if only.is_some_and(|only| only != kind.code) {
+            continue;
+        }
+        let mut named: Vec<&str> = accounts
+            .iter()
+            .map(|vid| codes.get(vid).map_or("?", String::as_str))
+            .collect();
+        named.sort_unstable();
+        if !named.is_empty() {
+            requirement_lines.push(format!("{} is required on {}", kind.code, named.join(", ")));
+        }
+        requirement_items.push(obj(vec![
+            ("dimension", s(kind.code)),
+            ("accounts", Json::Arr(named.into_iter().map(s).collect())),
+        ]));
+    }
     let values: Vec<&DimensionValueRow> = values
         .iter()
         .filter(|row| only.is_none_or(|only| row.spec.dimension == only))
@@ -202,6 +297,7 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 "values",
                 Json::Arr(values.iter().map(|row| value_json(row)).collect()),
             ),
+            ("requirements", Json::Arr(requirement_items)),
         ],
         &if human.is_empty() {
             format!(
@@ -209,7 +305,11 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 kinds()
             )
         } else {
-            human.join("\n")
+            human
+                .into_iter()
+                .chain(requirement_lines)
+                .collect::<Vec<_>>()
+                .join("\n")
         },
     );
     Ok(())

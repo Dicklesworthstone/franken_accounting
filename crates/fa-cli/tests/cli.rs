@@ -7226,6 +7226,46 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
         let (code, out) = tb(filter, extra);
         assert_eq!(code, 2, "{filter} {extra:?}: {out}");
     }
+
+    // fa dimension require: from now on every leg on 6100 names a cost
+    // center; requiring it again writes nothing.
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(false)));
+    let before = head(&run);
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&run), before);
+    let listed = doc(&run(&["dimension", "list", "cost_center"]).1);
+    let requirements = arr(&listed, "requirements");
+    assert_eq!(requirements.len(), 1, "{listed:?}");
+    let accounts: Vec<&str> = arr(&requirements[0], "accounts")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(accounts, ["6100"]);
+    // A leg on 6100 naming no cost center is refused (FA-REF-005) with the
+    // values effective that day, CC only (CC10's window has closed), and
+    // nothing is written; the untagged cash leg needs none.
+    let (code, out) = post("untagged", "2026-03-25", "{}");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-005"), "{out}");
+    assert!(out.contains("one of: CC") && !out.contains("CC10"), "{out}");
+    assert_eq!(head(&run), before);
+    let (code, out) = post("required-tagged", "2026-03-25", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 0, "{out}");
+    // Removed, an untagged leg is admitted again.
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100", "--remove"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("required"), Some(&Json::Bool(false)));
+    let (code, out) = post("untagged-after", "2026-03-25", "{}");
+    assert_eq!(code, 0, "{out}");
+    // Planted: an account the chart lacks, and a dimension with no value.
+    let (code, out) = run(&["dimension", "require", "cost_center", "9999"]);
+    assert_eq!(code, 3, "{out}");
+    let (code, out) = run(&["dimension", "require", "project", "6100"]);
+    assert_eq!(code, 2, "{out}");
     Ok(())
 }
 
@@ -7991,6 +8031,19 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         run(
             true,
             &["dimension", "add", "cost_center", "CC10", "--name", "Ops"]
+        )
+        .0,
+        0
+    );
+    // Required, then not, so the posts below need no cost center.
+    assert_eq!(
+        run(true, &["dimension", "require", "cost_center", "6000"]).0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &["dimension", "require", "cost_center", "6000", "--remove"]
         )
         .0,
         0

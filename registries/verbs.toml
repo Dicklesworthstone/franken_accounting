@@ -837,12 +837,12 @@ example = "fa entity add acme-de.json --book ./books/myco --json"
 name = "dimension"
 summary = "Dimension values (plan §4.1): create a value of a registered dimension (cost_center, department, project, product, region, fund, grant, segment) with its name, parent and valid time, or list them. A post intent's leg tags values with \"dimensions\": {\"cost_center\": \"CC10\"}; the kernel refuses a value the book does not hold or one not effective on the entry's date."
 writes = true
-subcommands = ["add", "list"]
+subcommands = ["add", "list", "require"]
 flags = ["--name", "--parent", "--from", "--to", "--key", "--as-known-at"]
-switches = []
-events = ["dimension_value_recorded", "dimension_values"]
+switches = ["--remove"]
+events = ["dimension_value_recorded", "dimension_values", "dimension_requirement_recorded"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]   (a journaled SchemaChange control under schema_change authority; the code is unique in its dimension; a parent is an existing value of the same dimension; the value is effective from --from (inclusive) and before --to (exclusive), always when they are omitted; the default key is dimension:<dimension>:<code>, so an exact retry returns the recorded value)", "dimension list [<dimension>] [--as-known-at HEAD|<seq>]   (every value, or one dimension's; needs read)", "A leg tags values in its intent: \"dimensions\": {\"cost_center\": \"CC10\", \"project\": \"P-7\"}. The legal entity and the party keep the leg's entity and party fields. An unknown value is a usage error; a value outside its valid time is FA-REF-194."]
+usage = ["dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]   (a journaled SchemaChange control under schema_change authority; the code is unique in its dimension; a parent is an existing value of the same dimension; the value is effective from --from (inclusive) and before --to (exclusive), always when they are omitted; the default key is dimension:<dimension>:<code>, so an exact retry returns the recorded value)", "dimension list [<dimension>] [--as-known-at HEAD|<seq>]   (every value, or one dimension's, and the accounts each dimension is required on; needs read)", "dimension require <dimension> <account> [--remove] [--key K]   (from now on every leg on that posting leaf must name a value of the dimension, or with --remove need not; a journaled SchemaChange control under read and schema_change; the dimension needs a value first; an account already in (or out of) the requirement writes nothing; a leg that omits a required dimension is refused with FA-REF-005, naming the values effective that day)", "A leg tags values in its intent: \"dimensions\": {\"cost_center\": \"CC10\", \"project\": \"P-7\"}. The legal entity and the party keep the leg's entity and party fields. An unknown value is a usage error; a value outside its valid time is FA-REF-194."]
 example = "fa dimension add cost_center CC10 --name Operations --book ./books/myco --json"
 
 [[verb]]
@@ -2160,7 +2160,13 @@ fields = ["value:dimension_value", "control_entry:hex", "already_recorded:bool"]
 name = "dimension_values"
 book = true
 doc = "Every value of the registered dimensions the book holds at known_at, by dimension id then code; dimension is the one asked for, or null for all."
-fields = ["known_at:seq", "dimension:string?", "values:[dimension_value]"]
+fields = ["known_at:seq", "dimension:string?", "values:[dimension_value]", "requirements:[dimension_requirement]"]
+
+[[event]]
+name = "dimension_requirement_recorded"
+book = true
+doc = "One account now requires (or no longer requires) a value of a dimension on every leg; control_entry and recorded_at are null when the account already was (or was not) required and nothing was written (already_recorded true)."
+fields = ["dimension:string", "account:string", "required:bool", "control_entry:hex?", "recorded_at:seq?", "already_recorded:bool"]
 
 [[event]]
 name = "legal_entities"
@@ -2944,6 +2950,11 @@ fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string
 name = "tb_dimension"
 doc = "The dimension filter of fa tb --dimension: the dimension, the value named, and every value whose tagged legs the report folds (the value and its descendants, by code)."
 fields = ["dimension:string", "value:string", "values:[string]"]
+
+[[shape]]
+name = "dimension_requirement"
+doc = "A dimension that has values, and the account codes whose every leg must name one of them (empty when none does)."
+fields = ["dimension:string", "accounts:[string]"]
 
 [[shape]]
 name = "dimension_value"
@@ -6046,6 +6057,11 @@ subcommands = ["list"]
 ops = ["read"]
 
 [[bound]]
+verbs = ["dimension"]
+subcommands = ["require"]
+ops = ["read", "schema_change"]
+
+[[bound]]
 verbs = ["party"]
 subcommands = ["ownership"]
 ops = ["read"]
@@ -6144,6 +6160,18 @@ switches = []
 required = []
 dont = ["Name the dimension by its registered code (cost_center, department, project, product, region, fund, grant, segment); the legal entity and the party are not created here.", "Don't recreate a value to change its window or name: a value's declaration is fixed when it is created.", "Don't tag a leg with a value outside its valid time: the post is refused (FA-REF-194); date the entry inside the window or pick an effective value."]
 mistakes = ["Calling add without dimension, code and name.", "A parent that is not yet a value of the same dimension.", "valid_to on or before valid_from."]
+
+[[mcp.tool]]
+cluster = "fa.dimensions"
+name = "require"
+verb = "dimension"
+subcommands = ["require"]
+positionals = ["dimension", "account"]
+flags = ["--key"]
+switches = ["--remove"]
+required = ["dimension", "account"]
+dont = ["Require a dimension on posting leaves only (expense accounts, for example); a summary account is refused.", "Don't require a dimension before it has a value: the refusal names fa dimension add."]
+mistakes = ["Naming the account by name instead of its chart code.", "Expecting remove to write when the account was never required: it writes nothing."]
 
 [[mcp.cluster]]
 name = "fa.subledger"

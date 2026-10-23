@@ -939,6 +939,13 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::SchemaChange],
             Succeeds,
         ),
+        // --remove on an account never required writes nothing, so the
+        // later rows' legs on 6100 need no cost center.
+        row(
+            &["dimension", "require", "cost_center", "6100", "--remove"],
+            &[Op::Read, Op::SchemaChange],
+            Reaches,
+        ),
         row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],
