@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+mod reachability;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +17,7 @@ use fa_registry::procedures::Procedures;
 use fa_registry::refusal_catalog::RefusalCatalog;
 use fa_registry::scoreboard::Scoreboard;
 use fa_registry::topology::Topology;
+use fa_registry::unwired_modules::UnwiredModules;
 use fa_registry::{EntryClasses, ExitCodes, rounding_laws_embedded, units_embedded};
 
 fn default_workspace_root() -> PathBuf {
@@ -106,12 +109,23 @@ fn run() -> Result<(), String> {
     let mut json = false;
     let mut mode = "summary";
     let mut manifest_path: Option<PathBuf> = None;
+    let mut today: Option<String> = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "summary" | "status" => mode = "summary",
             "scoreboard" => mode = "scoreboard",
             "mutants" => mode = "mutants",
+            "reachability" => mode = "reachability",
+            "--today" => {
+                let d = args
+                    .next()
+                    .ok_or_else(|| "xtask: --today requires a YYYY-MM-DD date".to_string())?;
+                if fa_registry::unwired_modules::parse_date(&d).is_none() {
+                    return Err(format!("xtask: --today `{d}` is not a YYYY-MM-DD date"));
+                }
+                today = Some(d);
+            }
             "--manifest" => {
                 let p = args
                     .next()
@@ -120,7 +134,9 @@ fn run() -> Result<(), String> {
             }
             "--json" => json = true,
             "-h" | "--help" => {
-                println!("Usage: xtask [summary|scoreboard|mutants] [--manifest <path>] [--json]");
+                println!(
+                    "Usage: xtask [summary|scoreboard|mutants|reachability] [--manifest <path>] [--today YYYY-MM-DD] [--json]"
+                );
                 return Ok(());
             }
             other => return Err(format!("xtask: unknown argument `{other}`")),
@@ -130,6 +146,9 @@ fn run() -> Result<(), String> {
         let sb = Scoreboard::embedded().map_err(|e| e.to_string())?;
         print!("{}", sb.render_markdown());
         return Ok(());
+    }
+    if mode == "reachability" {
+        return run_reachability(today.unwrap_or_else(reachability::utc_today));
     }
     if mode == "mutants" {
         let root = default_workspace_root();
@@ -157,6 +176,28 @@ fn run() -> Result<(), String> {
     let out = render_summary(json)?;
     println!("{out}");
     Ok(())
+}
+
+/// `xtask reachability`: the report on stdout; every failure, the expiry
+/// check against `today` included, as a `FAIL ` line and exit 2 (fa-2ioe).
+fn run_reachability(today: String) -> Result<(), String> {
+    let root = default_workspace_root();
+    let crates = reachability::workspace_crates()?;
+    let read = |p: &str| fs::read_to_string(root.join(p)).ok();
+    let modules = reachability::analyze(&crates, &read);
+    let registry = UnwiredModules::embedded().map_err(|e| e.to_string())?;
+    print!("{}", reachability::render(&modules, &registry));
+    let fails = reachability::check(&modules, &registry, &read, Some(today.as_str()));
+    if fails.is_empty() {
+        println!("xtask reachability: ok (as of {today})");
+        Ok(())
+    } else {
+        Err(fails
+            .iter()
+            .map(|f| format!("FAIL {f}"))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
 }
 
 fn main() -> ExitCode {
