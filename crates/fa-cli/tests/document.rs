@@ -787,6 +787,94 @@ fn extract_records_a_pdf_text_layer_as_a_derived_document() -> std::io::Result<(
         "{workpaper}"
     );
 
+    // fa explain evidence names the derivation and its lineage when an entry
+    // cites the derived text beside its source; the unreviewed AgentUpload
+    // derivation does not count toward the minimum, the invoice does.
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let intent = write(
+        &dir,
+        "rent.json",
+        format!(
+            r#"{{"idempotency_key":"rent","evidence":["{invoice}",{{"document_oid":"{derived}","role":"Support"}}],{RENT}}}"#
+        )
+        .as_bytes(),
+    );
+    let posted = ok(&book, &["post", "--intent", &intent, "--json"]);
+    let entry = field(&posted, "vid").unwrap().to_string();
+    let explained = ok(&book, &["explain", "evidence", &entry, "--json"]);
+    let line = fa_cli::json::parse(explained.trim()).expect("one robot line");
+    let documents = line
+        .get("data")
+        .and_then(|data| data.get("documents"))
+        .and_then(fa_cli::json::Json::as_arr)
+        .unwrap_or_default();
+    let text = |v: &fa_cli::json::Json, key: &str| {
+        v.get(key)
+            .and_then(fa_cli::json::Json::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let cited = |oid: &str| {
+        documents
+            .iter()
+            .find(|d| text(d, "document_oid") == oid)
+            .unwrap_or_else(|| panic!("{oid} is cited: {explained}"))
+    };
+    let derived_doc = cited(&derived);
+    let extraction = derived_doc.get("extraction").expect("extraction");
+    assert_eq!(text(extraction, "method"), "pdf_text_layer", "{explained}");
+    assert_eq!(
+        extraction
+            .get("replayable")
+            .and_then(fa_cli::json::Json::as_bool),
+        Some(true)
+    );
+    let lineage = derived_doc
+        .get("derived_from")
+        .and_then(fa_cli::json::Json::as_arr)
+        .unwrap_or_default();
+    assert_eq!(lineage.len(), 1, "{explained}");
+    assert_eq!(text(&lineage[0], "document_oid"), invoice, "{explained}");
+    assert_eq!(text(&lineage[0], "grade"), "HumanUpload", "{explained}");
+    assert_eq!(
+        derived_doc
+            .get("counts_toward_minimum")
+            .and_then(fa_cli::json::Json::as_bool),
+        Some(false),
+        "{explained}"
+    );
+    let source_doc = cited(&invoice);
+    assert_eq!(
+        source_doc.get("extraction"),
+        Some(&fa_cli::json::Json::Null),
+        "{explained}"
+    );
+    assert_eq!(
+        source_doc
+            .get("derived_from")
+            .and_then(fa_cli::json::Json::as_arr)
+            .map(<[fa_cli::json::Json]>::len),
+        Some(0),
+        "{explained}"
+    );
+    assert_eq!(
+        source_doc
+            .get("counts_toward_minimum")
+            .and_then(fa_cli::json::Json::as_bool),
+        Some(true),
+        "{explained}"
+    );
+
     // Planted: a source with no PDF text layer is refused, and nothing is
     // recorded; an unknown oid and a missing oid are refused.
     let note = add("note.txt", b"not a pdf", "Other", "text/plain");
