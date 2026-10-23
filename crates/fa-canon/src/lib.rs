@@ -38,7 +38,7 @@ pub use eval::{
 };
 pub use ir::{
     CANON_INPUTS_DOMAIN, CANON_IR_DOMAIN, CompiledRule, DateSource, Dependencies, InputDecl,
-    InputType, IrError, LegTemplate, Node,
+    InputType, IrError, LegTemplate, Node, Produces,
 };
 pub use lex::MAX_SOURCE_BYTES;
 

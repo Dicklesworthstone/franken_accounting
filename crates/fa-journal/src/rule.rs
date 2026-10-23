@@ -1053,10 +1053,11 @@ pub struct RuleDerivation<'a> {
     pub evidence: &'a [fa_model::EvidenceRef],
 }
 
-/// The `Original` proposal a rule derivation posts: the derived legs at the
-/// derivation's effective date, its origin naming the version, event and
-/// inputs digest, and the inputs themselves in extension 32 so the kernel
-/// can re-run it. Its evidence is the cited event's.
+/// The proposal a rule derivation posts, in the class the rule produces
+/// (Original or Adjusting): the derived legs at the derivation's effective
+/// date, its origin naming the version, event and inputs digest, and the
+/// inputs themselves in extension 32 so the kernel can re-run it. Its
+/// evidence is the cited event's.
 pub fn rule_derived_proposal(
     book: &BookContext,
     derived: &RuleDerivation<'_>,
@@ -1075,7 +1076,7 @@ pub fn rule_derived_proposal(
         schema_minor: fa_model::entry::SCHEMA_MINOR,
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
-        class: EntryClass::ORIGINAL,
+        class: derived.rule.produces().entry_class(),
         effective_date: derived.derivation.effective,
         document_date: None,
         description,
@@ -1209,10 +1210,15 @@ pub(crate) fn verify_rule_origin<V: Vfs + Clone>(
             "derive the entry with fa rule derive, which posts exactly the rule's legs",
         )));
     }
-    if proposal.class != EntryClass::ORIGINAL {
+    if proposal.class != rule.produces().entry_class() {
         return Ok(Err(derivation_refusal(
-            "a rule-derived entry is an Original".into(),
-            "derive the entry with fa rule derive",
+            format!(
+                "rule {} v{} produces {} entries, and this entry is another class",
+                rule.name(),
+                rule.version(),
+                rule.produces().name()
+            ),
+            "derive the entry with fa rule derive, which posts the class the rule produces",
         )));
     }
     Ok(Ok(()))

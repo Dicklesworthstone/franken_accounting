@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::proof::{self, Unproven};
 use fa_model::{
-    DecodeError, EncodeError, EventKind, Reader, Writer, dimension_kind, domain_digest,
+    DecodeError, EncodeError, EntryClass, EventKind, Reader, Writer, dimension_kind, domain_digest,
 };
 use fa_money::{RoundingLaw, Side, UnitId, UnitRegistry};
 
@@ -141,11 +141,66 @@ impl From<DecodeError> for IrError {
     }
 }
 
+/// The entry class a rule's derivations post: its rule family (plan §10.2).
+/// Original unless the rule says `produces Adjusting`. The adjusting family
+/// (accruals, deferrals, depreciation) posts Adjusting entries, which the
+/// admissibility matrix admits into a soft-closed period, where an Original
+/// is refused. The other derived classes need their own laws (allocation,
+/// FX revaluation, consolidation) and are not bound to rules yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Produces {
+    Original,
+    Adjusting,
+}
+
+impl Produces {
+    pub const ALL: &[Self] = &[Self::Original, Self::Adjusting];
+
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Original => 1,
+            Self::Adjusting => 2,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::Original),
+            2 => Some(Self::Adjusting),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Original => "Original",
+            Self::Adjusting => "Adjusting",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|class| class.name() == name)
+    }
+
+    #[must_use]
+    pub const fn entry_class(self) -> EntryClass {
+        match self {
+            Self::Original => EntryClass::ORIGINAL,
+            Self::Adjusting => EntryClass::ADJUSTING,
+        }
+    }
+}
+
 /// A rule before it is sealed: the IR alone.
 pub(crate) struct Parts {
     pub name: String,
     pub version: u32,
     pub event: EventKind,
+    pub produces: Produces,
     pub inputs: Vec<InputDecl>,
     pub slots: Vec<Node>,
     pub legs: Vec<LegTemplate>,
@@ -161,6 +216,7 @@ pub struct CompiledRule {
     name: String,
     version: u32,
     event: EventKind,
+    produces: Produces,
     inputs: Vec<InputDecl>,
     slots: Vec<Node>,
     legs: Vec<LegTemplate>,
@@ -402,6 +458,7 @@ impl CompiledRule {
             name,
             version,
             event,
+            produces,
             inputs,
             slots,
             legs,
@@ -412,6 +469,7 @@ impl CompiledRule {
             name,
             version,
             event,
+            produces,
             inputs,
             slots,
             legs,
@@ -450,6 +508,12 @@ impl CompiledRule {
     #[must_use]
     pub fn event(&self) -> EventKind {
         self.event
+    }
+
+    /// The entry class this rule's derivations post.
+    #[must_use]
+    pub fn produces(&self) -> Produces {
+        self.produces
     }
 
     #[must_use]
@@ -543,7 +607,10 @@ fn write_node(w: &mut Writer, node: &Node, units: &BTreeMap<UnitId, UnitRef>) {
 
 fn encode(parts: &Parts) -> Result<Vec<u8>, EncodeError> {
     let mut w = Writer::new();
-    w.str(&parts.name).u32(parts.version).u8(parts.event.tag());
+    w.str(&parts.name)
+        .u32(parts.version)
+        .u8(parts.event.tag())
+        .u8(parts.produces.tag());
     w.list(&parts.inputs, |w, input| {
         w.str(&input.name);
         match &input.ty {
@@ -672,6 +739,8 @@ fn read(ir: &[u8], registry: &UnitRegistry) -> Result<Parts, IrError> {
     let version = r.u32("rule.version")?;
     let tag = r.u8("rule.event")?;
     let event = EventKind::from_tag(tag).ok_or_else(|| r.bad_tag("rule.event", tag))?;
+    let tag = r.u8("rule.produces")?;
+    let produces = Produces::from_tag(tag).ok_or_else(|| r.bad_tag("rule.produces", tag))?;
     let mut inputs = Vec::new();
     for _ in 0..r.count(MAX_INPUTS, "rule.inputs")? {
         let name = r.str(MAX_TEXT, "rule.input.name")?.to_string();
@@ -713,6 +782,7 @@ fn read(ir: &[u8], registry: &UnitRegistry) -> Result<Parts, IrError> {
         name,
         version,
         event,
+        produces,
         inputs,
         slots,
         legs: Vec::new(),

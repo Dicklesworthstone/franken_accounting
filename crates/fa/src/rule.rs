@@ -25,7 +25,7 @@ use crate::{AsyncBook, Outcome};
 
 pub use fa_canon::{
     CANON_INPUTS_DOMAIN, CanonError, CompiledRule, Dependencies, Derivation, DerivedLeg, EvalError,
-    InputDecl, InputType, InputValue, Inputs, IrError, MAX_SOURCE_BYTES, decode_inputs,
+    InputDecl, InputType, InputValue, Inputs, IrError, MAX_SOURCE_BYTES, Produces, decode_inputs,
     encode_inputs, evaluate,
 };
 pub use fa_journal::refusal::code::CANON_RULE;

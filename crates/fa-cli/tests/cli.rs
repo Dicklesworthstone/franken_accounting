@@ -21155,8 +21155,12 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
     // entry's inputs_digest.
     let mut relabeled = propose(&derivation, b"tampered-inputs");
     relabeled.extensions = vec![(fa_model::entry::RULE_INPUTS_EXTENSION, vec![0])];
+    // Planted: the derivation's legs and inputs, posted as Adjusting by a
+    // rule that produces Original entries.
+    let mut reclassed = propose(&derivation, b"tampered-class");
+    reclassed.class = fa_model::EntryClass::ADJUSTING;
     let before = lib.head().unwrap();
-    for (what, proposal) in [("legs", moved), ("inputs", relabeled)] {
+    for (what, proposal) in [("legs", moved), ("inputs", relabeled), ("class", reclassed)] {
         let refused = lib
             .post(fa_journal::PostRequest {
                 proposal,
@@ -21169,6 +21173,115 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
         assert_eq!(refused.code, "FA-REF-196", "{what}: {refused:?}");
     }
     assert_eq!(lib.head().unwrap(), before, "the refusals write nothing");
+    Ok(())
+}
+
+/// fa-c34: a rule that `produces Adjusting` (plan §10.2's adjusting family)
+/// derives Adjusting entries. The admissibility matrix admits those into a
+/// soft-closed period and refuses the same derivation as an Original.
+#[test]
+fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("canon-adjusting")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-RENT",
+        "--kind",
+        "accrual",
+        "--occurred-on",
+        "2026-03-31",
+        "--evidence",
+        &ev,
+        "--resource",
+        "rent:100.00 USD",
+        "--json",
+    ]);
+    let activate = |name: &str, header: &str| -> (String, String) {
+        let source = write(
+            &dir,
+            &format!("{name}.rule"),
+            &format!(
+                r#"rule {name} v1 for event Accrual {header} {{
+  let rent = event.resource("rent", "USD")
+  debit "6000" rent
+  credit "1000" rent
+}}"#
+            ),
+        );
+        let checked = doc(&ok(&["rule", "check", &source, "--json"]));
+        let digest = text(
+            &doc(&ok(&["rule", "propose", &source, "--json"])),
+            "ir_digest",
+        )
+        .to_string();
+        let planned = doc(&ok(&[
+            "rule",
+            "activate",
+            &digest,
+            "--from",
+            "2026-03-01",
+            "--dry-run",
+            "--json",
+        ]));
+        let plan = write(&dir, &format!("{name}.plan"), text(&planned, "bytes"));
+        let proposal = text(&planned, "proposal_digest").to_string();
+        let approval = |who: &str| -> String {
+            let out = ok(&["approve", "--proposal", &proposal, "--as", who, "--json"]);
+            field(&out, "approval_vid").unwrap_or_default().to_string()
+        };
+        let (a, b) = (approval("controller-a"), approval("controller-b"));
+        ok(&[
+            "rule",
+            "activate",
+            "--plan",
+            &plan,
+            "--approval",
+            &a,
+            "--approval",
+            &b,
+            "--json",
+        ]);
+        (text(&checked, "produces").to_string(), digest)
+    };
+    let (accrue_class, accrue) = activate("accrue_rent", "produces Adjusting");
+    let (plain_class, plain) = activate("plain_rent", "");
+    assert_eq!(
+        (accrue_class.as_str(), plain_class.as_str()),
+        ("Adjusting", "Original")
+    );
+    let listed = ok(&["rule", "list", "--json"]);
+    assert!(listed.contains("\"produces\":\"Adjusting\""), "{listed}");
+
+    ok(&["period", "soft-close", "FY2026-P03", "--json"]);
+    // The Original derivation is the period law's refusal (exit 7), not
+    // Canon's.
+    let (code, out, _) = run(&[
+        "rule", "derive", "--rule", &plain, "--event", "EV-RENT", "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert_ne!(field(&out, "refusal_id"), Some("FA-REF-196"), "{out}");
+    assert!(
+        out.contains("is not admissible") && out.contains("SoftClosed"),
+        "{out}"
+    );
+    let posted = ok(&[
+        "rule", "derive", "--rule", &accrue, "--event", "EV-RENT", "--json",
+    ]);
+    assert!(posted.contains("\"event\":\"posted\""), "{posted}");
+    assert_eq!(text(&doc(&posted), "class"), "Adjusting");
+    let entry = text(&doc(&posted), "vid").to_string();
+    let shown = ok(&["entry", "show", &entry, "--json"]);
+    assert!(
+        shown.contains("Adjusting") && shown.contains("100.00 USD"),
+        "{shown}"
+    );
     Ok(())
 }
 

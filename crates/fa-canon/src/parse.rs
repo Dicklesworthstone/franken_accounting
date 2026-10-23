@@ -57,6 +57,8 @@ pub(crate) struct SourceRule {
     pub name: String,
     pub version: u32,
     pub event: (String, Pos),
+    /// `produces <Class>`, when the rule names its entry class.
+    pub produces: Option<(String, Pos)>,
     pub inputs: Vec<SourceInput>,
     pub stmts: Vec<Stmt>,
 }
@@ -223,6 +225,18 @@ impl Parser {
             (Token::Ident(kind), pos) => (kind, pos),
             (_, pos) => return Err(pos.error("expected the event kind, such as `Sale`")),
         };
+        let produces = if self.peek_ident("produces") {
+            self.keyword("produces")?;
+            match self.next("the entry class the rule produces")? {
+                (Token::Ident(class), pos) => Some((class, pos)),
+                (_, pos) => {
+                    return Err(pos
+                        .error("expected the entry class the rule produces, such as `Adjusting`"));
+                }
+            }
+        } else {
+            None
+        };
         self.symbol('{')?;
         let inputs = if self.peek_ident("inputs") {
             self.inputs()?
@@ -243,6 +257,7 @@ impl Parser {
             name,
             version,
             event,
+            produces,
             inputs,
             stmts,
         })

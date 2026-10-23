@@ -1,7 +1,9 @@
 //! Canon end to end through the public API: compile a source, evaluate it
 //! over a recorded event, and refuse what cannot be proven or computed.
 
-use fa_canon::{CompiledRule, EvalError, InputType, InputValue, Inputs, compile, evaluate};
+use fa_canon::{
+    CompiledRule, EvalError, InputType, InputValue, Inputs, Produces, compile, evaluate,
+};
 use fa_model::{Erasable, EventKind, EventResource, EventSpec, EvidenceRef, Oid, SealKey};
 use fa_money::{Amount, RoundingLaw, Side, Unit, UnitKind, UnitRegistry};
 use fa_time::DateDay;
@@ -279,6 +281,53 @@ fn a_rule_is_compiled_only_when_its_balance_is_proven_per_unit() {
             .message
             .contains("does not balance in EUR")
     );
+}
+
+/// Plan §10.2 rule families: a rule names the entry class its derivations
+/// post. The class is part of the IR, so it moves the content address and
+/// survives decoding, and only the bound families compile.
+#[test]
+fn a_rule_names_the_entry_class_it_produces() {
+    let units = units();
+    let rule = |header: &str| {
+        compile(
+            &format!(
+                r#"rule rent v1 for event Accrual {header} {{ debit "6000" "1.00 USD" credit "2100" "1.00 USD" }}"#
+            ),
+            &units,
+        )
+    };
+    let original = rule("").unwrap();
+    assert_eq!(original.produces(), Produces::Original);
+    assert_eq!(
+        rule("produces Original").unwrap().ir_digest(),
+        original.ir_digest()
+    );
+    let adjusting = rule("produces Adjusting").unwrap();
+    assert_eq!(adjusting.produces(), Produces::Adjusting);
+    assert_ne!(adjusting.ir_digest(), original.ir_digest());
+    assert_eq!(
+        CompiledRule::decode(adjusting.ir(), &units).unwrap(),
+        adjusting
+    );
+    // The two IRs differ in the class byte alone; an unknown class does not
+    // decode.
+    let differ: Vec<usize> = (0..original.ir().len())
+        .filter(|&i| original.ir()[i] != adjusting.ir()[i])
+        .collect();
+    assert_eq!(differ.len(), 1, "{differ:?}");
+    let mut unknown = adjusting.ir().to_vec();
+    unknown[differ[0]] = 9;
+    let error = CompiledRule::decode(&unknown, &units).unwrap_err();
+    assert!(error.0.contains("rule.produces"), "{error}");
+    for (header, needle) in [
+        ("produces Allocation", "not bound to a rule family"),
+        ("produces Accrued", "not an entry class"),
+        ("produces", "expected the entry class"),
+    ] {
+        let error = rule(header).unwrap_err();
+        assert!(error.message.contains(needle), "{header}\n=> {error}");
+    }
 }
 
 #[test]

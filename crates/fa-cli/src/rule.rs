@@ -94,6 +94,7 @@ fn rule_fields(rule: &CompiledRule) -> Vec<(&'static str, Json)> {
         ("rule", s(rule.name())),
         ("version", Json::Int(i128::from(rule.version()))),
         ("event_kind", s(rule.event().name())),
+        ("produces", s(rule.produces().name())),
         ("ir_digest", s(hex(&rule.ir_digest()))),
     ]
 }
@@ -242,6 +243,7 @@ fn version_json(version: &RuleVersionRow) -> Json {
         ("rule", s(rule.name())),
         ("version", Json::Int(i128::from(rule.version()))),
         ("event_kind", s(rule.event().name())),
+        ("produces", s(rule.produces().name())),
         ("ir_digest", s(hex(&rule.ir_digest()))),
         ("proposed_at", Json::Int(i128::from(version.created_at.0))),
         ("accounts", strings(&rule.dependencies().accounts)),
@@ -465,7 +467,7 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let posted = book.derive_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??;
     ctx.out.at_book(&book)?;
-    crate::cli::emit_posted(&ctx.out, posted, "Original", false, None, None)
+    crate::cli::emit_posted(&ctx.out, posted, rule.produces().name(), false, None, None)
 }
 
 /// The request itself, within the 64-byte key bound: deriving the same

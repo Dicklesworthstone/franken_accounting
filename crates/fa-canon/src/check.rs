@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 
 use crate::CanonError;
 use crate::ir::{
-    CompiledRule, DateSource, InputDecl, InputType, LegTemplate, Node, Parts, UnitRef, reduce,
+    CompiledRule, DateSource, InputDecl, InputType, LegTemplate, Node, Parts, Produces, UnitRef,
+    reduce,
 };
 use crate::parse::{self, DateRef, Expr, Pos, SourceType, Stmt};
 use fa_model::{EventKind, dimension_kind};
@@ -27,6 +28,23 @@ pub fn compile(source: &str, units: &UnitRegistry) -> Result<CompiledRule, Canon
                 .join(", ")
         ))
     })?;
+    let produces = match &rule.produces {
+        None => Produces::Original,
+        Some((class, pos)) => Produces::from_name(class).ok_or_else(|| {
+            let bound = Produces::ALL
+                .iter()
+                .map(|class| class.name())
+                .collect::<Vec<_>>()
+                .join(" or ");
+            pos.error(if fa_model::EntryClass::from_name(class).is_some() {
+                format!(
+                    "a rule produces {bound} entries; {class} is not bound to a rule family yet (plan §10.2)"
+                )
+            } else {
+                format!("`{class}` is not an entry class; a rule produces {bound} entries")
+            })
+        })?,
+    };
     let mut checker = Checker {
         units,
         inputs: Vec::new(),
@@ -134,6 +152,7 @@ pub fn compile(source: &str, units: &UnitRegistry) -> Result<CompiledRule, Canon
         name: rule.name,
         version: rule.version,
         event,
+        produces,
         inputs,
         slots: slots.into_iter().map(|t| t.node).collect(),
         legs,
