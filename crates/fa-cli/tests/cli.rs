@@ -22504,7 +22504,19 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     // Certified (slice 2): the run is retained under a report certificate,
     // replays to its complete robot line byte for byte, and is Current until
     // a later contribution supersedes it.
-    let (code, certified) = run(&["consolidate", "--period", "FY2026-P03", "--certify"]);
+    let earlier = at.to_string();
+    let file = dir.join("consolidation.cert");
+    let file_arg = file.display().to_string();
+    let (code, certified) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &earlier,
+        "--certify",
+        "--certificate-out",
+        &file_arg,
+    ]);
     assert_eq!(code, 0, "{certified}");
     let lines: Vec<&str> = certified.lines().collect();
     assert_eq!(
@@ -22519,12 +22531,39 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     assert_eq!(oid.len(), 64, "{certified}");
     assert_eq!(field(lines[0], "certificate"), Some(oid.as_str()));
     assert_eq!(text(&certificate, "output_format"), "fa:consolidation:v1");
+    assert_eq!(int(&certificate, "known_at"), Some(at));
+    assert_eq!(text(&certificate, "file"), file_arg);
     assert_eq!(text(&doc(lines[0]), "run_digest"), digest);
     let original = format!("{}\n", lines[0]);
     let cert = format!("C:{oid}");
+    let bytes = std::fs::read(&file)?;
+    assert!(bytes.starts_with(fa::certificate::CONSOLIDATION_CERTIFICATE_FORMAT));
+    assert_consolidation_certificate_replay_laws(&book, &bytes);
     let (code, replayed) = run(&["replay", &cert]);
     assert_eq!(code, 0, "{replayed}");
     assert_eq!(replayed, original, "the complete robot line replays");
+    let (code, replayed) = run(&["replay", &file_arg]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original, "a new process replays the saved file");
+    // Retention advanced HEAD. A fresh process must hydrate this explicit
+    // earlier prefix before re-certifying, without changing a single byte.
+    let (code, repeated) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &earlier,
+        "--certify",
+    ]);
+    assert_eq!(code, 0, "{repeated}");
+    let repeated: Vec<&str> = repeated.lines().collect();
+    assert_eq!(repeated.len(), 2);
+    assert_eq!(format!("{}\n", repeated[0]), original);
+    assert_eq!(
+        text(&doc(repeated[1]), "bytes"),
+        text(&certificate, "bytes"),
+        "fixed-prefix certification is byte deterministic after reopening"
+    );
     let (code, status) = run(&["certificate", "status", &cert]);
     assert_eq!(code, 0, "{status}");
     assert_eq!(text(&doc(&status), "status"), "Current", "{status}");
@@ -22538,6 +22577,102 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
         "--certify",
     ]);
     assert_ne!(code, 0, "{out}");
+
+    // A reader can inspect the group, but publishing a certificate needs
+    // Produce. The token session confines host files to its working directory.
+    let token = dir.join("group-reader.token").display().to_string();
+    let (code, out) = run(&[
+        "capability",
+        "issue",
+        "--holder",
+        "group-reader",
+        "--profile",
+        "human",
+        "--op",
+        "read",
+        "--out",
+        &token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let token_run = |extra: &[&str]| {
+        let mut argv = vec![
+            "--book",
+            "book",
+            "--token",
+            "group-reader.token",
+            "consolidate",
+            "--period",
+            "FY2026-P03",
+            "--json",
+        ];
+        argv.extend_from_slice(extra);
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .current_dir(&dir)
+            .args(&argv)
+            .env_remove("FA_BOOK")
+            .output()
+            .expect("run token-bound consolidation");
+        let code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        check_robot_output(&argv, code, &stdout);
+        (code, stdout)
+    };
+    let (code, out) = token_run(&[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("consolidation_run"));
+    for flags in [
+        vec!["--certify"],
+        vec!["--certificate-out", "reader-must-not-write.cert"],
+    ] {
+        let (code, out) = token_run(&flags);
+        assert_eq!(code, i32::from(fa_journal::exit::SAFETY), "{out}");
+        assert_eq!(out.lines().count(), 1, "no report is disclosed: {out}");
+        assert!(!dir.join("reader-must-not-write.cert").exists());
+    }
+
+    // These journaled controls do not contribute to March's consolidation:
+    // the OWNS edge starts after March, cash is not a consolidation role,
+    // and the economic event has not generated any accounting entry.
+    let (code, out) = run(&[
+        "party",
+        "relate",
+        "S1",
+        "S2",
+        "--kind",
+        "owns",
+        "--basis",
+        "equity_voting",
+        "--valid-from",
+        "2026-04-01",
+        "--pct",
+        "10000/10000",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["chart", "role", "1000", "cash"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&[
+        "event",
+        "record",
+        "--code",
+        "UNPOSTED-SALE",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &evidence,
+        "--resource",
+        "net:40.00 USD",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, status) = run(&["certificate", "status", &cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "Current", "{status}");
+    assert!(arr(&doc(&status), "later_entries").is_empty());
 
     // Planted: a charge P books alone leaves the group's balances 5.00 out.
     let (code, out) = post(
@@ -22567,7 +22702,6 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     assert_eq!(code, 0, "{replayed}");
     assert_eq!(replayed, original);
     // The prefix before it still consolidates, to the same run.
-    let earlier = at.to_string();
     let (code, out) = run(&[
         "consolidate",
         "--period",
@@ -22577,6 +22711,113 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     ]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(text(&doc(&out), "run_digest"), digest, "{out}");
+
+    // Complete the counterparty side and certify a new, balanced group.
+    let (code, out) = post(
+        "s1-counterparty",
+        "2026-03-10",
+        &[
+            ("debit", "5300", "5.00", "S1"),
+            ("credit", "2300", "5.00", "S1"),
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, second) = run(&["consolidate", "--period", "FY2026-P03", "--certify"]);
+    assert_eq!(code, 0, "{second}");
+    let second: Vec<&str> = second.lines().collect();
+    assert_eq!(second.len(), 2);
+    let second_report = format!("{}\n", second[0]);
+    let second_cert = format!("C:{}", text(&doc(second[1]), "oid"));
+    assert_ne!(text(&doc(second[0]), "run_digest"), digest);
+    let (code, status) = run(&["certificate", "status", &second_cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "Current", "{status}");
+
+    // Removing an account role is a later contribution even if current
+    // consolidation now refuses. Replay still uses the role at its prefix.
+    let (code, out) = run(&[
+        "chart",
+        "role",
+        "5900",
+        "noncontrolling_interest_income",
+        "--remove",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-194");
+    let (code, status) = run(&["certificate", "status", &second_cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "SupersededBy", "{status}");
+    assert_eq!(arr(&doc(&status), "later_entries").len(), 1);
+    let (code, replayed) = run(&["replay", &second_cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, second_report);
+    let (code, out) = run(&["chart", "role", "5900", "noncontrolling_interest_income"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, status) = run(&["certificate", "status", &second_cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "SupersededBy", "{status}");
+    assert_eq!(
+        arr(&doc(&status), "later_entries").len(),
+        2,
+        "restoring the role does not erase either later contributing entry"
+    );
+
+    let (code, third) = run(&["consolidate", "--period", "FY2026-P03", "--certify"]);
+    assert_eq!(code, 0, "{third}");
+    let third: Vec<&str> = third.lines().collect();
+    assert_eq!(third.len(), 2);
+    let third_report = format!("{}\n", third[0]);
+    let third_cert = format!("C:{}", text(&doc(third[1]), "oid"));
+    // Unlike the future edge, this second parent is active in March and
+    // invalidates current consolidation without invalidating retained replay.
+    let (code, out) = run(&[
+        "party",
+        "relate",
+        "S1",
+        "S2",
+        "--kind",
+        "owns",
+        "--basis",
+        "equity_voting",
+        "--valid-from",
+        "2026-03-01",
+        "--valid-to",
+        "2026-04-01",
+        "--pct",
+        "10000/10000",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("owned by several group entities"), "{out}");
+    let (code, status) = run(&["certificate", "status", &third_cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "SupersededBy", "{status}");
+    assert_eq!(arr(&doc(&status), "later_entries").len(), 1);
+    let (code, replayed) = run(&["replay", &third_cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, third_report);
+    let (code, replayed) = run(&["replay", &file_arg]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original);
+    let (code, repeated) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &earlier,
+        "--certify",
+    ]);
+    assert_eq!(code, 0, "{repeated}");
+    let repeated: Vec<&str> = repeated.lines().collect();
+    assert_eq!(repeated.len(), 2);
+    assert_eq!(format!("{}\n", repeated[0]), original);
+    assert_eq!(
+        text(&doc(repeated[1]), "bytes"),
+        text(&certificate, "bytes")
+    );
 
     // Planted: an unknown period, a missing --period, and a one-entity book.
     let (code, out) = run(&[
@@ -22599,6 +22840,145 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     assert_eq!(code, 3, "{out}");
     assert!(out.contains("needs a group"), "{out}");
     Ok(())
+}
+
+/// The native v6 artifact must refold the whole group, even when a supplied
+/// certificate's hashes have been recomputed after changing its claims.
+fn assert_consolidation_certificate_replay_laws(path: &Path, bytes: &[u8]) {
+    use fa::{ReportArtifactExpectation, ReportCertificate, ReportOutput, ReportSelection};
+    use fa_verify::blake3::hash_parts;
+
+    let certificate = ReportCertificate::decode(bytes).unwrap();
+    assert_eq!(certificate.canonical_bytes().unwrap(), bytes);
+    assert_eq!(
+        certificate.selection,
+        ReportSelection::Consolidation {
+            period: "FY2026-P03".to_string()
+        }
+    );
+    let principal = fa_model::principal_vid("operator");
+    let reader = fa_policy::Capability::embedded(principal, &["read"]).unwrap();
+    let producer = fa_policy::Capability::embedded(principal, &["read", "produce"]).unwrap();
+    let keys = fa::BookKeys::load(&path.join("book.keys")).unwrap();
+    let mut book = fa::Book::open_dir(path, keys, fa::Entropy::deterministic(227)).unwrap();
+    let head = book.head().unwrap();
+    let replayed = book
+        .replay_report_artifact_for_with_history(
+            principal,
+            &reader,
+            bytes,
+            Some(&certificate.digest),
+            ReportArtifactExpectation::AsSupplied,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(replayed.family, fa::ReportArtifactFamily::Native);
+    assert_eq!(replayed.output, certificate.output);
+    let historical = book.replay_report(&certificate).unwrap().unwrap();
+    assert!(matches!(historical, ReportOutput::Consolidation(_)));
+    assert_eq!(historical.canonical_bytes().unwrap(), certificate.output);
+    let repeated = book
+        .certify_report(certificate.selection.clone(), Some(certificate.known_at))
+        .unwrap()
+        .unwrap();
+    assert_eq!(repeated.report, historical);
+    assert_eq!(repeated.certificate.canonical_bytes().unwrap(), bytes);
+    assert_eq!(book.head().unwrap(), head, "certification is a read");
+
+    for authority in [
+        fa_policy::Capability::embedded(principal, &["produce"]).unwrap(),
+        reader.clone().for_accounts(&["1000"]).unwrap(),
+        reader.clone().expiring_at(head),
+    ] {
+        let refusal = book
+            .replay_report_artifact(principal, &authority, b"malformed", None)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            refusal.exit,
+            fa_journal::exit::SAFETY,
+            "current whole-book authority is checked before artifact decoding"
+        );
+    }
+    assert_eq!(
+        book.retain_report_artifact(principal, &reader, b"malformed", None)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        fa_journal::exit::SAFETY,
+        "generic retention needs Produce before decoding supplied bytes"
+    );
+    assert_eq!(
+        book.replay_report_artifact(principal, &reader, bytes, Some(&[0; 32]))
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        fa_journal::exit::VERIFICATION,
+        "an independently expected digest binds the delivery"
+    );
+
+    // Hash independently with the portable verifier, using the native format's
+    // raw domain concatenation rather than fa_model's length-prefixed identity.
+    let reseal = |mut forged: ReportCertificate| {
+        forged.output_digest = hash_parts(b"fa:report-output:v1", &[&forged.output]);
+        let encoded = forged.canonical_bytes().unwrap();
+        forged.digest = hash_parts(
+            fa::certificate::CONSOLIDATION_CERTIFICATE_FORMAT,
+            &[&encoded[..encoded.len() - 32]],
+        );
+        forged.canonical_bytes().unwrap()
+    };
+    assert_eq!(
+        reseal(certificate.clone()),
+        bytes,
+        "independent format witness"
+    );
+    let mut false_member = certificate.clone();
+    let name = false_member
+        .output
+        .windows(b"Sub One".len())
+        .position(|slice| slice == b"Sub One")
+        .expect("the complete certificate binds displayed entity names");
+    false_member.output[name..name + b"Sub One".len()].copy_from_slice(b"Sub Xne");
+    let mut false_nci = certificate.clone();
+    let amount = false_nci
+        .output
+        .windows(16)
+        .position(|slice| slice == 10_800_i128.to_le_bytes())
+        .expect("the real 108.00 NCI equity is encoded exactly");
+    false_nci.output[amount..amount + 16].copy_from_slice(&10_801_i128.to_le_bytes());
+    let mut false_period = certificate.clone();
+    false_period.selection = ReportSelection::Consolidation {
+        period: "FY2026-P02".to_string(),
+    };
+    for forged in [false_member, false_nci, false_period] {
+        let forged = reseal(forged);
+        let decoded = fa::ReportArtifact::decode(&forged).unwrap();
+        assert_ne!(decoded.digest(), &certificate.digest);
+        assert_eq!(
+            book.replay_report_artifact(principal, &reader, &forged, Some(decoded.digest()))
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            fa_journal::exit::VERIFICATION,
+            "rehashed false membership, financial output or period fails full replay"
+        );
+        assert_eq!(
+            book.retain_report_artifact(principal, &producer, &forged, Some(decoded.digest()))
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            fa_journal::exit::VERIFICATION
+        );
+        assert_eq!(book.head().unwrap(), head, "a forgery never publishes");
+    }
+    for length in [0, 1, bytes.len() - 1] {
+        assert!(ReportCertificate::decode(&bytes[..length]).is_err());
+    }
+    let mut trailing = bytes.to_vec();
+    trailing.push(0);
+    assert!(ReportCertificate::decode(&trailing).is_err());
+    assert_eq!(book.head().unwrap(), head);
 }
 
 /// A role's `verbs` (registries/account_roles.toml) name registered verbs,

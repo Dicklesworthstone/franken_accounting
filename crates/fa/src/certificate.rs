@@ -2266,6 +2266,48 @@ impl AccountMetadata {
     }
 }
 
+/// A consolidation reads ownership only between its members on the selected
+/// period's last day, and only the roles used by Concordat. Recording a future
+/// stake, a third party relationship or another workflow's role does not
+/// supersede that period's report.
+fn consolidation_control_selected(
+    effective_through: DateDay,
+    entity_codes: &BTreeMap<Id128, String>,
+    control: Option<&ControlPayload>,
+) -> Result<bool, BookError> {
+    let Some(ControlPayload::SchemaChange {
+        kind,
+        canonical_bytes,
+    }) = control
+    else {
+        return Ok(false);
+    };
+    match *kind {
+        // Chart membership and lifecycle controls remain relevant: even a
+        // zero balance account can change the statements' mandatory mapping.
+        1..=4 => Ok(true),
+        fa_model::rea::SCHEMA_CHANGE_RECORD_RELATIONSHIP => {
+            let relationship =
+                fa_model::RelationshipSpec::decode(canonical_bytes).map_err(|error| {
+                    fa_journal::KernelError::Corrupt(format!(
+                        "consolidation ownership control: {error}"
+                    ))
+                })?;
+            Ok(
+                matches!(relationship.kind, fa_model::RelationshipKind::Owns { .. })
+                    && relationship.is_active_on(effective_through)
+                    && entity_codes.contains_key(&Id128(relationship.from.0.to_be_bytes()))
+                    && entity_codes.contains_key(&Id128(relationship.to.0.to_be_bytes())),
+            )
+        }
+        fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE => {
+            let role = fa_journal::account_role::AccountRoleSpec::decode(canonical_bytes)?;
+            Ok(crate::consolidation::CONSOLIDATION_ROLES.contains(&role.role.as_str()))
+        }
+        _ => Ok(false),
+    }
+}
+
 pub(crate) fn selected(
     book: &BookContext,
     selection: &ReportSelection,
@@ -2275,15 +2317,19 @@ pub(crate) fn selected(
 ) -> Result<bool, BookError> {
     // A control's nominal date is not a contribution. Releases and migration
     // activation are checked explicitly by their targets in the caller. A
-    // consolidation also reads the chart, the legal entities and ownership
-    // edges (REA), and the account roles those schema controls journal.
+    // consolidation also reads the chart, the active group ownership edges,
+    // and the account roles those schema controls journal.
     if entry.proposal.legs.is_empty() || fa_notary::journal::is_undated(entry.proposal.class) {
-        return Ok(matches!(selection, ReportSelection::Consolidation { .. })
-            && matches!(
-                &entry.proposal.control,
-                Some(ControlPayload::SchemaChange { kind, .. })
-                    if matches!(*kind, 1..=11 | fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE)
-            ));
+        return match (selection, report) {
+            (ReportSelection::Consolidation { .. }, ReportOutput::Consolidation(report)) => {
+                consolidation_control_selected(
+                    report.effective_through,
+                    &report.entity_codes,
+                    entry.proposal.control.as_ref(),
+                )
+            }
+            _ => Ok(false),
+        };
     }
     match (selection, report) {
         // Every member's posted stock through the period's last day, of
@@ -3035,6 +3081,123 @@ mod tests {
         assert!(selected(&book, &selection, &report, &entry, &BTreeMap::new()).unwrap());
         entry.proposal.effective_period.as_mut().unwrap().code = "FY2026-P12".into();
         assert!(!selected(&book, &selection, &report, &entry, &BTreeMap::new()).unwrap());
+    }
+
+    #[test]
+    fn consolidation_status_selects_ownership_at_the_period_end_within_the_group() {
+        let through = DateDay::from_ymd(2026, 1, 31).unwrap();
+        let members = BTreeMap::from([
+            (Id128(1u128.to_be_bytes()), "PARENT".to_string()),
+            (Id128(2u128.to_be_bytes()), "SUB".to_string()),
+        ]);
+        let original = fa_model::RelationshipSpec {
+            from: VId(1),
+            to: VId(2),
+            kind: fa_model::RelationshipKind::Owns {
+                pct: fa_model::OwnershipPct::new(4, 5).unwrap(),
+            },
+            basis: "direct_equity_ownership".into(),
+            valid_from: DateDay::from_ymd(2026, 1, 1).unwrap(),
+            valid_to: None,
+        };
+        let selected = |relationship: &fa_model::RelationshipSpec| {
+            consolidation_control_selected(
+                through,
+                &members,
+                Some(&ControlPayload::SchemaChange {
+                    kind: fa_model::rea::SCHEMA_CHANGE_RECORD_RELATIONSHIP,
+                    canonical_bytes: relationship.encode().unwrap(),
+                }),
+            )
+            .unwrap()
+        };
+        assert!(selected(&original));
+        let mut changed = original.clone();
+        changed.valid_from = through;
+        assert!(selected(&changed));
+        changed.valid_from = DateDay::from_ymd(2026, 2, 1).unwrap();
+        assert!(
+            !selected(&changed),
+            "future ownership leaves January current"
+        );
+        let mut changed = original.clone();
+        changed.valid_to = Some(through);
+        assert!(!selected(&changed), "the ownership end is exclusive");
+        changed.valid_to = Some(DateDay::from_ymd(2026, 2, 1).unwrap());
+        assert!(selected(&changed));
+        for (from, to) in [(VId(1), VId(99)), (VId(99), VId(2))] {
+            let mut changed = original.clone();
+            changed.from = from;
+            changed.to = to;
+            assert!(!selected(&changed), "both endpoints must be group members");
+        }
+        for kind in [
+            fa_model::RelationshipKind::Controls,
+            fa_model::RelationshipKind::RelatedTo,
+        ] {
+            let mut changed = original.clone();
+            changed.kind = kind;
+            assert!(!selected(&changed));
+        }
+        let mut malformed = original.encode().unwrap();
+        malformed.push(0);
+        assert!(
+            consolidation_control_selected(
+                through,
+                &members,
+                Some(&ControlPayload::SchemaChange {
+                    kind: fa_model::rea::SCHEMA_CHANGE_RECORD_RELATIONSHIP,
+                    canonical_bytes: malformed,
+                }),
+            )
+            .is_err(),
+            "an undecodable relationship must not become an unrelated control"
+        );
+    }
+
+    #[test]
+    fn consolidation_status_selects_its_role_assignments_and_removals() {
+        let through = DateDay::from_ymd(2026, 1, 31).unwrap();
+        let members = BTreeMap::new();
+        for assigned in [true, false] {
+            for (role, relevant) in [
+                ("contributed_capital", true),
+                ("intercompany", true),
+                ("intercompany_activity", true),
+                ("investment_in_subsidiary", true),
+                ("noncontrolling_interest", true),
+                ("noncontrolling_interest_income", true),
+                ("cash", false),
+                ("receivable", false),
+            ] {
+                let control = ControlPayload::SchemaChange {
+                    kind: fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE,
+                    canonical_bytes: fa_journal::account_role::AccountRoleSpec {
+                        account: VId(9),
+                        role: role.into(),
+                        assigned,
+                    }
+                    .encode()
+                    .unwrap(),
+                };
+                assert_eq!(
+                    consolidation_control_selected(through, &members, Some(&control)).unwrap(),
+                    relevant,
+                    "role {role}, assigned {assigned}"
+                );
+            }
+        }
+        assert!(
+            consolidation_control_selected(
+                through,
+                &members,
+                Some(&ControlPayload::SchemaChange {
+                    kind: fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE,
+                    canonical_bytes: Vec::new(),
+                }),
+            )
+            .is_err()
+        );
     }
 
     #[test]

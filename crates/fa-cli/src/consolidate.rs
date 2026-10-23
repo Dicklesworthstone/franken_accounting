@@ -15,8 +15,8 @@ use fa_money::{Amount, UnitId};
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, Out, admit_whole_book_read, hex, known_at_flag, prepare_native_certificate_history,
-    registered_unit_code, render_amount, statement_presentation, usage,
+    Ctx, Fail, Out, admit_whole_book_read, hex, known_at_flag, registered_unit_code, render_amount,
+    statement_presentation, usage,
 };
 use crate::json::{Json, obj, s};
 
@@ -43,14 +43,26 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     }
     let period = args.flag("--period").unwrap_or_default().to_string();
     let who = ctx.principal(args);
-    let capability = ctx.capability(args, &["read"])?;
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
-    let mut book = ctx.books.open_admitted(args, |book| {
+    let capability = ctx.capability(
+        args,
         if certify {
-            prepare_native_certificate_history(book, &capability, None)
+            &["read", "produce"]
         } else {
-            admit_whole_book_read(book, &capability, &[], "consolidating the group")
-        }
+            &["read"]
+        },
+    )?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_whole_book_read(
+            book,
+            &capability,
+            if certify {
+                &[fa_policy::Op::Produce]
+            } else {
+                &[]
+            },
+            "consolidating the group",
+        )
     })?;
     let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
     let (group, certificate) = if certify {
@@ -63,7 +75,9 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                 ),
             ));
         }
-        admit_whole_book_read(&book, &capability, &[], "consolidating the group")?;
+        // Admission precedes loading, and the requested prefix (not merely
+        // HEAD) decides whether cold retained native history is required.
+        book.prepare_report_history(who, &capability, known_at)??;
         let selection = fa::ReportSelection::Consolidation {
             period: period.clone(),
         };

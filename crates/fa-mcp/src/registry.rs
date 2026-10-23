@@ -2451,6 +2451,11 @@ mod tests {
                 json!({"statement": "MATCH (a:Account) RETURN a.code", "certify": true}),
                 "query",
             ),
+            (
+                "fa_close_consolidate",
+                json!({"period": "FY2026-P03", "as_known_at": "42", "certify": true}),
+                "consolidate",
+            ),
         ] {
             let tool = mcp.tool_by_wire(wire).expect("certifiable report");
             let schema = tool.input_schema(&mcp, reg);
