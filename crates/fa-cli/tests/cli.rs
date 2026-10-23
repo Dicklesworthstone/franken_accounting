@@ -7904,6 +7904,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["tb", "--period", "FY2026-P03"]).0, 0);
     assert_eq!(
+        run(true, &["diff", "--from", "HEAD", "--period", "FY2026-P03"]).0,
+        0
+    );
+    assert_eq!(
         run(true, &["tb", "--period", "FY2026-P03", "--render", "md"]).0,
         0
     );
@@ -20521,5 +20525,101 @@ fn aging_ar_and_ap_age_the_account_holding_the_role() -> std::io::Result<()> {
         "{out}"
     );
     assert!(out.contains("fa chart role"), "{out}");
+    Ok(())
+}
+
+/// `fa diff` (plan §15.3, Time and close): the stock trial balance's change
+/// between two recorded coordinates. After a backdated entry, diffing from
+/// the sequence before it lists exactly the two accounts it moved, with both
+/// sides and the net change; the same coordinate twice changes nothing; a
+/// reversed range and a missing --period are usage errors.
+#[test]
+fn diff_lists_the_accounts_a_later_recording_moved() -> std::io::Result<()> {
+    let dir = tmp("ledger-diff")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Diff Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    let post = |key: &str, day: &str, debit: &str, credit: &str, amount: &str| -> i128 {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{day}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount}"}},{{"side":"credit","account":"{credit}","amount":"{amount}"}}]}}"#
+            ),
+        );
+        int(
+            &doc(&ok(&["post", "--intent", &intent, "--evidence", &evidence])),
+            "recorded_at",
+        )
+        .expect("recorded_at")
+    };
+    let sale = post("sale", "2026-03-20", "1000", "4000", "500.00 USD");
+    // Recorded later, effective earlier: a backdated rent.
+    let rent = post("rent", "2026-03-05", "6000", "1000", "120.00 USD");
+    assert!(rent > sale);
+    let from = sale.to_string();
+    let diff = doc(&ok(&["diff", "--from", &from, "--period", "FY2026-P03"]));
+    assert_eq!(int(&diff, "from"), Some(sale));
+    assert_eq!(int(&diff, "to"), Some(rent));
+    assert_eq!(int(&diff, "changed"), Some(2));
+    let rows = arr(&diff, "rows");
+    let row = |code: &str| {
+        rows.iter()
+            .find(|r| text(r, "code") == code)
+            .unwrap_or_else(|| panic!("{code} in {rows:?}"))
+    };
+    let cash = row("1000");
+    assert_eq!(text(cash, "before_debits"), "500.00 USD");
+    assert_eq!(text(cash, "before_credits"), "0.00 USD");
+    assert_eq!(text(cash, "after_credits"), "120.00 USD");
+    assert_eq!(text(cash, "net_change"), "-120.00 USD");
+    let rent_row = row("6000");
+    assert_eq!(text(rent_row, "before_debits"), "0.00 USD");
+    assert_eq!(text(rent_row, "after_debits"), "120.00 USD");
+    assert_eq!(text(rent_row, "net_change"), "120.00 USD");
+    assert!(rows.iter().all(|r| text(r, "code") != "4000"));
+
+    let same = doc(&ok(&[
+        "diff",
+        "--from",
+        &from,
+        "--to",
+        &from,
+        "--period",
+        "FY2026-P03",
+    ]));
+    assert_eq!(int(&same, "changed"), Some(0));
+    // Planted: a range that runs backwards, and no periods.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "diff",
+            "--from",
+            "HEAD",
+            "--to",
+            &from,
+            "--period",
+            "FY2026-P03",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    let (code, out, _) = fa(Some(&book), &["diff", "--from", &from, "--json"]);
+    assert_eq!(code, 2, "{out}");
     Ok(())
 }

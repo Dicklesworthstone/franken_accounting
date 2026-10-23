@@ -111,6 +111,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("event", event_cmd),
     ("migrate", migrate_cmd),
     ("tb", tb_cmd),
+    ("diff", diff_cmd),
     ("statement", statement_cmd),
     ("replay", notary::replay_cmd),
     ("certificate", notary::certificate_cmd),
@@ -11153,6 +11154,139 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if let (Some(request), Some(rendering)) = (render.as_ref(), rendering) {
         emit_rendering(out, request, rendering);
     }
+    Ok(())
+}
+
+/// `fa diff --from <seq> [--to HEAD|<seq>] --period <code>...` (plan §15.3,
+/// Time and close): how the stock trial balance through the selected periods
+/// changed between two recorded coordinates. Every account and unit whose
+/// debits or credits differ is listed with both sides and its net change;
+/// entries recorded after `--from`, backdated ones included, are what moved
+/// them. A pure read of two fixed snapshots under read, judged like `fa tb`.
+pub(crate) fn diff_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa diff --from <seq> [--to HEAD|<seq>] --period FY2026-P03 --json";
+    if args.positional.len() != 1 {
+        return Err(usage("fa diff takes no positional argument", FIX));
+    }
+    let periods: Vec<String> = args
+        .flag_all("--period")
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if periods.is_empty() {
+        return Err(usage("fa diff needs --period <code>...", FIX));
+    }
+    let seq = |flag: &str| -> Result<Option<CommitSeq>, Fail> {
+        match args.flag(flag) {
+            None | Some("HEAD") => Ok(None),
+            Some(v) => v.parse::<u64>().map(|n| Some(CommitSeq(n))).map_err(|_| {
+                usage(
+                    format!("{flag} `{v}` must be HEAD or a commit sequence"),
+                    FIX,
+                )
+            }),
+        }
+    };
+    if args.flag("--from").is_none() {
+        return Err(usage("fa diff needs --from <seq>", FIX));
+    }
+    let (from, to) = (seq("--from")?, seq("--to")?);
+    let who = ctx.principal(args);
+    let read_cap = ctx.capability(args, &["read"])?;
+    // A diff reads every account of the selected periods at two
+    // coordinates: it reaches the whole book, so a scoped token is refused
+    // before anything is read (doctrine 8), never answered filtered.
+    let book = ctx.books.open_admitted(args, |book| {
+        fa_policy::admit_read(&read_cap, who, book.context().book_id)
+            .and_then(|()| {
+                fa_policy::reach(&read_cap, &fa_policy::Reach::whole_book(true), None)
+            })
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))
+    })?;
+    let before = book.trial_balance_at(&periods, from)?;
+    let after = book.trial_balance_at(&periods, to)?;
+    if before.known_at > after.known_at {
+        return Err(usage(
+            format!(
+                "--from resolves to sequence {}, after --to's {}",
+                before.known_at.0, after.known_at.0
+            ),
+            FIX,
+        ));
+    }
+    let units = &book.context().units;
+    validate_trial_balance_units(&before, units)?;
+    validate_trial_balance_units(&after, units)?;
+    // (debits, credits) before and after, per (account code, unit).
+    type Totals = (i128, i128);
+    let mut cells: std::collections::BTreeMap<(String, u32), (String, Totals, Totals)> =
+        std::collections::BTreeMap::new();
+    for r in &before.rows {
+        cells
+            .entry((r.code.clone(), r.unit_id))
+            .or_insert_with(|| (r.name.clone(), (0, 0), (0, 0)))
+            .1 = (r.debits, r.credits);
+    }
+    for r in &after.rows {
+        cells
+            .entry((r.code.clone(), r.unit_id))
+            .or_insert_with(|| (r.name.clone(), (0, 0), (0, 0)))
+            .2 = (r.debits, r.credits);
+    }
+    let render = |unit: u32, m: i128| render_amount(Amount::new(fa_money::UnitId(unit), m), units);
+    let mut rows = Vec::new();
+    let mut human = Vec::new();
+    for ((code, unit), (name, was, now)) in &cells {
+        if was == now {
+            continue;
+        }
+        let change = tb_net(code, now.0, now.1)?
+            .checked_sub(tb_net(code, was.0, was.1)?)
+            .ok_or_else(|| {
+                Fail::Internal(format!(
+                    "account {code}: the net change is outside the exact amount range"
+                ))
+            })?;
+        human.push(format!(
+            "{code} {name}: net change {}",
+            render(*unit, change)?
+        ));
+        rows.push(obj(vec![
+            ("code", s(code)),
+            ("name", s(name)),
+            (
+                "unit",
+                s(registered_unit_code(fa_money::UnitId(*unit), units)?),
+            ),
+            ("before_debits", s(render(*unit, was.0)?)),
+            ("before_credits", s(render(*unit, was.1)?)),
+            ("after_debits", s(render(*unit, now.0)?)),
+            ("after_credits", s(render(*unit, now.1)?)),
+            ("net_change", s(render(*unit, change)?)),
+        ]));
+    }
+    ctx.out.known_at(after.known_at);
+    let summary = format!(
+        "{} account(s) changed between sequence {} and {} through {}",
+        rows.len(),
+        before.known_at.0,
+        after.known_at.0,
+        periods.join(", ")
+    );
+    ctx.out.event(
+        "ledger_diff",
+        vec![
+            ("from", Json::Int(i128::from(before.known_at.0))),
+            ("to", Json::Int(i128::from(after.known_at.0))),
+            ("periods", Json::Arr(periods.iter().map(s).collect())),
+            ("changed", Json::Int(rows.len() as i128)),
+            ("rows", Json::Arr(rows)),
+        ],
+        &std::iter::once(summary)
+            .chain(human)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
     Ok(())
 }
 

@@ -528,6 +528,18 @@ usage = ["tb ((--period <code>)... | --fiscal-year N) [--activity] [--summary [-
 example = "fa tb --period FY2026-P03 --book ./books/myco --json"
 
 [[verb]]
+name = "diff"
+summary = "How the stock trial balance through the selected periods changed between two recorded coordinates (plan §15.3, Time and close): every account and unit whose debits or credits differ, with both sides and the net change."
+writes = false
+subcommands = []
+flags = ["--from", "--to", "--period", "--grant"]
+switches = []
+events = ["ledger_diff"]
+exits = [0, 2, 3, 4, 5, 7]
+usage = ["diff --from <seq> [--to HEAD|<seq>] --period <code>...", "Both coordinates are recorded sequences (fa book info, or any event's coordinate.known_at); --to defaults to HEAD. The entries recorded after --from, backdated ones included, are what moved the listed accounts: fa gl detail --account <code> --as-known-at <seq> lists them. A scoped token is refused: a diff reaches the whole book. Branch and scenario differences are fa scenario diff and fa draft diff."]
+example = "fa diff --from 42 --period FY2026-P03 --book ./books/myco --json"
+
+[[verb]]
 name = "statement"
 summary = "Balance sheet or income statement from exact journal folds under a registered definition, with optional period comparatives, retained replay certificates, and frontier diff/trace bridges."
 writes = true
@@ -1852,6 +1864,12 @@ doc = "The same idempotency key was already recorded with the same content; noth
 fields = ["vid:hex", "entry_digest:hex", "recorded_at:seq", "requested:amount?", "moved:amount?"]
 
 [[event]]
+name = "ledger_diff"
+book = true
+doc = "The stock trial balance through periods at two recorded sequences, from and to (fa diff): changed counts the account-unit rows whose debits or credits differ, and each row carries both sides and net_change, the change in debits minus credits."
+fields = ["from:seq", "to:seq", "periods:[string]", "changed:int", "rows:[ledger_diff_row]"]
+
+[[event]]
 name = "trial_balance"
 book = true
 doc = "Stock (through `effective_through`) or activity (the selected periods), at the `known_at` snapshot."
@@ -2918,6 +2936,11 @@ fields = ["unit_id:int", "max_mantissa:int"]
 name = "capability_daily_total"
 doc = "A cumulative daily gross-debit limit in one native unit, expressed as a positive maximum mantissa at that unit's scale. Descendants share the original issuance's usage and may only narrow their limits."
 fields = ["unit_id:int", "max_mantissa:int"]
+
+[[shape]]
+name = "ledger_diff_row"
+doc = "One account in one unit whose balance moved between the two coordinates."
+fields = ["code:string", "name:string", "unit:string", "before_debits:amount", "before_credits:amount", "after_debits:amount", "after_credits:amount", "net_change:amount"]
 
 [[shape]]
 name = "tb_row"
@@ -4590,6 +4613,18 @@ mistakes = ["Passing load_file edrm or both: this build writes Concordance DAT/O
 
 [[mcp.tool]]
 cluster = "fa.proof"
+name = "diff"
+verb = "diff"
+subcommands = []
+positionals = []
+flags = ["--from", "--to", "--period"]
+switches = []
+required = ["--from", "--period"]
+dont = ["Don't diff across a scenario or draft: this compares two recorded sequences of trunk; use fa_scenario_diff for a counterfactual.", "Don't pass a date for from or to: both are recorded sequences (a coordinate's known_at)."]
+mistakes = ["Passing an RFC3339 instant: give the sequence an event's coordinate.known_at printed.", "Expecting entries: the rows are balances; fa_proof_gl detail lists the entries behind an account's change."]
+
+[[mcp.tool]]
+cluster = "fa.proof"
 name = "gl"
 verb = "gl"
 subcommands = ["detail", "roll-forward", "aging", "cash-flow", "lots"]
@@ -5400,7 +5435,7 @@ ops = ["read"]
 reach = "judged"
 
 [[bound]]
-verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor"]
+verbs = ["gl", "replay", "certificate", "procedure", "triage", "next", "doctor", "diff"]
 ops = ["read"]
 
 # The access log names every principal's reads: the whole book.
