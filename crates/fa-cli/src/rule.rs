@@ -190,17 +190,14 @@ fn propose(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         book.admit_rule_change(who, &cap)??;
         Ok(())
     })?;
-    // The default key is the source's own digest, so proposing the same text
-    // again is a retry.
+    // The default key is the source's own digest (64 hex digits, within the
+    // key bound), so proposing the same text again is a retry.
     let key = args.flag("--key").map_or_else(
         || {
-            format!(
-                "rule-propose:{}",
-                hex(&fa_model::domain_digest(
-                    b"fa:rule-source:v1",
-                    &[text.as_bytes()]
-                ))
-            )
+            hex(&fa_model::domain_digest(
+                b"fa-cli:rule-propose-key:v1",
+                &[text.as_bytes()],
+            ))
         },
         str::to_string,
     );
@@ -307,8 +304,15 @@ fn plan_activation(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let from = DateDay::parse(from)
         .map_err(|e| usage(format!("--from `{from}`: {e:?}"), "--from YYYY-MM-DD"))?;
+    // The default key is the version and date (as a 64-hex digest, within the
+    // key bound), so planning the same activation again plans the same entry.
     let key = args.flag("--key").map_or_else(
-        || format!("rule-activate:{}:{}", hex(&digest), from.render()),
+        || {
+            hex(&fa_model::domain_digest(
+                b"fa-cli:rule-activate-key:v1",
+                &[&digest, &from.0.to_le_bytes()],
+            ))
+        },
         str::to_string,
     );
     let capability = ctx.capability(args, &["rule_change"])?;
