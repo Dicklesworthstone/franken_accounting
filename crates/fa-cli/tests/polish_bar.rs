@@ -177,6 +177,9 @@ const READS: &[&[&str]] = &[
     &["verify", "registers", "--period", "FY2026-P03", "--json"],
     &["capabilities", "--json"],
     &["law", "list", "--json"],
+    // G1 names triage and doctor at the Polish Bar beside tb and explain.
+    &["triage", "--json"],
+    &["doctor", "--json"],
 ];
 
 /// Plan Appendix D `verify-determinism`: every read twice, in separate
@@ -199,6 +202,103 @@ fn verify_determinism() {
             "{args:?} is not byte-deterministic"
         );
     }
+}
+
+/// G1's Polish Bar for `fa post`: a dry run writes nothing (its plan seals
+/// the description under a fresh nonce, so plan bytes are not repeatable by
+/// design; reads are, see verify_determinism); the post prints exactly one
+/// `posted` envelope, and its exact retry names the same entry (the idempotency key
+/// is the identity), so an agent that retries after a lost reply never
+/// double-posts.
+#[test]
+fn post_meets_the_polish_bar() {
+    let (dir, book) = posted_book("post");
+    let fee = write(
+        &dir,
+        "fee.json",
+        r#"{"effective_date":"2026-03-18","idempotency_key":"fee","description":"bank fee","legs":[{"side":"debit","account":"6000","amount":"3.00 USD"},{"side":"credit","account":"1000","amount":"3.00 USD"}]}"#,
+    );
+    let source = write(&dir, "fee.txt", "BANK FEE NOTICE (polish bar fixture)");
+    let added = fa(
+        Some(&book),
+        &[
+            "document",
+            "add",
+            &source,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    let oid = json::parse(added.stdout.lines().last().unwrap_or_default())
+        .ok()
+        .and_then(|j| {
+            j.get("data")
+                .and_then(|d| d.get("oid"))
+                .and_then(Json::as_str)
+                .map(str::to_string)
+        })
+        .expect("document oid");
+    let env = [("SOURCE_DATE_EPOCH", "1767225600")];
+    let dry = [
+        "post",
+        "--intent",
+        fee.as_str(),
+        "--evidence",
+        oid.as_str(),
+        "--dry-run",
+        "--json",
+    ];
+    let tb = ["tb", "--period", "FY2026-P03", "--json"];
+    let before = fa_env(Some(&book), &tb, &env);
+    let first = fa_env(Some(&book), &dry, &env);
+    log("post-dry-run", &dry, &first);
+    assert_eq!(first.code, 0, "{}\n{}", first.stdout, first.stderr);
+    let after = fa_env(Some(&book), &tb, &env);
+    assert_eq!(before.stdout, after.stdout, "a dry run wrote to the book");
+
+    let post = [
+        "post",
+        "--intent",
+        fee.as_str(),
+        "--evidence",
+        oid.as_str(),
+        "--json",
+    ];
+    let posted = fa(Some(&book), &post);
+    log("post", &post, &posted);
+    assert_eq!(posted.code, 0, "{}\n{}", posted.stdout, posted.stderr);
+    assert_eq!(
+        events(&posted.stdout)
+            .iter()
+            .filter(|e| e.as_str() == "posted")
+            .count(),
+        1,
+        "{}",
+        posted.stdout
+    );
+    let vid = |run: &Run| {
+        json::parse(run.stdout.lines().last().unwrap_or_default())
+            .ok()
+            .and_then(|j| {
+                j.get("data")
+                    .and_then(|d| d.get("vid"))
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    };
+    let retried = fa(Some(&book), &post);
+    log("post-retry", &post, &retried);
+    assert_eq!(retried.code, 0, "{}\n{}", retried.stdout, retried.stderr);
+    assert!(!vid(&posted).is_empty(), "{}", posted.stdout);
+    assert_eq!(
+        vid(&retried),
+        vid(&posted),
+        "an exact retry named another entry"
+    );
 }
 
 /// Plan Appendix D `verify-stdout-stderr-split`: in robot mode stdout holds
