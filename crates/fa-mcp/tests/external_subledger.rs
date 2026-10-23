@@ -123,3 +123,53 @@ fn external_feed_requires_read_and_post_while_reconciliation_requires_read() {
         ["read"]
     );
 }
+
+#[test]
+fn aggregate_feed_reconciliation_keeps_fixed_scope_and_conditional_certification_authority() {
+    let registry = fa_cli::verbs::registry().expect("verb registry");
+    let mcp = McpRegistry::embedded().expect("MCP registry");
+    let tool = mcp.tool_for("subledger", Some("reconcile-feed")).unwrap();
+    assert_eq!(tool.wire_name(), "fa_audit_external_feed");
+    for certify in [false, true] {
+        let arguments = json!({
+            "feed": "vendor-ap", "control": "2000", "as_of": "2026-03-31",
+            "as_known_at": "17", "certify": certify
+        });
+        let call = tool.invocation(&mcp, registry, &arguments).unwrap();
+        let parsed =
+            fa_cli::args::parse(&call.argv, &registry.value_flags(), &registry.switches()).unwrap();
+        assert_eq!(
+            parsed.positional,
+            ["subledger", "reconcile-feed", "vendor-ap"]
+        );
+        assert_eq!(parsed.flag("--control"), Some("2000"));
+        assert_eq!(parsed.flag("--as-of"), Some("2026-03-31"));
+        assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+        assert_eq!(parsed.switch("--certify"), certify);
+        let ops: Vec<_> = fa_cli::cli::bound_command_ops("subledger", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect();
+        assert_eq!(
+            ops,
+            if certify {
+                vec!["read", "produce"]
+            } else {
+                vec!["read"]
+            }
+        );
+        assert!(call.stdin.is_none());
+    }
+    let schema = tool.input_schema(&mcp, registry);
+    for forbidden in ["certificate_out", "as", "grant", "input_file"] {
+        assert!(schema["properties"].get(forbidden).is_none());
+    }
+    for arguments in [
+        json!({"feed":"vendor-ap", "control":"2000"}),
+        json!({"feed":"vendor-ap", "as_of":"2026-03-31"}),
+        json!({"control":"2000", "as_of":"2026-03-31"}),
+    ] {
+        assert!(tool.invocation(&mcp, registry, &arguments).is_err());
+    }
+}

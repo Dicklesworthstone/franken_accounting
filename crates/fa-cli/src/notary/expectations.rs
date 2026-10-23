@@ -20,6 +20,7 @@ pub(super) enum Expected {
     CashFlow(RollForwardRequest, CashFlowDefinition),
     Indirect(IndirectCashFlowRequest),
     Equity(fa::EquityRollForwardRequest),
+    ExternalFeed(fa::ExternalFeedRequest),
     Reconciliation(AgingReconciliationRequest),
     Portfolio(AgingPortfolioRequest),
     PolicyCashFlow(RollForwardRequest, CashFlowPolicy),
@@ -40,6 +41,7 @@ impl Expected {
             },
             Self::Indirect(request) => fa::ReportArtifactExpectation::IndirectCashFlow(request),
             Self::Equity(request) => fa::ReportArtifactExpectation::EquityRollForward(request),
+            Self::ExternalFeed(request) => fa::ReportArtifactExpectation::ExternalFeed(request),
             Self::Reconciliation(request) => {
                 fa::ReportArtifactExpectation::AgingReconciliation(request)
             }
@@ -274,6 +276,18 @@ pub(super) fn parse(
                 definition: indirect,
             }))
         }
+        "external-feed-reconciliation" => {
+            exact_fields(
+                &doc,
+                &["kind", "feed", "control_account", "through", "known_at"],
+            )?;
+            Ok(Expected::ExternalFeed(fa::ExternalFeedRequest {
+                feed: string(&doc, "feed")?.to_string(),
+                control_account: account(string(&doc, "control_account")?, book)?,
+                effective_through: day(&doc, "through")?,
+                known_at: Some(fixed_prefix(&doc)?),
+            }))
+        }
         "equity-roll-forward" => {
             exact_fields(
                 &doc,
@@ -471,6 +485,24 @@ fn scope_fields(request: &RollForwardRequest) -> Vec<(&'static str, Json)> {
                 .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
         ),
     ]
+}
+
+pub(crate) fn external_feed_expectation_json(request: &fa::ExternalFeedRequest) -> Json {
+    obj(vec![
+        ("kind", s("external-feed-reconciliation")),
+        ("feed", s(&request.feed)),
+        (
+            "control_account",
+            s(format!("{:032x}", request.control_account.0)),
+        ),
+        ("through", s(request.effective_through.render())),
+        (
+            "known_at",
+            request
+                .known_at
+                .map_or(Json::Null, |at| Json::Int(i128::from(at.0))),
+        ),
+    ])
 }
 
 pub(crate) fn equity_expectation_json(request: &fa::EquityRollForwardRequest) -> Json {
@@ -753,6 +785,9 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
             request,
             definition,
         } => cash_flow_expectation_json(request, definition),
+        fa::ReportArtifactExpectation::ExternalFeed(request) => {
+            external_feed_expectation_json(request)
+        }
         fa::ReportArtifactExpectation::EquityRollForward(request) => {
             equity_expectation_json(request)
         }

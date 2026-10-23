@@ -146,9 +146,12 @@ pub use equity_certificate::{
 };
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
 pub use external_subledger::{
+    CertifiedExternalFeed, EXTERNAL_FEED_CERTIFICATE_FORMAT, EXTERNAL_FEED_REPORT_FORMAT,
     EXTERNAL_SUBLEDGER_DOCUMENT_KIND, EXTERNAL_SUBLEDGER_EVIDENCE_ROLE, EXTERNAL_SUBLEDGER_MIME,
-    ExternalSubledgerBatch, ExternalSubledgerDetail, ExternalSubledgerReconciliation,
-    MAX_EXTERNAL_DETAIL_BYTES, MAX_EXTERNAL_DETAIL_ROWS, MAX_EXTERNAL_SUMMARY_LEGS,
+    ExternalFeedCertificate, ExternalFeedContribution, ExternalFeedLeg, ExternalFeedReconciliation,
+    ExternalFeedRequest, ExternalFeedRow, ExternalFeedTotal, ExternalSubledgerBatch,
+    ExternalSubledgerDetail, ExternalSubledgerReconciliation, MAX_EXTERNAL_DETAIL_BYTES,
+    MAX_EXTERNAL_DETAIL_ROWS, MAX_EXTERNAL_FEED_CERTIFICATE_BYTES, MAX_EXTERNAL_SUMMARY_LEGS,
 };
 pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
