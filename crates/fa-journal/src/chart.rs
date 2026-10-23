@@ -182,9 +182,10 @@ impl ChartSnapshot {
         &self.children
     }
 
-    /// Every journaled FX revaluation routing version, in recorded order.
+    /// Every FX revaluation routes map recorded at this frontier;
+    /// `chart::fx` selects the one effective on a date.
     #[must_use]
-    pub(crate) fn fx_revaluation_routes(&self) -> &[FxRevaluationRoutes] {
+    pub fn fx_revaluation_routes(&self) -> &[FxRevaluationRoutes] {
         &self.fx_revaluation_routes
     }
 
