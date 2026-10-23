@@ -20,7 +20,7 @@ use fa_model::{
 };
 use fa_policy::{Capability, Intent, Op, Party, Profile, Reach};
 use fa_time::{DateDay, MonthEndPolicy, MonthlyRecurrence};
-use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
+use fgdb::{Database, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
@@ -1044,7 +1044,7 @@ pub(crate) fn witness<V: Vfs + Clone>(
 
 pub(crate) fn stage_progress<V: Vfs + Clone>(
     txn: &mut WriteTxn,
-    db: &Database<V>,
+    db: &mut Database<V>,
     token: Executing,
     entry: VId,
 ) -> Result<(), KernelError> {

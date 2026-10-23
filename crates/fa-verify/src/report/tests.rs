@@ -20,6 +20,7 @@ fn account_id(code: &str) -> u128 {
 fn erasable(w: &mut Writer) {
     w.fixed(&[0; 32]).u8(0).fixed(&[0; 24]).bytes(&[]);
 }
+#[allow(clippy::too_many_arguments)]
 fn record(
     class: u16,
     seq: u64,
