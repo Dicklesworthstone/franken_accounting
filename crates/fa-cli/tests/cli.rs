@@ -4812,8 +4812,75 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
         out
     };
+    // fa-waow (plan §15.6 `--population ar-open`): the population is the
+    // open items of the account holding the receivable role, so a book
+    // with no such role refuses with the assignment that fixes it.
+    let by_role = [
+        "uniform",
+        "--population",
+        "ar-open",
+        "--seed",
+        "7",
+        "--size",
+        "2",
+    ];
+    let (code, out, err) = fa(
+        Some(&book),
+        &[&["sample"][..], &by_role[..], &["--json"][..]].concat(),
+    );
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(out.contains("receivable role"), "{out}");
+    assert!(out.contains("fa chart role <account> receivable"), "{out}");
+    let (code, out, err) = fa(
+        Some(&book),
+        &["chart", "role", "1200", "receivable", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
     let uniform = ["uniform", "--account", "1200", "--seed", "7", "--size", "2"];
     let out = draw(&uniform);
+    // The role names 1200: the same sample, its replay command included.
+    assert_eq!(draw(&by_role), out);
+    for args in [
+        vec![
+            "sample",
+            "uniform",
+            "--population",
+            "ar-open",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--size",
+            "2",
+            "--json",
+        ],
+        vec![
+            "sample",
+            "uniform",
+            "--population",
+            "ar",
+            "--seed",
+            "7",
+            "--size",
+            "2",
+            "--json",
+        ],
+        // Nothing holds the payable role.
+        vec![
+            "sample",
+            "uniform",
+            "--population",
+            "ap-open",
+            "--seed",
+            "7",
+            "--size",
+            "2",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+    }
     let data = doc(&out);
     assert_eq!(text(&data, "method"), "uniform");
     assert_eq!(text(&data, "unit"), "USD");
