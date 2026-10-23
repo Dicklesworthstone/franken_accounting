@@ -239,7 +239,7 @@ fn sample_multi_unit_journal() -> FormatJournal {
 #[test]
 fn embedded_formats_registry_matches_fa_formats_surface() {
     let formats = Formats::embedded().expect("registries/formats.toml must parse");
-    assert_eq!(formats.rows.len(), 23);
+    assert_eq!(formats.rows.len(), 24);
     assert!(
         formats
             .by_name("aicpa_ads_gl_v2")
@@ -247,6 +247,7 @@ fn embedded_formats_registry_matches_fa_formats_surface() {
             .round_trip_identity
     );
     assert!(formats.by_name("oecd_saft_v2").unwrap().round_trip_identity);
+    assert!(formats.by_name("aicpa_ads_gl_v3").unwrap().round_trip_identity);
     assert!(formats.by_name("csv_gl_v1").unwrap().round_trip_identity);
     assert_eq!(
         formats.by_name("beancount_v3").unwrap().oracle_tool,

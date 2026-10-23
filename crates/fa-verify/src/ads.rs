@@ -129,8 +129,54 @@ fn exact(value: &str, scale: u32) -> Option<i128> {
     Some(m)
 }
 
-fn parse_row(line: &str, number: usize) -> Result<Row, String> {
-    let fields: Vec<&str> = line.split('|').collect();
+// Independent std-only reader for the v3 text law. Do not import fa-formats:
+// the offline verifier must not share its writer or parser implementation.
+fn decode_field(field: &str) -> Result<String, String> {
+    let mut decoded = String::new();
+    let mut input = field.chars();
+    while let Some(c) = input.next() {
+        if c != '\\' {
+            if c.is_control() {
+                return Err("unescaped control character in ADS v3 text".into());
+            }
+            decoded.push(c);
+            continue;
+        }
+        let c = match input.next() {
+            Some('\\') => '\\',
+            Some('p') => '|',
+            Some('n') => '\n',
+            Some('r') => '\r',
+            Some('u') => {
+                let digits: String = input.by_ref().take(4).collect();
+                if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                    return Err("invalid ADS v3 control escape".into());
+                }
+                let scalar = u32::from_str_radix(&digits, 16).map_err(|_| "invalid ADS v3 scalar")?;
+                let control = char::from_u32(scalar).ok_or("invalid ADS v3 scalar")?;
+                if !control.is_control() || matches!(control, '\n' | '\r') {
+                    return Err("noncanonical ADS v3 control escape".into());
+                }
+                control
+            }
+            _ => return Err("unknown or incomplete ADS v3 text escape".into()),
+        };
+        decoded.push(c);
+    }
+    Ok(decoded)
+}
+
+fn fields(line: &str, escaped: bool, gl: bool) -> Result<Vec<String>, String> {
+    line.split('|').enumerate().map(|(i, s)| {
+        if escaped && gl && matches!(i, 11 | 12) && s == "\\N" {
+            Ok(String::new())
+        } else if escaped { decode_field(s) } else { Ok(s.into()) }
+    }).collect()
+}
+
+fn parse_row(line: &str, number: usize, escaped: bool) -> Result<Row, String> {
+    let decoded = fields(line, escaped, true)?;
+    let fields: Vec<&str> = decoded.iter().map(String::as_str).collect();
     if fields.len() != GL_FIELDS {
         return Err(format!(
             "GL_Detail line {number} has {} fields, not {GL_FIELDS} (a description holding a line break makes a row unreadable)",
@@ -161,7 +207,7 @@ fn parse_row(line: &str, number: usize) -> Result<Row, String> {
 
 /// GL_Detail as entries, rows grouped by `Journal_ID` in first-seen order,
 /// each numbered 1.. in order and agreeing on sequence, date and class.
-fn extracted(gl_detail: &str) -> Result<Vec<Extracted>, String> {
+fn extracted(gl_detail: &str, escaped: bool) -> Result<Vec<Extracted>, String> {
     let mut lines = gl_detail.split('\n');
     if lines.next() != Some(GL_HEADER) {
         return Err("GL_Detail does not start with the ADS GL header".to_string());
@@ -172,7 +218,7 @@ fn extracted(gl_detail: &str) -> Result<Vec<Extracted>, String> {
         if line.is_empty() {
             continue;
         }
-        let row = parse_row(line, i.saturating_add(2))?;
+        let row = parse_row(line, i.saturating_add(2), escaped)?;
         let entry = by_id.entry(row.journal_id.clone()).or_insert_with(|| {
             order.push(row.journal_id.clone());
             Extracted {
@@ -274,6 +320,14 @@ pub fn verify_ads(
             .push("the bundle did not verify, so GL_Detail was not judged against it".into());
         return Ok(out);
     }
+    let escaped = match field(certificate, "format") {
+        Some("aicpa_ads_gl_v3") => true,
+        Some("aicpa_ads_gl_v2") | None => false,
+        Some(other) => {
+            out.failures.push(format!("unsupported ADS format version {other:?}"));
+            return Ok(out);
+        }
+    };
     let manifest = out.bundle.manifest.clone();
     if !matches!(manifest.scope, BundleScope::Prefix) {
         out.failures.push(
@@ -324,7 +378,7 @@ pub fn verify_ads(
             legs,
         });
     }
-    let extract = match extracted(gl_detail) {
+    let extract = match extracted(gl_detail, escaped) {
         Ok(extract) => extract,
         Err(why) => {
             out.failures.push(why);
@@ -374,7 +428,7 @@ pub fn verify_ads(
         ));
     }
     if out.failures.is_empty() {
-        match trial_balance_rows(trial_balance, &extract, &cutoff) {
+        match trial_balance_rows(trial_balance, &extract, &cutoff, escaped) {
             Ok(rows) => out.tb_rows = rows,
             Err(why) => out.failures.push(why),
         }
@@ -391,6 +445,7 @@ fn trial_balance_rows(
     trial_balance: &str,
     extract: &[Extracted],
     cutoff: &str,
+    escaped: bool,
 ) -> Result<u64, String> {
     let mut folded: BTreeMap<(&str, &str), (i128, u32)> = BTreeMap::new();
     for row in extract.iter().flat_map(|entry| &entry.rows) {
@@ -421,7 +476,8 @@ fn trial_balance_rows(
         ));
     }
     for (line, ((account, unit), (balance, scale))) in stated.iter().zip(&folded) {
-        let fields: Vec<&str> = line.split('|').collect();
+        let decoded = fields(line, escaped, false)?;
+        let fields: Vec<&str> = decoded.iter().map(String::as_str).collect();
         let magnitude = balance
             .checked_abs()
             .ok_or_else(|| "a GL_Detail balance exceeds the exact fold range".to_string())?;
@@ -470,17 +526,17 @@ mod tests {
              aa|2|2026-03-10|7|1|1000|C|15.00|USD|2|Rent||\n\
              bb|1|2026-03-11|8|1|1000|D|1.00|USD|2|x||\n"
         );
-        let entries = extracted(&gl).unwrap();
+        let entries = extracted(&gl, false).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].rows.len(), 2);
         assert!(!entries[0].rows[1].debit);
         assert_eq!(entries[1].rows[0].mantissa, 100);
 
         let skipped = gl.replace("aa|2|", "aa|3|");
-        assert!(extracted(&skipped).is_err(), "line 2 is missing");
+        assert!(extracted(&skipped, false).is_err(), "line 2 is missing");
         let torn = gl.replace("|Rent||\n", "|Ren\nt||\n");
-        assert!(extracted(&torn).is_err(), "a broken row is refused");
-        assert!(extracted("Journal_ID|x\n").is_err(), "not the ADS header");
+        assert!(extracted(&torn, false).is_err(), "a broken row is refused");
+        assert!(extracted("Journal_ID|x\n", false).is_err(), "not the ADS header");
     }
 
     #[test]
@@ -492,14 +548,14 @@ mod tests {
              bb|1|2026-03-11|8|1|1000|D|1.00|USD|2|x||\n\
              bb|2|2026-03-11|8|1|4000|C|1.00|USD|2|x||\n"
         );
-        let extract = extracted(&gl).unwrap();
+        let extract = extracted(&gl, false).unwrap();
         let tb = format!(
             "{TB_HEADER}\n\
              1000|2026-03-31|C|14.00|USD|2\n\
              4000|2026-03-31|C|1.00|USD|2\n\
              6000|2026-03-31|D|15.00|USD|2\n"
         );
-        assert_eq!(trial_balance_rows(&tb, &extract, "2026-03-31"), Ok(3));
+        assert_eq!(trial_balance_rows(&tb, &extract, "2026-03-31", false), Ok(3));
         for bad in [
             tb.replace("C|14.00", "C|14.01"),
             tb.replace("C|14.00", "D|14.00"),
@@ -511,7 +567,7 @@ mod tests {
             tb.replace(TB_HEADER, "GL_Account_Number|As_Of_Date"),
         ] {
             assert!(
-                trial_balance_rows(&bad, &extract, "2026-03-31").is_err(),
+                trial_balance_rows(&bad, &extract, "2026-03-31", false).is_err(),
                 "{bad}"
             );
         }
