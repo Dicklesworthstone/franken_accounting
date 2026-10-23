@@ -46,7 +46,7 @@ pub(crate) const ISSUE_ONLY: [&str; 8] = [
 ];
 /// The statement verb's report flags and switches: `issue` and `issuances`
 /// refuse each, never ignore it.
-const REPORT_ONLY: [&str; 18] = [
+const REPORT_ONLY: [&str; 19] = [
     "--compare",
     "--definition",
     "--before",
@@ -65,12 +65,16 @@ const REPORT_ONLY: [&str; 18] = [
     "--out",
     "--as-issued-to",
     "--as-reported-in",
+    "--as-currently-stated",
 ];
 /// The restatement views that fix a read's known-at themselves (plan §7.4).
-pub(crate) const VIEW_FLAGS: [&str; 3] = [
+/// `--as-currently-stated` names the head read every other view departs
+/// from, so it excludes them and every known-at selector like they do.
+pub(crate) const VIEW_FLAGS: [&str; 4] = [
     "--as-originally-reported",
     "--as-issued-to",
     "--as-reported-in",
+    "--as-currently-stated",
 ];
 
 /// A restatement view (plan §7.4): where it pins a period's reads.
@@ -117,6 +121,9 @@ pub(crate) fn reported_view(args: &Args, example: &str) -> Result<Option<Reporte
         ));
     }
     Ok(Some(match flag {
+        // AS CURRENTLY STATED is the head, with every correction recorded
+        // since the period was reported: the read pins nothing.
+        "--as-currently-stated" => return Ok(None),
         "--as-originally-reported" => ReportedView::Originally,
         "--as-issued-to" => {
             let names = IssuedTo::ALL.map(IssuedTo::name).join("|");

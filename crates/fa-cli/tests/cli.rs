@@ -3243,6 +3243,34 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
             "HEAD",
             "--json",
         ],
+        // AS CURRENTLY STATED is a view too: one view, no known-at beside it.
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-currently-stated",
+            "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-currently-stated",
+            "--as-known-at",
+            "HEAD",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "balance-sheet",
+            "--for",
+            march,
+            "--as-currently-stated",
+            "--as-issued-to",
+            "board",
+            "--json",
+        ],
         // Balance-only switches are refused, never ignored, elsewhere.
         vec![
             "explain",
@@ -3251,6 +3279,15 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
             "--period",
             march,
             "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "explain",
+            "register",
+            "6000",
+            "--period",
+            march,
+            "--as-currently-stated",
             "--json",
         ],
         vec![
@@ -3285,6 +3322,53 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
         "--as-originally-reported",
         "--json",
     ];
+    // fa-wrrw: AS CURRENTLY STATED is the head read, by name. It answers
+    // before anything was reported, where AS ORIGINALLY REPORTED refuses.
+    for (named, plain) in [
+        (
+            vec!["tb", "--period", march, "--as-currently-stated", "--json"],
+            vec!["tb", "--period", march, "--json"],
+        ),
+        (
+            vec![
+                "statement",
+                "income-statement",
+                "--for",
+                march,
+                "--compare",
+                "FY2026-P04",
+                "--as-currently-stated",
+                "--json",
+            ],
+            vec![
+                "statement",
+                "income-statement",
+                "--for",
+                march,
+                "--compare",
+                "FY2026-P04",
+                "--json",
+            ],
+        ),
+        (
+            vec![
+                "explain",
+                "balance",
+                "6000",
+                "--period",
+                march,
+                "--as-currently-stated",
+                "--json",
+            ],
+            vec!["explain", "balance", "6000", "--period", march, "--json"],
+        ),
+    ] {
+        let (code, stated, err) = fa(Some(&book), &named);
+        assert_eq!(code, 0, "{named:?}\n{stated}\n{err}");
+        let (code, head, err) = fa(Some(&book), &plain);
+        assert_eq!(code, 0, "{plain:?}\n{head}\n{err}");
+        assert_eq!(stated, head, "{named:?}");
+    }
     // Open, then Closed: nothing was reported yet; never HEAD, never a Close.
     let (code, out, _) = fa(Some(&book), &originally);
     assert_eq!(code, 3, "{out}");

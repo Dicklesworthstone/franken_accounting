@@ -886,7 +886,7 @@ fn select_branch<'b>(
     {
         return Err(usage(
             "a branch read (a scenario or a draft) is not certified yet, and trunk known-at selectors do not apply to its replay",
-            "drop --certify, --certificate-out, --as-originally-reported, --as-issued-to, --as-reported-in and any known-at, --before or --after selector, or read trunk without --branch",
+            "drop --certify, --certificate-out, --as-originally-reported, --as-issued-to, --as-reported-in, --as-currently-stated and any known-at, --before or --after selector, or read trunk without --branch",
         ));
     }
     let replay = if let Some(name) = draft {
@@ -11813,7 +11813,7 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             || crate::issuance::view_flag(args).is_some()
         {
             return Err(usage(
-                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in) do not select this workflow",
+                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in, --as-currently-stated) do not select this workflow",
                 "fa statement diff --definition balance-sheet --for <period> --before <seq> --after <seq> --json",
             ));
         }
