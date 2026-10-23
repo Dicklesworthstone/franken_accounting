@@ -486,8 +486,9 @@ pub fn fuzz_ads_extract(bytes: &[u8]) {
 /// fa-yrhb: the interop readers an importer or an export's recipient feeds
 /// untrusted text (plan §16.8): the ADS package (the text in place of each
 /// of its four files), SAF-T, CSV GL, Beancount, hledger, the NDJSON GL
-/// stream, the XBRL instance, taxonomy schema and calculation linkbase, and
-/// Concordance DAT load files, without panic.
+/// stream, the XBRL instance, taxonomy schema and calculation linkbase,
+/// Concordance DAT load files and the fwc Plaid `transactions_sync` bank
+/// feed, without panic.
 pub fn fuzz_interop_readers(bytes: &[u8]) {
     let text = String::from_utf8_lossy(bytes);
     let text = text.as_ref();
@@ -508,6 +509,7 @@ pub fn fuzz_interop_readers(bytes: &[u8]) {
         let _ = fa_formats::csv_gl::read_csv_gl(text, &units);
         let _ = fa_formats::beancount::read_beancount(text, &units);
         let _ = fa_formats::beancount::read_hledger(text, &units);
+        let _ = fa_formats::fwc::parse_fwc_plaid_transactions_sync(text, &units);
     }
     let _ = fa_formats::csv_gl::verify_ndjson_gl_stream(text);
     let _ = fa_formats::xbrl::read_xbrl_instance_xml(text);
@@ -1221,6 +1223,11 @@ pub fn seeds_for_target(target_name: &str) -> Vec<Vec<u8>> {
             seeds.push(g.ads_package.chart_of_accounts.clone().into_bytes());
             seeds.push(g.ads_package.gl_detail.clone().into_bytes());
             seeds.extend(g.interop_exports.iter().cloned());
+            seeds.push(
+                fa_formats::fwc::FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON
+                    .as_bytes()
+                    .to_vec(),
+            );
         }
         "registry_toml" => {
             seeds.push(include_bytes!("../../../registries/units.toml").to_vec());
@@ -1566,6 +1573,13 @@ mod tests {
         fa_formats::csv_gl::verify_ndjson_gl_stream(text(4)).expect("golden NDJSON verifies");
         fa_formats::xbrl::verify_format_journal_xbrl_xml(text(5)).expect("golden XBRL verifies");
         assert_eq!(g.interop_exports.len(), 6);
+        // The bank-feed seed is a payload the Plaid reader accepts, so its
+        // mutations start inside the parser rather than at its first check.
+        let plaid = fa_formats::fwc::FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON;
+        assert!(seeds_for_target("interop_readers").contains(&plaid.as_bytes().to_vec()));
+        let feed = fa_formats::fwc::parse_fwc_plaid_transactions_sync(plaid, &units)
+            .expect("the Plaid fixture parses");
+        assert_eq!(feed.extract.lines.len(), 2);
     }
 
     #[test]
