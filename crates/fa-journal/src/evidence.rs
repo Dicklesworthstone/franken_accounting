@@ -719,6 +719,60 @@ fn stage_document_payload(
     Ok(())
 }
 
+/// The sources of `doc` (oid `oid`) that are this book's documents, for its
+/// `DERIVED_FROM` lineage, read through `read`; empty when `doc` is no
+/// derivation. Derived text is governed as its source is (plan §9.6): a
+/// derivation of a document a redaction contract governs is refused
+/// (FA-REF-083) unless the same contract governs the derivation's kind, so a
+/// reader without the revealing op never reads a governed source's withheld
+/// bytes through text derived from them.
+pub(crate) fn derivation_sources(
+    doc: &Document,
+    oid: &Oid,
+    policy: &EvidencePolicy,
+    book: &BookContext,
+    mut read: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
+) -> Result<Result<Vec<Oid>, Refusal>, KernelError> {
+    let Ok((sources, _)) = crate::import::decode_derivation(&doc.bytes) else {
+        return Ok(Ok(Vec::new()));
+    };
+    let contracts = crate::redaction::contracts()?;
+    let governs = contracts.for_kind(doc.kind).map(|contract| contract.id);
+    let mut parents = Vec::new();
+    for parent in sources {
+        if parent == *oid {
+            continue;
+        }
+        let Some(row) = read(document_vid(&parent))? else {
+            continue;
+        };
+        let Ok(record) = verify_row(&row, policy) else {
+            continue;
+        };
+        if record.book_id != book.book_id {
+            continue;
+        }
+        if let Some(contract) = contracts.for_kind(record.kind)
+            && governs != Some(contract.id)
+        {
+            return Ok(Err(Refusal::new(
+                code::DOCUMENT_INTAKE,
+                exit::USAGE,
+                format!(
+                    "document {} is governed by redaction contract {} (`{}`), which does not govern the kind of a document derived from it",
+                    hex(&parent.0),
+                    contract.id,
+                    contract.name
+                ),
+                "plan §9.6 (derived text is governed as its source is); registries/redaction_contracts.toml",
+                "record the derivation under its source's kind (omit --kind), or another kind the same redaction contract governs",
+            )));
+        }
+        parents.push(parent);
+    }
+    Ok(Ok(parents))
+}
+
 /// Record a document in the book (plan §9.1, §9.3): one `Document` vertex
 /// carrying the canonical payload and its mirrors (`_fa_digest` =
 /// `doc_commit`, `code` = the kind's registered name, `book_id`,
@@ -752,25 +806,11 @@ pub async fn add_document<V: asupersync::fs::Vfs + Clone>(
     stage_document(&mut batch, book, doc, &kind_name)?;
     crate::custody::stage_receipt(&mut batch, book, doc, source, doc.retrieved_by, None)?;
 
-    let derived_parents: Vec<Oid> = match crate::import::decode_derivation(&doc.bytes) {
-        Ok((sources, _)) => {
-            let mut valid_parents = Vec::new();
-            for parent_oid in sources {
-                if parent_oid == oid {
-                    continue;
-                }
-                let pvid = document_vid(&parent_oid);
-                if let Some(prow) = db.vertex(pvid)?
-                    && let Ok(prec) = verify_row(&prow, &policy)
-                    && prec.book_id == book.book_id
-                {
-                    valid_parents.push(parent_oid);
-                }
-            }
-            valid_parents
-        }
-        Err(_) => Vec::new(),
-    };
+    let derived_parents =
+        match derivation_sources(doc, &oid, &policy, book, |pvid| Ok(db.vertex(pvid)?))? {
+            Ok(parents) => parents,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
 
     if derived_parents.is_empty() {
         match db.write(&ctx.commit(), batch).await {

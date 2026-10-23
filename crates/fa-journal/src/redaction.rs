@@ -265,7 +265,7 @@ pub fn redacted_view_vid(book: Id128, original: &Oid, contract: u16) -> VId {
 }
 
 /// The embedded contracts, parsed once per process.
-fn contracts() -> Result<&'static RedactionContracts, KernelError> {
+pub(crate) fn contracts() -> Result<&'static RedactionContracts, KernelError> {
     static CONTRACTS: OnceLock<Result<RedactionContracts, String>> = OnceLock::new();
     CONTRACTS
         .get_or_init(|| RedactionContracts::embedded().map_err(|e| e.to_string()))

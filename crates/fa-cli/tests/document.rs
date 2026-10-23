@@ -892,6 +892,45 @@ fn extract_records_a_pdf_text_layer_as_a_derived_document() -> std::io::Result<(
         after.matches("\"oid\"").count(),
         "a refused extraction records nothing"
     );
+    // Derived text is governed as its source is (plan §9.6): a bank
+    // statement's text may only be recorded under a kind its redaction
+    // contract governs, so `--kind Invoice` is refused with nothing written.
+    let statement = add("statement.pdf", &pdf, "BankStatement", "application/pdf");
+    let before = ok(&book, &["document", "list", "--json"]);
+    let refusal = refused(
+        &book,
+        &[
+            "document",
+            "extract",
+            &statement,
+            "--kind",
+            "Invoice",
+            "--grant",
+            "privileged",
+            "--json",
+        ],
+        "FA-REF-083",
+        2,
+    );
+    assert!(refusal.contains("statement-account-block"), "{refusal}");
+    let after = ok(&book, &["document", "list", "--json"]);
+    assert_eq!(
+        before.matches("\"oid\"").count(),
+        after.matches("\"oid\"").count(),
+        "a derivation outside its source's contract records nothing"
+    );
+    let out = ok(
+        &book,
+        &[
+            "document",
+            "extract",
+            &statement,
+            "--grant",
+            "privileged",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&out, "kind"), Some("BankStatement"), "{out}");
     refused(
         &book,
         &["document", "extract", &"ab".repeat(32), "--json"],
