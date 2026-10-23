@@ -65,6 +65,10 @@ socket = "fad.sock"
 lease = "fad.lease"
 max_frame_bytes = 67108864
 idle_timeout_ms = 30000
+# Bound the complete client call, including queued work and report execution.
+# This is not the server's incomplete-frame idle timeout. A client timeout
+# never retries the request or claims that an accepted write was rolled back.
+request_timeout_ms = 300000
 tick_ns = 1000000000
 sweep_batch = 64
 clock_drift_ns = 250000000
