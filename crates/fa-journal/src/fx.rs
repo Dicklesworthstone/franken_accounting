@@ -1276,15 +1276,15 @@ impl FxConversionVerification {
 /// names (live or not now: history keeps the law it was posted under). A
 /// Reversal of a SpotClose or PeriodAverage valuation must be the exact
 /// side-swap of the entry it reverses, which is checked on its own row.
-/// Read-only.
+/// Book interpretation also comes from `at`; current authority admission
+/// remains the caller's responsibility. Read-only.
 pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     cx: &fgdb_types::context::PurposeContexts,
     book: &crate::genesis::BookContext,
     at: CommitSeq,
 ) -> Result<FxConversionVerification, crate::KernelError> {
-    let spec = crate::genesis::read_book_spec(db)?
-        .ok_or_else(|| crate::KernelError::Corrupt("the book has no genesis".into()))?;
+    let spec = book_spec_at(db, book, at)?;
     let mut out = FxConversionVerification {
         known_at: at,
         checked: BTreeMap::new(),
@@ -1325,6 +1325,32 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
     }
     out.drift.sort_by_key(|d| (d.recorded_at, d.entry.0));
     Ok(out)
+}
+
+/// FX interpretation and carrying relief share the selected historical root.
+/// A later root cannot reinterpret a previously recorded valuation.
+pub(crate) fn book_spec_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &crate::genesis::BookContext,
+    at: CommitSeq,
+) -> Result<BookSpec, crate::KernelError> {
+    let root = db
+        .vertex_at(crate::rows::book_root(), at)?
+        .filter(|row| row.labels.contains(&label::BOOK))
+        .ok_or_else(|| {
+            crate::KernelError::Corrupt("FX book does not exist at the selected prefix".into())
+        })?;
+    let spec = BookSpec::decode(&crate::rows::bytes(
+        &root,
+        fa_model::symbols::property::FA_PAYLOAD,
+        "FX book payload",
+    )?)?;
+    if spec.book_id != book.book_id || spec.calendar != book.calendar {
+        return Err(crate::KernelError::Corrupt(
+            "FX book context disagrees with the selected root".into(),
+        ));
+    }
+    Ok(spec)
 }
 
 /// One recorded valued entry: `Err` names why its valuation does not

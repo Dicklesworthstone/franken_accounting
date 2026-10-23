@@ -213,6 +213,112 @@ fn undo(proposal: &EntryPayload, target: EntryRef, key: &[u8]) -> EntryPayload {
 }
 
 #[test]
+fn historical_fx_and_carrying_ignore_later_book_spec_damage() {
+    let mut f = fixture(3, 10);
+    let settlement = f.prepare(1, b"historical-settlement").into_proposal();
+    f.h.post(request(settlement)).unwrap();
+    let at = f.h.db.frontier().unwrap();
+    let expected_carrying = f.carrying();
+    let cx = f.h.ctx();
+    let expected_verification = cx
+        .query()
+        .with_restriction(|| verify_fx_conversions(&f.h.db, &cx, &f.h.book, at))
+        .unwrap();
+    assert!(expected_verification.is_green());
+    assert_eq!(
+        expected_verification.checked.get("SettlementCarryingBasis"),
+        Some(&1),
+    );
+
+    // Corrupt only a later root. Both the outer FX fold and its nested
+    // source-bound carrying check must retain their selected BookSpec.
+    let mut spec = fa_journal::genesis::read_book_spec(&f.h.db)
+        .unwrap()
+        .unwrap();
+    spec.base_unit = f.foreign;
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.set_vertex_property(
+        book_root(),
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(spec.canonical_bytes().unwrap()).unwrap()),
+    );
+    f.h.write_raw(damage);
+
+    assert_eq!(
+        open_item_carrying_at(&f.h.db, &cx, &f.h.book, f.target, 0, at)
+            .unwrap()
+            .unwrap(),
+        expected_carrying,
+    );
+    assert_eq!(
+        cx.query()
+            .with_restriction(|| verify_fx_conversions(&f.h.db, &cx, &f.h.book, at))
+            .unwrap(),
+        expected_verification,
+    );
+    let head = f.h.db.frontier().unwrap();
+    assert!(
+        open_item_carrying_at(&f.h.db, &cx, &f.h.book, f.target, 0, head)
+            .unwrap()
+            .is_err(),
+    );
+    assert!(
+        !cx.query()
+            .with_restriction(|| verify_fx_conversions(&f.h.db, &cx, &f.h.book, head))
+            .unwrap()
+            .is_green(),
+    );
+}
+
+#[test]
+fn historical_fx_and_carrying_reject_selected_book_context_mismatches() {
+    let mut f = fixture(3, 10);
+    let original = fa_journal::genesis::read_book_spec(&f.h.db)
+        .unwrap()
+        .unwrap();
+    for mismatch in ["book", "calendar"] {
+        let mut changed = original.clone();
+        match mismatch {
+            "book" => changed.book_id = Id128([0xbb; 16]),
+            "calendar" => changed.calendar.id.push_str("-changed"),
+            _ => unreachable!(),
+        }
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        damage.set_vertex_property(
+            book_root(),
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(changed.canonical_bytes().unwrap()).unwrap()),
+        );
+        f.h.write_raw(damage);
+        let at = f.h.db.frontier().unwrap();
+        let mut restore = fgdb::WriteBatch::new(relation::IN_BOOK);
+        restore.set_vertex_property(
+            book_root(),
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(original.canonical_bytes().unwrap()).unwrap()),
+        );
+        f.h.write_raw(restore);
+
+        let cx = f.h.ctx();
+        let carrying = open_item_carrying_at(&f.h.db, &cx, &f.h.book, f.target, 0, at).unwrap_err();
+        assert!(
+            matches!(carrying, KernelError::Corrupt(ref reason) if reason.contains("selected root")),
+            "{mismatch}: {carrying}",
+        );
+        let verification = cx
+            .query()
+            .with_restriction(|| verify_fx_conversions(&f.h.db, &cx, &f.h.book, at))
+            .unwrap_err();
+        assert!(
+            matches!(verification, KernelError::Corrupt(ref reason) if reason.contains("selected root")),
+            "{mismatch}: {verification}",
+        );
+        f.verify();
+        assert_eq!(f.carrying().open_base.mantissa, 10);
+    }
+}
+
+#[test]
 fn foreign_partial_final_and_reversed_applications_restore_recorded_base() {
     let mut f = fixture(3, 10);
     let first = f.prepare(1, b"first");

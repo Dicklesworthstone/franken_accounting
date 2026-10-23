@@ -210,8 +210,7 @@ fn open_item_carrying_inner<V: Vfs + Clone>(
     let Some(leg) = original.proposal.legs.get(usize::from(ordinal)) else {
         return Ok(Err(invalid("target ordinal is outside the original entry")));
     };
-    let spec = crate::genesis::read_book_spec(db)?
-        .ok_or_else(|| KernelError::Corrupt("no book specification".into()))?;
+    let spec = crate::fx::book_spec_at(db, book, at)?;
     let Some(original_base) = leg.base_amount else {
         return Ok(Err(invalid(
             "the original foreign item has no retained base valuation",
