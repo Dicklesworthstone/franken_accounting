@@ -21036,6 +21036,60 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
     ]);
     assert_eq!(code, 2, "{out}");
 
+    // Lantern reads the derivations' origin: with three rule-derived
+    // entries on 1000 and 6000, a manual entry on them is a
+    // jet.manual_vs_rule finding (3 of 4 postings = 7500 bps >= 6000).
+    for (code, day) in [("EV-10", "2026-03-14"), ("EV-11", "2026-03-16")] {
+        ok(&[
+            "event",
+            "record",
+            "--code",
+            code,
+            "--kind",
+            "sale",
+            "--occurred-on",
+            day,
+            "--evidence",
+            &ev,
+            "--resource",
+            "net:12.00 USD",
+            "--json",
+        ]);
+        let all = doc(&ok(&["rule", "derive", "--event", code, "--json"]));
+        assert_eq!(arr(&all, "derived").len(), 1, "{}", all.render());
+    }
+    let manual = write(
+        &dir,
+        "manual.json",
+        r#"{"effective_date":"2026-03-20","idempotency_key":"manual-sale","legs":[{"side":"debit","account":"1000","amount":"5.00 USD"},{"side":"credit","account":"6000","amount":"5.00 USD"}],"description":"hand-keyed sale"}"#,
+    );
+    let manual = field(
+        &ok(&["post", "--intent", &manual, "--evidence", &ev, "--json"]),
+        "vid",
+    )
+    .unwrap_or_default()
+    .to_string();
+    let jet = doc(&ok(&["procedure", "run", "jet.manual_vs_rule", "--json"]));
+    let findings = arr(&jet, "findings");
+    assert_eq!(findings.len(), 1, "only the manual entry: {}", jet.render());
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(
+        (int(statistic, "value"), int(statistic, "population")),
+        (Some(7500), Some(4)),
+        "{}",
+        jet.render()
+    );
+    assert!(
+        findings[0]
+            .get("cites")
+            .and_then(Json::as_arr)
+            .is_some_and(|cites| cites
+                .iter()
+                .any(|c| c.get("entry").and_then(Json::as_str) == Some(manual.as_str()))),
+        "the finding cites the manual entry: {}",
+        jet.render()
+    );
+
     // A live rule's account cannot be closed out from under it (plan §10.3).
     let (code, out, _) = run(&["chart", "close", "6000", "--on", "2026-12-31", "--json"]);
     assert_eq!(
