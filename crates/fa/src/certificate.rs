@@ -158,7 +158,7 @@ impl TrialBalanceSelection {
         }
     }
 
-    fn report<V: Vfs + Clone>(
+    pub(crate) fn report<V: Vfs + Clone>(
         &self,
         db: &Database<V>,
         book: &BookContext,
