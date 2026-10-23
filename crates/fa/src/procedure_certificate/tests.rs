@@ -289,7 +289,7 @@ fn every_supported_procedure_has_a_native_replayable_certificate_and_does_not_wr
     f.post(4, "1020", "6000", 10, false);
     let before = f.head();
     let mut certificates = Vec::new();
-    assert_eq!(CERTIFIABLE_PROCEDURES.len(), 23);
+    assert_eq!(CERTIFIABLE_PROCEDURES.len(), 24);
     for &(id, _) in CERTIFIABLE_PROCEDURES {
         let row = fa_lantern::bind(id).unwrap();
         let certified = f.certify(&f.request(&row.id, source));
