@@ -10,8 +10,10 @@
 # no account holds refuses with the command that assigns it.
 #
 # A role is listed only once a procedure selects by it; `consumers` names
-# those procedures, and fa-lantern checks the list against its code.
-# `account_types` are the account types the role admits (account_types.toml).
+# those procedures, and fa-lantern checks the list against its code. A role a
+# verb reads outside Lantern names that verb in `verbs` (optional; fa-cli
+# checks the list against verbs.toml and the verb's code). `account_types`
+# are the account types the role admits (account_types.toml).
 
 schema_version = 1
 
@@ -26,6 +28,7 @@ name = "intercompany"
 account_types = ["Asset", "Liability"]
 meaning = "An intercompany due-from (Asset) or due-to (Liability) account: a balance with another legal entity of the group that must be matched by its reciprocal."
 consumers = ["jet.intercompany_unmatched", "recon.intercompany"]
+verbs = ["consolidate"]
 
 [[role]]
 name = "receivable"
@@ -74,3 +77,38 @@ name = "payroll"
 account_types = ["Asset", "Liability", "Expense"]
 meaning = "Payroll: wage and salary expense, payroll liabilities, or a payroll clearing account; an entry with a leg on one is a payroll posting."
 consumers = ["payroll.ghost"]
+
+[[role]]
+name = "intercompany_activity"
+account_types = ["Revenue", "Expense"]
+meaning = "An intercompany revenue or expense account: a charge, sale or interest between legal entities of the group, eliminated on consolidation against its reciprocal."
+consumers = []
+verbs = ["consolidate"]
+
+[[role]]
+name = "investment_in_subsidiary"
+account_types = ["Asset"]
+meaning = "A parent's investment in a consolidated subsidiary, carried at cost: consolidation eliminates it against the controlling share of the subsidiary's contributed capital."
+consumers = []
+verbs = ["consolidate"]
+
+[[role]]
+name = "contributed_capital"
+account_types = ["Equity"]
+meaning = "Owners' contributed capital (share capital, additional paid-in capital): a consolidated subsidiary's is eliminated against its parent's investment, and the rest is the noncontrolling interest's."
+consumers = []
+verbs = ["consolidate"]
+
+[[role]]
+name = "noncontrolling_interest"
+account_types = ["Equity"]
+meaning = "The group's noncontrolling (minority) interest in partly owned subsidiaries: consolidation credits it with the minority's share of a subsidiary's contributed capital and post-acquisition equity."
+consumers = []
+verbs = ["consolidate"]
+
+[[role]]
+name = "noncontrolling_interest_income"
+account_types = ["Expense"]
+meaning = "Net income attributable to noncontrolling interests (ASC 810-10-45-20): consolidation charges the minority's share of a partly owned subsidiary's post-acquisition earnings here, so the net income that remains is the parent's."
+consumers = []
+verbs = ["consolidate"]

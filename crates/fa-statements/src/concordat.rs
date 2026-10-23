@@ -332,6 +332,11 @@ pub struct OwnershipSpec {
     pub subsidiary_equity_account_ids: Vec<u128>,
     /// Consolidated Non-Controlling Interest (NCI) equity account ID (required if `ownership_bps < 10_000`).
     pub nci_equity_account_id: Option<u128>,
+    /// Account charged with the NCI's share of the subsidiary's equity outside
+    /// its eliminated capital (post-acquisition earnings and reserves): the
+    /// "net income attributable to noncontrolling interests" allocation
+    /// (ASC 810-10-45-20). Required when that share is non-zero.
+    pub nci_income_account_id: Option<u128>,
     /// Registered rounding law used when splitting subsidiary equity/earnings into controlling vs NCI.
     pub rounding_law: RoundingLaw,
 }
@@ -423,7 +428,24 @@ pub struct ConsolidationInput {
     pub units: Vec<u32>,
     pub members: Vec<EntityMemberInput>,
     pub intercompany_pairs: Vec<IntercompanyPairSpec>,
+    /// Intercompany accounts of a chart the members share (one multi-entity
+    /// book): every member's net on them is eliminated as one group entry per
+    /// unit, so the group's net on them must be zero. No declared pair may
+    /// name one of them.
+    pub intercompany_accounts: Vec<u128>,
     pub ownership: Vec<OwnershipSpec>,
+    pub income: IncomeInput,
+}
+
+/// The income statement's input: each member's activity over the statement's
+/// periods (the caller excludes Closing entries, as a single-book income
+/// statement does). The balance sheet folds the members' stock; the income
+/// statement folds this, with the eliminations this activity carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncomeInput {
+    pub periods: Vec<String>,
+    pub effective_from: fa_time::DateDay,
+    pub members: Vec<EntityMemberInput>,
 }
 
 /// Output of a deterministic consolidation run (`FA-INV-13.core`).
@@ -434,7 +456,11 @@ pub struct ConsolidationRun {
     pub known_at: u64,
     pub period: String,
     pub matched_pairs: Vec<MatchedIntercompanyPair>,
+    /// The balance sheet's eliminations, derived from the members' stock.
     pub eliminations: Vec<EliminationEntry>,
+    /// The income statement's eliminations, derived from the members'
+    /// activity over its periods.
+    pub income_eliminations: Vec<EliminationEntry>,
     pub equity_reconciliations: Vec<ConsolidatedEquityReconciliation>,
     pub balance_sheet: Statement,
     pub income_statement: Statement,
@@ -442,6 +468,20 @@ pub struct ConsolidationRun {
 
 impl ConsolidationRun {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        fn entries(w: &mut Writer, list: &[EliminationEntry]) {
+            w.list(list, |w, elim| {
+                w.str(&elim.code)
+                    .str(&elim.description)
+                    .u32(elim.unit_id)
+                    .list(&elim.legs, |w, leg| {
+                        w.fixed(&leg.entity_id.0)
+                            .u128(leg.account_id)
+                            .u32(leg.unit_id)
+                            .i128(leg.debits)
+                            .i128(leg.credits);
+                    });
+            });
+        }
         let mut w = Writer::new();
         w.fixed(CONSOLIDATION_RUN_FORMAT)
             .fixed(&self.consolidation_book_id.0)
@@ -461,28 +501,18 @@ impl ConsolidationRun {
                     .opt(pair.difference_leg.as_ref(), |w, (acct, delta)| {
                         w.u128(*acct).i128(*delta);
                     });
-            })
-            .list(&self.eliminations, |w, elim| {
-                w.str(&elim.code)
-                    .str(&elim.description)
-                    .u32(elim.unit_id)
-                    .list(&elim.legs, |w, leg| {
-                        w.fixed(&leg.entity_id.0)
-                            .u128(leg.account_id)
-                            .u32(leg.unit_id)
-                            .i128(leg.debits)
-                            .i128(leg.credits);
-                    });
-            })
-            .list(&self.equity_reconciliations, |w, eq| {
-                w.u32(eq.unit_id)
-                    .i128(eq.parent_total_equity)
-                    .i128(eq.subsidiaries_total_equity)
-                    .i128(eq.equity_eliminations)
-                    .i128(eq.non_controlling_interest_equity)
-                    .i128(eq.controlling_interest_equity)
-                    .i128(eq.consolidated_total_equity);
             });
+        entries(&mut w, &self.eliminations);
+        entries(&mut w, &self.income_eliminations);
+        w.list(&self.equity_reconciliations, |w, eq| {
+            w.u32(eq.unit_id)
+                .i128(eq.parent_total_equity)
+                .i128(eq.subsidiaries_total_equity)
+                .i128(eq.equity_eliminations)
+                .i128(eq.non_controlling_interest_equity)
+                .i128(eq.controlling_interest_equity)
+                .i128(eq.consolidated_total_equity);
+        });
         let bs_bytes = self.balance_sheet.canonical_bytes()?;
         let is_bytes = self.income_statement.canonical_bytes()?;
         w.bytes(&bs_bytes).bytes(&is_bytes);
@@ -539,9 +569,22 @@ pub enum ConcordatError {
         entity_b_net: i128,
         residual: i128,
     },
-    /// Parent's investment account balance disagrees with the controlling share of subsidiary equity.
+    /// The members' nets on the group's intercompany accounts do not sum to
+    /// zero in a unit: a balance or transaction recorded by one entity and not
+    /// by its counterparty (`FA-INV-13`). `nets` lists every non-zero
+    /// `(entity, account, debits - credits)`.
+    UnmatchedIntercompanyGroup {
+        unit_id: u32,
+        residual: i128,
+        nets: Vec<(Id128, u128, i128)>,
+    },
+    /// Parent's investment account balance disagrees with the controlling share
+    /// of its subsidiaries' eliminated capital (summed over the subsidiaries
+    /// whose investment that account carries).
     InvestmentEquityMismatch {
-        subsidiary_entity: Id128,
+        parent_entity: Id128,
+        investment_account_id: u128,
+        subsidiaries: Vec<Id128>,
         unit_id: u32,
         investment_balance: i128,
         expected_controlling_equity: i128,
@@ -613,15 +656,36 @@ impl fmt::Display for ConcordatError {
                 entity_a.to_hex(),
                 entity_b.to_hex()
             ),
+            Self::UnmatchedIntercompanyGroup {
+                unit_id,
+                residual,
+                nets,
+            } => {
+                write!(
+                    f,
+                    "the group's intercompany accounts do not net to zero in unit {unit_id}: residual {residual} over"
+                )?;
+                for (entity, account, net) in nets {
+                    write!(f, " {} {account:032x} {net};", entity.to_hex())?;
+                }
+                Ok(())
+            }
             Self::InvestmentEquityMismatch {
-                subsidiary_entity,
+                parent_entity,
+                investment_account_id,
+                subsidiaries,
                 unit_id,
                 investment_balance,
                 expected_controlling_equity,
             } => write!(
                 f,
-                "parent investment in subsidiary {} in unit {unit_id} is {investment_balance}, but controlling share of subsidiary equity is {expected_controlling_equity}",
-                subsidiary_entity.to_hex()
+                "parent {} carries {investment_balance} on investment account {investment_account_id:032x} in unit {unit_id}, but the controlling share of subsidiary capital ({}) is {expected_controlling_equity}",
+                parent_entity.to_hex(),
+                subsidiaries
+                    .iter()
+                    .map(|s| s.to_hex())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Self::EquityReconciliationFailure {
                 unit_id,
@@ -1091,17 +1155,458 @@ fn push_reversing_leg(
     }
 }
 
+/// An entity's standalone total equity in a unit, credit-normal: its Equity,
+/// Revenue and Expense nets, so unclosed earnings count.
+fn entity_total_equity(
+    member_nets: &BTreeMap<(Id128, u128, u32), i128>,
+    accounts: &BTreeMap<u128, &Account>,
+    entity_id: Id128,
+    unit_id: u32,
+) -> Result<i128, ConcordatError> {
+    let mut total = 0i128;
+    for (&(ent, acct_id, u), &net) in member_nets {
+        if ent != entity_id || u != unit_id {
+            continue;
+        }
+        // Equity (3), Revenue (4), Expense (5) all contribute to total equity (credit - debit = -net).
+        if matches!(accounts[&acct_id].account_type, 3..=5) {
+            let credit_contribution = net
+                .checked_neg()
+                .ok_or(ConcordatError::Overflow("entity equity contribution"))?;
+            total = total
+                .checked_add(credit_contribution)
+                .ok_or(ConcordatError::Overflow("entity equity sum"))?;
+        }
+    }
+    Ok(total)
+}
+
+/// The credit-normal sum of `entity`'s nets in `unit_id` on the accounts
+/// `admit` selects.
+fn credit_of(
+    nets: &BTreeMap<(Id128, u128, u32), i128>,
+    accounts: &BTreeMap<u128, &Account>,
+    entity_id: Id128,
+    unit_id: u32,
+    admit: impl Fn(&Account) -> bool,
+) -> Result<i128, ConcordatError> {
+    let mut total = 0i128;
+    for (&(ent, acct_id, u), &net) in nets {
+        if ent != entity_id || u != unit_id || !admit(accounts[&acct_id]) {
+            continue;
+        }
+        total = net
+            .checked_neg()
+            .and_then(|credit| total.checked_add(credit))
+            .ok_or(ConcordatError::Overflow("credit-normal sum"))?;
+    }
+    Ok(total)
+}
+
+/// Revenue (4) and Expense (5): an entity's earnings not yet closed to equity.
+fn is_earnings(account: &Account) -> bool {
+    matches!(account.account_type, 4 | 5)
+}
+
+/// The NCI's share of a partly owned subsidiary's `share` of `what`
+/// (unclosed earnings, or a period's earnings), charged to the NCI income
+/// allocation and credited to the NCI equity account (reversed for a share
+/// of losses).
+fn nci_allocation(
+    spec: &OwnershipSpec,
+    accounts: &BTreeMap<u128, &Account>,
+    unit_id: u32,
+    share: i128,
+    what: &str,
+) -> Result<EliminationEntry, ConcordatError> {
+    let sub = spec.subsidiary_entity.to_hex();
+    let (Some(nci_acct), Some(income_acct)) =
+        (spec.nci_equity_account_id, spec.nci_income_account_id)
+    else {
+        return Err(ConcordatError::Input(format!(
+            "subsidiary {sub} has ownership {} bps (< 10000) and a non-zero NCI share {share} of its {what}, so nci_equity_account_id and nci_income_account_id are required",
+            spec.ownership_bps
+        )));
+    };
+    for id in [nci_acct, income_acct] {
+        leaf_account(accounts, id, "NCI")?;
+    }
+    let magnitude = share
+        .checked_abs()
+        .ok_or(ConcordatError::Overflow("nci share magnitude"))?;
+    let (charge, credit) = if share > 0 {
+        ((income_acct, magnitude, 0), (nci_acct, 0, magnitude))
+    } else {
+        ((income_acct, 0, magnitude), (nci_acct, magnitude, 0))
+    };
+    let legs = [charge, credit]
+        .into_iter()
+        .map(|(account_id, debits, credits)| EliminationLeg {
+            entity_id: spec.subsidiary_entity,
+            account_id,
+            unit_id,
+            debits,
+            credits,
+        })
+        .collect();
+    Ok(EliminationEntry {
+        code: format!("ELIM-NCI-{sub}-U{unit_id}"),
+        description: format!(
+            "Allocate the noncontrolling interest's share of subsidiary {sub}'s {what} ({} bps owned)",
+            spec.ownership_bps
+        ),
+        unit_id,
+        legs,
+    })
+}
+
+/// The NCI's share of a partly owned subsidiary's reserves (Equity accounts
+/// outside its eliminated capital and the NCI account: retained earnings
+/// and other reserves), reclassified within equity. Each reserve is debited
+/// with the NCI's share of it and the NCI credited with their sum, so no
+/// prior period's earnings reach the income statement. `None` when every
+/// share is zero; otherwise the entry and the NCI it recognizes.
+fn nci_reserves_allocation(
+    spec: &OwnershipSpec,
+    nets: &BTreeMap<(Id128, u128, u32), i128>,
+    accounts: &BTreeMap<u128, &Account>,
+    unit_id: u32,
+) -> Result<Option<(EliminationEntry, i128)>, ConcordatError> {
+    let mut legs = Vec::new();
+    let mut total = 0i128;
+    for (&(ent, acct_id, u), &net) in nets {
+        let account = accounts[&acct_id];
+        if ent != spec.subsidiary_entity
+            || u != unit_id
+            || net == 0
+            || account.account_type != 3
+            || spec.subsidiary_equity_account_ids.contains(&acct_id)
+            || spec.nci_equity_account_id == Some(acct_id)
+        {
+            continue;
+        }
+        let reserve = net
+            .checked_neg()
+            .ok_or(ConcordatError::Overflow("subsidiary reserve negation"))?;
+        let share = reserve
+            .checked_sub(round_bps_share(
+                reserve,
+                spec.ownership_bps,
+                spec.rounding_law,
+            )?)
+            .ok_or(ConcordatError::Overflow("nci reserve share"))?;
+        if share == 0 {
+            continue;
+        }
+        // The reserve gives up the NCI's share: debit a credit reserve.
+        push_reversing_leg(
+            &mut legs,
+            ent,
+            acct_id,
+            unit_id,
+            share
+                .checked_neg()
+                .ok_or(ConcordatError::Overflow("nci reserve leg"))?,
+        );
+        total = total
+            .checked_add(share)
+            .ok_or(ConcordatError::Overflow("nci reserve total"))?;
+    }
+    if legs.is_empty() {
+        return Ok(None);
+    }
+    let sub = spec.subsidiary_entity.to_hex();
+    let Some(nci_acct) = spec.nci_equity_account_id else {
+        return Err(ConcordatError::Input(format!(
+            "subsidiary {sub} has ownership {} bps (< 10000) and reserves outside its capital, so nci_equity_account_id is required",
+            spec.ownership_bps
+        )));
+    };
+    leaf_account(accounts, nci_acct, "NCI")?;
+    // Credit the NCI with the shares (a share of a deficit debits it).
+    push_reversing_leg(&mut legs, spec.subsidiary_entity, nci_acct, unit_id, total);
+    let entry = EliminationEntry {
+        code: format!("ELIM-NCI-RES-{sub}-U{unit_id}"),
+        description: format!(
+            "Reclassify the noncontrolling interest's share of subsidiary {sub}'s reserves ({} bps owned)",
+            spec.ownership_bps
+        ),
+        unit_id,
+        legs,
+    };
+    if !entry.is_balanced() {
+        return Err(ConcordatError::Input(format!(
+            "derived NCI reserve reclassification `{}` is not balanced",
+            entry.code
+        )));
+    }
+    Ok(Some((entry, total)))
+}
+
+fn leaf_account(
+    accounts: &BTreeMap<u128, &Account>,
+    id: u128,
+    what: &str,
+) -> Result<(), ConcordatError> {
+    match accounts.get(&id) {
+        Some(account) if account.is_leaf => Ok(()),
+        Some(account) => Err(ConcordatError::Input(format!(
+            "{what} account `{}` is a summary account",
+            account.code
+        ))),
+        None => Err(ConcordatError::Input(format!(
+            "{what} account {id:032x} is unknown"
+        ))),
+    }
+}
+
+/// Every member's net (debits - credits) per `(entity, account, unit)`,
+/// checked against the chart and the units.
+fn nets_of(
+    members: &[EntityMemberInput],
+    accounts: &BTreeMap<u128, &Account>,
+    units: &[u32],
+    what: &str,
+) -> Result<BTreeMap<(Id128, u128, u32), i128>, ConcordatError> {
+    let mut nets = BTreeMap::new();
+    for member in members {
+        let entity = member.entity_id.to_hex();
+        for b in &member.balances {
+            let account = accounts.get(&b.account_id).ok_or_else(|| {
+                ConcordatError::Input(format!(
+                    "{what} of member {entity} names unknown account {:032x}",
+                    b.account_id
+                ))
+            })?;
+            if !account.is_leaf {
+                return Err(ConcordatError::Input(format!(
+                    "{what} of member {entity} names summary account `{}`",
+                    account.code
+                )));
+            }
+            if !units.contains(&b.unit_id) {
+                return Err(ConcordatError::Input(format!(
+                    "{what} of member {entity} uses undeclared unit {}",
+                    b.unit_id
+                )));
+            }
+            let net = checked_net(b.debits, b.credits)?;
+            if nets
+                .insert((member.entity_id, b.account_id, b.unit_id), net)
+                .is_some()
+            {
+                return Err(ConcordatError::Input(format!(
+                    "{what} of member {entity} has two balances for account `{}` in unit {}",
+                    account.code, b.unit_id
+                )));
+            }
+        }
+    }
+    Ok(nets)
+}
+
+/// The balanced entry eliminating one matched declared pair.
+fn pair_elimination(
+    pair: &MatchedIntercompanyPair,
+    accounts: &BTreeMap<u128, &Account>,
+) -> Result<EliminationEntry, ConcordatError> {
+    let mut legs = Vec::new();
+    push_reversing_leg(
+        &mut legs,
+        pair.entity_a,
+        pair.account_a,
+        pair.unit_id,
+        pair.entity_a_net,
+    );
+    push_reversing_leg(
+        &mut legs,
+        pair.entity_b,
+        pair.account_b,
+        pair.unit_id,
+        pair.entity_b_net,
+    );
+    if let Some((diff_acct, diff_delta)) = pair.difference_leg {
+        let account = accounts.get(&diff_acct).ok_or_else(|| {
+            ConcordatError::Input(format!(
+                "intercompany pair `{}` difference account {:032x} is unknown",
+                pair.pair_code, diff_acct
+            ))
+        })?;
+        if !account.is_leaf {
+            return Err(ConcordatError::Input(format!(
+                "intercompany pair `{}` difference account `{}` is a summary account",
+                pair.pair_code, account.code
+            )));
+        }
+        // The difference leg takes the residual: a debit when positive.
+        let reversal = diff_delta.checked_neg().ok_or(ConcordatError::Overflow(
+            "intercompany difference leg negation",
+        ))?;
+        push_reversing_leg(&mut legs, pair.entity_a, diff_acct, pair.unit_id, reversal);
+    }
+    let entry = EliminationEntry {
+        code: format!("ELIM-IC-{}-U{}", pair.pair_code, pair.unit_id),
+        description: format!(
+            "Eliminate intercompany pair `{}` between {} and {}",
+            pair.pair_code,
+            pair.entity_a.to_hex(),
+            pair.entity_b.to_hex()
+        ),
+        unit_id: pair.unit_id,
+        legs,
+    };
+    if !entry.is_balanced() {
+        return Err(ConcordatError::Input(format!(
+            "derived intercompany elimination `{}` is not balanced",
+            entry.code
+        )));
+    }
+    Ok(entry)
+}
+
+/// The entry reversing every member's net on the group's shared-chart
+/// intercompany accounts in `unit_id`, over the categories named (true:
+/// balances, Asset and Liability; false: transactions, Revenue and Expense).
+/// Each category must net to zero across the group: a charge one entity
+/// books alone hits a due-from and a revenue account, which would otherwise
+/// cancel each other.
+fn group_elimination(
+    nets: &BTreeMap<(Id128, u128, u32), i128>,
+    group: &BTreeSet<u128>,
+    accounts: &BTreeMap<u128, &Account>,
+    unit_id: u32,
+    categories: &[bool],
+) -> Result<Option<EliminationEntry>, ConcordatError> {
+    let mut legs = Vec::new();
+    for &balance_sheet in categories {
+        let mut found = Vec::new();
+        let mut residual = 0i128;
+        for (&(entity, account_id, u), &net) in nets {
+            if u != unit_id
+                || net == 0
+                || !group.contains(&account_id)
+                || matches!(accounts[&account_id].account_type, 1 | 2) != balance_sheet
+            {
+                continue;
+            }
+            residual = residual
+                .checked_add(net)
+                .ok_or(ConcordatError::Overflow("intercompany group residual"))?;
+            found.push((entity, account_id, net));
+            push_reversing_leg(&mut legs, entity, account_id, unit_id, net);
+        }
+        if residual != 0 {
+            return Err(ConcordatError::UnmatchedIntercompanyGroup {
+                unit_id,
+                residual,
+                nets: found,
+            });
+        }
+    }
+    if legs.is_empty() {
+        return Ok(None);
+    }
+    let entry = EliminationEntry {
+        code: format!("ELIM-IC-GROUP-U{unit_id}"),
+        description: format!(
+            "Eliminate the group's intercompany balances and transactions in unit {unit_id}"
+        ),
+        unit_id,
+        legs,
+    };
+    if !entry.is_balanced() {
+        return Err(ConcordatError::Input(format!(
+            "derived intercompany elimination `{}` is not balanced",
+            entry.code
+        )));
+    }
+    Ok(Some(entry))
+}
+
+/// `(account, unit) -> (debits, credits)`.
+type Totals = BTreeMap<(u128, u32), (i128, i128)>;
+
+/// The members' balances plus every elimination leg, per `(account, unit)`.
+fn totals_with(
+    members: &[EntityMemberInput],
+    eliminations: &[EliminationEntry],
+) -> Result<Totals, ConcordatError> {
+    let mut totals = Totals::new();
+    let legs = eliminations
+        .iter()
+        .flat_map(|e| &e.legs)
+        .map(|l| (l.account_id, l.unit_id, l.debits, l.credits));
+    let balances = members
+        .iter()
+        .flat_map(|m| &m.balances)
+        .map(|b| (b.account_id, b.unit_id, b.debits, b.credits));
+    for (account_id, unit_id, debits, credits) in balances.chain(legs) {
+        let slot = totals.entry((account_id, unit_id)).or_insert((0, 0));
+        slot.0 = slot
+            .0
+            .checked_add(debits)
+            .ok_or(ConcordatError::Overflow("consolidated debits"))?;
+        slot.1 = slot
+            .1
+            .checked_add(credits)
+            .ok_or(ConcordatError::Overflow("consolidated credits"))?;
+    }
+    Ok(totals)
+}
+
+/// Refuse an intercompany account that did not eliminate to zero.
+fn eliminated_to_zero(
+    totals: &Totals,
+    accounts: impl IntoIterator<Item = (u128, u32)>,
+) -> Result<(), ConcordatError> {
+    for (account_id, unit_id) in accounts {
+        let (d, c) = totals
+            .get(&(account_id, unit_id))
+            .copied()
+            .unwrap_or((0, 0));
+        if d != c {
+            return Err(ConcordatError::Input(format!(
+                "intercompany account {account_id:032x} did not eliminate to zero in unit {unit_id} ({d} != {c})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn balances_of(totals: Totals) -> Vec<AccountBalance> {
+    totals
+        .into_iter()
+        .map(
+            |((account_id, unit_id), (debits, credits))| AccountBalance {
+                account_id,
+                unit_id,
+                debits,
+                credits,
+            },
+        )
+        .collect()
+}
+
 /// Execute a deterministic consolidation run over member entity folds (`plan §12.3`, `FA-INV-13.core`).
 ///
 /// Steps:
 /// 1. Validates member inputs, accounts, units, and the ownership graph.
 /// 2. Matches all declared `intercompany_pairs` (`match_intercompany_pairs`), refusing any
 ///    unmatched pair or FX residual outside the law's bound.
-/// 3. Derives balanced `EliminationEntry` records for each matched intercompany pair and for
-///    each parent-subsidiary ownership link (eliminating subsidiary equity against the parent's
-///    investment account and recognizing Non-Controlling Interest under the registered `RoundingLaw`).
-/// 4. Aggregates member balances + elimination legs, evaluates the consolidated Balance Sheet
-///    and Income Statement via `evaluate`, and proves consolidated equity conservation (`FA-INV-13.core`).
+/// 3. Derives the balance sheet's balanced `EliminationEntry` records from the members' stock:
+///    each matched intercompany pair; the group's shared-chart `intercompany_accounts` (balances
+///    and transactions each netting to zero); and for each parent-subsidiary link, subsidiary
+///    capital against the parent's investment account (one account may carry several
+///    subsidiaries; the sum of controlling shares must equal its balance) with Non-Controlling
+///    Interest on that capital, the NCI's share of the subsidiary's reserves reclassified within
+///    equity, and its share of the subsidiary's unclosed earnings charged to the NCI income
+///    allocation, each under the link's registered `RoundingLaw`.
+/// 4. Derives the income statement's eliminations from the members' activity over its periods:
+///    revenue/expense pairs, the group's revenue and expense accounts, and the NCI's share of
+///    each partly owned subsidiary's earnings for the period.
+/// 5. Evaluates the consolidated Balance Sheet (stock plus its eliminations) and Income
+///    Statement (activity plus its eliminations) via `evaluate`, and proves consolidated equity
+///    conservation (`FA-INV-13.core`).
 pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, ConcordatError> {
     if input.members.is_empty() || input.members.len() > MAX_ENTITIES {
         return Err(ConcordatError::Input(
@@ -1130,111 +1635,60 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
 
     let matched_pairs =
         match_intercompany_pairs(&input.members, &input.intercompany_pairs, &units)?;
+    let member_nets = nets_of(&input.members, &accounts, &units, "the stock")?;
+    let known_entities: BTreeSet<Id128> = input.members.iter().map(|m| m.entity_id).collect();
 
-    // Index member net balances (debits - credits) per (entity_id, account_id, unit_id).
-    let mut member_nets: BTreeMap<(Id128, u128, u32), i128> = BTreeMap::new();
-    let mut known_entities = BTreeSet::new();
-    for member in &input.members {
-        known_entities.insert(member.entity_id);
-        for b in &member.balances {
-            let account = accounts.get(&b.account_id).ok_or_else(|| {
-                ConcordatError::Input(format!(
-                    "member {} balance names unknown account {:032x}",
-                    member.entity_id.to_hex(),
-                    b.account_id
-                ))
-            })?;
-            if !account.is_leaf {
-                return Err(ConcordatError::Input(format!(
-                    "member {} balance names summary account `{}`",
-                    member.entity_id.to_hex(),
-                    account.code
-                )));
-            }
-            if !units.contains(&b.unit_id) {
-                return Err(ConcordatError::Input(format!(
-                    "member {} balance uses undeclared unit {}",
-                    member.entity_id.to_hex(),
-                    b.unit_id
-                )));
-            }
-            let net = checked_net(b.debits, b.credits)?;
-            member_nets.insert((member.entity_id, b.account_id, b.unit_id), net);
-        }
+    let group_accounts: BTreeSet<u128> = input.intercompany_accounts.iter().copied().collect();
+    if group_accounts.len() != input.intercompany_accounts.len() {
+        return Err(ConcordatError::Input(
+            "duplicate intercompany account in consolidation input".into(),
+        ));
     }
-
-    let mut eliminations = Vec::new();
-    // 1. Derive intercompany pair eliminations.
-    for pair in &matched_pairs {
-        let mut legs = Vec::new();
-        push_reversing_leg(
-            &mut legs,
-            pair.entity_a,
-            pair.account_a,
-            pair.unit_id,
-            pair.entity_a_net,
-        );
-        push_reversing_leg(
-            &mut legs,
-            pair.entity_b,
-            pair.account_b,
-            pair.unit_id,
-            pair.entity_b_net,
-        );
-        if let Some((diff_acct, diff_delta)) = pair.difference_leg {
-            let account = accounts.get(&diff_acct).ok_or_else(|| {
-                ConcordatError::Input(format!(
-                    "intercompany pair `{}` difference account {:032x} is unknown",
-                    pair.pair_code, diff_acct
-                ))
-            })?;
-            if !account.is_leaf {
-                return Err(ConcordatError::Input(format!(
-                    "intercompany pair `{}` difference account `{}` is a summary account",
-                    pair.pair_code, account.code
-                )));
-            }
-            if diff_delta > 0 {
-                legs.push(EliminationLeg {
-                    entity_id: pair.entity_a,
-                    account_id: diff_acct,
-                    unit_id: pair.unit_id,
-                    debits: diff_delta,
-                    credits: 0,
-                });
-            } else if diff_delta < 0 {
-                legs.push(EliminationLeg {
-                    entity_id: pair.entity_a,
-                    account_id: diff_acct,
-                    unit_id: pair.unit_id,
-                    debits: 0,
-                    credits: diff_delta.checked_neg().ok_or(ConcordatError::Overflow(
-                        "intercompany difference leg negation",
-                    ))?,
-                });
-            }
-        }
-        let entry = EliminationEntry {
-            code: format!("ELIM-IC-{}-U{}", pair.pair_code, pair.unit_id),
-            description: format!(
-                "Eliminate intercompany pair `{}` between {} and {}",
-                pair.pair_code,
-                pair.entity_a.to_hex(),
-                pair.entity_b.to_hex()
-            ),
-            unit_id: pair.unit_id,
-            legs,
-        };
-        if !entry.is_balanced() {
+    for account_id in &group_accounts {
+        let account = accounts.get(account_id).ok_or_else(|| {
+            ConcordatError::Input(format!("intercompany account {account_id:032x} is unknown"))
+        })?;
+        if !account.is_leaf {
             return Err(ConcordatError::Input(format!(
-                "derived intercompany elimination `{}` is not balanced",
-                entry.code
+                "intercompany account `{}` is a summary account",
+                account.code
             )));
         }
-        eliminations.push(entry);
+        if !matches!(account.account_type, 1 | 2 | 4 | 5) {
+            return Err(ConcordatError::Input(format!(
+                "intercompany account `{}` is neither a balance-sheet (Asset, Liability) nor an income-statement (Revenue, Expense) account",
+                account.code
+            )));
+        }
+        if input
+            .intercompany_pairs
+            .iter()
+            .any(|p| p.account_a == *account_id || p.account_b == *account_id)
+        {
+            return Err(ConcordatError::Input(format!(
+                "intercompany account `{}` is both a group account and a declared pair's account",
+                account.code
+            )));
+        }
     }
 
-    // 2. Validate ownership graph and derive investment-vs-subsidiary-equity eliminations.
+    // The balance sheet's eliminations, from the members' stock.
+    let mut eliminations = Vec::new();
+    for pair in &matched_pairs {
+        eliminations.push(pair_elimination(pair, &accounts)?);
+    }
+    for &unit_id in &units {
+        eliminations.extend(group_elimination(
+            &member_nets,
+            &group_accounts,
+            &accounts,
+            unit_id,
+            &[true, false],
+        )?);
+    }
+
+    // Validate the ownership graph and derive investment-vs-capital
+    // eliminations and the NCI's shares.
     let mut sorted_ownership: Vec<&OwnershipSpec> = input.ownership.iter().collect();
     sorted_ownership.sort_by(|a, b| {
         a.parent_entity
@@ -1245,6 +1699,23 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
     let mut seen_subsidiaries = BTreeSet::new();
     let mut nci_recognized_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
     let mut eliminated_sub_equity_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+    // Equity impact (credit-normal) of the NCI allocations' debits: the
+    // reserves they reclassify and the unclosed earnings they charge.
+    let mut nci_allocated_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+    // (parent, investment account, unit) -> (sum of controlling shares, subsidiaries):
+    // one account may carry a parent's investments in several subsidiaries.
+    let mut investment_expected: BTreeMap<(Id128, u128, u32), (i128, Vec<Id128>)> = BTreeMap::new();
+    let mut recognize = |unit_id: u32, nci: i128, allocated: i128| -> Result<(), ConcordatError> {
+        let total = nci_recognized_by_unit.entry(unit_id).or_insert(0);
+        *total = total
+            .checked_add(nci)
+            .ok_or(ConcordatError::Overflow("nci total"))?;
+        let impact = nci_allocated_by_unit.entry(unit_id).or_insert(0);
+        *impact = impact
+            .checked_sub(allocated)
+            .ok_or(ConcordatError::Overflow("nci allocation total"))?;
+        Ok(())
+    };
 
     for spec in &sorted_ownership {
         if spec.parent_entity == spec.subsidiary_entity {
@@ -1277,10 +1748,10 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
             ));
         }
         for &unit_id in &units {
-            let inv_net = member_nets
-                .get(&(spec.parent_entity, spec.investment_account_id, unit_id))
-                .copied()
-                .unwrap_or(0);
+            let expected = investment_expected
+                .entry((spec.parent_entity, spec.investment_account_id, unit_id))
+                .or_insert((0, Vec::new()));
+            expected.1.push(spec.subsidiary_entity);
             let mut sub_equity_credit = 0i128;
             let mut legs = Vec::new();
             for &eq_acct in &spec.subsidiary_equity_account_ids {
@@ -1298,7 +1769,43 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
                 // Eliminate subsidiary equity account (debit if credit_bal > 0).
                 push_reversing_leg(&mut legs, spec.subsidiary_entity, eq_acct, unit_id, net);
             }
-            if inv_net == 0 && sub_equity_credit == 0 {
+            // The NCI also owns its share of the subsidiary's equity outside
+            // its capital: its reserves, and its earnings not yet closed.
+            let mut allocations = Vec::new();
+            if spec.ownership_bps < 10_000 {
+                if let Some((entry, share)) =
+                    nci_reserves_allocation(spec, &member_nets, &accounts, unit_id)?
+                {
+                    allocations.push(entry);
+                    recognize(unit_id, share, share)?;
+                }
+                let earnings = credit_of(
+                    &member_nets,
+                    &accounts,
+                    spec.subsidiary_entity,
+                    unit_id,
+                    is_earnings,
+                )?;
+                let share = earnings
+                    .checked_sub(round_bps_share(
+                        earnings,
+                        spec.ownership_bps,
+                        spec.rounding_law,
+                    )?)
+                    .ok_or(ConcordatError::Overflow("nci earnings share"))?;
+                if share != 0 {
+                    allocations.push(nci_allocation(
+                        spec,
+                        &accounts,
+                        unit_id,
+                        share,
+                        "unclosed earnings",
+                    )?);
+                    recognize(unit_id, share, share)?;
+                }
+            }
+            if sub_equity_credit == 0 {
+                eliminations.extend(allocations);
                 continue;
             }
             let controlling_share =
@@ -1306,21 +1813,22 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
             let nci_share = sub_equity_credit
                 .checked_sub(controlling_share)
                 .ok_or(ConcordatError::Overflow("nci share subtraction"))?;
-            if inv_net != controlling_share {
-                return Err(ConcordatError::InvestmentEquityMismatch {
-                    subsidiary_entity: spec.subsidiary_entity,
-                    unit_id,
-                    investment_balance: inv_net,
-                    expected_controlling_equity: controlling_share,
-                });
-            }
-            // Credit parent's investment account by `controlling_share`.
+            // Credit parent's investment account by `controlling_share`; the
+            // parent's investment balance is proved against the sum of these
+            // shares once every link has been derived.
+            let expected = investment_expected
+                .get_mut(&(spec.parent_entity, spec.investment_account_id, unit_id))
+                .ok_or(ConcordatError::Overflow("investment expectation"))?;
+            expected.0 = expected
+                .0
+                .checked_add(controlling_share)
+                .ok_or(ConcordatError::Overflow("expected controlling equity"))?;
             push_reversing_leg(
                 &mut legs,
                 spec.parent_entity,
                 spec.investment_account_id,
                 unit_id,
-                inv_net,
+                controlling_share,
             );
             if nci_share != 0 {
                 let nci_acct = spec.nci_equity_account_id.ok_or_else(|| {
@@ -1330,29 +1838,15 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
                         spec.ownership_bps
                     ))
                 })?;
-                if nci_share > 0 {
-                    legs.push(EliminationLeg {
-                        entity_id: spec.subsidiary_entity,
-                        account_id: nci_acct,
-                        unit_id,
-                        debits: 0,
-                        credits: nci_share,
-                    });
-                } else {
-                    legs.push(EliminationLeg {
-                        entity_id: spec.subsidiary_entity,
-                        account_id: nci_acct,
-                        unit_id,
-                        debits: nci_share
-                            .checked_neg()
-                            .ok_or(ConcordatError::Overflow("nci debit negation"))?,
-                        credits: 0,
-                    });
-                }
-                let entry_nci = nci_recognized_by_unit.entry(unit_id).or_insert(0);
-                *entry_nci = entry_nci
-                    .checked_add(nci_share)
-                    .ok_or(ConcordatError::Overflow("nci total"))?;
+                // Credit the NCI with its share of the capital.
+                push_reversing_leg(
+                    &mut legs,
+                    spec.subsidiary_entity,
+                    nci_acct,
+                    unit_id,
+                    nci_share,
+                );
+                recognize(unit_id, nci_share, 0)?;
             }
             let entry_elim = eliminated_sub_equity_by_unit.entry(unit_id).or_insert(0);
             *entry_elim = entry_elim
@@ -1376,74 +1870,124 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
                 )));
             }
             eliminations.push(entry);
+            eliminations.extend(allocations);
+        }
+    }
+    for (&(parent_entity, investment_account_id, unit_id), (expected, subsidiaries)) in
+        &investment_expected
+    {
+        let investment_balance = member_nets
+            .get(&(parent_entity, investment_account_id, unit_id))
+            .copied()
+            .unwrap_or(0);
+        if investment_balance != *expected {
+            return Err(ConcordatError::InvestmentEquityMismatch {
+                parent_entity,
+                investment_account_id,
+                subsidiaries: subsidiaries.clone(),
+                unit_id,
+                investment_balance,
+                expected_controlling_equity: *expected,
+            });
         }
     }
 
-    // Aggregate member debits/credits + elimination legs per (account_id, unit_id).
-    let mut consolidated_totals: BTreeMap<(u128, u32), (i128, i128)> = BTreeMap::new();
-    for member in &input.members {
-        for b in &member.balances {
-            let slot = consolidated_totals
-                .entry((b.account_id, b.unit_id))
-                .or_insert((0, 0));
-            slot.0 = slot
-                .0
-                .checked_add(b.debits)
-                .ok_or(ConcordatError::Overflow("consolidated debits"))?;
-            slot.1 = slot
-                .1
-                .checked_add(b.credits)
-                .ok_or(ConcordatError::Overflow("consolidated credits"))?;
-        }
-    }
-    for elim in &eliminations {
-        for leg in &elim.legs {
-            let slot = consolidated_totals
-                .entry((leg.account_id, leg.unit_id))
-                .or_insert((0, 0));
-            slot.0 = slot
-                .0
-                .checked_add(leg.debits)
-                .ok_or(ConcordatError::Overflow("consolidated elimination debits"))?;
-            slot.1 = slot
-                .1
-                .checked_add(leg.credits)
-                .ok_or(ConcordatError::Overflow("consolidated elimination credits"))?;
-        }
-    }
+    // Every matched and group intercompany account nets to zero in the
+    // consolidated stock.
+    let consolidated_totals = totals_with(&input.members, &eliminations)?;
+    eliminated_to_zero(
+        &consolidated_totals,
+        matched_pairs
+            .iter()
+            .flat_map(|p| [(p.account_a, p.unit_id), (p.account_b, p.unit_id)])
+            .chain(
+                group_accounts
+                    .iter()
+                    .flat_map(|a| units.iter().map(move |u| (*a, *u))),
+            ),
+    )?;
 
-    // Verify that every matched intercompany account nets to zero in the consolidated totals.
-    for pair in &matched_pairs {
-        for acct in [pair.account_a, pair.account_b] {
-            let (d, c) = consolidated_totals
-                .get(&(acct, pair.unit_id))
-                .copied()
-                .unwrap_or((0, 0));
-            if d != c {
-                return Err(ConcordatError::Input(format!(
-                    "intercompany account {:032x} in pair `{}` did not eliminate to zero ({d} != {c})",
-                    acct, pair.pair_code
-                )));
+    // The income statement's eliminations, from the members' activity.
+    let income = &input.income;
+    let income_nets = nets_of(&income.members, &accounts, &units, "the activity")?;
+    let income_entities: BTreeSet<Id128> = income.members.iter().map(|m| m.entity_id).collect();
+    if income_entities != known_entities || income.members.len() != input.members.len() {
+        return Err(ConcordatError::Input(
+            "the income statement's members must be the consolidation's members".into(),
+        ));
+    }
+    if income.effective_from > input.effective_through || income.periods.is_empty() {
+        return Err(ConcordatError::Input(
+            "the income statement needs its periods and an effective_from no later than effective_through".into(),
+        ));
+    }
+    let income_pairs: Vec<IntercompanyPairSpec> = input
+        .intercompany_pairs
+        .iter()
+        .filter(|p| p.kind == IntercompanyPairKind::ReciprocalRevenueExpense)
+        .cloned()
+        .collect();
+    let income_matched = match_intercompany_pairs(&income.members, &income_pairs, &units)?;
+    let mut income_eliminations = Vec::new();
+    for pair in &income_matched {
+        income_eliminations.push(pair_elimination(pair, &accounts)?);
+    }
+    for &unit_id in &units {
+        income_eliminations.extend(group_elimination(
+            &income_nets,
+            &group_accounts,
+            &accounts,
+            unit_id,
+            &[false],
+        )?);
+    }
+    for spec in &sorted_ownership {
+        if spec.ownership_bps >= 10_000 {
+            continue;
+        }
+        for &unit_id in &units {
+            let earnings = credit_of(
+                &income_nets,
+                &accounts,
+                spec.subsidiary_entity,
+                unit_id,
+                is_earnings,
+            )?;
+            let share = earnings
+                .checked_sub(round_bps_share(
+                    earnings,
+                    spec.ownership_bps,
+                    spec.rounding_law,
+                )?)
+                .ok_or(ConcordatError::Overflow("nci period earnings share"))?;
+            if share != 0 {
+                income_eliminations.push(nci_allocation(
+                    spec,
+                    &accounts,
+                    unit_id,
+                    share,
+                    "earnings for the period",
+                )?);
             }
         }
     }
-
-    let consolidated_balances: Vec<AccountBalance> = consolidated_totals
-        .into_iter()
-        .map(
-            |((account_id, unit_id), (debits, credits))| AccountBalance {
-                account_id,
-                unit_id,
-                debits,
-                credits,
-            },
-        )
-        .collect();
+    let income_totals = totals_with(&income.members, &income_eliminations)?;
+    eliminated_to_zero(
+        &income_totals,
+        income_matched
+            .iter()
+            .flat_map(|p| [(p.account_a, p.unit_id), (p.account_b, p.unit_id)])
+            .chain(
+                group_accounts
+                    .iter()
+                    .filter(|a| is_earnings(accounts[*a]))
+                    .flat_map(|a| units.iter().map(move |u| (*a, *u))),
+            ),
+    )?;
 
     let bs_def = StatementDefinition::embedded("balance-sheet")?;
     let is_def = StatementDefinition::embedded("income-statement")?;
-
-    let bs_input = StatementInput {
+    let statement_input = |effective_from, periods: &[String], balances| StatementInput {
         book_id: input.consolidation_book_id,
         branch_id: input.branch_id,
         known_at: input.known_at,
@@ -1451,29 +1995,28 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         units: units.clone(),
         columns: vec![ColumnInput {
             label: input.period.clone(),
-            periods: vec![input.period.clone()],
-            effective_from: None,
+            periods: periods.to_vec(),
+            effective_from,
             effective_through: input.effective_through,
-            balances: consolidated_balances.clone(),
+            balances,
         }],
     };
-    let is_input = StatementInput {
-        book_id: input.consolidation_book_id,
-        branch_id: input.branch_id,
-        known_at: input.known_at,
-        accounts: input.accounts.clone(),
-        units: units.clone(),
-        columns: vec![ColumnInput {
-            label: input.period.clone(),
-            periods: vec![input.period.clone()],
-            effective_from: Some(input.effective_through),
-            effective_through: input.effective_through,
-            balances: consolidated_balances,
-        }],
-    };
-
-    let balance_sheet = evaluate(&bs_def, &bs_input)?;
-    let income_statement = evaluate(&is_def, &is_input)?;
+    let balance_sheet = evaluate(
+        &bs_def,
+        &statement_input(
+            None,
+            std::slice::from_ref(&input.period),
+            balances_of(consolidated_totals),
+        ),
+    )?;
+    let income_statement = evaluate(
+        &is_def,
+        &statement_input(
+            Some(income.effective_from),
+            &income.periods,
+            balances_of(income_totals),
+        ),
+    )?;
 
     // Compute per-entity standalone total equity (Equity + Revenue - Expense, credit-normal)
     // and verify the FA-INV-13 consolidated equity conservation law per unit.
@@ -1481,26 +2024,6 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         .iter()
         .map(|s| s.subsidiary_entity)
         .collect();
-
-    let entity_total_equity = |entity_id: Id128, unit_id: u32| -> Result<i128, ConcordatError> {
-        let mut total = 0i128;
-        for (&(ent, acct_id, u), &net) in &member_nets {
-            if ent != entity_id || u != unit_id {
-                continue;
-            }
-            let acct_type = accounts[&acct_id].account_type;
-            // Equity (3), Revenue (4), Expense (5) all contribute to total equity (credit - debit = -net).
-            if matches!(acct_type, 3..=5) {
-                let credit_contribution = net
-                    .checked_neg()
-                    .ok_or(ConcordatError::Overflow("entity equity contribution"))?;
-                total = total
-                    .checked_add(credit_contribution)
-                    .ok_or(ConcordatError::Overflow("entity equity sum"))?;
-            }
-        }
-        Ok(total)
-    };
 
     // Net P&L / difference impact of intercompany eliminations per unit.
     let ic_equity_impact = |unit_id: u32| -> Result<i128, ConcordatError> {
@@ -1530,7 +2053,7 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         let mut parent_total_equity = 0i128;
         let mut subsidiaries_total_equity = 0i128;
         for member in &input.members {
-            let eq = entity_total_equity(member.entity_id, unit_id)?;
+            let eq = entity_total_equity(&member_nets, &accounts, member.entity_id, unit_id)?;
             if subsidiary_ids.contains(&member.entity_id) {
                 subsidiaries_total_equity = subsidiaries_total_equity
                     .checked_add(eq)
@@ -1547,8 +2070,10 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
             .copied()
             .unwrap_or(0);
         let ic_eq_elim = ic_equity_impact(unit_id)?;
+        let nci_alloc = nci_allocated_by_unit.get(&unit_id).copied().unwrap_or(0);
         let equity_eliminations = sub_eq_elim
             .checked_add(ic_eq_elim)
+            .and_then(|v| v.checked_add(nci_alloc))
             .ok_or(ConcordatError::Overflow("equity_eliminations"))?;
 
         let expected_consolidated_equity = parent_total_equity
@@ -1596,6 +2121,7 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         period: input.period.clone(),
         matched_pairs,
         eliminations,
+        income_eliminations,
         equity_reconciliations,
         balance_sheet,
         income_statement,
@@ -1641,6 +2167,7 @@ mod tests {
             account(5000, "5000", "Operating Expense", 5),
             account(5300, "5300", "Intercompany Expense", 5),
             account(5400, "5400", "Intercompany FX Difference", 5),
+            account(5900, "5900", "Net Income Attributable to NCI", 5),
         ]
     }
 
@@ -1650,7 +2177,8 @@ mod tests {
         let sub = Id128([0x02; 16]);
         let group_book = Id128([0x10; 16]);
 
-        // Parent (80% owner of Sub, Sub stock = 500 -> Parent investment = 400, NCI = 100):
+        // Parent (80% owner of Sub, Sub stock = 500 -> Parent investment = 400, NCI on
+        // capital = 100; the NCI also owns 20% of Sub's 50 of earnings, so NCI = 110):
         // Assets: Cash 1100 (Dr), IC Due From Sub 150 (Dr), Investment in Sub 400 (Dr) = 1650
         // Liabilities: AP 200 (Cr)
         // Equity: Common Stock 1000 (Cr)
@@ -1703,7 +2231,7 @@ mod tests {
             effective_through: DateDay(90),
             accounts: consolidation_chart(),
             units: vec![1],
-            members: vec![parent_member, sub_member],
+            members: vec![parent_member.clone(), sub_member.clone()],
             intercompany_pairs: vec![
                 IntercompanyPairSpec {
                     pair_code: "IC-AR-AP".into(),
@@ -1726,6 +2254,7 @@ mod tests {
                     max_fx_residual: 5,
                 },
             ],
+            intercompany_accounts: vec![],
             ownership: vec![OwnershipSpec {
                 parent_entity: parent,
                 subsidiary_entity: sub,
@@ -1733,14 +2262,47 @@ mod tests {
                 investment_account_id: 1500,
                 subsidiary_equity_account_ids: vec![3100],
                 nci_equity_account_id: Some(3200),
+                nci_income_account_id: Some(5900),
                 rounding_law: RoundingLaw::HalfEven,
             }],
+            // Every movement fell in the period: its activity is the stock.
+            income: IncomeInput {
+                periods: vec!["FY2026-P03".into()],
+                effective_from: DateDay(60),
+                members: vec![parent_member, sub_member],
+            },
         };
 
         let run = consolidate(&input).expect("consolidation succeeds");
         assert_eq!(run.matched_pairs.len(), 2);
-        assert_eq!(run.eliminations.len(), 3);
+        assert_eq!(run.eliminations.len(), 4);
+        // The income statement carries the revenue/expense pair and the
+        // NCI's 10 of the period's earnings.
+        let income_codes: Vec<&str> = run
+            .income_eliminations
+            .iter()
+            .map(|e| e.code.as_str())
+            .collect();
+        assert_eq!(
+            income_codes,
+            vec![
+                "ELIM-IC-IC-REV-EXP-U1".to_string(),
+                format!("ELIM-NCI-{}-U1", sub.to_hex())
+            ]
+        );
         assert!(run.eliminations.iter().all(EliminationEntry::is_balanced));
+        let nci = run
+            .eliminations
+            .iter()
+            .find(|e| e.code.starts_with("ELIM-NCI-"))
+            .expect("NCI allocation");
+        assert_eq!(
+            nci.legs
+                .iter()
+                .map(|l| (l.account_id, l.debits, l.credits))
+                .collect::<Vec<_>>(),
+            vec![(5900, 10, 0), (3200, 0, 10)]
+        );
 
         // Consolidated Cash = 1100 + 750 = 1850; IC Due From & Investment in Sub eliminated to 0!
         let bs_line = |code: &str| -> i128 {
@@ -1761,22 +2323,25 @@ mod tests {
         };
         assert_eq!(bs_line("assets"), 1_850);
         assert_eq!(bs_line("liabilities"), 250);
-        // Equity = Parent Common Stock (1000) + NCI (100) = 1100
-        assert_eq!(bs_line("equity"), 1_100);
-        // Consolidated Net Income = External Rev (500 + 248 = 748) - Operating Exp (170 + 80 = 250) + IC FX Gain (2) = 500
+        // Equity = Parent Common Stock (1000) + NCI (100 on capital + 10 of earnings) = 1110
+        assert_eq!(bs_line("equity"), 1_110);
+        // Consolidated net income = External Rev (500 + 248 = 748) - Operating Exp (170 + 80 = 250)
+        // + IC FX Gain (2) = 500, of which 10 is attributable to the NCI: 490 to the parent.
         assert_eq!(is_line("revenue"), 748);
-        assert_eq!(is_line("expense"), 248);
-        assert_eq!(is_line("net_income"), 500);
-        assert_eq!(bs_line("unclosed_earnings"), 500);
+        assert_eq!(is_line("expense"), 258);
+        assert_eq!(is_line("net_income"), 490);
+        assert_eq!(bs_line("unclosed_earnings"), 490);
         assert_eq!(bs_line("total_equity"), 1_600);
         assert_eq!(bs_line("balance_check"), 0);
 
         let eq = &run.equity_reconciliations[0];
         assert_eq!(eq.parent_total_equity, 1_450); // 1000 stock + (620 rev - 170 exp)
         assert_eq!(eq.subsidiaries_total_equity, 550); // 500 stock + (248 rev - 198 exp)
-        assert_eq!(eq.equity_eliminations, -500); // -500 sub stock + 0 net P&L impact (IC rev 120 Dr, IC exp 118 Cr, FX diff 2 Cr)
-        assert_eq!(eq.non_controlling_interest_equity, 100);
-        assert_eq!(eq.controlling_interest_equity, 1_500);
+        // -500 sub stock, 0 net P&L impact of the IC pairs (IC rev 120 Dr, IC exp 118 Cr,
+        // FX diff 2 Cr), and -10 charged to the NCI income allocation.
+        assert_eq!(eq.equity_eliminations, -510);
+        assert_eq!(eq.non_controlling_interest_equity, 110);
+        assert_eq!(eq.controlling_interest_equity, 1_490);
         assert_eq!(eq.consolidated_total_equity, 1_600);
 
         // Determinism: permuting member and balance order yields identical canonical bytes and digest.
@@ -1791,6 +2356,393 @@ mod tests {
             run_b.canonical_bytes().unwrap()
         );
         assert_eq!(digest_a, run_b.digest().unwrap());
+    }
+
+    /// One chart shared by three entities (a multi-entity book): the group's
+    /// intercompany accounts eliminate as one entry, one investment account
+    /// carries both subsidiaries, and the 80%-owned subsidiary's earnings
+    /// and losses are shared with its NCI.
+    #[test]
+    fn a_shared_chart_group_eliminates_its_intercompany_accounts_and_shares_earnings_with_the_nci()
+    {
+        let (p, s1, s2) = (Id128([1; 16]), Id128([2; 16]), Id128([3; 16]));
+        let member = |entity_id, balances| EntityMemberInput {
+            entity_id,
+            book_id: Id128([0x0a; 16]),
+            known_at: 7,
+            balances,
+        };
+        // P: capital 1000, investment 400 (80% of S1's 500) + 200 (100% of S2's 200),
+        // IC due from S1 30, IC revenue 30 (a fee charged to S1), cash 400.
+        // S1: capital 500, revenue 100, expense 40 + IC fee 30 (earnings 30), IC due to P 30.
+        // S2: capital 200, expense 25 (a loss of 25).
+        let members = vec![
+            member(
+                p,
+                vec![
+                    bal(1000, 1, 400, 0),
+                    bal(1300, 1, 30, 0),
+                    bal(1500, 1, 600, 0),
+                    bal(3000, 1, 0, 1_000),
+                    bal(4300, 1, 0, 30),
+                ],
+            ),
+            member(
+                s1,
+                vec![
+                    bal(1000, 1, 560, 0),
+                    bal(2300, 1, 0, 30),
+                    bal(3000, 1, 0, 500),
+                    bal(4000, 1, 0, 100),
+                    bal(5000, 1, 40, 0),
+                    bal(5300, 1, 30, 0),
+                ],
+            ),
+            member(
+                s2,
+                vec![
+                    bal(1000, 1, 175, 0),
+                    bal(3000, 1, 0, 200),
+                    bal(5000, 1, 25, 0),
+                ],
+            ),
+        ];
+        let link = |subsidiary_entity, ownership_bps| OwnershipSpec {
+            parent_entity: p,
+            subsidiary_entity,
+            ownership_bps,
+            investment_account_id: 1500,
+            subsidiary_equity_account_ids: vec![3000],
+            nci_equity_account_id: Some(3200),
+            nci_income_account_id: Some(5900),
+            rounding_law: RoundingLaw::HalfEven,
+        };
+        let input = ConsolidationInput {
+            consolidation_book_id: Id128([0x10; 16]),
+            branch_id: Id128::TRUNK,
+            known_at: 7,
+            period: "FY2026-P03".into(),
+            effective_through: DateDay(90),
+            accounts: consolidation_chart(),
+            units: vec![1],
+            members: members.clone(),
+            intercompany_pairs: vec![],
+            intercompany_accounts: vec![1300, 2300, 4300, 5300],
+            ownership: vec![link(s1, 8_000), link(s2, 10_000)],
+            income: IncomeInput {
+                periods: vec!["FY2026-P03".into()],
+                effective_from: DateDay(60),
+                members,
+            },
+        };
+        let run = consolidate(&input).expect("the group consolidates");
+        let codes: Vec<&str> = run.eliminations.iter().map(|e| e.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            vec![
+                "ELIM-IC-GROUP-U1".to_string(),
+                format!("ELIM-EQ-{}-U1", s1.to_hex()),
+                format!("ELIM-NCI-{}-U1", s1.to_hex()),
+                format!("ELIM-EQ-{}-U1", s2.to_hex()),
+            ]
+        );
+        assert!(run.eliminations.iter().all(EliminationEntry::is_balanced));
+        assert_eq!(
+            run.income_eliminations
+                .iter()
+                .map(|e| e.code.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "ELIM-IC-GROUP-U1".to_string(),
+                format!("ELIM-NCI-{}-U1", s1.to_hex()),
+            ]
+        );
+        assert!(
+            run.income_eliminations
+                .iter()
+                .all(EliminationEntry::is_balanced)
+        );
+        let legs = |code: &str| -> Vec<(Id128, u128, i128, i128)> {
+            run.eliminations
+                .iter()
+                .find(|e| e.code == code)
+                .unwrap()
+                .legs
+                .iter()
+                .map(|l| (l.entity_id, l.account_id, l.debits, l.credits))
+                .collect()
+        };
+        assert_eq!(
+            legs("ELIM-IC-GROUP-U1"),
+            vec![
+                (p, 1300, 0, 30),
+                (s1, 2300, 30, 0),
+                (p, 4300, 30, 0),
+                (s1, 5300, 0, 30),
+            ]
+        );
+        // 80% of S1's 500 of capital is 400 against the investment; 100 is NCI.
+        assert_eq!(
+            legs(&format!("ELIM-EQ-{}-U1", s1.to_hex())),
+            vec![(s1, 3000, 500, 0), (p, 1500, 0, 400), (s1, 3200, 0, 100)]
+        );
+        // S1 earned 30: 20% (6) is the NCI's.
+        assert_eq!(
+            legs(&format!("ELIM-NCI-{}-U1", s1.to_hex())),
+            vec![(s1, 5900, 6, 0), (s1, 3200, 0, 6)]
+        );
+        // S2 is wholly owned: its loss stays with the parent, and no NCI arises.
+        assert_eq!(
+            legs(&format!("ELIM-EQ-{}-U1", s2.to_hex())),
+            vec![(s2, 3000, 200, 0), (p, 1500, 0, 200)]
+        );
+        let line = |statement: &Statement, code: &str| {
+            statement
+                .lines
+                .iter()
+                .find(|l| l.code == code && l.unit_id == 1)
+                .unwrap()
+                .amounts[0]
+        };
+        // Cash 400 + 560 + 175; the IC balances and the investment eliminate.
+        assert_eq!(line(&run.balance_sheet, "assets"), 1_135);
+        assert_eq!(line(&run.balance_sheet, "liabilities"), 0);
+        assert_eq!(line(&run.balance_sheet, "equity"), 1_106);
+        // Group earnings: P 30 + S1 30 - S2 25 = 35, less the IC fee both ways,
+        // less the NCI's 6: 29 attributable to the parent.
+        assert_eq!(line(&run.income_statement, "revenue"), 100);
+        assert_eq!(line(&run.income_statement, "expense"), 71);
+        assert_eq!(line(&run.income_statement, "net_income"), 29);
+        assert_eq!(line(&run.balance_sheet, "total_equity"), 1_135);
+        assert_eq!(line(&run.balance_sheet, "balance_check"), 0);
+        let eq = &run.equity_reconciliations[0];
+        assert_eq!(eq.parent_total_equity, 1_030);
+        assert_eq!(eq.subsidiaries_total_equity, 530 + 175);
+        assert_eq!(eq.equity_eliminations, -700 - 6);
+        assert_eq!(eq.non_controlling_interest_equity, 106);
+        assert_eq!(eq.controlling_interest_equity, 1_029);
+        assert_eq!(eq.consolidated_total_equity, 1_135);
+
+        // A loss is shared too: S1 at a loss of 20 gives the NCI -4.
+        let mut losing = input.clone();
+        losing.members[1].balances[3] = bal(4000, 1, 0, 50);
+        losing.members[1].balances[0] = bal(1000, 1, 510, 0);
+        losing.income.members = losing.members.clone();
+        let run = consolidate(&losing).expect("a loss consolidates");
+        assert_eq!(
+            run.eliminations
+                .iter()
+                .find(|e| e.code.starts_with(&format!("ELIM-NCI-{}", s1.to_hex())))
+                .unwrap()
+                .legs
+                .iter()
+                .map(|l| (l.account_id, l.debits, l.credits))
+                .collect::<Vec<_>>(),
+            vec![(5900, 0, 4), (3200, 4, 0)]
+        );
+        assert_eq!(
+            run.equity_reconciliations[0].non_controlling_interest_equity,
+            96
+        );
+
+        // Planted: the fee booked by P alone. Its due-from and its revenue
+        // would cancel in one set; the balances alone are 30 out.
+        let mut one_sided = input.clone();
+        one_sided.members[1]
+            .balances
+            .retain(|b| b.account_id != 2300 && b.account_id != 5300);
+        assert!(matches!(
+            consolidate(&one_sided),
+            Err(ConcordatError::UnmatchedIntercompanyGroup { unit_id: 1, residual: 30, ref nets })
+                if nets == &vec![(p, 1300, 30)]
+        ));
+        // Planted: an investment of 590 is not 80% of 500 plus 100% of 200.
+        let mut short = input.clone();
+        short.members[0].balances[2] = bal(1500, 1, 590, 0);
+        short.members[0].balances[0] = bal(1000, 1, 410, 0);
+        assert!(matches!(
+            consolidate(&short),
+            Err(ConcordatError::InvestmentEquityMismatch {
+                investment_balance: 590,
+                expected_controlling_equity: 600,
+                ref subsidiaries,
+                ..
+            }) if subsidiaries == &vec![s1, s2]
+        ));
+        // Planted: the NCI's share of earnings needs its allocation account.
+        let mut no_income = input.clone();
+        no_income.ownership[0].nci_income_account_id = None;
+        assert!(matches!(
+            consolidate(&no_income),
+            Err(ConcordatError::Input(ref m)) if m.contains("nci_income_account_id")
+        ));
+        // Planted: an account cannot be both a group account and a pair's.
+        let mut both = input;
+        both.intercompany_pairs.push(IntercompanyPairSpec {
+            pair_code: "X".into(),
+            kind: IntercompanyPairKind::ReciprocalReceivablePayable,
+            entity_a: p,
+            account_a: 1300,
+            entity_b: s1,
+            account_b: 2300,
+            difference_account: None,
+            max_fx_residual: 0,
+        });
+        assert!(matches!(
+            consolidate(&both),
+            Err(ConcordatError::Input(ref m)) if m.contains("both a group account")
+        ));
+    }
+
+    /// A partly owned subsidiary with retained earnings from earlier years and
+    /// earnings for the year so far, of which the period holds only some. The
+    /// NCI's share of the reserves is reclassified within equity, its share of
+    /// the unclosed earnings is charged on the balance sheet, and the income
+    /// statement shows the period's activity with the NCI's share of it.
+    #[test]
+    fn reserves_reach_the_nci_through_equity_and_the_income_statement_is_the_periods() {
+        let (p, s) = (Id128([1; 16]), Id128([2; 16]));
+        let mut chart = consolidation_chart();
+        chart.push(account(3300, "3300", "Retained Earnings", 3));
+        let member = |entity_id, balances| EntityMemberInput {
+            entity_id,
+            book_id: Id128([0x0a; 16]),
+            known_at: 9,
+            balances,
+        };
+        // S: capital 500, retained earnings 40 from earlier years, and 100 of
+        // revenue less 70 of expense so far this year; March alone is 20 - 10.
+        let stock = vec![
+            member(
+                p,
+                vec![
+                    bal(1000, 1, 600, 0),
+                    bal(1500, 1, 400, 0),
+                    bal(3000, 1, 0, 1_000),
+                ],
+            ),
+            member(
+                s,
+                vec![
+                    bal(1000, 1, 570, 0),
+                    bal(3100, 1, 0, 500),
+                    bal(3300, 1, 0, 40),
+                    bal(4000, 1, 0, 100),
+                    bal(5000, 1, 70, 0),
+                ],
+            ),
+        ];
+        let march = vec![
+            member(p, vec![]),
+            member(
+                s,
+                vec![
+                    bal(1000, 1, 20, 10),
+                    bal(4000, 1, 0, 20),
+                    bal(5000, 1, 10, 0),
+                ],
+            ),
+        ];
+        let input = ConsolidationInput {
+            consolidation_book_id: Id128([0x10; 16]),
+            branch_id: Id128::TRUNK,
+            known_at: 9,
+            period: "FY2026-P03".into(),
+            effective_through: DateDay(90),
+            accounts: chart,
+            units: vec![1],
+            members: stock,
+            intercompany_pairs: vec![],
+            intercompany_accounts: vec![],
+            ownership: vec![OwnershipSpec {
+                parent_entity: p,
+                subsidiary_entity: s,
+                ownership_bps: 8_000,
+                investment_account_id: 1500,
+                subsidiary_equity_account_ids: vec![3100],
+                nci_equity_account_id: Some(3200),
+                nci_income_account_id: Some(5900),
+                rounding_law: RoundingLaw::HalfEven,
+            }],
+            income: IncomeInput {
+                periods: vec!["FY2026-P03".into()],
+                effective_from: DateDay(60),
+                members: march,
+            },
+        };
+        let run = consolidate(&input).expect("consolidates");
+        let legs = |list: &[EliminationEntry], code: String| -> Vec<(u128, i128, i128)> {
+            list.iter()
+                .find(|e| e.code == code)
+                .unwrap_or_else(|| panic!("{code}"))
+                .legs
+                .iter()
+                .map(|l| (l.account_id, l.debits, l.credits))
+                .collect()
+        };
+        let hex = s.to_hex();
+        assert_eq!(run.eliminations.len(), 3);
+        assert_eq!(
+            legs(&run.eliminations, format!("ELIM-EQ-{hex}-U1")),
+            vec![(3100, 500, 0), (1500, 0, 400), (3200, 0, 100)]
+        );
+        // 20% of the 40 of reserves moves to the NCI within equity.
+        assert_eq!(
+            legs(&run.eliminations, format!("ELIM-NCI-RES-{hex}-U1")),
+            vec![(3300, 8, 0), (3200, 0, 8)]
+        );
+        // 20% of the year's unclosed 30 is charged to the NCI's income.
+        assert_eq!(
+            legs(&run.eliminations, format!("ELIM-NCI-{hex}-U1")),
+            vec![(5900, 6, 0), (3200, 0, 6)]
+        );
+        // The income statement carries 20% of March's 10.
+        assert_eq!(run.income_eliminations.len(), 1);
+        assert_eq!(
+            legs(&run.income_eliminations, format!("ELIM-NCI-{hex}-U1")),
+            vec![(5900, 2, 0), (3200, 0, 2)]
+        );
+        let line = |statement: &Statement, code: &str| {
+            statement
+                .lines
+                .iter()
+                .find(|l| l.code == code && l.unit_id == 1)
+                .unwrap()
+                .amounts[0]
+        };
+        assert_eq!(line(&run.balance_sheet, "assets"), 1_170);
+        // P's 1000, S's reserves less the NCI's 8, and the NCI's 114.
+        assert_eq!(line(&run.balance_sheet, "equity"), 1_146);
+        assert_eq!(line(&run.balance_sheet, "unclosed_earnings"), 24);
+        assert_eq!(line(&run.balance_sheet, "total_equity"), 1_170);
+        assert_eq!(line(&run.balance_sheet, "balance_check"), 0);
+        assert_eq!(line(&run.income_statement, "revenue"), 20);
+        assert_eq!(line(&run.income_statement, "expense"), 12);
+        assert_eq!(line(&run.income_statement, "net_income"), 8);
+        assert_eq!(
+            run.income_statement.columns[0].effective_from,
+            Some(DateDay(60))
+        );
+        let eq = &run.equity_reconciliations[0];
+        assert_eq!(
+            (
+                eq.parent_total_equity,
+                eq.subsidiaries_total_equity,
+                eq.equity_eliminations,
+                eq.non_controlling_interest_equity,
+                eq.controlling_interest_equity,
+                eq.consolidated_total_equity
+            ),
+            (1_000, 570, -514, 114, 1_056, 1_170)
+        );
+
+        // Planted: the income statement's members must be the group's.
+        let mut stranger = input;
+        stranger.income.members[0].entity_id = Id128([9; 16]);
+        assert!(matches!(
+            consolidate(&stranger),
+            Err(ConcordatError::Input(ref m)) if m.contains("must be the consolidation's members")
+        ));
     }
 
     #[test]

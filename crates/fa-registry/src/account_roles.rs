@@ -22,6 +22,8 @@ pub struct AccountRole {
     pub meaning: String,
     /// Procedures that select a population by this role.
     pub consumers: Vec<String>,
+    /// Verbs (`verbs.toml`) that read accounts by this role outside Lantern.
+    pub verbs: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,11 +97,16 @@ impl AccountRoles {
             }
             let meaning = req_str(R, t, "meaning")?.to_string();
             let consumers = strings(t, "consumers", &name)?;
-            if consumers.is_empty() {
+            let verbs = if t.get("verbs").is_some() {
+                strings(t, "verbs", &name)?
+            } else {
+                Vec::new()
+            };
+            if consumers.is_empty() && verbs.is_empty() {
                 return Err(invalid(
                     R,
                     format!(
-                        "role `{name}` has no consumer: list a role once a procedure selects by it"
+                        "role `{name}` has no consumer: list a role once a procedure or verb selects by it"
                     ),
                 ));
             }
@@ -116,6 +123,7 @@ impl AccountRoles {
                 account_types,
                 meaning,
                 consumers,
+                verbs,
             });
         }
         if rows.is_empty() {
@@ -166,10 +174,21 @@ mod tests {
         );
         assert_eq!(
             roles.listing(),
-            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, payroll"
+            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, payroll, intercompany_activity, investment_in_subsidiary, contributed_capital, noncontrolling_interest, noncontrolling_interest_income"
         );
         assert!(roles.get("payable").is_some_and(|r| !r.admits("Asset")));
         assert!(roles.get("cash").is_some_and(|r| r.consumers.len() == 7));
+        // A role a verb reads outside Lantern lists the verb, not a procedure.
+        let nci = roles
+            .get("noncontrolling_interest_income")
+            .expect("nci income");
+        assert!(nci.consumers.is_empty() && nci.verbs == vec!["consolidate"]);
+        assert!(nci.admits("Expense") && !nci.admits("Equity"));
+        assert_eq!(
+            roles.get("intercompany").map(|r| r.verbs.clone()),
+            Some(vec!["consolidate".to_string()])
+        );
+        assert!(roles.get("suspense").is_some_and(|r| r.verbs.is_empty()));
     }
 
     #[test]
@@ -194,6 +213,18 @@ mod tests {
             (
                 row("name = \"a\"\naccount_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = []"),
                 "has no consumer",
+            ),
+            (
+                row(
+                    "name = \"a\"\naccount_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = []\nverbs = []",
+                ),
+                "has no consumer",
+            ),
+            (
+                row(
+                    "name = \"a\"\naccount_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = []\nverbs = [\"\"]",
+                ),
+                "holds a non-string",
             ),
             (
                 row(

@@ -204,7 +204,7 @@ mod tests {
         assert!(
             r.unwired
                 .iter()
-                .any(|u| u.path == "fa_statements::concordat" && u.owner_bead == "fa-76hy")
+                .any(|u| u.path == "fa_time::business" && u.owner_bead == "fa-94qd")
         );
         let parsed = UnwiredModules::from_text(ROW).expect("one row");
         assert_eq!(parsed.unwired[0].expires, "2026-11-21");

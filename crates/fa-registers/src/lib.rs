@@ -51,8 +51,9 @@ pub use availability::{
     AccountAvailability, AvailabilityDrift, AvailabilityVerification, verify_availability,
 };
 pub use entity::{
-    EntityCell, EntityCellKey, EntityFold, EntityVerification, RegisterEquals,
-    check_register_equals, fold_period_by_entity, register_equals, verify_entities,
+    EntityActivity, EntityBalance, EntityCell, EntityCellKey, EntityFold, EntityStock,
+    EntityVerification, RegisterEquals, check_register_equals, fold_period_by_entity,
+    period_activity_by_entity, register_equals, stock_by_entity, verify_entities,
 };
 pub use explain::{BalanceExplanation, explain_balance};
 pub use fx::{
@@ -1410,7 +1411,7 @@ pub fn period_activity_excluding_classes<V: asupersync::fs::Vfs + Clone>(
     )
 }
 
-fn select_periods<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn select_periods<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     periods: &[String],
@@ -1544,7 +1545,7 @@ fn trial_balance_from_sums<V: asupersync::fs::Vfs + Clone>(
 /// Native and functional activity apply the same accounting-class policy.
 /// In particular, a Closing period can also contain operating adjustments;
 /// only the retained entry class and its verified reversal lineage decide.
-fn accounting_class_included<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn accounting_class_included<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     at: CommitSeq,
