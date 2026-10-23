@@ -454,7 +454,7 @@ fn certified_income_statement_exports_a_recipient_bound_offline_command() {
     let without_authority: Vec<_> = args
         .iter()
         .enumerate()
-        .filter_map(|(index, arg)| (!matches!(index, 6 | 7 | 8 | 9)).then_some(arg.clone()))
+        .filter_map(|(index, arg)| (!matches!(index, 6..=9)).then_some(arg.clone()))
         .collect();
     let refused = fa_verify::cli::run(&without_authority, &|path| std::fs::read(path));
     assert_eq!(refused.exit, 8, "{}{}", refused.stdout, refused.stderr);
