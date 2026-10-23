@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::KernelError;
 use fa_journal::entity::leg_entity;
-use fa_journal::genesis::{BookContext, BookSpec, read_book_spec};
+use fa_journal::genesis::{BookContext, BookSpec, read_book_spec_at};
 use fa_journal::rows::AccountRow;
 use fa_model::{AccountType, Entry, EntryClass, LegPayload, Writer};
 use fa_money::{Amount, Side, UnitId};
@@ -206,8 +206,11 @@ fn digest_of(
     Ok(h.finalize().0)
 }
 
-fn book_spec<V: asupersync::fs::Vfs + Clone>(db: &Database<V>) -> Result<BookSpec, RegisterError> {
-    Ok(read_book_spec(db)?
+fn book_spec<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    at: CommitSeq,
+) -> Result<BookSpec, RegisterError> {
+    Ok(read_book_spec_at(db, at)?
         .ok_or_else(|| KernelError::Corrupt("no book spec on the root".into()))?)
 }
 
@@ -222,7 +225,7 @@ pub fn fold_period_by_entity<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<EntityFold, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
-    let spec = book_spec(db)?;
+    let spec = book_spec(db, seq)?;
     let mut cells: BTreeMap<EntityCellKey, EntityCell> = BTreeMap::new();
     let mut pending: BTreeMap<EntityCellKey, EntityCell> = BTreeMap::new();
     let mut watermark: Option<CommitSeq> = None;
@@ -351,7 +354,7 @@ pub fn stock_by_entity<V: asupersync::fs::Vfs + Clone>(
     known_at: Option<CommitSeq>,
 ) -> Result<EntityStock, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
-    let spec = book_spec(db)?;
+    let spec = book_spec(db, seq)?;
     let mut sums = EntitySums::new();
     for (_, entry, _) in &entries_at(db, book, seq)? {
         if entry.proposal.legs.is_empty()
@@ -384,7 +387,7 @@ pub fn period_activity_by_entity<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<EntityActivity, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let periods = crate::select_periods(db, book, periods, seq)?;
-    let spec = book_spec(db)?;
+    let spec = book_spec(db, seq)?;
     let entries = entries_at(db, book, seq)?;
     let by_id: BTreeMap<_, _> = if excluded_classes.is_empty() {
         BTreeMap::new()
@@ -454,7 +457,7 @@ pub fn verify_entities<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<EntityVerification, RegisterError> {
     let by_entity = fold_period_by_entity(db, book, period_code, known_at)?;
     let plain = fold_period_at(db, book, period_code, Some(by_entity.known_at))?;
-    let spec = book_spec(db)?;
+    let spec = book_spec(db, by_entity.known_at)?;
     let mut findings = Vec::new();
     let sum = |column: &[EntityCell]| -> Result<AccountSums, RegisterError> {
         let mut out = AccountSums::new();

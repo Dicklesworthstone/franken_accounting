@@ -207,7 +207,8 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
     period: &str,
     at: CommitSeq,
 ) -> Outcome<Consolidation> {
-    let spec = fa_journal::genesis::read_book_spec(db)?.ok_or(BookError::NoBook)?;
+    crate::certificate::context_at(db, book, at)?;
+    let spec = fa_journal::genesis::read_book_spec_at(db, at)?.ok_or(BookError::NoBook)?;
     if spec.entities.len() < 2 {
         return Ok(Err(refusal(
             format!(
