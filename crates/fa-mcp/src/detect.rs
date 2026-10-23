@@ -526,8 +526,7 @@ pub fn broadcast_scope(
         );
         let is_broadcast = matches!(
             lower.as_str(),
-            "*"
-                | "all"
+            "*" | "all"
                 | "everything"
                 | "all accounts"
                 | "all_accounts"
