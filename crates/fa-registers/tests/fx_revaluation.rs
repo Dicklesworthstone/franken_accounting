@@ -1224,7 +1224,7 @@ fn later_foreign_reversals_retain_the_original_valuation_day_and_period_through_
         let original_rate = f.rate(
             original_quote_day,
             numerator,
-            law.required_purpose(),
+            law.required_purpose().expect("quoted valuation law"),
             RoundingLaw::HalfEven,
             "Retained original-period quote",
         );
@@ -1291,7 +1291,7 @@ fn later_foreign_reversals_retain_the_original_valuation_day_and_period_through_
                     close_date
                 },
                 quoted_numerator,
-                law.required_purpose(),
+                law.required_purpose().expect("quoted valuation law"),
                 RoundingLaw::HalfEven,
                 "New reversal-period quote must not replace retained valuation",
             );

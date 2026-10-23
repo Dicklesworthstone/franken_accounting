@@ -5329,26 +5329,26 @@ impl Book {
     /// Seal its proposal once, retain a PostIntent for independent approval,
     /// and use plan/commit_plan for ordinary native admission and publication.
     pub fn prepare_year_end_close(
-        &self,
+        &mut self,
         request: &fa_journal::closing::YearEndCloseRequest,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
         let purposes = self.purposes();
-        with_store!(&self.store, core =>
-            core.prepare_year_end_close(&purposes, request, capability)
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_year_end_close(&purposes, request, capability))
         )
     }
 
     /// Check zero nominal balances at the last close and expose later deltas.
     pub fn verify_year_end_close(
-        &self,
+        &mut self,
         fiscal_year: i32,
         known_at: Option<CommitSeq>,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::YearEndCloseVerification> {
         let purposes = self.purposes();
-        with_store!(&self.store, core =>
-            core.verify_year_end_close(&purposes, fiscal_year, known_at, capability)
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_year_end_close(&purposes, fiscal_year, known_at, capability))
         )
     }
 

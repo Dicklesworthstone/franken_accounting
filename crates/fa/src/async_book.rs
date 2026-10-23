@@ -343,12 +343,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Derive exact Closing legs from immutable fiscal-year contributions,
     /// including previous Closing legs so a reclose transfers only the delta.
     /// Preparation publishes nothing and grants no approval or posting authority.
-    pub fn prepare_year_end_close(
-        &self,
+    pub async fn prepare_year_end_close(
+        &mut self,
         cx: &PurposeContexts,
         request: &fa_journal::closing::YearEndCloseRequest,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
+        // The complete nominal population and its retained carrying values
+        // require immutable source history even when the selected prefix is
+        // HEAD. Admit current whole-book authority before loading that history.
+        if let Err(refusal) =
+            fa_journal::closing::authorize(&self.db, &self.context, capability, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
         Ok(fa_journal::closing::prepare_year_end_close(
             &self.db,
             cx,
@@ -360,20 +371,54 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
     /// Recompute nominal balances at the last Closing and the selected prefix.
     /// A later adjustment is reported separately as a required delta reclose.
-    pub fn verify_year_end_close(
-        &self,
+    pub async fn verify_year_end_close(
+        &mut self,
         cx: &PurposeContexts,
         fiscal_year: i32,
         known_at: Option<CommitSeq>,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::YearEndCloseVerification> {
+        if let Err(denial) =
+            fa_policy::admit_read(capability, capability.holder(), self.context.book_id).and_then(
+                |()| {
+                    fa_policy::reach(
+                        capability,
+                        &fa_policy::Reach {
+                            observes: known_at
+                                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                            ..fa_policy::Reach::whole_book(true)
+                        },
+                        None,
+                    )
+                },
+            )
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let head = match fa_journal::policy::current_at(&self.db, &self.context, capability)? {
+            Ok(current) => current.at(),
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let selected = known_at.unwrap_or(head);
+        if selected.0 == 0 || selected > head {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::refusal::exit::USAGE,
+                "closing verification selects a prefix outside this book's recorded history",
+                "plan §7.1 / §7.5 (closing verification uses one retained prefix)",
+                format!("select a recorded sequence from 1 through {}", head.0),
+            )));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
         Ok(fa_journal::closing::verify_year_end_close(
             &self.db,
             cx,
             &self.context,
             capability,
             fiscal_year,
-            known_at,
+            Some(selected),
         )?)
     }
 

@@ -122,6 +122,45 @@ fn reseal(certificate: &mut ReportCertificate) {
 }
 
 #[test]
+fn retained_v5_replays_before_additive_close_law_but_cannot_claim_that_law() {
+    let (mut h, _) = fixture();
+    let certified = certified(&mut h);
+    let mut prior = certified.certificate.clone();
+    prior.registry_digest =
+        crate::certificate::pre_carrying_registry_digest(&prior.selection).unwrap();
+    assert_ne!(prior.registry_digest, certified.certificate.registry_digest);
+    assert_ne!(prior.registry_digest, prior.legacy_v2_registry_closure());
+    reseal(&mut prior);
+    let retained = ReportCertificate::decode(&prior.canonical_bytes().unwrap()).unwrap();
+    assert_eq!(
+        h.book.replay_report(&h.cx(), &retained).unwrap().unwrap(),
+        ReportOutput::FunctionalStatement(Box::new(certified.statement)),
+    );
+
+    // The compatibility closure cannot cover a new source-bound close, even
+    // when an otherwise valid valuation's totals and amounts are unchanged.
+    let mut valued = h
+        .book
+        .db
+        .vertices_at(h.head())
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.labels.contains(&label::ENTRY))
+        .map(|row| {
+            Entry::decode(&bytes(&row, property::FA_PAYLOAD, "valued entry").unwrap())
+                .unwrap()
+                .proposal
+        })
+        .find(|proposal| proposal.base_totals.is_some())
+        .unwrap();
+    assert!(crate::certificate::pre_carrying_registry_covers(&valued));
+    valued.base_totals.as_mut().unwrap().fx_law_oid = FxLawId::YearEndCloseCarrying.oid();
+    assert!(!crate::certificate::pre_carrying_registry_covers(&valued));
+    valued.base_totals.as_mut().unwrap().fx_law_oid = Oid([0xff; 32]);
+    assert!(!crate::certificate::pre_carrying_registry_covers(&valued));
+}
+
+#[test]
 fn functional_certificate_replays_rates_and_retains_a_distinct_output_basis() {
     let (mut h, rate) = fixture();
     let certified = certified(&mut h);

@@ -2310,29 +2310,54 @@ impl FxLaws {
             if !seen_names.insert(name.clone()) {
                 return Err(invalid(R, format!("duplicate law name `{name}`")));
             }
-            if !matches!(
-                rate_purpose.as_str(),
-                "SpotClose" | "PeriodClose" | "PeriodAverage" | "Settlement"
-            ) {
-                return Err(invalid(
-                    R,
-                    format!("law `{code}`: invalid rate_purpose `{rate_purpose}`"),
-                ));
-            }
-            if !matches!(
-                date_selector.as_str(),
-                "entry_effective_date" | "period_end_date" | "settlement_and_settled_item_dates"
-            ) {
-                return Err(invalid(
-                    R,
-                    format!("law `{code}`: invalid date_selector `{date_selector}`"),
-                ));
-            }
-            if !valid_rounding.contains(&rounding_law.as_str()) {
-                return Err(invalid(
-                    R,
-                    format!("law `{code}`: unknown rounding_law `{rounding_law}`"),
-                ));
+            let carrying_close =
+                id == 8 || code == "year_end_close_carrying" || name == "YearEndCloseCarrying";
+            if carrying_close {
+                if id != 8
+                    || version != 1
+                    || code != "year_end_close_carrying"
+                    || name != "YearEndCloseCarrying"
+                    || rate_purpose != "None"
+                    || date_selector != "fiscal_year_source_prefix"
+                    || rounding_law != "None"
+                    || residual_mode != "none"
+                    || !admitted_classes
+                        .iter()
+                        .map(String::as_str)
+                        .eq(["Closing", "Reversal"])
+                {
+                    return Err(invalid(
+                        R,
+                        "YearEndCloseCarrying id 8 version 1 must transfer recorded source balances without a rate, rounding or residual, only on Closing and Reversal",
+                    ));
+                }
+            } else {
+                if !matches!(
+                    rate_purpose.as_str(),
+                    "SpotClose" | "PeriodClose" | "PeriodAverage" | "Settlement"
+                ) {
+                    return Err(invalid(
+                        R,
+                        format!("law `{code}`: invalid rate_purpose `{rate_purpose}`"),
+                    ));
+                }
+                if !matches!(
+                    date_selector.as_str(),
+                    "entry_effective_date"
+                        | "period_end_date"
+                        | "settlement_and_settled_item_dates"
+                ) {
+                    return Err(invalid(
+                        R,
+                        format!("law `{code}`: invalid date_selector `{date_selector}`"),
+                    ));
+                }
+                if !valid_rounding.contains(&rounding_law.as_str()) {
+                    return Err(invalid(
+                        R,
+                        format!("law `{code}`: unknown rounding_law `{rounding_law}`"),
+                    ));
+                }
             }
             if !matches!(residual_mode.as_str(), "designated_leg" | "none") {
                 return Err(invalid(
@@ -2400,10 +2425,10 @@ impl FxLaws {
                 meaning,
             });
         }
-        if laws.len() != 7 {
+        if laws.len() != 8 {
             return Err(invalid(
                 R,
-                format!("expected 7 [[law]] rows, found {}", laws.len()),
+                format!("expected 8 [[law]] rows, found {}", laws.len()),
             ));
         }
         for required_code in [
@@ -2414,6 +2439,7 @@ impl FxLaws {
             "translation_current_rate",
             "remeasurement_temporal",
             "remeasurement_ias29_hyperinflation",
+            "year_end_close_carrying",
         ] {
             if !seen_codes.contains(required_code) {
                 return Err(invalid(
@@ -2760,11 +2786,51 @@ mod tests {
         assert_eq!(tracing_laws.replenishment_modes.len(), 2);
 
         let fx_laws = FxLaws::embedded(&classes).expect("fx_laws.toml");
-        assert_eq!(fx_laws.laws.len(), 7);
+        assert_eq!(fx_laws.laws.len(), 8);
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");
         assert_eq!(formats.rows.len(), 23);
+    }
+
+    #[test]
+    fn carrying_close_registry_cannot_become_a_quote_or_general_posting_law() {
+        let classes = crate::EntryClasses::embedded().unwrap();
+        let registry = FxLaws::embedded(&classes).unwrap();
+        let law = registry
+            .laws
+            .iter()
+            .find(|law| law.code == "year_end_close_carrying")
+            .unwrap();
+        assert_eq!((law.id, law.version), (8, 1));
+        assert_eq!(law.rate_purpose, "None");
+        assert_eq!(law.rounding_law, "None");
+        assert_eq!(law.admitted_classes, ["Closing", "Reversal"]);
+        for (from, to) in [
+            ("rate_purpose = \"None\"", "rate_purpose = \"SpotClose\""),
+            ("rounding_law = \"None\"", "rounding_law = \"HalfEven\""),
+            (
+                "date_selector = \"fiscal_year_source_prefix\"",
+                "date_selector = \"entry_effective_date\"",
+            ),
+            (
+                "admitted_classes = [\"Closing\", \"Reversal\"]",
+                "admitted_classes = [\"Original\", \"Closing\", \"Reversal\"]",
+            ),
+            ("id = 8\nversion = 1", "id = 9\nversion = 1"),
+            (
+                "rounding_law = \"None\"\nresidual_mode = \"none\"",
+                "rounding_law = \"None\"\nresidual_mode = \"designated_leg\"",
+            ),
+        ] {
+            let changed = FX_LAWS_TOML.replacen(from, to, 1);
+            assert_ne!(changed, FX_LAWS_TOML, "test must change {from}");
+            let refusal = FxLaws::parse(&changed, &classes).unwrap_err();
+            assert!(refusal.to_string().contains("YearEndCloseCarrying"));
+        }
+        let unquoted_spot =
+            FX_LAWS_TOML.replacen("rate_purpose = \"SpotClose\"", "rate_purpose = \"None\"", 1);
+        assert!(FxLaws::parse(&unquoted_spot, &classes).is_err());
     }
 
     #[test]
