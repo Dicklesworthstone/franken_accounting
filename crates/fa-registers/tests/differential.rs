@@ -1971,21 +1971,22 @@ fn kernel_transition_under(
         .expect("kernel")
 }
 
-fn kernel_transition(
+/// The approvals a transition keyed by `step` needs. Lock and Reopen are
+/// dual-controlled (sod_policy.toml, fa-llx): a second Human approves exactly
+/// the proposal the transition will commit, so the random walk keeps
+/// exercising Locked periods. The case-bound reopens still refuse, in both
+/// engines.
+fn transition_approvals(
     k: &mut Kernel,
     code: &str,
     t: PeriodTransition,
     step: u64,
-) -> Result<Transitioned, Refusal> {
-    // Lock and Reopen are dual-controlled (sod_policy.toml, fa-llx): a second
-    // Human approves exactly the proposal this transition will commit, so the
-    // random walk keeps exercising Locked periods. The case-bound reopens
-    // still refuse, in both engines.
+) -> Vec<fa_model::ApprovalRef> {
     let from =
         k.db.vertex(fa_model::period_vid(&k.book.calendar.id, code))
             .expect("read")
             .map(|row| PeriodRow::decode(&row).expect("period row").state);
-    let approvals = match (from, t) {
+    match (from, t) {
         (Some(from), PeriodTransition::Lock | PeriodTransition::Reopen { .. }) => {
             match fa_time::period::transition(from, t) {
                 Ok(to) => {
@@ -1996,7 +1997,16 @@ fn kernel_transition(
             }
         }
         _ => Vec::new(),
-    };
+    }
+}
+
+fn kernel_transition(
+    k: &mut Kernel,
+    code: &str,
+    t: PeriodTransition,
+    step: u64,
+) -> Result<Transitioned, Refusal> {
+    let approvals = transition_approvals(k, code, t, step);
     kernel_transition_under(
         k,
         code,
@@ -2088,7 +2098,13 @@ fn kernel_and_oracle_agree_on_generated_histories_across_seeds() {
     }
     // One seed's luck decides how often each plant fires; across the seeds
     // the campaign must still reach every one of a single seed's minimums.
+    eprintln!(
+        "fa-2ihd coverage over {seeds} seeds: {} (class, state, outcome) cells: {:?}",
+        total.cells.len(),
+        total.cells
+    );
     total.assert_minimums(&format!("{seeds} seeds"));
+    total.assert_coverage(&format!("{seeds} seeds"));
 }
 
 /// Delta debugging (Zeller and Hildebrandt's ddmin, complements first) over
@@ -2220,6 +2236,11 @@ struct Coverage {
     march_cash_history: usize,
     open_item_legs: usize,
     corruption_planted: u32,
+    /// Committed entries and transitions the serial replay re-admitted.
+    serial_replayed: usize,
+    /// The coverage map: (class, period state before the post, outcome)
+    /// cells the history hit (fa-2ihd).
+    cells: BTreeSet<(String, &'static str, &'static str)>,
     /// The steps run, for replay and shrinking (never summed).
     trace: Vec<TraceStep>,
 }
@@ -2241,6 +2262,8 @@ impl Coverage {
         self.march_cash_history += other.march_cash_history;
         self.open_item_legs += other.open_item_legs;
         self.corruption_planted += other.corruption_planted;
+        self.serial_replayed += other.serial_replayed;
+        self.cells.extend(other.cells.iter().cloned());
     }
 
     fn assert_minimums(&self, what: &str) {
@@ -2306,6 +2329,43 @@ impl Coverage {
             self.corruption_planted >= 1,
             "{what}: no live leg had an application to corrupt"
         );
+        assert!(
+            self.serial_replayed > self.posted as usize,
+            "{what}: the serial replay re-admitted {} of {} posts and their transitions",
+            self.serial_replayed,
+            self.posted
+        );
+    }
+
+    /// The coverage map against Appendix C: every (class, state) cell the
+    /// matrix admits under an op the generator grants, with no approvals,
+    /// posted at least once, and every other cell was refused at least once.
+    fn assert_coverage(&self, what: &str) {
+        let matrix = fa_registry::Admissibility::embedded(
+            &fa_registry::EntryClasses::embedded().expect("entry_classes.toml"),
+        )
+        .expect("admissibility.toml");
+        for class in STEERED {
+            for state in fa_registry::ALL_STATES {
+                let admits = admitting_op(&matrix, class, state).is_some();
+                let wanted = |outcome: &str| {
+                    if admits {
+                        outcome == "posted"
+                    } else {
+                        outcome.starts_with("FA-REF-")
+                    }
+                };
+                assert!(
+                    self.cells
+                        .iter()
+                        .any(|(c, s, o)| c == class && *s == state.name() && wanted(o)),
+                    "{what}: {class} in a {} period never {}; cells: {:?}",
+                    state.name(),
+                    if admits { "posted" } else { "refused" },
+                    self.cells
+                );
+            }
+        }
     }
 }
 
@@ -2323,6 +2383,49 @@ fn splitmix(i: u64) -> u64 {
 /// and planted corruption. Returns what it exercised.
 fn generated_history_campaign(seed: u64) -> Coverage {
     campaign(seed, Schedule::All, None)
+}
+
+/// The classes coverage steering aims at, and the ops it may grant.
+const STEERED: [&str; 5] = ["Original", "Adjusting", "Pending", "Reversal", "Resolution"];
+const GRANTED: [&str; 3] = ["post", "post_closed", "post_softclosed"];
+
+/// The op a generated post of `class` needs in a period of `state` under
+/// Appendix C, when the generator can grant it: `post` where the cell
+/// admits, the cell's op where it needs one and no approvals; `None`
+/// otherwise.
+fn admitting_op(
+    matrix: &fa_registry::Admissibility,
+    class: &str,
+    state: PeriodState,
+) -> Option<&'static str> {
+    match matrix.decide(class, state)? {
+        fa_registry::Decision::Admit => Some("post"),
+        fa_registry::Decision::With { op, approvals: 0 } => {
+            GRANTED.iter().copied().find(|g| *g == op.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// Coverage steering's target: the first admissible (class, state) cell the
+/// history has not posted whose state some period is in now, as the class,
+/// a day in that period, and the op to grant.
+fn unposted_cell(
+    matrix: &fa_registry::Admissibility,
+    cells: &BTreeSet<(String, &'static str, &'static str)>,
+    oracle: &Oracle,
+    defs: &[fa_time::period::PeriodDef],
+    dates: &[DateDay; 4],
+) -> Option<(&'static str, DateDay, &'static str)> {
+    STEERED.iter().find_map(|class| {
+        dates.iter().find_map(|day| {
+            let period = fa_time::period::resolve_period(defs, *day, None).ok()?;
+            let state = oracle.period_state(&period.code)?;
+            let op = admitting_op(matrix, class, state)?;
+            let posted = cells.contains(&((*class).to_string(), state.name(), "posted"));
+            (!posted).then_some((*class, *day, op))
+        })
+    })
 }
 
 /// Which steps a campaign runs. `All` is the full 640-step history and
@@ -2353,6 +2456,17 @@ struct TraceStep {
 fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> Coverage {
     let (mut k, mut oracle, periods) = setup();
     let usd = k.book.units.lookup("USD").unwrap();
+    // The serial replay starts from the book as set up, and replays each
+    // committed key under the ops it was posted with.
+    let genesis = oracle.clone();
+    let since = k.db.frontier().unwrap();
+    let mut authority: BTreeMap<Vec<u8>, Vec<String>> = BTreeMap::new();
+    let period_defs = k.book.calendar.periods_for_year(2026).unwrap();
+    let matrix = fa_registry::Admissibility::embedded(
+        &fa_registry::EntryClasses::embedded().expect("entry_classes.toml"),
+    )
+    .expect("admissibility.toml");
+    let mut cells: BTreeSet<(String, &'static str, &'static str)> = BTreeSet::new();
     let mut rng = Rng(seed);
     let dates = [
         DateDay::from_ymd(2026, 2, 10).unwrap(),
@@ -2647,14 +2761,30 @@ fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> C
                 again
             }
         } else {
-            let class = classes[rng.below(classes.len() as u64) as usize];
-            let ops: Vec<String> = if rng.chance(35) {
-                vec!["post".into(), "post_closed".into()]
+            // Coverage steering (fa-2ihd): now and then the draw aims at an
+            // admissible (class, state) cell this history has not posted,
+            // dated into a period in that state under the op its Appendix C
+            // cell needs.
+            let steer = if rng.chance(20) {
+                unposted_cell(&matrix, &cells, &oracle, &period_defs, &dates)
             } else {
-                vec!["post".into()]
+                None
+            };
+            let class = match steer {
+                Some((class, ..)) => class,
+                None => classes[rng.below(classes.len() as u64) as usize],
+            };
+            // The ops a capability grants: post alone, or with the op a
+            // Closed or a SoftClosed period requires.
+            let ops: Vec<String> = match steer {
+                Some((_, _, "post")) => vec!["post".into()],
+                Some((_, _, op)) => vec!["post".into(), op.into()],
+                None if rng.chance(35) => vec!["post".into(), "post_closed".into()],
+                None if rng.chance(30) => vec!["post".into(), "post_softclosed".into()],
+                None => vec!["post".into()],
             };
             let key = format!("k{step}").into_bytes();
-            if class == "Invoice" {
+            let mut drawn = if class == "Invoice" {
                 let amount = 1_000 + rng.below(90_000) as i128;
                 Intent {
                     class: "Original".into(),
@@ -2936,15 +3066,38 @@ fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> C
                     resolves: None,
                     settles: Vec::new(),
                 }
+            };
+            if let Some((_, day, _)) = steer {
+                drawn.date = day;
+                drawn.discriminator = None;
             }
+            drawn
         };
         history.push(intent.clone());
         if let Some(last) = trace.last_mut() {
             last.plant = fired;
         }
 
+        // The coverage cell: the class, the state its period was in before
+        // the post (`None`: no period), and the reference's outcome.
+        let state = fa_time::period::resolve_period(
+            &period_defs,
+            intent.date,
+            intent.discriminator.as_deref(),
+        )
+        .ok()
+        .and_then(|p| oracle.period_state(&p.code));
         let kernel = kernel_post(&mut k, &intent, usd, &refs);
         let model = oracle.post(&intent);
+        cells.insert((
+            intent.class.clone(),
+            state.map_or("none", PeriodState::name),
+            match &model {
+                Verdict::Posted { .. } => "posted",
+                Verdict::Recorded { .. } => "recorded",
+                Verdict::Refused { code } => code,
+            },
+        ));
         match (&kernel, &model) {
             (
                 Ok(Posted::Committed {
@@ -2955,6 +3108,7 @@ fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> C
                 assert_eq!(period, p, "step {step}: period");
                 assert_eq!(*index, refs.len(), "step {step}: journal index");
                 refs.push(*entry_ref);
+                authority.insert(intent.key.clone(), intent.ops.clone());
                 posted += 1;
                 posted_intents.push(intent.clone());
                 if let Some(t) = intent.reverses {
@@ -3078,6 +3232,7 @@ fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> C
         undone,
         resolutions: posted_resolutions,
         trace,
+        cells,
         ..Coverage::default()
     };
     // FA-REF-102: a registered class this slice does not post. Replacement
@@ -3103,6 +3258,8 @@ fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> C
     }
     coverage.refused = refused.keys().copied().collect();
     assert_eq!(oracle.journal_len() as u32, posted);
+    coverage.serial_replayed =
+        assert_serial_replay(&k, &genesis, since, &authority, &oracle, &periods);
 
     // Every register cell of every period agrees, cell by cell, and the
     // kernel's trial balance over all periods nets to zero per unit.
@@ -3453,6 +3610,1077 @@ fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> C
     let tb = trial_balance(&k.db, &k.book, &periods).unwrap();
     assert!(tb.is_balanced(), "{:?}", tb.unit_totals);
     coverage
+}
+
+// ---- fa-2ihd: the serial-equivalence oracle ---------------------------------
+
+/// One committed operation, decoded from the engine's journal.
+#[derive(Debug)]
+enum Decoded {
+    /// A posting entry as the reference intent it records, and the period
+    /// the engine journaled it in.
+    Post(Box<Intent>, String),
+    /// A period transition and the states it moved between.
+    Transition(String, PeriodTransition, (PeriodState, PeriodState)),
+}
+
+/// The transition that moves a period from `from` to `to` (exactly one does).
+fn transition_between(from: PeriodState, to: PeriodState) -> PeriodTransition {
+    let moving: Vec<PeriodTransition> = [
+        PeriodTransition::Open,
+        PeriodTransition::SoftClose,
+        PeriodTransition::Close,
+        PeriodTransition::Lock,
+        PeriodTransition::Reopen {
+            to: PeriodState::Open,
+        },
+        PeriodTransition::Reopen {
+            to: PeriodState::SoftClosed,
+        },
+    ]
+    .into_iter()
+    .filter(|t| fa_time::period::transition(from, *t) == Ok(to))
+    .collect();
+    assert_eq!(moving.len(), 1, "{from:?} -> {to:?}: {moving:?}");
+    moving[0]
+}
+
+/// The chart code of account vertex `vid`.
+fn account_code(k: &Kernel, vid: VId) -> String {
+    ACCOUNTS
+        .iter()
+        .map(|(c, ..)| *c)
+        .find(|c| account_vid(k.book.book_id, c) == vid)
+        .expect("a chart account")
+        .to_string()
+}
+
+/// The engine's journal after `since`, decoded from the committed payloads
+/// alone, in commit order. Only the capability a writer presented is not
+/// journaled: `authority` holds the ops each committed key was posted under,
+/// so the replay's period law sees the authority the admission saw.
+fn decode_journal(
+    k: &Kernel,
+    since: CommitSeq,
+    authority: &BTreeMap<Vec<u8>, Vec<String>>,
+) -> Vec<(CommitSeq, Decoded)> {
+    let head = k.db.frontier().unwrap();
+    // Entry vertex -> its index in the replayed reference journal.
+    let mut index: BTreeMap<VId, usize> = BTreeMap::new();
+    let mut decoded = Vec::new();
+    for (vid, entry, seq) in fa_registers::entries_at(&k.db, &k.book, head).unwrap() {
+        if seq <= since {
+            continue;
+        }
+        let p = &entry.proposal;
+        match &p.control {
+            Some(ControlPayload::PeriodTransition {
+                period_ref,
+                from,
+                to,
+                ..
+            }) => {
+                let moved = (
+                    PeriodState::from_tag(*from).expect("state tag"),
+                    PeriodState::from_tag(*to).expect("state tag"),
+                );
+                let t = transition_between(moved.0, moved.1);
+                decoded.push((seq, Decoded::Transition(period_ref.code.clone(), t, moved)));
+                continue;
+            }
+            None | Some(ControlPayload::ReservationRelease) => {}
+            Some(other) => panic!(
+                "serial replay: no reference form for control {other:?} at {}",
+                seq.0
+            ),
+        }
+        let target = |r: &EntryRef| {
+            *index.get(&r.vid).unwrap_or_else(|| {
+                panic!(
+                    "serial replay: entry {} cites {} ahead of its commit",
+                    vid.0, r.vid.0
+                )
+            })
+        };
+        let mut legs = Vec::with_capacity(p.legs.len());
+        let mut settles = Vec::new();
+        for (ordinal, l) in p.legs.iter().enumerate() {
+            assert!(
+                l.dimension_set.is_empty(),
+                "serial replay: a dimensioned leg"
+            );
+            legs.push(Leg {
+                side: match l.side {
+                    Side::Debit => fa_reference::Side::Debit,
+                    Side::Credit => fa_reference::Side::Credit,
+                },
+                account: account_code(k, l.account_ref),
+                unit: l.amount.unit.0,
+                entity: None,
+                mantissa: l.amount.mantissa,
+            });
+            settles.extend(l.settles.iter().map(|s| Settle {
+                leg: ordinal,
+                target: target(&s.target),
+                ordinal: usize::from(s.ordinal),
+                mantissa: s.amount.mantissa,
+            }));
+        }
+        let reverses = match p.supersession.as_slice() {
+            [] => None,
+            [s] if s.kind == SupersessionKind::Reverses => Some((target(&s.target), s.reason_code)),
+            other => panic!("serial replay: no reference form for supersession {other:?}"),
+        };
+        let resolves = p.pending.as_ref().and_then(|hold| {
+            assert!(hold.timeout_ns.is_none(), "serial replay: a timed hold");
+            hold.resolution_of.as_ref().map(|of| Resolve {
+                target: target(of),
+                posts: match &hold.disposition {
+                    Some(Disposition::Posts { source_ordinals }) => Some(source_ordinals.clone()),
+                    Some(Disposition::Voids) => None,
+                    other => panic!("serial replay: no reference form for disposition {other:?}"),
+                },
+            })
+        });
+        let ops = authority
+            .get(&p.idempotency_key)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "serial replay: no recorded authority for key {}",
+                    String::from_utf8_lossy(&p.idempotency_key)
+                )
+            });
+        let intent = Intent {
+            class: p.class.name().expect("registered class").to_string(),
+            date: p.effective_date,
+            discriminator: p.effective_period.as_ref().map(|r| r.code.clone()),
+            legs,
+            key: p.idempotency_key.clone(),
+            ops,
+            approvals: entry.approvals.len(),
+            reverses: reverses.map(|(t, _)| t),
+            supersession_reason: reverses.map_or(1, |(_, reason)| reason),
+            resolves,
+            settles,
+        };
+        let period = fa_registers::entry_period(&k.book, &entry).unwrap();
+        index.insert(vid, index.len());
+        decoded.push((seq, Decoded::Post(Box::new(intent), period)));
+    }
+    decoded
+}
+
+/// The serial-equivalence oracle: the engine's committed journal, decoded
+/// and replayed in CommitSeq order through a fresh reference (`genesis`, the
+/// reference as the book was set up), re-admits every entry into the period
+/// the engine journaled it in and every transition between the same states,
+/// and reaches the lockstep reference's registers, open items and period
+/// states. A history the engine admitted only through a stale witness has no
+/// serial order the reference accepts. Returns the operations replayed.
+fn assert_serial_replay(
+    k: &Kernel,
+    genesis: &Oracle,
+    since: CommitSeq,
+    authority: &BTreeMap<Vec<u8>, Vec<String>>,
+    lockstep: &Oracle,
+    periods: &[String],
+) -> usize {
+    let decoded = decode_journal(k, since, authority);
+    let mut replay = genesis.clone();
+    for (seq, op) in &decoded {
+        match op {
+            Decoded::Post(intent, period) => match replay.post(intent) {
+                Verdict::Posted { period: p, .. } => {
+                    assert_eq!(&p, period, "serial replay at {}: period", seq.0)
+                }
+                other => panic!(
+                    "serial replay at {}: the reference gives {other:?} for the committed {intent:?}",
+                    seq.0
+                ),
+            },
+            Decoded::Transition(code, t, moved) => assert_eq!(
+                replay.transition(code, *t),
+                Ok(*moved),
+                "serial replay at {}: {code} {t:?}",
+                seq.0
+            ),
+        }
+    }
+    assert_eq!(
+        replay.journal_len(),
+        lockstep.journal_len(),
+        "serial replay: journal length"
+    );
+    for code in periods {
+        assert_eq!(
+            replay.fold(code),
+            lockstep.fold(code),
+            "serial replay: {code}"
+        );
+        assert_eq!(
+            replay.pending_fold(code),
+            lockstep.pending_fold(code),
+            "serial replay: {code} pending"
+        );
+        assert_eq!(
+            replay.period_state(code),
+            lockstep.period_state(code),
+            "serial replay: {code} state"
+        );
+    }
+    assert_eq!(
+        replay.open_items(),
+        lockstep.open_items(),
+        "serial replay: open items"
+    );
+    decoded.len()
+}
+
+/// Every register cell (posted and pending) of every period, and every open
+/// item, agree between the engine and the reference.
+fn assert_registers_agree(
+    k: &Kernel,
+    oracle: &Oracle,
+    periods: &[String],
+    refs: &[EntryRef],
+    what: &str,
+) {
+    type Cells = BTreeMap<(String, u32), (i128, i128, u64)>;
+    for code in periods {
+        let fold = fold_period(&k.db, &k.book, code).unwrap();
+        for (kernel, model) in [
+            (&fold.cells, oracle.fold(code)),
+            (&fold.pending, oracle.pending_fold(code)),
+        ] {
+            let kernel: Cells = kernel
+                .iter()
+                .map(|c| {
+                    (
+                        (account_code(k, c.key.account), c.key.unit_id),
+                        (c.debits, c.credits, c.entry_count),
+                    )
+                })
+                .collect();
+            let model: Cells = model
+                .into_iter()
+                .map(|(key, c)| {
+                    let wide = |v: &Int| v.to_i128().expect("a register in range");
+                    (key, (wide(&c.debits), wide(&c.credits), c.entry_count))
+                })
+                .collect();
+            assert_eq!(kernel, model, "{what}: {code} registers");
+        }
+    }
+    let kernel: BTreeMap<(usize, usize), (i128, i128, i128)> =
+        open_items(&k.db, &k.book, None, None)
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let index = refs
+                    .iter()
+                    .position(|r| r.vid == item.entry)
+                    .expect("an open item of a posted entry");
+                (
+                    (index, usize::from(item.ordinal)),
+                    (item.original, item.applied, item.applied_out),
+                )
+            })
+            .collect();
+    assert_eq!(kernel, oracle.open_items(), "{what}: open items");
+}
+
+/// One writer's operation in a race.
+#[derive(Clone, Debug)]
+enum RaceOp {
+    Post(Intent),
+    Transition(String, PeriodTransition),
+}
+
+/// A race operation staged at the race's prefix, not yet published.
+enum Ready {
+    Post(Box<PreparedPost>),
+    Transition(Box<PreparedTransition>),
+}
+
+/// [`kernel_post`]'s preparation without its publication: the staged entry
+/// and its read witnesses at the current prefix.
+fn kernel_prepare_post(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+) -> Result<PostPreparation, Refusal> {
+    let req = kernel_request(k, intent, usd, refs);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    k.runtime
+        .block_on(async { fa_journal::scratch::ensure_history(db, &ctx).await })
+        .expect("kernel")
+        .expect("retained history");
+    prepare_post(&mut k.db, &ctx, &k.book, req).expect("kernel")
+}
+
+/// [`kernel_transition`]'s preparation without its publication.
+fn kernel_prepare_transition(
+    k: &mut Kernel,
+    code: &str,
+    t: PeriodTransition,
+    step: u64,
+    approvals: &[fa_model::ApprovalRef],
+) -> Result<PreparedTransition, Refusal> {
+    let key = format!("t-{step}");
+    let description = period_description(k);
+    let ctx = k.ctx();
+    let db = &mut k.db;
+    k.runtime
+        .block_on(async { fa_journal::scratch::ensure_history(db, &ctx).await })
+        .expect("kernel")
+        .expect("retained history");
+    prepare_transition(
+        &mut k.db,
+        &ctx,
+        &k.book,
+        code,
+        t,
+        PRINCIPAL,
+        1,
+        key.as_bytes(),
+        description,
+        &Capability::embedded(PRINCIPAL, &["close", "reopen", "post"]).expect("ops"),
+        approvals,
+    )
+    .expect("kernel")
+}
+
+/// Reference-side bookkeeping for a race campaign: the kernel handle of each
+/// posted entry (indexed like the reference journal), the ops each committed
+/// key was posted under, and the targets writers contend for.
+#[derive(Default)]
+struct Ledger {
+    refs: Vec<EntryRef>,
+    authority: BTreeMap<Vec<u8>, Vec<String>>,
+    invoices: Vec<usize>,
+    holds: Vec<usize>,
+    reversed: BTreeSet<usize>,
+    resolved: BTreeSet<usize>,
+    keys: u64,
+}
+
+impl Ledger {
+    fn key(&mut self) -> Vec<u8> {
+        self.keys += 1;
+        format!("race-{}", self.keys).into_bytes()
+    }
+
+    /// Compare one post's verdicts in the two engines; true when it posted.
+    fn agree(
+        &mut self,
+        what: &str,
+        intent: &Intent,
+        kernel: Result<Posted, Refusal>,
+        model: Verdict,
+    ) -> bool {
+        match (kernel, model) {
+            (
+                Ok(Posted::Committed {
+                    period, entry_ref, ..
+                }),
+                Verdict::Posted { period: p, index },
+            ) => {
+                assert_eq!(period, p, "{what}: period of {intent:?}");
+                assert_eq!(index, self.refs.len(), "{what}: journal index");
+                self.refs.push(entry_ref);
+                self.authority
+                    .insert(intent.key.clone(), intent.ops.clone());
+                if intent.class == "Pending" {
+                    self.holds.push(index);
+                }
+                if intent.settles.is_empty()
+                    && intent.reverses.is_none()
+                    && intent.legs.first().is_some_and(|l| l.account == "1200")
+                {
+                    self.invoices.push(index);
+                }
+                if let Some(t) = intent.reverses {
+                    self.reversed.insert(t);
+                }
+                if let Some(r) = &intent.resolves {
+                    self.resolved.insert(r.target);
+                }
+                true
+            }
+            (Ok(Posted::AlreadyRecorded { entry_ref, .. }), Verdict::Recorded { index }) => {
+                assert_eq!(entry_ref, self.refs[index], "{what}: recorded handle");
+                false
+            }
+            (Err(r), Verdict::Refused { code }) => {
+                assert_eq!(r.code, code, "{what}: refusal of {intent:?}");
+                false
+            }
+            (kernel, model) => {
+                panic!("{what}: kernel {kernel:?}, reference {model:?} for {intent:?}")
+            }
+        }
+    }
+}
+
+/// Two legs of one amount.
+fn two_legs(usd: UnitId, debit: &str, credit: &str, mantissa: i128) -> Vec<Leg> {
+    [
+        (fa_reference::Side::Debit, debit),
+        (fa_reference::Side::Credit, credit),
+    ]
+    .into_iter()
+    .map(|(side, account)| Leg {
+        side,
+        account: account.into(),
+        unit: usd.0,
+        entity: None,
+        mantissa,
+    })
+    .collect()
+}
+
+fn race_intent(class: &str, date: DateDay, legs: Vec<Leg>, key: Vec<u8>, ops: &[&str]) -> Intent {
+    Intent {
+        class: class.into(),
+        date,
+        discriminator: None,
+        legs,
+        key,
+        ops: ops.iter().map(|o| (*o).to_string()).collect(),
+        approvals: 0,
+        reverses: None,
+        supersession_reason: 1,
+        resolves: None,
+        settles: Vec::new(),
+    }
+}
+
+/// The exact side-swap of posted entry `target`.
+fn reversal_of(oracle: &Oracle, target: usize, date: DateDay, key: Vec<u8>) -> Intent {
+    let legs = oracle
+        .entry(target)
+        .expect("a posted entry")
+        .legs
+        .iter()
+        .map(|l| Leg {
+            side: l.side.flipped(),
+            ..l.clone()
+        })
+        .collect();
+    Intent {
+        reverses: Some(target),
+        ..race_intent("Reversal", date, legs, key, &["post"])
+    }
+}
+
+/// A resolution of hold `target`: posting all of it, or voiding it.
+fn resolution_of(
+    oracle: &Oracle,
+    target: usize,
+    posts: bool,
+    date: DateDay,
+    key: Vec<u8>,
+) -> Intent {
+    let hold = oracle.entry(target).expect("a posted hold");
+    let (legs, ordinals) = if posts {
+        let ordinals = (0..hold.legs.len())
+            .map(|o| u16::try_from(o).expect("small ordinal"))
+            .collect();
+        (hold.legs.clone(), Some(ordinals))
+    } else {
+        (Vec::new(), None)
+    };
+    Intent {
+        resolves: Some(Resolve {
+            target,
+            posts: ordinals,
+        }),
+        ..race_intent("Resolution", date, legs, key, &["post"])
+    }
+}
+
+/// A receipt applying `amount` to invoice `target`'s receivable leg.
+fn receipt_of(usd: UnitId, target: usize, amount: i128, date: DateDay, key: Vec<u8>) -> Intent {
+    Intent {
+        settles: vec![Settle {
+            leg: 1,
+            target,
+            ordinal: 0,
+            mantissa: amount,
+        }],
+        ..race_intent(
+            "Original",
+            date,
+            two_legs(usd, "1000", "1200", amount),
+            key,
+            &["post"],
+        )
+    }
+}
+
+/// The races a campaign draws: two writers contending for one thing; two
+/// that share only a cited document; and a control pair that shares nothing
+/// but the book's unit (see `RaceCoverage::assert_minimums`).
+const RACES: [&str; 8] = [
+    "post-vs-transition",
+    "double-reversal",
+    "double-resolution",
+    "receipt-pair",
+    "same-key",
+    "reversal-vs-receipt",
+    "same-document",
+    "disjoint",
+];
+
+/// Draw a race over the current book. A race whose target does not exist yet
+/// becomes the disjoint pair.
+fn draw_race(
+    rng: &mut Rng,
+    book: &mut Ledger,
+    oracle: &Oracle,
+    racing: &[String],
+    days: &[DateDay; 3],
+    usd: UnitId,
+) -> (&'static str, [RaceOp; 2]) {
+    let open = oracle.open_items();
+    let live_invoices: Vec<(usize, i128)> = book
+        .invoices
+        .iter()
+        .filter(|i| !book.reversed.contains(i))
+        .filter_map(|i| {
+            open.get(&(*i, 0))
+                .map(|(original, applied, out)| (*i, original - out - applied))
+        })
+        .filter(|(_, left)| *left > 1)
+        .collect();
+    let unreversed: Vec<usize> = (0..book.refs.len())
+        .filter(|i| !book.reversed.contains(i))
+        .filter(|i| {
+            oracle.entry(*i).is_some_and(|e| {
+                matches!(e.class.as_str(), "Original" | "Adjusting")
+                    && e.reverses.is_none()
+                    && e.settles.is_empty()
+            })
+        })
+        .collect();
+    let unresolved: Vec<usize> = book
+        .holds
+        .iter()
+        .copied()
+        .filter(|h| !book.resolved.contains(h))
+        .collect();
+    // March or April: the periods that stay mostly Open.
+    let day = |rng: &mut Rng| days[1 + rng.below(2) as usize];
+    let amount = |rng: &mut Rng| 100 + rng.below(5_000) as i128;
+    let race = RACES[rng.below(RACES.len() as u64) as usize];
+    let ops = match race {
+        "post-vs-transition" => {
+            // February closes and locks; March and April soft-close and
+            // reopen (Closed and Locked are absorbing without a case).
+            let p = [0usize, 1, 1, 2, 2][rng.below(5) as usize];
+            let code = &racing[p];
+            let t = match (p, oracle.period_state(code)) {
+                (_, Some(PeriodState::Open)) => PeriodTransition::SoftClose,
+                (0, Some(PeriodState::SoftClosed)) if rng.chance(50) => PeriodTransition::Close,
+                (_, Some(PeriodState::SoftClosed)) => PeriodTransition::Reopen {
+                    to: PeriodState::Open,
+                },
+                (_, Some(PeriodState::Closed)) => PeriodTransition::Lock,
+                // Locked: refused at preparation, in both engines.
+                _ => PeriodTransition::SoftClose,
+            };
+            let granted: &[&str] = if rng.chance(50) {
+                &["post"]
+            } else {
+                &["post", "post_closed"]
+            };
+            let class = if rng.chance(70) {
+                "Original"
+            } else {
+                "Adjusting"
+            };
+            let legs = two_legs(usd, "6000", "1000", amount(rng));
+            let post = race_intent(class, days[p], legs, book.key(), granted);
+            Some([RaceOp::Post(post), RaceOp::Transition(code.clone(), t)])
+        }
+        "double-reversal" if !unreversed.is_empty() => {
+            let target = unreversed[rng.below(unreversed.len() as u64) as usize];
+            let a = reversal_of(oracle, target, day(rng), book.key());
+            let b = reversal_of(oracle, target, day(rng), book.key());
+            Some([RaceOp::Post(a), RaceOp::Post(b)])
+        }
+        "double-resolution" if !unresolved.is_empty() => {
+            let target = unresolved[rng.below(unresolved.len() as u64) as usize];
+            let a = resolution_of(oracle, target, false, day(rng), book.key());
+            let b = resolution_of(oracle, target, rng.chance(50), day(rng), book.key());
+            Some([RaceOp::Post(a), RaceOp::Post(b)])
+        }
+        "receipt-pair" if !live_invoices.is_empty() => {
+            let (target, left) = live_invoices[rng.below(live_invoices.len() as u64) as usize];
+            // Each fits; together they mostly over-apply.
+            let a = 1 + rng.below(left as u64) as i128;
+            let b = if rng.chance(70) {
+                left - a + 1 + rng.below(a as u64) as i128
+            } else {
+                1 + rng.below((left - a).max(1) as u64) as i128
+            };
+            Some([
+                RaceOp::Post(receipt_of(usd, target, a, day(rng), book.key())),
+                RaceOp::Post(receipt_of(usd, target, b, day(rng), book.key())),
+            ])
+        }
+        "same-key" => {
+            // One key, two contents (dates): one writer's entry, the other's
+            // idempotency conflict.
+            let key = book.key();
+            let legs = two_legs(usd, "6000", "1000", amount(rng));
+            Some([
+                RaceOp::Post(race_intent(
+                    "Original",
+                    days[1],
+                    legs.clone(),
+                    key.clone(),
+                    &["post"],
+                )),
+                RaceOp::Post(race_intent("Original", days[2], legs, key, &["post"])),
+            ])
+        }
+        "reversal-vs-receipt" if !live_invoices.is_empty() => {
+            let (target, left) = live_invoices[rng.below(live_invoices.len() as u64) as usize];
+            let paid = 1 + rng.below(left as u64) as i128;
+            Some([
+                RaceOp::Post(reversal_of(oracle, target, day(rng), book.key())),
+                RaceOp::Post(receipt_of(usd, target, paid, day(rng), book.key())),
+            ])
+        }
+        "same-document" => {
+            // Disjoint accounts and periods, one cited document (the race
+            // campaign gives this pair no second source).
+            let plain = two_legs(usd, "6000", "1000", amount(rng));
+            let invoice = two_legs(usd, "1200", "4000", amount(rng));
+            Some([
+                RaceOp::Post(race_intent(
+                    "Original",
+                    days[1],
+                    plain,
+                    book.key(),
+                    &["post"],
+                )),
+                RaceOp::Post(race_intent(
+                    "Original",
+                    days[2],
+                    invoice,
+                    book.key(),
+                    &["post"],
+                )),
+            ])
+        }
+        _ => None,
+    };
+    match ops {
+        Some(ops) => (race, ops),
+        None => {
+            let plain = two_legs(usd, "6000", "1000", amount(rng));
+            let invoice = two_legs(usd, "1200", "4000", amount(rng));
+            (
+                "disjoint",
+                [
+                    RaceOp::Post(race_intent(
+                        "Original",
+                        days[1],
+                        plain,
+                        book.key(),
+                        &["post"],
+                    )),
+                    RaceOp::Post(race_intent(
+                        "Original",
+                        days[2],
+                        invoice,
+                        book.key(),
+                        &["post"],
+                    )),
+                ],
+            )
+        }
+    }
+}
+
+/// `f` with the kernel citing `cite`, when given, instead of the fixture
+/// source document.
+fn citing<T>(k: &mut Kernel, cite: Option<EvidenceRef>, f: impl FnOnce(&mut Kernel) -> T) -> T {
+    let saved = cite.map(|e| std::mem::replace(&mut k.evidence, vec![e]));
+    let out = f(k);
+    if let Some(saved) = saved {
+        k.evidence = saved;
+    }
+    out
+}
+
+/// How one race came out.
+#[derive(Clone, Copy, Debug, Default)]
+struct RaceCount {
+    ran: u32,
+    /// Both operations prepared at one prefix: two live writers to order.
+    contended: u32,
+    both_committed: u32,
+    /// A prepared operation lost at commit with a conflict (exit 6).
+    conflicted: u32,
+    /// A conflict's loser, retried on the current book, was admitted.
+    retried_in: u32,
+}
+
+/// Race two operations: both are prepared at one prefix, as two writers
+/// would, then published in a seeded order. First committer wins: whatever
+/// commits, the reference admits in commit order; a loser loses with a
+/// conflict (exit 6) and, retried on the current book, gets the reference's
+/// verdict. A preparation refused at the prefix is refused by the reference
+/// at that prefix.
+#[allow(clippy::too_many_arguments)]
+fn run_race(
+    k: &mut Kernel,
+    oracle: &mut Oracle,
+    book: &mut Ledger,
+    usd: UnitId,
+    rng: &mut Rng,
+    what: &str,
+    step: u64,
+    ops: &[RaceOp; 2],
+    second: Option<EvidenceRef>,
+) -> RaceCount {
+    // The second writer's post cites `second`, when given, instead of the
+    // fixture source.
+    let cite = |i: usize| if i == 1 { second } else { None };
+    let keys = [300_000 + 2 * step, 300_001 + 2 * step];
+    // Dual control first: an approval is a commit, so both operations are
+    // prepared after it, at one prefix.
+    let approvals: Vec<Vec<fa_model::ApprovalRef>> = ops
+        .iter()
+        .zip(keys)
+        .map(|(op, key)| match op {
+            RaceOp::Transition(code, t) => transition_approvals(k, code, *t, key),
+            RaceOp::Post(_) => Vec::new(),
+        })
+        .collect();
+    let basis = k.db.frontier().unwrap();
+    let at_basis = oracle.clone();
+    let mut ready: Vec<(usize, Ready)> = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        match op {
+            RaceOp::Post(intent) => match citing(k, cite(i), |k| {
+                kernel_prepare_post(k, intent, usd, &book.refs)
+            }) {
+                Ok(PostPreparation::Ready(prepared)) => {
+                    assert_eq!(prepared.basis(), basis, "{what}: basis");
+                    ready.push((i, Ready::Post(prepared)));
+                }
+                Ok(PostPreparation::AlreadyRecorded(posted)) => {
+                    let model = at_basis.clone().post(intent);
+                    book.agree(
+                        &format!("{what}: preparation {i}"),
+                        intent,
+                        Ok(posted),
+                        model,
+                    );
+                }
+                Err(refused) => {
+                    let model = at_basis.clone().post(intent);
+                    book.agree(
+                        &format!("{what}: preparation {i}"),
+                        intent,
+                        Err(refused),
+                        model,
+                    );
+                }
+            },
+            RaceOp::Transition(code, t) => {
+                match kernel_prepare_transition(k, code, *t, keys[i], &approvals[i]) {
+                    Ok(prepared) => {
+                        assert_eq!(prepared.basis(), basis, "{what}: basis");
+                        ready.push((i, Ready::Transition(Box::new(prepared))));
+                    }
+                    Err(r) => assert_eq!(
+                        at_basis.clone().transition(code, *t).err(),
+                        Some(r.code),
+                        "{what}: preparation {i} of {code} {t:?}"
+                    ),
+                }
+            }
+        }
+    }
+    let mut count = RaceCount {
+        ran: 1,
+        contended: u32::from(ready.len() == 2),
+        ..RaceCount::default()
+    };
+    if rng.chance(50) {
+        ready.reverse();
+    }
+    let mut committed = 0u32;
+    let mut losers = Vec::new();
+    for (i, prepared) in ready {
+        let ctx = k.ctx();
+        let db = &mut k.db;
+        match (prepared, &ops[i]) {
+            (Ready::Post(prepared), RaceOp::Post(intent)) => {
+                match k
+                    .runtime
+                    .block_on(async { prepared.commit(db, &ctx).await })
+                    .expect("kernel")
+                {
+                    Err(r) if r.exit == 6 => {
+                        eprintln!("{what}: writer {i} lost: {} {}", r.code, r.message);
+                        losers.push(i);
+                    }
+                    out => {
+                        let model = oracle.post(intent);
+                        if book.agree(
+                            &format!("{what}: commit {i}, in commit order"),
+                            intent,
+                            out,
+                            model,
+                        ) {
+                            committed += 1;
+                        }
+                    }
+                }
+            }
+            (Ready::Transition(prepared), RaceOp::Transition(code, t)) => {
+                match k
+                    .runtime
+                    .block_on(async { prepared.commit(db, &ctx).await })
+                    .expect("kernel")
+                {
+                    Ok(moved) => {
+                        assert_eq!(
+                            oracle.transition(code, *t),
+                            Ok((moved.from, moved.to)),
+                            "{what}: commit {i} of {code} {t:?}, in commit order"
+                        );
+                        committed += 1;
+                    }
+                    Err(r) if r.exit == 6 => {
+                        eprintln!("{what}: writer {i} lost: {} {}", r.code, r.message);
+                        losers.push(i);
+                    }
+                    Err(r) => assert_eq!(
+                        oracle.transition(code, *t).err(),
+                        Some(r.code),
+                        "{what}: commit {i} of {code} {t:?}"
+                    ),
+                }
+            }
+            _ => unreachable!("each preparation is of its own operation"),
+        }
+    }
+    count.both_committed = u32::from(committed == 2);
+    count.conflicted = u32::try_from(losers.len()).expect("two writers");
+    for i in losers {
+        match &ops[i] {
+            RaceOp::Post(intent) => {
+                let kernel = citing(k, cite(i), |k| kernel_post(k, intent, usd, &book.refs));
+                let model = oracle.post(intent);
+                if book.agree(&format!("{what}: retry of {i}"), intent, kernel, model) {
+                    count.retried_in += 1;
+                }
+            }
+            RaceOp::Transition(code, t) => {
+                let kernel = kernel_transition(k, code, *t, keys[i] + 100_000);
+                match (kernel, oracle.transition(code, *t)) {
+                    (Ok(moved), Ok(model)) => {
+                        assert_eq!(
+                            (moved.from, moved.to),
+                            model,
+                            "{what}: retry of {code} {t:?}"
+                        );
+                        count.retried_in += 1;
+                    }
+                    (Err(r), Err(c)) => assert_eq!(r.code, c, "{what}: retry of {code} {t:?}"),
+                    (kernel, model) => {
+                        panic!(
+                            "{what}: retry of {code} {t:?}: kernel {kernel:?}, reference {model:?}"
+                        )
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+/// What the race campaigns exercised.
+#[derive(Debug, Default)]
+struct RaceCoverage {
+    races: BTreeMap<&'static str, RaceCount>,
+    /// Committed operations the serial replay re-admitted.
+    replayed: usize,
+}
+
+impl RaceCoverage {
+    fn add(&mut self, other: &RaceCoverage) {
+        for (race, c) in &other.races {
+            let total = self.races.entry(*race).or_default();
+            total.ran += c.ran;
+            total.contended += c.contended;
+            total.both_committed += c.both_committed;
+            total.conflicted += c.conflicted;
+            total.retried_in += c.retried_in;
+        }
+        self.replayed += other.replayed;
+    }
+
+    fn assert_minimums(&self, what: &str) {
+        for race in RACES {
+            let c = self.races.get(race).copied().unwrap_or_default();
+            assert!(c.ran >= 5 && c.contended >= 1, "{what}: {race} {c:?}");
+        }
+        // Where two prepared writers want one thing, one of them lost.
+        for race in [
+            "post-vs-transition",
+            "double-reversal",
+            "double-resolution",
+            "same-key",
+        ] {
+            let c = self.races[race];
+            assert!(c.conflicted >= 1, "{what}: {race} never conflicted: {c:?}");
+        }
+        // Every two posts in one unit share its unit vertex: each leg adds an
+        // IN_UNIT edge into it, and an ordinary commit conflicts on shared
+        // endpoints (fgdb's append-only rebase would admit both; the kernel
+        // does not use it). So disjoint writers serialize today, and each
+        // contended pair must still end with both entries posted: both
+        // commit, or the loser's retry is admitted.
+        let disjoint = self.races["disjoint"];
+        assert!(
+            disjoint.both_committed + disjoint.retried_in == disjoint.contended,
+            "{what}: a disjoint writer was never posted: {disjoint:?}"
+        );
+        assert!(self.replayed > 0, "{what}: nothing replayed");
+    }
+}
+
+/// One race campaign: February, March and April open, then 40 races over a
+/// book the campaign keeps stocked with invoices, holds and plain entries
+/// (posted serially, in lockstep), then the registers and the serial replay.
+fn race_campaign(seed: u64) -> RaceCoverage {
+    let (mut k, mut oracle, periods) = setup();
+    let usd = k.book.units.lookup("USD").unwrap();
+    // A second source document. Two posts citing one document both add an
+    // EVIDENCED_BY edge into it, and an ordinary commit conflicts on an
+    // edge's endpoints (fgdb write_txn finish) whatever else they contend
+    // for. So the second writer of each two-post race cites this one, and
+    // only the same-document race shares a document. (Posts in one unit
+    // still share the unit vertex the same way; see RaceCoverage.)
+    let second_source = {
+        let doc = Document {
+            book_id: k.book.book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: PRINCIPAL,
+            bytes: b"INVOICE (race fixture, a second source document)".to_vec(),
+        };
+        let ctx = k.ctx();
+        let db = &mut k.db;
+        let book = &k.book;
+        k.runtime
+            .block_on(async { add_document(db, &ctx, book, &doc).await })
+            .expect("kernel")
+            .expect("the second source is admitted");
+        doc.evidence_ref(1)
+    };
+    let genesis = oracle.clone();
+    let since = k.db.frontier().unwrap();
+    let mut rng = Rng(seed);
+    let mut book = Ledger::default();
+    let mut coverage = RaceCoverage::default();
+    let racing = &periods[1..4];
+    let days = [
+        DateDay::from_ymd(2026, 2, 10).unwrap(),
+        DateDay::from_ymd(2026, 3, 15).unwrap(),
+        DateDay::from_ymd(2026, 4, 2).unwrap(),
+    ];
+    for (n, code) in racing.iter().enumerate() {
+        let kernel = kernel_transition(&mut k, code, PeriodTransition::Open, 200_000 + n as u64);
+        let model = oracle.transition(code, PeriodTransition::Open);
+        assert!(
+            kernel.is_ok() && model.is_ok(),
+            "open {code}: kernel {kernel:?}, reference {model:?}"
+        );
+    }
+    for step in 0..40u64 {
+        let what = format!("seed {seed:#x} race {step}");
+        if book.refs.len() < 6 || rng.chance(40) {
+            let day = days[1 + rng.below(2) as usize];
+            let amount = 1_000 + rng.below(9_000) as i128;
+            let (class, debit, credit) = match rng.below(3) {
+                0 => ("Original", "1200", "4000"),
+                1 => ("Pending", "6000", "1000"),
+                _ => ("Original", "6000", "1000"),
+            };
+            let target = race_intent(
+                class,
+                day,
+                two_legs(usd, debit, credit, amount),
+                book.key(),
+                &["post"],
+            );
+            let kernel = kernel_post(&mut k, &target, usd, &book.refs);
+            let model = oracle.post(&target);
+            book.agree(&format!("{what}: target"), &target, kernel, model);
+        }
+        let (race, ops) = draw_race(&mut rng, &mut book, &oracle, racing, &days, usd);
+        let c = run_race(
+            &mut k,
+            &mut oracle,
+            &mut book,
+            usd,
+            &mut rng,
+            &format!("{what} ({race})"),
+            step,
+            &ops,
+            (race != "same-document").then_some(second_source),
+        );
+        let mut one = RaceCoverage::default();
+        one.races.insert(race, c);
+        coverage.add(&one);
+    }
+    let what = format!("seed {seed:#x}");
+    assert_registers_agree(&k, &oracle, &periods, &book.refs, &what);
+    coverage.replayed =
+        assert_serial_replay(&k, &genesis, since, &book.authority, &oracle, &periods);
+    let tb = trial_balance(&k.db, &k.book, &periods).unwrap();
+    assert!(tb.is_balanced(), "{what}: {:?}", tb.unit_totals);
+    coverage
+}
+
+/// fa-2ihd acceptance (serial-equivalence oracle): race campaigns over many
+/// seeds, each race two writers prepared at one committed prefix and
+/// published in a seeded order, checked in commit order against the
+/// reference, then the committed journal replayed serially. Tier 1 runs 8
+/// seeds; `FA_DIFFERENTIAL_SEEDS=<n>` runs n (tier 2). A divergence names its
+/// seed.
+#[test]
+fn serial_equivalence_oracle() {
+    let seeds = std::env::var("FA_DIFFERENTIAL_SEEDS")
+        .ok()
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(8);
+    let mut total = RaceCoverage::default();
+    for i in 1..=seeds {
+        // Distinct from the generated-history campaign's seeds.
+        let seed = splitmix(i.wrapping_add(0x5E71_A1E0));
+        match std::panic::catch_unwind(|| race_campaign(seed)) {
+            Ok(coverage) => total.add(&coverage),
+            Err(_) => {
+                panic!("the race campaign diverged at seed {seed:#018x} (seed {i} of {seeds})")
+            }
+        }
+    }
+    eprintln!("fa-2ihd races over {seeds} seeds: {:?}", total.races);
+    total.assert_minimums(&format!("{seeds} seeds"));
 }
 
 fn create_year(k: &mut Kernel, oracle: &mut Oracle, year: i32) -> CommitSeq {

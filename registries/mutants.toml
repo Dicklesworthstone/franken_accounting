@@ -6,13 +6,16 @@
 # - id:         dense identifier MUT-001 .. MUT-NNN
 # - file:       workspace-relative source file path
 # - find:       exact substring in `file` (must occur exactly once)
-# - replace:    mutated replacement text (applied in a scratch copy, never in tree)
+# - replace:    mutated replacement text (applied only while the mutant runs, then restored)
 # - law:        invariant clause (FA-INV-*) or refusal code (FA-REF-*) broken
 # - killed_by:  one or more `crate::target::path` test entrypoints that must fail
 # - description: why this mutation breaks the accounting/verification law
 #
 # Validated statically by `fa-registry::mutants` and `tools/registry-check`,
-# and executed against scratch copies by `xtask mutants`.
+# and anchored by `xtask mutants` (each `find` occurs once). Executed by
+# `scripts/mutants_execute.sh`: it applies each mutant in its worktree, runs
+# every killed_by test, and restores the file. `xtask mutants --results`
+# credits a kill only from that execution record.
 # =============================================================================
 
 schema_version = 1
@@ -353,3 +356,12 @@ replace = "            if false && !req.capability.holds(needed) {"
 law = "FA-INV-03.core"
 killed_by = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_generated_histories_across_seeds"]
 description = "Skip the capability op an admissibility cell requires (post_closed in a Closed period), so the period law admits a class without its op. The generated-history differential catches it within 2 seeds: the reference refuses FA-REF-011 where the mutated kernel goes on to another check (fa-2ihd planted negative)."
+
+[[mutant]]
+id = "MUT-036"
+file = "crates/fa-journal/src/post.rs"
+find = "    let state_scalar = txn.vertex_property(db, pvid, property::STATE)?;\n    let state = state_from_scalar(state_scalar.as_ref())\n        .ok_or_else(|| KernelError::Corrupt(format!(\"period `{}` state mirror\", period.code)))?;\n    let kind_scalar = txn.vertex_property(db, pvid, property::PERIOD_KIND)?;"
+replace = "    let state_scalar = db.vertex(pvid)?.and_then(|row| prop(&row, property::STATE).cloned());\n    let state = state_from_scalar(state_scalar.as_ref())\n        .ok_or_else(|| KernelError::Corrupt(format!(\"period `{}` state mirror\", period.code)))?;\n    let kind_scalar = db.vertex(pvid)?.and_then(|row| prop(&row, property::PERIOD_KIND).cloned());"
+law = "FA-INV-03.witness-race"
+killed_by = ["fa-registers::tests/differential.rs::serial_equivalence_oracle", "fa-conformance::tests/substrate.rs::post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period"]
+description = "Read the period's state and kind outside the posting transaction, so a post no longer witnesses its period: serially nothing changes, but a post prepared before a concurrent close or soft close still commits after it. The race campaign's serial-equivalence oracle catches it: the reference, given the operations in commit order, refuses the post (fa-2ihd planted negative)."
