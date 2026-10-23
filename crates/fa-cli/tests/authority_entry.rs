@@ -3,7 +3,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fa_cli::authority::{LaunchAuthority, LaunchProfile};
@@ -14,10 +14,14 @@ use fa_cli::lease::Lease;
 use fa_cli::verbs::registry;
 
 fn fixture(name: &str) -> PathBuf {
+    fixture_in(&std::env::temp_dir(), name)
+}
+
+fn fixture_in(root: &Path, name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        let path = root.join(format!(
             "fa-authority-entry-{}-{name}-{id}",
             std::process::id()
         ));
@@ -230,11 +234,15 @@ fn a_held_lease_never_forwards_bound_authority_to_a_listening_daemon() {
     use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
 
-    let book = fixture("held");
+    // RCH's TMPDIR can itself exceed sockaddr_un.sun_path. This probe needs
+    // a reachable real socket before it can test authority containment.
+    let book = fixture_in(Path::new("/tmp"), "held");
     let authority = authority(book.clone());
     let daemon = &registry().expect("verbs.toml").daemon;
     let _lease = Lease::acquire(&book, &daemon.lease, "another writer").expect("lease");
-    let listener = UnixListener::bind(book.join(&daemon.socket)).expect("daemon socket");
+    let socket = book.join(&daemon.socket);
+    assert!(socket.as_os_str().len() < 104, "{}", socket.display());
+    let listener = UnixListener::bind(socket).expect("daemon socket");
     listener
         .set_nonblocking(true)
         .expect("nonblocking listener");

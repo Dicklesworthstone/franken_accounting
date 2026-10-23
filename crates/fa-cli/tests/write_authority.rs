@@ -433,7 +433,7 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
-            &["void-reserve", entry, "--date", DAY, "--yes"],
+            &["void-reserve", entry, "--date", DAY],
             &[Op::Post],
             Reaches,
         ),
@@ -1374,6 +1374,20 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
         }
 
         let authority = tokens(&mut m, &row.ops);
+        if row.argv[0] == "void-reserve" {
+            // A bound request cannot supply host confirmation. Keep that
+            // refusal separate so the valid row reaches its operation guard.
+            let mut with_confirmation = row.argv.clone();
+            with_confirmation.push("--yes".into());
+            let before = m.book.head().expect("head");
+            let (exit, out) = m.bound(&authority, &with_confirmation);
+            assert_eq!(exit, 2, "{with_confirmation:?}: {out:?}");
+            assert!(
+                out.stdout
+                    .contains("--yes cannot override launch-bound authority")
+            );
+            assert_eq!(m.book.head().expect("head"), before);
+        }
         let (exit, out) = m.bound(&authority, &row.argv);
         match row.admitted {
             Admitted::Succeeds => {

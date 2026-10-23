@@ -16092,6 +16092,74 @@ fn off_balance_commitment_and_statistical_headcount_cli_scenario() -> std::io::R
     Ok(())
 }
 
+/// tru 0.1.1 serializes integral JSON numbers as `6.0`. Normalize only that
+/// exact representation outside strings, without floating-point arithmetic.
+/// Fractions, exponents, malformed JSON and out-of-range integers still go
+/// through the production parser unchanged and are refused. A decoder that
+/// changes an integer's value still fails the differential equality below.
+fn parse_tru_integer_json(text: &str) -> Result<Json, json::ParseError> {
+    let mut normalized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let (mut quoted, mut escaped) = (false, false);
+    while let Some(ch) = chars.next() {
+        if quoted {
+            normalized.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+        } else if ch == '"' {
+            quoted = true;
+            normalized.push(ch);
+        } else if ch == '-' || ch.is_ascii_digit() {
+            let mut number = String::from(ch);
+            while let Some(&next) = chars.peek()
+                && (next.is_ascii_digit() || matches!(next, '.' | 'e' | 'E' | '+' | '-'))
+            {
+                number.push(next);
+                let _ = chars.next();
+            }
+            normalized.push_str(number.strip_suffix(".0").unwrap_or(&number));
+        } else {
+            normalized.push(ch);
+        }
+    }
+    json::parse(&normalized)
+}
+
+#[test]
+fn tru_integer_adapter_preserves_text_and_rejects_fractional_or_changed_values() {
+    let expected =
+        json::parse(r#"{"n":6,"negative":-7,"text":"6.0, \\\"8.0\\\"","zero":0}"#).unwrap();
+    assert_eq!(
+        parse_tru_integer_json(r#"{"n":6.0,"negative":-7.0,"text":"6.0, \\\"8.0\\\"","zero":0.0}"#)
+            .unwrap(),
+        expected
+    );
+    for refused in [
+        "6.5",
+        "1e2",
+        "1.0e0",
+        "01.0",
+        "6.5.0",
+        "170141183460469231731687303715884105728.0",
+    ] {
+        assert!(parse_tru_integer_json(refused).is_err(), "{refused}");
+    }
+    // The input parser's accounting contract is unchanged.
+    assert!(json::parse("6.0").is_err());
+    assert_ne!(parse_tru_integer_json("6.0").unwrap(), Json::Int(7));
+    // In particular, an external binary64 rounding loss is never repaired
+    // by guessing the original integer.
+    assert_ne!(
+        parse_tru_integer_json("9007199254740992.0").unwrap(),
+        Json::Int(9_007_199_254_740_993)
+    );
+}
+
 #[test]
 fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
     let dir = tmp("toon-format-cli")?;
@@ -16239,7 +16307,9 @@ fn toon_robot_output_format_and_differential_oracle() -> std::io::Result<()> {
             );
             let decoded_str = String::from_utf8(decoded.stdout)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            let roundtripped = json::parse(decoded_str.trim()).expect("parse tru --decode output");
+            let roundtripped = parse_tru_integer_json(decoded_str.trim()).unwrap_or_else(|error| {
+                panic!("{label}: parse tru --decode output: {error:?}\n{decoded_str}")
+            });
             assert_eq!(
                 roundtripped, parsed_json,
                 "tru --decode round-trip mismatch on {label}"
