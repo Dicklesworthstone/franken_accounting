@@ -153,7 +153,10 @@ pub use external_subledger::{
     ExternalSubledgerDetail, ExternalSubledgerReconciliation, MAX_EXTERNAL_DETAIL_BYTES,
     MAX_EXTERNAL_DETAIL_ROWS, MAX_EXTERNAL_FEED_CERTIFICATE_BYTES, MAX_EXTERNAL_SUMMARY_LEGS,
 };
-pub use fa_docket::intake::{DerivedDocumentResult, extract_pdf_text_layer};
+pub use fa_docket::intake::{
+    DerivedDocumentResult, ExternalToolOutcome, FocrConfig, FwConfig, extract_pdf_text_layer,
+    run_focr_extraction, run_fw_extraction,
+};
 pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
     BatchPlan, BatchPlanCertificate, IntentError, MAX_BATCH_BYTES, MAX_BATCH_PLAN_BYTES,
