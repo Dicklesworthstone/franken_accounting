@@ -21,6 +21,23 @@ fn registry() -> Result<RoleRegistry, Fail> {
     RoleRegistry::embedded().map_err(|e| Fail::Internal(e.to_string()))
 }
 
+/// The idempotency key of a role control a chart import or account open
+/// records under its own key `parent`: `plain` (the parent key extended with
+/// the account and role) while it fits the model's key limit, else a digest
+/// of `(parent, code, role)`, so a long role name or `--key` never makes the
+/// role unrecordable. Either way a retried import or open records nothing
+/// new.
+pub(crate) fn seeded_role_key(plain: Vec<u8>, parent: &[u8], code: &str, role: &str) -> Vec<u8> {
+    if plain.len() <= fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES {
+        return plain;
+    }
+    let digest = fa_model::domain_digest(
+        b"fa:seeded-role-key:v1",
+        &[parent, code.as_bytes(), role.as_bytes()],
+    );
+    format!("role:{}", crate::cli::hex(&digest[..16])).into_bytes()
+}
+
 /// One `account_role` object (verbs.toml shape).
 pub(crate) fn account_role_json(control: &AccountRoleControl, code: &str) -> Json {
     obj(vec![
@@ -264,4 +281,34 @@ pub(crate) fn roles(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         &human.join("\n"),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::seeded_role_key;
+    use fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES;
+
+    /// A key that fits keeps its readable form; one that would exceed the
+    /// model's limit (a 38-byte chart key and `investment_in_subsidiary`)
+    /// becomes a bounded digest, the same on every retry and distinct per
+    /// account and role.
+    #[test]
+    fn a_seeded_role_key_always_fits_the_idempotency_limit() {
+        let chart = b"chart:0123456789abcdef0123456789abcdef";
+        let short = [chart.as_slice(), b":role:1300:intercompany"].concat();
+        assert_eq!(
+            seeded_role_key(short.clone(), chart, "1300", "intercompany"),
+            short
+        );
+        let long = |code: &str, role: &str| {
+            let plain = [chart.as_slice(), format!(":role:{code}:{role}").as_bytes()].concat();
+            assert!(plain.len() > MAX_IDEMPOTENCY_KEY_BYTES);
+            seeded_role_key(plain, chart, code, role)
+        };
+        let key = long("1500", "investment_in_subsidiary");
+        assert!(key.len() <= MAX_IDEMPOTENCY_KEY_BYTES && key.starts_with(b"role:"));
+        assert_eq!(key, long("1500", "investment_in_subsidiary"));
+        assert_ne!(key, long("1510", "investment_in_subsidiary"));
+        assert_ne!(key, long("1500", "noncontrolling_interest_income"));
+    }
 }
