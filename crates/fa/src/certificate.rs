@@ -52,6 +52,10 @@ pub const STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v4";
 /// Existing native statements keep their v4 encoding and valuation semantics.
 pub const FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v5";
 pub const FUNCTIONAL_STATEMENT_OUTPUT_FORMAT: &str = "fa:functional-statement:v1";
+/// A consolidation run of a multi-entity book (fa-76hy): one more selector
+/// tag in its own format version, so earlier certificates keep their bytes.
+pub const CONSOLIDATION_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v6";
+pub const CONSOLIDATION_OUTPUT_FORMAT: &str = "fa:consolidation:v1";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -187,6 +191,10 @@ pub enum ReportSelection {
     /// The book's functional unit, using independently verified retained base
     /// valuations. No current-rate conversion or presentation translation.
     FunctionalStatement(Box<crate::StatementSelection>),
+    /// The consolidation of the book's legal entities for one period (plan §12.3).
+    Consolidation {
+        period: String,
+    },
 }
 
 impl From<TrialBalanceSelection> for ReportSelection {
@@ -210,6 +218,7 @@ impl ReportSelection {
             Self::Statement(selection) | Self::FunctionalStatement(selection) => {
                 selection.is_canonical()
             }
+            Self::Consolidation { period } => !period.is_empty() && period.len() <= 128,
         }
     }
 
@@ -232,6 +241,7 @@ impl ReportSelection {
             Self::OpenItems { .. } => "fa:open-items:v1",
             Self::Statement(_) => "fa:statement:v1",
             Self::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_OUTPUT_FORMAT,
+            Self::Consolidation { .. } => CONSOLIDATION_OUTPUT_FORMAT,
         }
     }
 
@@ -255,6 +265,9 @@ impl ReportSelection {
                 w.u8(3);
                 selection.write(w)?;
             }
+            Self::Consolidation { period } => {
+                w.u8(4).str(period);
+            }
         }
         Ok(())
     }
@@ -277,6 +290,9 @@ impl ReportSelection {
             3 if version == 5 => Ok(Self::FunctionalStatement(Box::new(
                 crate::StatementSelection::read(r)?,
             ))),
+            4 if version == 6 => Ok(Self::Consolidation {
+                period: r.str(128, "consolidation period")?.to_string(),
+            }),
             tag => Err(r.bad_tag("report selector", tag)),
         }
     }
@@ -310,6 +326,10 @@ impl ReportSelection {
                 db, book, selection, at,
             )?
             .map(|statement| ReportOutput::FunctionalStatement(Box::new(statement)))),
+            Self::Consolidation { period } => {
+                Ok(crate::consolidation::consolidate_at(db, book, period, at)?
+                    .map(|run| ReportOutput::Consolidation(Box::new(run))))
+            }
         }
     }
 }
@@ -323,6 +343,7 @@ pub enum ReportOutput {
     OpenItems(OpenItemsReport),
     Statement(Box<fa_statements::Statement>),
     FunctionalStatement(Box<fa_statements::Statement>),
+    Consolidation(Box<crate::consolidation::Consolidation>),
 }
 
 impl ReportOutput {
@@ -335,6 +356,7 @@ impl ReportOutput {
             Self::Statement(report) | Self::FunctionalStatement(report) => {
                 CommitSeq(report.known_at)
             }
+            Self::Consolidation(report) => report.known_at,
         }
     }
 
@@ -349,6 +371,7 @@ impl ReportOutput {
             Self::Statement(report) | Self::FunctionalStatement(report) => {
                 report.known_at = known_at.0;
             }
+            Self::Consolidation(report) => report.set_known_at(known_at),
         }
     }
 
@@ -365,6 +388,7 @@ impl ReportOutput {
                     .bytes(&report.canonical_bytes()?);
                 w.finish()
             }
+            Self::Consolidation(report) => report.canonical_bytes(),
         }
     }
 }
@@ -518,6 +542,20 @@ fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static
     if matches!(selection, ReportSelection::FunctionalStatement(_)) {
         sources.extend([
             ("fx_laws", include_str!("../../../registries/fx_laws.toml")),
+            (
+                "rounding_laws",
+                include_str!("../../../registries/rounding_laws.toml"),
+            ),
+        ]);
+    }
+    // Account roles select the run's accounts, and the NCI rounds under a
+    // registered law.
+    if matches!(selection, ReportSelection::Consolidation { .. }) {
+        sources.extend([
+            (
+                "account_roles",
+                include_str!("../../../registries/account_roles.toml"),
+            ),
             (
                 "rounding_laws",
                 include_str!("../../../registries/rounding_laws.toml"),
@@ -819,6 +857,7 @@ impl ReportCertificate {
             ReportSelection::TrialBalance(_) => CERTIFICATE_FORMAT,
             ReportSelection::Statement(_) => STATEMENT_CERTIFICATE_FORMAT,
             ReportSelection::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT,
+            ReportSelection::Consolidation { .. } => CONSOLIDATION_CERTIFICATE_FORMAT,
             _ => REPORT_CERTIFICATE_FORMAT,
         }
     }
@@ -849,6 +888,7 @@ impl ReportCertificate {
         if self.format() == REPORT_CERTIFICATE_FORMAT
             || self.format() == STATEMENT_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
+            || self.format() == CONSOLIDATION_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -882,6 +922,8 @@ impl ReportCertificate {
                 4
             } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
                 5
+            } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
+                6
             } else {
                 return Err(r.invalid("report certificate format"));
             };
@@ -1424,7 +1466,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         && !pre_carrying
         && (matches!(
             &certificate.selection,
-            ReportSelection::FunctionalStatement(_)
+            ReportSelection::FunctionalStatement(_) | ReportSelection::Consolidation { .. }
         ) || (certificate.registry_digest != legacy_v2
             && certificate.registry_digest != legacy_registry_digest(&certificate.selection)))
     {
@@ -2130,21 +2172,12 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
             .iter()
             .map(|(vid, row)| (*vid, AccountMetadata::Complete(row.clone())))
             .collect(),
-        ReportOutput::Statement(report) | ReportOutput::FunctionalStatement(report) => report
-            .mappings
-            .iter()
-            .map(|mapping| {
-                (
-                    VId(mapping.account.id),
-                    AccountMetadata::Statement {
-                        code: mapping.account.code.clone(),
-                        name: mapping.account.name.clone(),
-                        account_type: mapping.account.account_type,
-                        is_leaf: mapping.account.is_leaf,
-                    },
-                )
-            })
-            .collect(),
+        ReportOutput::Statement(report) | ReportOutput::FunctionalStatement(report) => {
+            statement_account_metadata([report.as_ref()])
+        }
+        ReportOutput::Consolidation(report) => {
+            statement_account_metadata([&report.run.balance_sheet, &report.run.income_statement])
+        }
     };
     for (vid, expected) in accounts {
         cx.checkpoint().map_err(BookError::Context)?;
@@ -2175,6 +2208,27 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
         }
     }
     Ok(Ok(()))
+}
+
+/// The displayed metadata of every account the statements map.
+fn statement_account_metadata<'a>(
+    statements: impl IntoIterator<Item = &'a fa_statements::Statement>,
+) -> BTreeMap<VId, AccountMetadata> {
+    statements
+        .into_iter()
+        .flat_map(|statement| &statement.mappings)
+        .map(|mapping| {
+            (
+                VId(mapping.account.id),
+                AccountMetadata::Statement {
+                    code: mapping.account.code.clone(),
+                    name: mapping.account.name.clone(),
+                    account_type: mapping.account.account_type,
+                    is_leaf: mapping.account.is_leaf,
+                },
+            )
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2220,11 +2274,24 @@ pub(crate) fn selected(
     entries: &BTreeMap<VId, Entry>,
 ) -> Result<bool, BookError> {
     // A control's nominal date is not a contribution. Releases and migration
-    // activation are checked explicitly by their targets in the caller.
+    // activation are checked explicitly by their targets in the caller. A
+    // consolidation also reads the chart, the legal entities and ownership
+    // edges (REA), and the account roles those schema controls journal.
     if entry.proposal.legs.is_empty() || fa_notary::journal::is_undated(entry.proposal.class) {
-        return Ok(false);
+        return Ok(matches!(selection, ReportSelection::Consolidation { .. })
+            && matches!(
+                &entry.proposal.control,
+                Some(ControlPayload::SchemaChange { kind, .. })
+                    if matches!(*kind, 1..=11 | fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE)
+            ));
     }
     match (selection, report) {
+        // Every member's posted stock through the period's last day, of
+        // which the period's activity is part.
+        (ReportSelection::Consolidation { .. }, ReportOutput::Consolidation(report)) => {
+            return Ok(entry.proposal.class != EntryClass::PENDING
+                && entry.proposal.effective_date <= report.effective_through);
+        }
         (ReportSelection::OpenItems { account }, ReportOutput::OpenItems(_)) => {
             return open_item_selected(entry, entries, *account);
         }

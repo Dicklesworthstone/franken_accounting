@@ -9,17 +9,18 @@
 //! before anything is observed: a token carrying any scope caveat is
 //! refused, never filtered.
 
+use fa::Book;
+use fa::consolidation::Consolidation;
 use fa_money::{Amount, UnitId};
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, admit_whole_book_read, hex, known_at_flag, registered_unit_code, render_amount,
-    statement_presentation, usage,
+    Ctx, Fail, Out, admit_whole_book_read, hex, known_at_flag, prepare_native_certificate_history,
+    registered_unit_code, render_amount, statement_presentation, usage,
 };
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str =
-    "fa consolidate --period FY2026-P03 [--as-known-at HEAD|<seq>|<RFC3339>] --book <dir> --json";
+const EXAMPLE: &str = "fa consolidate --period FY2026-P03 [--as-known-at HEAD|<seq>|<RFC3339>] [--certify] [--certificate-out <new-file>] --book <dir> --json";
 
 pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 1 {
@@ -34,14 +35,81 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             EXAMPLE,
         ));
     }
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage(
+            "--certificate-out may be supplied only once",
+            EXAMPLE,
+        ));
+    }
     let period = args.flag("--period").unwrap_or_default().to_string();
+    let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
-    let book = ctx.books.open_admitted(args, |book| {
-        admit_whole_book_read(book, &capability, &[], "consolidating the group")
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let mut book = ctx.books.open_admitted(args, |book| {
+        if certify {
+            prepare_native_certificate_history(book, &capability, None)
+        } else {
+            admit_whole_book_read(book, &capability, &[], "consolidating the group")
+        }
     })?;
-    let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-    let group = book.consolidation(&period, known_at, &capability)??;
-    ctx.out.known_at(group.known_at);
+    let (known_at, requested_utc_ns) = known_at_flag(args, &book, &ctx.out)?;
+    let (group, certificate) = if certify {
+        if requested_utc_ns.is_some() {
+            return Err(usage(
+                "a consolidation certificate binds a recorded sequence; an instant's TimeEvidence is not part of its format",
+                format!(
+                    "use --as-known-at {} to certify this consolidation",
+                    known_at.map_or_else(|| "HEAD".to_string(), |seq| seq.0.to_string())
+                ),
+            ));
+        }
+        admit_whole_book_read(&book, &capability, &[], "consolidating the group")?;
+        let selection = fa::ReportSelection::Consolidation {
+            period: period.clone(),
+        };
+        book.read_scope(who, &capability)??
+            .admit_report(&selection, known_at)??;
+        let certified = book.certify_report(selection, known_at)??;
+        let fa::ReportOutput::Consolidation(group) = certified.report else {
+            return Err(Fail::Internal(
+                "consolidation certification returned another report kind".into(),
+            ));
+        };
+        (*group, Some(certified.certificate))
+    } else {
+        (book.consolidation(&period, known_at, &capability)??, None)
+    };
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            crate::notary::retain_report_certificate(
+                &mut book,
+                &ctx.files,
+                args,
+                certificate,
+                &capability,
+            )
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    render_consolidation(&ctx.out, &book, &group, digest.as_deref())?;
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        crate::notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
+}
+
+/// The `consolidation_run` event of one consolidation, with its certificate's
+/// digest when it is certified; `fa replay` renders a replayed run here too.
+pub(crate) fn render_consolidation(
+    out: &Out,
+    book: &Book,
+    group: &Consolidation,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    out.known_at(group.known_at);
     let units = &book.context().units;
     let money =
         |unit: u32, mantissa: i128| render_amount(Amount::new(UnitId(unit), mantissa), units);
@@ -183,7 +251,7 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     let balance_sheet = statement(&group.run.balance_sheet)?;
     let income_statement = statement(&group.run.income_statement)?;
 
-    ctx.out.event(
+    out.event_with_certificate(
         "consolidation_run",
         vec![
             ("period", s(&group.period)),
@@ -199,6 +267,7 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ("income_statement", income_statement),
         ],
         &human.join("\n"),
+        certificate,
     );
     Ok(())
 }

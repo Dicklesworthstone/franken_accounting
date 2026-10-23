@@ -84,6 +84,8 @@ fa verify registers --book ./books/acme --period FY2026-P03 --json
 fa verify entities --book ./books/acme --period FY2026-P03 --json
 # Consolidate that book's entities: eliminations from the OWNS edges and account roles, the NCI, and consolidated statements (nothing is posted).
 fa consolidate --period FY2026-P03 --book ./books/acme --json
+# Certify it: fa replay C:<oid> re-executes the run byte for byte, and fa certificate status names what supersedes it.
+fa consolidate --period FY2026-P03 --certify --book ./books/acme --json
 # Find entries by their description or leg memos, documents by their (extracted) text, and recorded findings by their narrative: one index rebuilt from the journal per query.
 fa search "office rent" --book ./books/acme --json
 # What changed since sequence 40: March balances then and now, and every entry recorded since, whatever date it carries.

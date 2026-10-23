@@ -24,7 +24,7 @@ use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, exit};
 use fa_journal::rows::{AccountRow, PeriodRow, bytes};
 use fa_model::symbols::{label, property};
-use fa_model::{Id128, RelationshipKind, legal_entity_vid, period_vid};
+use fa_model::{Id128, RelationshipKind, Writer, legal_entity_vid, period_vid};
 use fa_money::rounding::RoundingLaw;
 use fa_policy::Capability;
 use fa_statements::concordat::{
@@ -629,6 +629,41 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
         entity_codes,
         accounts,
     }))
+}
+
+impl Consolidation {
+    /// The certified output (`fa:consolidation:v1`): the period, the prefix,
+    /// the members and how each is owned, the rounding law, and the run's own
+    /// canonical bytes. `run_digest` is a digest of the latter, not a part.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(crate::certificate::CONSOLIDATION_OUTPUT_FORMAT.as_bytes())
+            .str(&self.period)
+            .u64(self.known_at.0)
+            .i32(self.effective_through.0)
+            .list(&self.members, |w, member| {
+                w.str(&member.code)
+                    .str(&member.name)
+                    .opt(member.parent.as_ref(), |w, parent| {
+                        w.str(parent);
+                    })
+                    .opt(member.ownership_bps.as_ref(), |w, bps| {
+                        w.u16(*bps);
+                    });
+            })
+            .str(self.rounding_law.name())
+            .bytes(&self.run.canonical_bytes()?);
+        w.finish()
+    }
+
+    /// Restamp the prefix the run was read at, so that certificate status can
+    /// compare a run recomputed at the head with the certified one.
+    pub(crate) fn set_known_at(&mut self, known_at: CommitSeq) {
+        self.known_at = known_at;
+        self.run.known_at = known_at.0;
+        self.run.balance_sheet.known_at = known_at.0;
+        self.run.income_statement.known_at = known_at.0;
+    }
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {

@@ -22501,6 +22501,44 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     assert_eq!(code, 0, "{again}");
     assert_eq!(text(&doc(&again), "run_digest"), digest);
 
+    // Certified (slice 2): the run is retained under a report certificate,
+    // replays to its complete robot line byte for byte, and is Current until
+    // a later contribution supersedes it.
+    let (code, certified) = run(&["consolidate", "--period", "FY2026-P03", "--certify"]);
+    assert_eq!(code, 0, "{certified}");
+    let lines: Vec<&str> = certified.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "the run and its retained certificate: {certified}"
+    );
+    assert_eq!(field(lines[0], "event"), Some("consolidation_run"));
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let certificate = doc(lines[1]);
+    let oid = text(&certificate, "oid").to_string();
+    assert_eq!(oid.len(), 64, "{certified}");
+    assert_eq!(field(lines[0], "certificate"), Some(oid.as_str()));
+    assert_eq!(text(&certificate, "output_format"), "fa:consolidation:v1");
+    assert_eq!(text(&doc(lines[0]), "run_digest"), digest);
+    let original = format!("{}\n", lines[0]);
+    let cert = format!("C:{oid}");
+    let (code, replayed) = run(&["replay", &cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original, "the complete robot line replays");
+    let (code, status) = run(&["certificate", "status", &cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "Current", "{status}");
+    // Planted: an instant selector cannot be certified by this format.
+    let (code, out) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        "2026-03-31T00:00:00Z",
+        "--certify",
+    ]);
+    assert_ne!(code, 0, "{out}");
+
     // Planted: a charge P books alone leaves the group's balances 5.00 out.
     let (code, out) = post(
         "p-alone",
@@ -22518,6 +22556,16 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
         out.contains("5.00 USD out of balance") && out.contains("P carries 35.00 USD on 1300"),
         "the refusal names the entity and the account: {out}"
     );
+    // The charge is dated in the period: the certificate is superseded by it,
+    // and still replays at its own prefix.
+    let (code, status) = run(&["certificate", "status", &cert]);
+    assert_eq!(code, 0, "{status}");
+    let status = doc(&status);
+    assert_eq!(text(&status, "status"), "SupersededBy", "{status:?}");
+    assert_eq!(arr(&status, "later_entries").len(), 1, "{status:?}");
+    let (code, replayed) = run(&["replay", &cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original);
     // The prefix before it still consolidates, to the same run.
     let earlier = at.to_string();
     let (code, out) = run(&[

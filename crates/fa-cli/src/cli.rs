@@ -11051,7 +11051,7 @@ fn prepare_certificate_history(
 /// Full history can be loaded only by a current whole-book reader. A scoped
 /// caller keeps the existing evaluation path without loading additional data;
 /// this adapter does not manufacture a scoped native-history capability.
-fn prepare_native_certificate_history(
+pub(crate) fn prepare_native_certificate_history(
     book: &mut Book,
     capability: &Capability,
     known_at: Option<CommitSeq>,

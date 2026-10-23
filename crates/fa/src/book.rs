@@ -6053,9 +6053,9 @@ impl ReadScope<'_> {
                     fa_statements::Basis::Activity => self.authority.periods(book, seq, &reached),
                 }
             }
-            ReportSelection::OpenItems { .. } | ReportSelection::FunctionalStatement(_) => {
-                self.authority.whole_book(seq)
-            }
+            ReportSelection::OpenItems { .. }
+            | ReportSelection::FunctionalStatement(_)
+            | ReportSelection::Consolidation { .. } => self.authority.whole_book(seq),
         };
         Ok(admitted.map(|()| seq))
     }

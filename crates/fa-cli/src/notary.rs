@@ -1118,6 +1118,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ReportOutput::FunctionalStatement(report),
                 ReportSelection::FunctionalStatement(_),
             ) => crate::cli::render_functional_statement(&ctx.out, &book, report, Some(&digest))?,
+            (ReportOutput::Consolidation(report), ReportSelection::Consolidation { .. }) => {
+                crate::consolidate::render_consolidation(&ctx.out, &book, report, Some(&digest))?
+            }
             _ => {
                 return Err(certificate_invalid(
                     "replayed report kind differs from the retained certificate selector",
@@ -1377,6 +1380,9 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         ReportSelection::OpenItems { .. } => {}
         ReportSelection::Statement(selection) | ReportSelection::FunctionalStatement(selection) => {
             ctx.out.effective(periods_selector(&selection.periods));
+        }
+        ReportSelection::Consolidation { period } => {
+            ctx.out.effective(format!("period:{period}"));
         }
     }
     let digest = hex(artifact.digest());
