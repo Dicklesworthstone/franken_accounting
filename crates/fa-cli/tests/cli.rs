@@ -9960,6 +9960,12 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     run2(&["rule", "check", &fee_rule]);
     run2(&["rule", "eval", &fee_rule, "--event", "EV-1001"]);
+    let (_, proposed) = run2(&["rule", "propose", &fee_rule]);
+    let fee_digest = field(&proposed, "ir_digest")
+        .unwrap_or_default()
+        .to_string();
+    run2(&["rule", "list"]);
+    run2(&["rule", "show", &fee_digest]);
     run2(&["verify", "periods"]);
     run2(&[
         "capability",
@@ -20443,6 +20449,162 @@ fn a_canon_rule_is_checked_against_the_book_and_derives_legs_from_a_recorded_eve
             "as_of=2026-03-31",
         ],
         vec!["rule", "lint", rule.as_str()],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    Ok(())
+}
+
+/// fa-c34: `fa rule propose` journals a rule version addressed by its IR
+/// digest under rule_change; the same IR again writes nothing whatever its
+/// key; `fa rule list|show` read the versions and `fa rule eval --rule`
+/// evaluates the journaled version exactly as its source file evaluates. A
+/// refused source journals nothing, and proposing needs rule_change.
+#[test]
+fn a_rule_version_is_journaled_by_its_content_and_evaluates_from_the_journal() -> std::io::Result<()>
+{
+    let (book, ev, dir) = envelope_book("canon-propose")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let (code, out, err) = run(&[
+        "event",
+        "record",
+        "--code",
+        "EV-8",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:40.00 USD",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}{err}");
+    let source = r#"rule fee_split v2 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net / 4 round HalfEven
+  credit "6000" net - net / 4 round HalfEven
+}"#;
+    let rule = write(&dir, "split.rule", source);
+    let head = |out: &str| -> i128 {
+        let envelope = doc(out);
+        let coordinate = envelope.get("coordinate").expect("book coordinate");
+        int(coordinate, "known_at").expect("coordinate known_at")
+    };
+
+    let (code, out, _) = run(&["rule", "propose", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let proposed = doc(&out);
+    assert_eq!(text(&proposed, "event"), "rule_proposed");
+    assert_eq!(proposed.get("already_recorded"), Some(&Json::Bool(false)));
+    let digest = text(&proposed, "ir_digest").to_string();
+    let (_, checked, _) = run(&["rule", "check", &rule, "--json"]);
+    assert_eq!(
+        text(&doc(&checked), "ir_digest"),
+        digest,
+        "check and propose agree"
+    );
+    let (_, tb_after_propose, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+
+    // The same text again is a retry of its default key; the same IR under
+    // another key (reformatted source) is the same version: nothing written.
+    let (code, out, _) = run(&["rule", "propose", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    let reflowed = write(&dir, "reflowed.rule", &source.replace('\n', " "));
+    let (code, out, _) = run(&["rule", "propose", &reflowed, "--key", "other", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(text(&doc(&out), "ir_digest"), digest);
+    assert_eq!(doc(&out).get("control_entry"), Some(&Json::Null), "{out}");
+
+    let (code, out, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    assert_eq!(int(&listed, "count"), Some(1), "{out}");
+    let row = &arr(&listed, "versions")[0];
+    assert_eq!(
+        (
+            text(row, "rule"),
+            int(row, "version"),
+            text(row, "ir_digest")
+        ),
+        ("fee_split", Some(2), digest.as_str())
+    );
+    let (code, out, _) = run(&["rule", "show", &digest, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let shown = doc(&out);
+    assert_eq!(text(&shown, "source"), source);
+    assert_eq!(
+        arr(&shown, "laws")
+            .iter()
+            .filter_map(Json::as_str)
+            .collect::<Vec<_>>(),
+        ["HalfEven"]
+    );
+
+    // From the journal or from the file: the same derivation.
+    let (code, from_file, _) = run(&["rule", "eval", &rule, "--event", "EV-8", "--json"]);
+    assert_eq!(code, 0, "{from_file}");
+    let (code, from_journal, _) = run(&[
+        "rule", "eval", "--rule", &digest, "--event", "EV-8", "--json",
+    ]);
+    assert_eq!(code, 0, "{from_journal}");
+    assert_eq!(
+        arr(&doc(&from_journal), "legs"),
+        arr(&doc(&from_file), "legs")
+    );
+    assert_eq!(arr(&doc(&from_journal), "legs").len(), 3);
+
+    // Proposing posts nothing.
+    let (_, tb_now, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(
+        arr(&doc(&tb_now), "rows"),
+        arr(&doc(&tb_after_propose), "rows")
+    );
+
+    // A refused source journals nothing.
+    let (_, before, _) = run(&["rule", "list", "--json"]);
+    let bad = write(
+        &dir,
+        "bad.rule",
+        r#"rule bad v1 for event Sale { debit "1000" "1.00 USD" credit "6000" "2.00 USD" }"#,
+    );
+    let (code, out, _) = run(&["rule", "propose", &bad, "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    let (_, after, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(
+        head(&after),
+        head(&before),
+        "a refused proposal writes nothing"
+    );
+
+    // Unknown and malformed addresses are usage errors.
+    for args in [
+        vec!["rule", "show", "00"],
+        vec![
+            "rule",
+            "show",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ],
+        vec![
+            "rule",
+            "eval",
+            "--rule",
+            digest.as_str(),
+            rule.as_str(),
+            "--event",
+            "EV-8",
+        ],
     ] {
         let mut argv = args.clone();
         argv.push("--json");

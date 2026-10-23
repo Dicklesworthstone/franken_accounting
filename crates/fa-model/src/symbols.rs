@@ -81,6 +81,7 @@ symbols!(
         (PROPOSED_ADJUSTMENT, "ProposedAdjustment", 53),
         (RECURRING_SCHEDULE, "RecurringSchedule", 54),
         (EXTERNAL_SUBLEDGER_BATCH, "ExternalSubledgerBatch", 55),
+        (RULE_VERSION, "RuleVersion", 56),
     ]
 );
 

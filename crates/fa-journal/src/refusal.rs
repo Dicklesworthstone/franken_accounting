@@ -470,6 +470,10 @@ pub mod code {
     /// the other registered kinds) outside its valid-time effectivity on
     /// the entry's effective date (plan §4.1).
     pub const DIMENSION_NOT_EFFECTIVE: &str = "FA-REF-195";
+    /// A Canon rule source the checker refuses (a parse, unit, law, name or
+    /// balance-proof failure), or an evaluation that cannot be computed
+    /// exactly over the event it was given (plan §10.3).
+    pub const CANON_RULE: &str = "FA-REF-196";
     /// The migration run is not `Open`: it was finalized or abandoned, so it
     /// takes no more chunks and no second Finalize or Abandon (plan §8.6).
     pub const RUN_NOT_OPEN: &str = "FA-REF-130";

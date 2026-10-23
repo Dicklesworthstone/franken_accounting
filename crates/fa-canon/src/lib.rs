@@ -28,6 +28,7 @@ mod eval;
 mod ir;
 mod lex;
 mod parse;
+mod proof;
 
 use core::fmt;
 
@@ -35,7 +36,7 @@ pub use check::compile;
 pub use eval::{Derivation, DerivedLeg, EvalError, InputValue, Inputs, evaluate};
 pub use ir::{
     CANON_INPUTS_DOMAIN, CANON_IR_DOMAIN, CompiledRule, DateSource, Dependencies, InputDecl,
-    InputType, LegTemplate, Node,
+    InputType, IrError, LegTemplate, Node,
 };
 pub use lex::MAX_SOURCE_BYTES;
 

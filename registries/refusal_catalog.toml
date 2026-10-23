@@ -1203,7 +1203,7 @@ fix = "tag the leg with a value of that dimension effective on the entry's date 
 [[refusal]]
 code = "FA-REF-196"
 name = "CANON_RULE"
-owners = ["fa"]
+owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §10.3 (Canon: a total, statically typed rule language whose units, laws and balance are checked before it runs; a rule that cannot be evaluated fails closed with a typed error instead of posting a guess)"
 fix = "revise the rule at the line and column the refusal names and run fa rule check <file> again; for an evaluation, choose an event of the rule's kind that carries each resource the rule reads exactly once, in the unit it reads it"

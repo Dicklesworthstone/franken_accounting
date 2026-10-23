@@ -974,6 +974,54 @@ impl Book {
         )))
     }
 
+    /// Admit `capability` to change rules before anything is observed.
+    pub fn admit_rule_change(
+        &self,
+        principal: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.admit_rule_change(&self.purposes(), principal, capability))
+    }
+
+    /// Journal a Canon rule version (bead fa-c34) under `rule_change`
+    /// authority; the kernel compiles the source itself.
+    pub fn propose_rule_version(
+        &mut self,
+        source: &str,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::rule::RuleVersionRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.propose_rule_version(
+            &purposes, source, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Every rule version at `known_at` (the head when `None`), with the
+    /// prefix read, under current whole-book read authority.
+    pub fn rule_versions(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::rule::RuleVersionRow>)> {
+        with_store!(&self.store, core => core.rule_versions(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
+    /// The rule version addressed by `ir_digest` at `known_at`, if any.
+    pub fn rule_version(
+        &self,
+        ir_digest: &[u8; 32],
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Option<crate::rule::RuleVersionRow>)> {
+        with_store!(&self.store, core => core.rule_version(
+            &self.purposes(), ir_digest, known_at, capability,
+        ))
+    }
+
     /// Every registered kind's dimension value at `known_at` (the head when
     /// `None`), with the prefix read, under current whole-book read authority.
     pub fn dimension_values(
