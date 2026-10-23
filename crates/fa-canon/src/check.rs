@@ -67,6 +67,7 @@ pub fn compile(source: &str, units: &UnitRegistry) -> Result<CompiledRule, Canon
     }
     let mut legs = Vec::new();
     let mut effective: Option<DateSource> = None;
+    let mut reverses: Option<DateSource> = None;
     for stmt in &rule.stmts {
         match stmt {
             Stmt::Let { name, expr, pos } => {
@@ -124,21 +125,18 @@ pub fn compile(source: &str, units: &UnitRegistry) -> Result<CompiledRule, Canon
                 if effective.is_some() {
                     return Err(pos.error("a rule names its effective date once"));
                 }
-                effective = Some(match date {
-                    DateRef::Occurred => DateSource::Occurred,
-                    DateRef::Name(name) => match checker.names.get(name) {
-                        Some(Bound::Input(index))
-                            if checker.inputs[*index as usize].ty == InputType::Date =>
-                        {
-                            DateSource::Input(*index)
-                        }
-                        _ => {
-                            return Err(pos.error(format!(
-                                "`{name}` is not a declared date input; declare it as `inputs {{ {name}: date }}`"
-                            )));
-                        }
-                    },
-                });
+                effective = Some(checker.date(date, *pos)?);
+            }
+            Stmt::Reverses { date, pos } => {
+                if reverses.is_some() {
+                    return Err(pos.error("a rule names its reversal date once"));
+                }
+                if produces != Produces::Adjusting {
+                    return Err(pos.error(
+                        "only an Adjusting entry schedules its reversal; declare `produces Adjusting`",
+                    ));
+                }
+                reverses = Some(checker.date(date, *pos)?);
             }
         }
     }
@@ -157,6 +155,7 @@ pub fn compile(source: &str, units: &UnitRegistry) -> Result<CompiledRule, Canon
         slots: slots.into_iter().map(|t| t.node).collect(),
         legs,
         effective: effective.unwrap_or(DateSource::Occurred),
+        reverses,
         units: unit_refs,
     })
     .map_err(|e| Pos { line: 1, column: 1 }.error(e.0))
@@ -184,6 +183,23 @@ struct Checker<'a> {
 }
 
 impl Checker<'_> {
+    /// `event.occurred_on`, or a declared date input.
+    fn date(&self, date: &DateRef, pos: Pos) -> Result<DateSource, CanonError> {
+        match date {
+            DateRef::Occurred => Ok(DateSource::Occurred),
+            DateRef::Name(name) => match self.names.get(name) {
+                Some(Bound::Input(index))
+                    if self.inputs[*index as usize].ty == InputType::Date =>
+                {
+                    Ok(DateSource::Input(*index))
+                }
+                _ => Err(pos.error(format!(
+                    "`{name}` is not a declared date input; declare it as `inputs {{ {name}: date }}`"
+                ))),
+            },
+        }
+    }
+
     fn bind(&mut self, name: &str, bound: Bound, pos: Pos) -> Result<(), CanonError> {
         if self.names.insert(name.to_string(), bound).is_some() {
             return Err(pos.error(format!(

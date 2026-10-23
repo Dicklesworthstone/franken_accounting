@@ -81,6 +81,9 @@ pub fn evaluation_refusal(rule: &CompiledRule, event: &str, error: &EvalError) -
         EvalError::InputType { name, .. } => {
             format!("supply --input {name}=<value> in the declared type")
         }
+        EvalError::ReversalNotAfter { .. } => {
+            "supply a reversal date after the effective date, or revise the rule's reverses".to_string()
+        }
         EvalError::Overflow { .. } | EvalError::NegativeLeg { .. } | EvalError::Encode(_) => {
             "revise the rule so every leg is a non-negative amount within range for this event"
                 .to_string()
@@ -1102,12 +1105,24 @@ pub fn rule_derived_proposal(
         supersession: Vec::new(),
         pending: None,
         external_ids: Vec::new(),
-        extensions: vec![(
-            fa_model::entry::RULE_INPUTS_EXTENSION,
-            derived.inputs.to_vec(),
-        )],
+        extensions: derived_extensions(derived.derivation, derived.inputs),
         tags: Vec::new(),
     })
+}
+
+/// The extensions a derivation determines, in tag order: the reversal an
+/// Adjusting rule schedules (`fa:auto-reverse:v1`, exact negation) and the
+/// recorded inputs (extension 32).
+fn derived_extensions(derivation: &Derivation, inputs: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    let mut extensions = Vec::new();
+    if let Some(reverse_on) = derivation.reverse_on {
+        extensions.push((
+            fa_model::entry::AUTO_REVERSE_EXTENSION,
+            crate::schedule::auto_reverse_bytes(reverse_on, crate::schedule::RULE_EXACT_NEGATION),
+        ));
+    }
+    extensions.push((fa_model::entry::RULE_INPUTS_EXTENSION, inputs.to_vec()));
+    extensions
 }
 
 /// FA-INV-05 `rule-reproduction`, judged inside the posting transaction:
@@ -1115,8 +1130,9 @@ pub fn rule_derived_proposal(
 /// force (by its name's witnessed bindings) on the entry's effective date,
 /// and re-running it over the witnessed cited event with the recorded
 /// inputs reproduces everything a derivation determines: the legs, the
-/// effective date and the class, the cited event's evidence, and nothing a
-/// rule does not derive (no other extension, supersession, pending block,
+/// effective date and the class, the cited event's evidence, the reversal an
+/// Adjusting rule schedules, and nothing a rule does not derive (no other
+/// extension, supersession, pending block,
 /// control, document date, period override, base totals, external ids or
 /// tags). Only the description, key and author are the poster's.
 pub(crate) fn verify_rule_origin<V: Vfs + Clone>(
@@ -1234,8 +1250,8 @@ pub(crate) fn verify_rule_origin<V: Vfs + Clone>(
             "evidence other than the cited event's",
         ),
         (
-            proposal.extensions.len() != 1,
-            "an extension besides its inputs",
+            proposal.extensions != derived_extensions(&derivation, recorded),
+            "an extension besides its inputs and the reversal it schedules",
         ),
         (!proposal.supersession.is_empty(), "supersession"),
         (proposal.pending.is_some(), "a pending block"),

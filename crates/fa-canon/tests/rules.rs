@@ -330,6 +330,61 @@ fn a_rule_names_the_entry_class_it_produces() {
     }
 }
 
+/// An Adjusting rule schedules its entry's reversal (`reverses`): a date
+/// after the effective date, carried by the IR and the derivation.
+#[test]
+fn an_adjusting_rule_schedules_its_reversal_after_its_effective_date() {
+    let units = units();
+    let source = r#"rule accrue_rent v1 for event Accrual produces Adjusting {
+  inputs { back: date }
+  let rent = event.resource("rent", "USD")
+  debit "6000" rent
+  credit "2100" rent
+  reverses back
+}"#;
+    let rule = compile(source, &units).unwrap();
+    assert_eq!(CompiledRule::decode(rule.ir(), &units).unwrap(), rule);
+    let accrual = event(EventKind::Accrual, vec![("rent", usd(&units, 10_000))]);
+    let on = |day: DateDay| {
+        let mut inputs = Inputs::new();
+        inputs.set("back", InputValue::Date(day));
+        inputs
+    };
+    let april = DateDay::from_ymd(2026, 4, 1).unwrap();
+    let derived = evaluate(&rule, &accrual, &on(april)).unwrap();
+    assert_eq!(derived.reverse_on, Some(april));
+    assert_eq!(derived.effective, accrual.occurred_on);
+    // A reversal on or before the effective date cannot be scheduled.
+    assert!(matches!(
+        evaluate(&rule, &accrual, &on(accrual.occurred_on)),
+        Err(EvalError::ReversalNotAfter { .. })
+    ));
+    // Without the clause there is no reversal, and the address moves.
+    let plain = compile(&source.replace("reverses back", ""), &units).unwrap();
+    assert_ne!(plain.ir_digest(), rule.ir_digest());
+    assert_eq!(
+        evaluate(&plain, &accrual, &on(april)).unwrap().reverse_on,
+        None
+    );
+    for (changed, needle) in [
+        (
+            source.replace(" produces Adjusting", ""),
+            "only an Adjusting entry schedules its reversal",
+        ),
+        (
+            source.replace("reverses back", "reverses back reverses back"),
+            "names its reversal date once",
+        ),
+        (
+            source.replace("reverses back", "reverses rent"),
+            "not a declared date input",
+        ),
+    ] {
+        let error = compile(&changed, &units).unwrap_err();
+        assert!(error.message.contains(needle), "{changed}\n=> {error}");
+    }
+}
+
 #[test]
 fn units_laws_names_and_kinds_are_checked_before_anything_runs() {
     let units = units();

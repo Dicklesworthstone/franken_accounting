@@ -205,6 +205,8 @@ pub(crate) struct Parts {
     pub slots: Vec<Node>,
     pub legs: Vec<LegTemplate>,
     pub effective: DateSource,
+    /// When the entry reverses (an Adjusting rule's `reverses`).
+    pub reverses: Option<DateSource>,
     pub units: BTreeMap<UnitId, UnitRef>,
 }
 
@@ -221,6 +223,7 @@ pub struct CompiledRule {
     slots: Vec<Node>,
     legs: Vec<LegTemplate>,
     effective: DateSource,
+    reverses: Option<DateSource>,
     units: BTreeMap<UnitId, UnitRef>,
     dependencies: Dependencies,
     ir: Vec<u8>,
@@ -387,12 +390,19 @@ fn validate(parts: &Parts) -> Result<(), IrError> {
             last = Some(kind.id);
         }
     }
-    if let DateSource::Input(index) = parts.effective
-        && parts.inputs.get(index as usize).map(|i| &i.ty) != Some(&InputType::Date)
-    {
-        return Err(IrError(format!(
-            "input #{index} is not a declared date input"
-        )));
+    for date in std::iter::once(parts.effective).chain(parts.reverses) {
+        if let DateSource::Input(index) = date
+            && parts.inputs.get(index as usize).map(|i| &i.ty) != Some(&InputType::Date)
+        {
+            return Err(IrError(format!(
+                "input #{index} is not a declared date input"
+            )));
+        }
+    }
+    if parts.reverses.is_some() && parts.produces != Produces::Adjusting {
+        return Err(IrError(
+            "only an Adjusting rule schedules its entry's reversal".into(),
+        ));
     }
     Ok(())
 }
@@ -463,6 +473,7 @@ impl CompiledRule {
             slots,
             legs,
             effective,
+            reverses,
             units,
         } = parts;
         Ok(Self {
@@ -474,6 +485,7 @@ impl CompiledRule {
             slots,
             legs,
             effective,
+            reverses,
             units,
             dependencies,
             ir,
@@ -534,6 +546,12 @@ impl CompiledRule {
     #[must_use]
     pub fn effective(&self) -> DateSource {
         self.effective
+    }
+
+    /// When an Adjusting rule's entry reverses, if it says.
+    #[must_use]
+    pub fn reverses(&self) -> Option<DateSource> {
+        self.reverses
     }
 
     #[must_use]
@@ -637,6 +655,17 @@ fn encode(parts: &Parts) -> Result<Vec<u8>, EncodeError> {
         }
         DateSource::Input(index) => {
             w.u8(1).u32(index);
+        }
+    }
+    match parts.reverses {
+        None => {
+            w.u8(0);
+        }
+        Some(DateSource::Occurred) => {
+            w.u8(1);
+        }
+        Some(DateSource::Input(index)) => {
+            w.u8(2).u32(index);
         }
     }
     w.finish()
@@ -777,6 +806,12 @@ fn read(ir: &[u8], registry: &UnitRegistry) -> Result<Parts, IrError> {
         1 => DateSource::Input(r.u32("rule.effective.input")?),
         tag => return Err(r.bad_tag("rule.effective", tag).into()),
     };
+    let reverses = match r.u8("rule.reverses")? {
+        0 => None,
+        1 => Some(DateSource::Occurred),
+        2 => Some(DateSource::Input(r.u32("rule.reverses.input")?)),
+        tag => return Err(r.bad_tag("rule.reverses", tag).into()),
+    };
     r.finish()?;
     let mut parts = Parts {
         name,
@@ -787,6 +822,7 @@ fn read(ir: &[u8], registry: &UnitRegistry) -> Result<Parts, IrError> {
         slots,
         legs: Vec::new(),
         effective,
+        reverses,
         units,
     };
     // A leg's unit is its amount's; validation re-checks it.

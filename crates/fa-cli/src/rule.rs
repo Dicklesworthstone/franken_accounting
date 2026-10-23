@@ -35,7 +35,7 @@ const DERIVE: &str =
     "fa rule derive [--rule <ir_digest> [--input <name>=<value>]... [--key K]] --event <code|vid>";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 const TEST: &str = "fa rule test (<rule-file|-> | --rule <ir_digest>) --golden <file|dir>...";
-const GOLDEN: &str = "a golden case: [event] kind = \"sale\", occurred_on = \"2026-03-12\", resources = [\"net:40.00 USD\"]; optional [inputs] as_of = \"2026-03-31\"; [expect] legs = [\"debit 1000 40.00 USD\", \"credit 6000 40.00 USD region=EU\"] with an optional effective = \"2026-03-12\", or refused = \"<part of the refusal>\"";
+const GOLDEN: &str = "a golden case: [event] kind = \"sale\", occurred_on = \"2026-03-12\", resources = [\"net:40.00 USD\"]; optional [inputs] as_of = \"2026-03-31\"; [expect] legs = [\"debit 1000 40.00 USD\", \"credit 6000 40.00 USD region=EU\"] with an optional effective = \"2026-03-12\" and, for a rule that reverses, reverse_on = \"2026-04-01\", or refused = \"<part of the refusal>\"";
 const BACKTEST: &str = "fa rule backtest (<rule-file|-> | --rule <ir_digest>) [--compare <ir_digest>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 
 pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -846,12 +846,16 @@ fn eval(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         })?;
     ctx.out.known_at(rea.known_at);
     let mut human = vec![format!(
-        "rule {} v{} over event {} derives {} legs effective {} (nothing is posted)",
+        "rule {} v{} over event {} derives {} legs effective {}{} (nothing is posted)",
         rule.name(),
         rule.version(),
         event.spec.code,
         derived.legs.len(),
-        derived.effective.render()
+        derived.effective.render(),
+        derived.reverse_on.map_or(String::new(), |day| format!(
+            ", reversing on {}",
+            day.render()
+        ))
     )];
     human.extend(derived.legs.iter().map(|leg| {
         format!(
@@ -873,6 +877,7 @@ fn eval(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ("event_digest", s(hex(&derived.event_digest))),
         ("inputs_digest", s(hex(&derived.inputs_digest))),
         ("effective", s(derived.effective.render())),
+        ("reverse_on", reverse_json(derived.reverse_on)),
         (
             "legs",
             Json::Arr(
@@ -1110,6 +1115,14 @@ fn backtest(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ),
             ("effective", effective(mine.as_ref().ok())),
             ("baseline_effective", effective(theirs)),
+            (
+                "reverse_on",
+                reverse_json(mine.as_ref().ok().and_then(|derived| derived.reverse_on)),
+            ),
+            (
+                "baseline_reverse_on",
+                reverse_json(theirs.and_then(|derived| derived.reverse_on)),
+            ),
             ("legs", legs(mine.as_ref().ok())),
             ("baseline_legs", legs(theirs)),
             ("detail", detail.map_or(Json::Null, s)),
@@ -1147,10 +1160,17 @@ fn backtest(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Two derivations post the same entry: the same effective date and the
-/// same legs, in any order.
+/// Two derivations post the same entry: the same effective date, the same
+/// reversal (or none), and the same legs, in any order.
 fn same_entry(a: &Derivation, b: &Derivation, units: &fa_money::UnitRegistry) -> bool {
-    a.effective == b.effective && leg_keys(&a.legs, units) == leg_keys(&b.legs, units)
+    a.effective == b.effective
+        && a.reverse_on == b.reverse_on
+        && leg_keys(&a.legs, units) == leg_keys(&b.legs, units)
+}
+
+/// A derivation's reversal date, or null.
+fn reverse_json(day: Option<DateDay>) -> Json {
+    day.map_or(Json::Null, |day| s(day.render()))
 }
 
 /// `fa rule test (<rule-file|-> | --rule <ir_digest>) --golden <file|dir>...`
@@ -1240,8 +1260,25 @@ fn test(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let case = golden_case(file, text, &rule, units, &book.context().seal_key)?;
         let derived = fa::rule::evaluate(&rule, &case.event, &case.inputs);
         let failure = match (&derived, &case.expect) {
-            (Ok(derived), Expect::Entry { effective, legs }) => {
+            (
+                Ok(derived),
+                Expect::Entry {
+                    effective,
+                    reverse_on,
+                    legs,
+                },
+            ) => {
                 let mut wrong = Vec::new();
+                if derived.reverse_on != *reverse_on {
+                    let render = |day: Option<DateDay>| {
+                        day.map_or_else(|| "no reversal".to_string(), |day| day.render())
+                    };
+                    wrong.push(format!(
+                        "reverses on {} where the golden expects {}",
+                        render(derived.reverse_on),
+                        render(*reverse_on)
+                    ));
+                }
                 if let Some(effective) = effective
                     && *effective != derived.effective
                 {
@@ -1295,6 +1332,10 @@ fn test(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (
                 "effective",
                 ok.map_or(Json::Null, |derived| s(derived.effective.render())),
+            ),
+            (
+                "reverse_on",
+                reverse_json(ok.and_then(|derived| derived.reverse_on)),
             ),
             (
                 "legs",
@@ -1387,6 +1428,8 @@ fn render_keys(keys: &[LegKey]) -> String {
 enum Expect {
     Entry {
         effective: Option<DateDay>,
+        /// Compared always: a case without `reverse_on` expects no reversal.
+        reverse_on: Option<DateDay>,
         legs: Vec<LegKey>,
     },
     Refused(String),
@@ -1510,6 +1553,10 @@ fn golden_case(
                 effective: string(expect, "effective")
                     .map_err(bad)?
                     .map(|text| day(text, "effective"))
+                    .transpose()?,
+                reverse_on: string(expect, "reverse_on")
+                    .map_err(bad)?
+                    .map(|text| day(text, "reverse_on"))
                     .transpose()?,
                 legs: keys,
             }

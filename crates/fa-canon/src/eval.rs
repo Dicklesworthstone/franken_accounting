@@ -53,6 +53,9 @@ pub struct Derivation {
     pub event_digest: [u8; 32],
     pub inputs_digest: [u8; 32],
     pub effective: DateDay,
+    /// When the entry reverses (an Adjusting rule's `reverses`): always
+    /// after `effective`.
+    pub reverse_on: Option<DateDay>,
     pub legs: Vec<DerivedLeg>,
 }
 
@@ -91,6 +94,11 @@ pub enum EvalError {
     NegativeLeg {
         account: String,
         amount: Amount,
+    },
+    /// The reversal date is not after the effective date.
+    ReversalNotAfter {
+        effective: DateDay,
+        reverse_on: DateDay,
     },
     Encode(String),
 }
@@ -145,6 +153,15 @@ impl fmt::Display for EvalError {
                 f,
                 "the leg on {account} evaluates to {} minor units below zero; a leg is never negative, so the rule must be revised for this event",
                 amount.mantissa.unsigned_abs()
+            ),
+            Self::ReversalNotAfter {
+                effective,
+                reverse_on,
+            } => write!(
+                f,
+                "the reversal date {} does not follow the effective date {}; a scheduled reversal comes after the entry it reverses",
+                reverse_on.render(),
+                effective.render()
             ),
             Self::Encode(message) => write!(f, "canonical encoding failed: {message}"),
         }
@@ -307,27 +324,36 @@ pub fn evaluate(
             dims: leg.dims.clone(),
         });
     }
-    let effective = match rule.effective() {
-        DateSource::Occurred => event.occurred_on,
+    let date = |source: DateSource| match source {
+        DateSource::Occurred => Ok(event.occurred_on),
         DateSource::Input(index) => match rule
             .inputs()
             .get(index as usize)
             .and_then(|decl| inputs.0.get(&decl.name))
         {
-            Some(InputValue::Date(day)) => *day,
-            _ => {
-                return Err(EvalError::InputType {
-                    name: rule.inputs()[index as usize].name.clone(),
-                    expected: InputType::Date,
-                });
-            }
+            Some(InputValue::Date(day)) => Ok(*day),
+            _ => Err(EvalError::InputType {
+                name: rule.inputs()[index as usize].name.clone(),
+                expected: InputType::Date,
+            }),
         },
     };
+    let effective = date(rule.effective())?;
+    let reverse_on = rule.reverses().map(date).transpose()?;
+    if let Some(reverse_on) = reverse_on
+        && reverse_on <= effective
+    {
+        return Err(EvalError::ReversalNotAfter {
+            effective,
+            reverse_on,
+        });
+    }
     Ok(Derivation {
         rule_version_oid: rule.ir_digest(),
         event_digest,
         inputs_digest: domain_digest(CANON_INPUTS_DOMAIN, &[&inputs_bytes]),
         effective,
+        reverse_on,
         legs,
     })
 }

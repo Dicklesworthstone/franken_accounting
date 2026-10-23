@@ -1,12 +1,14 @@
 //! The rule grammar (plan §10.3), parsed into an untyped syntax tree:
 //!
 //! ```text
-//! rule    := 'rule' NAME 'v'N 'for' 'event' KIND '{' [inputs] stmt* '}'
+//! rule    := 'rule' NAME 'v'N 'for' 'event' KIND ['produces' CLASS] '{' [inputs] stmt* '}'
 //! inputs  := 'inputs' '{' NAME ':' type (',' NAME ':' type)* [','] '}'
 //! type    := 'date' | 'amount' '(' "UNIT" ')'
 //! stmt    := 'let' NAME '=' expr
 //!          | ('debit' | 'credit') "ACCOUNT" expr ['dims' '{' DIM '=' "CODE" (',' …)* [','] '}']
-//!          | 'effective' ('event' '.' 'occurred_on' | NAME)
+//!          | 'effective' date
+//!          | 'reverses' date
+//! date    := 'event' '.' 'occurred_on' | NAME
 //! expr    := term (('+' | '-') term)*
 //! term    := factor (('*' | '/') INT)* ['round' LAW]
 //! factor  := '(' expr ')' | "AMOUNT UNIT" | NAME | 'event' '.' 'resource' '(' "LABEL" ',' "UNIT" ')'
@@ -27,7 +29,7 @@ const MAX_INPUTS: usize = 64;
 /// Words a name may not be. `date`, `amount`, `occurred_on` and `resource`
 /// mean something only where the grammar expects them (a type, or after
 /// `event.`), so they stay free for lets and inputs.
-const KEYWORDS: [&str; 10] = [
+const KEYWORDS: [&str; 11] = [
     "rule",
     "for",
     "event",
@@ -37,6 +39,7 @@ const KEYWORDS: [&str; 10] = [
     "credit",
     "dims",
     "effective",
+    "reverses",
     "round",
 ];
 
@@ -91,6 +94,11 @@ pub(crate) enum Stmt {
         pos: Pos,
     },
     Effective {
+        date: DateRef,
+        pos: Pos,
+    },
+    /// The date an Adjusting rule's entry reverses on.
+    Reverses {
         date: DateRef,
         pos: Pos,
     },
@@ -263,6 +271,18 @@ impl Parser {
         })
     }
 
+    /// `event.occurred_on`, or a declared date input by name.
+    fn date(&mut self) -> Result<DateRef, CanonError> {
+        if self.peek_ident("event") {
+            self.at = self.at.saturating_add(1);
+            self.symbol('.')?;
+            self.keyword("occurred_on")?;
+            Ok(DateRef::Occurred)
+        } else {
+            Ok(DateRef::Name(self.name("a declared date input")?.0))
+        }
+    }
+
     fn inputs(&mut self) -> Result<Vec<SourceInput>, CanonError> {
         self.keyword("inputs")?;
         self.symbol('{')?;
@@ -330,18 +350,18 @@ impl Parser {
             }
             Some(Token::Ident(w)) if w == "effective" => {
                 self.at = self.at.saturating_add(1);
-                let date = if self.peek_ident("event") {
-                    self.at = self.at.saturating_add(1);
-                    self.symbol('.')?;
-                    self.keyword("occurred_on")?;
-                    DateRef::Occurred
-                } else {
-                    DateRef::Name(self.name("a declared date input")?.0)
-                };
+                let date = self.date()?;
                 Ok(Stmt::Effective { date, pos })
             }
+            Some(Token::Ident(w)) if w == "reverses" => {
+                self.at = self.at.saturating_add(1);
+                let date = self.date()?;
+                Ok(Stmt::Reverses { date, pos })
+            }
             None => Err(pos.error("the rule ended before its closing `}`")),
-            _ => Err(pos.error("expected `let`, `debit`, `credit`, `effective` or `}`")),
+            _ => {
+                Err(pos.error("expected `let`, `debit`, `credit`, `effective`, `reverses` or `}`"))
+            }
         }
     }
 

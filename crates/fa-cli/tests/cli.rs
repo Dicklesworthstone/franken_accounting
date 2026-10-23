@@ -21194,7 +21194,36 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
 /// soft-closed period and refuses the same derivation as an Original.
 #[test]
 fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> {
-    let (book, ev, dir) = envelope_book("canon-adjusting")?;
+    // A book that declares its civil-day policy, so an entry can schedule
+    // its reversal (plan §7.7).
+    let dir = tmp("canon-adjusting")?;
+    let book = dir.join("book");
+    for args in [
+        &[
+            "book",
+            "create",
+            "--name",
+            "Accrual Co",
+            "--time-zone",
+            "UTC",
+            "--json",
+        ][..],
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+        &["period", "open", "FY2026-P03", "--json"],
+    ] {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        if args[0] == "book" {
+            let chart = write(
+                &dir,
+                "chart.json",
+                r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+            );
+            let (code, out, err) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+            assert_eq!(code, 0, "{out}\n{err}");
+        }
+    }
+    let ev = source_doc(&dir, &book);
     let run = |args: &[&str]| fa(Some(&book), args);
     let ok = |args: &[&str]| -> String {
         let (code, out, err) = run(args);
@@ -21216,15 +21245,17 @@ fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> 
         "rent:100.00 USD",
         "--json",
     ]);
-    let activate = |name: &str, header: &str| -> (String, String) {
+    let activate = |name: &str, header: &str, reverses: &str| -> (String, String) {
         let source = write(
             &dir,
             &format!("{name}.rule"),
             &format!(
                 r#"rule {name} v1 for event Accrual {header} {{
+  inputs {{ back: date }}
   let rent = event.resource("rent", "USD")
   debit "6000" rent
   credit "1000" rent
+  {reverses}
 }}"#
             ),
         );
@@ -21263,8 +21294,8 @@ fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> 
         ]);
         (text(&checked, "produces").to_string(), digest)
     };
-    let (accrue_class, accrue) = activate("accrue_rent", "produces Adjusting");
-    let (plain_class, plain) = activate("plain_rent", "");
+    let (accrue_class, accrue) = activate("accrue_rent", "produces Adjusting", "reverses back");
+    let (plain_class, plain) = activate("plain_rent", "", "");
     assert_eq!(
         (accrue_class.as_str(), plain_class.as_str()),
         ("Adjusting", "Original")
@@ -21276,7 +21307,15 @@ fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> 
     // The Original derivation is the period law's refusal (exit 7), not
     // Canon's.
     let (code, out, _) = run(&[
-        "rule", "derive", "--rule", &plain, "--event", "EV-RENT", "--json",
+        "rule",
+        "derive",
+        "--rule",
+        &plain,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-04-01",
+        "--json",
     ]);
     assert_eq!(code, 7, "{out}");
     assert_ne!(field(&out, "refusal_id"), Some("FA-REF-196"), "{out}");
@@ -21284,8 +21323,33 @@ fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> 
         out.contains("is not admissible") && out.contains("SoftClosed"),
         "{out}"
     );
+    // A reversal date on or before the effective date is Canon's refusal.
+    let (code, out, _) = run(&[
+        "rule",
+        "derive",
+        "--rule",
+        &accrue,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
     let posted = ok(&[
-        "rule", "derive", "--rule", &accrue, "--event", "EV-RENT", "--json",
+        "rule",
+        "derive",
+        "--rule",
+        &accrue,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-04-01",
+        "--json",
     ]);
     assert!(posted.contains("\"event\":\"posted\""), "{posted}");
     assert_eq!(text(&doc(&posted), "class"), "Adjusting");
@@ -21295,6 +21359,73 @@ fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> 
         shown.contains("Adjusting") && shown.contains("100.00 USD"),
         "{shown}"
     );
+
+    // The entry carries the exact-negation reversal the rule scheduled, and
+    // the kernel refuses a derivation whose reversal was moved.
+    let keys = fa::BookKeys::load(&book.join("book.keys")).unwrap();
+    let mut lib = fa::Book::open_dir(&book, keys, fa::Entropy::deterministic(0xad)).unwrap();
+    let vid = fgdb_types::VId(u128::from_str_radix(&entry, 16).unwrap());
+    let (posted_entry, _) = lib.read_entry(vid).unwrap().unwrap();
+    let april = fa_time::DateDay::parse("2026-04-01").unwrap();
+    assert_eq!(
+        fa_journal::schedule::auto_reverse(&posted_entry.proposal).unwrap(),
+        Some((april, fa_journal::schedule::RULE_EXACT_NEGATION))
+    );
+    let operator = fa_model::principal_vid("operator");
+    let cap = fa::Capability::embedded(operator, &["read", "post"]).unwrap();
+    let mut ir = [0u8; 32];
+    for (i, byte) in ir.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&accrue[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    let rule = lib
+        .rule_version(&ir, None, &cap)
+        .unwrap()
+        .unwrap()
+        .1
+        .unwrap()
+        .rule;
+    let event = lib
+        .read_event(fa_model::event_vid(lib.context().book_id, "EV-RENT"), None)
+        .unwrap()
+        .unwrap();
+    let mut inputs = fa::rule::Inputs::new();
+    inputs.set("back", fa::rule::InputValue::Date(april));
+    let inputs_bytes = fa::rule::encode_inputs(&rule, &inputs).unwrap();
+    let mut moved = fa::rule::evaluate(&rule, &event.spec, &inputs).unwrap();
+    moved.reverse_on = fa_time::DateDay::parse("2026-04-15").ok();
+    let description = fa_model::Erasable::seal(
+        &"moved".to_string(),
+        None,
+        &lib.context().seal_key,
+        [3u8; 32],
+        [4u8; 24],
+    );
+    let proposal = fa::rule::rule_derived_proposal(
+        lib.context(),
+        &fa::rule::RuleDerivation {
+            rule: &rule,
+            event: event.vid,
+            inputs: &inputs_bytes,
+            derivation: &moved,
+            evidence: &event.spec.evidence,
+        },
+        operator,
+        b"moved-reversal",
+        description,
+    )
+    .unwrap();
+    let before = lib.head().unwrap();
+    let refused = lib
+        .post(fa_journal::PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            capability: cap,
+            plan_certificate: None,
+        })
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-196", "{refused:?}");
+    assert_eq!(lib.head().unwrap(), before);
     Ok(())
 }
 
