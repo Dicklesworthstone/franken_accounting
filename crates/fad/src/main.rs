@@ -513,7 +513,7 @@ mod tests {
         assert!(text.contains("franken_networkx@9d710b1c"), "{text}");
         assert!(text.contains("fastmcp-rust@=0.12.0"), "{text}");
         assert!(text.contains("frankensympy@bd1ad68a"), "{text}");
-        assert!(text.contains("registries: schema_v=1, epochs=14"), "{text}");
+        assert!(text.contains("registries: schema_v=1, epochs=15"), "{text}");
 
         let meta = cli::version_metadata_json("fad");
         assert_eq!(meta.get("binary").and_then(Json::as_str), Some("fad"));
@@ -526,7 +526,32 @@ mod tests {
             .get("registry_epochs")
             .and_then(Json::as_arr)
             .expect("registry_epochs array");
-        assert_eq!(epochs.len(), 14);
+        // The stack lock is itself a registry epoch; the older count of
+        // fourteen omitted its registered `foundations` fingerprint.
+        let names: Vec<&str> = epochs
+            .iter()
+            .map(|epoch| epoch.get("name").and_then(Json::as_str).expect("epoch name"))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "account_types",
+                "admissibility",
+                "entry_classes",
+                "exit_codes",
+                "foundation_dependencies",
+                "invariants",
+                "intents",
+                "limits",
+                "procedures",
+                "reason_codes",
+                "rounding_laws",
+                "symbols",
+                "units",
+                "verbs",
+                "foundations",
+            ]
+        );
         for epoch in epochs {
             let digest = epoch
                 .get("canonical_digest")
