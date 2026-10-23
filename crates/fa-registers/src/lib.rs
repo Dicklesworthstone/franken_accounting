@@ -52,15 +52,16 @@ pub use entity::{
 };
 pub use explain::{BalanceExplanation, explain_balance};
 pub use fx::{
-    CtaRollForwardSchedule, FUNCTIONAL_FOLD_DIGEST_DOMAIN, FUNCTIONAL_STOCK_DIGEST_DOMAIN,
-    FunctionalCell, FunctionalCellKey, FunctionalFold, FunctionalStockCell, FunctionalStockCellKey,
-    FunctionalStockFold, REMEASUREMENT_CERTIFICATE_DOMAIN, RemeasurementBasis,
-    RemeasurementInputLine, RemeasurementLineResult, RemeasurementRunResult,
-    TRANSLATION_CERTIFICATE_DOMAIN, TranslatedStatement, TranslationInputLine, TranslationItemKind,
-    TranslationLineResult, fold_functional_stock, fold_period_functional,
+    CtaRollForwardSchedule, FUNCTIONAL_ACTIVITY_DIGEST_DOMAIN, FUNCTIONAL_FOLD_DIGEST_DOMAIN,
+    FUNCTIONAL_STOCK_DIGEST_DOMAIN, FunctionalCell, FunctionalCellKey, FunctionalFold,
+    FunctionalStockCell, FunctionalStockCellKey, FunctionalStockFold,
+    REMEASUREMENT_CERTIFICATE_DOMAIN, RemeasurementBasis, RemeasurementInputLine,
+    RemeasurementLineResult, RemeasurementRunResult, TRANSLATION_CERTIFICATE_DOMAIN,
+    TranslatedStatement, TranslationInputLine, TranslationItemKind, TranslationLineResult,
+    fold_functional_stock, fold_period_functional, fold_period_functional_excluding_classes,
     plan_cta_deconsolidation_recycling, plan_remeasurement_entry, remeasure_temporal,
-    translate_current_rate, verify_functional_fold, verify_functional_stock,
-    verify_remeasurement_certificate, verify_translation_certificate,
+    translate_current_rate, verify_functional_fold, verify_functional_fold_excluding_classes,
+    verify_functional_stock, verify_remeasurement_certificate, verify_translation_certificate,
 };
 pub use lots::{
     LotDisposalPlan, LotDisposalRequest, LotDisposalSlice, LotItem, LotReliefEdge, LotsReport,
@@ -1456,24 +1457,8 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
         if !selected {
             continue;
         }
-        if !excluded_classes.is_empty() {
-            let (original_vid, original) = accounting_origin(*vid, entry, &by_id)?;
-            if excluded_classes.contains(&entry.proposal.class)
-                || excluded_classes.contains(&original.proposal.class)
-            {
-                continue;
-            }
-            if excluded_classes.contains(&EntryClass::CLOSING)
-                && original.proposal.class == EntryClass::MIGRATION
-            {
-                let code = entry_period(book, original)?;
-                if period_at(db, book, &code, seq)?.kind == PeriodKind::Closing {
-                    return Err(RegisterError::InvalidSelection(format!(
-                        "cannot classify migration entry {:032x} in Closing period `{code}` for activity excluding Closing: its original accounting class is not retained",
-                        original_vid.0
-                    )));
-                }
-            }
+        if !accounting_class_included(db, book, seq, (*vid, entry), &by_id, excluded_classes)? {
+            continue;
         }
         for leg in &entry.proposal.legs {
             let e = sums
@@ -1547,6 +1532,41 @@ fn trial_balance_from_sums<V: asupersync::fs::Vfs + Clone>(
         unit_totals,
         pending_unit_totals,
     })
+}
+
+/// Native and functional activity apply the same accounting-class policy.
+/// In particular, a Closing period can also contain operating adjustments;
+/// only the retained entry class and its verified reversal lineage decide.
+fn accounting_class_included<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    at: CommitSeq,
+    source: (VId, &Entry),
+    entries: &BTreeMap<VId, (&Entry, CommitSeq)>,
+    excluded_classes: &[EntryClass],
+) -> Result<bool, RegisterError> {
+    if excluded_classes.is_empty() {
+        return Ok(true);
+    }
+    let (vid, entry) = source;
+    let (original_vid, original) = accounting_origin(vid, entry, entries)?;
+    if excluded_classes.contains(&entry.proposal.class)
+        || excluded_classes.contains(&original.proposal.class)
+    {
+        return Ok(false);
+    }
+    if excluded_classes.contains(&EntryClass::CLOSING)
+        && original.proposal.class == EntryClass::MIGRATION
+    {
+        let code = entry_period(book, original)?;
+        if period_at(db, book, &code, at)?.kind == PeriodKind::Closing {
+            return Err(RegisterError::InvalidSelection(format!(
+                "cannot classify migration entry {:032x} in Closing period `{code}` for activity excluding Closing: its original accounting class is not retained",
+                original_vid.0
+            )));
+        }
+    }
+    Ok(true)
 }
 
 /// Exact reversals carry the economic class of the original entry for a

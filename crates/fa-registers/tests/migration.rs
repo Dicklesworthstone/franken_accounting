@@ -2699,6 +2699,8 @@ fn full_detail(
 /// silently treating its equity transfer as negative revenue.
 #[test]
 fn income_activity_refuses_visible_migration_in_a_closing_period() {
+    use fa_registers::fold_period_functional_excluding_classes;
+
     let ops = vec!["post".to_string(), "migrate".to_string()];
     let (dr, cr) = (fa_reference::Side::Debit, fa_reference::Side::Credit);
     let (mut k, mut oracle) = setup_with(Some((opening_date(), P01)));
@@ -2750,6 +2752,15 @@ fn income_activity_refuses_visible_migration_in_a_closing_period() {
     );
     let staged = k.db.frontier().unwrap();
     let closing = ["FY2025-CLOSE".to_string()];
+    let functional_staged = fold_period_functional_excluding_classes(
+        &k.db,
+        &k.book,
+        &closing[0],
+        Some(staged),
+        &[EntryClass::CLOSING],
+    )
+    .unwrap();
+    assert!(functional_staged.cells.is_empty());
     assert!(
         fa_registers::period_activity_excluding_classes(
             &k.db,
@@ -2783,6 +2794,40 @@ fn income_activity_refuses_visible_migration_in_a_closing_period() {
     assert!(
         matches!(refused, fa_registers::RegisterError::InvalidSelection(ref why)
         if why.contains("migration entry") && why.contains("FY2025-CLOSE"))
+    );
+    let functional_refused = fold_period_functional_excluding_classes(
+        &k.db,
+        &k.book,
+        &closing[0],
+        None,
+        &[EntryClass::CLOSING],
+    )
+    .expect_err("functional income must also refuse ambiguous imported Closing activity");
+    assert!(
+        matches!(functional_refused, fa_registers::RegisterError::InvalidSelection(ref why)
+        if why.contains("migration entry") && why.contains("FY2025-CLOSE"))
+    );
+    let functional_income = fold_period_functional_excluding_classes(
+        &k.db,
+        &k.book,
+        "FY2025-P03",
+        None,
+        &[EntryClass::CLOSING],
+    )
+    .unwrap();
+    assert_eq!(functional_income.total_debits().unwrap(), 300);
+    assert_eq!(functional_income.total_credits().unwrap(), 300);
+    assert_eq!(
+        fold_period_functional_excluding_classes(
+            &k.db,
+            &k.book,
+            &closing[0],
+            Some(staged),
+            &[EntryClass::CLOSING],
+        )
+        .unwrap(),
+        functional_staged,
+        "functional visibility remains pinned after migration activation"
     );
     let income = fa_registers::period_activity_excluding_classes(
         &k.db,

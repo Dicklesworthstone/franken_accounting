@@ -537,6 +537,11 @@ fn materialize_then_verify_is_green_and_a_tampered_register_is_drift() {
 
 #[test]
 fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() {
+    use fa_registers::{
+        fold_period_functional, fold_period_functional_excluding_classes,
+        verify_functional_fold_excluding_classes,
+    };
+
     let mut h = harness();
     h.post_rent(100, b"ordinary-activity");
     let adjustment = h.commit(h.proposal(
@@ -613,6 +618,100 @@ fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() 
             .all(|totals| *totals == (0, 0))
     );
 
+    // Functional income must apply the same policy through both reversals;
+    // filtering only the visible Reversal class would reintroduce the expense.
+    let functional = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        None,
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(functional.entries, 1);
+    assert_eq!(functional.total_debits().unwrap(), 100);
+    assert_eq!(functional.total_credits().unwrap(), 100);
+    let expense = functional
+        .cells
+        .iter()
+        .find(|cell| cell.key.account == h.rent)
+        .unwrap();
+    assert_eq!((expense.debits, expense.credits), (100, 0));
+    let reserved = functional
+        .pending
+        .iter()
+        .find(|cell| cell.key.account == h.rent)
+        .unwrap();
+    assert_eq!((reserved.debits, reserved.credits), (500, 0));
+    verify_functional_fold_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        &[EntryClass::ADJUSTING],
+        &functional,
+    )
+    .unwrap();
+    let functional_history = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        Some(before_reversal),
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(functional_history.cells, functional.cells);
+    assert!(functional_history.pending.is_empty());
+
+    let all = fold_period_functional(&h.db, &h.book, &h.march, None).unwrap();
+    assert_eq!(
+        fold_period_functional_excluding_classes(&h.db, &h.book, &h.march, None, &[]).unwrap(),
+        all,
+        "an empty policy preserves the legacy functional fold, including its digest"
+    );
+    let no_closing = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        None,
+        &[EntryClass::CLOSING],
+    )
+    .unwrap();
+    assert_eq!(no_closing.cells, all.cells);
+    assert_ne!(no_closing.fold_digest, all.fold_digest);
+    assert!(
+        verify_functional_fold_excluding_classes(
+            &h.db,
+            &h.book,
+            &h.march,
+            &[EntryClass::CLOSING],
+            &all,
+        )
+        .is_err(),
+        "equal amounts cannot substitute for the requested accounting policy"
+    );
+    let no_adjustments_or_holds = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        None,
+        &[
+            EntryClass::PENDING,
+            EntryClass::ADJUSTING,
+            EntryClass::ADJUSTING,
+        ],
+    )
+    .unwrap();
+    assert!(no_adjustments_or_holds.pending.is_empty());
+    assert_eq!(no_adjustments_or_holds.cells, functional.cells);
+    verify_functional_fold_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        &[EntryClass::ADJUSTING, EntryClass::PENDING],
+        &no_adjustments_or_holds,
+    )
+    .unwrap();
+
     let fold = h.materialize_march();
     let cell = fold
         .cells
@@ -633,6 +732,17 @@ fn class_filtered_activity_uses_payload_lineage_and_ignores_damaged_registers() 
     assert_eq!(after.rows, filtered.rows);
     assert_eq!(after.unit_totals, filtered.unit_totals);
     assert_eq!(after.pending_unit_totals, filtered.pending_unit_totals);
+    let functional_after = fold_period_functional_excluding_classes(
+        &h.db,
+        &h.book,
+        &h.march,
+        None,
+        &[EntryClass::ADJUSTING],
+    )
+    .unwrap();
+    assert_eq!(functional_after.cells, functional.cells);
+    assert_eq!(functional_after.pending, functional.pending);
+    assert_eq!(functional_after.fold_digest, functional.fold_digest);
 }
 
 #[test]
