@@ -931,6 +931,9 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     if let Some(edges) = crate::post::reconciliation_edges(rvid, &reconciliation) {
         batches.push(edges);
     }
+    // Dimensionless legs have no FOR edges; the substrate rejects empty
+    // relation batches, just as it does on the ordinary posting path.
+    batches.retain(|batch| !batch.is_empty());
     // The next reversal must observe this entry and quota receipt in the
     // same overlay. Publishing remains the caller's single atomic commit.
     txn.write_ordered(db, batches)?;
