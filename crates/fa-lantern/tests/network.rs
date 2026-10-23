@@ -1,5 +1,7 @@
 //! Network tracing through real admitted journal entries, not synthetic flows.
 
+use std::cell::Cell;
+
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::*;
@@ -321,6 +323,128 @@ impl Fixture {
             })
             .map(|f| f.statistic.value)
             .sum()
+    }
+}
+
+#[test]
+fn network_runtime_budget_interrupts_projection_before_building_the_full_matrix() {
+    let mut f = Fixture::new(0x79);
+    let source = f.transfer("A", f.usd, 1, "3000", "1000", 100);
+    f.transfer("A", f.usd, 2, "1000", "1010", 80);
+    let before = f.db.frontier().unwrap();
+    let cx = PurposeContexts::narrow_runtime_root(&f.root).query();
+    let snapshot = fa_lantern::Snapshot::read(&f.db, &cx, &f.book, None, Some(day(31))).unwrap();
+    for id in IDS {
+        let procedure = catalog::build(
+            id,
+            Params::defaults(id).unwrap(),
+            catalog::Inputs {
+                account: Some(f.account("1000")),
+                source: Some(source),
+            },
+        )
+        .unwrap();
+        // The first entry and its two legs cost three units. Its single
+        // transport cell costs 257, before allocating the matrix. Waiting
+        // for both entries instead reports 520 and fails this assertion.
+        let error =
+            fa_lantern::run_over_metered(&snapshot, &f.book, procedure.as_ref(), Some(6), None)
+                .expect_err("the runtime budget stops projection before the second entry");
+        assert!(
+            matches!(
+                error,
+                LanternError::BudgetExhausted {
+                    used: 260,
+                    budget: 6,
+                    ..
+                }
+            ),
+            "{id}: {error:?}"
+        );
+        assert_eq!(f.db.frontier().unwrap(), before);
+    }
+}
+
+#[test]
+fn network_runtime_budget_interrupts_the_engine_and_exact_budget_preserves_the_schedule() {
+    // Deterministic cancellation injection on the third poll: after the
+    // runner's entry checkpoint and the projection's first work charge.
+    // FIFO/LIFO must observe it inside the engine, before the full schedule.
+    struct CancelOnThirdPoll(Cell<u64>);
+    impl fa_lantern::Cancellation for CancelOnThirdPoll {
+        fn cancelled(&self) -> bool {
+            let polls = self.0.get().checked_add(1).unwrap();
+            self.0.set(polls);
+            polls >= 3
+        }
+    }
+    let mut f = Fixture::new(0x7a);
+    let source = f.transfer("A", f.usd, 1, "3000", "1000", 100);
+    f.transfer("A", f.usd, 2, "1000", "1010", 80);
+    let before = f.db.frontier().unwrap();
+    let cx = PurposeContexts::narrow_runtime_root(&f.root).query();
+    let snapshot = fa_lantern::Snapshot::read(&f.db, &cx, &f.book, None, Some(day(31))).unwrap();
+    for id in IDS {
+        let procedure = catalog::build(
+            id,
+            Params::defaults(id).unwrap(),
+            catalog::Inputs {
+                account: Some(f.account("1000")),
+                source: Some(source),
+            },
+        )
+        .unwrap();
+        let complete =
+            fa_lantern::run_over_metered(&snapshot, &f.book, procedure.as_ref(), None, None)
+                .unwrap();
+        assert_eq!(f.amount(&complete, "1000", "held_mantissa"), 20, "{id}");
+        assert_eq!(f.amount(&complete, "1010", "held_mantissa"), 80, "{id}");
+        assert!(complete.work.total() > 524, "{id}");
+        // Two entries, four legs and two 257-unit projection cells cost
+        // 520. The engine's four-unit ordering charge must refuse before
+        // tracing, rather than charging all of the finished engine's work.
+        let error =
+            fa_lantern::run_over_metered(&snapshot, &f.book, procedure.as_ref(), Some(520), None)
+                .expect_err("the caller's budget stops the engine before it finishes");
+        assert!(
+            matches!(
+                error,
+                LanternError::BudgetExhausted {
+                    used: 524,
+                    budget: 520,
+                    ..
+                }
+            ),
+            "{id}: {error:?}"
+        );
+        let bounded = fa_lantern::run_over_metered(
+            &snapshot,
+            &f.book,
+            procedure.as_ref(),
+            Some(complete.work.total()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(bounded.work, complete.work, "{id}");
+        assert_eq!(bounded.findings_digest, complete.findings_digest, "{id}");
+        let cancellation = CancelOnThirdPoll(Cell::new(0));
+        let error = fa_lantern::run_over_metered(
+            &snapshot,
+            &f.book,
+            procedure.as_ref(),
+            None,
+            Some(&cancellation),
+        )
+        .expect_err("caller cancellation withholds every law's findings");
+        let LanternError::Cancelled { used, .. } = error else {
+            panic!("{id}: {error:?}");
+        };
+        assert_eq!(cancellation.0.get(), 3, "{id}");
+        assert!(used > 520 && used <= complete.work.total(), "{id}: {used}");
+        if matches!(id, "trace.network_fifo" | "trace.network_lifo") {
+            assert!(used < complete.work.total(), "stopped inside engine: {id}");
+        }
+        assert_eq!(f.db.frontier().unwrap(), before);
     }
 }
 
