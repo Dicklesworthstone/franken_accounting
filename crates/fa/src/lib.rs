@@ -211,7 +211,10 @@ pub use fa_statements::{
     StatementKind, StatementLine,
 };
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
-pub use fx::{FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
+pub use fx::{
+    FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, FxSettlementRequest,
+    PreparedFxSettlement,
+};
 pub use fx_revaluation::{
     FxRevaluationRequest, FxRevaluationRoute, FxRevaluationRoutes, FxRevaluationRoutesRecorded,
     FxRevaluationRoutesRequest, PreparedFxRevaluation,

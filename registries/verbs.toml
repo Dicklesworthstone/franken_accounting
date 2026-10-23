@@ -294,11 +294,11 @@ name = "receipt"
 summary = "Post a customer receipt (plan §15.3, Appendix B): cash debited, the receivable credited for the party, the credit applied to the open invoices --applies names. Typed sugar over fa post."
 writes = true
 subcommands = []
-flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
+flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--fx-rate", "--conversion", "--realized-fx", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned", "scenario_run"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["receipt --party <code> --number <reference> --date YYYY-MM-DD --cash <code> --receivable <code> --amount \"1290.00 USD\" [--applies <invoice vid>[:<leg>][=<amount>]]... [--evidence <oid>]... [--entity <code>] [--key K] [--dry-run [--plan-out <new-file>] | --draft <name> | --scenario <name>]", "--applies names an open item (an invoice's receivable leg is leg 0); with one --applies the whole amount applies, with several each names its amount; the kernel refuses more than is open (FA-REF-072) and names the open amount. Without --applies the receipt is on account. A zero amount or application is refused. The key is receipt:[<entity>:]<party>:<number> unless --key is given (the reference is the customer's); fa bank match reads <number> as the bank reference."]
+usage = ["receipt --party <code> --number <reference> --date YYYY-MM-DD --cash <code> --receivable <code> --amount \"1290.00 USD\" [--applies <invoice vid>[:<leg>][=<amount>]]... [--evidence <oid>]... [--entity <code>] [--key K] [--dry-run [--plan-out <new-file>] | --draft <name> | --scenario <name>]", "--applies names an open item (an invoice's receivable leg is leg 0); with one --applies the whole amount applies, with several each names its amount; the kernel refuses more than is open (FA-REF-072) and names the open amount. Without --applies the receipt is on account. A zero amount or application is refused. The key is receipt:[<entity>:]<party>:<number> unless --key is given (the reference is the customer's); fa bank match reads <number> as the bank reference.", "For a foreign invoice paid in the book's functional currency, name exactly one --applies <vid>:<leg>=<foreign amount> and all of --fx-rate D:<retained Settlement Rate oid> --conversion <AnyCurrency account> --realized-fx <gain/loss account>. --amount is the actual cash amount and must equal the retained rate conversion. RemainingCarryingValue derives relief from the invoice and prior live applications, including exact reversal restoration; final payment consumes the remaining base value. Ambiguous carrying histories or unapportioned revaluations refuse. Review --dry-run and save --plan-out; after an uncertain acknowledgement retry the saved plan with fa commit."]
 example = "fa receipt --party ACME-CUST-17 --number WIRE-IN-1 --date 2026-03-20 --cash 1000 --receivable 1200 --amount \"1250.00 USD\" --applies <invoice vid> --evidence <oid> --book ./books/myco --json"
 
 
@@ -307,11 +307,11 @@ name = "payment"
 summary = "Post a vendor payment (plan §15.3, Appendix B): the payable debited for the party, cash credited, the debit applied to the open bills --applies names. Typed sugar over fa post."
 writes = true
 subcommands = []
-flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
+flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--fx-rate", "--conversion", "--realized-fx", "--entity", "--key", "--description", "--evidence", "--event", "--grant", "--plan-out", "--draft", "--scenario"]
 switches = ["--dry-run"]
 events = ["posted", "recorded", "plan", "draft_planned", "scenario_run"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["payment --party <code> --number <reference> --date YYYY-MM-DD --cash <code> --payable <code> --amount \"300.00 USD\" [--applies <bill vid>[:<leg>][=<amount>]]... [--evidence <oid>]... [--entity <code>] [--key K] [--dry-run [--plan-out <new-file>] | --draft <name> | --scenario <name>]", "As fa receipt, mirrored: a bill's payable leg is leg 0; the key is payment:[<entity>:]<number> unless --key is given (the book numbers its payments)."]
+usage = ["payment --party <code> --number <reference> --date YYYY-MM-DD --cash <code> --payable <code> --amount \"300.00 USD\" [--applies <bill vid>[:<leg>][=<amount>]]... [--evidence <oid>]... [--entity <code>] [--key K] [--dry-run [--plan-out <new-file>] | --draft <name> | --scenario <name>]", "As fa receipt, mirrored: a bill's payable leg is leg 0; the key is payment:[<entity>:]<number> unless --key is given (the book numbers its payments). Foreign bills use --fx-rate D:<Settlement Rate oid> --conversion <account> --realized-fx <gain/loss account>, one explicit foreign --applies amount and functional-currency --amount. Carrying relief is derived from retained history; use --dry-run --plan-out and commit the saved plan for retry-safe execution."]
 example = "fa payment --party V-17 --number ACH-OUT-1 --date 2026-03-25 --cash 1000 --payable 2000 --amount \"300.00 USD\" --applies <bill vid> --evidence <oid> --book ./books/myco --json"
 
 [[verb]]
@@ -4426,7 +4426,7 @@ name = "receipt"
 verb = "receipt"
 subcommands = []
 positionals = []
-flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
+flags = ["--party", "--number", "--date", "--cash", "--receivable", "--amount", "--applies", "--fx-rate", "--conversion", "--realized-fx", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
 switches = ["--dry-run"]
 required = ["--party", "--date", "--cash", "--receivable", "--amount"]
 dont = ["Don't apply more than an invoice's open amount: list open items first (fa_read_open_items).", "Don't invent a reference: use the bank's (or the remittance's) own, so the receipt matches its bank line."]
@@ -4439,7 +4439,7 @@ name = "payment"
 verb = "payment"
 subcommands = []
 positionals = []
-flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
+flags = ["--party", "--number", "--date", "--cash", "--payable", "--amount", "--applies", "--fx-rate", "--conversion", "--realized-fx", "--entity", "--key", "--description", "--evidence", "--event", "--draft", "--scenario"]
 switches = ["--dry-run"]
 required = ["--party", "--date", "--cash", "--payable", "--amount"]
 dont = ["Don't apply more than a bill's open amount: list open items first."]

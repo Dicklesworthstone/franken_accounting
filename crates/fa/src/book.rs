@@ -2662,6 +2662,26 @@ impl Book {
         )))
     }
 
+    /// Derive a single foreign open item's exact remaining carrying basis,
+    /// producing an ordinary proposal for the existing plan/commit protocol.
+    pub fn prepare_fx_settlement(
+        &mut self,
+        capability: &fa_journal::Capability,
+        request: &crate::FxSettlementRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedFxSettlement> {
+        let purposes = self.purposes();
+        let arithmetic = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = fa_money::rate::ArithmeticBudget::new(
+            &arithmetic,
+            fa_money::rate::BudgetLimits::uniform(1_000_000, 0),
+            4096,
+        );
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_fx_settlement(
+            &purposes, capability, request, template, &mut budget,
+        )))
+    }
+
     /// Exact functional-currency period activity at a retained journal prefix.
     /// Pending holds stay separate. This is not cumulative stock or a certificate.
     pub fn functional_period_activity(
@@ -3947,26 +3967,6 @@ impl Book {
         ))
     }
 
-    /// Certify an exact lead schedule against its native chart, journal, migration and registry closure.
-    pub fn certify_roll_forward(
-        &self,
-        principal: VId,
-        capability: &fa_policy::Capability,
-        request: &crate::RollForwardRequest,
-    ) -> Outcome<crate::CertifiedRollForward> {
-        with_store!(&self.store, core => core.certify_roll_forward(
-            &self.purposes(), principal, capability, request
-        ))
-    }
-
-    /// Replay a certified roll-forward at its original prefix under current read authority.
-    pub fn replay_roll_forward(
-        &self,
-        principal: VId,
-        capability: &fa_policy::Capability,
-        certificate: &crate::RollForwardCertificate,
-    ) -> Outcome<crate::RollForward> {
-        with_store!(&self.store, core => core.replay_roll_forward(
     /// Certify the complete equity statement and its explicit classification roles.
     pub fn certify_equity_roll_forward(
         &self,
@@ -3992,6 +3992,26 @@ impl Book {
         ))
     }
 
+    /// Certify an exact lead schedule against its native chart, journal, migration and registry closure.
+    pub fn certify_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::RollForwardRequest,
+    ) -> Outcome<crate::CertifiedRollForward> {
+        with_store!(&self.store, core => core.certify_roll_forward(
+            &self.purposes(), principal, capability, request
+        ))
+    }
+
+    /// Replay a certified roll-forward at its original prefix under current read authority.
+    pub fn replay_roll_forward(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::RollForwardCertificate,
+    ) -> Outcome<crate::RollForward> {
+        with_store!(&self.store, core => core.replay_roll_forward(
             &self.purposes(), principal, capability, certificate
         ))
     }
