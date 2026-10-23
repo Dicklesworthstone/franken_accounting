@@ -1,4 +1,4 @@
-//! Independent recomputation of native trial-balance certificates (plan §13.3).
+//! Independent recomputation of native accounting reports (plan §13.3).
 //!
 //! Report bundles disclose the complete signed checkpoint prefix, including
 //! every payload that derives its selectors. The verifier reconstructs the
@@ -7,12 +7,13 @@
 //! byte. Native database read attestations are retained, but are not an outsider
 //! proof and never supply the arithmetic or metadata used here.
 //!
-//! Version 1 supports sequence-selected native trial balances (as-of, stock by
-//! period, and period activity). Instant selections and statement certificates
-//! are refused. It proves accounting recomputation, not economic truth, unit
+//! Version 1 supports sequence-selected native trial balances and v4 native
+//! financial statements. Instant selections and functional valuations are
+//! refused. It proves accounting recomputation, not economic truth, unit
 //! display labels, source-document authenticity, or database read attestations.
 
 mod metadata;
+mod statement;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +31,7 @@ use crate::tree::{leaf_hash, root_of};
 pub const REPORT_BUNDLE_FORMAT: &[u8] = b"fa:report-bundle:v1";
 pub const MAX_REPORT_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v1";
+const STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v4";
 const OUTPUT_FORMAT: &[u8; 19] = b"fa:trial-balance:v1";
 const MAX_ROWS: usize = 1 << 20;
 
@@ -88,17 +90,26 @@ pub struct VerifiedReport {
     pub activity: bool,
     pub periods: Vec<String>,
     pub rows: Vec<ReportRow>,
+    /// Present for independently replayed balance/income statements. Trial
+    /// balance rows remain in `rows`; statement lines retain their columns.
+    pub statement: Option<VerifiedStatement>,
+    /// Statement unit membership is an explicit recipient-owned premise; the
+    /// accumulator does not authenticate genesis Unit vertices or their labels.
+    pub unit_universe_source: &'static str,
     /// Exact canonical report bytes, independently reconstructed.
     pub output: Vec<u8>,
     pub checked_records: usize,
     pub receipt: Option<ReceiptFacts>,
 }
 
+pub use statement::{StatementColumn, StatementLine, VerifiedStatement};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Selection {
     Periods(Vec<String>),
     AsOf(i32),
     Activity(Vec<String>),
+    Statement(Box<statement::Selection>),
 }
 struct Certificate<'a> {
     book: [u8; 16],
@@ -131,16 +142,25 @@ fn strings(r: &mut Reader<'_>, field: &'static str) -> Result<Vec<String>, Repor
 }
 fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut r = Reader::new(bytes);
-    if &r.fixed::<24>("certificate.format")? != CERTIFICATE_FORMAT {
+    let format = r.fixed::<24>("certificate.format")?;
+    let is_statement = &format == STATEMENT_CERTIFICATE_FORMAT;
+    if &format != CERTIFICATE_FORMAT && !is_statement {
         return Err(failed(
             "supported_report",
-            "expected a sequence-selected v1 native trial-balance certificate",
+            "expected a sequence-selected v1 trial-balance or v4 native statement certificate",
         ));
     }
     for (field, expected) in [
         ("certificate.scope", "fa-fold-over-prefix"),
         ("certificate.authority", "embedded-owner"),
-        ("certificate.output_format", "fa:trial-balance:v1"),
+        (
+            "certificate.output_format",
+            if is_statement {
+                "fa:statement:v1"
+            } else {
+                "fa:trial-balance:v1"
+            },
+        ),
     ] {
         if text(&mut r, 64, field)? != expected {
             return Err(failed("supported_report", field));
@@ -149,11 +169,22 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let book = r.fixed("certificate.book")?;
     let branch = r.fixed("certificate.branch")?;
     let known_at = r.u64("certificate.known_at")?;
-    let selection = match r.u8("certificate.selector")? {
-        0 => Selection::Periods(strings(&mut r, "certificate.periods")?),
-        1 => Selection::AsOf(r.i32("certificate.as_of")?),
-        2 => Selection::Activity(strings(&mut r, "certificate.periods")?),
-        _ => return Err(failed("supported_report", "unknown trial-balance selector")),
+    let selector = r.u8("certificate.selector")?;
+    let selection = if is_statement {
+        if selector != 2 {
+            return Err(failed(
+                "supported_report",
+                "invalid native statement selector",
+            ));
+        }
+        Selection::Statement(Box::new(statement::Selection::read(&mut r)?))
+    } else {
+        match selector {
+            0 => Selection::Periods(strings(&mut r, "certificate.periods")?),
+            1 => Selection::AsOf(r.i32("certificate.as_of")?),
+            2 => Selection::Activity(strings(&mut r, "certificate.periods")?),
+            _ => return Err(failed("supported_report", "unknown trial-balance selector")),
+        }
     };
     if matches!(&selection, Selection::Periods(p) | Selection::Activity(p) if p.is_empty()) {
         return Err(failed("report_selector", "period selection is empty"));
@@ -173,6 +204,12 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
+    if is_statement && r.present("certificate.time_selection")? {
+        return Err(failed(
+            "supported_report",
+            "instant-selected statement certificates need authenticated TimeEvidence resolution",
+        ));
+    }
     let digest = r.fixed("certificate.digest")?;
     r.finish("report certificate")?;
     if hash_parts(b"fa:report-output:v1", &[output]) != output_digest {
@@ -181,7 +218,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "certificate output differs from its commitment",
         ));
     }
-    if hash_parts(CERTIFICATE_FORMAT, &[&bytes[..bytes.len() - 32]]) != digest {
+    if hash_parts(&format, &[&bytes[..bytes.len() - 32]]) != digest {
         return Err(failed(
             "certificate_digest",
             "certificate bytes differ from their commitment",
@@ -219,11 +256,56 @@ pub fn verify_report(
     )
 }
 
+/// Recompute a v4 native statement using the recipient's independently chosen
+/// complete numeric unit universe. Zero-activity units produce zero lines too.
+/// This verifies arithmetic and source completeness under that premise, not
+/// the registration, currency labels or scale of those unit identifiers.
+pub fn verify_statement_report(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    units: &[u32],
+) -> Result<VerifiedReport, ReportError> {
+    if units.is_empty() || units.len() > 4096 || !units.windows(2).all(|p| p[0] < p[1]) {
+        return Err(failed(
+            "statement_units",
+            "supply 1..=4096 strictly ascending, distinct recipient-owned unit identifiers",
+        ));
+    }
+    verify_report_with_units(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        Some(units),
+        verify_checkpoint,
+    )
+}
+
 fn verify_report_with(
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     expected_checkpoint: Option<&Checkpoint>,
     receipt: Option<&[u8]>,
+    authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
+) -> Result<VerifiedReport, ReportError> {
+    verify_report_with_units(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        None,
+        authenticate,
+    )
+}
+
+fn verify_report_with_units(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    units: Option<&[u32]>,
     authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
 ) -> Result<VerifiedReport, ReportError> {
     if bundle.len() > MAX_REPORT_BUNDLE_BYTES {
@@ -240,6 +322,21 @@ fn verify_report_with(
         ));
     }
     let cert = certificate(r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?)?;
+    match (&cert.selection, units) {
+        (Selection::Statement(_), None) => {
+            return Err(failed(
+                "statement_units",
+                "a native statement requires independently supplied unit identifiers; use verify_statement_report or fa-verify report --units",
+            ));
+        }
+        (Selection::Statement(_), Some(_)) | (_, None) => {}
+        (_, Some(_)) => {
+            return Err(failed(
+                "supported_report",
+                "the statement-specific verifier requires a v4 native statement certificate",
+            ));
+        }
+    }
     let signed_bytes = r.bytes(1024 * 1024, "report_bundle.checkpoint")?;
     let signed = authenticate(signed_bytes, trusted_keys)
         .map_err(|e| failed("checkpoint_signature", e.to_string()))?;
@@ -344,7 +441,6 @@ fn verify_report_with(
         }
         infos.insert(index, info);
     }
-    let (periods, through, activity) = schema.selection(&cert.selection)?;
     let mut resolved = BTreeSet::new();
     for (index, info) in &infos {
         let e = &envelopes[*index];
@@ -369,6 +465,50 @@ fn verify_report_with(
             ));
         }
     }
+    if let Selection::Statement(selection) = &cert.selection {
+        let (statement, output) = statement::recompute(
+            selection,
+            &statement::Sources {
+                certificate: &cert,
+                schema: &schema,
+                envelopes,
+                legs: &legs,
+                infos: &infos,
+                by_digest: &by_digest,
+                visible_migrations: &visible_migrations,
+                resolved: &resolved,
+            },
+            units.ok_or_else(|| failed("statement_units", "missing recipient unit universe"))?,
+        )?;
+        if output != cert.output {
+            return Err(failed(
+                "report_recomputation",
+                "statement definition, columns, mappings, lines or canonical bytes differ from independent replay",
+            ));
+        }
+        let through = statement
+            .columns
+            .first()
+            .map(|column| column.effective_through);
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            bundle_digest: digest,
+            certificate_digest: cert.digest,
+            output_digest: cert.output_digest,
+            checkpoint: signed,
+            known_at: cert.known_at,
+            effective_through: through,
+            activity: selection.definition.income,
+            periods: selection.periods.clone(),
+            rows: Vec::new(),
+            statement: Some(statement),
+            unit_universe_source: "recipient-supplied",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
+    let (periods, through, activity) = schema.selection(&cert.selection)?;
     let mut sums: BTreeMap<(u128, u32), [i128; 4]> = BTreeMap::new();
     for (index, info) in &infos {
         let e = &envelopes[*index];
@@ -455,6 +595,8 @@ fn verify_report_with(
         activity,
         periods,
         rows,
+        statement: None,
+        unit_universe_source: "not-applicable",
         output,
         checked_records: records.len(),
         receipt,

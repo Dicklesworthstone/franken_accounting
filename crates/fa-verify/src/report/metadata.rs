@@ -13,7 +13,25 @@ pub(super) struct EntryInfo<'a> {
     pub schema: Option<(u16, &'a [u8])>,
     pub period: Option<(&'a str, &'a str)>,
     pub resolution: Option<(u128, [u8; 32])>,
+    pub supersession: Vec<(u128, [u8; 32], u8)>,
     pub identity: u128,
+    /// Before replacement-pair identities were target-derived, the immutable
+    /// corrected member used its ordinary key identity. Both encodings name
+    /// the same authenticated payload, never an arbitrary producer alias.
+    legacy_identity: Option<u128>,
+}
+
+impl EntryInfo<'_> {
+    pub fn matches_identity(&self, identity: u128) -> bool {
+        self.identity == identity || self.legacy_identity == Some(identity)
+    }
+}
+
+fn target_identity(domain: &[u8], target: u128) -> u128 {
+    let hash = crate::blake3::hash_parts(domain, &[&target.to_le_bytes()]);
+    let mut low = [0; 16];
+    low.copy_from_slice(&hash[..16]);
+    u128::from_le_bytes(low)
 }
 
 fn framed_identity(domain: &[u8], parts: &[&[u8]]) -> u128 {
@@ -34,7 +52,7 @@ pub(super) fn entry_info<'a>(
 ) -> Result<EntryInfo<'a>, ReportError> {
     let mut first = Reader::new(proposal);
     first.u16("entry.major")?;
-    first.u16("entry.minor")?;
+    let minor = first.u16("entry.minor")?;
     first.fixed::<16>("entry.book")?;
     first.fixed::<16>("entry.branch")?;
     first.u16("entry.class")?;
@@ -86,6 +104,20 @@ pub(super) fn entry_info<'a>(
     let key = r.bytes(MAX_RECORD_BYTES, "entry.idempotency_key")?;
     let mut probe = Reader::new(&proposal[proposal.len() - r.remaining()..]);
     let origin = probe.u8("origin.tag")?;
+    let migration = if origin == 2 {
+        Some(probe.u128("origin.run")?)
+    } else {
+        None
+    };
+    let schedule = if origin == 5 {
+        Some((
+            probe.u128("origin.schedule")?,
+            probe.u8("origin.trigger")?,
+            probe.u128("origin.trigger_ref")?,
+        ))
+    } else {
+        None
+    };
     if (origin == 2) != (envelope.class == 12) {
         return Err(failed(
             "migration_visibility",
@@ -102,7 +134,7 @@ pub(super) fn entry_info<'a>(
     }
     skip_origin(&mut r)?;
     let principal = r.u128("entry.principal")?;
-    let identity = framed_identity(
+    let key_identity = framed_identity(
         b"fa:vid:entry:v1",
         &[&envelope.book_id, &principal.to_le_bytes(), key],
     );
@@ -114,8 +146,13 @@ pub(super) fn entry_info<'a>(
         r.fixed::<65>("evidence")?;
     }
     let n = r.count(MAX_ENVELOPE_LIST, 51, "entry.supersession")?;
+    let mut supersession = Vec::with_capacity(n);
     for _ in 0..n {
-        r.fixed::<51>("supersession")?;
+        let target = r.u128("supersession.target")?;
+        let digest = r.fixed("supersession.digest")?;
+        let kind = r.u8("supersession.kind")?;
+        r.u16("supersession.reason")?;
+        supersession.push((target, digest, kind));
     }
     let mut resolution = None;
     if r.present("entry.pending")? {
@@ -141,11 +178,109 @@ pub(super) fn entry_info<'a>(
             }
         }
     }
+    for field in ["entry.external_ids", "entry.tags"] {
+        let n = r.count(if field == "entry.tags" { 32 } else { 256 }, 65, field)?;
+        for _ in 0..n {
+            r.bytes(64, "entry.key")?;
+            skip_erasable(&mut r, "entry.value")?;
+        }
+    }
+    let mut recurring = None;
+    if minor >= 1 {
+        let n = r.count(MAX_ENVELOPE_LIST, 6, "entry.extensions")?;
+        let mut previous = None;
+        for _ in 0..n {
+            let tag = r.u16("extension.tag")?;
+            let bytes = r.bytes(MAX_RECORD_BYTES, "extension.body")?;
+            if previous.is_some_and(|last| last >= tag) {
+                return Err(failed(
+                    "entry_identity",
+                    "extensions are not strictly ordered",
+                ));
+            }
+            previous = Some(tag);
+            if tag == 31 {
+                let mut marker = Reader::new(bytes);
+                if marker.u16("recurring.version")? != 1 {
+                    return Err(failed(
+                        "entry_identity",
+                        "unknown recurring occurrence version",
+                    ));
+                }
+                let source = marker.u128("recurring.schedule")?;
+                let index = marker.u64("recurring.index")?;
+                let tick = marker.u128("recurring.tick")?;
+                marker.finish("recurring occurrence")?;
+                if envelope.class != 1 || schedule != Some((source, 0, tick)) {
+                    return Err(failed(
+                        "entry_identity",
+                        "recurring marker differs from its schedule origin",
+                    ));
+                }
+                recurring = Some(framed_identity(
+                    b"fa:vid:recurring:v1",
+                    &[&source.to_le_bytes(), &index.to_le_bytes()],
+                ));
+            }
+        }
+    }
+    r.finish("report entry metadata")?;
+    let (mut identity, legacy_identity) = match envelope.class {
+        4 => match supersession.as_slice() {
+            [(target, _, 1)] => (target_identity(b"fa:vid:reversal:v1", *target), None),
+            _ => {
+                return Err(failed(
+                    "entry_identity",
+                    "reversal requires one Reverses target",
+                ));
+            }
+        },
+        5 => match supersession.as_slice() {
+            [(target, _, 2)] => (
+                target_identity(b"fa:vid:replacement:v1", *target),
+                Some(key_identity),
+            ),
+            _ => {
+                return Err(failed(
+                    "entry_identity",
+                    "replacement requires one Replaces target",
+                ));
+            }
+        },
+        3 => match resolution {
+            Some((target, _)) => (target_identity(b"fa:vid:resolution:v1", target), None),
+            None => {
+                return Err(failed(
+                    "entry_identity",
+                    "resolution requires a pending target",
+                ));
+            }
+        },
+        12 => (
+            framed_identity(
+                b"fa:vid:migration-entry:v1",
+                &[
+                    &envelope.book_id,
+                    &migration
+                        .ok_or_else(|| failed("entry_identity", "migration requires its run"))?
+                        .to_le_bytes(),
+                    key,
+                ],
+            ),
+            None,
+        ),
+        _ => (key_identity, None),
+    };
+    if let Some(occurrence) = recurring {
+        identity = occurrence;
+    }
     Ok(EntryInfo {
         schema,
         period,
         resolution,
+        supersession,
         identity,
+        legacy_identity,
     })
 }
 
@@ -154,6 +289,7 @@ pub(super) struct Account {
     pub code: String,
     pub name: String,
     pub account_type: u8,
+    pub is_leaf: bool,
 }
 #[derive(Clone, Debug)]
 struct Period {
@@ -173,7 +309,7 @@ fn account(r: &mut Reader<'_>) -> Result<Account, ReportError> {
     let name = text(r, MAX_RECORD_BYTES, "account.name")?.to_string();
     let account_type = r.u8("account.type")?;
     let normal = r.u8("account.normal")?;
-    r.present("account.posting")?;
+    let is_leaf = r.present("account.posting")?;
     let policy = r.i64("account.unit_policy")?;
     if r.present("account.parent")? {
         text(r, 64, "account.parent")?;
@@ -193,6 +329,7 @@ fn account(r: &mut Reader<'_>) -> Result<Account, ReportError> {
         code,
         name,
         account_type,
+        is_leaf,
     })
 }
 fn optional_limit(r: &mut Reader<'_>) -> Result<(), ReportError> {
@@ -373,7 +510,44 @@ impl Schema {
                 let activity = matches!(selection, Selection::Activity(_));
                 Ok((codes.clone(), (!activity).then_some(through), activity))
             }
+            Selection::Statement(_) => Err(failed(
+                "report_selector",
+                "statement columns require their own period selectors",
+            )),
         }
+    }
+    pub fn bounds(&self, codes: &[String]) -> Result<(i32, i32), ReportError> {
+        let mut first = i32::MAX;
+        let mut last = i32::MIN;
+        for code in codes {
+            let period = self.periods.get(code).ok_or_else(|| {
+                failed(
+                    "period_metadata",
+                    format!("unknown statement period {code}"),
+                )
+            })?;
+            first = first.min(period.start);
+            last = last.max(
+                period
+                    .end
+                    .checked_sub(1)
+                    .ok_or_else(|| failed("period_metadata", "statement period end underflow"))?,
+            );
+        }
+        if codes.is_empty() || first > last {
+            return Err(failed(
+                "period_metadata",
+                "empty statement period selection",
+            ));
+        }
+        Ok((first, last))
+    }
+    pub fn is_closing_period(&self, info: &EntryInfo<'_>, day: i32) -> Result<bool, ReportError> {
+        let code = self.entry_period(info, day)?;
+        Ok(self
+            .periods
+            .get(&code)
+            .is_some_and(|period| period.kind == 3))
     }
     pub fn entry_period(
         &self,
