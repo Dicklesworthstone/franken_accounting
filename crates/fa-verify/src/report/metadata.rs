@@ -92,13 +92,13 @@ pub(super) fn entry_info<'a>(
             "migration origin and class disagree",
         ));
     }
-    if let Some((kind, _)) = schema {
-        if origin != 3 || probe.u16("origin.control_kind")? != if kind == 13 { 13 } else { 1 } {
-            return Err(failed(
-                "schema_history",
-                "schema change has an unrelated control origin",
-            ));
-        }
+    if let Some((kind, _)) = schema
+        && (origin != 3 || probe.u16("origin.control_kind")? != if kind == 13 { 13 } else { 1 })
+    {
+        return Err(failed(
+            "schema_history",
+            "schema change has an unrelated control origin",
+        ));
     }
     skip_origin(&mut r)?;
     let principal = r.u128("entry.principal")?;
