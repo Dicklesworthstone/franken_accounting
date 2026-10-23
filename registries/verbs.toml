@@ -656,12 +656,12 @@ example = "fa query \"MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, l.side, 
 name = "rule"
 summary = "Check a Canon posting rule (plan §10.3): parse it, type its units, resolve its rounding laws and dimensions and prove its debits equal its credits in every unit; journal it as a content-addressed rule version; list and show the versions; or evaluate a rule over a recorded REA event. No entry is posted."
 writes = true
-subcommands = ["check", "propose", "list", "show", "eval"]
-flags = ["--event", "--input", "--rule", "--key", "--as-known-at"]
-switches = []
-events = ["rule_checked", "rule_proposed", "rule_versions", "rule_version", "rule_evaluated"]
+subcommands = ["check", "propose", "list", "show", "activate", "eval"]
+flags = ["--event", "--input", "--rule", "--key", "--from", "--plan", "--approval", "--as-known-at"]
+switches = ["--dry-run"]
+events = ["rule_checked", "rule_proposed", "rule_versions", "rule_version", "rule_activation_plan", "rule_activated", "rule_evaluated"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["rule propose <rule-file|-> [--key K]   (journal the rule as a version under rule_change: the kernel compiles the source against the book's units itself and stores the source and its canonical IR in a RuleVersion addressed by the IR digest, so a version is its content and proposing the same IR again writes nothing; the default key is the source text's digest. A proposed version is not active: no entry derives from it until an activation names it, which is not in this build)", "rule list [--as-known-at HEAD|<seq>]   (every rule version the book holds: name, version, event kind, ir_digest, the sequence it was proposed at and the accounts it posts to)", "rule show <ir_digest> [--as-known-at HEAD|<seq>]   (one version: its inputs, dependency set and source; its stored IR is decoded through the same validation and balance proof as a compiled rule and must digest to its address)", "rule check <rule-file|->   (compile the rule against the book's units and report the content address of its IR (ir_digest) and its dependency set: the accounts it posts to, units, rounding laws, event resources and dimension tags; a refused rule is FA-REF-196, naming the line and column)", "rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]   (from a file or a journaled version: the legs the rule derives from that recorded event and the inputs it declares, with the effective date and the rule, event and inputs digests; a leg that evaluates to zero is omitted; nothing is posted)", "A rule: rule <name> v<N> for event <Kind> { [inputs { <name>: date | amount(\"<UNIT>\"), ... }] <statements> }. Statements: let <name> = <amount>; debit|credit \"<account code>\" <amount> [dims { <dimension> = \"<code>\", ... }]; effective event.occurred_on | <date input> (default event.occurred_on). Amounts: \"12.50 USD\", event.resource(\"<label>\", \"<UNIT>\"), a let or amount input, + and -, * N, and / D round <law> (every division names a registered rounding law). # and // start a comment. A rule reads no clock: one that needs today declares a date input.", "check refuses a rule whose debits minus credits are not provably zero in every unit as exact linear forms (each distinct rounded division is one opaque term, so a rounding that does not appear on both sides cannot balance), a unit mismatch, an unregistered unit, law, dimension or event kind, and an undeclared name; Canon never adds a residual leg. The IR digest is independent of let names and layout. eval refuses with FA-REF-196 an event of another kind, a missing or repeated resource, a resource in another unit, a negative leg and an amount outside the exact i128 range. Activating a version under dual control and posting rule-derived entries are not in this build."]
+usage = ["rule propose <rule-file|-> [--key K]   (journal the rule as a version under rule_change: the kernel compiles the source against the book's units itself and stores the source and its canonical IR in a RuleVersion addressed by the IR digest, so a version is its content and proposing the same IR again writes nothing; the default key is the source text's digest. A proposed version is not active: no entry derives from it until an activation names it, which is not in this build)", "rule list [--as-known-at HEAD|<seq>]   (every rule version the book holds: name, version, event kind, ir_digest, the sequence it was proposed at and the accounts it posts to)", "rule show <ir_digest> [--as-known-at HEAD|<seq>]   (one version: its inputs, dependency set and source; its stored IR is decoded through the same validation and balance proof as a compiled rule and must digest to its address)", "rule activate <ir_digest> --from YYYY-MM-DD [--key K] --dry-run   (plan binding the version's rule name to it from that date under rule_change; nothing is written. Two Human approvers who are not the planner approve the plan's proposal_digest with fa approve --proposal (Appendix C PolicyControl W(rule_change, 2 for activations), sod_policy.toml rule-activate). A name's activations move forward in time: the date must be after its last activation, and a version already in force is not activated again (FA-REF-196))", "rule activate --plan <file|-> --approval <vid> --approval <vid>   (commit exactly the planned activation: a PolicyControl entry and the rule name's bindings, compare-and-set; the same plan committed again returns the recorded activation. From that date the name is in force at that version until a later activation; rule-derived posting is not in this build)", "rule check <rule-file|->   (compile the rule against the book's units and report the content address of its IR (ir_digest) and its dependency set: the accounts it posts to, units, rounding laws, event resources and dimension tags; a refused rule is FA-REF-196, naming the line and column)", "rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]   (from a file or a journaled version: the legs the rule derives from that recorded event and the inputs it declares, with the effective date and the rule, event and inputs digests; a leg that evaluates to zero is omitted; nothing is posted)", "A rule: rule <name> v<N> for event <Kind> { [inputs { <name>: date | amount(\"<UNIT>\"), ... }] <statements> }. Statements: let <name> = <amount>; debit|credit \"<account code>\" <amount> [dims { <dimension> = \"<code>\", ... }]; effective event.occurred_on | <date input> (default event.occurred_on). Amounts: \"12.50 USD\", event.resource(\"<label>\", \"<UNIT>\"), a let or amount input, + and -, * N, and / D round <law> (every division names a registered rounding law). # and // start a comment. A rule reads no clock: one that needs today declares a date input.", "check refuses a rule whose debits minus credits are not provably zero in every unit as exact linear forms (each distinct rounded division is one opaque term, so a rounding that does not appear on both sides cannot balance), a unit mismatch, an unregistered unit, law, dimension or event kind, and an undeclared name; Canon never adds a residual leg. The IR digest is independent of let names and layout. eval refuses with FA-REF-196 an event of another kind, a missing or repeated resource, a resource in another unit, a negative leg and an amount outside the exact i128 range. Activating a version under dual control and posting rule-derived entries are not in this build."]
 example = "fa rule eval rules/sale_with_tax.rule --event EV-1001 --input as_of=2026-03-31 --book ./books/myco --json"
 
 [[verb]]
@@ -2195,8 +2195,20 @@ fields = ["rule:string", "version:int", "event_kind:string", "ir_digest:hex", "r
 [[event]]
 name = "rule_versions"
 book = true
-doc = "Every rule version the book holds at known_at, by rule name, version and address."
-fields = ["count:int", "versions:[rule_version_row]"]
+doc = "Every rule version the book holds at known_at, by rule name, version and address, and every activated rule name's bindings in date order: from effective_from the name is in force at ir_digest until its next binding."
+fields = ["count:int", "versions:[rule_version_row]", "bindings:[rule_binding]"]
+
+[[event]]
+name = "rule_activation_plan"
+book = true
+doc = "A planned rule activation; nothing is written. The rule's name, the version (ir_digest) and the date it takes effect from, the planning principal, the proposal_digest two independent Human approvers approve (fa approve --proposal), and the canonical plan bytes (hex) that fa rule activate --plan commits."
+fields = ["rule:string", "ir_digest:hex", "effective_from:date", "principal:hex", "proposal_digest:hex", "bytes:hex", "scope:string"]
+
+[[event]]
+name = "rule_activated"
+book = true
+doc = "A journaled rule activation: from effective_from the rule is in force at ir_digest, by the PolicyControl control_entry recorded at recorded_at with its approvals; already_recorded is true when the same plan was committed before and nothing was written."
+fields = ["rule:string", "ir_digest:hex", "effective_from:date", "control_entry:hex", "recorded_at:seq", "approvals:int", "already_recorded:bool"]
 
 [[event]]
 name = "rule_version"
@@ -3697,6 +3709,11 @@ fields = ["account:string", "account_vid:hex", "account_name:string", "unit:stri
 name = "rule_version_row"
 doc = "One journaled rule version: name, version, event kind, ir_digest (its address), the sequence it was proposed at and the account codes it posts to."
 fields = ["rule:string", "version:int", "event_kind:string", "ir_digest:hex", "proposed_at:seq", "accounts:[string]"]
+
+[[shape]]
+name = "rule_binding"
+doc = "One activation of a rule name: from effective_from it is in force at the version ir_digest, until the name's next binding."
+fields = ["rule:string", "effective_from:date", "ir_digest:hex"]
 
 [[shape]]
 name = "rule_leg"
@@ -5795,7 +5812,7 @@ ops = ["read"]
 
 [[bound]]
 verbs = ["rule"]
-subcommands = ["propose"]
+subcommands = ["propose", "activate"]
 ops = ["rule_change"]
 
 [[bound]]
@@ -6335,6 +6352,21 @@ switches = []
 required = []
 dont = ["Don't expect a proposed version to post anything: activation under dual control comes first.", "Don't propose to change a version in place: a version is its content; propose the revised rule as a new version (bump vN)."]
 mistakes = ["Passing a host path as `file`: supply the rule text inline as `source`.", "Proposing without rule_change authority: the refusal names the op."]
+
+[[mcp.tool]]
+cluster = "fa.rules"
+name = "activate"
+verb = "rule"
+subcommands = ["activate"]
+positionals = ["digest?"]
+stdin_property = "plan"
+stdin_kind = "string"
+stdin_via = "--plan"
+flags = ["--from", "--key", "--approval"]
+switches = ["--dry-run"]
+required = []
+dont = ["Don't approve your own activation plan: two independent Human approvers approve its proposal_digest with fa approve.", "Don't activate a date at or before the rule's last activation: activations move forward in time."]
+mistakes = ["Committing without the plan event's bytes string as plan.", "Passing the RuleVersion vid instead of the ir_digest."]
 
 [[mcp.tool]]
 cluster = "fa.rules"

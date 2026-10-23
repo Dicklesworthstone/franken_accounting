@@ -16,7 +16,7 @@
 #                                    absent for book-scoped controls
 #   disposition                      Resolution only: "Posts"
 #   transition                       PeriodControl: Lock | Reopen;
-#                                    PolicyControl: Activate;
+#                                    PolicyControl: Activate | ActivateRule;
 #                                    MigrationControl: Open | Finalize | Abandon
 #   preparer_op                      control rows only (the admissibility
 #                                    matrix owns the op for posting classes)
@@ -395,6 +395,21 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 2
 exclusions = ["preparer", "duplicate"]
 cite = "Appendix C PolicyControl: W(rule_change, 2 for activations)"
+
+# A Canon rule version takes effect from a date only by an activation under
+# dual control (plan §10.3, §10.6; bead fa-c34): the same row as a policy
+# activation.
+[[rule]]
+name = "rule-activate"
+class = "PolicyControl"
+transition = "ActivateRule"
+preparer_op = "rule_change"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate"]
+cite = "Appendix C PolicyControl: W(rule_change, 2 for activations); plan §10.6 (rules are activated under the rule_change capability with dual control)"
 
 # ---- Time evidence and the expiry sweep (book-scoped) ----------------------
 # A tick journals an observed instant (plan §7.1a); the preparer holds

@@ -3,14 +3,17 @@
 //! REA event by [`fa_canon`], which is pure. A rule version is journaled by
 //! `fa rule propose` ([`fa_journal::rule`]), addressed by its IR digest.
 //!
-//! A version is not activated by being proposed, and no entry derives from
-//! one yet: activation under dual control and rule-derived posting are
-//! later slices of the bead.
+//! A version is not activated by being proposed: `fa rule activate` plans
+//! an activation from a date, two independent Human approvers approve its
+//! proposal, and its commit binds the rule's name to the version from that
+//! date ([`fa_journal::rule::activate_rule_version`]). No entry derives
+//! from a version yet: rule-derived posting is a later slice of the bead.
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
 use fa_journal::refusal::Refusal;
 use fa_policy::Capability;
+use fa_time::DateDay;
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
@@ -22,7 +25,9 @@ pub use fa_canon::{
 };
 pub use fa_journal::refusal::code::CANON_RULE;
 pub use fa_journal::rule::{
-    RuleVersionRecorded, RuleVersionRow, RuleVersionSpec, evaluation_refusal, rule_refusal,
+    RULE_ACTIVATION_PLAN_DOMAIN, RuleActivated, RuleActivationPlan, RuleBinding, RuleBindings,
+    RuleNameRow, RuleVersionRecorded, RuleVersionRow, RuleVersionSpec, evaluation_refusal,
+    rule_refusal,
 };
 
 /// Compile `source` against this book's registered units.
@@ -73,6 +78,58 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Plan activating the version `ir_digest` from `effective_from` under
+    /// `capability`, with the description sealed once. Nothing is written.
+    pub fn plan_rule_activation(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        ir_digest: &[u8; 32],
+        effective_from: DateDay,
+        key: &[u8],
+    ) -> Outcome<RuleActivationPlan> {
+        let description = self.seal_text(
+            cx,
+            &format!(
+                "activate rule version {} from {}",
+                fa_journal::evidence::hex(ir_digest),
+                effective_from.render()
+            ),
+        )?;
+        self.query(cx, |db, book| {
+            Ok(fa_journal::rule::plan_rule_activation(
+                db,
+                book,
+                capability,
+                ir_digest,
+                effective_from,
+                key,
+                description,
+            )?)
+        })
+    }
+
+    /// Commit a planned activation under `capability` and the cited
+    /// `approvals` (the `rule-activate` SoD row: two independent Human
+    /// approvers). The same plan committed again returns its record.
+    pub async fn activate_rule_version(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        plan: RuleActivationPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<RuleActivated> {
+        Ok(fa_journal::rule::activate_rule_version(
+            &mut self.db,
+            cx,
+            &self.context,
+            capability,
+            plan,
+            approvals,
+        )
+        .await?)
+    }
+
     /// Every rule version at `known_at` (the head when `None`), under current
     /// whole-book read authority, with the prefix they were read at.
     pub fn rule_versions(
@@ -87,6 +144,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             };
             Ok(Ok((at, fa_journal::rule::rule_versions_at(db, book, at)?)))
+        })
+    }
+
+    /// Every activated rule name and its bindings at `known_at`, under
+    /// current whole-book read authority.
+    pub fn rule_names(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+        capability: &Capability,
+    ) -> Outcome<(CommitSeq, Vec<RuleNameRow>)> {
+        self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            Ok(Ok((at, fa_journal::rule::rule_names_at(db, at)?)))
         })
     }
 

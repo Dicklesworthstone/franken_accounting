@@ -998,6 +998,44 @@ impl Book {
         )))
     }
 
+    /// Plan activating a rule version from a date (bead fa-c34); nothing is
+    /// written. Two independent Human approvers approve its proposal.
+    pub fn plan_rule_activation(
+        &self,
+        capability: &fa_journal::Capability,
+        ir_digest: &[u8; 32],
+        effective_from: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<crate::rule::RuleActivationPlan> {
+        with_store!(&self.store, core => core.plan_rule_activation(
+            &self.purposes(), capability, ir_digest, effective_from, idempotency_key,
+        ))
+    }
+
+    /// Commit a planned rule activation under the cited approvals.
+    pub fn activate_rule_version(
+        &mut self,
+        capability: &fa_journal::Capability,
+        plan: crate::rule::RuleActivationPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<crate::rule::RuleActivated> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.activate_rule_version(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Every activated rule name and its bindings at `known_at`.
+    pub fn rule_names(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::rule::RuleNameRow>)> {
+        with_store!(&self.store, core => core.rule_names(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
     /// Every rule version at `known_at` (the head when `None`), with the
     /// prefix read, under current whole-book read authority.
     pub fn rule_versions(

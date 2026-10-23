@@ -9966,6 +9966,47 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         .to_string();
     run2(&["rule", "list"]);
     run2(&["rule", "show", &fee_digest]);
+    // fa-c34: the version activated under dual control.
+    let (_, planned_rule) = run2(&[
+        "rule",
+        "activate",
+        &fee_digest,
+        "--from",
+        "2026-04-01",
+        "--dry-run",
+    ]);
+    let rule_proposal = field(&planned_rule, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let rule_plan = write(
+        &dir,
+        "fee-activate.plan",
+        field(&planned_rule, "bytes").unwrap_or_default(),
+    );
+    let (_, first) = run2(&[
+        "approve",
+        "--proposal",
+        &rule_proposal,
+        "--as",
+        "rule-approver-a",
+    ]);
+    let (_, second) = run2(&[
+        "approve",
+        "--proposal",
+        &rule_proposal,
+        "--as",
+        "rule-approver-b",
+    ]);
+    run2(&[
+        "rule",
+        "activate",
+        "--plan",
+        &rule_plan,
+        "--approval",
+        field(&first, "approval_vid").unwrap_or_default(),
+        "--approval",
+        field(&second, "approval_vid").unwrap_or_default(),
+    ]);
     run2(&["verify", "periods"]);
     run2(&[
         "capability",
@@ -20500,7 +20541,7 @@ fn a_rule_version_is_journaled_by_its_content_and_evaluates_from_the_journal() -
     let (code, out, _) = run(&["rule", "propose", &rule, "--json"]);
     assert_eq!(code, 0, "{out}");
     let proposed = doc(&out);
-    assert_eq!(text(&proposed, "event"), "rule_proposed");
+    assert!(out.contains("\"event\":\"rule_proposed\""), "{out}");
     assert_eq!(proposed.get("already_recorded"), Some(&Json::Bool(false)));
     let digest = text(&proposed, "ir_digest").to_string();
     let (_, checked, _) = run(&["rule", "check", &rule, "--json"]);
@@ -20612,6 +20653,152 @@ fn a_rule_version_is_journaled_by_its_content_and_evaluates_from_the_journal() -
         assert_eq!(code, 2, "{args:?}: {out}");
     }
     Ok(())
+}
+
+/// fa-c34: `fa rule activate` plans binding a proposed version's rule name
+/// to it from a date, writing nothing; two independent Human approvers
+/// approve its proposal; the commit journals the PolicyControl and the
+/// name's binding, which `fa rule list` reports. The planner's own approval,
+/// one approval alone, an activation at or before the name's last one and
+/// the version already in force are refused.
+#[test]
+fn a_rule_version_is_activated_from_a_date_under_dual_control() -> std::io::Result<()> {
+    let (book, _ev, dir) = envelope_book("canon-activate")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let head = |out: &str| -> i128 {
+        let envelope = doc(out);
+        let coordinate = envelope.get("coordinate").expect("book coordinate");
+        int(coordinate, "known_at").expect("coordinate known_at")
+    };
+    let propose = |name: &str, text: &str| -> String {
+        let file = write(&dir, name, text);
+        let (code, out, _) = run(&["rule", "propose", &file, "--json"]);
+        assert_eq!(code, 0, "{out}");
+        text_of(&out, "ir_digest")
+    };
+    let v1 = propose(
+        "fee1.rule",
+        r#"rule fee v1 for event Sale { debit "1000" "1.00 USD" credit "6000" "1.00 USD" }"#,
+    );
+    let v2 = propose(
+        "fee2.rule",
+        r#"rule fee v2 for event Sale { debit "1000" "2.00 USD" credit "6000" "2.00 USD" }"#,
+    );
+    let plan_for = |digest: &str, from: &str| -> (i32, String) {
+        let (code, out, _) = run(&[
+            "rule",
+            "activate",
+            digest,
+            "--from",
+            from,
+            "--dry-run",
+            "--json",
+        ]);
+        (code, out)
+    };
+    let (_, before, _) = run(&["rule", "list", "--json"]);
+    let (code, out) = plan_for(v1.as_str(), "2026-04-01");
+    assert_eq!(code, 0, "{out}");
+    let planned = doc(&out);
+    assert_eq!(text(&planned, "rule"), "fee");
+    assert_eq!(text(&planned, "effective_from"), "2026-04-01");
+    let proposal = text(&planned, "proposal_digest").to_string();
+    let plan = write(&dir, "fee1.plan", text(&planned, "bytes"));
+    let (_, after_plan, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(head(&after_plan), head(&before), "planning writes nothing");
+    assert!(arr(&doc(&after_plan), "bindings").is_empty());
+
+    let approve = |who: Option<&str>, digest: &str| -> String {
+        let mut argv = vec!["approve", "--proposal", digest];
+        if let Some(who) = who {
+            argv.extend(["--as", who]);
+        }
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 0, "{out}");
+        text_of(&out, "approval_vid")
+    };
+    let own = approve(None, proposal.as_str());
+    let a = approve(Some("controller-a"), proposal.as_str());
+    let b = approve(Some("controller-b"), proposal.as_str());
+    let commit = |plan: &str, approvals: &[&str]| -> (i32, String) {
+        let mut argv = vec!["rule", "activate", "--plan", plan];
+        for approval in approvals {
+            argv.extend(["--approval", approval]);
+        }
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        (code, out)
+    };
+    // The planner's own approval and one approval alone are refused.
+    let (code, out) = commit(plan.as_str(), &[own.as_str(), a.as_str()]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-008")),
+        "{out}"
+    );
+    let (code, out) = commit(plan.as_str(), &[a.as_str()]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-012")),
+        "{out}"
+    );
+    let (_, unchanged, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(
+        head(&unchanged),
+        head(&after_plan),
+        "refusals write nothing"
+    );
+
+    // Two independent approvers: the activation commits, and a retry of the
+    // same plan returns it.
+    let (code, out) = commit(plan.as_str(), &[a.as_str(), b.as_str()]);
+    assert_eq!(code, 0, "{out}");
+    let activated = doc(&out);
+    assert!(out.contains("\"event\":\"rule_activated\""), "{out}");
+    assert_eq!(int(&activated, "approvals"), Some(2));
+    assert_eq!(activated.get("already_recorded"), Some(&Json::Bool(false)));
+    let (code, out) = commit(plan.as_str(), &[a.as_str(), b.as_str()]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    let (_, listed, _) = run(&["rule", "list", "--json"]);
+    let bindings = arr(&doc(&listed), "bindings").to_vec();
+    assert_eq!(bindings.len(), 1, "{listed}");
+    assert_eq!(
+        (
+            text(&bindings[0], "rule"),
+            text(&bindings[0], "effective_from"),
+            text(&bindings[0], "ir_digest")
+        ),
+        ("fee", "2026-04-01", v1.as_str())
+    );
+
+    // Activations move forward: the same version again, and another
+    // version at or before the last date, are refused at planning.
+    for (digest, from) in [
+        (v1.as_str(), "2026-05-01"),
+        (v2.as_str(), "2026-04-01"),
+        (v2.as_str(), "2026-03-01"),
+    ] {
+        let (code, out) = plan_for(digest, from);
+        assert_eq!(
+            (code, field(&out, "refusal_id")),
+            (3, Some("FA-REF-196")),
+            "{digest} from {from}: {out}"
+        );
+    }
+    // A later version from a later date plans.
+    let (code, out) = plan_for(v2.as_str(), "2026-05-01");
+    assert_eq!(code, 0, "{out}");
+    // An unknown version is a usage error.
+    let (code, out) = plan_for("0".repeat(64).as_str(), "2026-06-01");
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// The string field `key` of the last line's data.
+fn text_of(out: &str, key: &str) -> String {
+    text(&doc(out), key).to_string()
 }
 
 /// fa-f3bo: `fa event record|show|list` journals and queries REA `Event`

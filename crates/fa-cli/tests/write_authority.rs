@@ -964,6 +964,13 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::RuleChange],
             Succeeds,
         ),
+        // Planning an activation of an address the book does not hold
+        // reaches the kernel under rule_change alone.
+        row(
+            &["rule", "activate", ZERO_DIGEST, "--from", DAY, "--dry-run"],
+            &[Op::RuleChange],
+            Reaches,
+        ),
         row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],

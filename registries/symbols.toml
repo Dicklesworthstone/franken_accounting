@@ -533,3 +533,9 @@ name = "ExternalSubledgerBatch"
 [[label]]
 id = 56
 name = "RuleVersion"
+
+# A Canon rule's name (plan §10.3, bead fa-c34): which version is in force
+# from which date, a projection of its activation controls.
+[[label]]
+id = 57
+name = "RuleName"

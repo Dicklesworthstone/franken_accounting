@@ -9,20 +9,25 @@
 //! nothing posts an entry.
 
 use fa::rule::{
-    CompiledRule, Derivation, EvalError, InputType, InputValue, Inputs, RuleVersionRow,
-    compile_rule, evaluation_refusal,
+    CompiledRule, Derivation, EvalError, InputType, InputValue, Inputs,
+    RULE_ACTIVATION_PLAN_DOMAIN, RuleActivationPlan, RuleNameRow, RuleVersionRow, compile_rule,
+    evaluation_refusal,
 };
 use fa_money::{Amount, Side};
 use fa_time::DateDay;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, find_event, hex, known_at_read_flag, usage};
+use crate::cli::{
+    Ctx, Fail, find_event, hex, known_at_read_flag, parse_vid, read_plan_bytes, usage,
+};
 use crate::json::{Json, obj, s};
 
 const CHECK: &str = "fa rule check <rule-file|->";
 const PROPOSE: &str = "fa rule propose <rule-file|-> [--key K]";
 const LIST: &str = "fa rule list [--as-known-at HEAD|<seq>]";
 const SHOW: &str = "fa rule show <ir_digest> [--as-known-at HEAD|<seq>]";
+const ACTIVATE: &str = "fa rule activate <ir_digest> --from YYYY-MM-DD [--key K] --dry-run";
+const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approval <vid>";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 
 pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -31,10 +36,11 @@ pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("propose") => propose(ctx, args),
         Some("list") => list(ctx, args),
         Some("show") => show(ctx, args),
+        Some("activate") => activate(ctx, args),
         Some("eval") => eval(ctx, args),
         _ => Err(usage(
-            "rule has the subcommands check, propose, list, show and eval",
-            format!("{CHECK} | {PROPOSE} | {LIST} | {SHOW} | {EVAL}"),
+            "rule has the subcommands check, propose, list, show, activate and eval",
+            format!("{CHECK} | {PROPOSE} | {LIST} | {SHOW} | {ACTIVATE} | {EVAL}"),
         )),
     }
 }
@@ -229,6 +235,173 @@ fn version_json(version: &RuleVersionRow) -> Json {
     ])
 }
 
+fn binding_json(name: &RuleNameRow) -> Vec<Json> {
+    name.bindings
+        .0
+        .iter()
+        .map(|binding| {
+            obj(vec![
+                ("rule", s(&name.name)),
+                ("effective_from", s(binding.effective_from.render())),
+                ("ir_digest", s(hex(&binding.ir_digest))),
+            ])
+        })
+        .collect()
+}
+
+/// `fa rule activate`: plan with `--dry-run`, or commit an approved plan.
+fn activate(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let approvals = args.flag_all("--approval");
+    match (args.switch("--dry-run"), args.flag("--plan")) {
+        (true, None) if approvals.is_empty() => plan_activation(ctx, args),
+        (false, Some(path)) => {
+            if args.flag("--from").is_some() || args.flag("--key").is_some() {
+                return Err(usage(
+                    "--from and --key belong to the plan; --plan carries what its approvals bind",
+                    COMMIT,
+                ));
+            }
+            commit_activation(ctx, args, path, &approvals)
+        }
+        (true, _) => Err(usage(
+            "--dry-run plans an activation and commits nothing; it takes no --plan or --approval",
+            ACTIVATE,
+        )),
+        (false, None) => Err(usage(
+            "rule activate needs --dry-run (to plan an activation) or --plan (to commit an approved one)",
+            format!(
+                "{ACTIVATE}; then two approvers run `fa approve --proposal <proposal_digest> --as <approver>`; then {COMMIT}"
+            ),
+        )),
+    }
+}
+
+fn plan_activation(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let [_, _, target] = args.positional.as_slice() else {
+        return Err(usage(
+            "rule activate names one version's ir_digest",
+            ACTIVATE,
+        ));
+    };
+    let digest = digest_arg(target, ACTIVATE)?;
+    let Some(from) = args.flag("--from") else {
+        return Err(usage(
+            "rule activate needs --from: the date it takes effect",
+            ACTIVATE,
+        ));
+    };
+    let from = DateDay::parse(from)
+        .map_err(|e| usage(format!("--from `{from}`: {e:?}"), "--from YYYY-MM-DD"))?;
+    let key = args.flag("--key").map_or_else(
+        || format!("rule-activate:{}:{}", hex(&digest), from.render()),
+        str::to_string,
+    );
+    let capability = ctx.capability(args, &["rule_change"])?;
+    let book = ctx.books.open(args)?;
+    let plan = book.plan_rule_activation(&capability, &digest, from, key.as_bytes())??;
+    let proposal = plan
+        .proposal_digest(book.context())
+        .map_err(|e| Fail::Internal(format!("rule activation digest: {e}")))?;
+    let encoded = hex(&plan
+        .encode()
+        .map_err(|e| Fail::Internal(format!("rule activation plan encoding: {e}")))?);
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "rule_activation_plan",
+        vec![
+            ("rule", s(&plan.rule_name)),
+            ("ir_digest", s(hex(&plan.ir_digest))),
+            ("effective_from", s(plan.effective_from.render())),
+            ("principal", s(format!("{:032x}", plan.principal_ref.0))),
+            ("proposal_digest", s(hex(&proposal))),
+            ("bytes", s(&encoded)),
+            ("scope", s("rule-activation-proposal")),
+        ],
+        &format!(
+            "planned activating rule {} at version {} from {}; nothing was written. Two approvers who are not the planner approve proposal {} (`fa approve --proposal {}`); commit with `fa rule activate --plan <file|-> --approval <vid> --approval <vid>`.\nCanonical rule activation plan bytes (hex):\n{encoded}",
+            plan.rule_name,
+            hex(&plan.ir_digest),
+            plan.effective_from.render(),
+            hex(&proposal),
+            hex(&proposal)
+        ),
+    );
+    Ok(())
+}
+
+fn commit_activation(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    path: &str,
+    approvals: &[&str],
+) -> Result<(), Fail> {
+    let bytes = read_plan_bytes(
+        &ctx.files,
+        path,
+        RULE_ACTIVATION_PLAN_DOMAIN,
+        "rule activation",
+    )?;
+    let plan = RuleActivationPlan::decode(&bytes).map_err(|e| {
+        usage(
+            format!("{path} is not a rule activation plan: {e}"),
+            ACTIVATE,
+        )
+    })?;
+    let capability = ctx.capability(args, &["rule_change"])?;
+    let mut book = ctx.books.open(args)?;
+    let digest = plan
+        .proposal_digest(book.context())
+        .map_err(|e| Fail::Internal(format!("rule activation digest: {e}")))?;
+    let approvals = approvals
+        .iter()
+        .map(|v| {
+            Ok(fa_model::ApprovalRef {
+                approval_vid: parse_vid(v, "--approval")?,
+                approved_digest: digest,
+            })
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let activated = book.activate_rule_version(&capability, plan, approvals)??;
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "rule_activated",
+        vec![
+            ("rule", s(&activated.rule_name)),
+            ("ir_digest", s(hex(&activated.binding.ir_digest))),
+            (
+                "effective_from",
+                s(activated.binding.effective_from.render()),
+            ),
+            (
+                "control_entry",
+                s(format!("{:032x}", activated.control_entry.0)),
+            ),
+            (
+                "recorded_at",
+                Json::Int(i128::from(activated.recorded_at.0)),
+            ),
+            (
+                "approvals",
+                Json::Int(i128::try_from(activated.approvals).unwrap_or(i128::MAX)),
+            ),
+            ("already_recorded", Json::Bool(activated.already_recorded)),
+        ],
+        &format!(
+            "{} rule {} at version {} from {} (record {})",
+            if activated.already_recorded {
+                "already activated:"
+            } else {
+                "activated"
+            },
+            activated.rule_name,
+            hex(&activated.binding.ir_digest),
+            activated.binding.effective_from.render(),
+            activated.recorded_at.0
+        ),
+    );
+    Ok(())
+}
+
 /// `fa rule list [--as-known-at HEAD|<seq>]`.
 fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 2 {
@@ -241,6 +414,7 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
     let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
     let (at, versions) = book.rule_versions(known_at, &cap)??;
+    let (_, names) = book.rule_names(Some(at), &cap)??;
     ctx.out.known_at(at);
     let human: Vec<String> = versions
         .iter()
@@ -265,6 +439,10 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (
                 "versions",
                 Json::Arr(versions.iter().map(version_json).collect()),
+            ),
+            (
+                "bindings",
+                Json::Arr(names.iter().flat_map(binding_json).collect()),
             ),
         ],
         &if human.is_empty() {

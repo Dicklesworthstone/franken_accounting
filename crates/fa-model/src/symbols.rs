@@ -82,6 +82,7 @@ symbols!(
         (RECURRING_SCHEDULE, "RecurringSchedule", 54),
         (EXTERNAL_SUBLEDGER_BATCH, "ExternalSubledgerBatch", 55),
         (RULE_VERSION, "RuleVersion", 56),
+        (RULE_NAME, "RuleName", 57),
     ]
 );
 
