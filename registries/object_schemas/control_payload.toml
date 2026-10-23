@@ -75,3 +75,10 @@ appendix_a = "Account.dimension_requirements (plan §4.3, bead fa-ficc)"
 code_type = "fa-journal::dimension::DimensionRequirementSpec; SchemaChange subkind 18"
 rationale = "One immutable canonical version-1 body (fa:dimension-requirement:v1) names a registered dimension, a posting leaf and whether the leaf now requires a value of it. The same transaction compare-and-sets the dimension's Dimension vertex payload (fa:dimension-required-accounts:v1, strictly ascending account ids), a projection rebuildable from these controls in recorded order. It changes no account row; chart replay decodes and skips it. Posting reads each registered dimension's vertex once per entry; requirements and value windows bind only legs a preparer chooses."
 tracking_bead = "fa-ficc"
+
+[[decision]]
+field = "SchemaChange.kind=19"
+appendix_a = "DimensionValue valid-time effectivity (plan §4.1, bead fa-ficc)"
+code_type = "fa-journal::dimension::DimensionCloseSpec; SchemaChange subkind 19"
+rationale = "One immutable canonical version-1 body (fa:dimension-close:v1) names a registered dimension, a value code and the date from which the value tags no leg. The same transaction compare-and-sets the value's DimensionValue vertex payload to its declaration with that valid_to, a projection rebuildable from the creation and close controls in recorded order. A close only shortens a window, never empties it, and is refused while any leg it tags (read through FOR edges and effective-day mirrors in the transaction) is effective on or after the date. Chart replay decodes and skips it; fa-verify's fold skips it."
+tracking_bead = "fa-ficc"

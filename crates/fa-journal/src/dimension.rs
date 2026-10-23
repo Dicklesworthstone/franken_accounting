@@ -43,9 +43,11 @@ use crate::rows::{AccountRow, book_root, bytes, edge_id, prop, scalar_bytes, sca
 
 pub const SCHEMA_CHANGE_DIMENSION_VALUE: u16 = 17;
 pub const SCHEMA_CHANGE_DIMENSION_REQUIREMENT: u16 = 18;
+pub const SCHEMA_CHANGE_DIMENSION_CLOSE: u16 = 19;
 const FORMAT: &[u8] = b"fa:dimension-value:v1";
 const REQUIREMENT_FORMAT: &[u8] = b"fa:dimension-requirement:v1";
 const REQUIRED_FORMAT: &[u8] = b"fa:dimension-required-accounts:v1";
+const CLOSE_FORMAT: &[u8] = b"fa:dimension-close:v1";
 
 /// One dimension value's declaration, the canonical body of its control.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -847,6 +849,261 @@ pub async fn record_dimension_requirement<V: Vfs + Clone>(
             code::IDEMPOTENCY_CONFLICT,
             exit::CONFLICT,
             "a dimension requirement control collided on a derived identity",
+            "FA-INV-09",
+            "retry its original key",
+        ))),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// One close control's canonical body: from `closed_on` (exclusive end of
+/// its window) the value tags no leg.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionCloseSpec {
+    pub dimension: String,
+    pub code: String,
+    pub closed_on: DateDay,
+}
+
+impl DimensionCloseSpec {
+    pub fn encode(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
+        let mut w = Writer::new();
+        w.fixed(CLOSE_FORMAT)
+            .str(&self.dimension)
+            .str(&self.code)
+            .i32(self.closed_on.0);
+        w.finish()
+    }
+
+    pub fn decode(encoded: &[u8]) -> Result<Self, KernelError> {
+        let mut r = Reader::new(encoded);
+        let bad = |error: fa_model::DecodeError| corrupt(error.to_string());
+        if r.fixed::<{ CLOSE_FORMAT.len() }>("dimension close format")
+            .map_err(bad)?
+            .as_slice()
+            != CLOSE_FORMAT
+        {
+            return Err(corrupt("unknown dimension close encoding"));
+        }
+        let dimension = r
+            .str(MAX_REA_CODE_BYTES, "closed dimension")
+            .map_err(bad)?
+            .to_string();
+        let code = r
+            .str(MAX_REA_CODE_BYTES, "closed value")
+            .map_err(bad)?
+            .to_string();
+        let closed_on = DateDay(r.i32("closed on").map_err(bad)?);
+        r.finish().map_err(bad)?;
+        if dimension_kind(&dimension).is_none() || code.is_empty() {
+            return Err(corrupt("a close names no registered dimension value"));
+        }
+        Ok(Self {
+            dimension,
+            code,
+            closed_on,
+        })
+    }
+}
+
+/// Close one value: from `spec.closed_on` it tags no leg (its window's end
+/// becomes that date), under current whole-book SchemaChange authority.
+/// Closing only ever shortens a window, never empties it, and never leaves a
+/// leg it already tags outside it: every tagged leg (read through its `FOR`
+/// edges and effective-day mirrors in the transaction) must be effective
+/// before the close. A value already closed on that date writes nothing.
+#[allow(clippy::too_many_arguments)]
+pub async fn close_dimension_value<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    spec: &DimensionCloseSpec,
+    principal: VId,
+    key: &[u8],
+    description: Erasable<String>,
+    capability: &Capability,
+) -> Outcome<DimensionValueRecorded> {
+    if let Some(refusal) = admit_schema_change(db, book, principal, capability)? {
+        return Ok(Err(refusal));
+    }
+    let Some(kind) = dimension_kind(&spec.dimension) else {
+        return Ok(Err(usage_refusal(
+            format!(
+                "`{}` is not a registered dimension; the dimensions are {}",
+                spec.dimension,
+                kinds_listing()
+            ),
+            "fa dimension close <dimension> <code> --on YYYY-MM-DD",
+        )));
+    };
+    let proposal = schema_control_proposal(
+        book,
+        SCHEMA_CHANGE_DIMENSION_CLOSE,
+        spec.encode()?,
+        principal,
+        DateDay(0),
+        key,
+        description,
+    );
+    let entry = proposal.clone().seal(Vec::new(), None)?;
+    let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), key);
+    let value_vid = dimension_value_vid(book.book_id, kind.code, &spec.code);
+    let mut txn = db.begin(&ctx.txn())?;
+    if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+    let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    let current = match txn.vertex(db, value_vid)? {
+        Some(row) => DimensionValueRow::decode(&row)?,
+        None => None,
+    };
+    let Some(current) = current.filter(|row| row.dimension_id == kind.id) else {
+        txn.abort();
+        return Ok(Err(usage_refusal(
+            format!("{} `{}` does not exist in this book", kind.code, spec.code),
+            format!("fa dimension list {} lists its values", kind.code),
+        )));
+    };
+    if let Some(row) = txn.vertex(db, evid)? {
+        txn.abort();
+        let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
+        if stored.proposal.semantic_digest(&book.seal_key)?
+            != proposal.semantic_digest(&book.seal_key)?
+        {
+            return Ok(Err(Refusal::new(
+                code::IDEMPOTENCY_CONFLICT,
+                exit::CONFLICT,
+                "this idempotency key already records different content",
+                "FA-INV-09",
+                "retry the original close or use a new key",
+            )));
+        }
+        return Ok(Ok(DimensionValueRecorded {
+            value: current,
+            control_entry: evid,
+            already_recorded: true,
+        }));
+    }
+    if current.spec.valid_to == Some(spec.closed_on) {
+        txn.abort();
+        return Ok(Ok(DimensionValueRecorded {
+            value: current,
+            control_entry: evid,
+            already_recorded: true,
+        }));
+    }
+    if let Some(to) = current.spec.valid_to
+        && spec.closed_on > to
+    {
+        txn.abort();
+        return Ok(Err(usage_refusal(
+            format!(
+                "{} `{}` is already effective only before {}; closing never extends a window",
+                kind.code,
+                spec.code,
+                to.render()
+            ),
+            "close on an earlier date, or create a new value for the later period",
+        )));
+    }
+    if let Some(from) = current.spec.valid_from
+        && spec.closed_on <= from
+    {
+        txn.abort();
+        return Ok(Err(usage_refusal(
+            format!(
+                "{} `{}` is effective from {}; a close on {} would leave it no window",
+                kind.code,
+                spec.code,
+                from.render(),
+                spec.closed_on.render()
+            ),
+            format!("close it after {}", from.render()),
+        )));
+    }
+    let mut latest: Option<DateDay> = None;
+    for leg in txn.in_neighbours(db, value_vid, relation::FOR)? {
+        let Some(CanonicalScalar::Int(day)) =
+            txn.vertex_property(db, leg, property::FA_EFFECTIVE_DAY)?
+        else {
+            return Err(corrupt("a tagged leg has no effective-day mirror"));
+        };
+        let day = DateDay(
+            i32::try_from(day).map_err(|_| corrupt("a tagged leg's effective day overflows"))?,
+        );
+        latest = latest.max(Some(day));
+    }
+    if let Some(latest) = latest
+        && latest >= spec.closed_on
+    {
+        txn.abort();
+        return Ok(Err(Refusal::new(
+            code::DIMENSION_NOT_EFFECTIVE,
+            exit::REFUSAL,
+            format!(
+                "{} `{}` tags a leg effective {}; closing it on {} would leave that leg outside its window",
+                kind.code,
+                spec.code,
+                latest.render(),
+                spec.closed_on.render()
+            ),
+            "plan §4.1 (DimensionValue valid-time effectivity; a close never invalidates a recorded leg)",
+            format!(
+                "close it on {} or later",
+                latest
+                    .add_days(1)
+                    .map_or_else(|_| latest.render(), DateDay::render)
+            ),
+        )
+        .at(kind.code, spec.code.clone())));
+    }
+    let closed = DimensionValueSpec {
+        valid_to: Some(spec.closed_on),
+        ..current.spec.clone()
+    };
+    let witnessed = txn.vertex_property(db, value_vid, property::FA_PAYLOAD)?;
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.compare_and_set_vertex_property(
+        value_vid,
+        property::FA_PAYLOAD,
+        witnessed,
+        scalar_bytes("dimension_value._fa_payload", closed.encode()?)?,
+        WriteMismatchPolicy::AbortWrite,
+    );
+    if let Err(error) = txn.write(db, batch) {
+        txn.abort();
+        return Err(error.into());
+    }
+    if let Err(denial) = fa_policy::current(capability, db.frontier()?) {
+        txn.abort();
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    match txn.commit(db, &ctx.commit()).await {
+        Ok(_) => Ok(Ok(DimensionValueRecorded {
+            value: DimensionValueRow {
+                spec: closed,
+                ..current
+            },
+            control_entry: evid,
+            already_recorded: false,
+        })),
+        Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
+            Ok(Err(Refusal::new(
+                code::CONFLICT,
+                exit::CONFLICT,
+                format!("a dimension close witness changed: {detail}"),
+                "FG-LAW-FCW-01",
+                "retry against the current frontier",
+            )))
+        }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => Ok(Err(Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            "a dimension close control collided on a derived identity",
             "FA-INV-09",
             "retry its original key",
         ))),

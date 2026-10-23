@@ -947,6 +947,18 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &[
+                "dimension",
+                "close",
+                "cost_center",
+                "CC10",
+                "--on",
+                "2027-01-01",
+            ],
+            &[Op::SchemaChange],
+            Reaches,
+        ),
+        row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],
             Reaches,

@@ -7305,6 +7305,30 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     assert_eq!(doc(&out).get("required"), Some(&Json::Bool(false)));
     let (code, out) = post("untagged-after", "2026-03-25", "{}");
     assert_eq!(code, 0, "{out}");
+    // fa dimension close: CC's last tagged leg is effective 2026-03-25, so a
+    // close that day is refused (FA-REF-195) naming the next day; a later
+    // close ends its window, again writes nothing, and never extends it.
+    let close = |on: &str| run(&["dimension", "close", "cost_center", "CC", "--on", on]);
+    let (code, out) = close("2026-03-25");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
+    assert!(out.contains("2026-03-26"), "{out}");
+    let (code, out) = close("2026-03-28");
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        text(doc(&out).get("value").unwrap(), "valid_to"),
+        "2026-03-28"
+    );
+    let before = head(&run);
+    let (code, out) = close("2026-03-28");
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&run), before);
+    let (code, out) = close("2026-03-30");
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = post("after-close", "2026-03-29", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
     // An applying leg carries its open item's values as dictated: a receipt
     // dated after P-7's window still settles the P-7 invoice, carrying P-7.
     let (code, out) = run(&[

@@ -477,9 +477,10 @@ impl Schema {
                 }
             }
             // Existing REA controls, role/closing/FX/subledger declarations,
-            // dimension values (17) and dimension requirements (18) change
-            // neither the immutable account labels nor period boundaries.
-            5..=12 | 14..=18 => return Ok(()),
+            // and dimension values (17), requirements (18) and closes (19)
+            // change neither the immutable account labels nor period
+            // boundaries.
+            5..=12 | 14..=19 => return Ok(()),
             _ => {
                 return Err(failed(
                     "schema_history",

@@ -14,8 +14,8 @@ use fgdb_types::{CommitSeq, VId};
 use crate::{AsyncBook, Outcome, TrialBalanceSelection};
 
 pub use fa_journal::dimension::{
-    DimensionRequirementRecorded, DimensionRequirementSpec, DimensionValueRecorded,
-    DimensionValueRow, DimensionValueSpec,
+    DimensionCloseSpec, DimensionRequirementRecorded, DimensionRequirementSpec,
+    DimensionValueRecorded, DimensionValueRow, DimensionValueSpec,
 };
 
 /// Each registered dimension's requiring accounts (dimensions with a value only).
@@ -45,6 +45,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<DimensionValueRecorded> {
         let description = self.seal_text(cx, &format!("add {} {}", spec.dimension, spec.code))?;
         Ok(fa_journal::dimension::create_dimension_value(
+            &mut self.db,
+            cx,
+            &self.context,
+            spec,
+            principal,
+            key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    /// Close one value from `spec.closed_on` under SchemaChange authority;
+    /// a value already closed on that date writes nothing.
+    pub async fn close_dimension_value(
+        &mut self,
+        cx: &PurposeContexts,
+        spec: &DimensionCloseSpec,
+        principal: VId,
+        key: &[u8],
+        capability: &Capability,
+    ) -> Outcome<DimensionValueRecorded> {
+        let description = self.seal_text(cx, &format!("close {} {}", spec.dimension, spec.code))?;
+        Ok(fa_journal::dimension::close_dimension_value(
             &mut self.db,
             cx,
             &self.context,

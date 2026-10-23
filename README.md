@@ -944,6 +944,7 @@ fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
 fa dimension add cost_center CC --name "All operations" --book acme.fabook --json
 fa dimension add cost_center CC10 --name Warehouse --parent CC --from 2026-01-01 --book acme.fabook --json
 fa dimension require cost_center 6100 --book acme.fabook --json
+fa dimension close cost_center CC10 --on 2026-07-01 --book acme.fabook --json
 fa dimension list cost_center --book acme.fabook --json
 fa tb --period FY2026-P03 --dimension cost_center=CC --book acme.fabook --json
 ```

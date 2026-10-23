@@ -6,7 +6,9 @@
 //! value exists in its dimension and is effective on the entry's date.
 
 use fa::TrialBalanceSelection;
-use fa::dimension::{DimensionRequirementSpec, DimensionValueRow, DimensionValueSpec};
+use fa::dimension::{
+    DimensionCloseSpec, DimensionRequirementSpec, DimensionValueRow, DimensionValueSpec,
+};
 use fa_model::{Id128, account_vid, dimension_kind, dimension_value_vid};
 use fa_time::DateDay;
 use fgdb_types::VId;
@@ -21,6 +23,7 @@ use crate::json::{Json, obj, s};
 const ADD: &str = "fa dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]";
 const LIST: &str = "fa dimension list [<dimension>] [--as-known-at HEAD|<seq>]";
 const REQUIRE: &str = "fa dimension require <dimension> <account> [--remove] [--key K]";
+const CLOSE: &str = "fa dimension close <dimension> <code> --on YYYY-MM-DD [--key K]";
 
 fn kinds() -> String {
     fa_journal::dimension::kinds_listing()
@@ -40,9 +43,10 @@ pub(crate) fn dimension_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         Some("add") => add(ctx, args),
         Some("list") => list(ctx, args),
         Some("require") => require(ctx, args),
+        Some("close") => close(ctx, args),
         _ => Err(usage(
-            "dimension has the subcommands add, list and require",
-            format!("{ADD} | {LIST} | {REQUIRE}"),
+            "dimension has the subcommands add, list, require and close",
+            format!("{ADD} | {LIST} | {REQUIRE} | {CLOSE}"),
         )),
     }
 }
@@ -153,6 +157,63 @@ fn add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             },
             recorded.control_entry.0,
             value.created_at.0,
+        ),
+    );
+    Ok(())
+}
+
+/// `fa dimension close <dimension> <code> --on YYYY-MM-DD [--key K]`.
+fn close(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let [_, _, dimension, code] = args.positional.as_slice() else {
+        return Err(usage(
+            "dimension close names one dimension and one value code",
+            CLOSE,
+        ));
+    };
+    registered(dimension, CLOSE)?;
+    let Some(on) = args.flag("--on") else {
+        return Err(usage("dimension close needs --on", CLOSE));
+    };
+    let closed_on =
+        DateDay::parse(on).map_err(|e| usage(format!("--on `{on}`: {e:?}"), "--on YYYY-MM-DD"))?;
+    let spec = DimensionCloseSpec {
+        dimension: dimension.clone(),
+        code: code.clone(),
+        closed_on,
+    };
+    let key = args.flag("--key").map_or_else(
+        || format!("dimension-close:{dimension}:{code}:{on}"),
+        str::to_string,
+    );
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["schema_change"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        book.admit_rea_change(who, &capability)??;
+        Ok(())
+    })?;
+    let recorded = book.close_dimension_value(&spec, who, key.as_bytes(), &capability)??;
+    ctx.out.at_book(&book)?;
+    let value = &recorded.value;
+    ctx.out.event(
+        "dimension_value_recorded",
+        vec![
+            ("value", value_json(value)),
+            (
+                "control_entry",
+                s(format!("{:032x}", recorded.control_entry.0)),
+            ),
+            ("already_recorded", Json::Bool(recorded.already_recorded)),
+        ],
+        &format!(
+            "{} {} is effective {}{}",
+            value.spec.dimension,
+            value.spec.code,
+            window(value),
+            if recorded.already_recorded {
+                "; nothing was written"
+            } else {
+                ""
+            },
         ),
     );
     Ok(())

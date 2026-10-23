@@ -990,6 +990,21 @@ impl Book {
         ))
     }
 
+    /// Close one dimension value from a date (bead fa-ficc) under
+    /// SchemaChange authority; a value already closed then writes nothing.
+    pub fn close_dimension_value(
+        &mut self,
+        spec: &crate::dimension::DimensionCloseSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionValueRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.close_dimension_value(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
     /// Require, or stop requiring, a dimension on one account's legs
     /// (bead fa-ficc) under SchemaChange authority.
     pub fn record_dimension_requirement(
