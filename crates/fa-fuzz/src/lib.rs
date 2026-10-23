@@ -679,6 +679,7 @@ pub fn fuzz_legacy_gl_formats(bytes: &[u8]) {
         let _ = fa_formats::legacy::parse_xero_csv(&text, &units, &map, "USD");
         let _ = fa_formats::legacy::parse_netsuite_csv(&text, &units, &map, "USD");
         let _ = fa_formats::legacy::parse_beancount_ledger(&text, &units, &map);
+        let _ = fa_formats::legacy::parse_hledger_journal(&text, &units, &map);
         let _ = fa_formats::bank::parse_camt053(&text, &units);
         let _ = fa_formats::bank::parse_camt052(&text, &units);
         let _ = fa_formats::bank::parse_bai2(&text, &units);
