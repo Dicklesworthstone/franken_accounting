@@ -21433,16 +21433,18 @@ fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fai
     ]))
 }
 
-/// `fa search <query> [--kind entry|document|all]` (plan §9, fa-qip): rank
-/// the entries whose description or memos match the query, and the
-/// documents whose text does, from one BM25 index rebuilt from the journal
-/// at the selected frontier for this query alone and never stored. It reads
-/// every entry and document, so it is admitted as a whole-book read. Text the
-/// book's key does not open (erased, or sealed under a subject's key) is
-/// never indexed, and a document is indexed only when this capability reads
-/// it whole: its own UTF-8 text, or a derived document's extracted text.
+/// `fa search <query> [--kind entry|document|finding|all]` (plan §9, fa-qip):
+/// rank the entries whose description or memos match the query, the
+/// documents whose text does, and the findings whose procedure or narrative
+/// does, from one BM25 index rebuilt from the journal at the selected
+/// frontier for this query alone and never stored. It reads every entry,
+/// document and recorded finding run, so it is admitted as a whole-book read.
+/// Text the book's key does not open (erased, or sealed under a subject's
+/// key) is never indexed, and a document is indexed only when this
+/// capability reads it whole: its own UTF-8 text, or a derived document's
+/// extracted text.
 fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const EXAMPLE: &str = "fa search \"office rent\" [--kind entry|document|all] [--as-known-at HEAD|<seq>] [--limit 20] --book <dir> --json";
+    const EXAMPLE: &str = "fa search \"office rent\" [--kind entry|document|finding|all] [--as-known-at HEAD|<seq>] [--limit 20] --book <dir> --json";
     let query = match args.positional.as_slice() {
         [_, query] => query.as_str(),
         _ => {
@@ -21470,30 +21472,36 @@ fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "all" => None,
         "entry" => Some(fa::SearchRecordKind::Entry),
         "document" => Some(fa::SearchRecordKind::Document),
+        "finding" => Some(fa::SearchRecordKind::Finding),
         other => {
             return Err(usage(
-                format!("--kind `{other}` is not entry, document or all"),
+                format!("--kind `{other}` is not entry, document, finding or all"),
                 EXAMPLE,
             ));
         }
     };
+    let wants = |wanted: fa::SearchRecordKind| kind.is_none_or(|only| only == wanted);
+    let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
     let mut book = ctx.books.open_admitted(args, |book| {
         admit_whole_book_read(book, &capability, &[], "searching the journal")
     })?;
     let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-    // Documents are read through this capability: one it sees only
-    // redacted, or cannot read, contributes nothing.
-    let mut documents = Vec::new();
-    if kind != Some(fa::SearchRecordKind::Entry) {
+    let mut records = Vec::new();
+    // Documents are read through this capability. One it sees only
+    // redacted, may not read, or that is erased contributes nothing; one
+    // that fails its own proof is drift and fails the search (exit 8).
+    if wants(fa::SearchRecordKind::Document) {
         for summary in book.documents(known_at)?? {
-            let Ok(Ok(fa_journal::DocumentRead::Full(document))) =
-                book.read_document_for(&capability, &summary.oid)
-            else {
-                continue;
+            let document = match book.read_document_for(&capability, &summary.oid)? {
+                Ok(fa_journal::DocumentRead::Full(document)) => document,
+                Err(refusal) if refusal.exit == fa_journal::exit::VERIFICATION => {
+                    return Err(Fail::Refusal(refusal));
+                }
+                Ok(fa_journal::DocumentRead::Redacted(_)) | Err(_) => continue,
             };
             if let Some(text) = fa::document_search_text(&document) {
-                documents.push(fa::SearchIndexableRecord {
+                records.push(fa::SearchIndexableRecord {
                     id: fa::SearchRecordId::Document(summary.oid),
                     recorded_at: summary.recorded_at.0,
                     subject_ref: None,
@@ -21502,7 +21510,36 @@ fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
         }
     }
-    let results = book.search(query, known_at, &documents, kind)?;
+    // Findings are the certified replays of every run recorded at the
+    // frontier, never a graph cache: a run that does not replay fails the
+    // search. Each finding is searched by its procedure and narrative.
+    if wants(fa::SearchRecordKind::Finding) {
+        let mut request = fa::findings::lookup::FindingRunPageRequest {
+            known_at,
+            after: None,
+            limit: fa::findings::lookup::MAX_FINDING_RUN_PAGE,
+        };
+        loop {
+            let page = book.finding_runs(who, &capability, &request)??;
+            for run in &page.runs {
+                let recorded =
+                    book.read_findings_with_history(who, &capability, &run.certificate_digest)??;
+                for (vid, finding) in recorded.finding_ids.iter().zip(&recorded.report.findings) {
+                    records.push(fa::SearchIndexableRecord {
+                        id: fa::SearchRecordId::Finding(*vid),
+                        recorded_at: recorded.recorded_at.0,
+                        subject_ref: None,
+                        text: format!("{}\n{}", finding.procedure, finding.narrative),
+                    });
+                }
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            request.after = Some(next);
+        }
+    }
+    let results = book.search(query, known_at, &records, kind)?;
     ctx.out.known_at(results.known_at);
     let shown = &results.hits[..results.hits.len().min(limit)];
     let hits: Vec<Json> = shown
@@ -21523,7 +21560,7 @@ fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .collect();
     let human = if shown.is_empty() {
         format!(
-            "nothing matches `{query}` at {} ({} entries and documents carry searchable text)",
+            "nothing matches `{query}` at {} ({} entries, documents and findings carry searchable text)",
             results.known_at.0, results.records
         )
     } else {
