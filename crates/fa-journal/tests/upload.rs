@@ -587,3 +587,85 @@ fn a_real_revocation_invalidates_prepared_uploads_and_blocks_recorded_retries() 
     let kept = read_document(&h.db, &prior.oid).unwrap().unwrap().unwrap();
     assert_eq!(kept.bytes, b"uploaded before revocation");
 }
+
+fn derived_from(db: &Database<MemVfs>) -> Vec<(VId, VId)> {
+    db.edges_at(db.frontier().unwrap())
+        .unwrap()
+        .into_iter()
+        .filter(|edge| edge.entry.relation == relation::DERIVED_FROM)
+        .map(|edge| (edge.entry.src, edge.entry.dst))
+        .collect()
+}
+
+fn extraction(source: fa_model::Oid, text: &str) -> Vec<u8> {
+    fa_journal::encode_extraction_derivation(
+        &[source],
+        &fa_journal::DerivedExtractionMetadata {
+            method: fa_journal::ExtractionMethod::PdfTextLayer,
+            tool_name: "fa-docket/pdf-text-layer".into(),
+            tool_version: "0.0.1".into(),
+            model_artifact_hash: None,
+            command_line: Vec::new(),
+            replayable: true,
+            extracted_text: text.into(),
+            raw_tool_output: Vec::new(),
+        },
+    )
+    .unwrap()
+}
+
+/// fa-lzrn: an uploaded derivation records its `DERIVED_FROM` lineage in
+/// the upload's own commit, as `add_document` does. Derived text is governed
+/// as its source is (plan §9.6): deriving from a document a redaction
+/// contract governs, under a kind that contract does not govern, is refused
+/// (FA-REF-083) with nothing written; under the source's kind it records.
+#[test]
+fn uploaded_derivations_record_lineage_and_keep_their_sources_redaction_contract() {
+    let mut h = Harness::new();
+    let human = cap(Profile::Human, 21);
+    let kind = |name: &str| {
+        EvidencePolicy::embedded()
+            .unwrap()
+            .kind_by_name(name)
+            .unwrap()
+            .tag
+    };
+    let typed = |name: &str, bytes: Vec<u8>| UploadRequest {
+        kind: kind(name),
+        mime: "text/plain".into(),
+        bytes,
+        asserted_grade: None,
+    };
+    let invoice = h
+        .upload(&human, typed("Invoice", b"INVOICE 1001".to_vec()))
+        .unwrap();
+    let statement = h
+        .upload(&human, typed("BankStatement", b"STATEMENT 12345".to_vec()))
+        .unwrap();
+
+    let derived = h
+        .upload(
+            &human,
+            typed("Invoice", extraction(invoice.oid, "INVOICE 1001")),
+        )
+        .unwrap();
+    assert!(
+        derived_from(&h.db).contains(&(document_vid(&derived.oid), document_vid(&invoice.oid))),
+        "the upload's commit carries its lineage"
+    );
+
+    let head = h.db.frontier().unwrap();
+    let refused = h
+        .upload(&human, typed("Invoice", extraction(statement.oid, "12345")))
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-083", "{refused:?}");
+    assert_eq!(h.db.frontier().unwrap(), head, "a refusal writes nothing");
+
+    let kept = h
+        .upload(
+            &human,
+            typed("BankStatement", extraction(statement.oid, "12345")),
+        )
+        .unwrap();
+    assert!(derived_from(&h.db).contains(&(document_vid(&kept.oid), document_vid(&statement.oid))));
+}
