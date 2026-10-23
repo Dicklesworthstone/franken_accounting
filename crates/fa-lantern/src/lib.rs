@@ -836,6 +836,16 @@ impl Work {
                     && self.comparisons
                         <= documents.saturating_add(snapshot.attestations.len() as u64)
             }
+            // duplicates.near: the sort, then at most MAX_NEAR_CANDIDATES
+            // comparisons per entry inside its window.
+            "O(legs log legs + entries × candidates)" => {
+                self.entries <= entries
+                    && self.legs <= legs
+                    && self.comparisons
+                        <= n_log_n.saturating_add(
+                            entries.saturating_mul(crate::duplicates::MAX_NEAR_CANDIDATES),
+                        )
+            }
             "O(entries)" => self.entries <= entries && self.legs == 0 && self.comparisons == 0,
             "O(legs)" => self.entries <= entries && self.legs <= legs && self.comparisons == 0,
             "O(entries + transitions)" => {

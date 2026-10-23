@@ -149,6 +149,34 @@ default = 30
 meaning = "Two same-leg entries whose effective dates differ by 1..=window_days days form a pair."
 
 [[procedure]]
+id = "duplicates.near"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L63"
+tie_break = "entry_vid"
+complexity = "O(legs log legs + entries × candidates)"
+calibration = "planted"
+summary = "Pairs of live entries with the same leg shape (account, side, unit and dimensions, so the same parties), effective dates at most window_days apart, every unit's debit total within tolerance_bp basis points of the larger, and descriptions at least min_similarity_pct similar (character-bigram Dice over the lowercased alphanumeric text, rounded down). Entries with identical legs are left to duplicates.same_same_same and same_same_different, supersession pairs are excluded, and each entry is paired with its nearest qualifying later entry only. Each entry is compared with at most 64 later entries of its shape; an entry past that cap, and an entry whose description cannot be opened, is reported."
+
+[[parameter]]
+procedure = "duplicates.near"
+name = "window_days"
+default = 30
+meaning = "Two entries whose effective dates differ by 0..=window_days days are compared."
+
+[[parameter]]
+procedure = "duplicates.near"
+name = "tolerance_bp"
+default = 100
+meaning = "Amounts are near when |a - b| * 10000 <= tolerance_bp * max(a, b) in every unit (0..=10000; 100 = 1%)."
+
+[[parameter]]
+procedure = "duplicates.near"
+name = "min_similarity_pct"
+default = 80
+meaning = "The least description similarity, in whole percent (1..=100), for a near pair."
+
+[[procedure]]
 id = "numbers.sequence_gaps"
 version = 1
 claim = "statistical"

@@ -13451,6 +13451,117 @@ fn procedure_run_flags_an_entry_whose_only_evidence_is_an_agent_upload() -> std:
     Ok(())
 }
 
+/// `duplicates.near` through the binary (fa-m35p, plan §11.3): two invoices on
+/// the same accounts, 50 bp apart, with the invoice number transposed, form
+/// one pair. The same text and amount on another account do not, and an
+/// out-of-range tolerance is refused as a usage error.
+#[test]
+fn procedure_run_pairs_near_duplicate_invoices() -> std::io::Result<()> {
+    let dir = tmp("near-duplicates")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Near Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Supplies","type":"Expense","unit":"USD"},{"code":"7000","name":"Utilities","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P01"]);
+    let path = write(&dir, "invoice.txt", "INVOICE 1043 (a person's upload)");
+    let added = ok(&[
+        "document",
+        "add",
+        &path,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = field(&added, "oid").unwrap_or_default().to_string();
+    let post = |key: &str, date: &str, account: &str, amount: &str, description: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{account}","amount":"{amount} USD"}},{{"side":"credit","account":"2000","amount":"{amount} USD"}}],"description":"{description}"}}"#
+            ),
+        );
+        let posted = ok(&["post", "--intent", &intent, "--evidence", &evidence]);
+        field(&posted, "vid").unwrap_or_default().to_string()
+    };
+    let first = post(
+        "first",
+        "2026-01-10",
+        "6000",
+        "1000.00",
+        "Invoice 1043 Acme Supplies",
+    );
+    post(
+        "other",
+        "2026-01-11",
+        "7000",
+        "1000.00",
+        "Invoice 1043 Acme Supplies",
+    );
+    let second = post(
+        "second",
+        "2026-01-20",
+        "6000",
+        "1005.00",
+        "INVOICE #1034 - ACME SUPPLIES",
+    );
+
+    let out = ok(&["procedure", "run", "duplicates.near"]);
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "duplicates.near");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "one pair: {out}");
+    assert_eq!(
+        findings[0].get("severity").and_then(Json::as_str),
+        Some("Low"),
+        "{out}"
+    );
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(int(statistic, "value"), Some(88), "similarity_pct: {out}");
+    assert_eq!(int(statistic, "population"), Some(3), "{out}");
+    let cited: Vec<&str> = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites")
+        .iter()
+        .filter(|c| c.get("kind").and_then(Json::as_str) == Some("entry"))
+        .filter_map(|c| c.get("entry").and_then(Json::as_str))
+        .collect();
+    assert_eq!(
+        cited,
+        vec![first.as_str(), second.as_str()],
+        "earlier, then later: {out}"
+    );
+
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "procedure",
+            "run",
+            "duplicates.near",
+            "--param",
+            "tolerance_bp=10001",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("tolerance_bp"), "{out}");
+    Ok(())
+}
+
 /// `fa procedure list|run`: Lantern over a persisted book through the CLI
 /// (plan §11, Appendix D). The planted round amount is found and cited by
 /// its posted vid; a parameter override changes the result; the registry
@@ -13512,7 +13623,7 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     let listed = ok(&["procedure", "list"]);
     let listed_doc = doc(&listed);
     let rows = arr(&listed_doc, "procedures");
-    assert_eq!(rows.len(), 62, "{listed}");
+    assert_eq!(rows.len(), 63, "{listed}");
     for id in [
         "jet.round_amounts",
         "solvency.balance_sheet_test",

@@ -21,7 +21,7 @@ use crate::cutoff::{
     SolvencyCashFlowTest, SubsequentEvents, UnrecordedLiabilities,
 };
 use crate::digits::{FirstDigit, FirstTwoDigits, SecondDigit};
-use crate::duplicates::{SameSameDifferent, SameSameSame};
+use crate::duplicates::{Near, SameSameDifferent, SameSameSame};
 use crate::graph::{
     CircularFlows, Communities, Concentration, IdentityResolution, Layering, RelatedPartyExposure,
     RoundTrips, ShellSignature, Structuring,
@@ -75,6 +75,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         IntercompanyUnmatched::ID => Box::new(IntercompanyUnmatched::with(params)),
         SameSameSame::ID => Box::new(SameSameSame::with(params)),
         SameSameDifferent::ID => Box::new(SameSameDifferent::with(params)),
+        Near::ID => Box::new(Near::with(params)),
         SequenceGaps::ID => Box::new(SequenceGaps::with(params)),
         RelativeSizeFactor::ID => Box::new(RelativeSizeFactor::with(params)),
         ThresholdSplitting::ID => Box::new(ThresholdSplitting::with(params)),
