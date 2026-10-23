@@ -82,3 +82,10 @@ appendix_a = "DimensionValue valid-time effectivity (plan §4.1, bead fa-ficc)"
 code_type = "fa-journal::dimension::DimensionCloseSpec; SchemaChange subkind 19"
 rationale = "One immutable canonical version-1 body (fa:dimension-close:v1) names a registered dimension, a value code and the date from which the value tags no leg. The same transaction compare-and-sets the value's DimensionValue vertex payload to its declaration with that valid_to, a projection rebuildable from the creation and close controls in recorded order. A close only shortens a window, never empties it, and is refused while any leg it tags (read through FOR edges and effective-day mirrors in the transaction) is effective on or after the date. Chart replay decodes and skips it; fa-verify's fold skips it."
 tracking_bead = "fa-ficc"
+
+[[decision]]
+field = "SchemaChange.kind=20"
+appendix_a = "RuleVersion (plan §10.3, §10.6, bead fa-c34)"
+code_type = "fa-journal::rule::RuleVersionSpec; SchemaChange subkind 20"
+rationale = "One immutable canonical version-1 body (fa:rule-version:v1) carries a Canon rule's source and the canonical fa:canon-ir:v1 IR the kernel compiled it to against the book's units at proposal; the kernel compiles the source itself, so the stored IR is the compiler's output. The same transaction materializes the RuleVersion vertex carrying that body at the address derived from the IR digest, so a version is its content: proposing the same IR again writes nothing. A reader decodes the IR through Canon's structural validation and balance proof and refuses one that digests to another address. It activates nothing and changes no account; chart replay decodes and skips it, and fa-verify's fold skips it."
+tracking_bead = "fa-c34"

@@ -1,9 +1,9 @@
 //! Canon end to end through the public API: compile a source, evaluate it
 //! over a recorded event, and refuse what cannot be proven or computed.
 
-use fa_canon::{EvalError, InputType, InputValue, Inputs, compile, evaluate};
+use fa_canon::{CompiledRule, EvalError, InputType, InputValue, Inputs, compile, evaluate};
 use fa_model::{Erasable, EventKind, EventResource, EventSpec, EvidenceRef, Oid, SealKey};
-use fa_money::{Amount, Side, UnitRegistry};
+use fa_money::{Amount, RoundingLaw, Side, Unit, UnitKind, UnitRegistry};
 use fa_time::DateDay;
 
 const SALE: &str = r#"
@@ -161,6 +161,62 @@ fn the_content_address_ignores_let_names_and_layout_but_not_meaning() {
         rule.ir_digest(),
         fa_model::domain_digest(fa_canon::CANON_IR_DOMAIN, &[rule.ir()])
     );
+}
+
+#[test]
+fn a_stored_ir_decodes_through_the_same_validation_and_proof() {
+    let units = units();
+    let rule = compile(SALE, &units).unwrap();
+    let decoded = CompiledRule::decode(rule.ir(), &units).unwrap();
+    assert_eq!(decoded, rule);
+    let sale = event(EventKind::Sale, vec![("net", usd(&units, 10_005))]);
+    assert_eq!(
+        evaluate(&decoded, &sale, &as_of()).unwrap(),
+        evaluate(&rule, &sale, &as_of()).unwrap()
+    );
+
+    // A stored IR whose credit literal was changed no longer balances: the
+    // decoder re-runs the proof rather than trusting what was stored.
+    let plain = compile(
+        r#"rule r v1 for event Sale { debit "1" "1.00 USD" credit "2" "1.00 USD" }"#,
+        &units,
+    )
+    .unwrap();
+    let hundred = 100i128.to_le_bytes();
+    let at: Vec<usize> = plain
+        .ir()
+        .windows(16)
+        .enumerate()
+        .filter(|(_, w)| *w == hundred)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(at.len(), 2, "both literals are 100 minor units");
+    let mut mutated = plain.ir().to_vec();
+    mutated[at[1]] = 101;
+    let error = CompiledRule::decode(&mutated, &units).unwrap_err();
+    assert!(error.0.contains("does not balance in USD"), "{error}");
+
+    let bytes = plain.ir();
+    assert!(CompiledRule::decode(&bytes[..bytes.len() - 1], &units).is_err());
+    let mut trailing = bytes.to_vec();
+    trailing.push(0);
+    assert!(CompiledRule::decode(&trailing, &units).is_err());
+
+    // A book must hold exactly the unit version and scale the IR spells.
+    let error = CompiledRule::decode(bytes, &UnitRegistry::empty()).unwrap_err();
+    assert!(error.0.contains("not registered in this book"), "{error}");
+    let mut other_scale = UnitRegistry::empty();
+    other_scale
+        .register(Unit {
+            code: "USD".to_string(),
+            scale: 3,
+            version: 0,
+            kind: UnitKind::Currency { iso4217: 840 },
+            rounding_default: RoundingLaw::HalfEven,
+        })
+        .unwrap();
+    let error = CompiledRule::decode(bytes, &other_scale).unwrap_err();
+    assert!(error.0.contains("another scale"), "{error}");
 }
 
 #[test]

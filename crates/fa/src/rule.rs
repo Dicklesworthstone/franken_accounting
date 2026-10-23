@@ -1,86 +1,113 @@
 //! Canon posting rules on the facade (plan §10.3, bead fa-c34). A rule is
 //! compiled against the book's unit registry and evaluated over a recorded
-//! REA event by [`fa_canon`], which is pure: this module adds only the book's
-//! units and the refusal envelope.
+//! REA event by [`fa_canon`], which is pure. A rule version is journaled by
+//! `fa rule propose` ([`fa_journal::rule`]), addressed by its IR digest.
 //!
-//! Nothing here writes. A derivation names the legs a rule version would
-//! give an event; journaled rule versions, their activation and
-//! rule-derived posting are later slices of the bead.
+//! A version is not activated by being proposed, and no entry derives from
+//! one yet: activation under dual control and rule-derived posting are
+//! later slices of the bead.
 
+use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
-use fa_journal::refusal::{Refusal, exit};
+use fa_journal::refusal::Refusal;
+use fa_policy::Capability;
+use fgdb_types::context::PurposeContexts;
+use fgdb_types::{CommitSeq, VId};
+
+use crate::{AsyncBook, Outcome};
 
 pub use fa_canon::{
     CanonError, CompiledRule, Dependencies, Derivation, DerivedLeg, EvalError, InputDecl,
-    InputType, InputValue, Inputs, MAX_SOURCE_BYTES, evaluate,
+    InputType, InputValue, Inputs, IrError, MAX_SOURCE_BYTES, evaluate,
 };
-
-pub mod code {
-    /// A rule source the Canon checker refuses (a parse, unit, law, name or
-    /// balance-proof failure), or an evaluation that cannot be computed
-    /// exactly over the event it was given.
-    pub const CANON_RULE: &str = "FA-REF-196";
-}
-
-const CITE: &str = "plan §10.3 (Canon: a total, statically typed rule language; units, laws and balance are checked before a rule runs)";
-const EVAL_CITE: &str = "plan §10.3 (a rule that cannot be evaluated fails closed with a typed error instead of posting a guess)";
+pub use fa_journal::refusal::code::CANON_RULE;
+pub use fa_journal::rule::{
+    RuleVersionRecorded, RuleVersionRow, RuleVersionSpec, evaluation_refusal, rule_refusal,
+};
 
 /// Compile `source` against this book's registered units.
 pub fn compile_rule(context: &BookContext, source: &str) -> Result<CompiledRule, Refusal> {
     fa_canon::compile(source, &context.units).map_err(|error| rule_refusal(&error))
 }
 
-/// The refusal for a source the checker rejects, at the line and column it
-/// names.
-#[must_use]
-pub fn rule_refusal(error: &CanonError) -> Refusal {
-    Refusal::new(
-        code::CANON_RULE,
-        exit::REFUSAL,
-        format!(
-            "the rule is refused at line {}, column {}: {}",
-            error.line, error.column, error.message
-        ),
-        CITE,
-        "revise the rule at that line and column, then run fa rule check <file> again",
-    )
-    .at("rule", format!("{}:{}", error.line, error.column))
-}
+impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Admit `capability` to change rules before anything is observed.
+    pub fn admit_rule_change(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+    ) -> Outcome<()> {
+        self.query(cx, |db, book| {
+            Ok(
+                match fa_journal::rule::admit_rule_change(db, book, principal, capability)? {
+                    Some(refusal) => Err(refusal),
+                    None => Ok(()),
+                },
+            )
+        })
+    }
 
-/// The refusal for an evaluation that cannot be computed over this event.
-#[must_use]
-pub fn evaluation_refusal(rule: &CompiledRule, event: &str, error: &EvalError) -> Refusal {
-    let fix = match error {
-        EvalError::WrongEventKind { rule, .. } => {
-            format!("evaluate the rule over a {} event (fa event list)", rule.name())
-        }
-        EvalError::MissingResource { .. } | EvalError::AmbiguousResource { .. } => {
-            "evaluate an event that carries each resource the rule reads exactly once (fa event show <code>), or revise the rule".to_string()
-        }
-        EvalError::ResourceUnit { .. } => {
-            "read the resource in the unit the event records it in, or evaluate another event".to_string()
-        }
-        EvalError::MissingInput { name } => format!("supply --input {name}=<value>"),
-        EvalError::UndeclaredInput { name } => {
-            format!("drop --input {name}, or declare it in the rule's inputs block")
-        }
-        EvalError::InputType { name, .. } => {
-            format!("supply --input {name}=<value> in the declared type")
-        }
-        EvalError::Overflow { .. } | EvalError::NegativeLeg { .. } | EvalError::Encode(_) => {
-            "revise the rule so every leg is a non-negative amount within range for this event".to_string()
-        }
-    };
-    Refusal::new(
-        code::CANON_RULE,
-        exit::REFUSAL,
-        format!(
-            "rule {} v{} cannot be evaluated over event {event}: {error}",
-            rule.name(),
-            rule.version()
-        ),
-        EVAL_CITE,
-        fix,
-    )
-    .at("event", event)
+    /// Journal a rule version under `rule_change` authority; the kernel
+    /// compiles the source itself. A retry of the key, or a source whose IR
+    /// the book already holds, writes nothing.
+    pub async fn propose_rule_version(
+        &mut self,
+        cx: &PurposeContexts,
+        source: &str,
+        principal: VId,
+        key: &[u8],
+        capability: &Capability,
+    ) -> Outcome<RuleVersionRecorded> {
+        let description = self.seal_text(cx, "propose rule version")?;
+        Ok(fa_journal::rule::propose_rule_version(
+            &mut self.db,
+            cx,
+            &self.context,
+            source,
+            principal,
+            key,
+            description,
+            capability,
+        )
+        .await?)
+    }
+
+    /// Every rule version at `known_at` (the head when `None`), under current
+    /// whole-book read authority, with the prefix they were read at.
+    pub fn rule_versions(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+        capability: &Capability,
+    ) -> Outcome<(CommitSeq, Vec<RuleVersionRow>)> {
+        self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            Ok(Ok((at, fa_journal::rule::rule_versions_at(db, book, at)?)))
+        })
+    }
+
+    /// The rule version addressed by `ir_digest` at `known_at`, if the book
+    /// holds it, under current whole-book read authority.
+    pub fn rule_version(
+        &self,
+        cx: &PurposeContexts,
+        ir_digest: &[u8; 32],
+        known_at: Option<CommitSeq>,
+        capability: &Capability,
+    ) -> Outcome<(CommitSeq, Option<RuleVersionRow>)> {
+        self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(db, book, capability, known_at)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            Ok(Ok((
+                at,
+                fa_journal::rule::rule_version_at(db, book, ir_digest, at)?,
+            )))
+        })
+    }
 }

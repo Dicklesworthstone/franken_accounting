@@ -1001,6 +1001,7 @@ name = "fa-journal"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-canon",
  "fa-escrow",
  "fa-intents",
  "fa-model",

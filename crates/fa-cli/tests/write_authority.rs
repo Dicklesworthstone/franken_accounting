@@ -958,6 +958,12 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::SchemaChange],
             Reaches,
         ),
+        // fa-c34: a rule version is policy data under rule_change.
+        row(
+            &["rule", "propose", "fee.rule"],
+            &[Op::RuleChange],
+            Succeeds,
+        ),
         row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],
@@ -1250,6 +1256,10 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
             (
                 "party.json",
                 r#"{"code":"V-17","kind":"Vendor","name":"Acme Supplies"}"#,
+            ),
+            (
+                "fee.rule",
+                r#"rule fee v1 for event Sale { debit "1200" "1.00 USD" credit "4000" "1.00 USD" }"#,
             ),
             ("junk.json", "{}"),
             ("junk.plan", "not a plan"),

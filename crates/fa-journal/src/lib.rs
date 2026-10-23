@@ -59,6 +59,7 @@ pub mod redaction;
 pub mod refusal;
 pub mod revaluation;
 pub mod rows;
+pub mod rule;
 pub mod scenario;
 pub mod schedule;
 pub mod scratch;

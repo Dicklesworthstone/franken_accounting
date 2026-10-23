@@ -52,7 +52,7 @@ pub use ids::{
     entry_vid, event_vid, external_id_vid, instrument_vid, intent_outcome_vid, legal_entity_vid,
     migration_entry_vid, migration_run_vid, party_value_vid, party_vid, period_vid, principal_vid,
     production_profile_vid, proposed_adjustment_vid, report_certificate_vid, restatement_case_vid,
-    scenario_vid, statement_issuance_vid, unit_vid,
+    rule_version_vid, scenario_vid, statement_issuance_vid, unit_vid,
 };
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};
 pub use rea::{

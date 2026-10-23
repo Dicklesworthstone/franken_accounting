@@ -654,14 +654,14 @@ example = "fa query \"MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, l.side, 
 
 [[verb]]
 name = "rule"
-summary = "Check a Canon posting rule (plan §10.3): parse it, type its units, resolve its rounding laws and dimensions and prove its debits equal its credits in every unit; or evaluate it over a recorded REA event. Nothing is journaled or posted."
-writes = false
-subcommands = ["check", "eval"]
-flags = ["--event", "--input", "--as-known-at"]
+summary = "Check a Canon posting rule (plan §10.3): parse it, type its units, resolve its rounding laws and dimensions and prove its debits equal its credits in every unit; journal it as a content-addressed rule version; list and show the versions; or evaluate a rule over a recorded REA event. No entry is posted."
+writes = true
+subcommands = ["check", "propose", "list", "show", "eval"]
+flags = ["--event", "--input", "--rule", "--key", "--as-known-at"]
 switches = []
-events = ["rule_checked", "rule_evaluated"]
-exits = [0, 2, 3, 4, 5, 7]
-usage = ["rule check <rule-file|->   (compile the rule against the book's units and report the content address of its IR (ir_digest) and its dependency set: the accounts it posts to, units, rounding laws, event resources and dimension tags; a refused rule is FA-REF-196, naming the line and column)", "rule eval <rule-file|-> --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]   (the legs the rule derives from that recorded event and the inputs it declares, with the effective date and the rule, event and inputs digests; a leg that evaluates to zero is omitted; nothing is posted)", "A rule: rule <name> v<N> for event <Kind> { [inputs { <name>: date | amount(\"<UNIT>\"), ... }] <statements> }. Statements: let <name> = <amount>; debit|credit \"<account code>\" <amount> [dims { <dimension> = \"<code>\", ... }]; effective event.occurred_on | <date input> (default event.occurred_on). Amounts: \"12.50 USD\", event.resource(\"<label>\", \"<UNIT>\"), a let or amount input, + and -, * N, and / D round <law> (every division names a registered rounding law). # and // start a comment. A rule reads no clock: one that needs today declares a date input.", "check refuses a rule whose debits minus credits are not provably zero in every unit as exact linear forms (each distinct rounded division is one opaque term, so a rounding that does not appear on both sides cannot balance), a unit mismatch, an unregistered unit, law, dimension or event kind, and an undeclared name; Canon never adds a residual leg. The IR digest is independent of let names and layout. eval refuses with FA-REF-196 an event of another kind, a missing or repeated resource, a resource in another unit, a negative leg and an amount outside the exact i128 range. Journaled rule versions, their activation and posting rule-derived entries are not in this slice."]
+events = ["rule_checked", "rule_proposed", "rule_versions", "rule_version", "rule_evaluated"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["rule propose <rule-file|-> [--key K]   (journal the rule as a version under rule_change: the kernel compiles the source against the book's units itself and stores the source and its canonical IR in a RuleVersion addressed by the IR digest, so a version is its content and proposing the same IR again writes nothing; the default key is the source text's digest. A proposed version is not active: no entry derives from it until an activation names it, which is not in this build)", "rule list [--as-known-at HEAD|<seq>]   (every rule version the book holds: name, version, event kind, ir_digest, the sequence it was proposed at and the accounts it posts to)", "rule show <ir_digest> [--as-known-at HEAD|<seq>]   (one version: its inputs, dependency set and source; its stored IR is decoded through the same validation and balance proof as a compiled rule and must digest to its address)", "rule check <rule-file|->   (compile the rule against the book's units and report the content address of its IR (ir_digest) and its dependency set: the accounts it posts to, units, rounding laws, event resources and dimension tags; a refused rule is FA-REF-196, naming the line and column)", "rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]   (from a file or a journaled version: the legs the rule derives from that recorded event and the inputs it declares, with the effective date and the rule, event and inputs digests; a leg that evaluates to zero is omitted; nothing is posted)", "A rule: rule <name> v<N> for event <Kind> { [inputs { <name>: date | amount(\"<UNIT>\"), ... }] <statements> }. Statements: let <name> = <amount>; debit|credit \"<account code>\" <amount> [dims { <dimension> = \"<code>\", ... }]; effective event.occurred_on | <date input> (default event.occurred_on). Amounts: \"12.50 USD\", event.resource(\"<label>\", \"<UNIT>\"), a let or amount input, + and -, * N, and / D round <law> (every division names a registered rounding law). # and // start a comment. A rule reads no clock: one that needs today declares a date input.", "check refuses a rule whose debits minus credits are not provably zero in every unit as exact linear forms (each distinct rounded division is one opaque term, so a rounding that does not appear on both sides cannot balance), a unit mismatch, an unregistered unit, law, dimension or event kind, and an undeclared name; Canon never adds a residual leg. The IR digest is independent of let names and layout. eval refuses with FA-REF-196 an event of another kind, a missing or repeated resource, a resource in another unit, a negative leg and an amount outside the exact i128 range. Activating a version under dual control and posting rule-derived entries are not in this build."]
 example = "fa rule eval rules/sale_with_tax.rule --event EV-1001 --input as_of=2026-03-31 --book ./books/myco --json"
 
 [[verb]]
@@ -2187,6 +2187,24 @@ doc = "A Canon rule that compiled: its name, version and event kind, the content
 fields = ["rule:string", "version:int", "event_kind:string", "ir_digest:hex", "ir_bytes:int", "inputs:[string]", "accounts:[string]", "units:[string]", "laws:[string]", "resources:[string]", "dimensions:[string]"]
 
 [[event]]
+name = "rule_proposed"
+book = true
+doc = "One rule version journaled by its SchemaChange control (plan §10.6): the rule's name, version and event kind, its ir_digest (the version's address), the RuleVersion vid, the sequence it was proposed at and the control entry this key recorded (null when another proposal had already recorded the same IR); already_recorded is true when nothing was written (a retry of the key, or an IR the book already holds). A proposed version is not active."
+fields = ["rule:string", "version:int", "event_kind:string", "ir_digest:hex", "rule_version_vid:hex", "proposed_at:seq", "control_entry:hex?", "already_recorded:bool"]
+
+[[event]]
+name = "rule_versions"
+book = true
+doc = "Every rule version the book holds at known_at, by rule name, version and address."
+fields = ["count:int", "versions:[rule_version_row]"]
+
+[[event]]
+name = "rule_version"
+book = true
+doc = "One journaled rule version: its name, version, event kind and ir_digest, the sequence it was proposed at, its declared inputs and dependency set as rule_checked reports them, and its source. Its stored IR was decoded through Canon's validation and balance proof and digests to its address."
+fields = ["rule:string", "version:int", "event_kind:string", "ir_digest:hex", "proposed_at:seq", "inputs:[string]", "accounts:[string]", "units:[string]", "laws:[string]", "resources:[string]", "dimensions:[string]", "source:text"]
+
+[[event]]
 name = "rule_evaluated"
 book = true
 doc = "The legs one checked rule derives from one recorded REA event and the inputs it declares: the rule's name, version, event kind and ir_digest; the event's code, vid and event digest; the digest of the inputs; the effective date; and the legs, in the rule's order, a zero leg omitted. The rule, event and inputs digests are the three a rule-derived entry's origin names. Nothing is journaled or posted, and an account code is resolved only when an entry posts."
@@ -3674,6 +3692,11 @@ fields = ["target:hex", "kind:string", "netting_law:string", "reason_code:int", 
 name = "lineage_net_cell"
 doc = "Net economic effect `(debit - credit)` of a `SUPERSEDES` lineage component on one `(account, unit)` cell."
 fields = ["account:string", "account_vid:hex", "account_name:string", "unit:string", "debits:amount", "credits:amount", "net:amount"]
+
+[[shape]]
+name = "rule_version_row"
+doc = "One journaled rule version: name, version, event kind, ir_digest (its address), the sequence it was proposed at and the account codes it posts to."
+fields = ["rule:string", "version:int", "event_kind:string", "ir_digest:hex", "proposed_at:seq", "accounts:[string]"]
 
 [[shape]]
 name = "rule_leg"
@@ -5767,7 +5790,13 @@ ops = ["read"]
 
 [[bound]]
 verbs = ["rule"]
+subcommands = ["check", "list", "show", "eval"]
 ops = ["read"]
+
+[[bound]]
+verbs = ["rule"]
+subcommands = ["propose"]
+ops = ["rule_change"]
 
 [[bound]]
 verbs = ["verify", "registers"]
@@ -6286,11 +6315,39 @@ positionals = ["file?"]
 stdin_property = "source"
 stdin_kind = "string"
 stdin_via = "file"
-flags = ["--event", "--input", "--as-known-at"]
+flags = ["--event", "--input", "--rule", "--as-known-at"]
 switches = []
 required = []
 dont = ["Don't balance a rule with a plug: a rule compiles only when its debits equal its credits in every unit, and Canon never adds a residual leg.", "Don't read today's date inside a rule: declare a date input and supply it (input as_of=2026-03-31)."]
 mistakes = ["Passing a host path as `file`: supply the rule text inline as `source`.", "Dividing without naming a rounding law: write `x * 7 / 100 round HalfEven`.", "Rounding one side and not the other: the same rounded term must appear on both sides."]
+
+[[mcp.tool]]
+cluster = "fa.rules"
+name = "propose"
+verb = "rule"
+subcommands = ["propose"]
+positionals = ["file?"]
+stdin_property = "source"
+stdin_kind = "string"
+stdin_via = "file"
+flags = ["--key"]
+switches = []
+required = []
+dont = ["Don't expect a proposed version to post anything: activation under dual control comes first.", "Don't propose to change a version in place: a version is its content; propose the revised rule as a new version (bump vN)."]
+mistakes = ["Passing a host path as `file`: supply the rule text inline as `source`.", "Proposing without rule_change authority: the refusal names the op."]
+
+[[mcp.tool]]
+cluster = "fa.rules"
+name = "versions"
+verb = "rule"
+subcommands = ["list", "show"]
+selector = "action"
+positionals = ["digest?"]
+flags = ["--as-known-at"]
+switches = []
+required = []
+dont = ["Don't name a version by its rule name: show takes the 64-hex ir_digest list reports."]
+mistakes = ["Passing the RuleVersion vid instead of the ir_digest."]
 
 [[mcp.cluster]]
 name = "fa.subledger"

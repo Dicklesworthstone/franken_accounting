@@ -339,6 +339,13 @@ pub fn dimension_value_vid(book: Id128, dimension_code: &str, value_code: &str) 
     )
 }
 
+/// `vid(RuleVersion) = H("fa:vid:rule-version:v1" ‖ book_id ‖ ir_digest)`:
+/// a Canon rule version is addressed by its content (plan §10.3).
+#[must_use]
+pub fn rule_version_vid(book: Id128, ir_digest: &[u8; 32]) -> VId {
+    derive_vid(b"fa:vid:rule-version:v1", &[&book.0, ir_digest])
+}
+
 /// The `dimension_set` value of legal entity `code` in `book`.
 #[must_use]
 pub fn entity_value_vid(book: Id128, code: &str) -> VId {
