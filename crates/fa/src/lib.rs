@@ -69,6 +69,7 @@ pub mod document_disclosure;
 pub mod draft_review;
 pub mod equity_certificate;
 pub mod evidence_disclosure;
+pub mod external_subledger;
 pub mod findings;
 pub mod fx;
 pub mod fx_revaluation;
@@ -143,6 +144,11 @@ pub use equity_certificate::{
     EquityRollForwardCertificate, MAX_EQUITY_CERTIFICATE_BYTES,
 };
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
+pub use external_subledger::{
+    EXTERNAL_SUBLEDGER_DOCUMENT_KIND, EXTERNAL_SUBLEDGER_EVIDENCE_ROLE, EXTERNAL_SUBLEDGER_MIME,
+    ExternalSubledgerBatch, ExternalSubledgerDetail, ExternalSubledgerReconciliation,
+    MAX_EXTERNAL_DETAIL_BYTES, MAX_EXTERNAL_DETAIL_ROWS, MAX_EXTERNAL_SUMMARY_LEGS,
+};
 pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
     BatchPlan, BatchPlanCertificate, IntentError, MAX_BATCH_BYTES, MAX_BATCH_PLAN_BYTES,

@@ -37,6 +37,8 @@ mod account_role_tests;
 mod carrying_tests;
 #[path = "genesis/closing_carrying.rs"]
 mod closing_carrying_tests;
+#[path = "genesis/external_subledger.rs"]
+mod external_subledger_tests;
 #[path = "genesis/fx_law.rs"]
 mod fx_law_tests;
 #[path = "genesis/outcome_batch_integrity.rs"]

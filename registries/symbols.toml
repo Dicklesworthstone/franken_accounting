@@ -517,3 +517,9 @@ name = "IN_MIGRATION_RUN"
 [[relation]]
 id = 37
 name = "IN_BATCH"
+
+# One immutable guard per external source feed/batch, published atomically
+# with its matched summary entry (plan §5.6, FA-INV-12).
+[[label]]
+id = 55
+name = "ExternalSubledgerBatch"

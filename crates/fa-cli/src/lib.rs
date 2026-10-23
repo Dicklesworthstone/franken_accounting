@@ -27,6 +27,7 @@ mod document;
 mod engagement;
 pub mod entry;
 mod export;
+mod external_subledger;
 mod finding;
 mod fx;
 mod fx_revaluation;

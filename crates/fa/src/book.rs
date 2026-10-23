@@ -847,6 +847,33 @@ impl Book {
         )))
     }
 
+    /// Derive a native summary from a retained external-detail Workpaper.
+    /// The real posting kernel independently verifies its review, gross effects,
+    /// and unique feed/batch identity at publication.
+    pub fn prepare_external_subledger(
+        &mut self,
+        document: fa_model::Oid,
+        template: fa_model::EntryPayload,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_external_subledger(
+            &purposes, document, template, capability,
+        )))
+    }
+
+    /// Recompute one externally fed summary from its reviewed immutable detail.
+    pub fn reconcile_external_subledger_feed(
+        &self,
+        entry: fa_model::EntryRef,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::ExternalSubledgerReconciliation> {
+        with_store!(&self.store, core => core.reconcile_external_subledger_feed(
+            &self.purposes(), entry, known_at, capability,
+        ))
+    }
+
     /// Designate an AR/AP posting leaf and require party detail on every leg.
     pub fn create_native_subledger(
         &mut self,

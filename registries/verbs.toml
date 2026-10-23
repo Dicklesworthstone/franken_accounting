@@ -728,12 +728,12 @@ example = "fa produce --matter SEC-v-Acme --document <oid>:12:confidential --doc
 name = "subledger"
 summary = "Native receivable/payable subledgers (plan §5.6): designate one control leaf whose legs must name parties, inspect its journaled definition, and reconcile party detail with the control account at an explicit coordinate."
 writes = true
-subcommands = ["add", "list", "show", "verify"]
-flags = ["--control", "--kind", "--name", "--date", "--key", "--as-of", "--as-known-at"]
-switches = []
-events = ["subledger_recorded", "subledgers", "subledger_reconciled"]
+subcommands = ["add", "list", "show", "verify", "detail", "feed", "verify-feed"]
+flags = ["--input", "--out", "--document", "--description", "--plan-out", "--control", "--kind", "--name", "--date", "--key", "--as-of", "--as-known-at"]
+switches = ["--dry-run"]
+events = ["subledger_recorded", "subledgers", "subledger_reconciled", "external_subledger_detail", "external_subledger_reconciled", "posted", "recorded", "plan"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["subledger add <code> --control <account> --kind receivables|payables [--name <name>] [--date YYYY-MM-DD] [--key K]   (AR requires an Asset leaf, AP a Liability leaf; needs read and schema_change. Every existing control leg, including staged migration history, must already name a valid party. Registration journals one immutable definition and never adds a posting. The default key is subledger:<code>; an identical retry writes nothing.)", "subledger list [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger show <code> [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger verify <code> --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]   (literal native-unit journal fold by party, compared with an independent control-account trial balance; posted debits/credits and pending debits/credits remain separate. Reversals and reservation releases keep their original party attribution. Reads require whole-book read scope; unsupported scoped requests refuse before data is observed.)", "This is the native one-control-leaf model, not an external summary-feed attestation. Reconciliation is a read-only fold, not a retained report certificate. External detail-digest validation remains tracked by fa-03s."]
+usage = ["subledger detail --input <batch.json|-> [--out <new-file>]   (canonical detail Workpaper bytes; JSON has feed, batch_key, effective_date and rows: each source_digest is unique nonzero 64-hex, account is a GL code, side is debit|credit, amount is an exact unit-bearing string, entity and party are optional codes. Include every counterpart explicitly. Rows are sorted by source digest without deduplication; maximum 128 rows, 32 summary legs and 8192 canonical bytes.)", "Retain those bytes with fa document add <detail-file> --kind Workpaper; an independent Human reviews the document with fa attest review <oid> --as <reviewer>. The source remains evidence rather than a second posting universe.", "subledger feed --document D:<oid> --date YYYY-MM-DD --key K [--description <text>] [--dry-run [--plan-out <new-file>]]   (derive every summary leg from retained independently reviewed detail, then run the ordinary posting kernel. Complete gross sides by account/unit/dimensions must match; no netting, implicit counterpart, FX, pending or settlement effects. Each feed/batch_key is consumed once across posting keys; unchanged retries remain idempotent. Saved plans commit with fa commit --plan.)", "subledger verify-feed <entry> [--as-known-at HEAD|<seq>]   (recompute the entry against its exact source and independent review at the original publication prefix, plus its immutable unique-batch guard. Later reviews or corrections never rewrite the original assertion.)", "subledger add <code> --control <account> --kind receivables|payables [--name <name>] [--date YYYY-MM-DD] [--key K]   (AR requires an Asset leaf, AP a Liability leaf; needs read and schema_change. Every existing control leg, including staged migration history, must already name a valid party. Registration journals one immutable definition and never adds a posting. The default key is subledger:<code>; an identical retry writes nothing.)", "subledger list [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger show <code> [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger verify <code> --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>]   (literal native-unit journal fold by party, compared with an independent control-account trial balance; posted debits/credits and pending debits/credits remain separate. Reversals and reservation releases keep their original party attribution. Reads require whole-book read scope; unsupported scoped requests refuse before data is observed.)", "Native reconciliation and matched external-feed reconciliation are read-only folds. The external slice verifies one reviewed source batch and its summary; it does not assert source-system completeness or reserve a whole control account exclusively for external feeds."]
 example = "fa subledger verify AR --as-of 2026-03-31 --book ./books/myco --json"
 
 [[verb]]
@@ -5917,3 +5917,69 @@ ops = ["read", "schema_change"]
 verbs = ["subledger"]
 subcommands = ["list", "show", "verify"]
 ops = ["read"]
+
+[[event]]
+name = "external_subledger_detail"
+book = true
+doc = "Canonical source detail to retain as a Workpaper and independently review. Nothing is posted or retained by this preparation command. Source digests are opaque caller assertions; summary sides are grouped without netting."
+fields = ["feed:string", "batch_key:string", "effective_date:date", "document_oid:hex", "doc_commit:hex", "kind:string", "mime:string", "detail_rows:int", "summary_legs:int", "bytes:hex", "file:string?"]
+
+[[event]]
+name = "external_subledger_reconciled"
+book = true
+doc = "One externally fed summary exactly recomputed from its immutable source batch, original independent Reviewed attestation and unique feed/batch guard. This is a mechanical source-summary reconciliation, not a claim of source-system completeness."
+fields = ["entry:hex", "recorded_at:seq", "feed:string", "batch_key:string", "effective_date:date", "document_oid:hex", "doc_commit:hex", "reviewer:hex", "review:hex", "detail_rows:int", "summary_legs:[external_summary_leg]", "reconciled:bool"]
+
+[[shape]]
+name = "external_summary_leg"
+doc = "One gross native summary side in canonical account/unit/dimension order; registered dimension identities preserve party and entity attribution."
+fields = ["account:hex", "side:string", "amount:string", "dimension_set:[batch_plan_dimension]"]
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "detail"
+verb = "subledger"
+subcommands = ["detail"]
+positionals = []
+flags = ["--input"]
+switches = []
+stdin_property = "detail"
+stdin_kind = "object"
+stdin_via = "--input"
+required = ["--input"]
+dont = ["Supply feed, batch_key, effective_date and complete rows inline. Every row has unique source_digest, account, debit|credit side and exact amount; entity and party are optional codes. Include counterpart rows explicitly. Retain the returned bytes as Workpaper evidence and obtain an independent Reviewed attestation before posting.", "Canonicalization does not upload evidence, approve it, or post a summary; source digests remain assertions about the source system."]
+mistakes = ["Supplying an amount as a JSON number, duplicating a source digest, or omitting counterpart effects."]
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "feed"
+verb = "subledger"
+subcommands = ["feed"]
+positionals = []
+flags = ["--document", "--date", "--key", "--description"]
+switches = ["--dry-run"]
+required = ["--document", "--date", "--key"]
+dont = ["Name a retained independently reviewed Workpaper containing canonical external detail. Its complete gross summary is independently checked inside the posting transaction. Use dry_run:true to receive an authenticated PostPlan.", "Each feed/batch_key can be consumed once regardless of posting idempotency key; after an uncertain commit retry the unchanged request or original plan."]
+mistakes = ["Trying to fix a mismatch with a balancing plug, changing the declared effective date, or treating an uploader's own review as independent."]
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "verify_feed"
+verb = "subledger"
+subcommands = ["verify-feed"]
+positionals = ["entry"]
+flags = ["--as-known-at"]
+switches = []
+required = ["entry"]
+dont = ["Name the committed summary entry; the original source and independent review are checked at its publication prefix. A later review cannot repair a deficient original entry."]
+mistakes = ["Treating the source-summary tie-out as proof that the upstream system supplied every transaction."]
+
+[[bound]]
+verbs = ["subledger"]
+subcommands = ["detail", "verify-feed"]
+ops = ["read"]
+
+[[bound]]
+verbs = ["subledger"]
+subcommands = ["feed"]
+ops = ["read", "post"]

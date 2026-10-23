@@ -1436,6 +1436,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         Ok(basis) => basis,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let external_subledger = match crate::external_subledger::validate_summary(proposal) {
+        Ok(basis) => basis,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     // 1b'. Migration provenance (plan §8.6): a Migration entry names its run
     //      in its origin, and no other class carries migration provenance.
@@ -2036,6 +2040,18 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
+
+    let external_review = if let Some(basis) = &external_subledger {
+        match crate::external_subledger::witness(&txn, db, book, basis)? {
+            Ok(review) => Some(review),
+            Err(refusal) => {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        }
+    } else {
+        None
+    };
 
     // Outcome recognition remains first. A new close must reproduce its
     // original reviewed source and the current complete nominal population.
@@ -3661,6 +3677,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
     has_leg.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    if let Some(basis) = &external_subledger {
+        crate::external_subledger::stage(&mut has_leg, basis, entry.entry_ref(evid))?;
+    }
     let outcome_digest = crate::outcome::stage_entry(&mut has_leg, &entry, evid)?;
     let leg_edges = crate::projections::stage_legs(&mut has_leg, evid, &entry, book)?;
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
@@ -3801,6 +3820,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         batches.push(derived_from);
     }
     batches.extend(evidence_edges(evid, &evidence));
+    if let Some(review) = external_review {
+        batches.push(crate::external_subledger::review_edge(evid, review));
+    }
     batches.extend(reconciliation_edges(evid, &reconciliation));
     batches.retain(|b| !b.is_empty());
     txn.write_ordered(db, batches)?;
@@ -3813,6 +3835,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let entry_bytes = entry.encode()?;
     effect_hasher.update(&(entry_bytes.len() as u64).to_le_bytes());
     effect_hasher.update(&entry_bytes);
+    if let (Some(basis), Some(review)) = (&external_subledger, external_review) {
+        effect_hasher.update(b"fa:external-subledger-effects:v1");
+        effect_hasher.update(&basis.identity().0.to_le_bytes());
+        effect_hasher.update(&review.attestation.0.to_le_bytes());
+        effect_hasher.update(&review.reviewer.0.to_le_bytes());
+    }
     // Existing plans without reconciliation effects preserve their bytes.
     // A new plan binds the exact immutable citations it will publish.
     if !reconciliation.is_empty() {

@@ -23,6 +23,7 @@
 
 pub mod admissibility;
 pub mod evidence;
+pub mod external_subledger;
 pub mod fx;
 pub mod lantern;
 pub mod lots;
@@ -56,6 +57,7 @@ pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
     (15, "statement_issuance", "IssuanceControl"),
     (16, "engagement_transition", "EngagementControl"),
     (17, "case_transition", "CaseControl"),
+    (18, "recurring_schedule", "ScheduleControl"),
 ];
 
 /// The control class a record of kind `id` must carry, per the oracle's copy.

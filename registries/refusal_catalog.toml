@@ -1176,6 +1176,15 @@ fix = "carry forward another engagement of this book in the same unit whose scop
 
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
+code = "FA-REF-192"
+name = "EXTERNAL_SUBLEDGER"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.6 / FA-INV-12 (a uniquely identified external source batch must have an independently reviewed retained Workpaper and exactly reproduce its complete gross summary effects)"
+fix = "prepare complete native source detail with fa subledger detail, retain and independently review its Workpaper, then fa subledger feed --document D:<oid> --date <effective-date> --key <key>; retry an already summarized batch with its original key, or give an explicit correction batch a new source identity"
+
+# ---- Proof export (145–146) ---
+[[refusal]]
 code = "FA-REF-145"
 name = "PROOF_STATE_UNKNOWN"
 owners = ["fa"]

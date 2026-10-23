@@ -33,6 +33,7 @@ pub mod engagement;
 pub mod entity;
 pub mod entry_history;
 pub mod evidence;
+pub mod external_subledger;
 pub mod finding_history;
 pub mod fx;
 pub mod genesis;

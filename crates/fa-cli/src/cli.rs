@@ -7286,6 +7286,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "reverse_on",
         "prior_period_error",
         "fx",
+        "external_subledger",
     ];
     if let Some((field, _)) = fields
         .iter()
@@ -7423,7 +7424,7 @@ fn build_post_request_with_prior(
     capability: Capability,
     earlier: &batch_plan::PriorEntries,
 ) -> Result<BuiltPost, Fail> {
-    if doc.get("fx").is_some() {
+    if doc.get("fx").is_some() || doc.get("external_subledger").is_some() {
         fa_policy::admit_read(&capability, who, book.context().book_id)
             .and_then(|()| {
                 fa_policy::require(
@@ -7941,6 +7942,14 @@ fn build_post_request_with_prior(
                 ));
             }
         }
+    } else if doc.get("external_subledger").is_some() {
+        if doc.get("legs").is_some() {
+            return Err(usage(
+                "external_subledger derives all summary legs from its reviewed detail document",
+                "omit legs and supply external_subledger: D:<reviewed detail document oid>",
+            ));
+        }
+        Vec::new()
     } else {
         if class == EntryClass::PENDING {
             pending = Some(Pending {
@@ -8087,6 +8096,7 @@ fn build_post_request_with_prior(
             }
         }
     }
+    let proposal = crate::external_subledger::value_intent(book, &capability, doc, proposal)?;
     let proposal = crate::fx::value_intent(book, &capability, doc, proposal)?;
     let proposal = match reverse_on {
         Some(day) => fa_journal::with_auto_reverse(proposal, day),
