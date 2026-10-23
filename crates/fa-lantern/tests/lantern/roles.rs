@@ -42,6 +42,24 @@ fn renamed(corpus: &GeneratedCorpus) -> (GeneratedCorpus, BTreeMap<String, (Stri
     (renamed, original_of)
 }
 
+/// `text` with every CGSE determinism witness (`cgse_witness=<hex>`)
+/// masked. The witness digests the graph a ranking ran over, vertex ids
+/// included, so renaming an account changes it by construction; the
+/// finding it accompanies must not change.
+fn masked_witness(text: &str) -> String {
+    const TAG: &str = "cgse_witness=";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(TAG) {
+        let (head, tail) = rest.split_at(at + TAG.len());
+        out.push_str(head);
+        out.push_str("<digest>");
+        rest = tail.trim_start_matches(|c: char| c.is_ascii_hexdigit());
+    }
+    out.push_str(rest);
+    out
+}
+
 /// A run's outcome over one book, with every book-specific handle mapped to
 /// what it stands for in the original corpus: entries by corpus index,
 /// accounts by original code, and in narratives and statistic names the
@@ -73,9 +91,11 @@ fn outcome(
         }
     }
     let text = |s: &str| {
-        replacements
-            .iter()
-            .fold(s.to_string(), |s, (from, to)| s.replace(from, to))
+        masked_witness(
+            &replacements
+                .iter()
+                .fold(s.to_string(), |s, (from, to)| s.replace(from, to)),
+        )
     };
     let entry = |vid: &VId| match posted_vids.iter().position(|v| v == vid) {
         Some(index) => format!("entry#{index}"),
@@ -173,12 +193,22 @@ fn findings_invariant_under_account_renaming() {
             named.keys().collect::<Vec<_>>(),
             renamed.keys().collect::<Vec<_>>()
         );
-        for (procedure, outcome) in &named {
-            assert_eq!(
-                outcome, &renamed[procedure],
-                "{scenario:?}/{procedure}: renaming the accounts changed the outcome"
-            );
-        }
+        let changed: Vec<String> = named
+            .iter()
+            .filter(|(procedure, outcome)| *outcome != &renamed[*procedure])
+            .map(|(procedure, outcome)| {
+                format!(
+                    "{procedure}:\n  named:   {outcome:?}\n  renamed: {:?}",
+                    renamed[procedure]
+                )
+            })
+            .collect();
+        assert!(
+            changed.is_empty(),
+            "{scenario:?}: renaming the accounts changed {} outcome(s):\n{}",
+            changed.len(),
+            changed.join("\n")
+        );
         let finding = |procedure: &&String| named[*procedure].as_ref().is_ok_and(|f| !f.is_empty());
         let reporting: Vec<&String> = named.keys().filter(finding).collect();
         assert!(
