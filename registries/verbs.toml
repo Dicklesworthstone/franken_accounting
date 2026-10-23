@@ -473,14 +473,14 @@ example = "fa settle --intent settle.json --book ./books/myco --json"
 
 [[verb]]
 name = "document"
-summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, record legal holds and attestations, or attach documents that support a committed entry."
+summary = "Record a source document, list the documents the book holds, run a batch import with a content-addressed receipt, read or redact a document, export a disclosure proof, manage custody, evaluate erasure against legal holds, record legal holds and attestations, attach documents that support a committed entry, or extract a PDF's text layer as a derived document."
 writes = true
-subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list", "show"]
+subcommands = ["add", "read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "extract", "import", "list", "show"]
 flags = ["--kind", "--mime", "--grade", "--chunk", "--to", "--authority", "--subject", "--through", "--scope", "--hold", "--effective", "--date", "--description", "--key", "--plan-out", "--plan", "--approval", "--document", "--against", "--intent", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--file", "--run", "--out", "--grant", "--party", "--balance", "--as-of", "--claim"]
 switches = ["--dry-run"]
-events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "evidence_attached", "import_recorded", "import_receipt", "documents", "document_shown"]
+events = ["document", "document_read", "redacted_view_derived", "document_disclosure_exported", "custody_transferred", "custody_chain", "legal_hold_placed", "legal_hold_release_planned", "legal_hold_released", "legal_hold", "legal_holds", "attestation_recorded", "evidence_attached", "document_extracted", "import_recorded", "import_receipt", "documents", "document_shown"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> (--subject <vid|oid>... | --through HEAD|<seq>) [--effective YYYY-MM-DD] [--description <text>] [--key K]   (--through holds every entry, document and party recorded at or before that sequence, a book-scope hold (plan §15.6); --scope book is --through HEAD; repeating it is the recorded hold)", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest confirmed <oid> --party <code> --balance \"<amount> <UNIT>\" --as-of YYYY-MM-DD   (plan §11.12, AS 2310: the auditor's Confirmed attestation over a Confirmation document, what the party confirmed; needs produce; one per document. An engagement judges it audit-grade only when its firm principal received the document)", "document attest represented <oid> --claim <text>... --as-of YYYY-MM-DD   (plan §11.12, AS 2805: management's Represented attestation over a Representation letter, each claim sealed under the book key; needs approve, which no Agent holds; one per letter)", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)", "document show <oid>   (plan §13.2 fa doc show: one held document at the head, its list metadata with its custody chain, the legal holds active on it and its Bates range in every matter that produced it; never the bytes)"]
+usage = ["document add <file|-> [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload]", "document read <oid> [--out <new-file>] [--grant <op>]...", "document redact <oid> [--grant privileged]", "document disclose <oid> [--chunk <idx>]... [--out <new-file>]", "document custody <oid> [--to <principal>]", "document erase <subject-vid|oid> [--grant erase]", "document hold place --authority <document-oid> (--subject <vid|oid>... | --through HEAD|<seq>) [--effective YYYY-MM-DD] [--description <text>] [--key K]   (--through holds every entry, document and party recorded at or before that sequence, a book-scope hold (plan §15.6); --scope book is --through HEAD; repeating it is the recorded hold)", "document hold release <hold-vid> [--effective YYYY-MM-DD] [--key K] [--dry-run | --plan-out <new-file> | --plan <file|-> --approval <vid>...]", "document hold show <hold-vid>", "document hold list --subject <vid|oid>   (the holds active on one subject, ascending; what blocks its erasure)", "document attest review <oid> [--against <oid>]...", "document attest manual --intent <file.json|-> --reason <name|code> --statement <text> [--plan-out <new-file>]", "document attest confirmed <oid> --party <code> --balance \"<amount> <UNIT>\" --as-of YYYY-MM-DD   (plan §11.12, AS 2310: the auditor's Confirmed attestation over a Confirmation document, what the party confirmed; needs produce; one per document. An engagement judges it audit-grade only when its firm principal received the document)", "document attest represented <oid> --claim <text>... --as-of YYYY-MM-DD   (plan §11.12, AS 2805: management's Represented attestation over a Representation letter, each claim sealed under the book key; needs approve, which no Agent holds; one per letter)", "document attest register-equals [<attestation-vid> | --account <code> --period <code> [--unit <CODE>] [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]]", "document attach <entry-vid|E:vid> --evidence <oid>[:role]...   (AttachEvidence, plan §9.2: documents that support a committed entry, recorded after it; the entry never changes, fa explain evidence lists the supplement, and the same attachment again is the recorded one)", "document extract <oid> [--kind <Kind>]   (plan §9.1: the PDF's text layer as a derived text document whose bytes bind the source oid; deterministic, so the same source gives the same document; uploaded and graded like document add, by who runs it; the kind defaults to the source's; fa document read shows the text and its lineage)", "document import run [--source Connector|Upload|Email:<id>|Scan:<dev>] --file <file|->... [--kind Invoice] [--mime application/pdf] [--grade AgentUpload|HumanUpload] [--date YYYY-MM-DD] [--description <text>] [--key K]", "document import receipt <run-vid> [--evidence <oid>]...", "document list [--kind <Kind>] [--as-known-at HEAD|<seq>]   (every held document as public metadata: oid, kind, media type, grade, size, commitment, recorded sequence; never the bytes)", "document show <oid>   (plan §13.2 fa doc show: one held document at the head, its list metadata with its custody chain, the legal holds active on it and its Bates range in every matter that produced it; never the bytes)"]
 example = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book ./books/myco --json"
 
 [[verb]]
@@ -2359,8 +2359,8 @@ fields = ["oid:hex", "kind:string", "mime:string", "grade:string", "size:int", "
 [[event]]
 name = "document_read"
 book = true
-doc = "A document read under the caller's capability (plan §9.7): `view` is `full` or `redacted`, `bytes_hex` carries the full content when unredacted, `text` wraps any UTF-8 content as `untrusted_text` with source `D:<oid>` (plan §9.3 prompt-injection boundary), and `disclosed_chunks`/`withheld_chunks`/`view_commit` describe a redacted view."
-fields = ["oid:hex", "doc_commit:hex", "view:string", "kind:string", "mime:string?", "grade:string?", "size:int", "bytes_hex:hex?", "text:untrusted_text?", "disclosed_chunks:int?", "withheld_chunks:int?", "view_commit:hex?", "out:string?"]
+doc = "A document read under the caller's capability (plan §9.7): `view` is `full` or `redacted`, `bytes_hex` carries the full content when unredacted, `text` wraps any UTF-8 content as `untrusted_text` with source `D:<oid>` (plan §9.3 prompt-injection boundary), and `disclosed_chunks`/`withheld_chunks`/`view_commit` describe a redacted view. `extraction` is set when the full document is a derived text document (`fa document extract`): its method, tool, sources and text; `text` is then null (the bytes are the derivation's envelope)."
+fields = ["oid:hex", "doc_commit:hex", "view:string", "kind:string", "mime:string?", "grade:string?", "size:int", "bytes_hex:hex?", "text:untrusted_text?", "extraction:extraction?", "disclosed_chunks:int?", "withheld_chunks:int?", "view_commit:hex?", "out:string?"]
 
 [[event]]
 name = "redacted_view_derived"
@@ -2433,6 +2433,12 @@ name = "evidence_attached"
 book = true
 doc = "A journaled SupplementalEvidence (plan §9.2 AttachEvidence): documents that support a committed entry, recorded after it with SUPPLEMENTS and EVIDENCED_BY edges. The entry and its own evidence list are unchanged; `fa explain evidence` lists the supplement. already_recorded marks the same attachment recorded before."
 fields = ["supplement_vid:hex", "entry:hex", "entry_digest:hex", "documents:[evidence_ref]", "body_digest:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "document_extracted"
+book = true
+doc = "A derived text document recorded from a source document's PDF text layer (plan §9.1, `fa document extract`). Its bytes are a `fa:derived-document:v1` envelope binding `source_oid`, so the lineage is part of its identity; the extraction is deterministic (`replayable`), so the same source gives the same document and a repeat has `already_recorded`. It is uploaded and graded like `fa document add`, by who runs it, never the source's grade; `evidence` cites it. `extraction.text` is the source's text, untrusted."
+fields = ["oid:hex", "doc_commit:hex", "source_oid:hex", "kind:string", "grade:string", "self_sourced:bool", "size:int", "recorded_at:seq", "already_recorded:bool", "extraction:extraction", "evidence:evidence_ref"]
 
 [[event]]
 name = "import_recorded"
@@ -3298,6 +3304,11 @@ fields = ["inflow:amount", "outflow:amount"]
 name = "bank_reconciliation_progress"
 doc = "Active progress at the selected prefix. confirmed applies to this manifest; occupied means the original source line is claimed under another interpretation. remaining includes occupied, proposed and unmatched lines. outstanding covers only available cash legs inside the declared candidate window. all_statement_lines_confirmed and closing_balances_equal are independent observations; they do not attest a balance or establish a posting lock."
 fields = ["confirmed:bank_cash_amounts", "occupied:bank_cash_amounts", "remaining:bank_cash_amounts", "proposed:bank_cash_amounts", "unmatched:bank_cash_amounts", "outstanding:bank_cash_amounts", "all_statement_lines_confirmed:bool", "closing_balances_equal:bool"]
+
+[[shape]]
+name = "extraction"
+doc = "How a derived text document was extracted (`fa:derived-extraction:v1`, plan §9.1): `method` (`pdf_text_layer`, `franken_ocr` or `franken_whisper`), the tool and its version, whether re-running it reproduces the text (`replayable`), the source documents its bytes bind, and the extracted text as `untrusted_text` with the derived document as its source."
+fields = ["method:string", "tool_name:string", "tool_version:string", "replayable:bool", "sources:[hex]", "text:untrusted_text"]
 
 [[shape]]
 name = "untrusted_text"
@@ -4891,7 +4902,7 @@ mistakes = ["A JSON number in balance: write \"-1500.00 USD\".", "Asserting a su
 cluster = "fa.evidence"
 name = "steward"
 verb = "document"
-subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "import", "list", "show"]
+subcommands = ["read", "redact", "disclose", "custody", "erase", "hold", "attest", "attach", "extract", "import", "list", "show"]
 selector = "action"
 positionals = ["target?", "arg?"]
 flags = ["--chunk", "--to", "--authority", "--subject", "--through", "--hold", "--effective", "--date", "--description", "--key", "--plan", "--approval", "--document", "--against", "--reason", "--statement", "--evidence", "--attestation", "--account", "--period", "--entity", "--unit", "--as-known-at", "--source", "--run", "--kind", "--party", "--balance", "--as-of", "--claim"]
@@ -5789,6 +5800,11 @@ ops = ["approve"]
 [[bound]]
 verbs = ["document"]
 subcommands = ["attach"]
+ops = ["read", "post"]
+
+[[bound]]
+verbs = ["document"]
+subcommands = ["extract"]
 ops = ["read", "post"]
 
 [[bound]]

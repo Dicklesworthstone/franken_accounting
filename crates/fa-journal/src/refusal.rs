@@ -393,6 +393,8 @@ pub mod code {
     pub const BANK_MATCH_DRIFT: &str = "FA-REF-169";
     /// The declared provenance grade is one only a verified receipt chain may confer.
     pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
+    /// A source document cannot be extracted by the method asked for: not a PDF, no text layer, an undecodable stream, a cipher that needs a password, or an extraction tool that failed.
+    pub const EXTRACTION_FAILED: &str = "FA-REF-193";
     /// A stored Document's mirrors disagree with its payload, or its payload does not verify.
     pub const DOCUMENT_DRIFT: &str = "FA-REF-085";
     /// The minimum is met only by counting self-sourced documents no reviewer other than the uploader has attested.

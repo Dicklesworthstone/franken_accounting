@@ -682,6 +682,139 @@ fn attach_creates_supplemental_evidence() -> std::io::Result<()> {
     Ok(())
 }
 
+/// fa-lzrn (plan §9.1, fa-646's pipeline): `fa document extract` records a
+/// PDF's text layer as a derived text document. Its bytes bind the source,
+/// `fa document read` shows the text and its lineage, the same extraction
+/// again is the recorded document, `--kind` names a different one, and it is
+/// graded by who ran it, never the source's HumanUpload. A source that is not
+/// a PDF is refused with FA-REF-193 and nothing is written; an unknown oid
+/// is refused.
+#[test]
+fn extract_records_a_pdf_text_layer_as_a_derived_document() -> std::io::Result<()> {
+    let dir = tmp("extract")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Extract Co", "--json"]);
+    let stream = b"BT /F1 12 Tf (ACME SUPPLIES INC.) Tj T* (TOTAL DUE: 1,234.56 USD) Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.7\n1 0 obj\n<< /Length {} >>\nstream\n",
+        stream.len()
+    )
+    .into_bytes();
+    pdf.extend_from_slice(stream);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF\n");
+    let add = |name: &str, bytes: &[u8], kind: &str, mime: &str| -> String {
+        let path = write(&dir, name, bytes);
+        let out = ok(
+            &book,
+            &[
+                "document",
+                "add",
+                &path,
+                "--kind",
+                kind,
+                "--mime",
+                mime,
+                "--grade",
+                "HumanUpload",
+                "--json",
+            ],
+        );
+        field(&out, "oid").unwrap().to_string()
+    };
+    let invoice = add("invoice.pdf", &pdf, "Invoice", "application/pdf");
+    let text = "ACME SUPPLIES INC.\\nTOTAL DUE: 1,234.56 USD";
+
+    let extract = ["document", "extract", invoice.as_str(), "--json"];
+    let out = ok(&book, &extract);
+    assert_eq!(field(&out, "event"), Some("document_extracted"), "{out}");
+    assert_eq!(field(&out, "source_oid"), Some(invoice.as_str()), "{out}");
+    assert_eq!(field(&out, "kind"), Some("Invoice"), "{out}");
+    assert_eq!(field(&out, "grade"), Some("AgentUpload"), "{out}");
+    assert_eq!(field(&out, "self_sourced"), Some("true"), "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("false"), "{out}");
+    assert_eq!(field(&out, "method"), Some("pdf_text_layer"), "{out}");
+    assert_eq!(field(&out, "replayable"), Some("true"), "{out}");
+    assert!(
+        out.contains(&format!("\"sources\":[\"{invoice}\"]")),
+        "{out}"
+    );
+    assert!(out.contains(text), "{out}");
+    let derived = field(&out, "oid").unwrap().to_string();
+    assert_ne!(derived, invoice);
+    assert!(
+        out.contains(&format!("\"source\":\"D:{derived}\"")),
+        "the text's handle is the derived document: {out}"
+    );
+
+    // Deterministic: the same source again is the recorded document.
+    let again = ok(&book, &extract);
+    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
+    assert_eq!(field(&again, "oid"), Some(derived.as_str()), "{again}");
+
+    // fa document read shows the derived text and its lineage; the source
+    // itself is no derivation.
+    let read = ok(&book, &["document", "read", &derived, "--json"]);
+    assert_eq!(field(&read, "event"), Some("document_read"), "{read}");
+    assert!(
+        read.contains("\"text\":null"),
+        "the envelope is never text: {read}"
+    );
+    assert_eq!(field(&read, "method"), Some("pdf_text_layer"), "{read}");
+    assert!(read.contains(text), "{read}");
+    assert!(
+        read.contains(&format!("\"sources\":[\"{invoice}\"]")),
+        "{read}"
+    );
+    let source = ok(&book, &["document", "read", &invoice, "--json"]);
+    assert!(source.contains("\"extraction\":null"), "{source}");
+
+    // The kind is part of the document's identity.
+    let workpaper = ok(
+        &book,
+        &[
+            "document",
+            "extract",
+            &invoice,
+            "--kind",
+            "Workpaper",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&workpaper, "kind"), Some("Workpaper"), "{workpaper}");
+    assert_ne!(
+        field(&workpaper, "oid"),
+        Some(derived.as_str()),
+        "{workpaper}"
+    );
+
+    // Planted: a source with no PDF text layer is refused, and nothing is
+    // recorded; an unknown oid and a missing oid are refused.
+    let note = add("note.txt", b"not a pdf", "Other", "text/plain");
+    let before = ok(&book, &["document", "list", "--json"]);
+    let refusal = refused(
+        &book,
+        &["document", "extract", &note, "--json"],
+        "FA-REF-193",
+        3,
+    );
+    assert!(refusal.contains("invalid_header"), "{refusal}");
+    let after = ok(&book, &["document", "list", "--json"]);
+    assert_eq!(
+        before.matches("\"oid\"").count(),
+        after.matches("\"oid\"").count(),
+        "a refused extraction records nothing"
+    );
+    refused(
+        &book,
+        &["document", "extract", &"ab".repeat(32), "--json"],
+        "FA-REF-081",
+        3,
+    );
+    let (code, out, _) = fa(&book, &["document", "extract", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
 /// The receiver takes over (plan §15.6, scoreboard WF-TRT-02, fa-k07b): `fa book
 /// fork receivership` on the appointing order holds everything recorded
 /// through the appointment and opens the estate's branch there; a document

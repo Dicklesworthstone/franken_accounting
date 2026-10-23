@@ -27,12 +27,6 @@
 schema_version = 1
 
 [[unwired]]
-path = "fa_docket::intake"
-owner_bead = "fa-lzrn"
-reason = "PDF text, focr and fw extraction into derived Documents (fa-646, closed) has no surface command; nothing calls extract_pdf_text_layer, run_focr_extraction or run_fw_extraction."
-expires = "2026-11-21"
-
-[[unwired]]
 path = "fa_formats::fwc"
 owner_bead = "fa-lzrn"
 reason = "Plaid transactions_sync bank feeds and warehouse export through flywheel_connectors (fa-ff6, closed) have no surface command."

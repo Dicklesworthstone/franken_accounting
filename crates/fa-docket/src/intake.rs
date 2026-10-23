@@ -16,8 +16,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use fa_journal::refusal::code;
 use fa_journal::{
     DerivedExtractionMetadata, Document, ExtractionMethod, Refusal, encode_extraction_derivation,
+    exit,
 };
 use fa_model::Oid;
 use fgdb_types::VId;
@@ -70,8 +72,8 @@ impl<T> ExternalToolOutcome<T> {
 
 fn intake_refusal(message: impl Into<String>, fix: impl Into<String>) -> Refusal {
     Refusal::new(
-        "FA-REF-084",
-        fa_journal::exit::USAGE,
+        code::EXTRACTION_FAILED,
+        exit::REFUSAL,
         message,
         "plan §9.1–§9.3 (evidence intake pipeline and honest provenance grading); FA-INV-05",
         fix,
@@ -1331,7 +1333,7 @@ fn extract_text_from_content_stream(stream: &[u8], out: &mut String) {
 ///
 /// - If the PDF declares `/Filter /Standard`, attempts empty-user-password
 ///   decryption via [`decrypt_pdf_standard_security`]; a non-empty user
-///   password or unsupported cipher refuses with `FA-REF-084` naming the
+///   password or unsupported cipher refuses with `FA-REF-193` naming the
 ///   [`PdfCryptoError`] code.
 /// - Inflates `/FlateDecode` streams via [`inflate_zlib`].
 pub fn extract_pdf_text_string(pdf_bytes: &[u8]) -> Result<String, Refusal> {
@@ -2117,7 +2119,7 @@ mod tests {
             bytes: locked_pdf,
         };
         let err = extract_pdf_text_layer(&locked_doc, HUMAN_UPLOADER, KIND_WORKPAPER).unwrap_err();
-        assert_eq!(err.code, "FA-REF-084");
+        assert_eq!((err.code, err.exit), ("FA-REF-193", exit::REFUSAL));
         assert!(
             err.message
                 .contains("pdf_crypto.empty_user_password_rejected"),
