@@ -3444,7 +3444,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.signer.public_key()
     }
 
-    /// Export a native trial-balance certificate with a signed, payload-complete
+    /// Export a native trial-balance or statement certificate with a complete
     /// journal prefix for the independent offline report verifier. The complete
     /// prefix is disclosed, so account/effective scope caveats cannot be served
     /// by filtering its records. The certificate is replayed before production.
@@ -3479,15 +3479,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             || certificate.time_selection.is_some()
             || !matches!(
                 &certificate.selection,
-                crate::ReportSelection::TrialBalance(_)
+                crate::ReportSelection::TrialBalance(_) | crate::ReportSelection::Statement(_)
             )
         {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's sequence-selected native trial-balance certificate",
+                "offline report production requires this book's sequence-selected native trial-balance or statement certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify a native fa tb report using HEAD or a recorded sequence, then produce its C:<oid> against a checkpoint covering that sequence",
+                "certify a native fa tb or fa statement report using HEAD or a recorded sequence, then produce its C:<oid> against a checkpoint covering that sequence; statement verification also requires the recipient's complete unit-ID list",
             )));
         }
         if let Err(refusal) = self

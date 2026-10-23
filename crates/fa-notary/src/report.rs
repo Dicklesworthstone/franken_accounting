@@ -1,4 +1,4 @@
-//! Portable native trial-balance reports over a payload-complete checkpoint.
+//! Portable native trial balances and statements over a complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
 //! independent verifier derives selectors from every record, reconstructs the
@@ -26,7 +26,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a sequence-selected native trial-balance certificate and a checkpoint at or after its known-at; preserve the complete historical schema and migration bodies",
+        "use a sequence-selected native trial-balance or statement certificate and a checkpoint at or after its known-at; preserve the complete historical schema and migration bodies",
     )
 }
 
@@ -52,7 +52,7 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
         .map(|bodies| needed.into_iter().zip(bodies).collect()))
 }
 
-/// Package an already replayed, sequence-selected native trial-balance
+/// Package an already replayed, sequence-selected native trial-balance or statement
 /// certificate. The facade performs current authority and retained-history
 /// checks first. The returned bytes are deterministic, and their digest can
 /// be signed by the existing detached `ProductionReceipt` format.
@@ -68,9 +68,11 @@ pub fn assemble(
     known_at: CommitSeq,
     bodies: &BTreeMap<VId, RunBody>,
 ) -> Outcome<Bundle> {
-    if !certificate.starts_with(b"fa:report-certificate:v1") {
+    if !certificate.starts_with(b"fa:report-certificate:v1")
+        && !certificate.starts_with(b"fa:report-certificate:v4")
+    {
         return Ok(Err(refused(
-            "offline report bundles currently require a v1 native trial-balance certificate",
+            "offline report bundles require a v1 native trial-balance or v4 native statement certificate",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
