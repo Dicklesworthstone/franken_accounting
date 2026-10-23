@@ -2,10 +2,11 @@
 # Difference Registry (plan §5.2, §5.3, §5.7, §6.4; FA-INV-01 `base`,
 # `base-residual`, `realized-fx`, FA-INV-04 `functional-fold`; bead fa-s3c).
 #
-# Every FX valuation names a registered law in this file and cites the exact
-# content-addressed `Rate` document(s) (`kind = 3` in `evidence_policy.toml`)
-# that supply the rational rate(s). Ad-hoc caller-typed rates without a
-# committed `Rate` document are unconditionally forbidden.
+# Every FX valuation names a registered law in this file. Quote-based laws
+# cite the exact content-addressed `Rate` documents (`kind = 11`, `role = 3`)
+# that supply their rational rates. A carrying-transfer law instead binds its
+# retained source balances and introduces no quote. Ad-hoc caller-typed rates
+# without a committed `Rate` document are unconditionally forbidden.
 
 schema_version = 1
 ad_hoc_rate_admission = "forbidden"
@@ -109,6 +110,20 @@ admitted_classes = ["Revaluation", "Restatement", "Reversal"]
 status = "reserved"
 standard_ref = "ASC 830-10-45-11 / IAS 29"
 meaning = "Hyperinflationary-economy restatement and remeasurement rule (IAS 29 general price-index restatement followed by closing-rate translation, or ASC 830-10-45-11 reporting-currency functional remeasurement)."
+
+[[law]]
+id = 8
+version = 1
+code = "year_end_close_carrying"
+name = "YearEndCloseCarrying"
+rate_purpose = "None"
+date_selector = "fiscal_year_source_prefix"
+rounding_law = "None"
+residual_mode = "none"
+admitted_classes = ["Closing", "Reversal"]
+status = "live"
+standard_ref = "plan §5.2, §7.5; FA-INV-01.base, FA-INV-04.functional-fold"
+meaning = "Year-end closing transfers each nominal account's exact recorded native and functional carrying balances to its declared equity destination, reproducing its saved source prefix and precommit balances. It applies no new rate or rounding, cites no Rate documents of its own, and carries no conversion residual. Any inherited reversal valuation must preserve those amounts; separate target-class and period laws remain authoritative, and Closing corrections use incremental reclose."
 
 [[application_difference_kind]]
 tag = 1

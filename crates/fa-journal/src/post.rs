@@ -2692,6 +2692,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 crate::fx::FxLawId::SpotClose
                     | crate::fx::FxLawId::PeriodAverage
                     | crate::fx::FxLawId::SettlementCarryingBasis
+                    | crate::fx::FxLawId::YearEndCloseCarrying
             ) =>
         {
             match reversal_fx_origin(&txn, db, ctx, book, proposal, target)? {

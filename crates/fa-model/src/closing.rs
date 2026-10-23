@@ -11,9 +11,13 @@ use crate::{DecodeError, EncodeError, Reader, Writer};
 
 const MAGIC: &[u8; 14] = b"FA-YEAR-CLOSE\0";
 pub const YEAR_END_CLOSE_VERSION: u16 = 1;
+/// Retained native and functional carrying amounts, grouped by their exact
+/// source valuation. Version 1 remains the native base-currency computation.
+pub const YEAR_END_CLOSE_CARRYING_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YearEndCloseBasis {
+    pub version: u16,
     pub fiscal_year: i32,
     pub closing_period: String,
     pub closing_date: DateDay,
@@ -29,7 +33,7 @@ impl YearEndCloseBasis {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
         w.fixed(MAGIC)
-            .u16(YEAR_END_CLOSE_VERSION)
+            .u16(self.version)
             .i32(self.fiscal_year)
             .str(&self.closing_period)
             .i32(self.closing_date.0)
@@ -42,12 +46,18 @@ impl YearEndCloseBasis {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
-        if r.fixed::<14>("year_end_close.magic")? != *MAGIC
-            || r.u16("year_end_close.version")? != YEAR_END_CLOSE_VERSION
-        {
+        if r.fixed::<14>("year_end_close.magic")? != *MAGIC {
+            return Err(r.invalid("year_end_close.version"));
+        }
+        let version = r.u16("year_end_close.version")?;
+        if !matches!(
+            version,
+            YEAR_END_CLOSE_VERSION | YEAR_END_CLOSE_CARRYING_VERSION
+        ) {
             return Err(r.invalid("year_end_close.version"));
         }
         let result = Self {
+            version,
             fiscal_year: r.i32("year_end_close.fiscal_year")?,
             closing_period: r.str(64, "year_end_close.closing_period")?.to_string(),
             closing_date: DateDay(r.i32("year_end_close.closing_date")?),
@@ -71,6 +81,7 @@ mod tests {
     #[test]
     fn closing_basis_is_bounded_versioned_and_complete() {
         let basis = YearEndCloseBasis {
+            version: YEAR_END_CLOSE_VERSION,
             fiscal_year: 2026,
             closing_period: "FY2026-CLOSE".into(),
             closing_date: DateDay(20_818),
@@ -87,8 +98,16 @@ mod tests {
         let mut trailing = bytes.clone();
         trailing.push(0);
         assert!(YearEndCloseBasis::decode(&trailing).is_err());
+        let mut carrying = basis.clone();
+        carrying.version = YEAR_END_CLOSE_CARRYING_VERSION;
+        let carrying_bytes = carrying.canonical_bytes().unwrap();
+        assert_eq!(
+            YearEndCloseBasis::decode(&carrying_bytes).unwrap(),
+            carrying
+        );
+        assert_eq!(&bytes[16..], &carrying_bytes[16..]);
         let mut future = bytes;
-        future[14] = 2;
+        future[14] = 3;
         assert!(YearEndCloseBasis::decode(&future).is_err());
     }
 }

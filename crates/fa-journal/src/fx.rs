@@ -2,9 +2,9 @@
 //! realized FX settlement (plan §5.2, §5.3, §6.4; bead `fa-s3c`;
 //! `FA-INV-01.base`, `FA-INV-01.base-residual`, `FA-INV-01.realized-fx`).
 //!
-//! Every FX conversion names a registered law from `registries/fx_laws.toml`
-//! and cites content-addressed `Rate` documents (`kind = 11`, `role = 3`) in
-//! the entry's provenance closure. The posting kernel recomputes the
+//! Every FX conversion names a registered law from `registries/fx_laws.toml`.
+//! Laws that apply a quote cite content-addressed `Rate` documents (`kind = 11`,
+//! `role = 3`) in the entry's provenance closure. The posting kernel recomputes the
 //! functional-currency (`base_unit`) valuation inside the posting transaction
 //! that witnesses the rate documents:
 //! - Under `SpotClose` and `PeriodAverage`, each legal entity's legs are
@@ -17,11 +17,14 @@
 //! - Under `SettlementCarryingBasis`, realized FX on settlement posts through
 //!   paired conversion account legs whose functional-currency (`base_amount`)
 //!   debits and credits net to zero (`FA-INV-01.realized-fx`).
+//! - Under `YearEndCloseCarrying`, closing transfers exact recorded native and
+//!   functional balances to equity. Its saved source prefix supplies the
+//!   carrying amounts; it introduces no rate or conversion residual.
 
 use std::collections::BTreeMap;
 
 use asupersync::Cx;
-use fa_model::symbols::label;
+use fa_model::symbols::{label, property};
 use fa_model::{
     BaseTotals, EntryClass, EntryPayload, EvidenceRef, Id128, LegPayload, Oid, Reader, Residual,
     SupersessionKind, Writer, domain_digest,
@@ -60,16 +63,18 @@ pub enum FxLawId {
     SettlementCarryingBasis = 4,
     TranslationCurrentRate = 5,
     RemeasurementTemporal = 6,
+    YearEndCloseCarrying = 8,
 }
 
 impl FxLawId {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::SpotClose,
         Self::PeriodEndRevaluation,
         Self::PeriodAverage,
         Self::SettlementCarryingBasis,
         Self::TranslationCurrentRate,
         Self::RemeasurementTemporal,
+        Self::YearEndCloseCarrying,
     ];
 
     #[must_use]
@@ -91,18 +96,22 @@ impl FxLawId {
             Self::SettlementCarryingBasis => "SettlementCarryingBasis",
             Self::TranslationCurrentRate => "TranslationCurrentRate",
             Self::RemeasurementTemporal => "RemeasurementTemporal",
+            Self::YearEndCloseCarrying => "YearEndCloseCarrying",
         }
     }
 
+    /// The quote purpose, or `None` when the law transfers recorded carrying
+    /// amounts without applying a new rate.
     #[must_use]
-    pub const fn required_purpose(self) -> FxRatePurpose {
+    pub const fn required_purpose(self) -> Option<FxRatePurpose> {
         match self {
-            Self::SpotClose => FxRatePurpose::SpotClose,
+            Self::SpotClose => Some(FxRatePurpose::SpotClose),
             Self::PeriodEndRevaluation
             | Self::TranslationCurrentRate
-            | Self::RemeasurementTemporal => FxRatePurpose::PeriodClose,
-            Self::PeriodAverage => FxRatePurpose::PeriodAverage,
-            Self::SettlementCarryingBasis => FxRatePurpose::Settlement,
+            | Self::RemeasurementTemporal => Some(FxRatePurpose::PeriodClose),
+            Self::PeriodAverage => Some(FxRatePurpose::PeriodAverage),
+            Self::SettlementCarryingBasis => Some(FxRatePurpose::Settlement),
+            Self::YearEndCloseCarrying => None,
         }
     }
 
@@ -738,7 +747,11 @@ pub(crate) fn admit_structure(
     // Verify embedded FxLaws registry agrees with FxLawId.
     let classes = fa_registry::EntryClasses::embedded().map_err(fx_structure)?;
     let registry = FxLaws::embedded(&classes).map_err(fx_structure)?;
-    if !registry.laws.iter().any(|r| r.id == law.id()) {
+    if !registry
+        .laws
+        .iter()
+        .any(|r| r.id == law.id() && r.version == law.version())
+    {
         return Err(not_implemented("base_totals"));
     }
 
@@ -759,6 +772,13 @@ pub(crate) fn admit_structure(
             "FxLawId::PeriodEndRevaluation is only admissible on a Revaluation entry",
         ));
     }
+    if law == FxLawId::YearEndCloseCarrying
+        && !matches!(proposal.class, EntryClass::CLOSING | EntryClass::REVERSAL)
+    {
+        return Err(fx_structure(
+            "YearEndCloseCarrying is only admissible on a Closing or its exact Reversal",
+        ));
+    }
 
     if bt.unit_id != spec.base_unit.0 {
         return Err(fx_structure(format!(
@@ -766,7 +786,13 @@ pub(crate) fn admit_structure(
             bt.unit_id, spec.base_unit.0
         )));
     }
-    if bt.rate_doc_oids.is_empty() {
+    if law == FxLawId::YearEndCloseCarrying {
+        if !bt.rate_doc_oids.is_empty() || bt.residual.is_some() {
+            return Err(fx_structure(
+                "YearEndCloseCarrying transfers recorded balances without Rate documents or a conversion residual",
+            ));
+        }
+    } else if bt.rate_doc_oids.is_empty() {
         return Err(fx_structure(
             "base_totals.rate_doc_oids must cite at least one Rate document",
         ));
@@ -806,8 +832,10 @@ pub(crate) fn admit_structure(
                 "leg {idx} is missing base_amount while base_totals is present"
             )));
         };
-        let zero_relief = law == FxLawId::SettlementCarryingBasis
-            && leg.amount.unit != spec.base_unit
+        let zero_relief = matches!(
+            law,
+            FxLawId::SettlementCarryingBasis | FxLawId::YearEndCloseCarrying
+        ) && leg.amount.unit != spec.base_unit
             && base_amt.mantissa == 0;
         if base_amt.unit != spec.base_unit
             || base_amt.mantissa < 0
@@ -977,47 +1005,41 @@ fn verify_claim(
     // residual assignment. The current reversal was separately balanced and
     // must preserve those exact base amounts, law and Rate commitments.
     let (valuation, valuation_period) = inherited_origin.unwrap_or((proposal, period));
-    let (rounding_law, average_as_of) =
-        if matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage) {
-            let classes = fa_registry::EntryClasses::embedded()
-                .map_err(|error| crate::KernelError::Corrupt(error.to_string()))?;
-            let registry = FxLaws::embedded(&classes)
-                .map_err(|error| crate::KernelError::Corrupt(error.to_string()))?;
-            let Some(law) = registry.laws.iter().find(|law| {
-                law.id == claim.law.id()
-                    && law.version == claim.law.version()
-                    && (!live || law.status == "live")
-            }) else {
-                return Ok(Err(fx_structure(format!(
-                    "FX law {} version {} is not {}",
-                    claim.law.name(),
-                    claim.law.version(),
-                    if live {
-                        "live for a new posting"
-                    } else {
-                        "registered"
-                    }
-                ))));
-            };
-            let class = proposal.class.name().unwrap_or("unregistered");
-            if live && !law.admitted_classes.iter().any(|allowed| allowed == class) {
-                return Ok(Err(fx_structure(format!(
-                    "FX law {} version {} does not admit entry class {class} for a new posting",
-                    claim.law.name(),
-                    claim.law.version(),
-                ))));
+    let classes = fa_registry::EntryClasses::embedded()
+        .map_err(|error| crate::KernelError::Corrupt(error.to_string()))?;
+    let registry = FxLaws::embedded(&classes)
+        .map_err(|error| crate::KernelError::Corrupt(error.to_string()))?;
+    let Some(law) = registry.laws.iter().find(|law| {
+        law.id == claim.law.id()
+            && law.version == claim.law.version()
+            && (!live || law.status == "live")
+    }) else {
+        return Ok(Err(fx_structure(format!(
+            "FX law {} version {} is not {}",
+            claim.law.name(),
+            claim.law.version(),
+            if live {
+                "live for a new posting"
+            } else {
+                "registered"
             }
-            (
-                Some(law.rounding_law.clone()),
-                if claim.law == FxLawId::PeriodAverage {
-                    Some(valuation_period.end.pred()?)
-                } else {
-                    None
-                },
-            )
-        } else {
-            (None, None)
-        };
+        ))));
+    };
+    let class = proposal.class.name().unwrap_or("unregistered");
+    if live && !law.admitted_classes.iter().any(|allowed| allowed == class) {
+        return Ok(Err(fx_structure(format!(
+            "FX law {} version {} does not admit entry class {class} for a new posting",
+            claim.law.name(),
+            claim.law.version(),
+        ))));
+    }
+    let rounding_law = matches!(claim.law, FxLawId::SpotClose | FxLawId::PeriodAverage)
+        .then_some(law.rounding_law.as_str());
+    let average_as_of = if claim.law == FxLawId::PeriodAverage {
+        Some(valuation_period.end.pred()?)
+    } else {
+        None
+    };
     let mut rate_docs = Vec::with_capacity(claim.rate_doc_oids.len());
     for oid in &claim.rate_doc_oids {
         let vid = document_vid(oid);
@@ -1045,12 +1067,38 @@ fn verify_claim(
                 "add the Rate document via add_document",
             )));
         }
-        let payload = crate::rows::bytes(
-            &row,
-            fa_model::symbols::property::FA_PAYLOAD,
-            "document.payload",
-        )?;
+        let payload = crate::rows::bytes(&row, property::FA_PAYLOAD, "document.payload")?;
         let record = DocumentRecord::decode(&payload)?;
+        let citation = proposal
+            .evidence
+            .iter()
+            .find(|evidence| evidence.document_oid == *oid && evidence.role == RATE_EVIDENCE_ROLE);
+        if record.book_id != spec.book_id
+            || record.oid() != *oid
+            || row.vid != vid
+            || document_vid(&record.oid()) != row.vid
+            || citation.is_none_or(|evidence| evidence.doc_commit != record.doc_commit)
+            || proposal.evidence.iter().any(|evidence| {
+                evidence.document_oid == *oid
+                    && evidence.role == RATE_EVIDENCE_ROLE
+                    && evidence.doc_commit != record.doc_commit
+            })
+            || crate::rows::bytes(&row, property::FA_DIGEST, "rate document digest")?
+                != record.doc_commit
+            || crate::rows::bytes(&row, property::BOOK_ID, "rate document book")? != spec.book_id.0
+            || crate::rows::text(&row, property::CODE, "rate document kind")? != "Rate"
+        {
+            return Ok(Err(Refusal::new(
+                code::EVIDENCE_COMMIT,
+                exit::REFUSAL,
+                format!(
+                    "rate document {} differs from its content identity, book, mirrors or Rate citation",
+                    crate::evidence::hex(&oid.0)
+                ),
+                "FA-INV-05 (Rate identity and commitment are bound to the recorded valuation)",
+                "restore the exact immutable Rate document and citation used for the valuation",
+            )));
+        }
         if record.kind != RATE_DOCUMENT_KIND {
             return Ok(Err(fx_structure(format!(
                 "cited rate document {} has kind {}, expected Rate ({RATE_DOCUMENT_KIND})",
@@ -1083,7 +1131,7 @@ fn verify_claim(
                     | FxRatePurpose::PeriodAverage
                     | FxRatePurpose::SpotClose
             ),
-            other => decoded.purpose == other.required_purpose(),
+            other => Some(decoded.purpose) == other.required_purpose(),
         };
         if !purpose_ok {
             return Ok(Err(fx_structure(format!(
@@ -1093,7 +1141,7 @@ fn verify_claim(
                 claim.law.name(),
             ))));
         }
-        if let Some(expected) = rounding_law.as_deref()
+        if let Some(expected) = rounding_law
             && decoded.rounding.name() != expected
         {
             return Ok(Err(fx_structure(format!(
@@ -1236,6 +1284,29 @@ fn verify_claim(
                 return Ok(Err(r));
             }
         }
+        FxLawId::YearEndCloseCarrying => {
+            // Closing's owner reproduces its saved source basis and the
+            // precommit balances. A reversal reaches this point only with
+            // an independently witnessed exact ancestry back to that close.
+            // The separate target-class and period gates still decide if
+            // it may publish; Closing currently corrects by incremental reclose.
+            // No rate is invented to represent a transfer of carrying value.
+            if valuation.class != EntryClass::CLOSING
+                || !valuation
+                    .extensions
+                    .iter()
+                    .any(|(tag, _)| *tag == fa_model::entry::YEAR_END_CLOSE_EXTENSION)
+                || !claim.rate_doc_oids.is_empty()
+                || valuation
+                    .base_totals
+                    .as_ref()
+                    .is_none_or(|totals| totals.residual.is_some())
+            {
+                return Ok(Err(fx_structure(
+                    "YearEndCloseCarrying requires a source-bound Closing or its exact inherited Reversal",
+                )));
+            }
+        }
     }
 
     Ok(Ok(()))
@@ -1314,6 +1385,25 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
             verification = crate::carrying::validate_post(db, cx, book, proposal, prior)?
                 .map_err(|refusal| refusal.message);
         }
+        if verification.is_ok()
+            && proposal.class == EntryClass::CLOSING
+            && proposal
+                .base_totals
+                .as_ref()
+                .is_some_and(|totals| totals.fx_law_oid == FxLawId::YearEndCloseCarrying.oid())
+            && !crate::closing::verify_recorded_carrying(
+                db,
+                cx,
+                book,
+                entry.entry_ref(row.vid),
+                row.created_at,
+            )?
+        {
+            verification = Err(
+                "year-end close carrying amounts do not reproduce the saved source prefix and precommit balances"
+                    .into(),
+            );
+        }
         if let Err(problem) = verification {
             out.drift.push(FxConversionDrift {
                 entry: row.vid,
@@ -1381,7 +1471,10 @@ fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
     if proposal.class == EntryClass::REVERSAL
         && matches!(
             claim.law,
-            FxLawId::SpotClose | FxLawId::PeriodAverage | FxLawId::SettlementCarryingBasis
+            FxLawId::SpotClose
+                | FxLawId::PeriodAverage
+                | FxLawId::SettlementCarryingBasis
+                | FxLawId::YearEndCloseCarrying
         )
     {
         let Some(target) = proposal
@@ -1399,6 +1492,15 @@ fn verify_recorded<V: asupersync::fs::Vfs + Clone>(
             )));
         };
         let original = crate::sweep::decode_entry(&row)?;
+        if original.entry_ref(row.vid) != target
+            || original.proposal.book_id != proposal.book_id
+            || original.proposal.branch_id != proposal.branch_id
+        {
+            return Ok(Err(
+                "a valued Reversal's target handle, book or branch differs from its recorded target"
+                    .into(),
+            ));
+        }
         return Ok(
             if crate::post::exact_side_swap(&original.proposal, proposal) {
                 Ok(())
@@ -1476,7 +1578,7 @@ fn compute_entity_valuations(
                 doc.base_unit.0, base_unit.0
             )));
         }
-        if doc.purpose != law.required_purpose() {
+        if Some(doc.purpose) != law.required_purpose() {
             return Err(fx_structure(format!(
                 "rate document purpose `{}` does not match law `{}`",
                 doc.purpose.as_str(),
@@ -1804,4 +1906,138 @@ const fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
         b = r;
     }
     a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fa_model::{EntryOrigin, Erasable, SealKey};
+    use fa_time::FiscalCalendar;
+
+    fn carrying_close(base: i128) -> (BookSpec, UnitRegistry, EntryPayload) {
+        let units = UnitRegistry::embedded().unwrap();
+        let usd = units.lookup("USD").unwrap();
+        let eur = units.lookup("EUR").unwrap();
+        let spec = BookSpec {
+            book_id: Id128([35; 16]),
+            name: "Exact carrying transfer".into(),
+            base_unit: usd,
+            calendar: FiscalCalendar::monthly("carrying-close", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        };
+        let legs = [(Side::Debit, VId(1)), (Side::Credit, VId(2))]
+            .into_iter()
+            .map(|(side, account)| {
+                let mut leg = LegPayload::simple(side, account, Amount::new(eur, 100));
+                leg.base_amount = Some(Amount::new(usd, base));
+                leg
+            })
+            .collect::<Vec<_>>();
+        let proposal = EntryPayload {
+            schema_minor: 0,
+            book_id: spec.book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::CLOSING,
+            effective_date: DateDay::from_ymd(2026, 12, 31).unwrap(),
+            document_date: None,
+            description: Erasable::seal(
+                &"Carry retained values".to_string(),
+                None,
+                &SealKey([36; 32]),
+                [37; 32],
+                [38; 24],
+            ),
+            effective_period: None,
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: Some(BaseTotals {
+                unit_id: usd.0,
+                debits: base,
+                credits: base,
+                fx_law_oid: FxLawId::YearEndCloseCarrying.oid(),
+                rate_doc_oids: Vec::new(),
+                residual: None,
+            }),
+            idempotency_key: b"carrying-close".to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([39; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: VId(7),
+            session_ref: None,
+            evidence: Vec::new(),
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        (spec, units, proposal)
+    }
+
+    #[test]
+    fn carrying_close_law_admits_exact_and_zero_foreign_carrying_without_quotes() {
+        assert_eq!(FxLawId::YearEndCloseCarrying.id(), 8);
+        assert_eq!(FxLawId::YearEndCloseCarrying.required_purpose(), None);
+        assert_eq!(
+            FxLawId::from_oid(&FxLawId::YearEndCloseCarrying.oid()),
+            Some(FxLawId::YearEndCloseCarrying),
+        );
+        for base in [0, 137] {
+            let (spec, units, mut proposal) = carrying_close(base);
+            for class in [EntryClass::CLOSING, EntryClass::REVERSAL] {
+                proposal.class = class;
+                let claim = admit_structure(&proposal, &spec, &[None, None], &units)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(claim.law, FxLawId::YearEndCloseCarrying);
+                assert!(claim.rate_doc_oids.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn carrying_close_law_refuses_quotes_residuals_classes_and_changed_base_par() {
+        let (spec, units, proposal) = carrying_close(137);
+        let refused = |bad: &EntryPayload| {
+            assert!(admit_structure(bad, &spec, &[None, None], &units).is_err());
+        };
+        let mut quoted = proposal.clone();
+        quoted.base_totals.as_mut().unwrap().rate_doc_oids = vec![Oid([9; 32])];
+        refused(&quoted);
+        let mut residual = proposal.clone();
+        residual.base_totals.as_mut().unwrap().residual = Some(Residual {
+            leg_ordinal: 0,
+            amount: Amount::new(spec.base_unit, 1),
+        });
+        refused(&residual);
+        for class in [
+            EntryClass::ORIGINAL,
+            EntryClass::ADJUSTING,
+            EntryClass::REVALUATION,
+        ] {
+            let mut bad = proposal.clone();
+            bad.class = class;
+            refused(&bad);
+        }
+        let mut unvalued = proposal.clone();
+        unvalued.legs[0].base_amount = None;
+        refused(&unvalued);
+        let mut unbalanced = proposal.clone();
+        unbalanced.legs[0].base_amount.as_mut().unwrap().mantissa += 1;
+        refused(&unbalanced);
+        let mut nonpar = proposal;
+        for leg in &mut nonpar.legs {
+            leg.amount.unit = spec.base_unit;
+        }
+        refused(&nonpar);
+        let (spec, units, mut zero) = carrying_close(0);
+        for leg in &mut zero.legs {
+            leg.amount.unit = spec.base_unit;
+        }
+        assert!(admit_structure(&zero, &spec, &[None, None], &units).is_err());
+    }
 }

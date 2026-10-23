@@ -559,6 +559,57 @@ fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
     )
 }
 
+/// The v5 registry closure before the additive retained-carrying close law.
+/// Every original law and every other registry remains bound byte-for-byte
+/// canonically. This is usable only for prefixes whose valuations use those
+/// original laws; it cannot authorize an entry under the omitted law.
+fn pre_carrying_registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
+    let leaves = report_registries(selection)
+        .into_iter()
+        .map(|(name, text)| {
+            if name != "fx_laws" {
+                return Ok((name, canonical_registry_digest(name, text)?));
+            }
+            let mut document = fa_registry::toml::parse(text)
+                .map_err(|e| invalid(format!("embedded registry {name} does not parse: {e}")))?;
+            let laws = document
+                .arrays
+                .get_mut("law")
+                .ok_or_else(|| invalid("embedded FX registry has no law rows"))?;
+            let index = laws
+                .iter()
+                .position(|row| {
+                    row.get("id").and_then(fa_registry::toml::Value::as_int) == Some(8)
+                        && row
+                            .get("version")
+                            .and_then(fa_registry::toml::Value::as_int)
+                            == Some(1)
+                        && row.get("code").and_then(fa_registry::toml::Value::as_str)
+                            == Some("year_end_close_carrying")
+                })
+                .ok_or_else(|| {
+                    invalid("embedded FX registry has no retained-carrying close law")
+                })?;
+            laws.remove(index);
+            Ok((
+                name,
+                digest(
+                    b"fa:registry-canonical-digest:v1",
+                    &document.canonical_bytes(),
+                ),
+            ))
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
+    Ok(registry_closure(b"fa:report-registry-closure:v2", &leaves))
+}
+
+fn pre_carrying_registry_covers(proposal: &fa_model::EntryPayload) -> bool {
+    proposal.base_totals.as_ref().is_none_or(|totals| {
+        fa_journal::fx::FxLawId::from_oid(&totals.fx_law_oid)
+            .is_some_and(|law| (1..=7).contains(&law.id()))
+    })
+}
+
 /// The pre-narrowing 8/9-registry v2 closure, kept so certificates retained
 /// before fa-t8gk narrowed the bound registry set still replay while those
 /// registries' canonical content is unchanged.
@@ -1312,7 +1363,20 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         Ok(closure) => closure,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let pre_carrying = if certificate.registry_digest != current
+        && matches!(
+            &certificate.selection,
+            ReportSelection::FunctionalStatement(_)
+        ) {
+        match pre_carrying_registry_digest(&certificate.selection) {
+            Ok(closure) => certificate.registry_digest == closure,
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    } else {
+        false
+    };
     if certificate.registry_digest != current
+        && !pre_carrying
         && (matches!(
             &certificate.selection,
             ReportSelection::FunctionalStatement(_)
@@ -1371,13 +1435,6 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             "the certified historical book context is unavailable: {error}"
         ))));
     }
-    if matches!(
-        &certificate.selection,
-        ReportSelection::FunctionalStatement(_)
-    ) && let Err(refusal) = functional::verify_sources(db, cx, book, certificate.known_at)?
-    {
-        return Ok(Err(refusal));
-    }
     let journal = match Journal::read(db, book, Some(certificate.known_at), None)? {
         Ok(journal) => journal,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1388,6 +1445,26 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         )));
     }
     if let Err(refusal) = unchanged_entries(db, &query, &journal)? {
+        return Ok(Err(refusal));
+    }
+    if pre_carrying {
+        for leaf in &journal.leaves {
+            let entry = Entry::decode(&leaf.payload).map_err(fa_journal::KernelError::from)?;
+            if !pre_carrying_registry_covers(&entry.proposal) {
+                return Ok(Err(registry_unavailable(
+                    "functional report certificate whose prefix uses a law absent from its registry",
+                    &certificate.registry_digest,
+                    &current,
+                    &report_registries(&certificate.selection),
+                )));
+            }
+        }
+    }
+    if matches!(
+        &certificate.selection,
+        ReportSelection::FunctionalStatement(_)
+    ) && let Err(refusal) = functional::verify_sources(db, cx, book, certificate.known_at)?
+    {
         return Ok(Err(refusal));
     }
     let report = match certificate

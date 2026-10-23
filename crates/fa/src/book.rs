@@ -3778,6 +3778,23 @@ impl Book {
         ))
     }
 
+    /// Produce a portable native trial balance for `fa-verify report`.
+    /// Replays the certificate under current whole-book read/produce authority,
+    /// then exports every payload in a signed checkpoint covering its prefix.
+    /// Returns `None` if the selected recorded checkpoint is unavailable.
+    pub fn produce_report_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_report_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the
@@ -5329,26 +5346,26 @@ impl Book {
     /// Seal its proposal once, retain a PostIntent for independent approval,
     /// and use plan/commit_plan for ordinary native admission and publication.
     pub fn prepare_year_end_close(
-        &self,
+        &mut self,
         request: &fa_journal::closing::YearEndCloseRequest,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
         let purposes = self.purposes();
-        with_store!(&self.store, core =>
-            core.prepare_year_end_close(&purposes, request, capability)
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_year_end_close(&purposes, request, capability))
         )
     }
 
     /// Check zero nominal balances at the last close and expose later deltas.
     pub fn verify_year_end_close(
-        &self,
+        &mut self,
         fiscal_year: i32,
         known_at: Option<CommitSeq>,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::YearEndCloseVerification> {
         let purposes = self.purposes();
-        with_store!(&self.store, core =>
-            core.verify_year_end_close(&purposes, fiscal_year, known_at, capability)
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_year_end_close(&purposes, fiscal_year, known_at, capability))
         )
     }
 

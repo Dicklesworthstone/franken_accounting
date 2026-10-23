@@ -343,12 +343,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Derive exact Closing legs from immutable fiscal-year contributions,
     /// including previous Closing legs so a reclose transfers only the delta.
     /// Preparation publishes nothing and grants no approval or posting authority.
-    pub fn prepare_year_end_close(
-        &self,
+    pub async fn prepare_year_end_close(
+        &mut self,
         cx: &PurposeContexts,
         request: &fa_journal::closing::YearEndCloseRequest,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
+        // The complete nominal population and its retained carrying values
+        // require immutable source history even when the selected prefix is
+        // HEAD. Admit current whole-book authority before loading that history.
+        if let Err(refusal) =
+            fa_journal::closing::authorize(&self.db, &self.context, capability, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
         Ok(fa_journal::closing::prepare_year_end_close(
             &self.db,
             cx,
@@ -360,20 +371,54 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
     /// Recompute nominal balances at the last Closing and the selected prefix.
     /// A later adjustment is reported separately as a required delta reclose.
-    pub fn verify_year_end_close(
-        &self,
+    pub async fn verify_year_end_close(
+        &mut self,
         cx: &PurposeContexts,
         fiscal_year: i32,
         known_at: Option<CommitSeq>,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::YearEndCloseVerification> {
+        if let Err(denial) =
+            fa_policy::admit_read(capability, capability.holder(), self.context.book_id).and_then(
+                |()| {
+                    fa_policy::reach(
+                        capability,
+                        &fa_policy::Reach {
+                            observes: known_at
+                                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                            ..fa_policy::Reach::whole_book(true)
+                        },
+                        None,
+                    )
+                },
+            )
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let head = match fa_journal::policy::current_at(&self.db, &self.context, capability)? {
+            Ok(current) => current.at(),
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let selected = known_at.unwrap_or(head);
+        if selected.0 == 0 || selected > head {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::refusal::exit::USAGE,
+                "closing verification selects a prefix outside this book's recorded history",
+                "plan §7.1 / §7.5 (closing verification uses one retained prefix)",
+                format!("select a recorded sequence from 1 through {}", head.0),
+            )));
+        }
+        if let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await? {
+            return Ok(Err(refusal));
+        }
         Ok(fa_journal::closing::verify_year_end_close(
             &self.db,
             cx,
             &self.context,
             capability,
             fiscal_year,
-            known_at,
+            Some(selected),
         )?)
     }
 
@@ -3381,6 +3426,124 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     #[must_use]
     pub fn checkpoint_public_key(&self) -> [u8; 32] {
         self.signer.public_key()
+    }
+
+    /// Export a native trial-balance certificate with a signed, payload-complete
+    /// journal prefix for the independent offline report verifier. The complete
+    /// prefix is disclosed, so account/effective scope caveats cannot be served
+    /// by filtering its records. The certificate is replayed before production.
+    pub async fn produce_report_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        cx.query().checkpoint().map_err(BookError::Context)?;
+        let reach = fa_policy::Reach {
+            observes: capability
+                .known_at_pin()
+                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            ..fa_policy::Reach::whole_book(true)
+        };
+        if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
+            .and_then(|()| {
+                fa_policy::require(
+                    capability,
+                    fa_policy::Op::Produce,
+                    "producing a certified report bundle",
+                )
+            })
+            .and_then(|()| fa_policy::reach(capability, &reach, None))
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if certificate.book_id != self.context.book_id
+            || certificate.time_selection.is_some()
+            || !matches!(
+                &certificate.selection,
+                crate::ReportSelection::TrialBalance(_)
+            )
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "offline report production requires this book's sequence-selected native trial-balance certificate",
+                "plan §13.1–13.3 (complete authenticated report inputs)",
+                "certify a native fa tb report using HEAD or a recorded sequence, then produce its C:<oid> against a checkpoint covering that sequence",
+            )));
+        }
+        if let Err(refusal) = self
+            .prepare_report_history(cx, principal, capability, Some(certificate.known_at))
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self.replay_report(cx, certificate)? {
+            return Ok(Err(refusal));
+        }
+        let at = self.head(cx)?;
+        let commitment = capability
+            .commitment()
+            .map_err(|error| KernelError::Corrupt(format!("capability commitment: {error}")))?;
+        let basis = self.query(cx, |db, book| {
+            Ok(bundle_basis_at(
+                db,
+                cx,
+                book,
+                &self.signer,
+                state,
+                capability.known_at_pin(),
+            )?)
+        })?;
+        let (journal, checkpoint) = match basis {
+            None => return Ok(Ok(None)),
+            Some(Err(refusal)) => return Ok(Err(refusal)),
+            Some(Ok(basis)) => basis,
+        };
+        let bodies = match self.query(cx, |db, _| {
+            Ok(fa_notary::report::run_bodies(
+                db,
+                &journal,
+                certificate.known_at,
+            )?)
+        })? {
+            Ok(bodies) => bodies,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let bytes = certificate
+            .canonical_bytes()
+            .map_err(|error| KernelError::Model(error.into()))?;
+        let bundle = match fa_notary::report::assemble(
+            &journal,
+            &checkpoint,
+            &bytes,
+            certificate.known_at,
+            &bodies,
+        )? {
+            Ok(bundle) => bundle,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let receipt = fa_notary::ProductionReceipt::sign(
+            fa_notary::ReceiptBody {
+                bundle_digest: bundle.digest,
+                producer_principal: principal,
+                produced_at_seq: at,
+                capability_commitment: commitment,
+                time_evidence_oid: None,
+            },
+            &self.signer,
+        )
+        .map_err(|error| KernelError::Corrupt(error.to_string()))?
+        .canonical_bytes()
+        .map_err(|error| KernelError::Model(error.into()))?;
+        Ok(Ok(Some(ProducedBundle {
+            bundle,
+            receipt,
+            checkpoint,
+            documents: Vec::new(),
+        })))
     }
 
     /// Produce an evidence bundle against the journaled state `state`

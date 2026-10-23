@@ -5,6 +5,8 @@
 
 #[path = "proofs/prefix.rs"]
 mod prefix;
+#[path = "proofs/report.rs"]
+mod report;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
