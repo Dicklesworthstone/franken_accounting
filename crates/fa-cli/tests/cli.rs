@@ -7161,7 +7161,7 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     assert!(arr(&legs[1], "dimensions").is_empty());
 
     // Planted, each writing nothing: a value the book does not hold, a value
-    // outside its window (FA-REF-194), a dimension with no values, and
+    // outside its window (FA-REF-195), a dimension with no values, and
     // dimensions the leg names elsewhere or not at all.
     let before = head(&run);
     let (code, out) = post("unknown", "2026-03-15", r#"{"cost_center":"CC99"}"#);
@@ -7169,7 +7169,7 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     assert!(out.contains("does not exist"), "{out}");
     let (code, out) = post("late", "2026-03-25", r#"{"cost_center":"CC10"}"#);
     assert_eq!(code, 3, "{out}");
-    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-194"), "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
     assert!(out.contains("2026-03-20"), "{out}");
     for (key, dimensions) in [
         ("department", r#"{"department":"D1"}"#),

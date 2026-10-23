@@ -469,7 +469,7 @@ pub mod code {
     /// A leg names a dimension value (cost center, department, project and
     /// the other registered kinds) outside its valid-time effectivity on
     /// the entry's effective date (plan §4.1).
-    pub const DIMENSION_NOT_EFFECTIVE: &str = "FA-REF-194";
+    pub const DIMENSION_NOT_EFFECTIVE: &str = "FA-REF-195";
     /// The migration run is not `Open`: it was finalized or abandoned, so it
     /// takes no more chunks and no second Finalize or Abandon (plan §8.6).
     pub const RUN_NOT_OPEN: &str = "FA-REF-130";

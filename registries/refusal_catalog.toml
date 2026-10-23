@@ -1184,7 +1184,7 @@ cite = "plan §9.1–§9.3 (evidence intake pipeline: derived text Documents); f
 fix = "the text layer needs a PDF that carries one; an image or a scan has none, so OCR it (fa document extract <oid> --tool focr); a password-protected PDF needs its owner to remove the password; a tool that failed names its own error; the source document itself stays the evidence"
 
 [[refusal]]
-code = "FA-REF-194"
+code = "FA-REF-195"
 name = "DIMENSION_NOT_EFFECTIVE"
 owners = ["fa-journal"]
 exit = "refusal"
