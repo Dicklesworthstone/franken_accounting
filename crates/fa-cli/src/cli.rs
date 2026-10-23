@@ -118,6 +118,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("gl", gl_cmd),
     ("explain", explain_cmd),
     ("search", search_cmd),
+    ("diff", crate::diff::diff_cmd),
     ("query", crate::query::query_cmd),
     ("procedure", procedure_cmd),
     ("jet", jet_cmd),
@@ -7050,7 +7051,7 @@ fn reversal_reason(value: Option<&Json>) -> Result<Reason, Fail> {
     .into())
 }
 
-fn lineage_json(link: &fa_model::Supersession, reasons: &ReasonCodes) -> Json {
+pub(crate) fn lineage_json(link: &fa_model::Supersession, reasons: &ReasonCodes) -> Json {
     obj(vec![
         ("entry", s(format!("{:032x}", link.target.vid.0))),
         ("kind", s(format!("{:?}", link.kind))),
@@ -10877,7 +10878,7 @@ pub(crate) fn known_at_read_flag(
 
 const TB_VIEW_EXAMPLE: &str = "fa tb --period FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>";
 
-fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
+pub(crate) fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
     if args.flag_all("--fiscal-year").len() > 1
         || (args.flag("--fiscal-year").is_some() && args.flag("--period").is_some())
     {
