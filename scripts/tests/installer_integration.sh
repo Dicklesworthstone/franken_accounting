@@ -32,6 +32,7 @@ new_case() {
   DEST="$CASE/existing destination"
   mkdir "$SRC" "$DEST" "$CASE/tmp"
   : >"$CASE/probes"
+  : >"$CASE/requests"
   local bin
   for bin in "${BINS[@]}"; do
     printf 'preserve original %s\n' "$bin" >"$DEST/$bin"
@@ -124,6 +125,34 @@ run_download() {
     TMPDIR="$CASE/tmp" FA_SKIP_VERIFY=0 PATH="$CASE/transport:$PATH" \
     bash "$INSTALLER" --version v0.fixture --dest "$DEST" --verify "$@" \
     >"$CASE/stdout" 2>"$CASE/stderr"
+  RC=$?
+  destination_snapshot >"$CASE/after"
+}
+
+# The cargo stand-in only tests installer control flow. No compilation claim.
+prepare_source() {
+  SOURCE_ROOT="$CASE/source"
+  mkdir -p "$SOURCE_ROOT/target/release" "$CASE/build-tool"
+  cp "$INSTALLER" "$SOURCE_ROOT/install.sh"
+  local bin
+  for bin in "${BINS[@]}"; do
+    cp "$SRC/$bin" "$SOURCE_ROOT/target/release/$bin"
+  done
+  cat >"$CASE/build-tool/cargo" <<'BUILD'
+#!/usr/bin/env bash
+set -eu
+[ "$*" = 'build --release --locked --bins' ] || exit 2
+printf '%s\n' "$*" >>"$INSTALLER_TEST_BUILD_REQUESTS"
+exit "${INSTALLER_TEST_BUILD_EXIT:-0}"
+BUILD
+  chmod 0755 "$CASE/build-tool/cargo"
+}
+
+run_source() {
+  INSTALLER_TEST_PROBES="$CASE/probes" INSTALLER_TEST_BUILD_REQUESTS="$CASE/build-requests" \
+    INSTALLER_TEST_BUILD_EXIT="${BUILD_EXIT:-0}" TMPDIR="$CASE/tmp" FA_SKIP_VERIFY=0 \
+    PATH="$CASE/build-tool:$PATH" bash "$SOURCE_ROOT/install.sh" --from-source \
+    --dest "$DEST" --verify >"$CASE/stdout" 2>"$CASE/stderr"
   RC=$?
   destination_snapshot >"$CASE/after"
 }
@@ -270,10 +299,10 @@ fi
 new_case quiet-opt-out
 run_install --verify --no-verify --quiet
 expect_success 'quiet_opt_out_still_installs_and_probes' 2
-if grep -Fq 'UNVERIFIED:' "$CASE/stderr"; then
-  gate_pass 'quiet_cannot_hide_unverified_warning'
+if grep -Fq 'UNVERIFIED:' "$CASE/stderr" && [ ! -s "$CASE/stdout" ]; then
+  gate_pass 'quiet_suppresses_probe_stdout_but_cannot_hide_unverified_warning'
 else
-  gate_fail 'quiet_cannot_hide_unverified_warning'
+  gate_fail 'quiet_suppresses_probe_stdout_but_cannot_hide_unverified_warning'
 fi
 
 new_case broken-opt-out
@@ -364,6 +393,35 @@ if [ "$(wc -l <"$CASE/requests" | tr -d ' ')" -eq 1 ] \
   gate_pass 'download_opt_out_is_explicit_and_does_not_fetch_manifest'
 else
   gate_fail 'download_opt_out_is_explicit_and_does_not_fetch_manifest'
+fi
+
+new_case source-complete
+prepare_source
+run_source
+expect_success 'source_install_control_flow_fixture_build_only' 2
+if grep -Fxq 'build --release --locked --bins' "$CASE/build-requests" \
+  && grep -Fq 'no release checksum claim' "$CASE/stdout" \
+  && ! grep -Fq 'self-verification passed' "$CASE/stdout"; then
+  gate_pass 'source_build_is_locked_and_never_claims_release_checksums'
+else
+  gate_fail 'source_build_is_locked_and_never_claims_release_checksums'
+fi
+
+new_case source-missing-member
+prepare_source
+mv "$SOURCE_ROOT/target/release/fa-verify" "$CASE/retained-built-verifier"
+run_source
+expect_refusal 'source_missing_member_preserves_destination' 'missing regular executable:'
+
+new_case source-build-failure
+prepare_source
+BUILD_EXIT=42
+run_source
+BUILD_EXIT=0
+if [ "$RC" -eq 42 ] && cmp -s "$CASE/before" "$CASE/after" && [ ! -s "$CASE/probes" ]; then
+  gate_pass 'source_build_failure_preserves_destination_and_exit_code'
+else
+  gate_fail 'source_build_failure_preserves_destination_and_exit_code'
 fi
 
 gate_verdict
