@@ -153,11 +153,16 @@ stage_binaries() {
 }
 
 probe_binaries() {
-  local dir="$1" bin flag
+  local dir="$1" phase="$2" bin flag output
   for bin in "${BINS[@]}"; do
     flag=--version
     [ "$bin" != fa-verify ] || flag=--help
-    "$dir/$bin" "$flag" || err "executable probe failed: $bin $flag"
+    output="$WORK/$phase-$bin.stdout"
+    "$dir/$bin" "$flag" >"$output" \
+      || err "executable probe failed: $bin $flag (stdout retained at $output)"
+    if [ "$QUIET" -eq 0 ] && [ "$bin" != fa-verify ]; then
+      cat "$output"
+    fi
     log "probe passed: $bin $flag"
   done
 }
@@ -210,7 +215,7 @@ fi
 if [ "$SKIP_HASH_CHECK" -eq 1 ]; then
   printf '[fa-install] UNVERIFIED: SHA256SUMS checks explicitly disabled\n' >&2
 fi
-probe_binaries "$STAGE"
+probe_binaries "$STAGE" candidate
 
 # Preflight the whole destination before replacing any member. Publication is
 # four ordinary installs, not an atomic multi-file upgrade or rollback.
@@ -230,7 +235,7 @@ for bin in "${BINS[@]}"; do
 done
 
 if [ "$RUN_VERIFY" -eq 1 ]; then
-  probe_binaries "$DEST"
+  probe_binaries "$DEST" installed
   if [ "$SKIP_HASH_CHECK" -eq 1 ]; then
     log "UNVERIFIED installation: all four executable probes passed; checksums were skipped"
   elif [ "$FROM_SOURCE" -eq 1 ]; then
