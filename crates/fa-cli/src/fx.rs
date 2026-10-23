@@ -36,13 +36,14 @@ pub(crate) fn posting_ops(doc: &Json) -> &'static [&'static str] {
 
 fn needs_source_read(doc: &Json) -> bool {
     doc.get("fx").is_some()
+        || doc.get("external_subledger").is_some()
         || doc
             .get("intents")
             .and_then(Json::as_arr)
-            .is_some_and(|members| members.iter().any(|member| member.get("fx").is_some()))
+            .is_some_and(|members| members.iter().any(needs_source_read))
 }
 
-/// An FX intent observes retained source evidence. Admit that read before
+/// An evidence-backed intent observes retained sources. Admit that read before
 /// even the book coordinate is stamped, including draft and batch routes.
 pub(crate) fn admit_intent_sources(
     book: &Book,
@@ -55,7 +56,7 @@ pub(crate) fn admit_intent_sources(
                 fa_policy::require(
                     capability,
                     fa_policy::Op::Post,
-                    "preparing an FX-valued posting",
+                    "preparing an evidence-backed posting",
                 )
             })
             .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))

@@ -813,3 +813,42 @@ approver_profiles = ["Human"]
 agent_prepared_human_approvers = 0
 exclusions = ["preparer", "duplicate"]
 cite = "plan §8.3 (Closed: the case's last transition)"
+
+# Monthly fixed-entry schedules bind the complete template, cadence and
+# execution capability to an independent approval. Stopping future effects
+# requires current post authority and ownership or approve, checked by kernel.
+[[rule]]
+name = "recurring-create"
+class = "ScheduleControl"
+transition = "CreateRecurring"
+preparer_op = "post"
+approvers = 1
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 1
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.6 (approved recurring schedule, fixed effects and current execution authority)"
+
+[[rule]]
+name = "recurring-cancel"
+class = "ScheduleControl"
+transition = "CancelRecurring"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.6 (recurring cancellation by immutable lineage)"
+
+[[rule]]
+name = "recurring-sweep"
+class = "SweepControl"
+transition = "Recurring"
+preparer_op = "post"
+approvers = 0
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 0
+exclusions = ["preparer", "duplicate"]
+cite = "plan §7.6 (System executor, committed tick, revalidated execution capability)"

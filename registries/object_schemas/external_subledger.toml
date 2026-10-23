@@ -1,0 +1,34 @@
+# Plan §5.6 / FA-INV-12; matched external source batches, not source-system
+# completeness or exclusive control-account routing.
+schema_version = 1
+name = "fa:external-subledger-detail:v1"
+entry_extension_tag = 30
+entry_schema_minor = 1
+document_kind = 21
+evidence_role = 1
+max_detail_rows = 128
+max_detail_bytes = 8192
+max_summary_legs = 32
+scope = "complete-native-gross-effects-of-one-reviewed-source-batch"
+# Detail encodes the format domain, book_id[16], feed str<=64, batch_key
+# str<=128, effective_day i32, and list(source_digest[32], account u128,
+# side u8:0 debit/1 credit, unit u32, mantissa i128>0,
+# list(dimension u32,value u128)). Strings use nonpersonal ASCII identifiers;
+# source digests are nonzero, strictly increasing and unique. Dimensions
+# are strictly increasing by kind. Integers use the ordinary little-endian
+# canonical codec. Gross columns fold by account, unit, dimensions and side
+# with checked i128 addition. No debit/credit netting or implicit counterpart.
+# Original entry extension30 holds these exact bytes and Source evidence
+# cites their Workpaper commitment. The complete expected legs, book and
+# effective date must match. Ordinary period, balance, scope, account, unit,
+# evidence and approval laws still run. A separately recorded Reviewed
+# attestation by someone other than the uploader is required for every feed.
+# The unique point identity is domain_digest(
+# "fa:vid:external-subledger-batch:v1", book_id, feed, batch_key)[0..16].
+# Domain parts are length-framed. One ExternalSubledgerBatch projection and
+# REVIEWED_BY edge publish atomically with the summary and its IntentOutcome.
+# The projection names the exact entry VID/digest and detail OID/commitment.
+# Exact retries return their original outcome; another key or preparer may
+# never reuse a source batch. Corrections use a separately identified source
+# batch; ordinary exact reversals preserve the original matched pair.
+# Kernel acceptance/count witness: fa-journal/tests/genesis/external_subledger.rs.

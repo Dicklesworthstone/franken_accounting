@@ -739,7 +739,7 @@ fn public_commitment_grade(stub: &Stub<'_>) -> Grade {
 }
 
 /// Why a receipt does not verify.
-fn receipt_grade(
+pub(crate) fn receipt_grade(
     receipt: &[u8],
     digest: &Digest,
     trusted_keys: &[[u8; 32]],

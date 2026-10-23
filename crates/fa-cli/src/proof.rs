@@ -484,7 +484,7 @@ pub(crate) fn write_new(
     })
 }
 
-const BUNDLE_EXAMPLE: &str = "fa bundle produce [--state <oid|latest>] [--account <code> --from YYYY-MM-DD --to YYYY-MM-DD | --entry <vid>...] [--balance <code>:<UNIT>[:YYYY-MM-DD]]... [--inline-documents] [--out <new.fab> --receipt-out <new-file>] --json";
+const BUNDLE_EXAMPLE: &str = "fa bundle produce [--certificate <C:oid|file|->] [--state <oid|latest>] [--account <code> --from YYYY-MM-DD --to YYYY-MM-DD | --entry <vid>...] [--balance <code>:<UNIT>[:YYYY-MM-DD]]... [--inline-documents] [--out <new.fab> --receipt-out <new-file>] --json";
 
 /// A bundle's scope arguments, checked before the book is opened: `--state`
 /// (a recorded state's 64-hex oid, or `latest`), and one scope, `--account`
@@ -626,13 +626,25 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.get(1).map(String::as_str) != Some("produce") || args.positional.len() != 2 {
         return Err(usage("bundle has one subcommand: produce", BUNDLE_EXAMPLE));
     }
-    for flag in ["--out", "--receipt-out"] {
+    for flag in ["--out", "--receipt-out", "--certificate"] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(
                 format!("bundle takes only one {flag}"),
                 BUNDLE_EXAMPLE,
             ));
         }
+    }
+    let report_source = args.flag("--certificate");
+    if report_source.is_some()
+        && (["--account", "--from", "--to", "--entry", "--balance"]
+            .iter()
+            .any(|flag| args.flag(flag).is_some())
+            || args.switch("--inline-documents"))
+    {
+        return Err(usage(
+            "--certificate selects the report's complete journal prefix and cannot be combined with another scope, balances or inline documents",
+            "fa bundle produce --certificate C:<trial-balance-certificate> [--state <oid|latest>] [--out <new.fab> --receipt-out <new-file>]",
+        ));
     }
     let scope_args = bundle_scope_args(args, BUNDLE_EXAMPLE)?;
     let output = args.flag("--out");
@@ -657,15 +669,56 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         fa_policy::require(&capability, op, "producing an evidence bundle")
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     }
-    let mut book = ctx.books.open(args)?;
+    let mut book = if report_source.is_some() {
+        ctx.books.open_admitted(args, |book| {
+            fa_policy::admit_read(&capability, principal, book.context().book_id)
+                .and_then(|()| {
+                    fa_policy::reach(
+                        &capability,
+                        &fa_policy::Reach {
+                            observes: capability
+                                .known_at_pin()
+                                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                            ..fa_policy::Reach::whole_book(true)
+                        },
+                        None,
+                    )
+                })
+                .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+            book.admit_current(&capability)??;
+            Ok(())
+        })?
+    } else {
+        ctx.books.open(args)?
+    };
     let request = bundle_request(&scope_args, args, &book, BUNDLE_EXAMPLE)?;
-    let scope_name = match &request.scope {
-        fa::BundleScope::Prefix => "prefix",
-        fa::BundleScope::Index(_) => "account",
-        fa::BundleScope::Entries(_) => "entries",
+    let scope_name = if report_source.is_some() {
+        "report"
+    } else {
+        match &request.scope {
+            fa::BundleScope::Prefix => "prefix",
+            fa::BundleScope::Index(_) => "account",
+            fa::BundleScope::Entries(_) => "entries",
+        }
     };
     let state = scope_args.state;
-    let Some(produced) = book.produce_bundle(principal, &capability, state, &request)?? else {
+    let mut report_digest = None;
+    let produced = if let Some(source) = report_source {
+        let certificate = crate::notary::certificate_input(
+            &book,
+            &ctx.files,
+            "--certificate",
+            source,
+            principal,
+            &capability,
+            fa::ReportCertificate::decode,
+        )?;
+        report_digest = Some(hex(&certificate.digest));
+        book.produce_report_bundle(principal, &capability, state, &certificate)??
+    } else {
+        book.produce_bundle(principal, &capability, state, &request)??
+    };
+    let Some(produced) = produced else {
         return Err(fa_journal::Refusal::new(
             fa::proof::code::PROOF_STATE_UNKNOWN,
             fa_journal::exit::USAGE,
@@ -716,14 +769,26 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let public_key = hex(&book.checkpoint_public_key());
     ctx.out.at_book(&book)?;
     let digest = hex(&produced.bundle.digest);
-    let verify = match (output, receipt_output) {
+    let verifier = if report_source.is_some() {
+        "report"
+    } else {
+        "bundle"
+    };
+    let mut verify = match (output, receipt_output) {
         (Some(path), Some(receipt_path)) => {
-            format!("fa-verify bundle {path} --key {public_key} --receipt {receipt_path}")
+            format!(
+                "fa-verify {verifier} {} --key {public_key} --receipt {}",
+                fa_journal::refusal::command_word(path),
+                fa_journal::refusal::command_word(receipt_path)
+            )
         }
         _ => format!(
-            "write bytes and receipt to files, then: fa-verify bundle <bundle-file> --key {public_key} --receipt <receipt-file>"
+            "write bytes and receipt to files, then: fa-verify {verifier} <bundle-file> --key {public_key} --receipt <receipt-file>"
         ),
     };
+    if let Some(digest) = report_digest {
+        verify.push_str(&format!(" --expect {digest}"));
+    }
     let human = format!(
         "Produced evidence bundle {digest} ({} bytes, scope {scope_name}, {} balance(s)){}.\nVerify it offline: {verify}",
         produced.bundle.bytes.len(),

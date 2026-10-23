@@ -385,3 +385,9 @@ id = 17
 name = "case_transition"
 class = "CaseControl"
 minted_by = "fa-journal case::open_case, case::determine_case"
+
+[[control_kind]]
+id = 18
+name = "recurring_schedule"
+class = "ScheduleControl"
+minted_by = "fa-journal recurring::create_recurring and cancel_recurring"

@@ -35,10 +35,18 @@ use fgdb_types::{CanonicalScalar, VId};
 mod account_role_tests;
 #[path = "genesis/carrying.rs"]
 mod carrying_tests;
+#[path = "genesis/closing_carrying.rs"]
+mod closing_carrying_tests;
+#[path = "genesis/external_subledger.rs"]
+mod external_subledger_tests;
+#[path = "genesis/fx_law.rs"]
+mod fx_law_tests;
 #[path = "genesis/outcome_batch_integrity.rs"]
 mod outcome_batch_integrity_tests;
 #[path = "genesis/outcome_keys.rs"]
 mod outcome_key_tests;
+#[path = "genesis/recurring.rs"]
+mod recurring_tests;
 #[path = "genesis/subledger.rs"]
 mod subledger_tests;
 

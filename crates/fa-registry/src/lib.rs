@@ -1473,6 +1473,7 @@ mod tests {
                 (15, "statement_issuance"),
                 (16, "engagement_transition"),
                 (17, "case_transition"),
+                (18, "recurring_schedule"),
             ]
         );
         assert_eq!(

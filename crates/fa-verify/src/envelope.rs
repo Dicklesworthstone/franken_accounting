@@ -331,7 +331,7 @@ fn opt_u128(r: &mut Reader<'_>, what: &'static str) -> Result<(), DecodeError> {
 /// is unassigned), skipped exactly. An unknown tag is refused: this
 /// verifier cannot know where the evidence list starts after a payload it
 /// does not read.
-fn skip_control(r: &mut Reader<'_>) -> Result<(), DecodeError> {
+pub(crate) fn skip_control(r: &mut Reader<'_>) -> Result<(), DecodeError> {
     match r.u8("control.tag")? {
         0 => {
             r.bytes(MAX_FIELD_BYTES, "control.period_ref.calendar")?;
@@ -433,7 +433,7 @@ fn skip_control(r: &mut Reader<'_>) -> Result<(), DecodeError> {
 }
 
 /// The entry's origin (Appendix A `EntryOrigin`, tags 0–5), skipped exactly.
-fn skip_origin(r: &mut Reader<'_>) -> Result<(), DecodeError> {
+pub(crate) fn skip_origin(r: &mut Reader<'_>) -> Result<(), DecodeError> {
     match r.u8("origin.tag")? {
         0 => {
             oid(r, "origin.intent_oid")?;

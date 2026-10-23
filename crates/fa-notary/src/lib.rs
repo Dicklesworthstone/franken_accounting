@@ -45,6 +45,7 @@ pub mod journal;
 pub mod migration_balance;
 pub mod prefix;
 pub mod production;
+pub mod report;
 pub mod scope;
 pub mod sign;
 pub mod state;

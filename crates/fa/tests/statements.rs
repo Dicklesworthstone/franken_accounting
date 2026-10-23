@@ -1270,7 +1270,7 @@ fn a_restatement_view_never_answers_from_an_unreported_coordinate() {
 }
 
 #[test]
-fn functional_income_preserves_actual_closing_reversal_lineage_and_closing_period_adjustments() {
+fn functional_income_preserves_actual_closing_source_reversals_and_closing_period_adjustments() {
     let mut fixture = Fixture::new(0xe7);
     let usd = fixture.usd;
     let book_id = fixture.book.context().book_id;
@@ -1322,13 +1322,15 @@ fn functional_income_preserves_actual_closing_reversal_lineage_and_closing_perio
         ("1000", "4000"),
         10_000,
     );
-    fixture.transfer(
-        day(2026, 12, 30),
-        b"functional-expense",
-        usd,
-        ("6000", "1000"),
-        2_000,
-    );
+    let expense = fixture
+        .transfer(
+            day(2026, 12, 30),
+            b"functional-expense",
+            usd,
+            ("6000", "1000"),
+            2_000,
+        )
+        .entry_ref();
     let income_selection = StatementSelection {
         definition: StatementDefinition::embedded("income-statement").unwrap(),
         periods: vec![december.into(), close_period.into()],
@@ -1414,10 +1416,13 @@ fn functional_income_preserves_actual_closing_reversal_lineage_and_closing_perio
     assert_eq!(amounts(&after_close, "equity", usd), &[8_000]);
     assert_eq!(amounts(&after_close, "unclosed_earnings", usd), &[0]);
 
-    let mut target = closing;
-    for (key, equity, unclosed) in [
-        (b"undo-functional-close".as_slice(), 0, 8_000),
-        (b"restore-functional-close".as_slice(), 8_000, 0),
+    // Closing itself is not a reversible class. Reverse and restore an
+    // underlying source in its lawful Normal period, retaining the genuine
+    // Closing transfer while new unclosed earnings remain visible.
+    let mut target = expense;
+    for (key, income_total, unclosed) in [
+        (b"undo-functional-source".as_slice(), 10_000, 2_000),
+        (b"restore-functional-source".as_slice(), 8_000, 0),
     ] {
         let (source, _) = fixture.book.read_entry(target.vid).unwrap().unwrap();
         let mut legs = source.proposal.legs.clone();
@@ -1429,7 +1434,12 @@ fn functional_income_preserves_actual_closing_reversal_lineage_and_closing_perio
             };
             leg.settles.clear();
         }
-        let mut reversal = fixture.proposal(date, key, EntryClass::REVERSAL, legs);
+        let mut reversal = fixture.proposal(
+            source.proposal.effective_date,
+            key,
+            EntryClass::REVERSAL,
+            legs,
+        );
         reversal.effective_period = source.proposal.effective_period.clone();
         reversal.supersession = vec![fa_model::Supersession {
             target,
@@ -1442,15 +1452,18 @@ fn functional_income_preserves_actual_closing_reversal_lineage_and_closing_perio
             .functional_statement(PRINCIPAL, &read, income_selection.clone(), None)
             .unwrap()
             .unwrap();
-        assert_eq!(amounts(&income, "net_income", usd), &[8_000, 8_000]);
+        assert_eq!(
+            amounts(&income, "net_income", usd),
+            &[income_total, income_total]
+        );
         let stock = fixture
             .book
             .functional_statement(PRINCIPAL, &read, balance_selection.clone(), None)
             .unwrap()
             .unwrap();
-        assert_eq!(amounts(&stock, "equity", usd), &[equity]);
+        assert_eq!(amounts(&stock, "equity", usd), &[8_000]);
         assert_eq!(amounts(&stock, "unclosed_earnings", usd), &[unclosed]);
-        assert_eq!(amounts(&stock, "total_equity", usd), &[8_000]);
+        assert_eq!(amounts(&stock, "total_equity", usd), &[income_total]);
         assert_eq!(amounts(&stock, "balance_check", usd), &[0]);
         assert!(matches!(
             fixture
@@ -1458,8 +1471,16 @@ fn functional_income_preserves_actual_closing_reversal_lineage_and_closing_perio
                 .certificate_status(&certified.certificate)
                 .unwrap()
                 .unwrap(),
-            CertificateStatus::Current { .. }
+            CertificateStatus::SupersededBy { later_entries, .. } if later_entries.contains(&target.vid)
         ));
+        assert_eq!(
+            fixture
+                .book
+                .replay_report(&certified.certificate)
+                .unwrap()
+                .unwrap(),
+            ReportOutput::FunctionalStatement(Box::new(certified.statement.clone()))
+        );
     }
 
     // A Closing-kind period can contain ordinary operating adjustments.

@@ -847,6 +847,76 @@ impl Book {
         )))
     }
 
+    /// Derive a native summary from a retained external-detail Workpaper.
+    /// The real posting kernel independently verifies its review, gross effects,
+    /// and unique feed/batch identity at publication.
+    pub fn prepare_external_subledger(
+        &mut self,
+        document: fa_model::Oid,
+        template: fa_model::EntryPayload,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_external_subledger(
+            &purposes, document, template, capability,
+        )))
+    }
+
+    /// Recompute one externally fed summary from its reviewed immutable detail.
+    pub fn reconcile_external_subledger_feed(
+        &self,
+        entry: fa_model::EntryRef,
+        known_at: Option<CommitSeq>,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<crate::ExternalSubledgerReconciliation> {
+        with_store!(&self.store, core => core.reconcile_external_subledger_feed(
+            &self.purposes(), entry, known_at, capability,
+        ))
+    }
+
+    /// Prepare a fixed-effects recurring schedule for independent approval.
+    pub fn plan_recurring(
+        &self,
+        capability: &fa_policy::Capability,
+        spec: crate::RecurringSpec,
+    ) -> Outcome<crate::RecurringPlan> {
+        with_store!(&self.store, core => core.plan_recurring(&self.purposes(), capability, spec))
+    }
+
+    /// Publish a recurring schedule whose complete proposal has been approved.
+    pub fn create_recurring(
+        &mut self,
+        capability: &fa_policy::Capability,
+        plan: crate::RecurringPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<crate::RecurringRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_recurring(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Current recurring schedules, with verified journal-derived progress.
+    pub fn recurring_schedules(
+        &self,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Vec<crate::RecurringView>> {
+        with_store!(&self.store, core => core.recurring_schedules(&self.purposes(), capability))
+    }
+
+    /// Stop future recurring effects with a journaled cancellation.
+    pub fn cancel_recurring(
+        &mut self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        reason: &str,
+    ) -> Outcome<crate::RecurringRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.cancel_recurring(
+            &purposes, capability, name, reason,
+        )))
+    }
+
     /// Designate an AR/AP posting leaf and require party detail on every leg.
     pub fn create_native_subledger(
         &mut self,
@@ -3276,6 +3346,18 @@ impl Book {
         with_store!(&mut self.store, core => core.sweep_reversals(&purposes, capability, max_batch).await)
     }
 
+    /// Execute one bounded set of approved recurring occurrences reached by
+    /// the latest committed tick, preserving typed blocked-occurrence reports.
+    pub async fn sweep_recurring(
+        &mut self,
+        cx: &Cx,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<Option<crate::RecurringBatch>> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.sweep_recurring(&purposes, capability, max_batch).await)
+    }
+
     /// Drain expiry batches and then reversal batches under the latest
     /// tick. Each batch commits separately; a refusal stops further work.
     pub async fn sweep(
@@ -3776,6 +3858,23 @@ impl Book {
         with_store!(&self.store, core => core.witness_checkpoint(
             &self.purposes(), principal, capability, witness, request,
         ))
+    }
+
+    /// Produce a portable native trial balance for `fa-verify report`.
+    /// Replays the certificate under current whole-book read/produce authority,
+    /// then exports every payload in a signed checkpoint covering its prefix.
+    /// Returns `None` if the selected recorded checkpoint is unavailable.
+    pub fn produce_report_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ReportCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_report_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
     }
 
     /// Produce an evidence bundle (plan §13.2) and its detached production
@@ -5329,26 +5428,26 @@ impl Book {
     /// Seal its proposal once, retain a PostIntent for independent approval,
     /// and use plan/commit_plan for ordinary native admission and publication.
     pub fn prepare_year_end_close(
-        &self,
+        &mut self,
         request: &fa_journal::closing::YearEndCloseRequest,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::PreparedYearEndClose> {
         let purposes = self.purposes();
-        with_store!(&self.store, core =>
-            core.prepare_year_end_close(&purposes, request, capability)
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.prepare_year_end_close(&purposes, request, capability))
         )
     }
 
     /// Check zero nominal balances at the last close and expose later deltas.
     pub fn verify_year_end_close(
-        &self,
+        &mut self,
         fiscal_year: i32,
         known_at: Option<CommitSeq>,
         capability: &fa_policy::Capability,
     ) -> Outcome<fa_journal::closing::YearEndCloseVerification> {
         let purposes = self.purposes();
-        with_store!(&self.store, core =>
-            core.verify_year_end_close(&purposes, fiscal_year, known_at, capability)
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.verify_year_end_close(&purposes, fiscal_year, known_at, capability))
         )
     }
 

@@ -79,6 +79,8 @@ symbols!(
         (BATES_RANGE, "BatesRange", 51),
         (ACCESS_EVENT, "AccessEvent", 52),
         (PROPOSED_ADJUSTMENT, "ProposedAdjustment", 53),
+        (RECURRING_SCHEDULE, "RecurringSchedule", 54),
+        (EXTERNAL_SUBLEDGER_BATCH, "ExternalSubledgerBatch", 55),
     ]
 );
 

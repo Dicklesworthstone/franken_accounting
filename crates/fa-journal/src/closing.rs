@@ -1,9 +1,10 @@
 //! Mechanical fiscal-year close and incremental reclose (plan §7.5).
 //!
-//! The intrinsic YearEndClose v1 computation closes Revenue/Expense leaves
-//! to their journaled Equity destinations. It admits native base-currency
-//! amounts and the existing legal-entity balancing dimension. Other
-//! dimensions and valuation laws refuse explicitly. This is not the larger
+//! The intrinsic YearEndClose computation closes Revenue/Expense leaves
+//! to their journaled Equity destinations. Version 1 retains its native
+//! base-currency format; version 2 transfers the exact native and functional
+//! carrying amounts of committed source valuations. Only the existing
+//! legal-entity balancing dimension is supported. This is not the larger
 //! CloseRun task DAG and does not execute generic Canon rules.
 //!
 //! Every public Closing path must reproduce extension 12 from both its
@@ -14,10 +15,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
+use fa_model::closing::{YEAR_END_CLOSE_CARRYING_VERSION, YEAR_END_CLOSE_VERSION};
 use fa_model::entry::{EXTENSIONS_MINOR, YEAR_END_CLOSE_EXTENSION};
 use fa_model::symbols::{label, property};
 use fa_model::{
-    AccountType, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Id128,
+    AccountType, BaseTotals, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Id128,
     LEGAL_ENTITY_DIMENSION, LegPayload, Writer, YearEndCloseBasis, entity_value_vid, period_vid,
 };
 use fa_money::{Amount, Side, UnitId};
@@ -28,7 +30,7 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::chart::{ChartSnapshot, closing_routes_at};
-use crate::genesis::{BookContext, BookSpec, UnitPolicy, read_book_spec};
+use crate::genesis::{BookContext, BookSpec, UnitPolicy};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, PeriodRow, bytes};
 
@@ -48,6 +50,8 @@ pub struct ClosingResidual {
     pub unit: UnitId,
     pub entity: Option<VId>,
     pub net: i128,
+    /// Retained functional debit-minus-credit amount, in the book's base unit.
+    pub base_net: i128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +69,7 @@ pub struct PreparedYearEndClose {
     unit: UnitId,
     residuals: Vec<ClosingResidual>,
     legs: Vec<LegPayload>,
+    base_totals: Option<BaseTotals>,
     latest_close: Option<ClosingRecord>,
 }
 
@@ -151,6 +156,7 @@ impl PreparedYearEndClose {
         template.legs = self.legs.clone();
         template.unit_totals =
             EntryPayload::fold_unit_totals(&template.legs).map_err(unsupported)?;
+        template.base_totals = self.base_totals.clone();
         template.extensions = vec![(
             YEAR_END_CLOSE_EXTENSION,
             self.basis.canonical_bytes().map_err(unsupported)?,
@@ -163,6 +169,7 @@ impl PreparedYearEndClose {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YearEndCloseVerification {
     pub fiscal_year: i32,
+    pub base_unit: UnitId,
     pub known_at: CommitSeq,
     pub latest_close: Option<ClosingRecord>,
     /// Evaluated at the latest Closing entry's own committed snapshot.
@@ -183,8 +190,8 @@ fn unsupported(message: impl core::fmt::Display) -> Refusal {
         code::CLASS_NOT_IMPLEMENTED,
         exit::REFUSAL,
         format!("year-end close: {message}"),
-        "plan §7.5; FA-INV-03.nominal-zero; intrinsic YearEndClose v1",
-        "use reviewed Revenue/Expense-to-Equity routes, native base-currency amounts and supported legal-entity dimensions; prepare and review fa close year-end --fiscal-year <year> --period FY<year>-CLOSE --key <new-key> --review-only (plan §7.5 / fa-4o0)",
+        "plan §5.2 / §7.5; FA-INV-03.nominal-zero; intrinsic YearEndClose",
+        "use reviewed Revenue/Expense-to-Equity routes accepting the source currencies, retained functional valuations and supported legal-entity dimensions; prepare and review fa close year-end --fiscal-year <year> --period FY<year>-CLOSE --key <new-key> --review-only (plan §7.5 / fa-4o0)",
     )
 }
 
@@ -200,7 +207,7 @@ fn changed(message: impl Into<String>) -> Refusal {
 
 /// Close preparation observes the entire nominal population. Scope cannot
 /// be widened implicitly by asking the kernel to calculate missing legs.
-pub(crate) fn authorize<V: Vfs + Clone>(
+pub fn authorize<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     capability: &Capability,
@@ -234,7 +241,11 @@ pub fn prepare_year_end_close<V: Vfs + Clone>(
         if let Err(refusal) = authorize(db, book, capability, true)? {
             return Ok(Err(refusal));
         }
-        observe(db, cx, book, request, db.frontier()?, true)
+        let at = db.frontier()?;
+        if let Err(refusal) = validate_sources(db, cx, book, at)? {
+            return Ok(Err(refusal));
+        }
+        observe(db, cx, book, request, at, true, None)
     })
 }
 
@@ -315,7 +326,7 @@ fn route_account(
     chart: &ChartSnapshot,
     account: VId,
     nominal: bool,
-    unit: UnitId,
+    unit: Option<UnitId>,
     day: DateDay,
     require_posting: bool,
 ) -> Result<&AccountRow, Refusal> {
@@ -337,9 +348,11 @@ fn route_account(
             "closing a balance-limited account requires a separate implemented close law",
         ));
     }
-    if matches!(row.unit_policy, UnitPolicy::Single(fixed) if fixed != unit) {
+    if unit
+        .is_some_and(|unit| matches!(row.unit_policy, UnitPolicy::Single(fixed) if fixed != unit))
+    {
         return Err(unsupported(
-            "a closing route account does not accept the book's native base currency",
+            "a closing route account does not accept the source currency",
         ));
     }
     if require_posting
@@ -393,6 +406,209 @@ fn bind_account(
     Ok(())
 }
 
+/// A signed native/functional vector. Carrying buckets use the reduced exact
+/// quotient of the two *recorded* positive amounts, never a new quoted rate.
+#[derive(Clone, Copy, Debug, Default)]
+struct CarryingBalance {
+    native: i128,
+    base: i128,
+}
+
+impl CarryingBalance {
+    fn add(&mut self, side: Side, native: i128, base: i128) -> Result<(), Refusal> {
+        let signed = |total: i128, value: i128| match side {
+            Side::Debit => total.checked_add(value),
+            Side::Credit => total.checked_sub(value),
+        };
+        self.native = signed(self.native, native)
+            .ok_or_else(|| unsupported("the nominal native fold exceeds exact i128 range"))?;
+        self.base = signed(self.base, base)
+            .ok_or_else(|| unsupported("the nominal functional fold exceeds exact i128 range"))?;
+        Ok(())
+    }
+
+    fn is_zero(self) -> bool {
+        self.native == 0 && self.base == 0
+    }
+}
+
+#[derive(Default)]
+struct CarryingCell {
+    total: CarryingBalance,
+    buckets: BTreeMap<(u128, u128), CarryingBalance>,
+}
+
+fn carrying_quotient(native: i128, base: i128) -> Result<(u128, u128), Refusal> {
+    let native = u128::try_from(native)
+        .ok()
+        .filter(|amount| *amount > 0)
+        .ok_or_else(|| unsupported("a source native amount must be strictly positive"))?;
+    let base = u128::try_from(base)
+        .map_err(|_| unsupported("a source functional carrying amount must be nonnegative"))?;
+    let (mut a, mut b) = (native, base);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    Ok((base / a, native / a))
+}
+
+/// The authenticated journal and its original valuation laws are checked at
+/// public boundaries. The fold itself stays pure so FX history verification
+/// can reproduce every retained Closing without recursively verifying itself.
+fn validate_sources<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    at: CommitSeq,
+) -> Outcome<()> {
+    if at.0 == 0 || at > db.frontier()? {
+        return Ok(Err(changed(
+            "the closing observation is outside this book's recorded history",
+        )));
+    }
+    crate::entry_history::verify_entry_history(db, cx, book, Some(at))?;
+    // Native v1 closes have no FX claim, but their source-bound provenance is
+    // just as authoritative. A bad older native close must not be laundered
+    // into a later carrying close merely because its numerical entry balances.
+    for row in db.vertices_at(at)? {
+        cx.query()
+            .checkpoint()
+            .map_err(fgdb::WriteTxnError::Interrupted)?;
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let entry = crate::sweep::decode_entry(&row)?;
+        if entry.proposal.class != EntryClass::CLOSING {
+            continue;
+        }
+        let basis = match admit(&entry.proposal) {
+            Ok(Some(basis)) => basis,
+            _ => {
+                return Ok(Err(unsupported(
+                    "a retained Closing has no valid intrinsic source basis",
+                )));
+            }
+        };
+        if basis.version == YEAR_END_CLOSE_VERSION
+            && !verify_record(
+                db,
+                cx,
+                book,
+                &YearEndCloseRequest {
+                    fiscal_year: basis.fiscal_year,
+                    closing_period: basis.closing_period,
+                },
+                &ClosingRecord {
+                    entry_ref: entry.entry_ref(row.vid),
+                    recorded_at: row.created_at,
+                },
+            )?
+        {
+            return Ok(Err(unsupported(
+                "a retained native Closing does not reproduce its source basis",
+            )));
+        }
+    }
+    let verified = crate::fx::verify_fx_conversions(db, cx, book, at)?;
+    if let Some(drift) = verified.drift.first() {
+        return Ok(Err(unsupported(format!(
+            "source valuation of entry {:032x} does not verify under {}: {}",
+            drift.entry.0, drift.law, drift.problem,
+        ))));
+    }
+    Ok(Ok(()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_pair(
+    legs: &mut Vec<LegPayload>,
+    chart: &ChartSnapshot,
+    end: DateDay,
+    account: VId,
+    closes_to: VId,
+    unit: UnitId,
+    base_unit: UnitId,
+    entity: Option<VId>,
+    balance: CarryingBalance,
+    valued: bool,
+) -> Result<(), Refusal> {
+    if balance.is_zero() {
+        return Ok(());
+    }
+    if balance.native == 0
+        || (balance.base != 0 && balance.native.signum() != balance.base.signum())
+    {
+        return Err(unsupported(
+            "a retained carrying bucket does not preserve its source signs",
+        ));
+    }
+    let magnitude = balance
+        .native
+        .checked_abs()
+        .ok_or_else(|| unsupported("a closing native leg magnitude exceeds exact i128 range"))?;
+    let base = balance
+        .base
+        .checked_abs()
+        .ok_or_else(|| unsupported("a closing functional magnitude exceeds exact i128 range"))?;
+    let (nominal_side, equity_side) = if balance.native > 0 {
+        (Side::Credit, Side::Debit)
+    } else {
+        (Side::Debit, Side::Credit)
+    };
+    for (target, side, nominal) in [
+        (account, nominal_side, true),
+        (closes_to, equity_side, false),
+    ] {
+        route_account(chart, target, nominal, Some(unit), end, true)?;
+        let mut leg = LegPayload::simple(side, target, Amount::new(unit, magnitude));
+        if valued {
+            leg.base_amount = Some(Amount::new(base_unit, base));
+        }
+        if let Some(entity) = entity {
+            leg.dimension_set = vec![(LEGAL_ENTITY_DIMENSION, entity)];
+        }
+        legs.push(leg);
+    }
+    if legs.len() > fa_model::limits::MAX_LEGS_PER_ENTRY {
+        return Err(unsupported(
+            "the complete close exceeds the atomic entry leg bound; no partial close was prepared",
+        ));
+    }
+    Ok(())
+}
+
+fn carrying_totals(legs: &[LegPayload], base_unit: UnitId) -> Result<BaseTotals, Refusal> {
+    let (mut debits, mut credits) = (0_i128, 0_i128);
+    for leg in legs {
+        let base = leg
+            .base_amount
+            .filter(|amount| amount.unit == base_unit && amount.mantissa >= 0)
+            .ok_or_else(|| {
+                unsupported("every carrying-close leg requires its retained base amount")
+            })?;
+        let total = match leg.side {
+            Side::Debit => &mut debits,
+            Side::Credit => &mut credits,
+        };
+        *total = total
+            .checked_add(base.mantissa)
+            .ok_or_else(|| unsupported("closing functional totals exceed exact i128 range"))?;
+    }
+    if debits != credits {
+        return Err(unsupported(
+            "retained closing functional debits and credits differ",
+        ));
+    }
+    Ok(BaseTotals {
+        unit_id: base_unit.0,
+        debits,
+        credits,
+        fx_law_oid: crate::fx::FxLawId::YearEndCloseCarrying.oid(),
+        rate_doc_oids: Vec::new(),
+        residual: None,
+    })
+}
+
 fn observe<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -400,6 +616,7 @@ fn observe<V: Vfs + Clone>(
     request: &YearEndCloseRequest,
     at: CommitSeq,
     posting: bool,
+    version: Option<u16>,
 ) -> Outcome<PreparedYearEndClose> {
     if at.0 == 0 || at > db.frontier()? {
         return Ok(Err(changed(
@@ -411,7 +628,7 @@ fn observe<V: Vfs + Clone>(
         Err(refusal) => return Ok(Err(refusal)),
     };
     let (start, end) = book.calendar.year_bounds(request.fiscal_year)?;
-    let spec = read_book_spec(db)?.ok_or_else(|| KernelError::Corrupt("no book spec".into()))?;
+    let spec = crate::fx::book_spec_at(db, book, at)?;
     if !book
         .units
         .get(spec.base_unit)
@@ -427,27 +644,6 @@ fn observe<V: Vfs + Clone>(
             "no journaled closing route map applies at the fiscal-year-end date",
         )));
     };
-    let mut source = fgdb_crypto::Hasher::new();
-    source.update(b"fa:year-end-close-source:v1");
-    source.update(&book.book_id.0);
-    source.update(&request.fiscal_year.to_le_bytes());
-    source.update(&start.0.to_le_bytes());
-    source.update(&end.0.to_le_bytes());
-    source.update(&[period.state as u8]);
-    source.update(&routes.control_entry.0.to_le_bytes());
-    source.update(&routes.digest);
-    // Every declared route remains structurally checked and bound, including
-    // zero balances. Posting activity is required only for emitted legs:
-    // a legitimately retired zero account needs no year-end posting.
-    for (account, destination) in &routes.routes {
-        for (vid, nominal) in [(*account, true), (*destination, false)] {
-            let row = match route_account(&chart, vid, nominal, spec.base_unit, end, false) {
-                Ok(row) => row,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            bind_account(&mut source, &chart, row)?;
-        }
-    }
     let mut entries = Vec::new();
     let mut runs = BTreeMap::new();
     for row in db.vertices_at(at)? {
@@ -474,7 +670,86 @@ fn observe<V: Vfs + Clone>(
         entries.push((row.vid, entry, row.created_at));
     }
     entries.sort_by_key(|(vid, _, recorded_at)| (*recorded_at, *vid));
-    let mut balances: BTreeMap<(VId, Option<VId>), i128> = BTreeMap::new();
+    let version = version.unwrap_or_else(|| {
+        let foreign_route = routes.routes.iter().any(|(account, destination)| {
+            [account, destination].into_iter().any(|vid| {
+                chart.accounts().get(vid).is_some_and(|row| {
+                    matches!(row.unit_policy, UnitPolicy::Single(unit) if unit != spec.base_unit)
+                })
+            })
+        });
+        if foreign_route
+            || entries.iter().any(|(_, entry, _)| {
+                entry.proposal.legs.iter().any(|leg| {
+                    chart
+                        .accounts()
+                        .get(&leg.account_ref)
+                        .is_some_and(|row| AccountType(row.account_type).is_flow())
+                        && (leg.amount.unit != spec.base_unit || leg.base_amount.is_some())
+                })
+            })
+        {
+            YEAR_END_CLOSE_CARRYING_VERSION
+        } else {
+            YEAR_END_CLOSE_VERSION
+        }
+    });
+    let valued = match version {
+        YEAR_END_CLOSE_VERSION => false,
+        YEAR_END_CLOSE_CARRYING_VERSION => true,
+        _ => {
+            return Ok(Err(unsupported(
+                "unknown year-end closing computation version",
+            )));
+        }
+    };
+    let mut source = fgdb_crypto::Hasher::new();
+    source.update(if valued {
+        b"fa:year-end-close-source:v2"
+    } else {
+        b"fa:year-end-close-source:v1"
+    });
+    source.update(&book.book_id.0);
+    source.update(&request.fiscal_year.to_le_bytes());
+    source.update(&start.0.to_le_bytes());
+    source.update(&end.0.to_le_bytes());
+    source.update(&[period.state as u8]);
+    source.update(&routes.control_entry.0.to_le_bytes());
+    source.update(&routes.digest);
+    if valued {
+        source.update(&spec.canonical_bytes()?);
+        let units = fa_model::unit::unit_table_digest(&book.units)
+            .map_err(|error| KernelError::Corrupt(format!("closing unit definitions: {error}")))?;
+        let root = db
+            .vertex_at(crate::rows::book_root(), at)?
+            .ok_or_else(|| KernelError::Corrupt("closing source has no Book root".into()))?;
+        if bytes(&root, property::UNIT_TABLE_DIGEST, "closing unit table")? != units {
+            return Err(KernelError::Corrupt(
+                "closing unit definitions differ from the selected historical book".into(),
+            ));
+        }
+        source.update(&units);
+        source.update(&crate::fx::FxLawId::YearEndCloseCarrying.oid().0);
+    }
+    // Dormant routes remain bound. Version 2 checks currency acceptance for
+    // each actual source unit instead of requiring every route to accept base.
+    for (account, destination) in &routes.routes {
+        for (vid, nominal) in [(*account, true), (*destination, false)] {
+            let row = match route_account(
+                &chart,
+                vid,
+                nominal,
+                if valued { None } else { Some(spec.base_unit) },
+                end,
+                false,
+            ) {
+                Ok(row) => row,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            bind_account(&mut source, &chart, row)?;
+        }
+    }
+    let mut balances: BTreeMap<(VId, UnitId, Option<VId>), CarryingCell> = BTreeMap::new();
     let mut latest_close = None;
     for (vid, entry, recorded_at) in entries {
         if entry.proposal.class == EntryClass::CLOSING {
@@ -492,11 +767,40 @@ fn observe<V: Vfs + Clone>(
             if !AccountType(account.account_type).is_flow() {
                 continue;
             }
-            if leg.amount.unit != spec.base_unit || leg.base_amount.is_some() {
+            if !valued && (leg.amount.unit != spec.base_unit || leg.base_amount.is_some()) {
                 return Ok(Err(unsupported(
-                    "a nominal contribution uses foreign currency or a base-valuation law",
+                    "version 1 closes only unvalued native base-currency sources",
                 )));
             }
+            if !book
+                .units
+                .get(leg.amount.unit)
+                .is_some_and(|unit| matches!(unit.kind, fa_money::UnitKind::Currency { .. }))
+            {
+                return Ok(Err(unsupported(
+                    "a nominal source uses an unsupported noncurrency unit",
+                )));
+            }
+            let base = match leg.base_amount {
+                Some(base)
+                    if base.unit == spec.base_unit
+                        && base.mantissa >= 0
+                        && (leg.amount.unit != spec.base_unit || base == leg.amount) =>
+                {
+                    base.mantissa
+                }
+                None if leg.amount.unit == spec.base_unit => leg.amount.mantissa,
+                None => {
+                    return Ok(Err(unsupported(
+                        "a foreign nominal source has no retained functional valuation",
+                    )));
+                }
+                Some(_) => {
+                    return Ok(Err(unsupported(
+                        "a nominal source has an invalid functional carrying amount",
+                    )));
+                }
+            };
             let entity = match closing_entity(&spec, leg) {
                 Ok(entity) => entity,
                 Err(refusal) => return Ok(Err(refusal)),
@@ -505,45 +809,52 @@ fn observe<V: Vfs + Clone>(
             source.update(&recorded_at.0.to_le_bytes());
             source.update(&entry.entry_digest);
             source.update(&(ordinal as u64).to_le_bytes());
-            let net = balances.entry((leg.account_ref, entity)).or_default();
-            let updated = match leg.side {
-                Side::Debit => net.checked_add(leg.amount.mantissa),
-                Side::Credit => net.checked_sub(leg.amount.mantissa),
+            let quotient = match carrying_quotient(leg.amount.mantissa, base) {
+                Ok(quotient) => quotient,
+                Err(refusal) => return Ok(Err(refusal)),
             };
-            let Some(updated) = updated else {
-                return Ok(Err(unsupported(
-                    "the nominal-account fold exceeds exact i128 range",
-                )));
-            };
-            *net = updated;
+            let cell = balances
+                .entry((leg.account_ref, leg.amount.unit, entity))
+                .or_default();
+            if let Err(refusal) = cell
+                .total
+                .add(leg.side, leg.amount.mantissa, base)
+                .and_then(|()| {
+                    cell.buckets.entry(quotient).or_default().add(
+                        leg.side,
+                        leg.amount.mantissa,
+                        base,
+                    )
+                })
+            {
+                return Ok(Err(refusal));
+            }
         }
     }
     let mut residuals = Vec::new();
     let mut legs = Vec::new();
     let mut bound_unrouted = BTreeSet::new();
-    for ((account, entity), net) in balances {
+    for ((account, unit, entity), cell) in balances {
         let row = &chart.accounts()[&account];
         let inactive = !row.is_leaf
             || !chart
                 .account_effectivity(account)
                 .unwrap_or_default()
                 .is_effective_at(end);
-        if inactive && net != 0 {
+        if inactive && !cell.total.is_zero() {
             return Ok(Err(unsupported(format!(
-                "nominal account {} has a nonzero fiscal-year balance but is not a posting leaf effective at fiscal-year end",
-                row.code
+                "nominal account {} has a nonzero fiscal-year carrying balance but is not a posting leaf effective at fiscal-year end",
+                row.code,
             ))));
         }
         let closes_to = match routes.routes.get(&account) {
             Some(destination) => *destination,
-            None if inactive && net == 0 => {
-                let row = match route_account(&chart, account, true, spec.base_unit, end, false) {
+            None if inactive && cell.total.is_zero() => {
+                let row = match route_account(&chart, account, true, Some(unit), end, false) {
                     Ok(row) => row,
                     Err(refusal) => return Ok(Err(refusal)),
                 };
                 if bound_unrouted.insert(account) {
-                    // Newly admissible unrouted zero accounts keep their
-                    // complete contribution and lifecycle dependencies.
                     source.update(b"fa:year-end-close-unrouted-zero:v1");
                     bind_account(&mut source, &chart, row)?;
                 }
@@ -552,54 +863,68 @@ fn observe<V: Vfs + Clone>(
             None => {
                 return Ok(Err(unsupported(format!(
                     "nominal account {} has activity but no reviewed closing destination",
-                    row.code
+                    row.code,
                 ))));
             }
         };
         residuals.push(ClosingResidual {
             account,
-            account_code: chart.accounts()[&account].code.clone(),
+            account_code: row.code.clone(),
             closes_to,
-            unit: spec.base_unit,
+            unit,
             entity,
-            net,
+            net: cell.total.native,
+            base_net: cell.total.base,
         });
-        if net == 0 {
+        // Opposing valuation cohorts can cancel both measures. Such an
+        // account is already closed and must not create economic-zero turnover.
+        if cell.total.is_zero() {
             continue;
         }
-        let Some(magnitude) = net.checked_abs() else {
-            return Ok(Err(unsupported(
-                "a closing leg magnitude exceeds exact i128 range",
-            )));
-        };
-        let (nominal_side, equity_side) = if net > 0 {
-            (Side::Credit, Side::Debit)
-        } else {
-            (Side::Debit, Side::Credit)
-        };
-        for (target, side, nominal) in [
-            (account, nominal_side, true),
-            (closes_to, equity_side, false),
-        ] {
-            if let Err(refusal) = route_account(&chart, target, nominal, spec.base_unit, end, true)
-            {
-                return Ok(Err(refusal));
+        if valued {
+            for balance in cell.buckets.into_values() {
+                if let Err(refusal) = append_pair(
+                    &mut legs,
+                    &chart,
+                    end,
+                    account,
+                    closes_to,
+                    unit,
+                    spec.base_unit,
+                    entity,
+                    balance,
+                    true,
+                ) {
+                    return Ok(Err(refusal));
+                }
             }
-            let mut leg = LegPayload::simple(side, target, Amount::new(spec.base_unit, magnitude));
-            if let Some(entity) = entity {
-                leg.dimension_set = vec![(LEGAL_ENTITY_DIMENSION, entity)];
-            }
-            legs.push(leg);
+        } else if let Err(refusal) = append_pair(
+            &mut legs,
+            &chart,
+            end,
+            account,
+            closes_to,
+            unit,
+            spec.base_unit,
+            entity,
+            cell.total,
+            false,
+        ) {
+            return Ok(Err(refusal));
         }
     }
-    if legs.len() > fa_model::limits::MAX_LEGS_PER_ENTRY {
-        return Ok(Err(unsupported(
-            "the complete close exceeds the atomic entry leg bound; no partial close was prepared",
-        )));
-    }
+    let base_totals = if valued {
+        match carrying_totals(&legs, spec.base_unit) {
+            Ok(totals) => Some(totals),
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    } else {
+        None
+    };
     Ok(Ok(PreparedYearEndClose {
         request: request.clone(),
         basis: YearEndCloseBasis {
+            version,
             fiscal_year: request.fiscal_year,
             closing_period: request.closing_period.clone(),
             closing_date: end,
@@ -611,6 +936,7 @@ fn observe<V: Vfs + Clone>(
         unit: spec.base_unit,
         residuals,
         legs,
+        base_totals,
         latest_close,
     }))
 }
@@ -639,20 +965,39 @@ pub(crate) fn admit(proposal: &EntryPayload) -> Result<Option<YearEndCloseBasis>
     if proposal.schema_minor != EXTENSIONS_MINOR
         || proposal.extensions.len() != 1
         || !matches!(&proposal.origin, EntryOrigin::Intent { intent_kind: 1, .. })
-        || proposal.base_totals.is_some()
         || proposal.control.is_some()
         || proposal.pending.is_some()
         || !proposal.supersession.is_empty()
-        || proposal
-            .legs
-            .iter()
-            .any(|leg| leg.base_amount.is_some() || !leg.settles.is_empty())
+        || proposal.legs.iter().any(|leg| !leg.settles.is_empty())
     {
         return Err(unsupported(
-            "Closing requires only its registered computation and native monetary effects",
+            "Closing requires only its registered computation and monetary effects",
         ));
     }
     let basis = YearEndCloseBasis::decode(bytes).map_err(unsupported)?;
+    match basis.version {
+        YEAR_END_CLOSE_VERSION => {
+            if proposal.base_totals.is_some()
+                || proposal.legs.iter().any(|leg| leg.base_amount.is_some())
+            {
+                return Err(unsupported(
+                    "version 1 closes only unvalued native base amounts",
+                ));
+            }
+        }
+        YEAR_END_CLOSE_CARRYING_VERSION => {
+            let totals = proposal.base_totals.as_ref().ok_or_else(|| {
+                unsupported("version 2 requires its source-bound retained carrying law")
+            })?;
+            let expected = carrying_totals(&proposal.legs, UnitId(totals.unit_id))?;
+            if *totals != expected {
+                return Err(unsupported(
+                    "version 2 preserves exact carrying totals without new Rate documents or a residual plug",
+                ));
+            }
+        }
+        _ => return Err(unsupported("unknown year-end closing computation version")),
+    }
     if proposal.effective_date != basis.closing_date
         || proposal
             .effective_period
@@ -692,7 +1037,10 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
     let mut snapshots = BTreeSet::new();
     snapshots.extend([basis.observed_at, txn.basis()]);
     for at in snapshots {
-        let observed = match observe(db, cx, book, &request, at, true)? {
+        if let Err(refusal) = validate_sources(db, cx, book, at)? {
+            return Ok(Err(refusal));
+        }
+        let observed = match observe(db, cx, book, &request, at, true, Some(basis.version))? {
             Ok(observed) => observed,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -701,6 +1049,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
             || observed.basis.source_digest != basis.source_digest
             || observed.basis.closing_date != basis.closing_date
             || observed.legs != proposal.legs
+            || observed.base_totals != proposal.base_totals
             || observed.is_noop()
         {
             return Ok(Err(changed(
@@ -744,6 +1093,9 @@ pub fn verify_year_end_close<V: Vfs + Clone>(
             return Ok(Err(crate::policy::refusal(&denial)));
         }
         let at = known_at.unwrap_or(db.frontier()?);
+        if let Err(refusal) = validate_sources(db, cx, book, at)? {
+            return Ok(Err(refusal));
+        }
         let Some(period) = book
             .calendar
             .periods_for_year(fiscal_year)?
@@ -756,7 +1108,7 @@ pub fn verify_year_end_close<V: Vfs + Clone>(
             fiscal_year,
             closing_period: period.code,
         };
-        let current = match observe(db, cx, book, &request, at, false)? {
+        let current = match observe(db, cx, book, &request, at, false, None)? {
             Ok(current) => current,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -767,6 +1119,7 @@ pub fn verify_year_end_close<V: Vfs + Clone>(
         };
         Ok(Ok(YearEndCloseVerification {
             fiscal_year,
+            base_unit: current.unit,
             known_at: at,
             latest_close: current.latest_close.clone(),
             nominal_zero_at_close,
@@ -818,7 +1171,7 @@ fn verify_record<V: Vfs + Clone>(
     let mut snapshots = BTreeSet::new();
     snapshots.extend([basis.observed_at, CommitSeq(record.recorded_at.0 - 1)]);
     for at in snapshots {
-        let observed = match observe(db, cx, book, request, at, true)? {
+        let observed = match observe(db, cx, book, request, at, true, Some(basis.version))? {
             Ok(observed) => observed,
             Err(_) => return Ok(false),
         };
@@ -827,15 +1180,62 @@ fn verify_record<V: Vfs + Clone>(
             || observed.basis.source_digest != basis.source_digest
             || observed.basis.closing_date != basis.closing_date
             || observed.legs != entry.proposal.legs
+            || observed.base_totals != entry.proposal.base_totals
             || observed.is_noop()
         {
             return Ok(false);
         }
     }
     Ok(
-        match observe(db, cx, book, request, record.recorded_at, false)? {
+        match observe(
+            db,
+            cx,
+            book,
+            request,
+            record.recorded_at,
+            false,
+            Some(basis.version),
+        )? {
             Ok(closed) => closed.is_noop(),
             Err(_) => false,
+        },
+    )
+}
+
+/// Reproduce a retained carrying close for the global FX verifier. This is a
+/// pure source/basis replay; the caller verifies every original valuation and
+/// the complete immutable Entry history independently, avoiding recursion.
+pub(crate) fn verify_recorded_carrying<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    entry_ref: EntryRef,
+    recorded_at: CommitSeq,
+) -> Result<bool, KernelError> {
+    let Some((entry, actual_at)) = crate::post::read_entry_at(db, entry_ref.vid, recorded_at)?
+    else {
+        return Ok(false);
+    };
+    if entry.entry_ref(entry_ref.vid) != entry_ref || actual_at != recorded_at {
+        return Ok(false);
+    }
+    let Ok(Some(basis)) = admit(&entry.proposal) else {
+        return Ok(false);
+    };
+    if basis.version != YEAR_END_CLOSE_CARRYING_VERSION {
+        return Ok(false);
+    }
+    verify_record(
+        db,
+        cx,
+        book,
+        &YearEndCloseRequest {
+            fiscal_year: basis.fiscal_year,
+            closing_period: basis.closing_period,
+        },
+        &ClosingRecord {
+            entry_ref,
+            recorded_at,
         },
     )
 }

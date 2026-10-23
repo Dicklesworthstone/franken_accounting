@@ -69,6 +69,7 @@ pub mod document_disclosure;
 pub mod draft_review;
 pub mod equity_certificate;
 pub mod evidence_disclosure;
+pub mod external_subledger;
 pub mod findings;
 pub mod fx;
 pub mod fx_revaluation;
@@ -82,6 +83,7 @@ pub mod production;
 pub mod projections;
 pub mod proof;
 pub mod query;
+pub mod recurring;
 pub mod report_artifact;
 pub mod roll_forward;
 pub mod scenario;
@@ -143,6 +145,11 @@ pub use equity_certificate::{
     EquityRollForwardCertificate, MAX_EQUITY_CERTIFICATE_BYTES,
 };
 pub use evidence_disclosure::{EvidenceDisclosureArtifact, EvidenceDisclosureRequest};
+pub use external_subledger::{
+    EXTERNAL_SUBLEDGER_DOCUMENT_KIND, EXTERNAL_SUBLEDGER_EVIDENCE_ROLE, EXTERNAL_SUBLEDGER_MIME,
+    ExternalSubledgerBatch, ExternalSubledgerDetail, ExternalSubledgerReconciliation,
+    MAX_EXTERNAL_DETAIL_BYTES, MAX_EXTERNAL_DETAIL_ROWS, MAX_EXTERNAL_SUMMARY_LEGS,
+};
 pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
     BatchPlan, BatchPlanCertificate, IntentError, MAX_BATCH_BYTES, MAX_BATCH_PLAN_BYTES,
@@ -250,6 +257,10 @@ pub use proof::{
 pub use query::{
     CertifiedQuery, MAX_QUERY_ROWS, QUERY_CERTIFICATE_FORMAT, QUERY_OUTPUT_FORMAT, QueryCell,
     QueryCertificate, QueryCertificateStatus, QueryRows, profile_refusal,
+};
+pub use recurring::{
+    RecurringBatch, RecurringBlocked, RecurringPlan, RecurringRecorded, RecurringSpec,
+    RecurringView,
 };
 pub use report_artifact::{
     MAX_REPORT_ARTIFACT_BYTES, ReplayedReportArtifact, ReportArtifact, ReportArtifactExpectation,

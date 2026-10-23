@@ -133,6 +133,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("production", crate::production::production_cmd),
     ("produce", crate::production::produce_cmd),
     ("subledger", crate::subledger::subledger_cmd),
+    ("schedule", crate::recurring::schedule_cmd),
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
@@ -7072,6 +7073,35 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     post_document(ctx, args, forced, doc)
 }
 
+/// Construct a fixed recurring template using the ordinary intent parser.
+/// The schedule kernel admits its supported template subset independently.
+pub(crate) fn recurring_template(
+    out: &Out,
+    book: &mut Book,
+    args: &Args,
+    doc: &Json,
+    principal: VId,
+    capability: Capability,
+) -> Result<EntryPayload, Fail> {
+    if doc.get("fx").is_some() || doc.get("external_subledger").is_some() {
+        return Err(usage(
+            "recurring templates require fixed native-unit legs without source-derived FX or external feeds",
+            "provide an Original entry intent with explicit legs and a start effective_date",
+        ));
+    }
+    Ok(build_post_request(
+        out,
+        book,
+        args,
+        Some(EntryClass::ORIGINAL),
+        doc,
+        principal,
+        capability,
+    )?
+    .request
+    .proposal)
+}
+
 /// A batch member's failure names its member; nothing in the batch is posted.
 fn batch_member_fail(index: usize, fail: Fail) -> Fail {
     match fail {
@@ -7291,6 +7321,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "reverse_on",
         "prior_period_error",
         "fx",
+        "external_subledger",
     ];
     if let Some((field, _)) = fields
         .iter()
@@ -7428,7 +7459,7 @@ fn build_post_request_with_prior(
     capability: Capability,
     earlier: &batch_plan::PriorEntries,
 ) -> Result<BuiltPost, Fail> {
-    if doc.get("fx").is_some() {
+    if doc.get("fx").is_some() || doc.get("external_subledger").is_some() {
         fa_policy::admit_read(&capability, who, book.context().book_id)
             .and_then(|()| {
                 fa_policy::require(
@@ -7946,6 +7977,14 @@ fn build_post_request_with_prior(
                 ));
             }
         }
+    } else if doc.get("external_subledger").is_some() {
+        if doc.get("legs").is_some() {
+            return Err(usage(
+                "external_subledger derives all summary legs from its reviewed detail document",
+                "omit legs and supply external_subledger: D:<reviewed detail document oid>",
+            ));
+        }
+        Vec::new()
     } else {
         if class == EntryClass::PENDING {
             pending = Some(Pending {
@@ -8092,6 +8131,7 @@ fn build_post_request_with_prior(
             }
         }
     }
+    let proposal = crate::external_subledger::value_intent(book, &capability, doc, proposal)?;
     let proposal = crate::fx::value_intent(book, &capability, doc, proposal)?;
     let proposal = match reverse_on {
         Some(day) => fa_journal::with_auto_reverse(proposal, day),
@@ -8502,8 +8542,13 @@ pub(crate) fn emit_post_plan(
             })?;
             let amount = render_amount(leg.amount, &book.context().units)?;
             let side = side_name(leg.side);
+            let base = leg
+                .base_amount
+                .map(|amount| render_amount(amount, &book.context().units))
+                .transpose()?
+                .map_or_else(String::new, |amount| format!("; functional {amount}"));
             human_legs.push(format!(
-                "  {ordinal}: {side} {} ({}) {amount}",
+                "  {ordinal}: {side} {} ({}) {amount}{base}",
                 account.code, account.name
             ));
             Ok(obj(vec![
@@ -8515,6 +8560,53 @@ pub(crate) fn emit_post_plan(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let valuation = if let Some(totals) = &proposal.base_totals {
+        let unit = fa_money::UnitId(totals.unit_id);
+        let law = fa::FxLawId::from_oid(&totals.fx_law_oid)
+            .ok_or_else(|| Fail::Internal("admitted plan has an unknown FX law".into()))?;
+        let amounts = proposal
+            .legs
+            .iter()
+            .enumerate()
+            .map(|(ordinal, leg)| {
+                let amount = leg.base_amount.ok_or_else(|| {
+                    Fail::Internal("admitted valued plan has an unvalued leg".into())
+                })?;
+                Ok(obj(vec![
+                    ("ordinal", Json::Int(ordinal as i128)),
+                    (
+                        "base_amount",
+                        s(render_amount(amount, &book.context().units)?),
+                    ),
+                ]))
+            })
+            .collect::<Result<Vec<_>, Fail>>()?;
+        obj(vec![
+            (
+                "base_unit",
+                s(registered_unit_code(unit, &book.context().units)?),
+            ),
+            ("law", s(law.name())),
+            ("law_oid", s(hex(&totals.fx_law_oid.0))),
+            (
+                "debits",
+                s(render_amount(
+                    Amount::new(unit, totals.debits),
+                    &book.context().units,
+                )?),
+            ),
+            (
+                "credits",
+                s(render_amount(
+                    Amount::new(unit, totals.credits),
+                    &book.context().units,
+                )?),
+            ),
+            ("legs", Json::Arr(amounts)),
+        ])
+    } else {
+        Json::Null
+    };
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
@@ -8675,6 +8767,7 @@ pub(crate) fn emit_post_plan(
             ("certificate_digest", s(certificate_digest)),
             ("plan_digest", s(plan_digest)),
             ("legs", Json::Arr(legs)),
+            ("valuation", valuation),
             (
                 "resolves",
                 resolves.map_or(Json::Null, |entry| s(format!("{:032x}", entry.vid.0))),
@@ -9380,6 +9473,7 @@ pub(crate) fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Resul
         ));
     }
     if bytes.starts_with(b"FA-INTENT\0")
+        || bytes.starts_with(fa::RecurringPlan::MAGIC)
         || bytes.starts_with(b"FA-ALLOC-REVIEW\0")
         || bytes.starts_with(b"FA-BAL-REVIEW\0")
         || bytes.starts_with(b"FA-SETTLEMENT-REVIEW\0")

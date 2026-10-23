@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use fa_cli::json::{self, Json};
 use fa_cli::verbs::registry;
 
+#[path = "subledger/external.rs"]
+mod external;
+
 #[test]
 fn bound_reader_can_reconcile_but_cannot_register_a_control() {
     use fa_cli::authority::{LaunchAuthority, LaunchProfile};
