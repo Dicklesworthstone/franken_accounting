@@ -608,7 +608,6 @@ fn every_plan_leaf_present_or_registered() {
             "fa bundle show",
             "fa-waow: the standalone fa-verify reads a .fab",
         ),
-        ("fa case diff", "fa-waow"),
         ("fa close run", "fa-4o0: the CloseRun task DAG"),
         ("fa close status", "fa-4o0: the CloseRun task DAG"),
         ("fa exhibit mark", "fa-6l9"),

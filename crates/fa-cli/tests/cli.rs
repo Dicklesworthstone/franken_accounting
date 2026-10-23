@@ -4163,7 +4163,7 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         "restate", "--json",
     ]);
     let rehearsal = dir.join("rehearsal.cert").display().to_string();
-    ok(&[
+    let reviewed = ok(&[
         "scenario",
         "diff",
         "revised",
@@ -4173,6 +4173,11 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &rehearsal,
         "--json",
     ]);
+    // fa-waow: a case not yet rehearsed has no diff to show.
+    let (code, out) = run(&["case", "diff", "1", "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-176"), "{out}");
+    assert!(out.contains("fa case rehearse"), "{out}");
     ok(&[
         "case",
         "rehearse",
@@ -4181,6 +4186,33 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &rehearsal,
         "--json",
     ]);
+    // `fa case diff` replays the certificate the rehearsal retained: the
+    // same diff the approvers review, under that certificate.
+    let scenario_diff = |out: &str| -> Json {
+        let line = out
+            .lines()
+            .find(|l| l.contains("\"event\":\"scenario_diff\""))
+            .unwrap_or_default();
+        json::parse(line).unwrap_or(Json::Null)
+    };
+    let replayed = scenario_diff(&ok(&["case", "diff", "1", "--json"]));
+    let original = scenario_diff(&reviewed);
+    let data = |line: &Json| line.get("data").cloned().unwrap_or(Json::Null);
+    assert_eq!(data(&replayed), data(&original), "{replayed:?}");
+    assert_eq!(arr(&data(&replayed), "rows").len(), 2, "{replayed:?}");
+    let case = doc(&ok(&["case", "show", "1", "--json"]));
+    let retained = text(
+        case.get("case")
+            .and_then(|c| c.get("rehearsal"))
+            .unwrap_or(&Json::Null),
+        "certificate",
+    )
+    .to_string();
+    assert_eq!(
+        replayed.get("certificate").and_then(Json::as_str),
+        Some(retained.as_str()),
+        "{replayed:?}"
+    );
     // fa-g8em: triage counts the rehearsed case among pending approvals and
     // points at it.
     let triage = ok(&["triage", "--json"]);
