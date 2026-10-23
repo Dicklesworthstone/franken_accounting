@@ -1326,6 +1326,104 @@ pub fn run_target_smoke(target: &FuzzTarget, mutations_per_seed: usize) -> (usiz
     (seeds.len(), mutated_count)
 }
 
+/// Whether `run` panics on `input`.
+fn panics(run: fn(&[u8]), input: &[u8]) -> bool {
+    std::panic::catch_unwind(|| run(input)).is_err()
+}
+
+/// A panicking `input` reduced by delta debugging (ddmin over byte chunks,
+/// down to single bytes) to a shorter input on which `run` still panics,
+/// within `budget` runs of the target. `None` when `input` does not panic.
+/// The result is a reproducer for triage, not a proof of minimality: it is
+/// 1-minimal only when the budget lasts.
+pub fn minimize_crash(run: fn(&[u8]), input: &[u8], budget: usize) -> Option<Vec<u8>> {
+    if !panics(run, input) {
+        return None;
+    }
+    let mut current = input.to_vec();
+    let mut parts = 2usize;
+    let mut runs = 1usize;
+    while current.len() >= 2 && runs < budget {
+        let chunk = current.len().div_ceil(parts);
+        let mut reduced = false;
+        let mut start = 0;
+        while start < current.len() && runs < budget {
+            let end = start.saturating_add(chunk).min(current.len());
+            let mut candidate = current[..start].to_vec();
+            candidate.extend_from_slice(&current[end..]);
+            runs += 1;
+            if panics(run, &candidate) {
+                current = candidate;
+                parts = parts.saturating_sub(1).max(2);
+                reduced = true;
+                break;
+            }
+            start = end;
+        }
+        if !reduced {
+            if parts >= current.len() {
+                break;
+            }
+            parts = parts.saturating_mul(2).min(current.len());
+        }
+    }
+    Some(current)
+}
+
+/// A panic a campaign found: the input that panicked and its minimized
+/// reproducer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Crash {
+    pub target: &'static str,
+    pub input: Vec<u8>,
+    pub minimized: Vec<u8>,
+}
+
+/// [`run_target_smoke`] that catches a panic instead of propagating it: the
+/// first panicking input is minimized within `minimize_budget` runs and
+/// returned as a [`Crash`], so a campaign leaves a reproducer to replay.
+pub fn run_target_campaign(
+    target: &FuzzTarget,
+    mutations_per_seed: usize,
+    minimize_budget: usize,
+) -> Result<(usize, usize), Crash> {
+    let seeds = seeds_for_target(target.name);
+    let mut rng = DetRng::new(
+        target
+            .name
+            .bytes()
+            .fold(0x517c_c1b7_2722_0a95u64, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(u64::from(b))
+            }),
+    );
+    let crash = |input: &[u8]| Crash {
+        target: target.name,
+        input: input.to_vec(),
+        minimized: minimize_crash(target.run, input, minimize_budget)
+            .unwrap_or_else(|| input.to_vec()),
+    };
+    let mut mutated_count = 0usize;
+    for seed in &seeds {
+        if panics(target.run, seed) {
+            return Err(crash(seed));
+        }
+        for _ in 0..mutations_per_seed {
+            let mutated = rng.mutate_bytes(seed);
+            mutated_count += 1;
+            if panics(target.run, &mutated) {
+                return Err(crash(&mutated));
+            }
+        }
+    }
+    let boundaries: [&[u8]; 3] = [&[], &[0x00], &[0xff]];
+    for boundary in boundaries {
+        if panics(target.run, boundary) {
+            return Err(crash(boundary));
+        }
+    }
+    Ok((seeds.len(), mutated_count))
+}
+
 /// Run the smoke campaign across all registered [`LIVE_TARGETS`].
 pub fn run_all_smoke(mutations_per_seed: usize) -> SmokeSummary {
     let mut corpus_inputs = 0usize;
@@ -1504,6 +1602,34 @@ mod tests {
             caught,
             "entry_codec smoke campaign must catch an injected unwrap() on a length field"
         );
+    }
+
+    /// fa-yrhb crash minimization: a campaign over the planted entry-decoder
+    /// bug returns a reproducer, ddmin shrinks it to exactly the eight bytes
+    /// the bug needs (a length field at bytes 4..8 that overruns the rest),
+    /// and the minimized input still panics. A clean input is not a crash,
+    /// and a live target's campaign comes back clean.
+    #[test]
+    fn a_planted_crash_minimizes_to_the_eight_bytes_that_trigger_it() {
+        let planted = FuzzTarget {
+            name: "entry_codec",
+            description: "planted unwrap on a length field",
+            run: buggy_entry_decoder_with_planted_unwrap,
+        };
+        let crash = run_target_campaign(&planted, 64, 4096).expect_err("the planted bug is found");
+        assert_eq!(crash.target, "entry_codec");
+        assert!(crash.minimized.len() <= crash.input.len());
+        assert_eq!(crash.minimized.len(), 8, "{:?}", crash.minimized);
+        assert!(panics(
+            buggy_entry_decoder_with_planted_unwrap,
+            &crash.minimized
+        ));
+        assert_eq!(minimize_crash(fuzz_entry_codec, &[0u8; 4], 64), None);
+        let cli = LIVE_TARGETS
+            .iter()
+            .find(|t| t.name == "cli_args")
+            .expect("cli_args is live");
+        assert!(run_target_campaign(cli, 4, 64).is_ok());
     }
 
     #[test]
