@@ -109,7 +109,18 @@ Reports show posted and pending amounts separately. A hold reserves its original
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
-The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Reports retain their literal folds. Historical register checkpoints, cadence policies, other register families, supervised daemon maintenance and cached report reads remain unfinished.
+The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Uncertified head trial balances and period activity can use checked native cells plus an exact tail; other selections retain literal folds.
+
+`fad serve --book ./books/acme --register-period FY2026-P03` selects native
+register maintenance without granting System authority. It attempts one selected
+period per timer cycle in fair rotation. The commit-wake implementation also
+makes one attempt ready when a served request advances the journal; repeated
+notifications coalesce, and reads or idempotent retries that change nothing do
+not wake it. This early attempt does not record clock evidence, run sweeps or
+postpone the regular timer. Its Rust regressions still require qualification.
+Period selection remains explicit: new periods are not discovered automatically.
+Historical checkpoints, cadence policies, functional-value maintenance, other
+register families and the remaining cached report reads are unfinished.
 
 ### Timed holds and scheduled reversals
 

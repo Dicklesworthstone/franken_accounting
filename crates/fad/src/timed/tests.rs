@@ -638,3 +638,112 @@ fn register_maintenance_alone_never_bootstraps_timed_authority() {
     .unwrap()
     .expect("lab completed");
 }
+
+#[test]
+fn commit_wakes_advance_real_registers_without_ticks_or_a_self_wake() {
+    lab(149, |root| async move {
+        let mut fixture = fixture(&root, 149).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut work = TimedWork::maintenance_only(
+            &root,
+            Policy {
+                tick_ns: 1_000_000_000,
+                ..POLICY
+            },
+            vec!["FY2026-P03".into()],
+        )
+        .unwrap();
+        let scheduled = work.next;
+        for ordinal in 0..2 {
+            let mut request = fixture.request.clone();
+            request.proposal.idempotency_key = format!("wake-{ordinal}").into_bytes();
+            fixture.book.post(&cx, request).await.unwrap().unwrap();
+            let posted_at = fixture.book.head(&cx).unwrap();
+            work.notify_commit();
+            work.notify_commit();
+            assert_eq!(work.deadline(), Some(Time::from_nanos(0)));
+            assert!(work.run_register_wake(&root, &mut fixture.book).await);
+            let registers = work.register_maintenance().unwrap();
+            assert_eq!(
+                registers.attempts(),
+                ordinal + 1,
+                "coalesced into one attempt"
+            );
+            assert_eq!(
+                registers.periods()[0]
+                    .last_success
+                    .as_ref()
+                    .unwrap()
+                    .through,
+                posted_at.0
+            );
+            assert!(
+                fixture
+                    .book
+                    .verify_registers(&cx, "FY2026-P03")
+                    .unwrap()
+                    .is_green()
+            );
+            assert!(!work.run_register_wake(&root, &mut fixture.book).await);
+            assert_eq!(work.next, scheduled, "commits never postpone periodic work");
+            assert_eq!(
+                work.deadline(),
+                scheduled,
+                "cache writes never wake themselves"
+            );
+            assert_eq!(work.cycles, 0);
+            assert_eq!(work.last_tick_utc_ns, None);
+            assert!(fixture.book.latest_tick(&cx).unwrap().is_none());
+            assert!(!work.timing_enabled());
+        }
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
+#[test]
+fn a_due_timing_cycle_consumes_a_commit_wake_only_once() {
+    lab(151, |root| async move {
+        let mut fixture = fixture(&root, 151).await;
+        let mut work = TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY)
+            .unwrap()
+            .with_register_maintenance(vec!["FY2026-P03".into()])
+            .unwrap();
+        work.notify_commit();
+        assert!(!work.run_register_wake(&root, &mut fixture.book).await);
+        assert_eq!(work.register_maintenance().unwrap().attempts(), 0);
+        work.run_maintained_observation(&root, &mut fixture.book, Ok(observation(&root, 1_000)))
+            .await
+            .unwrap();
+        assert_eq!(work.cycles, 1);
+        assert_eq!(work.register_maintenance().unwrap().attempts(), 1);
+        assert_eq!(work.last_tick_utc_ns, Some(1_000));
+        assert!(!work.register_wake);
+        assert!(work.deadline().unwrap() > clock::timer(&root).unwrap().now());
+    })
+    .unwrap()
+    .expect("lab completed");
+}
+
+#[test]
+fn a_commit_notification_never_enables_unconfigured_or_stopped_work() {
+    lab(157, |root| async move {
+        let fixture = fixture(&root, 157).await;
+        let mut work =
+            TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
+        let next = work.next;
+        work.notify_commit();
+        assert!(!work.register_wake);
+        assert_eq!(work.deadline(), next);
+        let mut work = work
+            .with_register_maintenance(vec!["FY2026-P03".into()])
+            .unwrap();
+        work.next = None;
+        work.notify_commit();
+        assert!(!work.register_wake);
+        assert_eq!(work.deadline(), None);
+        assert_eq!(work.register_maintenance().unwrap().attempts(), 0);
+    })
+    .unwrap()
+    .expect("lab completed");
+}

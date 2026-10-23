@@ -43,6 +43,106 @@ type Run = (Vec<Vec<String>>, Ended, Vec<Vec<u8>>);
 /// The book directory the lab connections serve.
 const BOOK: &str = "/books/lab";
 
+/// Real dispatcher and memory book, with a long timer so the commit hook
+/// itself must make maintenance ready. No virtual handler stands in for it.
+#[test]
+fn server_wakes_configured_registers_only_when_a_request_commits() {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_money::UnitRegistry;
+    use fa_time::FiscalCalendar;
+
+    let mut book = Book::create_memory(
+        BookKeys::for_development(163),
+        BookSpec {
+            book_id: Id128([163; 16]),
+            name: "Commit-woken maintenance".into(),
+            base_unit: UnitRegistry::embedded().unwrap().lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("wake", 1, 1).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(163),
+    )
+    .unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let cx = runtime.request_cx_with_budget(Budget::INFINITE);
+    let policy = timed::Policy {
+        tick_ns: 3_600_000_000_000,
+        sweep_batch: 1,
+        clock_drift_ns: 0,
+    };
+    let work = timed::TimedWork::maintenance_only(&cx, policy, vec!["FY2026-P03".into()]).unwrap();
+    let scheduled = work.deadline();
+    let mut server = Server {
+        book: &mut book,
+        dir: PathBuf::from(BOOK),
+        socket: PathBuf::from(BOOK).join("fad.sock"),
+        files_root: None,
+        requests: 0,
+        timed: Some(work),
+        daemon_uid: None,
+        timings: Vec::new(),
+    };
+    let run = |argv: &[&str]| Request {
+        op: Op::Run,
+        argv: argv.iter().map(|s| (*s).to_owned()).collect(),
+        cwd: None,
+        stdin: None,
+        token: None,
+    };
+    let before = server.book.head().unwrap();
+    let (read, _) = server.handle(run(&["book", "info", "--json"]));
+    assert_eq!(read.exit, 0, "{}{}", read.stdout, read.stderr);
+    assert_eq!(server.book.head().unwrap(), before);
+    assert_eq!(server.deadline(), scheduled);
+    let (bad, _) = server.handle(run(&["period", "create", "--fiscal-year", "bad", "--json"]));
+    assert_ne!(bad.exit, 0);
+    assert_eq!(server.book.head().unwrap(), before);
+    assert_eq!(server.deadline(), scheduled);
+
+    let create = run(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    let (created, _) = server.handle(create.clone());
+    assert_eq!(created.exit, 0, "{}{}", created.stdout, created.stderr);
+    let committed = server.book.head().unwrap();
+    assert!(committed > before);
+    assert_eq!(server.deadline(), Some(Time::from_nanos(0)));
+    runtime.block_on(server.tick(&cx));
+    let work = server.timed.as_ref().unwrap();
+    assert_eq!(work.deadline(), scheduled);
+    assert!(!work.timing_enabled());
+    let registers = work.register_maintenance().unwrap();
+    assert_eq!(registers.attempts(), 1);
+    assert_eq!(
+        registers.periods()[0]
+            .last_success
+            .as_ref()
+            .unwrap()
+            .through,
+        committed.0
+    );
+    assert!(
+        server
+            .book
+            .verify_registers("FY2026-P03")
+            .unwrap()
+            .is_green()
+    );
+    let maintained = server.book.head().unwrap();
+    let (retry, _) = server.handle(create);
+    assert_eq!(retry.exit, 0, "{}{}", retry.stdout, retry.stderr);
+    assert_eq!(server.book.head().unwrap(), maintained);
+    assert_eq!(
+        server.deadline(),
+        scheduled,
+        "an idempotent retry never wakes itself"
+    );
+}
+
 /// Feed `bytes` to a fresh connection, serve it with an echo handler, and
 /// collect everything the client receives.
 async fn exchange(cx: Cx, bytes: Vec<u8>) -> Run {
