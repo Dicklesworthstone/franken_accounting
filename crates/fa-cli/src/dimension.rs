@@ -5,13 +5,17 @@
 //! `"dimensions": {"cost_center": "CC10"}`. The kernel checks each tagged
 //! value exists in its dimension and is effective on the entry's date.
 
+use fa::TrialBalanceSelection;
 use fa::dimension::{DimensionValueRow, DimensionValueSpec};
 use fa_model::{Id128, dimension_kind, dimension_value_vid};
 use fa_time::DateDay;
 use fgdb_types::VId;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, known_at_read_flag, usage};
+use crate::cli::{
+    Ctx, Fail, TbDimension, known_at_read_flag, render_tagged_trial_balance, selected_periods,
+    usage,
+};
 use crate::json::{Json, obj, s};
 
 const ADD: &str = "fa dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]";
@@ -209,6 +213,102 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         },
     );
     Ok(())
+}
+
+/// `fa tb … --dimension <dimension>=<value>`: the trial balance over only
+/// the legs tagged with that value or a value under it, folded literally
+/// under whole-book read. Not certified, and only the plain stock, activity
+/// and as-of selections.
+pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const TB: &str = "fa tb --period <code> --dimension <dimension>=<value> [--activity] | fa tb --as-of YYYY-MM-DD --dimension <dimension>=<value>";
+    for flag in [
+        "--root",
+        "--certificate-out",
+        "--branch",
+        "--as-issued-to",
+        "--as-reported-in",
+        "--render",
+        "--out",
+    ] {
+        if args.flag(flag).is_some() {
+            return Err(usage(
+                format!("--dimension does not combine with {flag}"),
+                TB,
+            ));
+        }
+    }
+    for switch in [
+        "--summary",
+        "--certify",
+        "--functional",
+        "--as-originally-reported",
+        "--as-currently-stated",
+    ] {
+        if args.switch(switch) {
+            return Err(usage(
+                format!("--dimension does not combine with {switch}"),
+                TB,
+            ));
+        }
+    }
+    if args.positional.len() != 1 {
+        return Err(usage("unexpected trial-balance argument", TB));
+    }
+    let named = args.flag_all("--dimension");
+    let [named] = named.as_slice() else {
+        return Err(usage("--dimension may be supplied only once", TB));
+    };
+    let Some((dimension, value)) = named
+        .split_once('=')
+        .filter(|(dimension, value)| !dimension.is_empty() && !value.is_empty())
+    else {
+        return Err(usage(
+            format!("--dimension `{named}` names <dimension>=<value>"),
+            TB,
+        ));
+    };
+    registered(dimension, TB)?;
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
+    let selection = if let Some(date) = args.flag("--as-of") {
+        if args.flag("--period").is_some()
+            || args.flag("--fiscal-year").is_some()
+            || args.switch("--activity")
+        {
+            return Err(usage(
+                "--as-of cannot be combined with --period, --fiscal-year or --activity",
+                TB,
+            ));
+        }
+        TrialBalanceSelection::AsOf(
+            DateDay::parse(date)
+                .map_err(|e| usage(format!("--as-of `{date}`: {e:?}"), "--as-of YYYY-MM-DD"))?,
+        )
+    } else {
+        let periods = selected_periods(args, &book)?;
+        if args.switch("--activity") {
+            TrialBalanceSelection::Activity(periods)
+        } else {
+            TrialBalanceSelection::Periods(periods)
+        }
+    };
+    let report = book.dimension_trial_balance(&selection, known_at, dimension, value, &cap)??;
+    ctx.out.at_book(&book)?;
+    render_tagged_trial_balance(
+        &ctx.out,
+        &book,
+        &report.trial_balance,
+        &selection,
+        &TbDimension {
+            dimension: &report.dimension,
+            value: &report.value,
+            values: &report.values,
+        },
+    )
 }
 
 /// A leg's `"dimensions": {"cost_center": "CC10", …}` as `dimension_set`

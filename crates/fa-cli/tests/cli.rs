@@ -7184,6 +7184,48 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     // The parent is always effective, so it tags a leg the child cannot.
     let (code, out) = post("late-parent", "2026-03-25", r#"{"cost_center":"CC"}"#);
     assert_eq!(code, 0, "{out}");
+
+    // fa tb --dimension folds only the tagged legs, a value's descendants
+    // included; the untagged cash legs are left out, so it does not balance.
+    let tb = |filter: &str, extra: &[&str]| {
+        let mut argv = vec!["tb", "--period", "FY2026-P03", "--dimension", filter];
+        argv.extend_from_slice(extra);
+        run(&argv)
+    };
+    let (code, out) = tb("cost_center=CC", &[]);
+    assert_eq!(code, 0, "{out}");
+    let report = doc(&out);
+    let rows = arr(&report, "rows");
+    assert_eq!(rows.len(), 1, "{out}");
+    assert_eq!(text(&rows[0], "code"), "6100");
+    assert_eq!(text(&rows[0], "debits"), "84.00 USD");
+    assert_eq!(report.get("balanced"), Some(&Json::Bool(false)), "{out}");
+    let filter = report.get("dimension").unwrap();
+    assert_eq!(text(filter, "value"), "CC");
+    let included: Vec<&str> = arr(filter, "values")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(included, ["CC", "CC10"]);
+    let (code, out) = tb("cost_center=CC10", &["--activity"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(text(&arr(&doc(&out), "rows")[0], "debits"), "42.00 USD");
+    let (code, out) = run(&["tb", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    let whole = doc(&out);
+    assert_eq!(whole.get("dimension"), Some(&Json::Null));
+    assert_eq!(whole.get("balanced"), Some(&Json::Bool(true)));
+    // Planted: an unknown value, an unregistered dimension, no value, and a
+    // certificate, which a dimension report does not take.
+    for (filter, extra) in [
+        ("cost_center=NOPE", &[][..]),
+        ("nope=CC", &[][..]),
+        ("cost_center", &[][..]),
+        ("cost_center=CC", &["--certify"][..]),
+    ] {
+        let (code, out) = tb(filter, extra);
+        assert_eq!(code, 2, "{filter} {extra:?}: {out}");
+    }
     Ok(())
 }
 

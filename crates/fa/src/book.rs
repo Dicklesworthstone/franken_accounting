@@ -986,6 +986,22 @@ impl Book {
         ))
     }
 
+    /// `selection` over only the legs tagged with `dimension`'s `value` or a
+    /// value under it (`fa tb --dimension`), folded literally under current
+    /// whole-book read authority.
+    pub fn dimension_trial_balance(
+        &self,
+        selection: &crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+        dimension: &str,
+        value: &str,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionTrialBalance> {
+        with_store!(&self.store, core => core.dimension_trial_balance(
+            &self.purposes(), selection, known_at, dimension, value, capability,
+        ))
+    }
+
     /// Read journaled native subledgers at one prefix under current authority.
     pub fn native_subledgers(
         &self,

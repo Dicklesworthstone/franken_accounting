@@ -11037,6 +11037,11 @@ fn prepare_native_certificate_history(
 }
 
 pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    // A dimension-filtered report is its own uncertified literal fold
+    // (fa-ficc); it refuses the flags of every other mode.
+    if args.flag("--dimension").is_some() {
+        return crate::dimension::tb(ctx, args);
+    }
     const RENDER_EXAMPLE: &str = "fa tb --period FY2026-P03 --render pdf --out trial-balance.pdf";
     let render = render_request(args, RENDER_EXAMPLE)?;
     if render.is_some()
@@ -13213,6 +13218,46 @@ fn render_trial_balance_with_units(
     certificate: Option<&str>,
     served: Option<&fa_registers::Served>,
 ) -> Result<(), Fail> {
+    render_trial_balance_filtered(out, units, tb, selection, certificate, served, None)
+}
+
+/// The dimension filter a `trial_balance` names (`tb_dimension`, fa-ficc).
+pub(crate) struct TbDimension<'a> {
+    pub dimension: &'a str,
+    pub value: &'a str,
+    /// The value and its descendants, whose tagged legs the report folds.
+    pub values: &'a [String],
+}
+
+/// A trial balance over only the legs tagged with `dimension`'s values
+/// (`fa tb --dimension`).
+pub(crate) fn render_tagged_trial_balance(
+    out: &Out,
+    book: &Book,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    dimension: &TbDimension<'_>,
+) -> Result<(), Fail> {
+    render_trial_balance_filtered(
+        out,
+        &book.context().units,
+        tb,
+        selection,
+        None,
+        None,
+        Some(dimension),
+    )
+}
+
+fn render_trial_balance_filtered(
+    out: &Out,
+    units: &fa_money::UnitRegistry,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    certificate: Option<&str>,
+    served: Option<&fa_registers::Served>,
+    dimension: Option<&TbDimension<'_>>,
+) -> Result<(), Fail> {
     validate_trial_balance_units(tb, units)?;
     let periods: &[String] = match selection {
         TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
@@ -13290,6 +13335,19 @@ fn render_trial_balance_with_units(
                 ("pending_unit_totals", Json::Arr(pending_totals)),
                 ("balanced", Json::Bool(tb.is_balanced())),
                 ("served", served.map_or(Json::Null, served_json)),
+                (
+                    "dimension",
+                    dimension.map_or(Json::Null, |dimension| {
+                        obj(vec![
+                            ("dimension", s(dimension.dimension)),
+                            ("value", s(dimension.value)),
+                            (
+                                "values",
+                                Json::Arr(dimension.values.iter().map(s).collect()),
+                            ),
+                        ])
+                    }),
+                ),
             ],
             "",
             certificate,
@@ -13305,6 +13363,14 @@ fn render_trial_balance_with_units(
                 "period activity · {} · known at {}",
                 periods.join(", "),
                 tb.known_at.0
+            ));
+        }
+        if let Some(dimension) = dimension {
+            out.line(format!(
+                "only legs tagged {} {} ({}); the other legs of their entries are left out, so the totals need not balance",
+                dimension.dimension,
+                dimension.value,
+                dimension.values.join(", ")
             ));
         }
         out.line(out.style().header(&format!(
