@@ -580,11 +580,14 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-05"
 id = "rule-reproduction"
-status = "dormant"
+status = "live"
 statement = "A rule-derived entry (`EntryOrigin::Rule`) binds `rule_version_oid`, `event_ref`, and `inputs_digest`, and re-running the pure `RuleVersion` over the recorded `Event` and inputs reproduces the entry's legs bit-for-bit."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G2"
-activating = ["fa-c34"]
+owner = "fa-c34"
+checkers = ["fa-cli::tests/cli.rs::a_rule_derived_entry_posts_only_what_its_active_version_reproduces", "fa-canon::tests/rules.rs::a_stored_ir_decodes_through_the_same_validation_and_proof"]
+negatives = ["fa-cli::tests/cli.rs::a_rule_derived_entry_posts_only_what_its_active_version_reproduces"]
 depends = ["FA-INV-05.event-closure"]
 waiver = "forbidden"
 

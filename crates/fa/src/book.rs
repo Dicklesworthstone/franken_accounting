@@ -1025,6 +1025,22 @@ impl Book {
         )))
     }
 
+    /// Derive and post a rule version's entry over a recorded event (bead
+    /// fa-c34); the kernel re-runs the derivation in the commit.
+    pub fn derive_rule_entry(
+        &mut self,
+        capability: &fa_journal::Capability,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &crate::rule::Inputs,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::Posted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.derive_rule_entry(
+            &purposes, capability, ir_digest, event, inputs, idempotency_key,
+        )))
+    }
+
     /// Every activated rule name and its bindings at `known_at`.
     pub fn rule_names(
         &self,

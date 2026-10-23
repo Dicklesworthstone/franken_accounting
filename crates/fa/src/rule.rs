@@ -7,7 +7,11 @@
 //! an activation from a date, two independent Human approvers approve its
 //! proposal, and its commit binds the rule's name to the version from that
 //! date ([`fa_journal::rule::activate_rule_version`]). No entry derives
-//! from a version yet: rule-derived posting is a later slice of the bead.
+//! from a version except through `fa rule derive`
+//! ([`AsyncBook::derive_rule_entry`]): the kernel re-runs the version in
+//! force on the entry's date over the event and its recorded inputs inside
+//! the commit, and posts only what it derives (FA-INV-05
+//! `rule-reproduction`).
 
 use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
@@ -20,14 +24,15 @@ use fgdb_types::{CommitSeq, VId};
 use crate::{AsyncBook, Outcome};
 
 pub use fa_canon::{
-    CanonError, CompiledRule, Dependencies, Derivation, DerivedLeg, EvalError, InputDecl,
-    InputType, InputValue, Inputs, IrError, MAX_SOURCE_BYTES, evaluate,
+    CANON_INPUTS_DOMAIN, CanonError, CompiledRule, Dependencies, Derivation, DerivedLeg, EvalError,
+    InputDecl, InputType, InputValue, Inputs, IrError, MAX_SOURCE_BYTES, decode_inputs,
+    encode_inputs, evaluate,
 };
 pub use fa_journal::refusal::code::CANON_RULE;
 pub use fa_journal::rule::{
     RULE_ACTIVATION_PLAN_DOMAIN, RuleActivated, RuleActivationPlan, RuleBinding, RuleBindings,
-    RuleNameRow, RuleVersionRecorded, RuleVersionRow, RuleVersionSpec, evaluation_refusal,
-    rule_refusal,
+    RuleDerivation, RuleNameRow, RuleVersionRecorded, RuleVersionRow, RuleVersionSpec,
+    derived_legs, evaluation_refusal, rule_derived_proposal, rule_refusal,
 };
 
 /// Compile `source` against this book's registered units.
@@ -128,6 +133,90 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             approvals,
         )
         .await?)
+    }
+
+    /// Derive and post the entry the version `ir_digest` gives the recorded
+    /// event `event` with `inputs`, under `capability` (whole-book read, then
+    /// post): an `Original` whose origin names the version, event and inputs,
+    /// carrying the event's evidence. The kernel re-runs the derivation in
+    /// the commit and refuses anything it does not reproduce, including a
+    /// version not in force on the entry's date.
+    pub async fn derive_rule_entry(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &Inputs,
+        key: &[u8],
+    ) -> Outcome<fa_journal::Posted> {
+        let built = self.query(cx, |db, book| {
+            let at = match crate::subledger::admitted_at(db, book, capability, None)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let Some(version) = fa_journal::rule::rule_version_at(db, book, ir_digest, at)? else {
+                return Ok(Err(fa_journal::rule::unknown_version(ir_digest)));
+            };
+            Ok(Ok(version))
+        })?;
+        let version = match built {
+            Ok(version) => version,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let Some(event_row) = self.read_event(cx, event, None)? else {
+            return Ok(Err(fa_journal::refusal::Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::refusal::exit::USAGE,
+                format!("no event {:032x} in this book", event.0),
+                "plan §4.1 Event",
+                "fa event list names the recorded events",
+            )));
+        };
+        let rule = &version.rule;
+        let derived = fa_canon::encode_inputs(rule, inputs)
+            .and_then(|bytes| Ok((bytes, fa_canon::evaluate(rule, &event_row.spec, inputs)?)));
+        let (inputs_bytes, derivation) = match derived {
+            Ok(derived) => derived,
+            Err(error) => {
+                return Ok(Err(evaluation_refusal(rule, &event_row.spec.code, &error)));
+            }
+        };
+        let description = self.seal_text(
+            cx,
+            &format!(
+                "rule {} v{} over event {}",
+                rule.name(),
+                rule.version(),
+                event_row.spec.code
+            ),
+        )?;
+        let proposal = match fa_journal::rule::rule_derived_proposal(
+            &self.context,
+            &fa_journal::rule::RuleDerivation {
+                rule,
+                event: event_row.vid,
+                inputs: &inputs_bytes,
+                derivation: &derivation,
+                evidence: &event_row.spec.evidence,
+            },
+            capability.holder(),
+            key,
+            description,
+        ) {
+            Ok(proposal) => proposal,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        self.post(
+            cx,
+            fa_journal::PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                capability: capability.clone(),
+                plan_certificate: None,
+            },
+        )
+        .await
     }
 
     /// Every rule version at `known_at` (the head when `None`), under current

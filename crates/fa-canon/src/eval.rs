@@ -7,7 +7,7 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use crate::ir::{CANON_INPUTS_DOMAIN, CompiledRule, DateSource, InputType, Node, write_unit};
-use fa_model::{EventKind, EventSpec, Writer, domain_digest};
+use fa_model::{EventKind, EventSpec, Reader, Writer, domain_digest};
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
 
@@ -160,19 +160,12 @@ struct Frame<'a> {
     slots: Vec<i128>,
 }
 
-/// Evaluate `rule` over `event` with `inputs`. Pure and total: the same
-/// three arguments always yield the same [`Derivation`] or the same error.
-pub fn evaluate(
-    rule: &CompiledRule,
-    event: &EventSpec,
-    inputs: &Inputs,
-) -> Result<Derivation, EvalError> {
-    if event.kind != rule.event() {
-        return Err(EvalError::WrongEventKind {
-            rule: rule.event(),
-            event: event.kind,
-        });
-    }
+/// The canonical bytes of `inputs` under `rule`'s declarations, in
+/// declaration order (`str name ‖ u8 1 ‖ i32 day` for a date, `str name ‖ u8
+/// 2 ‖ unit ‖ i128 mantissa` for an amount): what `inputs_digest` digests
+/// and a rule-derived entry records, so the derivation can be re-run.
+/// Every declared input must be supplied in its type, and no other.
+pub fn encode_inputs(rule: &CompiledRule, inputs: &Inputs) -> Result<Vec<u8>, EvalError> {
     if let Some(name) = inputs
         .0
         .keys()
@@ -181,7 +174,6 @@ pub fn evaluate(
         return Err(EvalError::UndeclaredInput { name: name.clone() });
     }
     let mut digest_input = Writer::new();
-    let mut values = Vec::with_capacity(rule.inputs().len());
     for decl in rule.inputs() {
         let value = inputs
             .0
@@ -206,11 +198,78 @@ pub fn evaluate(
                 });
             }
         }
-        values.push(*value);
     }
-    let inputs_bytes = digest_input
+    digest_input
         .finish()
-        .map_err(|e| EvalError::Encode(e.to_string()))?;
+        .map_err(|e| EvalError::Encode(e.to_string()))
+}
+
+/// Read inputs back from their canonical bytes under `rule`'s declarations:
+/// exactly the declared names in order, each in its declared type and unit.
+pub fn decode_inputs(rule: &CompiledRule, bytes: &[u8]) -> Result<Inputs, EvalError> {
+    let bad = |what: &str| EvalError::Encode(format!("rule inputs: {what}"));
+    let mut r = Reader::new(bytes);
+    let mut out = Inputs::new();
+    for decl in rule.inputs() {
+        let name = r
+            .str(1024, "rule input name")
+            .map_err(|e| bad(&e.to_string()))?;
+        if name != decl.name {
+            return Err(bad(&format!(
+                "`{name}` is not the declared input `{}`",
+                decl.name
+            )));
+        }
+        let value = match (
+            r.u8("rule input type").map_err(|e| bad(&e.to_string()))?,
+            &decl.ty,
+        ) {
+            (1, InputType::Date) => InputValue::Date(DateDay(
+                r.i32("rule input date").map_err(|e| bad(&e.to_string()))?,
+            )),
+            (2, InputType::Amount(unit)) => {
+                let spelled = rule.unit(*unit);
+                let code = r
+                    .str(64, "rule input unit")
+                    .map_err(|e| bad(&e.to_string()))?;
+                let version = r
+                    .u16("rule input unit version")
+                    .map_err(|e| bad(&e.to_string()))?;
+                let scale = r
+                    .u8("rule input unit scale")
+                    .map_err(|e| bad(&e.to_string()))?;
+                if code != spelled.code || version != spelled.version || scale != spelled.scale {
+                    return Err(bad(&format!(
+                        "`{name}` is in another unit than the rule declares"
+                    )));
+                }
+                let mantissa = r
+                    .i128("rule input amount")
+                    .map_err(|e| bad(&e.to_string()))?;
+                InputValue::Amount(Amount::new(*unit, mantissa))
+            }
+            _ => return Err(bad(&format!("`{name}` is not in its declared type"))),
+        };
+        out.set(name, value);
+    }
+    r.finish().map_err(|e| bad(&e.to_string()))?;
+    Ok(out)
+}
+
+/// Evaluate `rule` over `event` with `inputs`. Pure and total: the same
+/// three arguments always yield the same [`Derivation`] or the same error.
+pub fn evaluate(
+    rule: &CompiledRule,
+    event: &EventSpec,
+    inputs: &Inputs,
+) -> Result<Derivation, EvalError> {
+    if event.kind != rule.event() {
+        return Err(EvalError::WrongEventKind {
+            rule: rule.event(),
+            event: event.kind,
+        });
+    }
+    let inputs_bytes = encode_inputs(rule, inputs)?;
     let event_digest = event
         .event_digest()
         .map_err(|e| EvalError::Encode(e.to_string()))?;
@@ -250,7 +309,11 @@ pub fn evaluate(
     }
     let effective = match rule.effective() {
         DateSource::Occurred => event.occurred_on,
-        DateSource::Input(index) => match values.get(index as usize) {
+        DateSource::Input(index) => match rule
+            .inputs()
+            .get(index as usize)
+            .and_then(|decl| inputs.0.get(&decl.name))
+        {
             Some(InputValue::Date(day)) => *day,
             _ => {
                 return Err(EvalError::InputType {

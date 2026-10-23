@@ -964,6 +964,20 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::RuleChange],
             Succeeds,
         ),
+        // Deriving from an address the book does not hold reaches the
+        // kernel under read and post alone.
+        row(
+            &[
+                "rule",
+                "derive",
+                "--rule",
+                ZERO_DIGEST,
+                "--event",
+                "EV-NONE",
+            ],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
         // Planning an activation of an address the book does not hold
         // reaches the kernel under rule_change alone.
         row(

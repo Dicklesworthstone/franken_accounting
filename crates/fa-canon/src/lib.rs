@@ -33,7 +33,9 @@ mod proof;
 use core::fmt;
 
 pub use check::compile;
-pub use eval::{Derivation, DerivedLeg, EvalError, InputValue, Inputs, evaluate};
+pub use eval::{
+    Derivation, DerivedLeg, EvalError, InputValue, Inputs, decode_inputs, encode_inputs, evaluate,
+};
 pub use ir::{
     CANON_INPUTS_DOMAIN, CANON_IR_DOMAIN, CompiledRule, DateSource, Dependencies, InputDecl,
     InputType, IrError, LegTemplate, Node,

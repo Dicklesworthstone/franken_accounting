@@ -28,6 +28,8 @@ const LIST: &str = "fa rule list [--as-known-at HEAD|<seq>]";
 const SHOW: &str = "fa rule show <ir_digest> [--as-known-at HEAD|<seq>]";
 const ACTIVATE: &str = "fa rule activate <ir_digest> --from YYYY-MM-DD [--key K] --dry-run";
 const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approval <vid>";
+const DERIVE: &str =
+    "fa rule derive --rule <ir_digest> --event <code|vid> [--input <name>=<value>]... [--key K]";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 
 pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -38,9 +40,10 @@ pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("show") => show(ctx, args),
         Some("activate") => activate(ctx, args),
         Some("eval") => eval(ctx, args),
+        Some("derive") => derive(ctx, args),
         _ => Err(usage(
-            "rule has the subcommands check, propose, list, show, activate and eval",
-            format!("{CHECK} | {PROPOSE} | {LIST} | {SHOW} | {ACTIVATE} | {EVAL}"),
+            "rule has the subcommands check, propose, list, show, activate, eval and derive",
+            format!("{CHECK} | {PROPOSE} | {LIST} | {SHOW} | {ACTIVATE} | {EVAL} | {DERIVE}"),
         )),
     }
 }
@@ -400,6 +403,79 @@ fn commit_activation(
         ),
     );
     Ok(())
+}
+
+/// `fa rule derive --rule <ir_digest> --event <code|vid> [--input …] [--key K]`:
+/// post the entry the version derives from the event. The kernel re-runs
+/// the derivation in the commit and posts only what it derives.
+fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "rule derive takes no positional; name the version with --rule",
+            DERIVE,
+        ));
+    }
+    let Some(rule) = args.flag("--rule") else {
+        return Err(usage("rule derive needs --rule <ir_digest>", DERIVE));
+    };
+    let digest = digest_arg(rule, DERIVE)?;
+    let Some(target) = args.flag("--event") else {
+        return Err(usage("rule derive needs --event", DERIVE));
+    };
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read", "post"])?;
+    let mut selected = None;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        let scope = book.read_scope(who, &cap)??;
+        let seq = scope.admit_whole_book(None)??;
+        selected = Some(book.rea_snapshot(Some(seq))?);
+        Ok(())
+    })?;
+    let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
+    let event = find_event(&rea, book.context().book_id, target).ok_or_else(|| {
+        usage(
+            format!("no event `{target}` in this book at {}", rea.known_at.0),
+            "fa event list --book <dir> --json",
+        )
+    })?;
+    let event_vid = event.vid;
+    let (_, version) = book.rule_version(&digest, Some(rea.known_at), &cap)??;
+    let rule = version
+        .ok_or_else(|| {
+            usage(
+                format!("this book holds no rule version {}", hex(&digest)),
+                "fa rule list names the versions; fa rule propose <file> journals one",
+            )
+        })?
+        .rule;
+    let given = inputs(&rule, args, &book.context().units)?;
+    let key = match args.flag("--key") {
+        Some(key) => key.to_string(),
+        // The request itself, within the 64-byte key bound: deriving the
+        // same version over the same event with the same inputs is a retry.
+        None => hex(&fa_model::domain_digest(
+            b"fa-cli:rule-derive-key:v1",
+            &[
+                &digest,
+                &event_vid.0.to_le_bytes(),
+                &fa_canon_inputs_digest(&rule, &given)?,
+            ],
+        )),
+    };
+    let posted = book.derive_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??;
+    ctx.out.at_book(&book)?;
+    crate::cli::emit_posted(&ctx.out, posted, "Original", false, None, None)
+}
+
+/// The inputs' digest, for a default key: deriving the same version over
+/// the same event with the same inputs again is a retry.
+fn fa_canon_inputs_digest(rule: &CompiledRule, inputs: &Inputs) -> Result<[u8; 32], Fail> {
+    let bytes = fa::rule::encode_inputs(rule, inputs)
+        .map_err(|e| usage(format!("the inputs do not fit the rule: {e}"), DERIVE))?;
+    Ok(fa_model::domain_digest(
+        fa::rule::CANON_INPUTS_DOMAIN,
+        &[&bytes],
+    ))
 }
 
 /// `fa rule list [--as-known-at HEAD|<seq>]`.

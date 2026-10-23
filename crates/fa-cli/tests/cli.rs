@@ -20801,6 +20801,183 @@ fn text_of(out: &str, key: &str) -> String {
     text(&doc(out), key).to_string()
 }
 
+/// fa-c34, FA-INV-05 `rule-reproduction`: `fa rule derive` posts the entry
+/// an activated version derives from a recorded event, and the kernel
+/// re-runs the derivation inside the commit. A version not in force on the
+/// entry's date, legs other than the derivation's (posted through the
+/// library) and recorded inputs that do not digest to the entry's
+/// inputs_digest are refused, and none of them writes.
+#[test]
+fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+    let (book, ev, dir) = envelope_book("canon-derive")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-9",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:40.00 USD",
+        "--json",
+    ]);
+    let source = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    let digest = text(
+        &doc(&ok(&["rule", "propose", &source, "--json"])),
+        "ir_digest",
+    )
+    .to_string();
+    // Proposed is not active: the kernel refuses the derivation.
+    let (code, out, _) = run(&[
+        "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("not in force"), "{out}");
+    let planned = doc(&ok(&[
+        "rule",
+        "activate",
+        &digest,
+        "--from",
+        "2026-03-01",
+        "--dry-run",
+        "--json",
+    ]));
+    let plan = write(&dir, "sale.plan", text(&planned, "bytes"));
+    let proposal = text(&planned, "proposal_digest").to_string();
+    let approval = |who: &str| -> String {
+        let out = ok(&["approve", "--proposal", &proposal, "--as", who, "--json"]);
+        field(&out, "approval_vid").unwrap_or_default().to_string()
+    };
+    let (a, b) = (approval("controller-a"), approval("controller-b"));
+    ok(&[
+        "rule",
+        "activate",
+        "--plan",
+        &plan,
+        "--approval",
+        &a,
+        "--approval",
+        &b,
+        "--json",
+    ]);
+
+    let posted = ok(&[
+        "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
+    ]);
+    assert!(posted.contains("\"event\":\"posted\""), "{posted}");
+    assert_eq!(text(&doc(&posted), "class"), "Original");
+    let entry = text(&doc(&posted), "vid").to_string();
+    let shown = ok(&["entry", "show", &entry, "--json"]);
+    assert!(shown.contains("40.00 USD"), "{shown}");
+    // Deriving the same version over the same event again is a retry.
+    let again = ok(&[
+        "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
+    ]);
+    assert_eq!(text(&doc(&again), "vid"), entry);
+    // Its lineage: GENERATED_BY to the version that derived it.
+    let lineage = doc(&ok(&[
+        "query",
+        "MATCH (e:Entry)-[:GENERATED_BY]->(r:RuleVersion) RETURN r.name",
+        "--json",
+    ]));
+    assert_eq!(int(&lineage, "row_count"), Some(1), "{}", lineage.render());
+
+    // Through the library: what the kernel re-derives is what posts.
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let mut lib = Book::open_dir(&book, keys, Entropy::deterministic(0xc3)).unwrap();
+    let operator = fa_model::principal_vid("operator");
+    let cap = fa::Capability::embedded(operator, &["read", "post"]).unwrap();
+    let mut ir = [0u8; 32];
+    for (i, byte) in ir.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&digest[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    let rule = lib
+        .rule_version(&ir, None, &cap)
+        .unwrap()
+        .unwrap()
+        .1
+        .unwrap()
+        .rule;
+    let event = lib
+        .read_event(fa_model::event_vid(lib.context().book_id, "EV-9"), None)
+        .unwrap()
+        .unwrap();
+    let inputs = fa::rule::Inputs::new();
+    let inputs_bytes = fa::rule::encode_inputs(&rule, &inputs).unwrap();
+    let derivation = fa::rule::evaluate(&rule, &event.spec, &inputs).unwrap();
+    let propose = |derivation: &fa::rule::Derivation, key: &[u8]| {
+        let description = fa_model::Erasable::seal(
+            &"tampered".to_string(),
+            None,
+            &lib.context().seal_key,
+            [1u8; 32],
+            [2u8; 24],
+        );
+        fa::rule::rule_derived_proposal(
+            lib.context(),
+            &fa::rule::RuleDerivation {
+                rule: &rule,
+                event: event.vid,
+                inputs: &inputs_bytes,
+                derivation,
+                evidence: &event.spec.evidence,
+            },
+            operator,
+            key,
+            description,
+        )
+        .unwrap()
+    };
+    // Planted: both legs moved by one cent, still balanced.
+    let mut tampered = derivation.clone();
+    for leg in &mut tampered.legs {
+        leg.amount.mantissa += 1;
+    }
+    let moved = propose(&tampered, b"tampered-legs");
+    // Planted: the derivation's legs, with inputs that do not digest to the
+    // entry's inputs_digest.
+    let mut relabeled = propose(&derivation, b"tampered-inputs");
+    relabeled.extensions = vec![(fa_model::entry::RULE_INPUTS_EXTENSION, vec![0])];
+    let before = lib.head().unwrap();
+    for (what, proposal) in [("legs", moved), ("inputs", relabeled)] {
+        let refused = lib
+            .post(fa_journal::PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                capability: cap.clone(),
+                plan_certificate: None,
+            })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, "FA-REF-196", "{what}: {refused:?}");
+    }
+    assert_eq!(lib.head().unwrap(), before, "the refusals write nothing");
+    Ok(())
+}
+
 /// fa-f3bo: `fa event record|show|list` journals and queries REA `Event`
 /// vertices, `fa post --event` links entries via `DERIVED_FROM` and inherits
 /// the event's evidence closure, `fa explain entry` reports the cited event,

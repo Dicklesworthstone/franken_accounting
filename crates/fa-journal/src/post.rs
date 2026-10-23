@@ -1739,11 +1739,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let unsupported_origin = match &proposal.origin {
-        EntryOrigin::Intent { .. } | EntryOrigin::Migration { .. } => None,
-        EntryOrigin::Rule { .. } => Some((
-            "Rule",
-            "leave the rule-derived entry unposted until Canon verifies its rule, event and inputs (fa-c34)",
-        )),
+        // A rule-derived entry is admitted by re-running its rule inside the
+        // transaction (step 5a'), never on its own word.
+        EntryOrigin::Intent { .. } | EntryOrigin::Migration { .. } | EntryOrigin::Rule { .. } => {
+            None
+        }
         EntryOrigin::Sweep { .. } => Some((
             "Sweep",
             "run the kernel expiry sweep under a committed tick; only that sweep may mint Sweep provenance",
@@ -2952,6 +2952,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
 
+    // 5a'. Canon provenance (plan §10.3, FA-INV-05 `rule-reproduction`): a
+    //      rule-derived entry posts only when its version, in force on its
+    //      effective date, re-run over the witnessed event with its recorded
+    //      inputs, reproduces its legs exactly.
+    if let Err(refusal) = crate::rule::verify_rule_origin(&txn, db, book, proposal)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+
     // 5b. Evidence minimum (plan §9.2, FA-INV-05 `evidence-minimum`): every
     //     citation names a document this book holds under its exact
     //     commitment, read as a witness of this transaction, as is the
@@ -3958,6 +3967,22 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             vec![],
         );
         batches.push(derived_from);
+    }
+    // Canon lineage (plan §4.1 GENERATED_BY): a rule-derived entry -> the
+    // RuleVersion that derived it, beside its DERIVED_FROM to the event.
+    if let EntryOrigin::Rule {
+        rule_version_oid, ..
+    } = &entry.proposal.origin
+    {
+        let version = fa_model::rule_version_vid(book.book_id, &rule_version_oid.0);
+        let mut generated_by = WriteBatch::new(relation::GENERATED_BY);
+        generated_by.add_edge(
+            edge_id(relation::GENERATED_BY, evid, version),
+            evid,
+            version,
+            vec![],
+        );
+        batches.push(generated_by);
     }
     batches.extend(evidence_edges(evid, &evidence));
     if let Some(review) = external_review {

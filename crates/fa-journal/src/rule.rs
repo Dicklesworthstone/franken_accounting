@@ -11,13 +11,13 @@
 //! until an activation names it.
 
 use asupersync::fs::Vfs;
-use fa_canon::{CanonError, CompiledRule, EvalError};
+use fa_canon::{CanonError, CompiledRule, Derivation, EvalError};
 use fa_model::limits::{MAX_DESCRIPTION_BYTES, MAX_IDEMPOTENCY_KEY_BYTES};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ApprovalRef, ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload,
-    Erasable, Id128, Reader, Writer, domain_digest, entry_mirrors, entry_vid, rule_name_vid,
-    rule_version_vid,
+    Erasable, Id128, LegPayload, Oid, Reader, Writer, domain_digest, entry_mirrors, entry_vid,
+    rule_name_vid, rule_version_vid,
 };
 use fa_policy::{Capability, Intent, Op, Party, Reach};
 use fa_time::DateDay;
@@ -776,7 +776,9 @@ pub fn plan_rule_activation<V: Vfs + Clone>(
     Ok(Ok(plan))
 }
 
-fn unknown_version(ir_digest: &[u8; 32]) -> Refusal {
+/// The refusal for an address the book holds no rule version at.
+#[must_use]
+pub fn unknown_version(ir_digest: &[u8; 32]) -> Refusal {
     Refusal::new(
         code::STRUCTURE,
         exit::USAGE,
@@ -987,4 +989,231 @@ pub async fn activate_rule_version<V: Vfs + Clone>(
         ))),
         Err(error) => Err(error.into()),
     }
+}
+
+// ---- Rule-derived entries (plan §10.3; FA-INV-05 rule-reproduction) -----
+
+const DERIVATION_CITE: &str = "plan §10.3, FA-INV-05 rule-reproduction (an entry records which version derived it from which event and inputs; re-running the version reproduces it)";
+
+fn derivation_refusal(message: String, fix: &str) -> Refusal {
+    Refusal::new(
+        code::CANON_RULE,
+        exit::REFUSAL,
+        message,
+        DERIVATION_CITE,
+        fix,
+    )
+}
+
+/// The legs `derivation` posts in this book: each account by its code, each
+/// dimension tag as its registered dimension id and the value's identity,
+/// ascending by dimension id. The kernel judges the accounts and values as
+/// for any posting.
+pub fn derived_legs(
+    book: &BookContext,
+    derivation: &Derivation,
+) -> Result<Vec<LegPayload>, Refusal> {
+    let mut legs = Vec::with_capacity(derivation.legs.len());
+    for leg in &derivation.legs {
+        let mut dimension_set = Vec::with_capacity(leg.dims.len());
+        for (dimension, code) in &leg.dims {
+            let Some(kind) = fa_model::dimension_kind(dimension) else {
+                return Err(derivation_refusal(
+                    format!("the rule tags `{dimension}`, which is not a registered dimension"),
+                    "revise the rule's dims",
+                ));
+            };
+            dimension_set.push((
+                kind.id,
+                fa_model::dimension_value_vid(book.book_id, kind.code, code),
+            ));
+        }
+        dimension_set.sort_by_key(|(id, _)| *id);
+        legs.push(LegPayload {
+            side: leg.side,
+            account_ref: fa_model::account_vid(book.book_id, &leg.account),
+            amount: leg.amount,
+            base_amount: None,
+            dimension_set,
+            memo: None,
+            settles: Vec::new(),
+        });
+    }
+    Ok(legs)
+}
+
+/// What a rule-derived entry asserts: the version, the event, the inputs'
+/// canonical bytes and the derivation they give.
+pub struct RuleDerivation<'a> {
+    pub rule: &'a CompiledRule,
+    pub event: VId,
+    pub inputs: &'a [u8],
+    pub derivation: &'a Derivation,
+    /// The cited event's evidence, which the entry carries as its own.
+    pub evidence: &'a [fa_model::EvidenceRef],
+}
+
+/// The `Original` proposal a rule derivation posts: the derived legs at the
+/// derivation's effective date, its origin naming the version, event and
+/// inputs digest, and the inputs themselves in extension 32 so the kernel
+/// can re-run it. Its evidence is the cited event's.
+pub fn rule_derived_proposal(
+    book: &BookContext,
+    derived: &RuleDerivation<'_>,
+    principal: VId,
+    idempotency_key: &[u8],
+    description: Erasable<String>,
+) -> Result<EntryPayload, Refusal> {
+    let legs = derived_legs(book, derived.derivation)?;
+    let unit_totals = EntryPayload::fold_unit_totals(&legs).map_err(|e| {
+        derivation_refusal(
+            format!("the derived legs do not fold: {e}"),
+            "revise the rule",
+        )
+    })?;
+    Ok(EntryPayload {
+        schema_minor: fa_model::entry::SCHEMA_MINOR,
+        book_id: book.book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: derived.derivation.effective,
+        document_date: None,
+        description,
+        effective_period: None,
+        legs,
+        control: None,
+        unit_totals,
+        base_totals: None,
+        idempotency_key: idempotency_key.to_vec(),
+        origin: EntryOrigin::Rule {
+            rule_version_oid: Oid(derived.rule.ir_digest()),
+            event_ref: derived.event,
+            inputs_digest: derived.derivation.inputs_digest,
+        },
+        principal_ref: principal,
+        session_ref: None,
+        evidence: {
+            let mut evidence = derived.evidence.to_vec();
+            evidence.sort_unstable();
+            evidence.dedup();
+            evidence
+        },
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: vec![(
+            fa_model::entry::RULE_INPUTS_EXTENSION,
+            derived.inputs.to_vec(),
+        )],
+        tags: Vec::new(),
+    })
+}
+
+/// FA-INV-05 `rule-reproduction`, judged inside the posting transaction:
+/// the entry is admitted only when its rule version is this book's and in
+/// force (by its name's witnessed bindings) on the entry's effective date,
+/// and re-running it over the witnessed cited event with the recorded
+/// inputs reproduces the entry's legs and effective date exactly.
+pub(crate) fn verify_rule_origin<V: Vfs + Clone>(
+    txn: &fgdb::WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    proposal: &EntryPayload,
+) -> Outcome<()> {
+    let EntryOrigin::Rule {
+        rule_version_oid,
+        event_ref,
+        inputs_digest,
+    } = &proposal.origin
+    else {
+        return Ok(Ok(()));
+    };
+    let digest = rule_version_oid.0;
+    let version = match txn.vertex(db, rule_version_vid(book.book_id, &digest))? {
+        Some(row) => RuleVersionRow::decode(&row, book)?,
+        None => None,
+    };
+    let Some(version) = version else {
+        return Ok(Err(derivation_refusal(
+            format!(
+                "the entry names rule version {}, which this book does not hold",
+                crate::evidence::hex(&digest)
+            ),
+            "derive entries with fa rule derive from a proposed and activated version",
+        )));
+    };
+    let rule = &version.rule;
+    let bindings = match txn.vertex(db, rule_name_vid(book.book_id, rule.name()))? {
+        Some(row) => {
+            RuleNameRow::decode(&row)?
+                .ok_or_else(|| corrupt("a rule name address holds another vertex"))?
+                .bindings
+        }
+        None => RuleBindings::default(),
+    };
+    if bindings.in_force(proposal.effective_date) != Some(digest) {
+        return Ok(Err(derivation_refusal(
+            format!(
+                "rule {} is not in force at version {} on {}",
+                rule.name(),
+                crate::evidence::hex(&digest),
+                proposal.effective_date.render()
+            ),
+            "fa rule list shows the version in force on each date; activate the version (fa rule activate) or derive with the one in force",
+        )));
+    }
+    let Some(row) = txn.vertex(db, *event_ref)? else {
+        return Ok(Err(derivation_refusal(
+            format!("the cited event {:032x} is not in this book", event_ref.0),
+            "fa event list names the recorded events",
+        )));
+    };
+    let event =
+        fa_model::EventSpec::decode(&bytes(&row, property::FA_PAYLOAD, "event._fa_payload")?)
+            .map_err(|e| corrupt(format!("event payload: {e}")))?;
+    let Some((_, recorded)) = proposal
+        .extensions
+        .iter()
+        .find(|(tag, _)| *tag == fa_model::entry::RULE_INPUTS_EXTENSION)
+    else {
+        return Ok(Err(derivation_refusal(
+            "a rule-derived entry records its inputs (extension 32)".into(),
+            "derive entries with fa rule derive",
+        )));
+    };
+    if domain_digest(fa_canon::CANON_INPUTS_DOMAIN, &[recorded]) != *inputs_digest {
+        return Ok(Err(derivation_refusal(
+            "the recorded inputs do not digest to the entry's inputs_digest".into(),
+            "derive entries with fa rule derive",
+        )));
+    }
+    let derivation = fa_canon::decode_inputs(rule, recorded)
+        .and_then(|inputs| fa_canon::evaluate(rule, &event, &inputs));
+    let derivation = match derivation {
+        Ok(derivation) => derivation,
+        Err(error) => return Ok(Err(evaluation_refusal(rule, &event.code, &error))),
+    };
+    let expected = match derived_legs(book, &derivation) {
+        Ok(legs) => legs,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if derivation.effective != proposal.effective_date || expected != proposal.legs {
+        return Ok(Err(derivation_refusal(
+            format!(
+                "the entry's legs or effective date are not what rule {} v{} ({}) derives from event {} with its recorded inputs",
+                rule.name(),
+                rule.version(),
+                crate::evidence::hex(&digest),
+                event.code
+            ),
+            "derive the entry with fa rule derive, which posts exactly the rule's legs",
+        )));
+    }
+    if proposal.class != EntryClass::ORIGINAL {
+        return Ok(Err(derivation_refusal(
+            "a rule-derived entry is an Original".into(),
+            "derive the entry with fa rule derive",
+        )));
+    }
+    Ok(Ok(()))
 }
