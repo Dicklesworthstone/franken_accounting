@@ -893,10 +893,10 @@ pub fn parse_date_iso(format: &'static str, text: &str) -> Result<DateDay, Forma
     })
 }
 
-/// Encode a 32-byte digest as 64 lowercase hex characters.
-pub fn hex_encode(bytes: &[u8; 32]) -> String {
+/// Encode bytes as lowercase hex characters (64 characters for a 32-byte digest).
+pub fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(64);
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for &b in bytes {
         out.push(HEX[(b >> 4) as usize] as char);
         out.push(HEX[(b & 0x0f) as usize] as char);
