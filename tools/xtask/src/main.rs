@@ -5,6 +5,7 @@
 
 mod reachability;
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -99,16 +100,68 @@ pub fn render_summary(json: bool) -> Result<String, String> {
     }
 }
 
-pub fn evaluate_workspace_mutants(root: &Path) -> Result<MutationManifest, String> {
+/// Anchor the ledger without executing it: every `find` occurs exactly once
+/// in its file. Returns the number of mutants anchored.
+pub fn anchor_workspace_mutants(root: &Path) -> Result<usize, String> {
     let ledger = MutantLedger::embedded().map_err(|e| e.to_string())?;
     ledger.verify_against_workspace(|rel| fs::read_to_string(root.join(rel)).ok())?;
-    ledger.enforce_lane(|_mutant, _checker| TestOutcome::Killed)
+    Ok(ledger.mutants.len())
+}
+
+/// The mutation lane judged from an execution record: `results` maps each
+/// mutant id to the verdict `scripts/mutants_execute.sh --results` recorded.
+/// Only a recorded `KILLED` kills; a `SURVIVED`, `UNRUN` or missing record
+/// survives, so the lane never credits a kill nobody ran.
+pub fn evaluate_workspace_mutants(
+    root: &Path,
+    results: &BTreeMap<String, String>,
+) -> Result<MutationManifest, String> {
+    let ledger = MutantLedger::embedded().map_err(|e| e.to_string())?;
+    ledger.verify_against_workspace(|rel| fs::read_to_string(root.join(rel)).ok())?;
+    ledger.enforce_lane(
+        |mutant, _checker| match results.get(&mutant.id).map(String::as_str) {
+            Some("KILLED") => TestOutcome::Killed,
+            _ => TestOutcome::Survived,
+        },
+    )
+}
+
+/// Parse an execution record: one `<MUT-id> KILLED|SURVIVED|UNRUN` per line.
+fn parse_mutant_results(text: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut results = BTreeMap::new();
+    for (n, line) in text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+    {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [id, verdict] = fields[..] else {
+            return Err(format!("xtask: results line {}: `{line}`", n + 1));
+        };
+        if !matches!(verdict, "KILLED" | "SURVIVED" | "UNRUN") {
+            return Err(format!(
+                "xtask: results line {}: verdict `{verdict}`",
+                n + 1
+            ));
+        }
+        if results
+            .insert(id.to_string(), verdict.to_string())
+            .is_some()
+        {
+            return Err(format!(
+                "xtask: results line {}: `{id}` recorded twice",
+                n + 1
+            ));
+        }
+    }
+    Ok(results)
 }
 
 fn run() -> Result<(), String> {
     let mut json = false;
     let mut mode = "summary";
     let mut manifest_path: Option<PathBuf> = None;
+    let mut results_path: Option<PathBuf> = None;
     let mut today: Option<String> = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -132,10 +185,16 @@ fn run() -> Result<(), String> {
                     .ok_or_else(|| "xtask: --manifest requires a file path".to_string())?;
                 manifest_path = Some(PathBuf::from(p));
             }
+            "--results" => {
+                let p = args
+                    .next()
+                    .ok_or_else(|| "xtask: --results requires a file path".to_string())?;
+                results_path = Some(PathBuf::from(p));
+            }
             "--json" => json = true,
             "-h" | "--help" => {
                 println!(
-                    "Usage: xtask [summary|scoreboard|mutants|reachability] [--manifest <path>] [--today YYYY-MM-DD] [--json]"
+                    "Usage: xtask [summary|scoreboard|mutants|reachability] [--manifest <path>] [--results <path>] [--today YYYY-MM-DD] [--json]"
                 );
                 return Ok(());
             }
@@ -152,7 +211,16 @@ fn run() -> Result<(), String> {
     }
     if mode == "mutants" {
         let root = default_workspace_root();
-        let manifest = evaluate_workspace_mutants(&root)?;
+        let Some(results_path) = results_path else {
+            let anchored = anchor_workspace_mutants(&root)?;
+            println!(
+                "xtask mutants: {anchored} mutants anchored (each `find` occurs once in its file); none executed: `scripts/mutants_execute.sh --results <file>` executes them, then `xtask mutants --results <file>` judges the record"
+            );
+            return Ok(());
+        };
+        let record = fs::read_to_string(&results_path)
+            .map_err(|e| format!("{}: {e}", results_path.display()))?;
+        let manifest = evaluate_workspace_mutants(&root, &parse_mutant_results(&record)?)?;
         let payload = manifest.to_json();
         if let Some(path) = manifest_path {
             if let Some(parent) = path.parent()
@@ -167,7 +235,7 @@ fn run() -> Result<(), String> {
             println!("{payload}");
         } else {
             println!(
-                "xtask mutants: ok ({}/{} killed, 0 survivors)",
+                "xtask mutants: ok ({}/{} killed by execution, 0 survivors)",
                 manifest.killed, manifest.total
             );
         }
@@ -230,13 +298,53 @@ mod tests {
     #[test]
     fn workspace_mutants_manifest_is_green_and_deterministic() {
         let root = default_workspace_root();
-        let m1 = evaluate_workspace_mutants(&root).expect("mutants lane");
-        let m2 = evaluate_workspace_mutants(&root).expect("mutants lane");
+        assert_eq!(anchor_workspace_mutants(&root).expect("anchored"), 35);
+        let ids = MutantLedger::embedded().expect("ledger").mutants;
+        let all_killed: BTreeMap<String, String> = ids
+            .iter()
+            .map(|m| (m.id.clone(), "KILLED".to_string()))
+            .collect();
+        let m1 = evaluate_workspace_mutants(&root, &all_killed).expect("mutants lane");
+        let m2 = evaluate_workspace_mutants(&root, &all_killed).expect("mutants lane");
         assert_eq!(m1, m2);
         assert!(m1.is_green());
         assert_eq!(m1.total, 35);
         assert_eq!(m1.killed, 35);
         assert!(m1.survivors.is_empty());
         assert_eq!(m1.to_json(), m2.to_json());
+    }
+
+    /// Only a recorded kill kills: a survivor, an unrun mutant and a mutant
+    /// with no record each fail the lane by name.
+    #[test]
+    fn an_execution_record_decides_each_kill() {
+        let root = default_workspace_root();
+        let ids: Vec<String> = MutantLedger::embedded()
+            .expect("ledger")
+            .mutants
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        let record: String = ids.iter().map(|id| format!("{id} KILLED\n")).collect();
+        let killed = parse_mutant_results(&record).expect("record");
+        assert!(evaluate_workspace_mutants(&root, &killed).is_ok());
+        for verdict in ["SURVIVED", "UNRUN", "missing"] {
+            let mut results = killed.clone();
+            if verdict == "missing" {
+                results.remove(&ids[3]);
+            } else {
+                results.insert(ids[3].clone(), verdict.to_string());
+            }
+            let err = evaluate_workspace_mutants(&root, &results).expect_err(verdict);
+            assert!(err.contains(&ids[3]), "{verdict}: {err}");
+        }
+        for bad in [
+            "MUT-001",
+            "MUT-001 KILLED extra",
+            "MUT-001 DEAD",
+            "MUT-001 KILLED\nMUT-001 KILLED",
+        ] {
+            assert!(parse_mutant_results(bad).is_err(), "{bad:?}");
+        }
     }
 }

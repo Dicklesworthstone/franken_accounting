@@ -6,13 +6,16 @@
 # - id:         dense identifier MUT-001 .. MUT-NNN
 # - file:       workspace-relative source file path
 # - find:       exact substring in `file` (must occur exactly once)
-# - replace:    mutated replacement text (applied in a scratch copy, never in tree)
+# - replace:    mutated replacement text (applied only while the mutant runs, then restored)
 # - law:        invariant clause (FA-INV-*) or refusal code (FA-REF-*) broken
 # - killed_by:  one or more `crate::target::path` test entrypoints that must fail
 # - description: why this mutation breaks the accounting/verification law
 #
 # Validated statically by `fa-registry::mutants` and `tools/registry-check`,
-# and executed against scratch copies by `xtask mutants`.
+# and anchored by `xtask mutants` (each `find` occurs once). Executed by
+# `scripts/mutants_execute.sh`: it applies each mutant in its worktree, runs
+# every killed_by test, and restores the file. `xtask mutants --results`
+# credits a kill only from that execution record.
 # =============================================================================
 
 schema_version = 1
