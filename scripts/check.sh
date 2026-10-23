@@ -20,7 +20,10 @@
 #   conformance-mutation (fa-zy1), deny, ubs, shellcheck, registries-embedded,
 #   registry-check (tools/registry-check: schema validation, claims lint,
 #   foundation API consumption, negative-checker disjointness, fa-szi / fa-r3d),
-#   installer-integration (fa-o3zg), forbidden-deps, foundations (resolved-foundation-graph, fa-c23) and its
+#   installer-integration (fa-o3zg), reachability (xtask reachability: every
+#   library module a surface reaches or a live registries/unwired_modules.toml
+#   row, expiry included; fa-2ioe), forbidden-deps, foundations
+#   (resolved-foundation-graph, fa-c23) and its
 #   planted negative, doctrine (fa-598p) and its planted negative,
 #   reference-boundary, and topology (fa-37f) and its planted negative.
 #   Scoreboards (crates/fa-cli/tests/scoreboard.rs, fa-e9z / fa-7s6d) and verb
@@ -442,6 +445,10 @@ if ! try_reuse_step "registries" ""; then
 fi
 if [ "$QUICK" -eq 0 ]; then
   cargo_build "registry-check" test -p registry-check --bins
+  # Reachability (fa-2ioe): a library module no surface references needs a
+  # live registries/unwired_modules.toml row. `cargo test -p xtask` judges
+  # the tree alone; this step also fails a row past its expiry date.
+  cargo_build "reachability" run -p xtask -- reachability --today "$(date -u +%F)"
 fi
 
 # Forbidden dependencies (plan §1 constraint 1): every first-party crate may
