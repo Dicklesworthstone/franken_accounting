@@ -4513,6 +4513,20 @@ fn the_correct_cluster_replaces_like_the_cli() {
         ],
     );
     mcp.discover();
+    let tools = mcp.result("tools/list", json!({}));
+    let replace = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "fa_correct_replace")
+        .expect("the correct cluster advertises replace");
+    assert!(
+        replace["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("intent")),
+        "the schema must require the complete corrected entry: {replace}"
+    );
     // Planted: no corrected entry is refused before anything is written.
     let (is_error, text, _) = call_tool(
         &mut mcp,
@@ -4520,7 +4534,10 @@ fn the_correct_cluster_replaces_like_the_cli() {
         json!({"vid": target, "reason": "WrongAmount", "evidence": oid}),
     );
     assert!(is_error, "a replacement needs its corrected entry: {text}");
-    assert!(text.contains("intent"), "{text}");
+    // FastMCP rejects a missing required argument before dispatch. Its
+    // schema error does not repeat individual field names; discovery above
+    // independently establishes that the omitted field is required.
+    assert!(text.contains("declared input schema"), "{text}");
     assert_eq!(
         cli_data(&["book", "info", "--book", &b, "--json"]),
         before,
