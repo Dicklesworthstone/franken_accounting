@@ -553,3 +553,44 @@ arithmetic, bulk storage readers, registered per-procedure budgets, structural
 stripped-context admission, and full complexity coverage are still separate
 unmet acceptance within the original open fa-1tvm; this callback wiring does
 not establish a universal wall-time checkpoint bound.
+
+## 2026-10-23 — Full workspace exposes blocked MCP discovery and daemon fixtures
+
+The complete `cargo test --workspace --all-targets --no-fail-fast` campaign
+at exact committed `836009e9`, with no overlays, compiles and terminates
+remote/client101:3075passed,31failed,0ignored across197 target summaries.
+Nineteen real MCP stdio tests fail at `server/discover`: catalog growth made
+the emitted instructions exceed fastmcp0.12.0's unchanged16384-byte protocol
+limit. Eleven daemon integration cases fail before their intended assertions
+because RCH's private `TMPDIR` makes the real Unix socket path too long. The
+remaining failure is a daemon version unit assertion still expecting14 epochs;
+the registered stack and its existing registry test require15, including the
+`foundations` fingerprint. The transcript is
+`workspace-tests-836009e9-rooted-20261023.log` in the verification-output directory.
+
+The MCP correction removes only catalog text duplicated by `tools/list` and
+`resources/list`, retaining every cluster description, accounting/authority
+rule, workflow macro and resource URI. It registers the same tools/resources
+with their full descriptions and validates the constructed server's actual
+discovery before returning from `build_server`. The new boundary test enables
+all on-demand clusters with a256-byte quoted principal, uses the pinned
+protocol validator and checks the retained guidance, names and authority.
+No framework cap, schema, accounting admission or existing stdio assertion is
+relaxed. The daemon fixture uses short retained `/tmp` roots with a portable
+socket-byte bound; actual processes, sockets and event/authority checks stay.
+The version check now requires the complete literal15-name epoch inventory,
+in addition to the existing foundation pins and digest checks. Its win/lose
+split admits the registered foundations fingerprint and still refuses an
+omitted, reordered, duplicated or unexpected name; it does not replace the
+expected inventory with the implementation's own count.
+
+The shared committer preserves these drafts through `f812bacd`; this agent
+does not issue those commits or push them to main. The earlier original-engine
+Rust test-only request expires103/queue_timeout with zero tests; the separate
+current-CLI network counterexample above remains actually executed. A new
+strict-remote network/MCP/daemon campaign is admitted against `f812bacd` plus
+only the daemon test's rustfmt layout overlay. Source/native worker preflight
+passes19.2832% free; the Mac Data volume remains disqualified for heavy local
+work. Its result is still pending. Three-/four-file static scans separately
+exit0 with zero critical findings; neither qualifies the complete static or
+canonical exact-tree gate. No Bead is closed.
