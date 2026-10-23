@@ -158,8 +158,8 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
     // including control characters the registry's small TOML reader omits.
     let (format, book_key, unit_key, book_name, unit_code) = if escaped {
         (ESCAPED_FMT, "book_name_utf8_hex", "base_unit_code_utf8_hex",
-         hex_encode(journal.coordinate.book_name.as_bytes()),
-         hex_encode(journal.coordinate.base_unit_code.as_bytes()))
+         encode_hex_text(&journal.coordinate.book_name),
+         encode_hex_text(&journal.coordinate.base_unit_code))
     } else {
         (FMT, "book_name", "base_unit_code", journal.coordinate.book_name.clone(),
          journal.coordinate.base_unit_code.clone())
@@ -531,11 +531,23 @@ fn decode_row(line: &str, escaped: bool, gl: bool) -> Result<Vec<String>, Format
     }).collect()
 }
 
+/// Lowercase hex of `s`'s UTF-8 bytes: the escaped v3 metadata fields,
+/// which [`decode_hex_text`] reads back.
+fn encode_hex_text(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(s.len().saturating_mul(2));
+    for &b in s.as_bytes() {
+        out.push(char::from(HEX[usize::from(b >> 4)]));
+        out.push(char::from(HEX[usize::from(b & 0x0f)]));
+    }
+    out
+}
+
 fn decode_hex_text(s: &str) -> Result<String, FormatError> {
     if s.len() % 2 != 0 || !s.is_ascii() {
         return Err(text_error("invalid ADS UTF-8 hex metadata"));
     }
-    let bytes = s.as_bytes().chunks_exact(2).map(|pair| {
+    let bytes = s.as_bytes().as_chunks::<2>().0.iter().map(|pair| {
         let high = char::from(pair[0]).to_digit(16);
         let low = char::from(pair[1]).to_digit(16);
         match (high, low) {
