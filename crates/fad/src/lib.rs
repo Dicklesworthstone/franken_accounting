@@ -771,6 +771,14 @@ impl Server<'_> {
                 let files_root = self.files_root.clone();
                 let cwd = request.cwd.map(PathBuf::from);
                 let stdin = request.stdin.map_or(Stdin::Missing, Stdin::Forwarded);
+                // The launch-selected daemon maintainer observes only its
+                // local committed frontier, not client-selected payloads.
+                // Do not add observations when maintenance is disabled.
+                let before = self
+                    .timed
+                    .as_ref()
+                    .filter(|work| work.register_maintenance().is_some())
+                    .and_then(|_| self.book.head().ok());
                 let (exit, out) = match &bound {
                     None => cli::run_for_daemon(
                         &request.argv,
@@ -792,6 +800,14 @@ impl Server<'_> {
                         true,
                     ),
                 };
+                if let Some(before) = before
+                    && self.book.head().is_ok_and(|after| after > before)
+                    && let Some(work) = self.timed.as_mut()
+                {
+                    // A command may commit before reporting a later error;
+                    // the frontier, rather than its exit code, decides.
+                    work.notify_commit();
+                }
                 (
                     Response {
                         op: Op::Run,

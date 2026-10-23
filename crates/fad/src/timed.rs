@@ -242,6 +242,7 @@ pub struct TimedWork {
     last_tick_monotonic_ok: Option<bool>,
     error: Option<String>,
     registers: Option<registers::RegisterWork>,
+    register_wake: bool,
 }
 
 impl TimedWork {
@@ -276,6 +277,7 @@ impl TimedWork {
             last_tick_monotonic_ok: None,
             error: None,
             registers: None,
+            register_wake: false,
         })
     }
 
@@ -306,6 +308,7 @@ impl TimedWork {
             last_tick_monotonic_ok: None,
             error: None,
             registers: Some(registers::RegisterWork::new(periods)?),
+            register_wake: false,
         })
     }
 
@@ -336,10 +339,58 @@ impl TimedWork {
     }
 
     pub(crate) fn deadline(&self) -> Option<Time> {
-        self.next
+        self.next.map(|next| {
+            if self.register_wake {
+                Time::from_nanos(0)
+            } else {
+                next
+            }
+        })
+    }
+
+    /// The serving region observed a request advance the committed frontier.
+    /// Coalesce notifications; a cache publication never notifies itself.
+    /// Only periods explicitly selected at launch can be advanced.
+    pub(crate) fn notify_commit(&mut self) {
+        if self.registers.is_some() && self.next.is_some() {
+            self.register_wake = true;
+        }
+    }
+
+    /// An early commit wake runs one cache attempt without sampling UTC,
+    /// sweeping, or postponing the regular timer. If that timer is already
+    /// due, the normal cycle below consumes the notification and does both.
+    pub(crate) async fn run_register_wake<B: registers::RegisterBook>(
+        &mut self,
+        cx: &Cx,
+        book: &mut B,
+    ) -> bool {
+        if !core::mem::take(&mut self.register_wake) {
+            return false;
+        }
+        if cx.checkpoint().is_err() {
+            self.next = None;
+            return true;
+        }
+        let Some(next) = self.next else {
+            return false;
+        };
+        let Ok(timer) = clock::timer(cx) else {
+            return false;
+        };
+        if timer.now() >= next {
+            return false;
+        }
+        if let Some(registers) = self.registers.as_mut() {
+            registers.run_cycle(cx, book).await;
+        }
+        true
     }
 
     pub(crate) async fn run_due(&mut self, cx: &Cx, book: &mut Book) {
+        if self.run_register_wake(cx, book).await {
+            return;
+        }
         if self.capability.is_some() {
             let sample = SystemClock.observe(cx);
             let _ = self.run_maintained_observation(cx, book, sample).await;
