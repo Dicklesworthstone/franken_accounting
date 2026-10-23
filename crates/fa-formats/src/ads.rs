@@ -585,12 +585,14 @@ fn decode_row(line: &str, escaped: bool, gl: bool) -> Result<Vec<String>, Format
 }
 
 fn decode_hex_text(s: &str) -> Result<String, FormatError> {
-    if s.len() % 2 != 0 || !s.is_ascii() {
+    if !s.len().is_multiple_of(2) || !s.is_ascii() {
         return Err(text_error("invalid ADS UTF-8 hex metadata"));
     }
     let bytes = s
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = char::from(pair[0]).to_digit(16);
             let low = char::from(pair[1]).to_digit(16);
