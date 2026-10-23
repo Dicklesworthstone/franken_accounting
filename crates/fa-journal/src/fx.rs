@@ -18,7 +18,7 @@
 //!   paired conversion account legs whose functional-currency (`base_amount`)
 //!   debits and credits net to zero (`FA-INV-01.realized-fx`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::Cx;
 use fa_model::symbols::label;
