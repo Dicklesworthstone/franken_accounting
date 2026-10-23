@@ -32,6 +32,7 @@ use fa_registry::sod_policy::SodPolicy;
 use fa_registry::threat_model::ThreatModel;
 use fa_registry::toml::{self, Table, Value};
 use fa_registry::topology::Topology;
+use fa_registry::unwired_modules::UnwiredModules;
 use fa_registry::{
     Admissibility, CapabilityCaveats, ControlKinds, EntryClasses, ExitCodes, IntentDependencies,
     Symbols, parse_units, rounding_laws_embedded,
@@ -129,6 +130,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "threat_model.toml",
     "tracing_laws.toml",
     "units.toml",
+    "unwired_modules.toml",
     "verbs.toml",
     "workspace_topology.toml",
 ];
@@ -757,6 +759,8 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         TracingLaws::parse(&read("tracing_laws.toml")?, &procedures).map_err(|e| e.to_string())?;
     let _fx_laws = FxLaws::parse(&read("fx_laws.toml")?, &classes).map_err(|e| e.to_string())?;
     let _formats = Formats::parse(&read("formats.toml")?).map_err(|e| e.to_string())?;
+    let _unwired =
+        UnwiredModules::from_text(&read("unwired_modules.toml")?).map_err(|e| e.to_string())?;
     let claims_config =
         ClaimsLintConfig::parse(&read("claims_lint.toml")?).map_err(|e| e.to_string())?;
 
