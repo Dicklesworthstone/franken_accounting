@@ -2413,6 +2413,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::sweep_reversals_batch(&mut self.db, cx, book, &req, &mut describe).await?)
     }
 
+    /// Execute a bounded batch of approved fixed monthly occurrences under
+    /// the latest corroborated journal tick and current creator authority.
+    pub async fn sweep_recurring(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        let req = sweep_request(capability, max_batch);
+        Ok(
+            fa_journal::recurring::sweep_recurring_batch(&mut self.db, cx, &self.context, &req)
+                .await?,
+        )
+    }
+
     /// Sweep expiry batches, then scheduled-reversal batches, until nothing
     /// remains under the latest tick. Each transaction is bounded by
     /// `max_batch`. A refusal or failure stops the sweep; earlier committed
@@ -3873,7 +3889,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         &self,
         cx: &PurposeContexts,
     ) -> Result<fa_journal::ScheduleVerification, BookError> {
-        self.query(cx, |db, book| Ok(fa_journal::verify_schedules(db, book)?))
+        self.query(cx, |db, book| {
+            let mut verification = fa_journal::verify_schedules(db, book)?;
+            let recurring = fa_journal::recurring::verify_recurring(db, cx, book)?;
+            verification.schedules_checked += recurring.schedules_checked;
+            verification.executed += recurring.executed;
+            verification.cancelled += recurring.cancelled;
+            verification.drift.extend(recurring.drift);
+            Ok(verification)
+        })
     }
 
     /// Recompute every FX-valued entry recorded at or before `known_at`

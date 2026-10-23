@@ -5918,6 +5918,47 @@ verbs = ["subledger"]
 subcommands = ["list", "show", "verify"]
 ops = ["read"]
 
+[[verb]]
+name = "schedule"
+summary = "Approved recurring fixed entries driven by committed TimeEvidence: prepare an exact template and calendar cadence, activate it with independent approval, inspect journal-derived progress, and stop future occurrences by cancellation lineage."
+writes = true
+subcommands = ["recurring"]
+flags = ["--template", "--every-months", "--month-end", "--end", "--plan", "--plan-out", "--approval", "--reason"]
+switches = ["--dry-run"]
+events = ["recurring_plan", "recurring_recorded", "recurring_schedules", "recurring_cancelled"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["schedule recurring create <name> --template <entry.json|-> --every-months <positive integer> --month-end PreserveDay|ClampToMonthEnd|LastDayStaysLast [--end YYYY-MM-DD] --dry-run [--plan-out <new-file>]   (template is an Original intent with explicit native legs, evidence, idempotency_key and effective_date as its start. Description, evidence and effects are fixed. No applications, FX derivation, pending entries or automatic reversals. The plan binds the current execution capability and requires a declared book time-zone policy.)", "schedule recurring create <name> --plan <file|hex|-> --approval <vid>...   (one independent Human approves proposal_digest with fa approve. Use the unchanged plan and creator capability. Creation journals a ScheduleControl and is idempotent by schedule name. The plan authorizes fixed effects; it does not exempt later occurrences from current account, amount, authority, evidence or period laws.)", "schedule recurring list   (current schedules, explicit cadence, next occurrence and any calendar refusal; read authority required)", "schedule recurring cancel <name> --reason <text>   (creator or a principal holding approve may stop future execution under current read/post authority. Cancellation is journaled; existing occurrences require ordinary corrections.)", "The daemon sweeps due occurrences only under corroborated committed TimeEvidence ticks. Each occurrence has a deterministic schedule/index identity, and cancellation, tick and execution progress are transaction witnesses. A Closed period blocks the named occurrence. Agent-profile activation and draft recurring schedules remain unsupported in this slice; a Human creates the approved schedule."]
+example = "fa schedule recurring create monthly-rent --template rent.json --every-months 1 --month-end ClampToMonthEnd --end 2026-12-31 --dry-run --plan-out rent.plan --book ./books/myco --json"
+
+[[event]]
+name = "recurring_plan"
+book = true
+doc = "The fixed template, cadence and execution authority prepared for independent approval. Scope is fixed-effects-approval: each future occurrence must independently pass current posting laws. bytes is the complete portable plan, preserving sealed text across approval publications."
+fields = ["name:string", "proposal_digest:hex", "start:date", "end:date?", "every_months:int", "month_end:string", "legs:int", "bytes:hex", "file:string?", "scope:string"]
+
+[[event]]
+name = "recurring_recorded"
+book = true
+doc = "An independently approved recurring schedule journaled once; recorded_at is assigned by the commit stream."
+fields = ["name:string", "schedule:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "recurring_cancelled"
+book = true
+doc = "Cancellation of future scheduled occurrences. Existing postings and the original approved template remain journaled."
+fields = ["name:string", "schedule:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[event]]
+name = "recurring_schedules"
+book = true
+doc = "Current recurring schedules with execution progress verified against immutable creation, occurrence and cancellation records. blocked names an explicit calendar refusal, including PreserveDay on a shorter month."
+fields = ["schedules:[recurring_schedule]"]
+
+[[shape]]
+name = "recurring_schedule"
+doc = "A fixed monthly schedule and its next unexecuted occurrence."
+fields = ["name:string", "schedule:hex", "principal:hex", "start:date", "end:date?", "every_months:int", "month_end:string", "created_at:seq", "cancelled_at:seq?", "next_index:int", "next_date:date?", "blocked:string?"]
+
 [[event]]
 name = "external_subledger_detail"
 book = true
@@ -5934,6 +5975,26 @@ fields = ["entry:hex", "recorded_at:seq", "feed:string", "batch_key:string", "ef
 name = "external_summary_leg"
 doc = "One gross native summary side in canonical account/unit/dimension order; registered dimension identities preserve party and entity attribution."
 fields = ["account:hex", "side:string", "amount:string", "dimension_set:[batch_plan_dimension]"]
+
+[[mcp.cluster]]
+name = "fa.schedule"
+on_demand = true
+doc = "Approved fixed-entry monthly schedules over committed time evidence: prepare, activate, inspect and cancel. On demand; current read/post and independent Human approval govern activation."
+
+[[mcp.tool]]
+cluster = "fa.schedule"
+name = "recurring"
+verb = "schedule"
+subcommands = ["recurring"]
+positionals = ["action", "name?"]
+flags = ["--template", "--every-months", "--month-end", "--end", "--plan", "--approval", "--reason"]
+switches = ["--dry-run"]
+stdin_property = "template"
+stdin_kind = "object"
+stdin_via = "--template"
+required = ["action"]
+dont = ["Use action create with name, inline template, explicit every_months and month_end, and dry_run:true to prepare. Save the returned complete bytes and obtain independent Human approval of proposal_digest. Then create with the same name, plan set to that hex string and approval references; omit template and cadence inputs.", "Use action list for read-only inspection, or cancel with name and reason to journal cancellation. Plan host paths are refused over MCP; only complete inline hex is accepted. Authority is fixed at launch; Agent-profile activation is unavailable.", "The plan does not pre-admit future periods. Each occurrence uses the current creator capability and normal posting laws; only the daemon's committed, corroborated TimeEvidence drives execution."]
+mistakes = ["Rebuilding sealed templates after approval, silently choosing a month-end policy, or supplying an ambient today value.", "Expecting cancellation to remove already committed entries."]
 
 [[mcp.tool]]
 cluster = "fa.subledger"
@@ -5973,6 +6034,11 @@ switches = []
 required = ["entry"]
 dont = ["Name the committed summary entry; the original source and independent review are checked at its publication prefix. A later review cannot repair a deficient original entry."]
 mistakes = ["Treating the source-summary tie-out as proof that the upstream system supplied every transaction."]
+
+[[bound]]
+verbs = ["schedule"]
+subcommands = ["recurring"]
+ops = ["read"]
 
 [[bound]]
 verbs = ["subledger"]

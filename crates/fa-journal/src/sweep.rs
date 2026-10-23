@@ -1310,6 +1310,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
 pub struct Swept {
     pub expiry: Vec<SweepBatch>,
     pub reversals: Vec<crate::schedule::ReversalBatch>,
+    pub recurring: Vec<crate::recurring::RecurringBatch>,
 }
 
 /// Sweep until nothing remains under the latest tick: expiry batches (plan
@@ -1340,11 +1341,24 @@ pub async fn sweep<V: asupersync::fs::Vfs + Clone>(
     loop {
         match crate::schedule::sweep_reversals_batch(db, ctx, book, req, describe).await? {
             Err(r) => return Ok(Err(r)),
-            Ok(None) => return Ok(Ok(out)),
+            Ok(None) => break,
             Ok(Some(batch)) => {
                 let done = batch.remaining == 0;
                 out.reversals.push(batch);
                 if done {
+                    break;
+                }
+            }
+        }
+    }
+    loop {
+        match crate::recurring::sweep_recurring_batch(db, ctx, book, req).await? {
+            Err(r) => return Ok(Err(r)),
+            Ok(None) => return Ok(Ok(out)),
+            Ok(Some(batch)) => {
+                let more = batch.more;
+                out.recurring.push(batch);
+                if !more {
                     return Ok(Ok(out));
                 }
             }

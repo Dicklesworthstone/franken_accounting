@@ -44,6 +44,7 @@ mod production;
 mod proof;
 mod query;
 mod rea;
+mod recurring;
 mod refusal_object;
 mod sample;
 mod scenario;

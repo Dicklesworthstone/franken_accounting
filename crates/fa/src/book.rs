@@ -874,6 +874,49 @@ impl Book {
         ))
     }
 
+    /// Prepare a fixed-effects recurring schedule for independent approval.
+    pub fn plan_recurring(
+        &self,
+        capability: &fa_policy::Capability,
+        spec: crate::RecurringSpec,
+    ) -> Outcome<crate::RecurringPlan> {
+        with_store!(&self.store, core => core.plan_recurring(&self.purposes(), capability, spec))
+    }
+
+    /// Publish a recurring schedule whose complete proposal has been approved.
+    pub fn create_recurring(
+        &mut self,
+        capability: &fa_policy::Capability,
+        plan: crate::RecurringPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<crate::RecurringRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_recurring(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Current recurring schedules, with verified journal-derived progress.
+    pub fn recurring_schedules(
+        &self,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<Vec<crate::RecurringView>> {
+        with_store!(&self.store, core => core.recurring_schedules(&self.purposes(), capability))
+    }
+
+    /// Stop future recurring effects with a journaled cancellation.
+    pub fn cancel_recurring(
+        &mut self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        reason: &str,
+    ) -> Outcome<crate::RecurringRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.cancel_recurring(
+            &purposes, capability, name, reason,
+        )))
+    }
+
     /// Designate an AR/AP posting leaf and require party detail on every leg.
     pub fn create_native_subledger(
         &mut self,
@@ -3301,6 +3344,18 @@ impl Book {
     ) -> Outcome<Option<fa_journal::ReversalBatch>> {
         let purposes = PurposeContexts::narrow_runtime_root(cx);
         with_store!(&mut self.store, core => core.sweep_reversals(&purposes, capability, max_batch).await)
+    }
+
+    /// Execute one bounded set of approved recurring occurrences reached by
+    /// the latest committed tick, preserving typed blocked-occurrence reports.
+    pub async fn sweep_recurring(
+        &mut self,
+        cx: &Cx,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<Option<crate::RecurringBatch>> {
+        let purposes = PurposeContexts::narrow_runtime_root(cx);
+        with_store!(&mut self.store, core => core.sweep_recurring(&purposes, capability, max_batch).await)
     }
 
     /// Drain expiry batches and then reversal batches under the latest

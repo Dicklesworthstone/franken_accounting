@@ -195,9 +195,15 @@ pub const PRIOR_PERIOD_ERROR_EXTENSION: u16 = 27;
 /// list(u32 corrected ordinal)`, each list strictly ascending, disjoint.
 pub const ENGAGEMENT_CARRY_FORWARD_EXTENSION: u16 = 28;
 
+/// Extension tag 29, the approved fixed template and execution capability of a
+/// monthly recurring schedule (plan §7.6). The whole body is approval-bound.
+pub const RECURRING_SCHEDULE_EXTENSION: u16 = 29;
 /// Extension tag 30, the complete canonical external-detail Workpaper whose
 /// gross account/unit/dimension/side fold this Original summary posts.
 pub const EXTERNAL_SUBLEDGER_EXTENSION: u16 = 30;
+/// Extension tag 31, a kernel-minted recurring occurrence: version, schedule,
+/// zero-based occurrence index and the committed TimeEvidence tick.
+pub const RECURRING_OCCURRENCE_EXTENSION: u16 = 31;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -229,7 +235,9 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     DOCUMENTATION_COMPLETION_EXTENSION,
     PRIOR_PERIOD_ERROR_EXTENSION,
     ENGAGEMENT_CARRY_FORWARD_EXTENSION,
+    RECURRING_SCHEDULE_EXTENSION,
     EXTERNAL_SUBLEDGER_EXTENSION,
+    RECURRING_OCCURRENCE_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -403,6 +411,7 @@ impl ControlKind {
     pub const STATEMENT_ISSUANCE: Self = Self(15);
     pub const ENGAGEMENT_TRANSITION: Self = Self(16);
     pub const CASE_TRANSITION: Self = Self(17);
+    pub const RECURRING_SCHEDULE: Self = Self(18);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -478,6 +487,11 @@ impl ControlKind {
             Self::CASE_TRANSITION,
             "case_transition",
             EntryClass::CASE_CONTROL,
+        ),
+        (
+            Self::RECURRING_SCHEDULE,
+            "recurring_schedule",
+            EntryClass::SCHEDULE_CONTROL,
         ),
     ];
 

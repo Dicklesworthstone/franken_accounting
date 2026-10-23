@@ -128,6 +128,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("production", crate::production::production_cmd),
     ("produce", crate::production::produce_cmd),
     ("subledger", crate::subledger::subledger_cmd),
+    ("schedule", crate::recurring::schedule_cmd),
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
@@ -7067,6 +7068,35 @@ fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Resu
     post_document(ctx, args, forced, doc)
 }
 
+/// Construct a fixed recurring template using the ordinary intent parser.
+/// The schedule kernel admits its supported template subset independently.
+pub(crate) fn recurring_template(
+    out: &Out,
+    book: &mut Book,
+    args: &Args,
+    doc: &Json,
+    principal: VId,
+    capability: Capability,
+) -> Result<EntryPayload, Fail> {
+    if doc.get("fx").is_some() || doc.get("external_subledger").is_some() {
+        return Err(usage(
+            "recurring templates require fixed native-unit legs without source-derived FX or external feeds",
+            "provide an Original entry intent with explicit legs and a start effective_date",
+        ));
+    }
+    Ok(build_post_request(
+        out,
+        book,
+        args,
+        Some(EntryClass::ORIGINAL),
+        doc,
+        principal,
+        capability,
+    )?
+    .request
+    .proposal)
+}
+
 /// A batch member's failure names its member; nothing in the batch is posted.
 fn batch_member_fail(index: usize, fail: Fail) -> Fail {
     match fail {
@@ -9438,6 +9468,7 @@ pub(crate) fn read_review_bytes(files: &Files, path: &str, bound: bool) -> Resul
         ));
     }
     if bytes.starts_with(b"FA-INTENT\0")
+        || bytes.starts_with(fa::RecurringPlan::MAGIC)
         || bytes.starts_with(b"FA-ALLOC-REVIEW\0")
         || bytes.starts_with(b"FA-BAL-REVIEW\0")
         || bytes.starts_with(b"FA-SETTLEMENT-REVIEW\0")

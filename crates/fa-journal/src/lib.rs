@@ -53,6 +53,7 @@ pub mod post;
 pub mod production;
 pub mod projections;
 pub mod rea;
+pub mod recurring;
 pub mod redaction;
 pub mod refusal;
 pub mod revaluation;

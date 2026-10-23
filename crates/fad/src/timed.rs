@@ -5,8 +5,8 @@
 //! never grants System authority. Requests cannot configure or mint it.
 //!
 //! Each cycle journals one clock observation, then performs at most one
-//! expiry transaction and one reversal transaction under the latest
-//! corroborated tick. `sweep_batch` bounds committed effects, not input
+//! expiry transaction, one reversal transaction, and a bounded batch of
+//! approved recurring posts under the latest corroborated tick. `sweep_batch` bounds committed effects, not input
 //! discovery: the current kernel still scans candidate rows eagerly.
 
 pub mod registers;
@@ -125,6 +125,12 @@ pub(crate) trait TimedBook {
         cap: &Capability,
         max: usize,
     ) -> Outcome<Option<ReversalBatch>>;
+    async fn sweep_recurring(
+        &mut self,
+        cx: &Cx,
+        cap: &Capability,
+        max: usize,
+    ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>>;
 }
 
 impl TimedBook for Book {
@@ -158,6 +164,15 @@ impl TimedBook for Book {
         max: usize,
     ) -> Outcome<Option<ReversalBatch>> {
         Book::sweep_reversals(self, cx, cap, max).await
+    }
+
+    async fn sweep_recurring(
+        &mut self,
+        cx: &Cx,
+        cap: &Capability,
+        max: usize,
+    ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
+        Book::sweep_recurring(self, cx, cap, max).await
     }
 }
 
@@ -193,6 +208,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> TimedBook for AsyncBook<V, B> {
     ) -> Outcome<Option<ReversalBatch>> {
         AsyncBook::sweep_reversals(self, &PurposeContexts::narrow_runtime_root(cx), cap, max).await
     }
+
+    async fn sweep_recurring(
+        &mut self,
+        cx: &Cx,
+        cap: &Capability,
+        max: usize,
+    ) -> Outcome<Option<fa_journal::recurring::RecurringBatch>> {
+        AsyncBook::sweep_recurring(self, &PurposeContexts::narrow_runtime_root(cx), cap, max).await
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -201,6 +225,8 @@ pub(crate) struct Cycle {
     pub expired: usize,
     pub reversed: usize,
     pub blocked_reversals: usize,
+    pub recurring: usize,
+    pub blocked_recurring: usize,
 }
 
 /// Timed work owned by the daemon's serving region. Dropping the server
@@ -431,6 +457,14 @@ impl TimedWork {
         )? {
             cycle.reversed = batch.minted.len();
             cycle.blocked_reversals = batch.blocked.len();
+        }
+        cx.checkpoint().map_err(|_| ClockError::Cancelled)?;
+        if let Some(batch) = admitted(
+            book.sweep_recurring(cx, capability, self.policy.sweep_batch)
+                .await,
+        )? {
+            cycle.recurring = batch.posted.len();
+            cycle.blocked_recurring = batch.blocked.len();
         }
         Ok(cycle)
     }

@@ -45,6 +45,8 @@ mod fx_law_tests;
 mod outcome_batch_integrity_tests;
 #[path = "genesis/outcome_keys.rs"]
 mod outcome_key_tests;
+#[path = "genesis/recurring.rs"]
+mod recurring_tests;
 #[path = "genesis/subledger.rs"]
 mod subledger_tests;
 

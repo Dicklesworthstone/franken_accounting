@@ -801,6 +801,8 @@ pub(crate) enum Admission {
     /// binding. The caller still needs their own trunk authority; the token
     /// satisfies only the capability's required dry-run prerequisite.
     VerifiedBatch(crate::batch::VerifiedBatchPlan),
+    /// A fixed occurrence derived by the approved recurring scheduler.
+    Recurring(crate::recurring::Executing),
     /// A dry run ([`fa_policy::admit_base_for_plan`]): never published.
     Plan,
     /// One planned intent of a draft's promotion (plan §15.2): it publishes
@@ -837,6 +839,13 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     admission: Admission,
 ) -> Outcome<Option<fa_policy::AccountScope>> {
     let proposal = &req.proposal;
+    let recurring = match admission {
+        Admission::Recurring(token) => Some(token),
+        _ => None,
+    };
+    if let Err(refusal) = crate::recurring::admission(proposal, recurring) {
+        return Ok(Err(refusal));
+    }
     if let Err(refusal) = validate_post_coordinate(book, proposal) {
         return Ok(Err(refusal));
     }
@@ -851,6 +860,7 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     // Every other admission check still runs with the unchanged capability.
     let admit_base = match admission {
         Admission::Commit
+        | Admission::Recurring(_)
         | Admission::VerifiedBatch(_)
         | Admission::Case(_)
         | Admission::ScratchScenario(_) => fa_policy::admit_base,
@@ -878,8 +888,10 @@ pub(crate) fn authorize_request<V: asupersync::fs::Vfs + Clone>(
     if let Err(denial) = policy::payload_reach(&req.capability, book, proposal, scope.as_ref()) {
         return Ok(Err(policy::refusal(&denial)));
     }
-    if matches!(admission, Admission::Commit | Admission::Case(_))
-        && req.capability.has_requires_dry_run_caveat()
+    if matches!(
+        admission,
+        Admission::Commit | Admission::Case(_) | Admission::Recurring(_)
+    ) && req.capability.has_requires_dry_run_caveat()
         && req.plan_certificate.is_none()
     {
         return Ok(Err(policy::refusal(&fa_policy::Denial::OutOfScope {
@@ -1035,6 +1047,26 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
     prepare_post_in(db, ctx, book, req, None, Admission::Plan, None)
+}
+
+/// Private recurring preparation: every normal accounting law remains live.
+pub(crate) fn prepare_recurring<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+    token: crate::recurring::Executing,
+) -> Outcome<PostPreparation> {
+    prepare_post_in(db, ctx, book, req, None, Admission::Recurring(token), None)
+}
+
+pub(crate) fn witness_recurring_executor<V: asupersync::fs::Vfs + Clone>(
+    prepared: &PreparedPost,
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+) -> Outcome<()> {
+    policy::capability_witness(&prepared.txn, db, book, capability)
 }
 
 /// [`prepare_post`] for one member of an atomic batch (plan §5.8): the same
@@ -1490,6 +1522,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             "Sweep",
             "run the kernel expiry sweep under a committed tick; only that sweep may mint Sweep provenance",
         )),
+        EntryOrigin::Schedule { .. } if matches!(admission, Admission::Recurring(_)) => None,
         EntryOrigin::Schedule { .. } => Some((
             "Schedule",
             "register the scheduled effect and let the kernel scheduler mint it from its trigger",
@@ -1922,6 +1955,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    if let Admission::Recurring(token) = admission
+        && let Err(refusal) = crate::recurring::witness(&txn, db, book, &req, token)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     // 3'''. A scoped token's footprint beyond the payload (plan §14.2,
     //       CobaltGull 3570): every target the commit releases, applies to
     //       or undoes lies wholly inside the scope, or the refusal is that
@@ -1968,6 +2007,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             ),
         },
     };
+    if let Admission::Recurring(token) = admission {
+        evid = match crate::recurring::admission(proposal, Some(token)) {
+            Ok(Some(vid)) => vid,
+            Ok(None) => {
+                return Err(KernelError::Corrupt(
+                    "recurring admission lost its identity".into(),
+                ));
+            }
+            Err(refusal) => {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        };
+    }
     // Earlier legitimate pairs used the caller's key for their Replacement.
     // Preserve exact retries of that immutable history only when the
     // reversal is already recorded and the canonical identity is absent.
@@ -3950,6 +4003,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
     let effects_digest = effect_hasher.finalize().0;
 
+    if let Admission::Recurring(token) = admission {
+        crate::recurring::stage_progress(&mut txn, db, token, evid)?;
+    }
     Ok(Ok(PostPreparation::Ready(Box::new(PreparedPost {
         txn,
         request: req,

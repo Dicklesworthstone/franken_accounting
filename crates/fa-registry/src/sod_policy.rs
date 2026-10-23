@@ -36,9 +36,9 @@ const SCHEMA_TRANSITIONS: &[&str] = &["ChartInstall", "CreatePeriods"];
 const TIME_TRANSITIONS: &[&str] = &["Tick"];
 /// One sweep batch and its SweepCursor: the expiry sweep's Expires (§5.4) or
 /// the scheduled-reversal sweep's Reversals (§7.6).
-const SWEEP_TRANSITIONS: &[&str] = &["Expire", "Reverse"];
+const SWEEP_TRANSITIONS: &[&str] = &["Expire", "Reverse", "Recurring"];
 /// A scheduled reversal cancelled by lineage (§7.6).
-const SCHEDULE_TRANSITIONS: &[&str] = &["Cancel"];
+const SCHEDULE_TRANSITIONS: &[&str] = &["Cancel", "CreateRecurring", "CancelRecurring"];
 /// The control classes with no period state (book-scoped, plan §7.1).
 const IMPORT_TRANSITIONS: &[&str] = &["Import"];
 /// A legal hold's placement and release (plan §8.5).
@@ -579,6 +579,15 @@ mod tests {
             (key("TimeControl", None, None, Some("Tick")), 0),
             (key("SweepControl", None, None, Some("Expire")), 0),
             (key("ScheduleControl", None, None, Some("Cancel")), 0),
+            (
+                key("ScheduleControl", None, None, Some("CreateRecurring")),
+                1,
+            ),
+            (
+                key("ScheduleControl", None, None, Some("CancelRecurring")),
+                0,
+            ),
+            (key("SweepControl", None, None, Some("Recurring")), 0),
             (key("SweepControl", None, None, Some("Reverse")), 0),
             (
                 key(

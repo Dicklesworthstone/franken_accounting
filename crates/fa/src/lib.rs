@@ -83,6 +83,7 @@ pub mod production;
 pub mod projections;
 pub mod proof;
 pub mod query;
+pub mod recurring;
 pub mod report_artifact;
 pub mod roll_forward;
 pub mod scenario;
@@ -256,6 +257,10 @@ pub use proof::{
 pub use query::{
     CertifiedQuery, MAX_QUERY_ROWS, QUERY_CERTIFICATE_FORMAT, QUERY_OUTPUT_FORMAT, QueryCell,
     QueryCertificate, QueryCertificateStatus, QueryRows, profile_refusal,
+};
+pub use recurring::{
+    RecurringBatch, RecurringBlocked, RecurringPlan, RecurringRecorded, RecurringSpec,
+    RecurringView,
 };
 pub use report_artifact::{
     MAX_REPORT_ARTIFACT_BYTES, ReplayedReportArtifact, ReportArtifact, ReportArtifactExpectation,

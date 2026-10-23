@@ -1404,6 +1404,16 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
             cause_ref,
         }) = entry.proposal.control
         {
+            if matches!(
+                entry.proposal.origin,
+                EntryOrigin::Control {
+                    control_kind: fa_model::ControlKind::RECURRING_SCHEDULE,
+                    ..
+                }
+            ) {
+                // The recurring verifier folds this separate lifecycle.
+                continue;
+            }
             cancels.insert(row.vid, (schedule_ref, cause_ref));
             continue;
         }
