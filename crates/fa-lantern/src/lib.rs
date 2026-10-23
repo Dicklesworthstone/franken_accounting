@@ -145,6 +145,8 @@ pub const ROLE_POPULATIONS: &[(&str, &str)] = &[
     ("lookback.preferences", "cash"),
     ("ponzi.net_investment", "cash"),
     ("ponzi.net_investment", "investor_capital"),
+    ("graph.ponzi_motif", "cash"),
+    ("graph.ponzi_motif", "investor_capital"),
     ("distribution.rising_tide", "cash"),
     ("distribution.rising_tide", "investor_capital"),
     ("distribution.pro_rata", "cash"),
