@@ -2473,7 +2473,9 @@ mod tests {
             );
         }
         // Keep the negative probes beyond every registered control kind.
-        for id in [0, 18, 19, u16::MAX] {
+        // 18 is now the registered recurring-schedule control; the ALL loop
+        // above proves it decodes. Keep four genuinely unregistered probes.
+        for id in [0, 19, 20, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"
