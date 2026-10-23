@@ -204,6 +204,7 @@ fn bundle(
         .map(|r| leaf_hash(&r.envelope.encode()))
         .collect();
     let (codes, cutoff, activity) = match &selection {
+        Selection::Statement(_) => panic!("use the statement fixture"),
         Selection::AsOf(day) => (
             if *day < 31 {
                 vec!["P1".into()]
@@ -219,9 +220,6 @@ fn bundle(
             false,
         ),
         Selection::Activity(p) => (p.clone(), None, true),
-        Selection::Statement(_) => {
-            panic!("the native trial-balance fixture requires a TB selector")
-        }
     };
     let mut totals = BTreeMap::new();
     for row in expected_rows {
@@ -241,6 +239,7 @@ fn bundle(
         .fixed(&[0; 16])
         .u64(known_at);
     match selection {
+        Selection::Statement(_) => panic!("use the statement fixture"),
         Selection::AsOf(day) => {
             cert.u8(1).i32(day);
         }
@@ -249,9 +248,6 @@ fn bundle(
             for code in p {
                 cert.bytes(code.as_bytes());
             }
-        }
-        Selection::Statement(_) => {
-            panic!("the native trial-balance fixture requires a TB selector")
         }
     }
     cert.fixed(&[0; 32])
@@ -280,7 +276,7 @@ fn bundle(
     (out.buf, signed(checkpoint))
 }
 fn verify_fixture(bytes: &[u8], anchor: SignedCheckpoint) -> Result<VerifiedReport, ReportError> {
-    verify_report_with(bytes, &[], None, None, |_, _| Ok(anchor))
+    verify_report_with(bytes, &[], None, None, None, |_, _| Ok(anchor))
 }
 #[test]
 fn stock_activity_and_historical_reports_are_independently_recomputed() {
@@ -353,9 +349,11 @@ fn incomplete_payloads_wrong_anchor_and_unsigned_self_trust_are_refused() {
     let mut other = anchor.checkpoint;
     other.through_seq += 1;
     assert_eq!(
-        verify_report_with(&bytes, &[], Some(&other), None, |_, _| Ok(anchor.clone()))
-            .unwrap_err()
-            .predicate,
+        verify_report_with(&bytes, &[], Some(&other), None, None, |_, _| Ok(
+            anchor.clone()
+        ))
+        .unwrap_err()
+        .predicate,
         "recipient_checkpoint"
     );
     let last_payload = bytes
@@ -368,6 +366,8 @@ fn incomplete_payloads_wrong_anchor_and_unsigned_self_trust_are_refused() {
         "record_derivation"
     );
 }
+
+mod statements;
 
 // Hand-written definition and expected output, without the producer evaluator
 // or this verifier's statement fold. The extra unit is deliberately all zero.

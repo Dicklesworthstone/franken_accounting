@@ -40,18 +40,20 @@ fn verify(
 ) -> fa_verify::report::VerifiedReport {
     let key = book.checkpoint_public_key();
     let checkpoint = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
-    let verified = fa_verify::report::verify_statement_report(
+    let verified = fa_verify::report::verify_statement_report_expected(
         &produced.bundle.bytes,
         &[key],
         Some(&checkpoint.checkpoint),
         Some(&produced.receipt),
         &unit_ids(book),
+        Some(&certificate.digest),
     )
     .expect("the independently authenticated journal must reproduce every statement byte");
     assert_eq!(verified.output, certificate.output);
     assert_eq!(verified.certificate_digest, certificate.digest);
     assert_eq!(verified.known_at, certificate.known_at.0);
     assert_eq!(verified.scope, "recomputation");
+    assert_eq!(verified.unit_universe_source, "authenticated-registry");
     assert!(verified.statement.is_some());
     assert!(verified.receipt.is_some());
     assert!(
@@ -59,6 +61,75 @@ fn verify(
         "statement lines are not trial-balance rows"
     );
     verified
+}
+
+// Exercise the public legacy assembler with exactly the authenticated
+// checkpoint records from a real v2 export. Journal's vertex keys only order
+// records here; the reconstructed statement must equal the signed checkpoint.
+fn legacy_bundle(
+    book: &Book,
+    produced: &fa::ProducedBundle,
+    certificate: &ReportCertificate,
+) -> fa_notary::Bundle {
+    let mut reader = fa_model::Reader::new(&produced.bundle.bytes);
+    let bound = fa_notary::report::MAX_REPORT_BUNDLE_BYTES;
+    assert_eq!(
+        reader.bytes(64, "format").unwrap(),
+        fa_notary::report::REPORT_BUNDLE_FORMAT
+    );
+    assert_eq!(reader.u16("major").unwrap(), 2);
+    assert_eq!(reader.u16("minor").unwrap(), 0);
+    let _ = reader.bytes(bound, "certificate").unwrap();
+    let signed = reader.bytes(bound, "checkpoint").unwrap();
+    let checkpoint = fa_verify::verify_checkpoint(signed, &[book.checkpoint_public_key()]).unwrap();
+    let prefix = fa_verify::verify_prefix(
+        reader.bytes(bound, "prefix").unwrap(),
+        &checkpoint.checkpoint,
+    )
+    .unwrap();
+    assert_eq!(
+        reader.u32("records").unwrap() as usize,
+        prefix.envelopes.len()
+    );
+    let records = prefix
+        .envelopes
+        .iter()
+        .enumerate()
+        .map(|(index, envelope)| {
+            let _ = reader.u32("proposal_len").unwrap();
+            let payload = reader.bytes(bound, "payload").unwrap();
+            (
+                VId(index as u128 + 1),
+                fa_notary::Record::decode(envelope.kind, payload).unwrap(),
+                CommitSeq(envelope.commit_seq),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reader.u32("migrations").unwrap(),
+        0,
+        "fixture has no migrations"
+    );
+    let journal = fa_notary::Journal::from_records_with_evidence(
+        certificate.book_id,
+        CommitSeq(checkpoint.checkpoint.through_seq),
+        Some(CommitSeq(0)),
+        records,
+    )
+    .unwrap();
+    assert_eq!(
+        journal.statement(),
+        produced.checkpoint.checkpoint.body.statement
+    );
+    fa_notary::report::assemble(
+        &journal,
+        &produced.checkpoint,
+        &certificate.canonical_bytes().unwrap(),
+        certificate.known_at,
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap()
+    .unwrap()
 }
 
 #[test]
@@ -432,8 +503,8 @@ fn reseal(certificate: &mut ReportCertificate) {
         fa::certificate::STATEMENT_CERTIFICATE_FORMAT,
         &[&body[..body.len() - 32]],
     );
-    // Ensure a negative vector is internally consistent, so rejection must
-    // come from report recomputation, not a broken certificate checksum.
+    // Keep each negative vector internally consistent, so a malformed
+    // certificate checksum cannot mask the authority or recomputation checks.
     assert_eq!(
         ReportCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap(),
         *certificate
@@ -474,6 +545,19 @@ fn resealed_statement_forgeries_and_missing_authenticated_records_are_refused() 
     verify(&fixture.book, &produced, &certified.certificate);
     let key = fixture.book.checkpoint_public_key();
     let units = unit_ids(&fixture.book);
+    let expected = certified.certificate.digest;
+    let legacy = legacy_bundle(&fixture.book, &produced, &certified.certificate);
+    let legacy_verified = fa_verify::report::verify_statement_report_expected(
+        &legacy.bytes,
+        &[key],
+        None,
+        None,
+        &units,
+        Some(&expected),
+    )
+    .unwrap();
+    assert_eq!(legacy_verified.output, certified.certificate.output);
+    assert_eq!(legacy_verified.unit_universe_source, "recipient-supplied");
     let eur = fixture.book.context().units.lookup("EUR").unwrap().0;
     for corruption in ["amount", "mapping", "definition", "zero_unit"] {
         let mut certificate = certified.certificate.clone();
@@ -515,12 +599,31 @@ fn resealed_statement_forgeries_and_missing_authenticated_records_are_refused() 
         }
         reseal(&mut certificate);
         let changed = replace_certificate(&produced.bundle.bytes, &certificate);
-        // No receipt is supplied here: exercise the verifier even when a
-        // hostile producer has resealed its own certificate and output.
+        // The recipient retains the original certificate, independently
+        // of this changed bundle. Resealing cannot substitute another report.
+        assert_eq!(
+            fa_verify::report::verify_statement_report_expected(
+                &changed,
+                &[key],
+                None,
+                None,
+                &units,
+                Some(&expected),
+            )
+            .unwrap_err()
+            .predicate,
+            "recipient_certificate",
+            "accepted {corruption} forgery against the retained certificate"
+        );
+        // Preserve the legacy recomputation vector as well: an explicit
+        // unit universe does not authenticate the producer's output, so the
+        // independent fold must still reject each internally resealed lie.
+        let changed_legacy = replace_certificate(&legacy.bytes, &certificate);
         assert!(
-            fa_verify::report::verify_statement_report(&changed, &[key], None, None, &units)
-                .is_err(),
-            "accepted {corruption} forgery"
+            fa_verify::report::verify_statement_report(
+                &changed_legacy, &[key], None, None, &units,
+            ).is_err(),
+            "accepted legacy {corruption} forgery"
         );
     }
     let (source, _) = fixture.book.read_entry(sale.vid).unwrap().unwrap();
@@ -541,39 +644,114 @@ fn resealed_statement_forgeries_and_missing_authenticated_records_are_refused() 
     let mut modified = produced.bundle.bytes.clone();
     modified[at + source.len() - 1] ^= 1;
     assert_eq!(
-        fa_verify::report::verify_statement_report(&modified, &[key], None, None, &units)
-            .unwrap_err()
-            .predicate,
+        fa_verify::report::verify_statement_report_expected(
+            &modified,
+            &[key],
+            None,
+            None,
+            &units,
+            Some(&expected),
+        )
+        .unwrap_err()
+        .predicate,
         "record_derivation"
     );
     let mut omitted = produced.bundle.bytes.clone();
     omitted.drain(at..at + source.len());
     assert!(
-        fa_verify::report::verify_statement_report(&omitted, &[key], None, None, &units).is_err()
+        fa_verify::report::verify_statement_report_expected(
+            &omitted,
+            &[key],
+            None,
+            None,
+            &units,
+            Some(&expected),
+        )
+        .is_err()
     );
     assert_eq!(
-        fa_verify::report::verify_statement_report(&produced.bundle.bytes, &[], None, None, &units)
-            .unwrap_err()
-            .predicate,
+        fa_verify::report::verify_statement_report_expected(
+            &produced.bundle.bytes,
+            &[],
+            None,
+            None,
+            &units,
+            Some(&expected),
+        )
+        .unwrap_err()
+        .predicate,
         "checkpoint_signature"
     );
     assert_eq!(
         fa_verify::report::verify_report(&produced.bundle.bytes, &[key], None, None)
             .unwrap_err()
             .predicate,
-        "statement_units",
-        "a statement's registered unit universe is an explicit recipient premise"
+        "report_input_authority",
+        "a registry-bearing statement needs a trusted receipt or recipient pin"
     );
-    let missing_unit: Vec<_> = units.iter().copied().filter(|unit| *unit != eur).collect();
-    assert!(
+    assert_eq!(
         fa_verify::report::verify_statement_report(
             &produced.bundle.bytes,
+            &[key],
+            None,
+            None,
+            &units,
+        )
+        .unwrap_err()
+        .predicate,
+        "report_input_authority",
+        "explicit units cannot bypass v2 input authority"
+    );
+    assert_eq!(
+        fa_verify::report::verify_report_expected(
+            &legacy.bytes,
+            &[key],
+            None,
+            None,
+            Some(&expected),
+        )
+        .unwrap_err()
+        .predicate,
+        "statement_units",
+        "a legacy statement's full unit universe remains an explicit recipient premise"
+    );
+    let without_explicit_units = fa_verify::report::verify_report_expected(
+        &produced.bundle.bytes,
+        &[key],
+        None,
+        None,
+        Some(&expected),
+    )
+    .unwrap();
+    assert_eq!(without_explicit_units.output, certified.certificate.output);
+    assert_eq!(
+        without_explicit_units.unit_universe_source,
+        "authenticated-registry"
+    );
+    let missing_unit: Vec<_> = units.iter().copied().filter(|unit| *unit != eur).collect();
+    assert_eq!(
+        fa_verify::report::verify_statement_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            None,
+            None,
+            &missing_unit,
+            Some(&expected),
+        )
+        .unwrap_err()
+        .predicate,
+        "statement_units",
+        "omitting a zero-activity recipient unit changes the complete report"
+    );
+    assert!(
+        fa_verify::report::verify_statement_report(
+            &legacy.bytes,
             &[key],
             None,
             None,
             &missing_unit,
         )
         .is_err(),
-        "omitting a zero-activity recipient unit changes the complete report"
+        "legacy explicit units must still reproduce every zero-activity line"
     );
 }
