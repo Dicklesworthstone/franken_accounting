@@ -9998,6 +9998,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "rule-approver-b",
     ]);
     run2(&["rule", "derive", "--event", "EV-1001"]);
+    run2(&["rule", "backtest", &fee_rule]);
     run2(&[
         "rule",
         "activate",
@@ -20926,6 +20927,109 @@ fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::
         "--json",
     ]));
     assert_eq!(int(&lineage, "row_count"), Some(1), "{}", lineage.render());
+
+    // Backtest (plan §10.6): v2 adds a dollar to both legs. EV-8 precedes
+    // v1's activation and carries no `net` resource.
+    let v2 = write(
+        &dir,
+        "sale2.rule",
+        r#"rule sale v2 for event Sale {
+  let net = event.resource("net", "USD") + "1.00 USD"
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-8",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-02-20",
+        "--evidence",
+        &ev,
+        "--resource",
+        "gross:9.00 USD",
+        "--json",
+    ]);
+    let tested = doc(&ok(&["rule", "backtest", &v2, "--json"]));
+    let counts =
+        |j: &Json| ["events", "same", "differs", "refused", "no_baseline"].map(|key| int(j, key));
+    assert_eq!(
+        counts(&tested),
+        [Some(2), Some(0), Some(1), Some(0), Some(1)],
+        "{}",
+        tested.render()
+    );
+    let rows = arr(&tested, "rows");
+    assert_eq!(
+        (text(&rows[0], "event_code"), text(&rows[0], "outcome")),
+        ("EV-8", "no_baseline")
+    );
+    assert!(
+        text(&rows[0], "detail").contains("`net`"),
+        "{}",
+        tested.render()
+    );
+    assert_eq!(
+        (text(&rows[1], "event_code"), text(&rows[1], "outcome")),
+        ("EV-9", "differs")
+    );
+    assert_eq!(text(&rows[1], "baseline"), digest);
+    assert_eq!(text(&arr(&rows[1], "legs")[1], "amount"), "41.00 USD");
+    assert_eq!(
+        text(&arr(&rows[1], "baseline_legs")[1], "amount"),
+        "40.00 USD"
+    );
+    // The version in force against itself changes nothing; --from narrows.
+    let itself = doc(&ok(&[
+        "rule",
+        "backtest",
+        "--rule",
+        &digest,
+        "--from",
+        "2026-03-01",
+        "--json",
+    ]));
+    assert_eq!(
+        counts(&itself),
+        [Some(1), Some(1), Some(0), Some(0), Some(0)],
+        "{}",
+        itself.render()
+    );
+    assert!(arr(&itself, "rows").is_empty());
+    // --compare names the baseline on every date, active or not.
+    let compared = doc(&ok(&[
+        "rule",
+        "backtest",
+        &v2,
+        "--compare",
+        &digest,
+        "--to",
+        "2026-02-28",
+        "--json",
+    ]));
+    assert_eq!(
+        counts(&compared),
+        [Some(1), Some(0), Some(0), Some(1), Some(0)],
+        "{}",
+        compared.render()
+    );
+    assert_eq!(text(&arr(&compared, "rows")[0], "outcome"), "both_refused");
+    let (code, out, _) = run(&[
+        "rule",
+        "backtest",
+        &v2,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-03-01",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+
     // A live rule's account cannot be closed out from under it (plan §10.3).
     let (code, out, _) = run(&["chart", "close", "6000", "--on", "2026-12-31", "--json"]);
     assert_eq!(

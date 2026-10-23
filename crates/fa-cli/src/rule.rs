@@ -1,5 +1,5 @@
-//! `fa rule check|propose|list|show|activate|eval|derive` (plan §10.3,
-//! §10.5, §10.6, bead fa-c34). A Canon posting rule is a text file. `check` compiles it against
+//! `fa rule check|propose|list|show|activate|eval|derive|backtest` (plan
+//! §10.3, §10.5, §10.6, bead fa-c34). A Canon posting rule is a text file. `check` compiles it against
 //! the book's units: names, unit types, registered rounding laws and
 //! dimensions, and the per-unit balance proof. It reports the IR's content
 //! address and the rule's dependency set. `propose` journals the version
@@ -8,7 +8,8 @@
 //! REA event and reports the legs it derives. `activate` binds a version to
 //! its name from a date under dual control, and `derive` posts what the
 //! version in force derives from an event; the kernel re-derives it in the
-//! commit.
+//! commit. `backtest` reports the events whose entries a candidate version
+//! would change.
 
 use fa::rule::{
     CompiledRule, Derivation, EvalError, InputType, InputValue, Inputs,
@@ -33,6 +34,7 @@ const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approv
 const DERIVE: &str =
     "fa rule derive [--rule <ir_digest> [--input <name>=<value>]... [--key K]] --event <code|vid>";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
+const BACKTEST: &str = "fa rule backtest (<rule-file|-> | --rule <ir_digest>) [--compare <ir_digest>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 
 pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
@@ -43,9 +45,12 @@ pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("activate") => activate(ctx, args),
         Some("eval") => eval(ctx, args),
         Some("derive") => derive(ctx, args),
+        Some("backtest") => backtest(ctx, args),
         _ => Err(usage(
-            "rule has the subcommands check, propose, list, show, activate, eval and derive",
-            format!("{CHECK} | {PROPOSE} | {LIST} | {SHOW} | {ACTIVATE} | {EVAL} | {DERIVE}"),
+            "rule has the subcommands check, propose, list, show, activate, eval, derive and backtest",
+            format!(
+                "{CHECK} | {PROPOSE} | {LIST} | {SHOW} | {ACTIVATE} | {EVAL} | {DERIVE} | {BACKTEST}"
+            ),
         )),
     }
 }
@@ -450,7 +455,7 @@ fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         })?
         .rule;
-    let given = inputs(&rule, args, &book.context().units)?;
+    let given = inputs(&rule, &args.flag_all("--input"), &book.context().units)?;
     let key = match args.flag("--key") {
         Some(key) => key.to_string(),
         None => default_key(&digest, event_vid, &rule, &given)?,
@@ -695,11 +700,11 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// Parse `--input <name>=<value>` against the rule's declared inputs.
 fn inputs(
     rule: &CompiledRule,
-    args: &Args,
+    given: &[&str],
     units: &fa_money::UnitRegistry,
 ) -> Result<Inputs, Fail> {
     let mut out = Inputs::new();
-    for raw in args.flag_all("--input") {
+    for &raw in given {
         let Some((name, value)) = raw.split_once('=') else {
             return Err(usage(
                 format!("--input `{raw}` is not <name>=<value>"),
@@ -819,7 +824,7 @@ fn eval(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         (None, None) => return Err(Fail::Internal("rule eval selected no rule".into())),
     };
     let units = &book.context().units;
-    let given = inputs(&rule, args, units)?;
+    let given = inputs(&rule, &args.flag_all("--input"), units)?;
     let event = find_event(&rea, book.context().book_id, target).ok_or_else(|| {
         usage(
             format!("no event `{target}` in this book at {}", rea.known_at.0),
@@ -876,4 +881,294 @@ fn eval(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     ]);
     ctx.out.event("rule_evaluated", fields, &human.join("\n"));
     Ok(())
+}
+
+/// `fa rule backtest (<rule-file|-> | --rule <ir_digest>) [--compare
+/// <ir_digest>] [--from D] [--to D] [--input …] [--as-known-at …]` (plan
+/// §10.6): run a candidate version over the book's recorded events of its
+/// kind and report every event whose entry would differ from the
+/// baseline's. The baseline is the `--compare` version, or else the version
+/// of the candidate's rule name in force on the event's date (what `fa rule
+/// derive` posts). Two derivations are the same entry when their effective
+/// dates and legs agree, in any order. Nothing is written.
+fn backtest(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let from_journal = match (args.flag("--rule"), args.positional.len()) {
+        (Some(digest), 2) => Some(digest_arg(digest, BACKTEST)?),
+        (None, 3) => None,
+        _ => {
+            return Err(usage(
+                "rule backtest takes one rule file or `--rule <ir_digest>`, not both",
+                BACKTEST,
+            ));
+        }
+    };
+    let compare = args
+        .flag("--compare")
+        .map(|digest| digest_arg(digest, BACKTEST))
+        .transpose()?;
+    let from = args
+        .flag("--from")
+        .map(|day| day_arg("--from", day))
+        .transpose()?;
+    let to = args
+        .flag("--to")
+        .map(|day| day_arg("--to", day))
+        .transpose()?;
+    if let (Some(from), Some(to)) = (from, to)
+        && from > to
+    {
+        return Err(usage(
+            format!("--from {} is after --to {}", from.render(), to.render()),
+            BACKTEST,
+        ));
+    }
+    let text = match from_journal {
+        Some(_) => None,
+        None => Some(ctx.files.read_text(source(args, BACKTEST)?)?),
+    };
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let mut selected = None;
+    let book = ctx.books.open_admitted(args, |book| {
+        let scope = book.read_scope(who, &cap)??;
+        let (known_at, _) = known_at_read_flag(args, book, &ctx.out, &cap)?;
+        let seq = scope.admit_whole_book(known_at)??;
+        selected = Some(book.rea_snapshot(Some(seq))?);
+        Ok(())
+    })?;
+    let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
+    let held = |digest: &[u8; 32]| -> Result<CompiledRule, Fail> {
+        let (_, version) = book.rule_version(digest, Some(rea.known_at), &cap)??;
+        version.map(|version| version.rule).ok_or_else(|| {
+            usage(
+                format!(
+                    "this book holds no rule version {} at {}",
+                    hex(digest),
+                    rea.known_at.0
+                ),
+                "fa rule list names the versions; fa rule propose <file> journals one",
+            )
+        })
+    };
+    let candidate = match (&text, from_journal) {
+        (Some(text), _) => compile_rule(book.context(), text).map_err(Fail::Refusal)?,
+        (None, Some(digest)) => held(&digest)?,
+        (None, None) => return Err(Fail::Internal("rule backtest selected no rule".into())),
+    };
+    let units = &book.context().units;
+    let raw = args.flag_all("--input");
+    let given = inputs(&candidate, &raw, units)?;
+    let mut versions = std::collections::BTreeMap::new();
+    if let Some(digest) = compare {
+        let rule = held(&digest)?;
+        if rule.event() != candidate.event() {
+            return Err(usage(
+                format!(
+                    "--compare {} is rule {} for event {}, not {}",
+                    hex(&digest),
+                    rule.name(),
+                    rule.event().name(),
+                    candidate.event().name()
+                ),
+                "compare versions of rules for the same event kind",
+            ));
+        }
+        versions.insert(digest, rule);
+    }
+    // Without --compare: the candidate's name's activations decide.
+    let bindings = match compare {
+        Some(_) => None,
+        None => {
+            let (_, names) = book.rule_names(Some(rea.known_at), &cap)??;
+            names
+                .into_iter()
+                .find(|name| name.name == candidate.name())
+                .map(|name| name.bindings)
+        }
+    };
+    let mut events: Vec<&fa_journal::EventRow> = rea
+        .events
+        .values()
+        .filter(|event| {
+            event.spec.kind == candidate.event()
+                && from.is_none_or(|from| event.spec.occurred_on >= from)
+                && to.is_none_or(|to| event.spec.occurred_on <= to)
+        })
+        .collect();
+    events.sort_by(|a, b| {
+        a.spec
+            .occurred_on
+            .cmp(&b.spec.occurred_on)
+            .then_with(|| a.spec.code.cmp(&b.spec.code))
+    });
+    let (mut same, mut differs, mut refused, mut no_baseline) = (0i128, 0i128, 0i128, 0i128);
+    let mut rows = Vec::new();
+    let mut human = Vec::new();
+    for event in &events {
+        let baseline_digest = compare.or_else(|| {
+            bindings
+                .as_ref()
+                .and_then(|bindings| bindings.in_force(event.spec.occurred_on))
+        });
+        if let Some(digest) = baseline_digest
+            && !versions.contains_key(&digest)
+        {
+            versions.insert(digest, held(&digest)?);
+        }
+        let mine = fa::rule::evaluate(&candidate, &event.spec, &given);
+        let theirs = match baseline_digest.and_then(|digest| versions.get(&digest)) {
+            Some(rule) => {
+                // The baseline takes the --input values it declares.
+                let declared: Vec<&str> = raw
+                    .iter()
+                    .copied()
+                    .filter(|raw| {
+                        raw.split_once('=').is_some_and(|(name, _)| {
+                            rule.inputs().iter().any(|decl| decl.name == name)
+                        })
+                    })
+                    .collect();
+                Some(fa::rule::evaluate(
+                    rule,
+                    &event.spec,
+                    &inputs(rule, &declared, units)?,
+                ))
+            }
+            None => None,
+        };
+        let (outcome, detail) = match (&mine, &theirs) {
+            (Ok(a), Some(Ok(b))) if same_entry(a, b, units) => {
+                same += 1;
+                continue;
+            }
+            (Ok(_), Some(Ok(_))) => {
+                differs += 1;
+                ("differs", None)
+            }
+            (Err(error), Some(Ok(_))) => {
+                refused += 1;
+                ("candidate_refused", Some(format!("candidate: {error}")))
+            }
+            (Ok(_), Some(Err(error))) => {
+                refused += 1;
+                ("baseline_refused", Some(format!("baseline: {error}")))
+            }
+            (Err(mine), Some(Err(theirs))) => {
+                refused += 1;
+                (
+                    "both_refused",
+                    Some(format!("candidate: {mine}; baseline: {theirs}")),
+                )
+            }
+            (_, None) => {
+                no_baseline += 1;
+                (
+                    "no_baseline",
+                    mine.as_ref()
+                        .err()
+                        .map(|error| format!("candidate: {error}")),
+                )
+            }
+        };
+        let effective = |derived: Option<&Derivation>| {
+            derived.map_or(Json::Null, |derived| s(derived.effective.render()))
+        };
+        let legs = |derived: Option<&Derivation>| {
+            Json::Arr(derived.map_or_else(Vec::new, |derived| {
+                derived
+                    .legs
+                    .iter()
+                    .map(|leg| leg_json(leg, units))
+                    .collect()
+            }))
+        };
+        let theirs = theirs.as_ref().and_then(|theirs| theirs.as_ref().ok());
+        human.push(format!(
+            "{} {} {outcome}{}{}",
+            event.spec.code,
+            event.spec.occurred_on.render(),
+            baseline_digest.map_or(String::new(), |digest| format!(
+                " (baseline {})",
+                hex(&digest)
+            )),
+            detail
+                .as_deref()
+                .map_or(String::new(), |detail| format!(": {detail}")),
+        ));
+        rows.push(obj(vec![
+            ("event_code", s(&event.spec.code)),
+            ("occurred_on", s(event.spec.occurred_on.render())),
+            ("outcome", s(outcome)),
+            (
+                "baseline",
+                baseline_digest.map_or(Json::Null, |digest| s(hex(&digest))),
+            ),
+            ("effective", effective(mine.as_ref().ok())),
+            ("baseline_effective", effective(theirs)),
+            ("legs", legs(mine.as_ref().ok())),
+            ("baseline_legs", legs(theirs)),
+            ("detail", detail.map_or(Json::Null, s)),
+        ]));
+    }
+    ctx.out.known_at(rea.known_at);
+    human.insert(
+        0,
+        format!(
+            "rule {} v{} over {} {} event{}: {same} same, {differs} differ, {refused} refused, {no_baseline} without a baseline (nothing is posted)",
+            candidate.name(),
+            candidate.version(),
+            events.len(),
+            candidate.event().name(),
+            if events.len() == 1 { "" } else { "s" },
+        ),
+    );
+    let day = |day: Option<DateDay>| day.map_or(Json::Null, |day| s(day.render()));
+    let mut fields = rule_fields(&candidate);
+    fields.extend([
+        (
+            "compare",
+            compare.map_or(Json::Null, |digest| s(hex(&digest))),
+        ),
+        ("from", day(from)),
+        ("to", day(to)),
+        ("events", Json::Int(events.len() as i128)),
+        ("same", Json::Int(same)),
+        ("differs", Json::Int(differs)),
+        ("refused", Json::Int(refused)),
+        ("no_baseline", Json::Int(no_baseline)),
+        ("rows", Json::Arr(rows)),
+    ]);
+    ctx.out.event("rule_backtest", fields, &human.join("\n"));
+    Ok(())
+}
+
+/// Two derivations post the same entry: the same effective date and the
+/// same legs, in any order.
+fn same_entry(a: &Derivation, b: &Derivation, units: &fa_money::UnitRegistry) -> bool {
+    let legs = |derived: &Derivation| {
+        let mut legs: Vec<_> = derived
+            .legs
+            .iter()
+            .map(|leg| {
+                (
+                    leg.account.clone(),
+                    side_name(leg.side),
+                    leg.amount.render(units),
+                    leg.dims.clone(),
+                )
+            })
+            .collect();
+        legs.sort();
+        legs
+    };
+    a.effective == b.effective && legs(a) == legs(b)
+}
+
+fn day_arg(flag: &str, text: &str) -> Result<DateDay, Fail> {
+    DateDay::parse(text).map_err(|error| {
+        usage(
+            format!("{flag} `{text}` is not a date ({error:?})"),
+            format!("{flag} YYYY-MM-DD"),
+        )
+    })
 }
