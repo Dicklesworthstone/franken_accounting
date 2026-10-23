@@ -12,6 +12,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const WATCHDOG: Duration = Duration::from_secs(3);
+/// The deadline for a peer that receives the request and then stalls. It
+/// also covers the connection, so it must outlast connecting on a loaded test
+/// worker (100 ms did not) while staying well inside the peer's watchdog.
+const STALLED_PEER_MS: u64 = 1_000;
 
 fn socket() -> (PathBuf, UnixListener) {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -104,7 +108,7 @@ fn a_responding_peer_preserves_the_complete_response() {
 #[test]
 fn a_peer_that_accepts_a_write_but_never_replies_times_out_without_resending() {
     let (path, listener) = socket();
-    let daemon = daemon(100);
+    let daemon = daemon(STALLED_PEER_MS);
     let request = request();
     let (release, released) = mpsc::channel();
     std::thread::scope(|scope| {
@@ -129,7 +133,7 @@ fn a_peer_that_accepts_a_write_but_never_replies_times_out_without_resending() {
             matches!(
                 error,
                 ClientError::Timeout {
-                    timeout_ms: 100,
+                    timeout_ms: STALLED_PEER_MS,
                     phase: Phase::ReceivingResponse
                 }
             ),
@@ -147,7 +151,7 @@ fn a_peer_that_accepts_a_write_but_never_replies_times_out_without_resending() {
 fn a_partial_response_does_not_disable_the_absolute_deadline() {
     for prefix_only in [true, false] {
         let (path, listener) = socket();
-        let daemon = daemon(100);
+        let daemon = daemon(STALLED_PEER_MS);
         let request = request();
         let (release, released) = mpsc::channel();
         std::thread::scope(|scope| {
