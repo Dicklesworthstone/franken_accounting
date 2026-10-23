@@ -1086,6 +1086,12 @@ expands = ["checkpoint", "create"]
 name = "checkpoint sign"
 expands = ["checkpoint", "create"]
 
+# Plan §15.6 "an audit-ready artifact in one command": a recorded run's
+# numbered workpaper.
+[[alias]]
+name = "workpaper export"
+expands = ["finding", "export"]
+
 [[alias]]
 name = "chart open-account"
 expands = ["chart", "open"]

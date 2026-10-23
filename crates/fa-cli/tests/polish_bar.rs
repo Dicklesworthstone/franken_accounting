@@ -632,7 +632,6 @@ fn every_plan_leaf_present_or_registered() {
             "fa verify certificate",
             "fa-waow: today fa certificate status and fa replay",
         ),
-        ("fa workpaper export", "fa-waow"),
     ];
     let plan = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
