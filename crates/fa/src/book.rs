@@ -959,6 +959,33 @@ impl Book {
         ))
     }
 
+    /// Create one value of a registered dimension (bead fa-ficc) under
+    /// SchemaChange authority; an identical retry writes nothing.
+    pub fn create_dimension_value(
+        &mut self,
+        spec: &crate::dimension::DimensionValueSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionValueRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_dimension_value(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Every registered kind's dimension value at `known_at` (the head when
+    /// `None`), with the prefix read, under current whole-book read authority.
+    pub fn dimension_values(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::dimension::DimensionValueRow>)> {
+        with_store!(&self.store, core => core.dimension_values(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
     /// Read journaled native subledgers at one prefix under current authority.
     pub fn native_subledgers(
         &self,

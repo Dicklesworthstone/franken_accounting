@@ -834,6 +834,18 @@ usage = ["entity add <entity.json|->   ({\"code\": \"ACME-DE\", \"name\": \"Acme
 example = "fa entity add acme-de.json --book ./books/myco --json"
 
 [[verb]]
+name = "dimension"
+summary = "Dimension values (plan §4.1): create a value of a registered dimension (cost_center, department, project, product, region, fund, grant, segment) with its name, parent and valid time, or list them. A post intent's leg tags values with \"dimensions\": {\"cost_center\": \"CC10\"}; the kernel refuses a value the book does not hold or one not effective on the entry's date."
+writes = true
+subcommands = ["add", "list"]
+flags = ["--name", "--parent", "--from", "--to", "--key", "--as-known-at"]
+switches = []
+events = ["dimension_value_recorded", "dimension_values"]
+exits = [0, 2, 3, 4, 5, 6, 7]
+usage = ["dimension add <dimension> <code> --name <name> [--parent <code>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--key K]   (a journaled SchemaChange control under schema_change authority; the code is unique in its dimension; a parent is an existing value of the same dimension; the value is effective from --from (inclusive) and before --to (exclusive), always when they are omitted; the default key is dimension:<dimension>:<code>, so an exact retry returns the recorded value)", "dimension list [<dimension>] [--as-known-at HEAD|<seq>]   (every value, or one dimension's; needs read)", "A leg tags values in its intent: \"dimensions\": {\"cost_center\": \"CC10\", \"project\": \"P-7\"}. The legal entity and the party keep the leg's entity and party fields. An unknown value is a usage error; a value outside its valid time is FA-REF-194."]
+example = "fa dimension add cost_center CC10 --name Operations --book ./books/myco --json"
+
+[[verb]]
 name = "finding"
 summary = "Discover recorded forensic runs, record a certified run, inspect its immutable findings, append independent human reviews, and export or replay numbered workpapers."
 writes = true
@@ -2139,6 +2151,18 @@ doc = "One REA control journaled (plan §4.1, §4.5): object is party, instrumen
 fields = ["object:string", "code:string", "target:hex", "control_entry:hex", "recorded_at:seq", "already_recorded:bool"]
 
 [[event]]
+name = "dimension_value_recorded"
+book = true
+doc = "One dimension value journaled by its SchemaChange control (plan §4.1): value is its declaration (dimension, code, name, parent, valid_from inclusive, valid_to exclusive), the dimension id legs carry it under, its DimensionValue vid and the sequence it was recorded at; already_recorded is true when an exact retry of the same key wrote nothing."
+fields = ["value:dimension_value", "control_entry:hex", "already_recorded:bool"]
+
+[[event]]
+name = "dimension_values"
+book = true
+doc = "Every value of the registered dimensions the book holds at known_at, by dimension id then code; dimension is the one asked for, or null for all."
+fields = ["known_at:seq", "dimension:string?", "values:[dimension_value]"]
+
+[[event]]
 name = "legal_entities"
 book = true
 doc = "The book's legal entities at known_at, in code order: each with its jurisdiction, functional unit, life span and the number of external ids it was created with."
@@ -2917,6 +2941,11 @@ doc = "One chart row; the bounds and `limit_scope` (lifetime: the account's whol
 fields = ["code:string", "name:string", "type:string", "leaf:bool", "unit:string", "lower_bound:amount?", "upper_bound:amount?", "limit_scope:string?"]
 
 [[shape]]
+name = "dimension_value"
+doc = "One value of a registered dimension (plan §4.1): its dimension and code, name, parent value (null at the top), valid time [valid_from, valid_to) with null for unbounded, the dimension id a leg's dimension_set carries it under, its DimensionValue vid and the sequence that recorded it."
+fields = ["dimension:string", "code:string", "name:string", "parent:string?", "valid_from:date?", "valid_to:date?", "dimension_id:int", "vid:hex", "recorded_at:seq"]
+
+[[shape]]
 name = "period"
 doc = "One period with its current state."
 fields = ["code:string", "state:string", "kind:string", "start:date", "end:date", "fiscal_year:int"]
@@ -3345,8 +3374,13 @@ fields = ["untrusted_content:text", "source:string"]
 
 [[shape]]
 name = "entry_leg"
-doc = "One leg of a committed entry."
-fields = ["side:string", "account:hex", "amount:amount", "memo:untrusted_text?"]
+doc = "One leg of a committed entry; dimensions are its dimension_set in ascending dimension id: legal_entity, a registered kind (cost_center, department, project, product, region, fund, grant, segment) or party, each with the DimensionValue vid it names."
+fields = ["side:string", "account:hex", "amount:amount", "memo:untrusted_text?", "dimensions:[leg_dimension]"]
+
+[[shape]]
+name = "leg_dimension"
+doc = "One value a leg tags: its dimension's code and the DimensionValue vid."
+fields = ["dimension:string", "value:hex"]
 
 [[shape]]
 name = "plan_warning"
@@ -5997,6 +6031,16 @@ subcommands = ["list"]
 ops = ["read"]
 
 [[bound]]
+verbs = ["dimension"]
+subcommands = ["add"]
+ops = ["schema_change"]
+
+[[bound]]
+verbs = ["dimension"]
+subcommands = ["list"]
+ops = ["read"]
+
+[[bound]]
 verbs = ["party"]
 subcommands = ["ownership"]
 ops = ["read"]
@@ -6077,6 +6121,24 @@ mistakes = ["A role the registry does not list (the refusal names the registered
 verbs = ["chart"]
 subcommands = ["role"]
 ops = ["read", "schema_change"]
+
+[[mcp.cluster]]
+name = "fa.dimensions"
+on_demand = true
+doc = "Dimension values (plan §4.1, fa-ficc): create a cost center, department, project or other registered dimension's value, or list them; a posting leg tags values in its intent's dimensions object. On demand (fa-mcp --cluster fa.dimensions): the default surface is at its 40-tool budget."
+
+[[mcp.tool]]
+cluster = "fa.dimensions"
+name = "dimension"
+verb = "dimension"
+subcommands = ["add", "list"]
+selector = "action"
+positionals = ["dimension?", "code?"]
+flags = ["--name", "--parent", "--from", "--to", "--key", "--as-known-at"]
+switches = []
+required = []
+dont = ["Name the dimension by its registered code (cost_center, department, project, product, region, fund, grant, segment); the legal entity and the party are not created here.", "Don't recreate a value to change its window or name: a value's declaration is fixed when it is created.", "Don't tag a leg with a value outside its valid time: the post is refused (FA-REF-194); date the entry inside the window or pick an effective value."]
+mistakes = ["Calling add without dimension, code and name.", "A parent that is not yet a value of the same dimension.", "valid_to on or before valid_from."]
 
 [[mcp.cluster]]
 name = "fa.subledger"

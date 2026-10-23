@@ -933,6 +933,12 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &[Op::Read, Op::SchemaChange],
             Succeeds,
         ),
+        // fa-ficc: a dimension value is a schema control legs then tag.
+        row(
+            &["dimension", "add", "cost_center", "CC10", "--name", "Ops"],
+            &[Op::SchemaChange],
+            Succeeds,
+        ),
         row(
             &["party", "add", "party.json"],
             &[Op::SchemaChange],

@@ -136,6 +136,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
+    ("dimension", crate::dimension::dimension_cmd),
     ("finding", crate::finding::finding_cmd),
     ("fx", crate::fx::fx_cmd),
     ("bank", crate::bank::bank_cmd),
@@ -6696,7 +6697,8 @@ fn parse_legs(
         leg.settles = parse_settles(l, &what, ctx, book, earlier)?;
         // A leg names its legal entity (required in a multi-entity book)
         // and its counterparty by code; the kernel checks both exist
-        // (plan §4.1, §4.5). Dimension ids ascend: entity 1, party 12.
+        // (plan §4.1, §4.5). Dimension ids ascend: entity 1, the registered
+        // kinds 2..=9, party 12.
         let code_field = |field: &str| -> Result<Option<&str>, Fail> {
             match l.get(field) {
                 None | Some(Json::Null) => Ok(None),
@@ -6719,6 +6721,11 @@ fn parse_legs(
                 fa_model::party_value_vid(ctx.book_id, code),
             ));
         }
+        // The registered dimensions (cost center, project, ...; fa-ficc),
+        // kept ascending by dimension id as the model requires.
+        leg.dimension_set
+            .extend(crate::dimension::leg_dimensions(l, &what, ctx.book_id)?);
+        leg.dimension_set.sort_by_key(|(dimension, _)| *dimension);
         legs.push((leg, ordinal));
     }
     Ok(legs)
@@ -19926,6 +19933,23 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                                 ("account", s(format!("{:032x}", l.account_ref.0))),
                                 ("amount", s(render_amount(l.amount, units)?)),
                                 ("memo", memo),
+                                (
+                                    "dimensions",
+                                    Json::Arr(
+                                        l.dimension_set
+                                            .iter()
+                                            .map(|(dimension, value)| {
+                                                obj(vec![
+                                                    (
+                                                        "dimension",
+                                                        s(crate::dimension::code_of(*dimension)),
+                                                    ),
+                                                    ("value", s(format!("{:032x}", value.0))),
+                                                ])
+                                            })
+                                            .collect(),
+                                    ),
+                                ),
                             ]))
                         })
                         .collect::<Result<_, Fail>>()?;

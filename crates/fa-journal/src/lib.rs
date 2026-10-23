@@ -28,6 +28,7 @@ pub mod case;
 pub mod chart;
 pub mod closing;
 pub mod custody;
+pub mod dimension;
 pub mod draft;
 pub mod engagement;
 pub mod entity;

@@ -1506,6 +1506,11 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
                 }
             }
         }
+        if let Some(refusal) =
+            crate::dimension::admit_leg_dimensions(leg, i, effective_date, &mut read_vertex)?
+        {
+            return Ok(Err(refusal));
+        }
         accounts.push(account);
     }
     Ok(Ok(accounts))
