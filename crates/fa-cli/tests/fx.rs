@@ -316,6 +316,230 @@ fn retained_spot_rate_values_native_entry_and_functional_activity_after_reopen()
     }
 }
 
+fn settlement_fixture() -> (Fixture, String, String) {
+    let f = Fixture::new();
+    let chart = f.file(
+        "settlement-chart.json",
+        r#"{"accounts":[{"code":"3900","name":"FX conversion","type":"Equity","unit":"any-currency"},{"code":"4900","name":"Realized FX","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&f.book, &["chart", "import", &chart]);
+    let party = f.file(
+        "customer.json",
+        r#"{"code":"CUST","kind":"Customer","name":"Foreign customer"}"#,
+    );
+    ok(&f.book, &["party", "add", &party]);
+    let spot = f.rate(
+        "invoice-spot",
+        "spot_close",
+        "2026-03-05",
+        "21",
+        "20",
+        "HalfEven",
+    );
+    let invoice_path = f.file(
+        "foreign-invoice.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"foreign-invoice","legs":[{{"side":"debit","account":"1200","party":"CUST","amount":"1000.00 EUR"}},{{"side":"credit","account":"4000","amount":"1000.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+            text(data(&spot), "oid"),
+        ),
+    );
+    let invoice = f.post(&invoice_path);
+    let invoice_vid = text(data(&invoice), "vid").to_string();
+    let rate = f.rate(
+        "settlement",
+        "settlement",
+        "2026-03-06",
+        "11",
+        "10",
+        "HalfEven",
+    );
+    let rate_oid = text(data(&rate), "oid").to_string();
+    (f, invoice_vid, rate_oid)
+}
+
+#[test]
+fn foreign_receipt_relief_is_derived_partial_final_reversed_and_retry_safe() {
+    let (f, invoice, rate) = settlement_fixture();
+    let receipt_args = |number: &str, foreign: &str, cash: &str| -> Vec<String> {
+        [
+            "receipt",
+            "--party",
+            "CUST",
+            "--number",
+            number,
+            "--date",
+            "2026-03-06",
+            "--cash",
+            "1100",
+            "--receivable",
+            "1200",
+            "--amount",
+            cash,
+            "--applies",
+            &format!("{invoice}:0={foreign}"),
+            "--fx-rate",
+            &rate,
+            "--conversion",
+            "3900",
+            "--realized-fx",
+            "4900",
+            "--evidence",
+            &f.evidence,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    };
+    let plan_path = f.dir.join("receipt.plan").display().to_string();
+    let mut first = receipt_args("partial", "333.33 EUR", "366.66 USD");
+    first.extend(["--dry-run".into(), "--plan-out".into(), plan_path.clone()]);
+    let planned = ok(
+        &f.book,
+        &first.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(text(&planned, "event"), "plan");
+    assert_eq!(rows(data(&planned), "legs").len(), 5);
+    let commit = ["commit", "--plan", &plan_path, "--grant", "read"];
+    let first_post = ok(&f.book, &commit);
+    let first_vid = text(data(&first_post), "vid");
+    let first_entry = f.entry(first_vid);
+    let applied = first_entry
+        .proposal
+        .legs
+        .iter()
+        .find(|leg| !leg.settles.is_empty())
+        .unwrap();
+    assert_eq!(applied.amount.mantissa, 33_333);
+    assert_eq!(applied.base_amount.unwrap().mantissa, 35_000);
+    assert_eq!(
+        applied.settles[0].target.vid,
+        VId(u128::from_str_radix(&invoice, 16).unwrap())
+    );
+    let before_retry = head(&f.book);
+    let retried = ok(&f.book, &commit);
+    assert_eq!(text(data(&retried), "vid"), first_vid);
+    assert_eq!(head(&f.book), before_retry);
+
+    let last = receipt_args("final", "666.67 EUR", "733.34 USD");
+    let final_post = ok(
+        &f.book,
+        &last.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let final_entry = f.entry(text(data(&final_post), "vid"));
+    let final_relief = final_entry
+        .proposal
+        .legs
+        .iter()
+        .find(|leg| !leg.settles.is_empty())
+        .unwrap();
+    assert_eq!(final_relief.base_amount.unwrap().mantissa, 70_000);
+    let activity = f.activity();
+    let net = |code: &str| {
+        text(
+            rows(data(&activity), "rows")
+                .iter()
+                .find(|row| text(row, "account") == code)
+                .unwrap(),
+            "net",
+        )
+    };
+    assert_eq!(net("1200"), "0.00 USD");
+    assert_eq!(net("3900"), "0.00 USD");
+    assert_eq!(net("1100"), "1100.00 USD");
+    assert_eq!(net("4900"), "-50.00 USD");
+
+    ok(
+        &f.book,
+        &[
+            "reverse",
+            first_vid,
+            "--reason",
+            "WrongAmount",
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let replacement = receipt_args("reapplied", "333.33 EUR", "366.66 USD");
+    let reapplied = ok(
+        &f.book,
+        &replacement.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let restored = f.entry(text(data(&reapplied), "vid"));
+    let relief = restored
+        .proposal
+        .legs
+        .iter()
+        .find(|leg| !leg.settles.is_empty())
+        .unwrap();
+    assert_eq!(relief.base_amount.unwrap().mantissa, 35_000);
+    ok(&f.book, &["verify", "open-items"]);
+    ok(&f.book, &["verify", "fx-conversion"]);
+}
+
+#[test]
+fn foreign_receipt_refuses_unexplained_cash_and_incomplete_route_without_posting() {
+    let (f, invoice, rate) = settlement_fixture();
+    let before = head(&f.book);
+    let (status, refusal) = run(
+        &f.book,
+        &[
+            "receipt",
+            "--party",
+            "CUST",
+            "--number",
+            "wrong-cash",
+            "--date",
+            "2026-03-06",
+            "--cash",
+            "1100",
+            "--receivable",
+            "1200",
+            "--amount",
+            "1099.00 USD",
+            "--applies",
+            &format!("{invoice}:0=1000.00 EUR"),
+            "--fx-rate",
+            &rate,
+            "--conversion",
+            "3900",
+            "--realized-fx",
+            "4900",
+            "--evidence",
+            &f.evidence,
+        ],
+        None,
+    );
+    assert_ne!(status, 0, "{}", refusal.render());
+    assert_eq!(head(&f.book), before);
+    let (status, refusal) = run(
+        &f.book,
+        &[
+            "receipt",
+            "--party",
+            "CUST",
+            "--number",
+            "missing-route",
+            "--date",
+            "2026-03-06",
+            "--cash",
+            "1100",
+            "--receivable",
+            "1200",
+            "--amount",
+            "1100.00 USD",
+            "--applies",
+            &format!("{invoice}:0=1000.00 EUR"),
+            "--fx-rate",
+            &rate,
+            "--evidence",
+            &f.evidence,
+        ],
+        None,
+    );
+    assert_eq!(status, 2, "{}", refusal.render());
+    assert_eq!(head(&f.book), before);
+}
+
 #[test]
 fn exact_fx_dry_run_commits_its_saved_plan_and_retries_without_new_publication() {
     let f = Fixture::new();

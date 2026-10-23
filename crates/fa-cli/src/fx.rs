@@ -272,6 +272,9 @@ pub(crate) fn value_intent(
             INTENT_USAGE,
         ));
     }
+    if fx.get("law").and_then(Json::as_str) == Some("SettlementCarryingBasis") {
+        return settlement_intent(book, capability, fx, proposal);
+    }
     strict_object(fx, &["law", "rates"], "intent.fx", INTENT_USAGE)?;
     let law = match required_string(fx, "law", "intent.fx", INTENT_USAGE)? {
         "SpotClose" => FxLawId::SpotClose,
@@ -315,6 +318,113 @@ pub(crate) fn value_intent(
         law,
         &oids.into_iter().collect::<Vec<_>>(),
     )??)
+}
+
+/// Two declared economic legs are expanded into the explicitly requested FX
+/// route. Their cash/native amounts, target, sides and dimensions are checked;
+/// the carrying valuation comes exclusively from the journal.
+fn settlement_intent(
+    book: &mut Book,
+    capability: &Capability,
+    fx: &Json,
+    mut proposal: EntryPayload,
+) -> Result<EntryPayload, Fail> {
+    const FIX: &str = "supply two legs (functional-currency cash and one fully applied foreign control leg), and fx:{law: SettlementCarryingBasis, rates:[D:oid], conversion_account:<code>, realized_fx_account:<code>}; receipt/payment accept --fx-rate, --conversion and --realized-fx with exactly one --applies <vid>:<leg>=<foreign amount>";
+    strict_object(
+        fx,
+        &["law", "rates", "conversion_account", "realized_fx_account"],
+        "intent.fx",
+        FIX,
+    )?;
+    let rates = fx.get("rates").and_then(Json::as_arr).ok_or_else(|| {
+        usage(
+            "FX settlement requires one retained Settlement Rate document",
+            FIX,
+        )
+    })?;
+    let [rate] = rates else {
+        return Err(usage(
+            "FX settlement requires exactly one Rate document",
+            FIX,
+        ));
+    };
+    let rate = rate
+        .as_str()
+        .ok_or_else(|| usage("Rate must be a D:oid string", FIX))?;
+    let rate_document = Oid(crate::document::hex32(rate, "intent.fx.rates")?);
+    if proposal.legs.len() != 2 {
+        return Err(usage(
+            "FX settlement requires exactly two declared source legs",
+            FIX,
+        ));
+    }
+    let applying_index = proposal
+        .legs
+        .iter()
+        .position(|leg| !leg.settles.is_empty())
+        .ok_or_else(|| {
+            usage(
+                "FX settlement must name the invoice or bill it applies to",
+                FIX,
+            )
+        })?;
+    let applying = proposal.legs[applying_index].clone();
+    let cash = proposal.legs[1 - applying_index].clone();
+    let [application] = applying.settles.as_slice() else {
+        return Err(usage(
+            "FX settlement supports one target per applying leg",
+            FIX,
+        ));
+    };
+    if !cash.settles.is_empty()
+        || application.amount != applying.amount
+        || applying.side == cash.side
+        || cash.amount.unit != book.spec()?.base_unit
+        || applying.amount.unit == cash.amount.unit
+    {
+        return Err(usage(
+            "FX settlement requires opposite cash/control sides, base-currency cash and a fully applied foreign leg",
+            FIX,
+        ));
+    }
+    let route = |field| {
+        required_string(fx, field, "intent.fx", FIX)
+            .map(|code| fa_model::account_vid(book.context().book_id, code))
+    };
+    let request = fa::FxSettlementRequest {
+        target: application.target,
+        target_ordinal: application.ordinal,
+        amount: applying.amount,
+        settlement_amount: cash.amount,
+        settlement_account: cash.account_ref,
+        conversion_account: route("conversion_account")?,
+        realized_fx_account: route("realized_fx_account")?,
+        rate_document,
+    };
+    proposal.legs.clear();
+    proposal.unit_totals.clear();
+    let prepared = book.prepare_fx_settlement(capability, &request, proposal)??;
+    let carrying = prepared.carrying();
+    if applying.account_ref != carrying.account
+        || applying.side == carrying.side
+        || applying.dimension_set != carrying.dimensions
+    {
+        return Err(usage(
+            "the declared applying account, side or dimensions disagree with the retained open item",
+            FIX,
+        ));
+    }
+    let mut result = prepared.into_proposal();
+    for leg in &mut result.legs {
+        if !leg.settles.is_empty() {
+            leg.memo = applying.memo.clone();
+        }
+        if leg.account_ref == cash.account_ref && leg.amount.unit == cash.amount.unit {
+            leg.memo = cash.memo.clone();
+            leg.dimension_set = cash.dimension_set.clone();
+        }
+    }
+    Ok(result)
 }
 
 pub(crate) fn functional_tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

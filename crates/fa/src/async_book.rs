@@ -3726,7 +3726,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Some(at) => at,
                 None => db.frontier().map_err(KernelError::from)?,
             };
-            Ok(fa_journal::verify_fx_conversions(db, &book.units, at)?)
+            Ok(fa_journal::verify_fx_conversions(db, cx, book, at)?)
         })
     }
 

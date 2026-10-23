@@ -366,6 +366,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &EquityRollForwardRequest,
     ) -> Outcome<EquityRollForwardReport> {
+        let source_request = match self.equity_source_request(cx, principal, capability, request)? {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let source = match self.roll_forward(cx, principal, capability, &source_request)? {
+            Ok(source) => source,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(equity_from_lead_schedule(source, request))
+    }
+
+    /// Resolve the complete equity/income chart at the request's one prefix.
+    /// Certification and ordinary reads must use the same selection law.
+    pub(crate) fn equity_source_request(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &EquityRollForwardRequest,
+    ) -> Outcome<RollForwardRequest> {
         // Authorization precedes the chart read that selects the leaves;
         // roll_forward repeats both checks at the same prefix.
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context().book_id)
@@ -450,23 +470,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(selected) => selected,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let source = match self.roll_forward(
-            cx,
-            principal,
-            capability,
-            &RollForwardRequest {
-                accounts,
-                units: request.units.clone(),
-                label: request.label.clone(),
-                effective_from: request.effective_from,
-                effective_through: request.effective_through,
-                known_at: Some(at),
-            },
-        )? {
-            Ok(source) => source,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        Ok(equity_from_lead_schedule(source, request))
+        Ok(Ok(RollForwardRequest {
+            accounts,
+            units: request.units.clone(),
+            label: request.label.clone(),
+            effective_from: request.effective_from,
+            effective_through: request.effective_through,
+            known_at: Some(at),
+        }))
     }
 }
 
@@ -501,7 +512,7 @@ pub struct EquityRollForwardReport {
 /// Classify the lead schedule's legs and fold the statement. Stocks are
 /// the schedule's own opening and closing (debit minus credit, as one
 /// positive side); nothing is read again.
-fn equity_from_lead_schedule(
+pub(crate) fn equity_from_lead_schedule(
     source: RollForward,
     request: &EquityRollForwardRequest,
 ) -> Result<EquityRollForwardReport, Refusal> {
@@ -623,6 +634,7 @@ fn as_account(account: &AccountRow) -> Account {
 #[cfg(test)]
 mod tests {
     mod certification;
+    mod equity_certificate;
     mod workpaper;
 
     use super::*;

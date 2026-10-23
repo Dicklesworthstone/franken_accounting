@@ -291,6 +291,10 @@ pub struct Daemon {
     pub max_frame_bytes: usize,
     /// How long a connection may sit between frames before the daemon closes it.
     pub idle_timeout_ms: u64,
+    /// One absolute client deadline for connecting, sending and receiving.
+    /// Separate from the server's incomplete-frame idle timeout, so a valid
+    /// long-running report gets its registered execution allowance.
+    pub request_timeout_ms: u64,
     /// Interval between daemon clock observations, in nanoseconds.
     pub tick_ns: u64,
     /// Maximum accounting entries per expiry or reversal batch in one cycle.
@@ -620,6 +624,8 @@ impl Registry {
                 .map_err(|_| "verbs.toml: daemon: max_frame_bytes out of range".to_string())?,
             idle_timeout_ms: u64::try_from(int("idle_timeout_ms")?)
                 .map_err(|_| "verbs.toml: daemon: idle_timeout_ms out of range".to_string())?,
+            request_timeout_ms: u64::try_from(int("request_timeout_ms")?)
+                .map_err(|_| "verbs.toml: daemon: request_timeout_ms out of range".to_string())?,
             tick_ns: u64::try_from(int("tick_ns")?)
                 .map_err(|_| "verbs.toml: daemon: tick_ns out of range".to_string())?,
             sweep_batch: usize::try_from(int("sweep_batch")?)
@@ -907,6 +913,8 @@ impl Registry {
             || d.max_frame_bytes == 0
             || u32::try_from(d.max_frame_bytes).is_err()
             || d.idle_timeout_ms == 0
+            || d.request_timeout_ms == 0
+            || d.request_timeout_ms.checked_mul(1_000_000).is_none()
             || d.tick_ns == 0
             || d.sweep_batch == 0
             || d.sweep_batch > fa_model::limits::MAX_BATCH_ENTRIES
@@ -915,7 +923,7 @@ impl Registry {
             || d.socket == d.lease
         {
             return Err(
-                "verbs.toml: daemon: protocol ≥ 1, a frame limit that fits the 4-byte prefix, non-zero idle and tick intervals, sweep_batch within the model batch limit, and two distinct plain file names".into(),
+                "verbs.toml: daemon: protocol ≥ 1, a frame limit that fits the 4-byte prefix, non-zero idle, request and tick intervals (request milliseconds must fit nanoseconds), sweep_batch within the model batch limit, and two distinct plain file names".into(),
             );
         }
         for e in &self.events {
@@ -1501,6 +1509,19 @@ mod tests {
     #[test]
     fn inconsistent_registries_are_refused() {
         let cases: Vec<(&str, Result<Registry, String>)> = vec![
+            (
+                "zero client request timeout",
+                with(|s| s.replace("request_timeout_ms = 300000", "request_timeout_ms = 0")),
+            ),
+            (
+                "client request timeout exceeds the monotonic clock",
+                with(|s| {
+                    s.replace(
+                        "request_timeout_ms = 300000",
+                        "request_timeout_ms = 18446744073709551615",
+                    )
+                }),
+            ),
             (
                 "alias to a missing verb",
                 with(|s| s.replace("expands = [\"tb\"]", "expands = [\"tbx\"]")),

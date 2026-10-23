@@ -311,7 +311,7 @@ pub fn verify_realized_fx(
     let mut by_account: BTreeMap<u128, Vec<&OracleRealizedLeg>> = BTreeMap::new();
 
     for leg in legs {
-        if leg.mantissa <= 0 || leg.base_mantissa <= 0 || leg.base_unit != base_unit {
+        if leg.mantissa <= 0 || leg.base_mantissa < 0 || leg.base_unit != base_unit {
             return Err("invalid leg mantissa or base_unit on realized FX entry".into());
         }
         if leg.unit == base_unit && leg.base_mantissa != leg.mantissa {
@@ -341,6 +341,45 @@ pub fn verify_realized_fx(
         if d != c {
             return Err(format!("entity {e:?} base amounts unbalanced: {d} != {c}"));
         }
+    }
+
+    // Zero functional relief preserves the positive foreign postings and
+    // omits the zero native base-conversion leg. Its complete four-leg
+    // vector has no free choice of a balancing amount.
+    if legs.iter().any(|leg| leg.base_mantissa == 0) {
+        let [settled, conversion, cash, realized] = legs else {
+            return Err("zero relief requires four complete realized FX legs".into());
+        };
+        let cash_amount = round_convert(
+            settled.mantissa,
+            quote_scale,
+            base_scale,
+            rate_num,
+            rate_den,
+            rounding_law,
+        )?;
+        let distinct: BTreeSet<_> = legs.iter().map(|leg| leg.account).collect();
+        if distinct.len() != 4
+            || settled.unit != quote_unit
+            || settled.base_mantissa != 0
+            || conversion.unit != quote_unit
+            || conversion.mantissa != settled.mantissa
+            || conversion.base_mantissa != 0
+            || conversion.side != settled.side.flipped()
+            || conversion.entity != settled.entity
+            || cash.side != conversion.side
+            || cash.unit != base_unit
+            || cash.mantissa != cash_amount
+            || realized.side != settled.side
+            || realized.unit != base_unit
+            || realized.mantissa != cash_amount
+        {
+            return Err(
+                "zero relief does not reproduce its exact foreign, cash and realized FX effects"
+                    .into(),
+            );
+        }
+        return Ok(());
     }
 
     let mut conversion = None;
@@ -421,8 +460,8 @@ pub fn fold_functional_period(
         let mut touched = BTreeSet::new();
         let mut by_entity: BTreeMap<Option<String>, (i128, i128)> = BTreeMap::new();
         for leg in &entry.legs {
-            if leg.base_unit != base_unit || leg.base_mantissa <= 0 {
-                return Err("leg missing positive base_mantissa in base_unit".into());
+            if leg.base_unit != base_unit || leg.base_mantissa < 0 {
+                return Err("leg missing nonnegative base_mantissa in base_unit".into());
             }
             if leg.unit == base_unit && leg.base_mantissa != leg.mantissa {
                 return Err("base_unit leg base_mantissa != native mantissa".into());
@@ -755,4 +794,43 @@ pub fn remeasure_temporal_oracle(
         remeasured_net_income_functional: remeasured_ni,
         ending_retained_earnings_functional: ending_re,
     })
+}
+
+#[cfg(test)]
+mod carrying_tests {
+    use super::*;
+
+    #[test]
+    fn zero_relief_and_exact_undo_preserve_native_effects_and_functional_folds() {
+        let leg = |side, account, unit, mantissa, base_mantissa| OracleRealizedLeg {
+            side,
+            account,
+            unit,
+            mantissa,
+            base_unit: 1,
+            base_mantissa,
+            entity: None,
+        };
+        let legs = vec![
+            leg(Side::Credit, 10, 2, 1, 0),
+            leg(Side::Debit, 20, 2, 1, 0),
+            leg(Side::Debit, 30, 1, 2, 2),
+            leg(Side::Credit, 40, 1, 2, 2),
+        ];
+        verify_realized_fx(&legs, 1, 2, 2, 2, 2, 1, "HalfEven").unwrap();
+        let mut reversed = legs.clone();
+        for leg in &mut reversed {
+            leg.side = leg.side.flipped();
+        }
+        verify_realized_fx(&reversed, 1, 2, 2, 2, 2, 1, "HalfEven").unwrap();
+        let entries = [legs, reversed].map(|legs| OracleFunctionalEntry {
+            period: "P1".into(),
+            is_pending: false,
+            is_resolved: false,
+            legs,
+        });
+        let cells = fold_functional_period(&entries, 1, "P1").unwrap();
+        assert_eq!(cells[&(20, 1, "P1".into(), None)], (0, 0, 2));
+        assert_eq!(cells[&(30, 1, "P1".into(), None)], (2, 2, 2));
+    }
 }

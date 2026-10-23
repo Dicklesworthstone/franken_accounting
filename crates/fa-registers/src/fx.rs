@@ -181,9 +181,9 @@ fn functional_mantissa(
 ) -> Result<i128, RegisterError> {
     match leg.base_amount {
         Some(base) => {
-            if base.unit != spec.base_unit || base.mantissa <= 0 {
+            if base.unit != spec.base_unit || base.mantissa < 0 {
                 return Err(RegisterError::ProjectionDrift(format!(
-                    "entry {:032x} leg {ordinal} has base_amount in unit {} (mantissa {}), expected positive base_unit {}",
+                    "entry {:032x} leg {ordinal} has base_amount in unit {} (mantissa {}), expected nonnegative base_unit {}",
                     entry_vid.0, base.unit.0, base.mantissa, spec.base_unit.0
                 )));
             }

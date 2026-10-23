@@ -3385,7 +3385,7 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
     }
     let mut settle_tpl = h.proposal(Vec::new(), b"fx-settle-mar28", EntryClass::ORIGINAL);
     settle_tpl.effective_date = mar_28;
-    let settle_prop = plan_realized_fx_settlement(
+    let mut settle_prop = plan_realized_fx_settlement(
         &mut budget,
         settle_tpl,
         ar_eur,
@@ -3400,6 +3400,21 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
         &h.book.units,
     )
     .unwrap();
+    let invoice_vid = fa_model::entry_vid(
+        h.book.book_id,
+        &PRINCIPAL.0.to_le_bytes(),
+        b"fx-spot-100-eur",
+    );
+    let invoice_ref = fa_journal::post::read_entry(&h.db, invoice_vid)
+        .unwrap()
+        .unwrap()
+        .0
+        .entry_ref(invoice_vid);
+    settle_prop.legs[0].settles = vec![fa_model::Settlement {
+        target: invoice_ref,
+        ordinal: 0,
+        amount: Amount::new(eur, 10_000),
+    }];
 
     // Verify realized FX entry against independent reference oracle (`FA-INV-01.realized-fx`).
     let to_oracle_legs = |p: &EntryPayload| -> Vec<OracleRealizedLeg> {
@@ -3439,7 +3454,7 @@ fn fx_valuation_residual_revaluation_and_realized_fx_match_oracle_and_fold_funct
             proposal: settle_prop.clone(),
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            capability: Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
         };
         h.runtime
             .block_on(async move { post(db, &ctx, book, req).await })
@@ -4180,14 +4195,18 @@ fn fx_unpaired_realized_fx_settlement_is_refused_without_mutating_book() {
             proposal: unpaired_settle,
             approvals: Vec::new(),
             plan_certificate: None,
-            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            capability: Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap(),
         };
         let err = h
             .runtime
             .block_on(async move { post(db, &ctx, book, req).await })
             .unwrap()
             .unwrap_err();
-        assert_eq!((err.code, err.exit), ("FA-REF-001", exit::REFUSAL));
+        assert_eq!(
+            (err.code, err.exit),
+            (fa_journal::refusal::code::SETTLE_SHAPE, exit::REFUSAL)
+        );
+        assert!(err.message.contains("explicitly applied foreign leg"));
     }
     assert_eq!(h.db.frontier().unwrap(), before);
 }
