@@ -290,7 +290,7 @@ impl Adapter {
         if let Some(e) = detect::floats(arguments)
             .or_else(|| detect::instants(tool, arguments))
             .or_else(|| detect::placeholders(tool, arguments))
-            .or_else(|| detect::broadcast_scope(tool, self.reg, arguments))
+            .or_else(|| detect::broadcast_scope(tool, &self.mcp, self.reg, arguments))
         {
             return Err(e);
         }
