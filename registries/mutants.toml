@@ -218,8 +218,8 @@ file = "crates/fa-registers/src/open_items.rs"
 find = ".and_then(|o| o.checked_sub(applied_sum))"
 replace = ".and_then(|o| o.checked_add(applied_sum))"
 law = "FA-INV-04.open-amount"
-killed_by = ["fa-journal::tests/genesis.rs::applications_settle_open_items_within_the_open_amount_and_reversal_undoes_them"]
-description = "Add live applications instead of subtracting them when computing an open item's open amount."
+killed_by = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history"]
+description = "Add live applications instead of subtracting them when computing an open item's open amount. (fa-journal's genesis test, its first named killer, cannot see this line: fa-journal's tests do not build fa-registers.)"
 
 # ---- 7. Notary Merkle trees & document chunk proofs (fa-notary) -------------
 
