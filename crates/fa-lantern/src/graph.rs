@@ -620,164 +620,238 @@ impl Procedure for CircularFlows {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let window_days = days(&self.params, "window_days")?;
-        let max_hops = self.params.get_u32("max_hops")? as usize;
-        let min_retention_bps = i128::from(self.params.get_u32("min_retention_bps")?);
-        if !(2..=8).contains(&max_hops) {
-            return Err(LanternError::Parameter {
-                procedure: Self::ID.into(),
-                name: "max_hops".into(),
-                message: "must be in 2..=8".into(),
-            });
-        }
         let scoped = scoped_flow_legs(snapshot)?;
-        let mut by_partition: BTreeMap<(Option<VId>, u32), Vec<&FlowLeg>> = BTreeMap::new();
-        for flow in &scoped {
-            work.leg()?;
-            let l = &flow.leg;
-            if l.class == EntryClass::REVERSAL || l.mantissa <= 0 || l.from == l.to {
+        circular_flows(
+            (Self::ID, self.version()),
+            &self.params,
+            snapshot,
+            book,
+            work,
+            &scoped,
+            Nodes::Accounts,
+        )
+    }
+}
+
+/// `graph.party_circular_flows` (bead fa-b6xs): [`CircularFlows`]'s cycle
+/// search over the party-level PAID projection
+/// ([`crate::projection::party_flow_legs`]). It finds money returning to a
+/// counterparty through others, A -> B -> C -> A, when every hop runs
+/// through one clearing account, where the account graph sees only
+/// self-flows.
+pub struct PartyCircularFlows {
+    params: Params,
+}
+crate::jet::procedure_boilerplate!(PartyCircularFlows, "graph.party_circular_flows");
+
+impl Procedure for PartyCircularFlows {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let scoped = crate::projection::party_flow_legs(snapshot)?;
+        circular_flows(
+            (Self::ID, self.version()),
+            &self.params,
+            snapshot,
+            book,
+            work,
+            &scoped,
+            Nodes::Parties,
+        )
+    }
+}
+
+/// The directed-cycle search shared by `graph.circular_flows` and
+/// `graph.party_circular_flows`: within each strongly connected component,
+/// cycles of at most `max_hops` transfers inside `window_days` whose
+/// bottleneck keeps at least `min_retention_bps` of the first hop, per
+/// `(legal entity, unit)`.
+fn circular_flows(
+    procedure: (&'static str, u16),
+    params: &Params,
+    snapshot: &Snapshot,
+    book: &BookContext,
+    work: &mut Meter<'_>,
+    scoped: &[ScopedFlowLeg],
+    kind: Nodes,
+) -> Result<Vec<Finding>, LanternError> {
+    let window_days = days(params, "window_days")?;
+    let max_hops = params.get_u32("max_hops")? as usize;
+    let min_retention_bps = i128::from(params.get_u32("min_retention_bps")?);
+    if !(2..=8).contains(&max_hops) {
+        return Err(LanternError::Parameter {
+            procedure: procedure.0.into(),
+            name: "max_hops".into(),
+            message: "must be in 2..=8".into(),
+        });
+    }
+    let retention = match kind {
+        Nodes::Accounts => "graph.circular_flows retention",
+        Nodes::Parties => "graph.party_circular_flows retention",
+    };
+    let mut by_partition: BTreeMap<(Option<VId>, u32), Vec<&FlowLeg>> = BTreeMap::new();
+    for flow in scoped {
+        work.leg()?;
+        let l = &flow.leg;
+        if l.class == EntryClass::REVERSAL || l.mantissa <= 0 || l.from == l.to {
+            continue;
+        }
+        by_partition
+            .entry((flow.legal_entity, l.unit_id))
+            .or_default()
+            .push(l);
+    }
+    let population = scoped.len() as u64;
+    let mut out = Vec::new();
+    for ((_entity, unit_id), mut legs) in by_partition {
+        legs.sort_by_key(|l| (l.effective_date, l.recorded, l.entry, l.from, l.to));
+        work.compare(legs.len() as u64)?;
+        let mut dg = fnx_classes::digraph::DiGraph::strict();
+        let mut nodes = std::collections::BTreeSet::new();
+        let mut edge_pairs = std::collections::BTreeSet::new();
+        for l in &legs {
+            nodes.insert(vid_node(l.from));
+            nodes.insert(vid_node(l.to));
+            edge_pairs.insert((vid_node(l.from), vid_node(l.to)));
+        }
+        for n in &nodes {
+            dg.add_node(n.clone());
+        }
+        for (u, v) in &edge_pairs {
+            let _ = dg.add_edge(u.clone(), v.clone());
+        }
+        let (sccs, _) =
+            fnx_cgse::collect_witnesses(|| fnx_algorithms::strongly_connected_components(&dg));
+        for mut scc in sccs {
+            if scc.len() < 2 {
                 continue;
             }
-            by_partition
-                .entry((flow.legal_entity, l.unit_id))
-                .or_default()
-                .push(l);
-        }
-        let population = scoped.len() as u64;
-        let mut out = Vec::new();
-        for ((_entity, unit_id), mut legs) in by_partition {
-            legs.sort_by_key(|l| (l.effective_date, l.recorded, l.entry, l.from, l.to));
-            work.compare(legs.len() as u64)?;
-            let mut dg = fnx_classes::digraph::DiGraph::strict();
-            let mut nodes = std::collections::BTreeSet::new();
-            let mut edge_pairs = std::collections::BTreeSet::new();
-            for l in &legs {
-                nodes.insert(vid_node(l.from));
-                nodes.insert(vid_node(l.to));
-                edge_pairs.insert((vid_node(l.from), vid_node(l.to)));
-            }
-            for n in &nodes {
-                dg.add_node(n.clone());
-            }
-            for (u, v) in &edge_pairs {
-                let _ = dg.add_edge(u.clone(), v.clone());
-            }
-            let (sccs, _) =
-                fnx_cgse::collect_witnesses(|| fnx_algorithms::strongly_connected_components(&dg));
-            for mut scc in sccs {
-                if scc.len() < 2 {
+            scc.sort();
+            let scc_vids: std::collections::BTreeSet<VId> =
+                scc.iter().filter_map(|s| parse_vid_node(s)).collect();
+            let scc_legs: Vec<&FlowLeg> = legs
+                .iter()
+                .copied()
+                .filter(|l| scc_vids.contains(&l.from) && scc_vids.contains(&l.to))
+                .collect();
+            let mut used = vec![false; scc_legs.len()];
+            for start_idx in 0..scc_legs.len() {
+                if used[start_idx] {
                     continue;
                 }
-                scc.sort();
-                let scc_vids: std::collections::BTreeSet<VId> =
-                    scc.iter().filter_map(|s| parse_vid_node(s)).collect();
-                let scc_legs: Vec<&FlowLeg> = legs
-                    .iter()
-                    .copied()
-                    .filter(|l| scc_vids.contains(&l.from) && scc_vids.contains(&l.to))
-                    .collect();
-                let mut used = vec![false; scc_legs.len()];
-                for start_idx in 0..scc_legs.len() {
-                    if used[start_idx] {
-                        continue;
-                    }
-                    let first = scc_legs[start_idx];
-                    let mut path_indices = vec![start_idx];
-                    let mut visited_accts = std::collections::BTreeSet::new();
-                    visited_accts.insert(first.from);
-                    visited_accts.insert(first.to);
-                    let mut cur_acct = first.to;
-                    let mut cur_day = first.effective_date.0;
-                    let mut min_flow = first.mantissa;
-                    let mut closed = false;
-                    while path_indices.len() < max_hops {
-                        work.compare(1)?;
-                        if let Some((close_idx, close_leg)) = scc_legs
-                            .iter()
-                            .enumerate()
-                            .skip(start_idx + 1)
-                            .find(|(idx, l)| {
-                                !used[*idx]
-                                    && !path_indices.contains(idx)
-                                    && l.from == cur_acct
-                                    && l.to == first.from
-                                    && l.effective_date.0 >= cur_day
-                                    && (l.effective_date.0 - first.effective_date.0) <= window_days
-                                    && l.entry != scc_legs[*path_indices.last().unwrap()].entry
-                            })
-                        {
-                            let candidate_min = min_flow.min(close_leg.mantissa);
-                            let ret_bps = amount_share_bps(
-                                candidate_min,
-                                first.mantissa,
-                                "graph.circular_flows retention",
-                            )?;
-                            if ret_bps >= min_retention_bps {
-                                path_indices.push(close_idx);
-                                min_flow = candidate_min;
-                                closed = true;
-                                break;
-                            }
-                        }
-                        if path_indices.len() + 1 >= max_hops {
-                            break;
-                        }
-                        let mut next_opt = None;
-                        for (idx, l) in scc_legs.iter().enumerate().skip(start_idx + 1) {
-                            if !used[idx]
-                                && !path_indices.contains(&idx)
+                let first = scc_legs[start_idx];
+                let mut path_indices = vec![start_idx];
+                let mut visited_accts = std::collections::BTreeSet::new();
+                visited_accts.insert(first.from);
+                visited_accts.insert(first.to);
+                let mut cur_acct = first.to;
+                let mut cur_day = first.effective_date.0;
+                let mut min_flow = first.mantissa;
+                let mut closed = false;
+                while path_indices.len() < max_hops {
+                    work.compare(1)?;
+                    if let Some((close_idx, close_leg)) = scc_legs
+                        .iter()
+                        .enumerate()
+                        .skip(start_idx + 1)
+                        .find(|(idx, l)| {
+                            !used[*idx]
+                                && !path_indices.contains(idx)
                                 && l.from == cur_acct
-                                && !visited_accts.contains(&l.to)
+                                && l.to == first.from
                                 && l.effective_date.0 >= cur_day
                                 && (l.effective_date.0 - first.effective_date.0) <= window_days
-                                && amount_share_bps(
-                                    l.mantissa.min(min_flow),
-                                    first.mantissa,
-                                    "graph.circular_flows retention",
-                                )? >= min_retention_bps
-                            {
-                                next_opt = Some((idx, l));
-                                break;
-                            }
-                        }
-                        if let Some((next_idx, next_leg)) = next_opt {
-                            path_indices.push(next_idx);
-                            visited_accts.insert(next_leg.to);
-                            cur_acct = next_leg.to;
-                            cur_day = next_leg.effective_date.0;
-                            min_flow = min_flow.min(next_leg.mantissa);
-                        } else {
+                                && l.entry != scc_legs[*path_indices.last().unwrap()].entry
+                        })
+                    {
+                        let candidate_min = min_flow.min(close_leg.mantissa);
+                        let ret_bps = amount_share_bps(candidate_min, first.mantissa, retention)?;
+                        if ret_bps >= min_retention_bps {
+                            path_indices.push(close_idx);
+                            min_flow = candidate_min;
+                            closed = true;
                             break;
                         }
                     }
-                    if closed {
-                        for &idx in &path_indices {
-                            used[idx] = true;
+                    if path_indices.len() + 1 >= max_hops {
+                        break;
+                    }
+                    let mut next_opt = None;
+                    for (idx, l) in scc_legs.iter().enumerate().skip(start_idx + 1) {
+                        if !used[idx]
+                            && !path_indices.contains(&idx)
+                            && l.from == cur_acct
+                            && !visited_accts.contains(&l.to)
+                            && l.effective_date.0 >= cur_day
+                            && (l.effective_date.0 - first.effective_date.0) <= window_days
+                            && amount_share_bps(
+                                l.mantissa.min(min_flow),
+                                first.mantissa,
+                                retention,
+                            )? >= min_retention_bps
+                        {
+                            next_opt = Some((idx, l));
+                            break;
                         }
-                        let ret_bps = amount_share_bps(
-                            min_flow,
-                            first.mantissa,
-                            "graph.circular_flows retention",
-                        )?;
-                        let mut cites = Vec::new();
-                        let mut decisions = Vec::new();
-                        for &idx in &path_indices {
-                            let l = scc_legs[idx];
-                            cites.push(Cite::Entry(l.entry));
-                            if snapshot.accounts.contains_key(&l.from) {
-                                cites.push(Cite::Account(l.from));
+                    }
+                    if let Some((next_idx, next_leg)) = next_opt {
+                        path_indices.push(next_idx);
+                        visited_accts.insert(next_leg.to);
+                        cur_acct = next_leg.to;
+                        cur_day = next_leg.effective_date.0;
+                        min_flow = min_flow.min(next_leg.mantissa);
+                    } else {
+                        break;
+                    }
+                }
+                if closed {
+                    for &idx in &path_indices {
+                        used[idx] = true;
+                    }
+                    let ret_bps = amount_share_bps(min_flow, first.mantissa, retention)?;
+                    let mut cites = Vec::new();
+                    let mut decisions = Vec::new();
+                    for &idx in &path_indices {
+                        let l = scc_legs[idx];
+                        cites.push(Cite::Entry(l.entry));
+                        if snapshot.accounts.contains_key(&l.from) {
+                            cites.push(Cite::Account(l.from));
+                        }
+                        decisions.push((vid_node(l.from), vid_node(l.to)));
+                    }
+                    let dec_refs: Vec<(&str, &str)> = decisions
+                        .iter()
+                        .map(|(a, b)| (a.as_str(), b.as_str()))
+                        .collect();
+                    let cgse =
+                        cgse_digest_hex(&dec_refs, nodes.len(), edge_pairs.len(), "scc_cycles");
+                    cites.truncate(MAX_CITES);
+                    // A party cycle names its parties; account cycles
+                    // cite their accounts and keep their narrative.
+                    let through = match kind {
+                        Nodes::Accounts => String::new(),
+                        Nodes::Parties => {
+                            let mut path = vec![party_label(snapshot, first.from)];
+                            for &idx in &path_indices {
+                                path.push(party_label(snapshot, scc_legs[idx].to));
                             }
-                            decisions.push((vid_node(l.from), vid_node(l.to)));
+                            format!(" through parties {}", path.join(" -> "))
                         }
-                        let dec_refs: Vec<(&str, &str)> = decisions
-                            .iter()
-                            .map(|(a, b)| (a.as_str(), b.as_str()))
-                            .collect();
-                        let cgse =
-                            cgse_digest_hex(&dec_refs, nodes.len(), edge_pairs.len(), "scc_cycles");
-                        cites.truncate(MAX_CITES);
-                        out.push(finding(
-                            (Self::ID, self.version()),
+                    };
+                    out.push(finding(
+                            procedure,
                             Severity::High,
                             Statistic {
                                 name: "retained_flow_mantissa".into(),
@@ -787,17 +861,16 @@ impl Procedure for CircularFlows {
                             },
                             cites,
                             format!(
-                                "{}-hop directed cycle in SCC retaining {min_flow} of {} ({ret_bps} bps, cgse_witness={cgse})",
+                                "{}-hop directed cycle in SCC retaining {min_flow} of {}{through} ({ret_bps} bps, cgse_witness={cgse})",
                                 path_indices.len(),
                                 first.mantissa
                             ),
                         ));
-                    }
                 }
             }
         }
-        Ok(out)
     }
+    Ok(out)
 }
 
 /// `graph.layering`: multi-hop pass-through chains (`>= min_hops`) within

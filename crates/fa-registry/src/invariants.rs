@@ -197,10 +197,10 @@ impl Checker {
     #[must_use]
     pub fn resolves_with(&self, mut read_file: impl FnMut(&str) -> Option<String>) -> bool {
         let mut files = self.candidate_files();
-        if let (Target::Test(_), Some((module, _))) = (&self.target, self.path.split_once("::")) {
-            if let Some(root) = read_file(&files[0]) {
-                files.extend(test_module_files(&self.krate, &root, module));
-            }
+        if let (Target::Test(_), Some((module, _))) = (&self.target, self.path.split_once("::"))
+            && let Some(root) = read_file(&files[0])
+        {
+            files.extend(test_module_files(&self.krate, &root, module));
         }
         files
             .iter()
