@@ -77,6 +77,9 @@ mod numbers;
 #[path = "lantern/ponzi_motif.rs"]
 mod ponzi_motif;
 
+#[path = "lantern/party_layering.rs"]
+mod party_layering;
+
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 
@@ -1891,7 +1894,7 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
             .expect("registered role and account type admitted");
     }
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 65, "every registry row is listed");
+    assert_eq!(rows.len(), 66, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();

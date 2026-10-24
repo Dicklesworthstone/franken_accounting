@@ -15,7 +15,7 @@ use fa_money::{UnitId, UnitKind};
 use fgdb_types::VId;
 
 use crate::amount::{amount_share_bps, amount_sum};
-use crate::projection::{FlowLeg, scoped_flow_legs};
+use crate::projection::{FlowLeg, ScopedFlowLeg, scoped_flow_legs};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
 };
@@ -824,124 +824,209 @@ impl Procedure for Layering {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let min_hops = self.params.get_u32("min_hops")? as usize;
-        let window_days = days(&self.params, "window_days")?;
-        let min_pass_bps = i128::from(self.params.get_u32("min_passthrough_bps")?);
-        if !(2..=8).contains(&min_hops) {
-            return Err(LanternError::Parameter {
-                procedure: Self::ID.into(),
-                name: "min_hops".into(),
-                message: "must be in 2..=8".into(),
-            });
-        }
         let scoped = scoped_flow_legs(snapshot)?;
-        let mut by_partition: BTreeMap<(Option<VId>, u32), Vec<&FlowLeg>> = BTreeMap::new();
-        for flow in &scoped {
-            work.leg()?;
-            let l = &flow.leg;
-            if l.class == EntryClass::REVERSAL || l.mantissa <= 0 || l.from == l.to {
+        layering(
+            (Self::ID, self.version()),
+            &self.params,
+            snapshot,
+            book,
+            work,
+            &scoped,
+            Nodes::Accounts,
+        )
+    }
+}
+
+/// `graph.party_layering` (bead fa-b6xs): [`Layering`]'s pass-through chain
+/// search over the party-level PAID projection
+/// ([`crate::projection::party_flow_legs`]) instead of accounts. It finds a
+/// chain of transfers between counterparties that moves through one clearing
+/// account, where every account-level flow is a self-flow the account graph
+/// drops.
+pub struct PartyLayering {
+    params: Params,
+}
+crate::jet::procedure_boilerplate!(PartyLayering, "graph.party_layering");
+
+impl Procedure for PartyLayering {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let scoped = crate::projection::party_flow_legs(snapshot)?;
+        layering(
+            (Self::ID, self.version()),
+            &self.params,
+            snapshot,
+            book,
+            work,
+            &scoped,
+            Nodes::Parties,
+        )
+    }
+}
+
+/// What a layering chain's nodes are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Nodes {
+    /// Chart accounts: the money-flow projection.
+    Accounts,
+    /// Parties, or the book itself: the PAID projection.
+    Parties,
+}
+
+/// The pass-through chain search shared by `graph.layering` and
+/// `graph.party_layering`: chains of at least `min_hops` transfers within
+/// `window_days`, each forwarding at least `min_passthrough_bps` of the one
+/// before without revisiting a node, per `(legal entity, unit)`.
+fn layering(
+    procedure: (&'static str, u16),
+    params: &Params,
+    snapshot: &Snapshot,
+    book: &BookContext,
+    work: &mut Meter<'_>,
+    scoped: &[ScopedFlowLeg],
+    nodes: Nodes,
+) -> Result<Vec<Finding>, LanternError> {
+    let min_hops = params.get_u32("min_hops")? as usize;
+    let window_days = days(params, "window_days")?;
+    let min_pass_bps = i128::from(params.get_u32("min_passthrough_bps")?);
+    if !(2..=8).contains(&min_hops) {
+        return Err(LanternError::Parameter {
+            procedure: procedure.0.into(),
+            name: "min_hops".into(),
+            message: "must be in 2..=8".into(),
+        });
+    }
+    let passthrough = match nodes {
+        Nodes::Accounts => "graph.layering passthrough",
+        Nodes::Parties => "graph.party_layering passthrough",
+    };
+    let mut by_partition: BTreeMap<(Option<VId>, u32), Vec<&FlowLeg>> = BTreeMap::new();
+    for flow in scoped {
+        work.leg()?;
+        let l = &flow.leg;
+        if l.class == EntryClass::REVERSAL || l.mantissa <= 0 || l.from == l.to {
+            continue;
+        }
+        by_partition
+            .entry((flow.legal_entity, l.unit_id))
+            .or_default()
+            .push(l);
+    }
+    let population = scoped.len() as u64;
+    let mut out = Vec::new();
+    for ((_entity, unit_id), mut legs) in by_partition {
+        legs.sort_by_key(|l| (l.effective_date, l.recorded, l.entry, l.from, l.to));
+        work.compare(legs.len() as u64)?;
+        let mut dg = fnx_classes::digraph::DiGraph::strict();
+        for l in &legs {
+            let u = vid_node(l.from);
+            let v = vid_node(l.to);
+            dg.add_node(u.clone());
+            dg.add_node(v.clone());
+            let _ = dg.add_edge(u, v);
+        }
+        let mut used = vec![false; legs.len()];
+        for start_idx in 0..legs.len() {
+            if used[start_idx] {
                 continue;
             }
-            by_partition
-                .entry((flow.legal_entity, l.unit_id))
-                .or_default()
-                .push(l);
-        }
-        let population = scoped.len() as u64;
-        let mut out = Vec::new();
-        for ((_entity, unit_id), mut legs) in by_partition {
-            legs.sort_by_key(|l| (l.effective_date, l.recorded, l.entry, l.from, l.to));
-            work.compare(legs.len() as u64)?;
-            let mut dg = fnx_classes::digraph::DiGraph::strict();
-            for l in &legs {
-                let u = vid_node(l.from);
-                let v = vid_node(l.to);
-                dg.add_node(u.clone());
-                dg.add_node(v.clone());
-                let _ = dg.add_edge(u, v);
+            let first = legs[start_idx];
+            let start_node = vid_node(first.from);
+            let (layers, _) = fnx_cgse::collect_witnesses(|| {
+                fnx_algorithms::bfs_layers_directed(&dg, &start_node)
+            });
+            if layers.len() <= min_hops {
+                continue;
             }
-            let mut used = vec![false; legs.len()];
-            for start_idx in 0..legs.len() {
-                if used[start_idx] {
-                    continue;
-                }
-                let first = legs[start_idx];
-                let start_node = vid_node(first.from);
-                let (layers, _) = fnx_cgse::collect_witnesses(|| {
-                    fnx_algorithms::bfs_layers_directed(&dg, &start_node)
-                });
-                if layers.len() <= min_hops {
-                    continue;
-                }
-                let mut chain = vec![start_idx];
-                let mut visited = std::collections::BTreeSet::new();
-                visited.insert(first.from);
-                visited.insert(first.to);
-                let mut cur_acct = first.to;
-                let mut cur_day = first.effective_date.0;
-                let mut prev_amt = first.mantissa;
-                let mut min_amt = first.mantissa;
-                while chain.len() < 8 {
-                    work.compare(1)?;
-                    let mut next_opt = None;
-                    for (idx, l) in legs.iter().enumerate().skip(start_idx + 1) {
-                        if !used[idx]
-                            && !chain.contains(&idx)
-                            && l.from == cur_acct
-                            && !visited.contains(&l.to)
-                            && l.effective_date.0 >= cur_day
-                            && (l.effective_date.0 - first.effective_date.0) <= window_days
-                            && l.mantissa <= prev_amt
-                            && amount_share_bps(l.mantissa, prev_amt, "graph.layering passthrough")?
-                                >= min_pass_bps
-                        {
-                            next_opt = Some((idx, l));
-                            break;
-                        }
-                    }
-                    if let Some((next_idx, next_leg)) = next_opt {
-                        chain.push(next_idx);
-                        visited.insert(next_leg.to);
-                        cur_acct = next_leg.to;
-                        cur_day = next_leg.effective_date.0;
-                        prev_amt = next_leg.mantissa;
-                        min_amt = min_amt.min(next_leg.mantissa);
-                    } else {
+            let mut chain = vec![start_idx];
+            let mut visited = std::collections::BTreeSet::new();
+            visited.insert(first.from);
+            visited.insert(first.to);
+            let mut cur_acct = first.to;
+            let mut cur_day = first.effective_date.0;
+            let mut prev_amt = first.mantissa;
+            let mut min_amt = first.mantissa;
+            while chain.len() < 8 {
+                work.compare(1)?;
+                let mut next_opt = None;
+                for (idx, l) in legs.iter().enumerate().skip(start_idx + 1) {
+                    if !used[idx]
+                        && !chain.contains(&idx)
+                        && l.from == cur_acct
+                        && !visited.contains(&l.to)
+                        && l.effective_date.0 >= cur_day
+                        && (l.effective_date.0 - first.effective_date.0) <= window_days
+                        && l.mantissa <= prev_amt
+                        && amount_share_bps(l.mantissa, prev_amt, passthrough)? >= min_pass_bps
+                    {
+                        next_opt = Some((idx, l));
                         break;
                     }
                 }
-                if chain.len() >= min_hops {
-                    for &idx in &chain {
-                        used[idx] = true;
+                if let Some((next_idx, next_leg)) = next_opt {
+                    chain.push(next_idx);
+                    visited.insert(next_leg.to);
+                    cur_acct = next_leg.to;
+                    cur_day = next_leg.effective_date.0;
+                    prev_amt = next_leg.mantissa;
+                    min_amt = min_amt.min(next_leg.mantissa);
+                } else {
+                    break;
+                }
+            }
+            if chain.len() >= min_hops {
+                for &idx in &chain {
+                    used[idx] = true;
+                }
+                let mut cites = Vec::new();
+                let mut decisions = Vec::new();
+                for &idx in &chain {
+                    let l = legs[idx];
+                    cites.push(Cite::Entry(l.entry));
+                    if snapshot.accounts.contains_key(&l.from) {
+                        cites.push(Cite::Account(l.from));
                     }
-                    let mut cites = Vec::new();
-                    let mut decisions = Vec::new();
-                    for &idx in &chain {
-                        let l = legs[idx];
-                        cites.push(Cite::Entry(l.entry));
-                        if snapshot.accounts.contains_key(&l.from) {
-                            cites.push(Cite::Account(l.from));
+                    decisions.push((vid_node(l.from), vid_node(l.to)));
+                }
+                if let Some(&last_idx) = chain.last()
+                    && snapshot.accounts.contains_key(&legs[last_idx].to)
+                {
+                    cites.push(Cite::Account(legs[last_idx].to));
+                }
+                let dec_refs: Vec<(&str, &str)> = decisions
+                    .iter()
+                    .map(|(a, b)| (a.as_str(), b.as_str()))
+                    .collect();
+                let cgse =
+                    cgse_digest_hex(&dec_refs, dg.node_count(), dg.edge_count(), "layering_bfs");
+                cites.truncate(MAX_CITES);
+                // A party chain names its parties; account chains cite
+                // their accounts and keep their narrative.
+                let through = match nodes {
+                    Nodes::Accounts => String::new(),
+                    Nodes::Parties => {
+                        let mut path = vec![party_label(snapshot, first.from)];
+                        for &idx in &chain {
+                            path.push(party_label(snapshot, legs[idx].to));
                         }
-                        decisions.push((vid_node(l.from), vid_node(l.to)));
+                        format!(" through parties {}", path.join(" -> "))
                     }
-                    if let Some(&last_idx) = chain.last()
-                        && snapshot.accounts.contains_key(&legs[last_idx].to)
-                    {
-                        cites.push(Cite::Account(legs[last_idx].to));
-                    }
-                    let dec_refs: Vec<(&str, &str)> = decisions
-                        .iter()
-                        .map(|(a, b)| (a.as_str(), b.as_str()))
-                        .collect();
-                    let cgse = cgse_digest_hex(
-                        &dec_refs,
-                        dg.node_count(),
-                        dg.edge_count(),
-                        "layering_bfs",
-                    );
-                    cites.truncate(MAX_CITES);
-                    out.push(finding(
-                        (Self::ID, self.version()),
+                };
+                out.push(finding(
+                        procedure,
                         Severity::High,
                         Statistic {
                             name: "layered_mantissa".into(),
@@ -951,16 +1036,28 @@ impl Procedure for Layering {
                         },
                         cites,
                         format!(
-                            "{}-hop pass-through chain forwarding {min_amt} of {} within {window_days} day(s) (cgse_witness={cgse})",
+                            "{}-hop pass-through chain forwarding {min_amt} of {} within {window_days} day(s){through} (cgse_witness={cgse})",
                             chain.len(),
                             first.mantissa
                         ),
                     ));
-                }
             }
         }
-        Ok(out)
     }
+    Ok(out)
+}
+
+/// A PAID node as a finding names it: the party's code, `book` for the book
+/// itself, or the 32-hex id of a value no party carries.
+fn party_label(snapshot: &Snapshot, node: VId) -> String {
+    if node == crate::projection::BOOK_NODE {
+        return "book".into();
+    }
+    snapshot
+        .rea
+        .parties
+        .get(&node)
+        .map_or_else(|| format!("{:032x}", node.0), |party| party.code.clone())
 }
 
 /// `graph.communities`: community detection over the money-flow projection via

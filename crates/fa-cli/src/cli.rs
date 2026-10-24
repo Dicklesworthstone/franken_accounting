@@ -12555,6 +12555,8 @@ pub(crate) fn render_statement_diff(
         after.known_at,
         diff.is_unchanged()
     );
+    // The event declares all three fields (nullable), so a native diff
+    // carries them too, as the statement event does.
     if let Some(base_unit) = diff.functional_unit() {
         let code = registered_unit_code(base_unit, units)?;
         fields.extend([
@@ -12563,6 +12565,12 @@ pub(crate) fn render_statement_diff(
             ("valuation_basis", s("retained-base-amounts")),
         ]);
         human.push_str(&format!(" · functional {code} · retained base amounts"));
+    } else {
+        fields.extend([
+            ("functional", Json::Bool(false)),
+            ("base_unit", Json::Null),
+            ("valuation_basis", s("native-amounts")),
+        ]);
     }
     out.event_with_certificate("statement_diff", fields, &human, certificate);
     Ok(())

@@ -12,7 +12,7 @@ mod transport;
 
 use std::collections::BTreeMap;
 
-use fa_model::{EntryClass, LEGAL_ENTITY_DIMENSION, LegPayload, Writer};
+use fa_model::{EntryClass, LEGAL_ENTITY_DIMENSION, LegPayload, PARTY_DIMENSION, Writer};
 use fa_money::Side;
 use fa_time::DateDay;
 use fgdb_crypto::Hasher;
@@ -117,12 +117,24 @@ pub(crate) fn scoped_entity(
         .map_err(|_| LanternError::Overflow("missing money-flow legal entity"))
 }
 
+/// The account-node partition the scope tests pin.
+#[cfg(test)]
 fn partition(legs: &[LegPayload], scope: &entity::Scope) -> Result<Partitions, LanternError> {
+    partition_by(legs, scope, |leg| leg.account_ref)
+}
+
+/// [`partition`] over the node `node` assigns each leg: its account for the
+/// money flow, its party for PAID.
+fn partition_by(
+    legs: &[LegPayload],
+    scope: &entity::Scope,
+    node: impl Fn(&LegPayload) -> VId,
+) -> Result<Partitions, LanternError> {
     let mut partitions: Partitions = BTreeMap::new();
     for leg in legs {
         let entity = scoped_entity(scope, leg)?;
         let slot = partitions.entry((leg.amount.unit.0, entity)).or_default();
-        let value = (leg.account_ref, leg.amount.mantissa);
+        let value = (node(leg), leg.amount.mantissa);
         match leg.side {
             Side::Credit => slot.0.push(value),
             Side::Debit => slot.1.push(value),
@@ -137,15 +149,69 @@ fn partition(legs: &[LegPayload], scope: &entity::Scope) -> Result<Partitions, L
 /// omitted values. If no value is explicit, the implicit book scope is kept.
 /// This normalization uses authenticated dimensions, never account names.
 pub fn scoped_flow_legs(snapshot: &Snapshot) -> Result<Vec<ScopedFlowLeg>, LanternError> {
+    allocated(snapshot, |leg| leg.account_ref, true)
+}
+
+/// The book itself as a PAID node: a leg that names no party, or several.
+pub const BOOK_NODE: VId = VId(0);
+
+/// A leg's PAID node: the party its one PARTY_DIMENSION value represents
+/// (`parties` maps a party's dimension value to the party), the value itself
+/// when no party in the snapshot carries it, and [`BOOK_NODE`] when the leg
+/// names no party or more than one (attributed to neither, as
+/// `graph.ponzi_motif` does).
+fn paid_node(leg: &LegPayload, parties: &BTreeMap<VId, VId>) -> VId {
+    let mut values = leg
+        .dimension_set
+        .iter()
+        .filter(|(dimension, _)| *dimension == PARTY_DIMENSION)
+        .map(|(_, value)| *value);
+    match (values.next(), values.next()) {
+        (Some(value), None) => parties.get(&value).copied().unwrap_or(value),
+        _ => BOOK_NODE,
+    }
+}
+
+/// Party-level money flow, the PAID projection's grain (plan §4.1 `PAID
+/// {amount, unit, effective, entry_ref}`, §11.4; bead fa-b6xs): each
+/// balanced `(unit, legal_entity)` partition of a live posting allocated from
+/// its credit legs to its debit legs under the same registered
+/// largest-remainder law as [`scoped_flow_legs`], over [`paid_node`]s instead
+/// of accounts. A transfer from a node to itself is dropped, so an entry whose
+/// legs name no party (or one party throughout) adds no PAID edge: a customer
+/// receipt (Dr Cash / Cr AR\[C\]) is C → book, a vendor payment (Dr AP\[V\] /
+/// Cr Cash) is book → V, and an intermediary transfer (Dr Clearing\[B\] /
+/// Cr Clearing\[A\]) is A → B even though its account flow is 1100 → 1100.
+pub fn party_flow_legs(snapshot: &Snapshot) -> Result<Vec<ScopedFlowLeg>, LanternError> {
+    let parties: BTreeMap<VId, VId> = snapshot
+        .rea
+        .parties
+        .values()
+        .map(|party| (party.dimension_value_vid, party.vid))
+        .collect();
+    allocated(snapshot, |leg| paid_node(leg, &parties), false)
+}
+
+/// Every live posting's allocations over the node `node` assigns each leg,
+/// ascending by `(entry, unit, from, to, mantissa, legal_entity)`; a
+/// self-flow is kept only when `self_flows`.
+fn allocated(
+    snapshot: &Snapshot,
+    node: impl Fn(&LegPayload) -> VId,
+    self_flows: bool,
+) -> Result<Vec<ScopedFlowLeg>, LanternError> {
     let live = snapshot.live_postings()?;
     let scope = entity_scope(live.iter().flat_map(|entry| &entry.entry.proposal.legs))?;
     let mut legs = Vec::new();
     for e in live {
-        let by_partition = partition(&e.entry.proposal.legs, &scope)?;
+        let by_partition = partition_by(&e.entry.proposal.legs, &scope, &node)?;
         for ((unit_id, legal_entity), (credits, debits)) in by_partition {
             for (from, to, mantissa) in
                 transport::allocate(fa_money::UnitId(unit_id), credits, debits)?
             {
+                if !self_flows && from == to {
+                    continue;
+                }
                 legs.push(ScopedFlowLeg {
                     legal_entity,
                     leg: FlowLeg {
@@ -192,8 +258,31 @@ pub fn flow_legs(snapshot: &Snapshot) -> Result<Vec<FlowLeg>, LanternError> {
 /// flow legs folded per `(from, to, unit, period)`.
 pub fn money_flow(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
     let entries = snapshot.live_postings()?.len() as u64;
+    // Do not label the corrected two-margin allocation with the historical
+    // independent-credit projection's digest domain.
+    fold(
+        entries,
+        flow_legs(snapshot)?,
+        "money-flow:capacity-entity-v3",
+    )
+}
+
+/// The PAID projection (plan §4.1, §11.4; fa-b6xs): [`party_flow_legs`]
+/// folded per `(from_party, to_party, unit, period)`, with its digest. Derived
+/// and rebuildable from the journal, never more authoritative than it.
+pub fn paid(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
+    let entries = snapshot.live_postings()?.len() as u64;
+    let legs = party_flow_legs(snapshot)?
+        .into_iter()
+        .map(|scoped| scoped.leg)
+        .collect();
+    fold(entries, legs, "paid:party-capacity-entity-v1")
+}
+
+/// Flow legs folded per `(from, to, unit, period)` under digest `domain`.
+fn fold(entries: u64, legs: Vec<FlowLeg>, domain: &str) -> Result<MoneyFlow, LanternError> {
     let mut edges: BTreeMap<(u128, u128, u32, String), (i128, u64)> = BTreeMap::new();
-    for l in flow_legs(snapshot)? {
+    for l in legs {
         let slot = edges
             .entry((l.from.0, l.to.0, l.unit_id, l.period))
             .or_insert((0, 0));
@@ -226,9 +315,7 @@ pub fn money_flow(snapshot: &Snapshot) -> Result<MoneyFlow, LanternError> {
             .i128(e.mantissa)
             .u64(e.contributions);
     });
-    // Do not label the corrected two-margin allocation with the historical
-    // independent-credit projection's digest domain.
-    let digest = digest("money-flow:capacity-entity-v3", w.finish()?);
+    let digest = digest(domain, w.finish()?);
     Ok(MoneyFlow {
         edges,
         entries,
@@ -462,5 +549,61 @@ mod scope_tests {
             .dimension_set
             .push((LEGAL_ENTITY_DIMENSION, VId(2)));
         assert!(named_entity(&duplicate).is_err());
+    }
+}
+
+#[cfg(test)]
+mod paid_tests {
+    use super::*;
+    use fa_money::{Amount, UnitId};
+
+    fn leg(side: Side, account: u128, parties: &[u128]) -> LegPayload {
+        let mut leg = LegPayload::simple(side, VId(account), Amount::new(UnitId(0), 1));
+        for party in parties {
+            leg.dimension_set.push((PARTY_DIMENSION, VId(*party)));
+        }
+        leg
+    }
+
+    /// fa-b6xs: a leg's node is the party its one party value represents,
+    /// the value itself when no party carries it, and the book when it
+    /// names none or several.
+    #[test]
+    fn a_leg_is_its_one_party_or_the_book() {
+        let parties = BTreeMap::from([(VId(70), VId(7))]);
+        assert_eq!(paid_node(&leg(Side::Debit, 10, &[70]), &parties), VId(7));
+        assert_eq!(paid_node(&leg(Side::Debit, 10, &[71]), &parties), VId(71));
+        assert_eq!(paid_node(&leg(Side::Debit, 10, &[]), &parties), BOOK_NODE);
+        assert_eq!(
+            paid_node(&leg(Side::Debit, 10, &[70, 71]), &parties),
+            BOOK_NODE
+        );
+    }
+
+    /// An intermediary transfer through one clearing account is a self-flow
+    /// between accounts and a transfer between parties.
+    #[test]
+    fn a_clearing_transfer_is_a_party_flow_where_the_account_flow_is_a_self_flow() {
+        let legs = [
+            leg(Side::Credit, 1100, &[70]),
+            leg(Side::Debit, 1100, &[80]),
+        ];
+        let scope = entity_scope(&legs).unwrap();
+        let parties = BTreeMap::from([(VId(70), VId(7)), (VId(80), VId(8))]);
+        let flows = |node: &dyn Fn(&LegPayload) -> VId| {
+            let mut out = Vec::new();
+            for ((unit, _), (credits, debits)) in partition_by(&legs, &scope, node).unwrap() {
+                out.extend(transport::allocate(UnitId(unit), credits, debits).unwrap());
+            }
+            out
+        };
+        assert_eq!(
+            flows(&|leg: &LegPayload| leg.account_ref),
+            vec![(VId(1100), VId(1100), 1)]
+        );
+        assert_eq!(
+            flows(&|leg: &LegPayload| paid_node(leg, &parties)),
+            vec![(VId(7), VId(8), 1)]
+        );
     }
 }

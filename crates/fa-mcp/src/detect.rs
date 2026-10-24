@@ -33,7 +33,7 @@ use fastmcp_rust::{JsonValue, json};
 
 use crate::dispatch::Reply;
 use crate::errors::{NEVER_REDATE, StructuredError};
-use crate::registry::{StdinKind, ToolCall, ToolSpec};
+use crate::registry::{McpRegistry, StdinKind, ToolCall, ToolSpec};
 
 /// An intent a safety refusal (period law) turned away.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -442,12 +442,28 @@ pub fn summary_account(
     None
 }
 
-fn is_write_call(tool: &ToolSpec, reg: &Registry, arguments: &JsonValue) -> bool {
+fn is_write_call(
+    tool: &ToolSpec,
+    mcp: &McpRegistry,
+    reg: &Registry,
+    arguments: &JsonValue,
+) -> bool {
     let Some(verb) = reg.verb(&tool.verb) else {
         return false;
     };
     if !verb.writes {
         return false;
+    }
+    // A verb that can write may not write on this call: a report writes only
+    // when it certifies. The call's own command decides, through the
+    // [[bound]] rule a token session is admitted by: it writes when its ops go
+    // past `read`. A call that does not lower falls back to the shape rules.
+    if let Ok(invocation) = tool.invocation(mcp, reg, arguments)
+        && let Ok(parsed) =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches())
+        && let Some(ops) = fa_cli::cli::bound_command_ops(&tool.verb, &parsed)
+    {
+        return ops.iter().any(|op| op.name() != "read");
     }
     if tool.verb == "close" && matches!(tool.subcommands.as_slice(), [sub] if sub == "routes") {
         return false;
@@ -479,10 +495,11 @@ fn is_write_call(tool: &ToolSpec, reg: &Registry, arguments: &JsonValue) -> bool
 #[must_use]
 pub fn broadcast_scope(
     tool: &ToolSpec,
+    mcp: &McpRegistry,
     reg: &Registry,
     arguments: &JsonValue,
 ) -> Option<StructuredError> {
-    if !is_write_call(tool, reg, arguments) {
+    if !is_write_call(tool, mcp, reg, arguments) {
         return None;
     }
     walk(arguments, &mut Vec::new(), &mut |path, v| {
@@ -919,7 +936,6 @@ pub fn remember(
 mod tests {
     use super::*;
     use crate::dispatch::Line;
-    use crate::registry::McpRegistry;
 
     fn tool(wire: &str) -> ToolSpec {
         McpRegistry::embedded()
@@ -1366,10 +1382,11 @@ mod tests {
     #[test]
     fn broadcast_scope_catches_wildcard_and_all_on_write_tools() {
         let reg = fa_cli::verbs::registry().expect("verbs.toml");
+        let mcp = McpRegistry::embedded().expect("[mcp]");
         let post = tool("fa_post_post");
         let mut bad_post = intent("2026-03-15", "k", json!("10.00 USD"));
         bad_post["intent"]["legs"][0]["account"] = json!("*");
-        let e = broadcast_scope(&post, reg, &bad_post).expect("wildcard account on write");
+        let e = broadcast_scope(&post, &mcp, reg, &bad_post).expect("wildcard account on write");
         assert_eq!(e.detector.as_deref(), Some("broadcast_scope"));
         assert!(
             e.message.contains("intent.legs[0].account") && e.message.contains("\"*\""),
@@ -1382,6 +1399,7 @@ mod tests {
         for scope in ["*", "all", "everything", "FY2026-*"] {
             let e = broadcast_scope(
                 &transition,
+                &mcp,
                 reg,
                 &json!({"transition": "close", "code": scope, "reason": "Scheduled"}),
             )
@@ -1393,9 +1411,23 @@ mod tests {
         // Descriptive free-text fields and read-only tools are never refused as broadcast_scope.
         let mut ok_post = intent("2026-03-15", "k", json!("10.00 USD"));
         ok_post["intent"]["description"] = json!("all");
-        assert!(broadcast_scope(&post, reg, &ok_post).is_none());
+        assert!(broadcast_scope(&post, &mcp, reg, &ok_post).is_none());
+        // A verb that can write (a report's --certify retains a certificate)
+        // is judged by the call's own [[bound]] ops. A trial balance reads
+        // (a plain --certify binds `read` alone), and so does an uncertified
+        // GL detail, even with a wildcard account, which the shape rules
+        // alone would have taken for a write. The same GL view certified
+        // binds read + produce, so its wildcard is a broadcast write.
         let tb = tool("fa_read_trial_balance");
-        assert!(broadcast_scope(&tb, reg, &json!({"period": "all"})).is_none());
+        assert!(broadcast_scope(&tb, &mcp, reg, &json!({"period": "all"})).is_none());
+        let gl = tool("fa_proof_gl");
+        let read = json!({"view": "detail", "account": "*"});
+        assert!(broadcast_scope(&gl, &mcp, reg, &read).is_none());
+        let mut certified = read.clone();
+        certified["certify"] = json!(true);
+        let e = broadcast_scope(&gl, &mcp, reg, &certified).expect("a certified GL writes");
+        assert_eq!(e.detector.as_deref(), Some("broadcast_scope"));
+        assert!(e.message.contains("account"), "{}", e.message);
     }
 
     #[test]
