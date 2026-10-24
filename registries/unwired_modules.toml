@@ -1,0 +1,84 @@
+# =============================================================================
+# registries/unwired_modules.toml — library code no surface reaches (fa-2ioe)
+# =============================================================================
+#
+# `xtask reachability` follows references from every non-test source file of
+# the surfaces (fa-cli, fad, fa-mcp, fa-verify) and the gate tools (xtask,
+# registry-check) into the library crates. A pub module or crate root with pub
+# items or methods of its own that nothing reachable references must have a
+# row here (one of trait impls or re-exports alone is never reported).
+# Library code without a surface is unverified by the e2e tests and invisible
+# to agents.
+#
+# [[unwired]]: wiring debt.
+# - path:       the module, `crate_ident::seg::seg` (a crate root is its ident)
+# - owner_bead: the open bead whose work reaches it from a surface
+# - reason:     what is missing
+# - expires:    YYYY-MM-DD. scripts/check.sh step `reachability` fails on the
+#               day after; extend it only with a new reason.
+# [[verification]]: code whose only consumer is a test harness, by design.
+# - path, reason as above
+# - consumer:   the workspace-relative test file that references it
+#
+# Both fail when stale: a row whose module a surface now reaches, or that
+# names no module, must go (cargo test -p xtask).
+# =============================================================================
+
+schema_version = 1
+
+[[unwired]]
+path = "fa_formats::fwc"
+owner_bead = "fa-lzrn"
+reason = "Plaid transactions_sync bank feeds and warehouse export through flywheel_connectors (fa-ff6, closed) have no surface command."
+expires = "2026-11-21"
+
+[[unwired]]
+path = "fa_formats::part370"
+owner_bead = "fa-p370"
+reason = "FDIC Part 370 files need ORC capacity codes on account-participant edges, which the REA model does not carry; no fa export part370."
+expires = "2026-11-21"
+
+[[unwired]]
+path = "fa_lantern::conformal"
+owner_bead = "fa-4psc"
+reason = "Split-conformal threshold calibration has no calibration surface."
+expires = "2026-11-21"
+
+[[unwired]]
+path = "fa_statements::regulatory"
+owner_bead = "fa-doa9"
+reason = "FFIEC 031/041 and FR Y-9C schedule definitions key on two-digit code prefixes that do not match templates/charts/us-bank-call-report.json, so they cannot be surfaced as they stand."
+expires = "2026-11-21"
+
+[[unwired]]
+path = "fa_steward"
+owner_bead = "fa-lzrn"
+reason = "The crate's own items (audit_capability_op, AccessAuditRecord, profile_default_ops) have no caller outside tests; its re-exports are reached through their home crates."
+expires = "2026-11-21"
+
+[[unwired]]
+path = "fa_time::business"
+owner_bead = "fa-94qd"
+reason = "Business-day calendars and day-roll conventions are not creatable or applied from any surface."
+expires = "2026-11-21"
+
+[[unwired]]
+path = "fa_time::selector"
+owner_bead = "fa-5c1"
+reason = "No surface selects through EffectiveSelector; fa-query's EFFECTIVE AT|BETWEEN parses its own window."
+expires = "2026-11-21"
+
+[[verification]]
+path = "fa_formats::conformance"
+consumer = "crates/fa-formats/tests/formats_conformance.rs"
+reason = "The interop conformance matrix and its baseline laws (plan §16.3)."
+
+[[verification]]
+path = "fa_formats::tigerbeetle"
+consumer = "crates/fa-formats/tests/formats_conformance.rs"
+reason = "The TigerBeetle semantic corpus runner, an external oracle (plan §16.3)."
+
+[[verification]]
+path = "fa_lantern::witness"
+consumer = "crates/fa-lantern/tests/lantern.rs"
+reason = "The CGSE determinism witness the procedure suite runs over every registered procedure (plan §11.1)."

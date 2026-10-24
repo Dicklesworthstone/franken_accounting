@@ -107,6 +107,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("allocate", allocate_cmd),
     ("settle", settle_cmd),
     ("document", document::document_cmd),
+    ("assert-balance", document::assert_balance_cmd),
     ("event", event_cmd),
     ("migrate", migrate_cmd),
     ("tb", tb_cmd),
@@ -117,8 +118,14 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("gl", gl_cmd),
     ("explain", explain_cmd),
     ("search", search_cmd),
+    ("diff", crate::diff::diff_cmd),
+    ("consolidate", crate::consolidate::consolidate_cmd),
     ("query", crate::query::query_cmd),
+    ("rule", crate::rule::rule_cmd),
     ("procedure", procedure_cmd),
+    ("jet", jet_cmd),
+    ("benford", benford_cmd),
+    ("trace", trace_cmd),
     ("sample", crate::sample::sample_cmd),
     ("engagement", crate::engagement::engagement_cmd),
     ("adjustment", crate::engagement::adjustment_cmd),
@@ -131,6 +138,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
     ("entity", crate::rea::entity_cmd),
+    ("dimension", crate::dimension::dimension_cmd),
     ("finding", crate::finding::finding_cmd),
     ("fx", crate::fx::fx_cmd),
     ("bank", crate::bank::bank_cmd),
@@ -881,7 +889,7 @@ fn select_branch<'b>(
     {
         return Err(usage(
             "a branch read (a scenario or a draft) is not certified yet, and trunk known-at selectors do not apply to its replay",
-            "drop --certify, --certificate-out, --as-originally-reported, --as-issued-to, --as-reported-in and any known-at, --before or --after selector, or read trunk without --branch",
+            "drop --certify, --certificate-out, --as-originally-reported, --as-issued-to, --as-reported-in, --as-currently-stated and any known-at, --before or --after selector, or read trunk without --branch",
         ));
     }
     let replay = if let Some(name) = draft {
@@ -2408,10 +2416,11 @@ enum HostPath {
     /// An input file of `fa document import run`.
     ImportRun,
     /// An input file: a positional chart, account, party, instrument, entity,
-    /// statement, document, certificate or export (a file, or an ADS package
-    /// directory), or a saved-certificate source flag
+    /// statement, document, certificate, rule or export (a file, or an ADS
+    /// package directory), a saved-certificate source flag
     /// (`--before-certificate`, `--after-certificate`, `--from-diff`,
-    /// `--from-source`, `--aging-certificate`, `--control-certificate`).
+    /// `--from-source`, `--aging-certificate`, `--control-certificate`), or a
+    /// rule's golden corpus (`--golden`, a file or directory).
     Input,
 }
 
@@ -2460,6 +2469,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--from-source",
         "--aging-certificate",
         "--control-certificate",
+        "--golden",
     ] {
         for value in args.flag_all(flag) {
             let digits = value.strip_prefix("C:").unwrap_or(value);
@@ -2503,7 +2513,11 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         | ("chart", Some("open"))
         | ("party" | "instrument" | "entity", Some("add"))
         | ("certificate", Some("status"))
-        | ("finding", Some("replay")) => args.positional.get(2),
+        | ("finding", Some("replay"))
+        // A Canon rule's source (fa-c34).
+        | ("rule", Some("check" | "propose" | "eval" | "backtest" | "test")) => {
+            args.positional.get(2)
+        }
         ("replay", _) => args.positional.get(1),
         // The exported file, or the ADS package directory.
         ("verify", Some("export")) => args.positional.get(3),
@@ -4303,9 +4317,13 @@ fn chart_lifecycle(ctx: &mut Ctx<'_>, args: &Args, action: &str) -> Result<(), F
                     role: role.clone(),
                     assigned: true,
                 };
-                let role_key = format!("{key}:role:{role}");
-                let held =
-                    book.record_account_role(&role_spec, who, role_key.as_bytes(), &capability)??;
+                let role_key = crate::chart_role::seeded_role_key(
+                    format!("{key}:role:{role}").into_bytes(),
+                    key.as_bytes(),
+                    code,
+                    role,
+                );
+                let held = book.record_account_role(&role_spec, who, &role_key, &capability)??;
                 role_items.push(crate::chart_role::account_role_json(&held.control, code));
             }
             out.at_book(&book)?;
@@ -4571,7 +4589,12 @@ fn chart_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     role: role.clone(),
                     assigned: true,
                 };
-                let role_key = [key.as_slice(), format!(":role:{code}:{role}").as_bytes()].concat();
+                let role_key = crate::chart_role::seeded_role_key(
+                    [key.as_slice(), format!(":role:{code}:{role}").as_bytes()].concat(),
+                    &key,
+                    code,
+                    role,
+                );
                 let recorded = book.record_account_role(&spec, who, &role_key, &capability)??;
                 role_items.push(crate::chart_role::account_role_json(
                     &recorded.control,
@@ -6691,7 +6714,8 @@ fn parse_legs(
         leg.settles = parse_settles(l, &what, ctx, book, earlier)?;
         // A leg names its legal entity (required in a multi-entity book)
         // and its counterparty by code; the kernel checks both exist
-        // (plan §4.1, §4.5). Dimension ids ascend: entity 1, party 12.
+        // (plan §4.1, §4.5). Dimension ids ascend: entity 1, the registered
+        // kinds 2..=9, party 12.
         let code_field = |field: &str| -> Result<Option<&str>, Fail> {
             match l.get(field) {
                 None | Some(Json::Null) => Ok(None),
@@ -6714,6 +6738,11 @@ fn parse_legs(
                 fa_model::party_value_vid(ctx.book_id, code),
             ));
         }
+        // The registered dimensions (cost center, project, ...; fa-ficc),
+        // kept ascending by dimension id as the model requires.
+        leg.dimension_set
+            .extend(crate::dimension::leg_dimensions(l, &what, ctx.book_id)?);
+        leg.dimension_set.sort_by_key(|(dimension, _)| *dimension);
         legs.push((leg, ordinal));
     }
     Ok(legs)
@@ -7046,7 +7075,7 @@ fn reversal_reason(value: Option<&Json>) -> Result<Reason, Fail> {
     .into())
 }
 
-fn lineage_json(link: &fa_model::Supersession, reasons: &ReasonCodes) -> Json {
+pub(crate) fn lineage_json(link: &fa_model::Supersession, reasons: &ReasonCodes) -> Json {
     obj(vec![
         ("entry", s(format!("{:032x}", link.target.vid.0))),
         ("kind", s(format!("{:?}", link.kind))),
@@ -7306,6 +7335,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
     const FIELDS: &[&str] = &[
         "class",
         "effective_date",
+        "document_date",
         "effective_period",
         "idempotency_key",
         "description",
@@ -7552,6 +7582,23 @@ fn build_post_request_with_prior(
     let mut target_period = None;
     let key = req_str(doc, "idempotency_key", "intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
+    // The source document's own date (Appendix A `document_date`): recorded
+    // on the entry, and judged against its period for cutoff (plan §5.1).
+    let document_date = match doc.get("document_date") {
+        None | Some(Json::Null) => None,
+        Some(Json::Str(text)) => Some(DateDay::parse(text).map_err(|e| {
+            usage(
+                format!("document_date `{text}`: {e:?}"),
+                "document_date: \"YYYY-MM-DD\", the source document's own date",
+            )
+        })?),
+        Some(_) => {
+            return Err(usage(
+                "intent: `document_date` must be a string",
+                "document_date: \"YYYY-MM-DD\"",
+            ));
+        }
+    };
     // A Reversal names its target; its legs are the exact side-swap of the
     // target's, derived here so an agent never has to retype amounts. A
     // Resolution names the hold it resolves and either posts a sub-vector
@@ -8060,7 +8107,7 @@ fn build_post_request_with_prior(
         branch_id: Id128::TRUNK,
         class,
         effective_date,
-        document_date: None,
+        document_date,
         description: book.seal_text(description)?,
         effective_period,
         legs,
@@ -8202,7 +8249,7 @@ pub(crate) fn post_document(
             )
         })?;
         let plan = book.plan(intent, &req.capability)??;
-        return emit_post_plan(out, &book, &ctx.files, args, &plan);
+        return emit_post_plan(out, &book, &ctx.files, args, &plan, &req.capability);
     }
     // `--balancing <leg>` (post and reserve): the leg moves at most what its
     // account's limit admits, decided inside the posting transaction; the
@@ -8522,6 +8569,7 @@ pub(crate) fn emit_post_plan(
     files: &Files,
     args: &Args,
     plan: &PostPlan,
+    capability: &Capability,
 ) -> Result<(), Fail> {
     let certificate = plan.certificate();
     let proposal = plan.proposal();
@@ -8611,6 +8659,59 @@ pub(crate) fn emit_post_plan(
         Json::Null
     };
     let net_effect = reclass_net_effect(book, proposal, &accounts)?;
+    // What journal-entry testing would flag, said before the commit (plan
+    // §5.1, fa-d5un): data only, never a refusal or a change to the plan.
+    // The duplicate scan reads other entries. A launch-bound session's own
+    // token decides whether it may; the embedded posture's operator acts
+    // with the owner's authority, so it reads as the planning principal.
+    let embedded_reader;
+    let reader = if out.is_bound() {
+        capability
+    } else {
+        embedded_reader = Capability::embedded(capability.holder(), &["read"])
+            .map_err(|e| Fail::Internal(format!("the embedded read capability: {e}")))?;
+        &embedded_reader
+    };
+    let warned = book.plan_warnings(plan, reader)?;
+    let warnings = Json::Arr(
+        warned
+            .warnings
+            .iter()
+            .map(|warning| {
+                obj(vec![
+                    ("kind", s(warning.kind.name())),
+                    (
+                        "legs",
+                        Json::Arr(
+                            warning
+                                .legs
+                                .iter()
+                                .map(|leg| Json::Int(i128::from(*leg)))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "entries",
+                        Json::Arr(
+                            warning
+                                .entries
+                                .iter()
+                                .map(|vid| s(format!("{:032x}", vid.0)))
+                                .collect(),
+                        ),
+                    ),
+                    ("message", s(&warning.message)),
+                ])
+            })
+            .collect(),
+    );
+    let unchecked = Json::Arr(
+        warned
+            .unchecked
+            .iter()
+            .map(|(kind, reason)| obj(vec![("kind", s(kind.name())), ("reason", s(reason))]))
+            .collect(),
+    );
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     let resolves = proposal
@@ -8732,6 +8833,12 @@ pub(crate) fn emit_post_plan(
     if let Some(path) = args.flag("--plan-out") {
         write_post_plan(files, path, &bytes)?;
     }
+    for warning in &warned.warnings {
+        out.warn(format!("{}: {}", warning.kind.name(), warning.message));
+    }
+    for (kind, reason) in &warned.unchecked {
+        out.warn(format!("{} not checked: {reason}", kind.name()));
+    }
     if bound_void || rehearsal {
         out.warn(&commit_guidance);
     }
@@ -8807,6 +8914,8 @@ pub(crate) fn emit_post_plan(
                 net_effect.map_or(Json::Null, |(json, _)| json),
             ),
             ("approvals", Json::Int(plan.approvals().len() as i128)),
+            ("warnings", warnings),
+            ("unchecked", unchecked),
             ("bytes", s(encoded)),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
             ("scope", s("same-snapshot-post")),
@@ -9990,7 +10099,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             book.plan_allocation_review(&review, digest, approvals, &capability)??
         };
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10151,7 +10260,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let plan =
             book.plan_balance_allocation(&review, review_digest, approvals, &capability)??;
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10275,7 +10384,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let plan =
             book.plan_allocation_review(&review, review_digest, approvals, &capability)??;
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10523,7 +10632,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (single_plan.into_post_plan(), class_name)
         };
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10665,7 +10774,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .plan_prepared_settlement_group(prepared, approvals, &capability)??
             .into_post_plan();
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10742,7 +10851,7 @@ fn settle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .plan_prepared_settlement(prepared, approvals, &capability)??
             .into_post_plan();
         if args.switch("--dry-run") {
-            return emit_post_plan(out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         out.at_book(&book)?;
@@ -10873,7 +10982,7 @@ pub(crate) fn known_at_read_flag(
 
 const TB_VIEW_EXAMPLE: &str = "fa tb --period FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>";
 
-fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
+pub(crate) fn selected_periods(args: &Args, book: &Book) -> Result<Vec<String>, Fail> {
     if args.flag_all("--fiscal-year").len() > 1
         || (args.flag("--fiscal-year").is_some() && args.flag("--period").is_some())
     {
@@ -10942,7 +11051,7 @@ fn prepare_certificate_history(
 /// Full history can be loaded only by a current whole-book reader. A scoped
 /// caller keeps the existing evaluation path without loading additional data;
 /// this adapter does not manufacture a scoped native-history capability.
-fn prepare_native_certificate_history(
+pub(crate) fn prepare_native_certificate_history(
     book: &mut Book,
     capability: &Capability,
     known_at: Option<CommitSeq>,
@@ -10957,6 +11066,11 @@ fn prepare_native_certificate_history(
 }
 
 pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    // A dimension-filtered report is its own uncertified literal fold
+    // (fa-ficc); it refuses the flags of every other mode.
+    if args.flag("--dimension").is_some() {
+        return crate::dimension::tb(ctx, args);
+    }
     const RENDER_EXAMPLE: &str = "fa tb --period FY2026-P03 --render pdf --out trial-balance.pdf";
     let render = render_request(args, RENDER_EXAMPLE)?;
     if render.is_some()
@@ -11595,16 +11709,14 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if functional
         && (matches!(
             args.positional[1].as_str(),
-            "diff" | "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
+            "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
         ) || args.flag("--branch").is_some()
-            || ["--before-certificate", "--after-certificate", "--from-diff"]
-                .iter()
-                .any(|flag| args.flag(flag).is_some())
+            || args.flag("--from-diff").is_some()
             || crate::issuance::view_flag(args).is_some())
     {
         return Err(usage(
-            "--functional selects a balance sheet or income statement on the trunk at one known-at; statement comparisons, issuance views and other statement workflows do not select a functional basis",
-            "fa statement balance-sheet|income-statement --functional --for <period> [--compare <period>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]",
+            "--functional selects a trunk balance sheet, income statement, or two-frontier statement diff; traces, issuance views and branch workflows do not support this basis",
+            "fa statement diff --functional --definition income-statement --for <period> --before <seq> --after <seq> [--certify]",
         ));
     }
     // Statement issuance (plan §12.5, bead fa-wrrw).
@@ -11685,7 +11797,7 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             || crate::issuance::view_flag(args).is_some()
         {
             return Err(usage(
-                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in) do not select this workflow",
+                "statement diff and trace select two frontiers with --before and --after; --known-at, --as-known-at and the restatement views (--as-originally-reported, --as-issued-to, --as-reported-in, --as-currently-stated) do not select this workflow",
                 "fa statement diff --definition balance-sheet --for <period> --before <seq> --after <seq> --json",
             ));
         }
@@ -11756,7 +11868,11 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         if mode == "diff" {
             if certify {
-                let certified = book.certify_statement_diff(who, &capability, &comparison)??;
+                let certified = if functional {
+                    book.certify_functional_statement_diff(who, &capability, &comparison)??
+                } else {
+                    book.certify_statement_diff(who, &capability, &comparison)??
+                };
                 return emit_certified_statement_diff(
                     &ctx.out,
                     &ctx.files,
@@ -11766,7 +11882,11 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &certified,
                 );
             }
-            let diff = book.statement_diff(who, &capability, &comparison)??;
+            let diff = if functional {
+                book.functional_statement_diff(who, &capability, &comparison)??
+            } else {
+                book.statement_diff(who, &capability, &comparison)??
+            };
             return render_statement_diff(&ctx.out, &book, &diff, None);
         }
         let request = StatementTraceRequest {
@@ -11980,7 +12100,7 @@ fn emit_certified_statement_diff(
         out,
         args,
         &artifact,
-        "fa:statement-diff:v1",
+        certified.certificate.output_format(),
         &bytes,
         &retained,
     );
@@ -12152,8 +12272,40 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             )?;
             // Mismatched sources are the library's refusal; this checks only
             // the question the caller stated against the first source.
-            if let fa::ReportSelection::Statement(selection) = &before.selection {
+            if let fa::ReportSelection::Statement(selection)
+            | fa::ReportSelection::FunctionalStatement(selection) = &before.selection
+            {
                 statement_question_matches(args, selection)?;
+            }
+            if args.switch("--functional")
+                && !matches!(
+                    before.selection,
+                    fa::ReportSelection::FunctionalStatement(_)
+                )
+            {
+                return Err(fa_journal::Refusal::new(
+                    fa::certificate::code::CERTIFICATE_INVALID,
+                    exit::VERIFICATION,
+                    "--functional requires two functional statement source certificates",
+                    "plan §8.3 / §12.5 (a comparison preserves its sources' accounting basis)",
+                    "pass two retained functional statement certificates, or omit --functional to compare two native statement certificates",
+                ).into());
+            }
+            // Functional sources also need immutable Entry creation history
+            // when their prefix is HEAD after reopening a checkpointed book.
+            for source in [&before, &after] {
+                if source.selection.uses_functional_valuations() {
+                    let bytes = source.canonical_bytes().map_err(|error| {
+                        Fail::Internal(format!("functional comparison source: {error}"))
+                    })?;
+                    book.replay_report_artifact_for_with_history(
+                        who,
+                        &capability,
+                        &bytes,
+                        Some(&source.digest),
+                        fa::ReportArtifactExpectation::AsSupplied,
+                    )??;
+                }
             }
             // Both sources replay: load the earlier retained prefix.
             book.prepare_report_history(
@@ -12359,32 +12511,38 @@ pub(crate) fn render_statement_diff(
     let columns = statement_columns_json(after);
     let lines = statement_line_changes_json(diff.lines(), units)?;
     let mapping_changes = statement_mapping_changes_json(diff.mapping_changes())?;
-    out.event_with_certificate(
-        "statement_diff",
-        vec![
-            ("name", s(&after.definition_name)),
-            (
-                "definition_version",
-                Json::Int(i128::from(after.definition_version)),
-            ),
-            ("definition_digest", s(hex(&after.definition_digest))),
-            ("before_known_at", Json::Int(i128::from(before.known_at))),
-            ("after_known_at", Json::Int(i128::from(after.known_at))),
-            ("amounts_changed", Json::Bool(diff.amounts_changed())),
-            ("unchanged", Json::Bool(diff.is_unchanged())),
-            ("columns", Json::Arr(columns)),
-            ("lines", Json::Arr(lines)),
-            ("mapping_changes", Json::Arr(mapping_changes)),
-        ],
-        &format!(
-            "{} diff · {} -> {} · unchanged={}",
-            after.definition_name,
-            before.known_at,
-            after.known_at,
-            diff.is_unchanged()
+    let mut fields = vec![
+        ("name", s(&after.definition_name)),
+        (
+            "definition_version",
+            Json::Int(i128::from(after.definition_version)),
         ),
-        certificate,
+        ("definition_digest", s(hex(&after.definition_digest))),
+        ("before_known_at", Json::Int(i128::from(before.known_at))),
+        ("after_known_at", Json::Int(i128::from(after.known_at))),
+        ("amounts_changed", Json::Bool(diff.amounts_changed())),
+        ("unchanged", Json::Bool(diff.is_unchanged())),
+        ("columns", Json::Arr(columns)),
+        ("lines", Json::Arr(lines)),
+        ("mapping_changes", Json::Arr(mapping_changes)),
+    ];
+    let mut human = format!(
+        "{} diff · {} -> {} · unchanged={}",
+        after.definition_name,
+        before.known_at,
+        after.known_at,
+        diff.is_unchanged()
     );
+    if let Some(base_unit) = diff.functional_unit() {
+        let code = registered_unit_code(base_unit, units)?;
+        fields.extend([
+            ("functional", Json::Bool(true)),
+            ("base_unit", s(&code)),
+            ("valuation_basis", s("retained-base-amounts")),
+        ]);
+        human.push_str(&format!(" · functional {code} · retained base amounts"));
+    }
+    out.event_with_certificate("statement_diff", fields, &human, certificate);
     Ok(())
 }
 
@@ -12497,9 +12655,9 @@ pub(crate) fn render_statement_trace(
     Ok(())
 }
 
-type StatementPresentation = (Vec<(&'static str, Json)>, String);
+pub(crate) type StatementPresentation = (Vec<(&'static str, Json)>, String);
 
-fn statement_presentation(
+pub(crate) fn statement_presentation(
     statement: &Statement,
     units: &fa_money::UnitRegistry,
 ) -> Result<StatementPresentation, Fail> {
@@ -12523,7 +12681,7 @@ fn functional_statement_unit(
     registered_unit_code(fa_money::UnitId(unit), units)
 }
 
-fn statement_presentation_basis(
+pub(crate) fn statement_presentation_basis(
     statement: &Statement,
     units: &fa_money::UnitRegistry,
     functional: bool,
@@ -13133,6 +13291,46 @@ fn render_trial_balance_with_units(
     certificate: Option<&str>,
     served: Option<&fa_registers::Served>,
 ) -> Result<(), Fail> {
+    render_trial_balance_filtered(out, units, tb, selection, certificate, served, None)
+}
+
+/// The dimension filter a `trial_balance` names (`tb_dimension`, fa-ficc).
+pub(crate) struct TbDimension<'a> {
+    pub dimension: &'a str,
+    pub value: &'a str,
+    /// The value and its descendants, whose tagged legs the report folds.
+    pub values: &'a [String],
+}
+
+/// A trial balance over only the legs tagged with `dimension`'s values
+/// (`fa tb --dimension`).
+pub(crate) fn render_tagged_trial_balance(
+    out: &Out,
+    book: &Book,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    dimension: &TbDimension<'_>,
+) -> Result<(), Fail> {
+    render_trial_balance_filtered(
+        out,
+        &book.context().units,
+        tb,
+        selection,
+        None,
+        None,
+        Some(dimension),
+    )
+}
+
+fn render_trial_balance_filtered(
+    out: &Out,
+    units: &fa_money::UnitRegistry,
+    tb: &fa_registers::TrialBalance,
+    selection: &TrialBalanceSelection,
+    certificate: Option<&str>,
+    served: Option<&fa_registers::Served>,
+    dimension: Option<&TbDimension<'_>>,
+) -> Result<(), Fail> {
     validate_trial_balance_units(tb, units)?;
     let periods: &[String] = match selection {
         TrialBalanceSelection::Periods(periods) | TrialBalanceSelection::Activity(periods) => {
@@ -13210,6 +13408,19 @@ fn render_trial_balance_with_units(
                 ("pending_unit_totals", Json::Arr(pending_totals)),
                 ("balanced", Json::Bool(tb.is_balanced())),
                 ("served", served.map_or(Json::Null, served_json)),
+                (
+                    "dimension",
+                    dimension.map_or(Json::Null, |dimension| {
+                        obj(vec![
+                            ("dimension", s(dimension.dimension)),
+                            ("value", s(dimension.value)),
+                            (
+                                "values",
+                                Json::Arr(dimension.values.iter().map(s).collect()),
+                            ),
+                        ])
+                    }),
+                ),
             ],
             "",
             certificate,
@@ -13225,6 +13436,14 @@ fn render_trial_balance_with_units(
                 "period activity · {} · known at {}",
                 periods.join(", "),
                 tb.known_at.0
+            ));
+        }
+        if let Some(dimension) = dimension {
+            out.line(format!(
+                "only legs tagged {} {} ({}); the other legs of their entries are left out, so the totals need not balance",
+                dimension.dimension,
+                dimension.value,
+                dimension.values.join(", ")
             ));
         }
         out.line(out.style().header(&format!(
@@ -16490,10 +16709,28 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         Some("aging") => {
-            if args.positional.len() != 2 {
+            // `fa aging ar|ap` (plan §15.3; fa-kxc4 roles): the one account
+            // holding the receivable or payable role.
+            let role = match args.positional.get(2).map(String::as_str) {
+                Some("ar") => Some("receivable"),
+                Some("ap") => Some("payable"),
+                _ => None,
+            };
+            if args.positional.len() != 2 + usize::from(role.is_some()) {
                 return Err(usage(
                     "unexpected gl aging argument",
-                    "fa gl aging [--account <code[,code...]> | --all-posting] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
+                    "fa gl aging [ar | ap | --account <code[,code...]> | --all-posting] --as-of YYYY-MM-DD [--bucket <days>]... [--reconcile] --book <dir>",
+                ));
+            }
+            if role.is_some()
+                && (args.flag("--account").is_some()
+                    || args.switch("--all-posting")
+                    || args.switch("--reconcile")
+                    || args.flag("--from-source").is_some())
+            {
+                return Err(usage(
+                    "gl aging ar|ap names its account by role; it takes no --account, --all-posting, --reconcile or --from-source",
+                    "fa aging ar --as-of YYYY-MM-DD, or fa gl aging --account <code> --as-of YYYY-MM-DD",
                 ));
             }
             let mut book = ctx.books.open_admitted(args, admit_report)?;
@@ -16550,6 +16787,45 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 .first()
                 .map(|code| account_vid(book.context().book_id, code));
             let known_at = gl_known_at(args, &book, out)?;
+            let account = match role {
+                None => account,
+                Some(role) => {
+                    let (at, roles) = book.account_roles(known_at, &capability)??;
+                    let holders: Vec<fgdb_types::VId> =
+                        roles.accounts_with(role).into_iter().collect();
+                    match holders.as_slice() {
+                        [only] => Some(*only),
+                        [] => {
+                            return Err(usage(
+                                format!("no account holds the {role} role at sequence {}", at.0),
+                                format!(
+                                    "fa chart role <account> {role} assigns it (fa chart roles lists the roles), or age an account with --account <code>"
+                                ),
+                            ));
+                        }
+                        many => {
+                            let mut codes: Vec<String> = book
+                                .accounts_at(at, &capability)??
+                                .into_iter()
+                                .filter(|a| many.contains(&a.vid))
+                                .map(|a| a.code)
+                                .collect();
+                            codes.sort();
+                            return Err(usage(
+                                format!(
+                                    "{} accounts hold the {role} role ({})",
+                                    codes.len(),
+                                    codes.join(", ")
+                                ),
+                                format!(
+                                    "age one with fa gl aging --account <code>, or tie them all with fa gl aging --account {} --reconcile",
+                                    codes.join(",")
+                                ),
+                            ));
+                        }
+                    }
+                }
+            };
             book.prepare_report_history(who, &capability, known_at)??;
             // Saved certificates are read after admission, and their own
             // prefix is prepared before the library replays them.
@@ -18189,6 +18465,20 @@ pub(crate) fn untrusted_text_json(content: Option<String>, source: String) -> Js
     }
 }
 
+/// The `extraction_info` shape: how a derived text document was extracted
+/// (fa-646), without its text (`fa document read` shows that).
+fn extraction_info_json(info: Option<&fa_journal::evidence::DerivedExtractionInfo>) -> Json {
+    info.map_or(Json::Null, |x| {
+        obj(vec![
+            ("method", s(&x.method)),
+            ("tool_name", s(&x.tool_name)),
+            ("tool_version", s(&x.tool_version)),
+            ("replayable", Json::Bool(x.replayable)),
+            ("text_bytes", Json::Int(i128::from(x.extracted_text_bytes))),
+        ])
+    })
+}
+
 fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let example = "fa explain evidence <entry-vid> --book <dir>";
@@ -18290,6 +18580,38 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
             }
         }
+        // fa-646: a derived text document names how it was extracted and
+        // the documents it derives from, ancestors included.
+        let lineage: Vec<Json> = doc
+            .derived_from
+            .iter()
+            .map(|src| {
+                let kind = policy
+                    .kinds
+                    .iter()
+                    .find(|k| k.tag == src.kind)
+                    .map_or("?", |k| k.name.as_str());
+                let grade = policy
+                    .grades
+                    .iter()
+                    .find(|g| g.tag == src.grade)
+                    .map_or("?", |g| g.name.as_str());
+                obj(vec![
+                    ("document_oid", s(hex(&src.document_oid.0))),
+                    ("doc_commit", s(hex(&src.doc_commit))),
+                    ("kind", s(kind)),
+                    ("mime", s(&src.mime)),
+                    ("grade", s(grade)),
+                    ("size", Json::Int(i128::from(src.size))),
+                    ("recorded_at", Json::Int(i128::from(src.recorded_at.0))),
+                    ("extraction", extraction_info_json(src.extraction.as_ref())),
+                    (
+                        "derived_from",
+                        Json::Arr(src.derived_from.iter().map(|o| s(hex(&o.0))).collect()),
+                    ),
+                ])
+            })
+            .collect();
         docs_json.push(obj(vec![
             ("document_oid", s(hex(&doc.document_oid.0))),
             ("doc_commit", s(hex(&doc.doc_commit))),
@@ -18302,6 +18624,8 @@ fn explain_evidence_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("recorded_at", Json::Int(i128::from(doc.recorded_at.0))),
             ("reviews", Json::Arr(reviews)),
             ("supplements", Json::Arr(supplements)),
+            ("extraction", extraction_info_json(doc.extraction.as_ref())),
+            ("derived_from", Json::Arr(lineage)),
             ("counts_toward_minimum", Json::Bool(counts)),
         ]));
     }
@@ -19699,6 +20023,7 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     for absent in [
                         "class",
                         "effective_date",
+                        "document_date",
                         "recorded_at",
                         "entry_digest",
                         "proposal_digest",
@@ -19747,6 +20072,23 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                                 ("account", s(format!("{:032x}", l.account_ref.0))),
                                 ("amount", s(render_amount(l.amount, units)?)),
                                 ("memo", memo),
+                                (
+                                    "dimensions",
+                                    Json::Arr(
+                                        l.dimension_set
+                                            .iter()
+                                            .map(|(dimension, value)| {
+                                                obj(vec![
+                                                    (
+                                                        "dimension",
+                                                        s(crate::dimension::code_of(*dimension)),
+                                                    ),
+                                                    ("value", s(format!("{:032x}", value.0))),
+                                                ])
+                                            })
+                                            .collect(),
+                                    ),
+                                ),
                             ]))
                         })
                         .collect::<Result<_, Fail>>()?;
@@ -19755,6 +20097,13 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("vid", s(vid_s)),
                         ("class", s(entry.proposal.class.name().unwrap_or("?"))),
                         ("effective_date", s(entry.proposal.effective_date.render())),
+                        (
+                            "document_date",
+                            entry
+                                .proposal
+                                .document_date
+                                .map_or(Json::Null, |day| s(day.render())),
+                        ),
                         ("recorded_at", Json::Int(i128::from(seq.0))),
                         ("entry_digest", s(hex(&entry.entry_digest))),
                         ("proposal_digest", s(hex(&entry.proposal_digest))),
@@ -19781,6 +20130,9 @@ fn entry_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         entry.proposal.legs.len(),
                         hex(&entry.entry_digest)
                     );
+                    if let Some(day) = entry.proposal.document_date {
+                        human.push_str(&format!("\ndocument dated {}", day.render()));
+                    }
                     for link in &entry.proposal.supersession {
                         let reason = reasons
                             .get("supersession", link.reason_code)
@@ -19974,6 +20326,158 @@ pub(crate) fn finding_json(f: &fa_lantern::Finding) -> Json {
 /// `fa procedure list` and `fa procedure run <id>`: Lantern's registered
 /// procedures over the book's trunk, a pure read (plan §11; FA-INV-04: a
 /// finding is derived, never authoritative).
+/// `fa trace <law> ...` (plan §15.3 Forensics, §11.5 tracing laws): `fa
+/// procedure run trace.<law> ...` under the plan's spelling. The law is a
+/// registered tracing procedure's suffix (`libr`, `pro-rata`,
+/// `network-fifo`, `restitution-order`, ...); every flag is procedure run's.
+fn trace_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str =
+        "fa trace libr --account 1000 --source <entry vid> --effective-through 2026-03-31 --json";
+    let [_, law] = args.positional.as_slice() else {
+        return Err(usage("fa trace takes one tracing law", FIX));
+    };
+    let id = format!("trace.{}", law.replace('-', "_"));
+    let laws: Vec<String> = fa_lantern::catalog::registered()
+        .map_err(lantern_usage)?
+        .into_iter()
+        .filter_map(|row| row.id.strip_prefix("trace.").map(|l| l.replace('_', "-")))
+        .collect();
+    if !laws
+        .iter()
+        .any(|l| l.replace('-', "_") == id["trace.".len()..])
+    {
+        return Err(usage(
+            format!("`{law}` is not a registered tracing law"),
+            format!(
+                "fa trace <{}> ... (fa procedure list --json)",
+                laws.join("|")
+            ),
+        ));
+    }
+    let mut run = args.clone();
+    run.positional = vec!["procedure".into(), "run".into(), id];
+    procedure_cmd(ctx, &run)
+}
+
+/// `fa jet [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD]
+/// [--budget <units>]` (plan §15.3 Forensics, §11.2 journal-entry tests):
+/// every registered `jet.*` procedure at its registered defaults, at one
+/// coordinate.
+fn jet_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    procedure_family(
+        ctx,
+        args,
+        "jet",
+        "fa jet [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] --json",
+    )
+}
+
+/// `fa benford [--scope <account type>] [--known-at HEAD|<seq>]
+/// [--budget <units>]` (plan §15.3 Forensics, §11.3 digit tests, §15.6): the
+/// registered first-digit, second-digit and first-two-digits tests at their
+/// registered defaults, over every posting, or with `--scope` over the legs
+/// of one registered account type (their `account_type` parameter).
+fn benford_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa benford [--scope assets|liabilities|equity|revenue|expenses] [--known-at HEAD|<seq>] --json";
+    let Some(scope) = args.flag("--scope") else {
+        return procedure_family(ctx, args, "benford", FIX);
+    };
+    if args.flag_all("--scope").len() > 1 || args.flag("--param").is_some() {
+        return Err(usage(
+            "fa benford takes one --scope, and the scope is its only parameter",
+            FIX,
+        ));
+    }
+    // Plan §15.6 `fa benford --scope expenses`: every digit test over the
+    // legs of one registered account type (the procedures' `account_type`).
+    let tag = fa_model::AccountType::ALL
+        .iter()
+        .find(|(_, name, ..)| {
+            let name = name.to_ascii_lowercase();
+            let plural = match name.strip_suffix('y') {
+                Some(stem) if name != "equity" => format!("{stem}ies"),
+                _ => format!("{name}s"),
+            };
+            scope == name || scope == plural
+        })
+        .map(|(tag, ..)| *tag)
+        .ok_or_else(|| {
+            usage(
+                format!("--scope {scope} names no registered account type"),
+                FIX,
+            )
+        })?;
+    let mut scoped = args.clone();
+    scoped.flags.remove("--scope");
+    scoped
+        .flags
+        .insert("--param".into(), vec![format!("account_type={tag}")]);
+    procedure_family(ctx, &scoped, "benford", FIX)
+}
+
+/// Run every registered procedure of `family` in registry order, each
+/// reported as `fa procedure run` reports it, then a `procedure_family`
+/// summary. A procedure this book cannot run (an account role no account
+/// holds, or a declared input) is listed as refused with its fix, and the
+/// rest still run; any other failure stops the run. A date reaches only the
+/// procedures that take one. A pure read: `fa finding record <id>` retains
+/// one run.
+fn procedure_family(ctx: &mut Ctx<'_>, args: &Args, family: &str, fix: &str) -> Result<(), Fail> {
+    if args.positional.len() != 1 {
+        return Err(usage(
+            format!("fa {family} takes no positional argument"),
+            fix,
+        ));
+    }
+    let procedures = fa_registry::procedures::Procedures::embedded()
+        .map_err(|e| usage(e.to_string(), "fa procedure list --json"))?;
+    let prefix = format!("{family}.");
+    let members: Vec<_> = procedures
+        .rows
+        .iter()
+        .filter(|row| row.id.starts_with(&prefix))
+        .collect();
+    let mut ran = Vec::new();
+    let mut refused = Vec::new();
+    for row in members {
+        let mut run = args.clone();
+        run.positional = vec!["procedure".into(), "run".into(), row.id.clone()];
+        if matches!(
+            row.effective_through,
+            fa_registry::procedures::EffectiveThrough::NotTaken
+        ) {
+            run.flags.remove("--effective-through");
+        }
+        match procedure_cmd(ctx, &run) {
+            Ok(()) => ran.push(s(&row.id)),
+            Err(Fail::Book(BookError::Lantern(
+                error @ (fa_lantern::LanternError::RoleUnassigned { .. }
+                | fa_lantern::LanternError::Parameter { .. }),
+            ))) => refused.push(obj(vec![
+                ("procedure", s(&row.id)),
+                ("message", s(error.to_string())),
+                ("fix", error.fix_hint().map_or(Json::Null, s)),
+            ])),
+            Err(other) => return Err(other),
+        }
+    }
+    let human = format!(
+        "fa {family}: {} procedure(s) ran, {} refused",
+        ran.len(),
+        refused.len()
+    );
+    ctx.out.event(
+        "procedure_family",
+        vec![
+            ("family", s(family)),
+            ("ran", Json::Arr(ran)),
+            ("refused", Json::Arr(refused)),
+        ],
+        &human,
+    );
+    Ok(())
+}
+
 fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let sub = args.positional.get(1).map(String::as_str);
@@ -21107,6 +21611,29 @@ fn event_summary_json(ev: &fa_journal::EventRow) -> Json {
     ])
 }
 
+/// The recorded event `target` names in `rea`: its 32-hex vid (optionally
+/// `EV:`-prefixed) or its code.
+pub(crate) fn find_event<'a>(
+    rea: &'a fa_journal::ReaSnapshot,
+    book_id: fa_model::Id128,
+    target: &str,
+) -> Option<&'a fa_journal::EventRow> {
+    let stripped = target.strip_prefix("EV:").unwrap_or(target);
+    if stripped.len() == 32
+        && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(raw) = u128::from_str_radix(stripped, 16)
+    {
+        rea.events
+            .get(&VId(raw))
+            .or_else(|| rea.events.values().find(|e| e.spec.code == target))
+    } else {
+        let derived = fa_model::event_vid(book_id, stripped);
+        rea.events
+            .get(&derived)
+            .or_else(|| rea.events.values().find(|e| e.spec.code == stripped))
+    }
+}
+
 fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fail> {
     let seal_key = &book.context().seal_key;
     let units = &book.context().units;
@@ -21172,15 +21699,18 @@ fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fai
     ]))
 }
 
-/// `fa search <query>` (plan §9, fa-qip): rank the entries whose
-/// description or memos match the query, from a BM25 index rebuilt from the
-/// journal at the selected frontier for this query alone and never stored.
-/// It reads every entry, so it is admitted as a whole-book read; text the
-/// book's key does not open (erased, or sealed under a subject's key) is
-/// never indexed.
+/// `fa search <query> [--kind entry|document|finding|all]` (plan §9, fa-qip):
+/// rank the entries whose description or memos match the query, the
+/// documents whose text does, and the findings whose procedure or narrative
+/// does, from one BM25 index rebuilt from the journal at the selected
+/// frontier for this query alone and never stored. It reads every entry,
+/// document and recorded finding run, so it is admitted as a whole-book read.
+/// Text the book's key does not open (erased, or sealed under a subject's
+/// key) is never indexed, and a document is indexed only when this
+/// capability reads it whole: its own UTF-8 text, or a derived document's
+/// extracted text.
 fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const EXAMPLE: &str =
-        "fa search \"office rent\" [--as-known-at HEAD|<seq>] [--limit 20] --book <dir> --json";
+    const EXAMPLE: &str = "fa search \"office rent\" [--kind entry|document|finding|all] [--as-known-at HEAD|<seq>] [--limit 20] --book <dir> --json";
     let query = match args.positional.as_slice() {
         [_, query] => query.as_str(),
         _ => {
@@ -21204,12 +21734,78 @@ fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .filter(|n| (1..=200).contains(n))
             .ok_or_else(|| usage(format!("--limit `{raw}` is not 1..=200"), EXAMPLE))?,
     };
+    let kind = match args.flag("--kind").unwrap_or("all") {
+        "all" => None,
+        "entry" => Some(fa::SearchRecordKind::Entry),
+        "document" => Some(fa::SearchRecordKind::Document),
+        "finding" => Some(fa::SearchRecordKind::Finding),
+        other => {
+            return Err(usage(
+                format!("--kind `{other}` is not entry, document, finding or all"),
+                EXAMPLE,
+            ));
+        }
+    };
+    let wants = |wanted: fa::SearchRecordKind| kind.is_none_or(|only| only == wanted);
+    let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
-    let book = ctx.books.open_admitted(args, |book| {
+    let mut book = ctx.books.open_admitted(args, |book| {
         admit_whole_book_read(book, &capability, &[], "searching the journal")
     })?;
     let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-    let results = book.search_entries(query, known_at)?;
+    let mut records = Vec::new();
+    // Documents are read through this capability. One it sees only
+    // redacted, may not read, or that is erased contributes nothing; one
+    // that fails its own proof is drift and fails the search (exit 8).
+    if wants(fa::SearchRecordKind::Document) {
+        for summary in book.documents(known_at)?? {
+            let document = match book.read_document_for(&capability, &summary.oid)? {
+                Ok(fa_journal::DocumentRead::Full(document)) => document,
+                Err(refusal) if refusal.exit == fa_journal::exit::VERIFICATION => {
+                    return Err(Fail::Refusal(refusal));
+                }
+                Ok(fa_journal::DocumentRead::Redacted(_)) | Err(_) => continue,
+            };
+            if let Some(text) = fa::document_search_text(&document) {
+                records.push(fa::SearchIndexableRecord {
+                    id: fa::SearchRecordId::Document(summary.oid),
+                    recorded_at: summary.recorded_at.0,
+                    subject_ref: None,
+                    text,
+                });
+            }
+        }
+    }
+    // Findings are the certified replays of every run recorded at the
+    // frontier, never a graph cache: a run that does not replay fails the
+    // search. Each finding is searched by its procedure and narrative.
+    if wants(fa::SearchRecordKind::Finding) {
+        let mut request = fa::findings::lookup::FindingRunPageRequest {
+            known_at,
+            after: None,
+            limit: fa::findings::lookup::MAX_FINDING_RUN_PAGE,
+        };
+        loop {
+            let page = book.finding_runs(who, &capability, &request)??;
+            for run in &page.runs {
+                let recorded =
+                    book.read_findings_with_history(who, &capability, &run.certificate_digest)??;
+                for (vid, finding) in recorded.finding_ids.iter().zip(&recorded.report.findings) {
+                    records.push(fa::SearchIndexableRecord {
+                        id: fa::SearchRecordId::Finding(*vid),
+                        recorded_at: recorded.recorded_at.0,
+                        subject_ref: None,
+                        text: format!("{}\n{}", finding.procedure, finding.narrative),
+                    });
+                }
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            request.after = Some(next);
+        }
+    }
+    let results = book.search(query, known_at, &records, kind)?;
     ctx.out.known_at(results.known_at);
     let shown = &results.hits[..results.hits.len().min(limit)];
     let hits: Vec<Json> = shown
@@ -21230,7 +21826,7 @@ fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .collect();
     let human = if shown.is_empty() {
         format!(
-            "no entry matches `{query}` at {} ({} entries carry searchable text)",
+            "nothing matches `{query}` at {} ({} entries, documents and findings carry searchable text)",
             results.known_at.0, results.records
         )
     } else {
@@ -21491,21 +22087,7 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?;
             let rea = selected.ok_or_else(|| Fail::Internal("event snapshot is missing".into()))?;
             ctx.out.known_at(rea.known_at);
-            let stripped = target.strip_prefix("EV:").unwrap_or(target);
-            let ev_row = if stripped.len() == 32
-                && stripped.bytes().all(|b| b.is_ascii_hexdigit())
-                && let Ok(raw) = u128::from_str_radix(stripped, 16)
-            {
-                rea.events
-                    .get(&VId(raw))
-                    .or_else(|| rea.events.values().find(|e| e.spec.code == target))
-            } else {
-                let derived = fa_model::event_vid(book.context().book_id, stripped);
-                rea.events
-                    .get(&derived)
-                    .or_else(|| rea.events.values().find(|e| e.spec.code == stripped))
-            }
-            .ok_or_else(|| {
+            let ev_row = find_event(&rea, book.context().book_id, target).ok_or_else(|| {
                 usage(
                     format!("no event `{target}` in this book at {}", rea.known_at.0),
                     "fa event list --book <dir> --json",

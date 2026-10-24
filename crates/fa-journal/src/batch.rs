@@ -430,6 +430,22 @@ pub async fn post_batch<V: Vfs + Clone>(
     capability: Capability,
     batch: PostBatch,
 ) -> Outcome<BatchPosted> {
+    post_batch_with_crash(db, ctx, book, capability, batch, None).await
+}
+
+/// [`post_batch`] through the substrate's production crash-point seam
+/// (`WriteTxn::commit_with_crash`), for the lab campaign that crashes a
+/// batch's one publication at each registered point and checks the book
+/// after reopening (fa-0fl). `None` is `post_batch`: both run this one path.
+#[doc(hidden)]
+pub async fn post_batch_with_crash<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    batch: PostBatch,
+    crash_at: Option<fgdb::CrashPoint>,
+) -> Outcome<BatchPosted> {
     if let Err(refusal) = authorize_members(db, book, &capability, &batch, Admission::Commit)? {
         return Ok(Err(refusal));
     }
@@ -445,7 +461,7 @@ pub async fn post_batch<V: Vfs + Clone>(
         Ok(BatchStage::Recorded(posted)) => return Ok(Ok(posted)),
         Ok(BatchStage::Staged(staged)) => staged,
     };
-    commit_batch(
+    commit_batch_with_crash(
         db,
         ctx,
         book,
@@ -453,6 +469,7 @@ pub async fn post_batch<V: Vfs + Clone>(
         &batch,
         Admission::Commit,
         staged,
+        crash_at,
     )
     .await
 }
@@ -644,6 +661,22 @@ pub(crate) async fn commit_batch<V: Vfs + Clone>(
     admission: Admission,
     staged: Box<StagedBatch>,
 ) -> Outcome<BatchPosted> {
+    commit_batch_with_crash(db, ctx, book, capabilities, batch, admission, staged, None).await
+}
+
+/// [`commit_batch`] through the substrate's production crash-point seam
+/// (fa-0fl); `None` is `commit_batch`.
+#[allow(clippy::too_many_arguments)]
+async fn commit_batch_with_crash<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capabilities: &[Capability],
+    batch: &PostBatch,
+    admission: Admission,
+    staged: Box<StagedBatch>,
+    crash_at: Option<fgdb::CrashPoint>,
+) -> Outcome<BatchPosted> {
     if staged.planning || matches!(admission, Admission::Plan) {
         staged.txn.abort();
         return Err(KernelError::Corrupt(
@@ -665,7 +698,7 @@ pub(crate) async fn commit_batch<V: Vfs + Clone>(
             return Ok(Err(policy::refusal(&d)));
         }
     }
-    match txn.commit(db, &commit).await {
+    match txn.commit_with_crash(db, &commit, crash_at).await {
         Ok(seq) => Ok(Ok(BatchPosted {
             outcome: ovid,
             entries,

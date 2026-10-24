@@ -409,7 +409,7 @@ fn fix_argv_parses_against_verbs() {
     // Planted negatives: the same check refuses an unknown verb, an unknown
     // subcommand and a flag the verb does not take.
     for planted in [
-        "fa consolidate --all",
+        "fa amalgamate --all",
         "fa chart frobnicate",
         "fa tb --not-a-flag",
     ] {

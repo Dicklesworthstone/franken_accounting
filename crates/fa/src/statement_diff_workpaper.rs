@@ -1,6 +1,6 @@
 //! Reviewable workpapers generated ONLY after both statement sources replay.
 //!
-//! JSONL preserves every exact amount, column, native unit and mapping change.
+//! JSONL preserves every exact amount, column, valuation basis and mapping change.
 //! Markdown is an escaped presentation of the same rows. The retained binary
 //! certificate travels beside them; it is not replaced by a checksum of text.
 //! Identical certificates produce identical workpapers despite later postings.
@@ -151,6 +151,15 @@ fn json(
         hex(certificate.digest())
     )?;
     quote(out, &diff.before().definition_name)?;
+    if let Some(unit) = diff.functional_unit() {
+        // Numeric registry IDs match the existing line-unit contract. The
+        // retained source certificates bind the historical unit registry.
+        write!(
+            out,
+            ",\"functional\":true,\"base_unit\":{},\"valuation_basis\":\"retained-base-amounts\"",
+            unit.0
+        )?;
+    }
     writeln!(
         out,
         ",\"definition_digest\":\"{}\",\"event\":\"manifest\",\"format\":\"{FORMAT}\",\"known_at_after\":\"{}\",\"known_at_before\":\"{}\",\"line_count\":{},\"mapping_changes\":{},\"scope\":\"retained_history_replay\",\"source_after\":\"{}\",\"source_before\":\"{}\",\"workpaper\":\"{id}\"}}",
@@ -238,9 +247,14 @@ fn markdown(
     )?;
     out.write_str("Definition: ")?;
     markdown_text(out, &diff.before().definition_name)?;
+    let amounts_description = if diff.is_functional() {
+        "Amounts below are exact functional base-unit integer mantissas from verified retained base amounts; no new rates or presentation rounding are applied."
+    } else {
+        "Amounts below are exact native-unit integer mantissas; no presentation rounding or cross-unit aggregation is applied."
+    };
     writeln!(
         out,
-        " (version {}).\n\nBoth sources were replayed against retained book history. This is not an assertion of issuance, case approval, signed authenticity, or economic truth.\n\nAmounts below are exact native-unit integer mantissas; no presentation rounding or cross-unit aggregation is applied. All lines, including unchanged and zero lines, are shown. Do not sum subtotals as though they were disjoint accounts.\n",
+        " (version {}).\n\nBoth sources were replayed against retained book history. This is not an assertion of issuance, case approval, signed authenticity, or economic truth.\n\n{amounts_description} All lines, including unchanged and zero lines, are shown. Do not sum subtotals as though they were disjoint accounts.\n",
         diff.before().definition_version
     )?;
     writeln!(
@@ -264,9 +278,14 @@ fn markdown(
             Some(day) => write!(out, "; activity starts on civil day {}", day.0)?,
             None => out.write_str("; stock from inception")?,
         }
+        let unit_label = if diff.is_functional() {
+            "Base unit ID"
+        } else {
+            "Native unit ID"
+        };
         writeln!(
             out,
-            "; inclusive cutoff day {}.\n\n| Line | Description | Native unit ID | Before | After | Delta |\n| --- | --- | ---: | ---: | ---: | ---: |",
+            "; inclusive cutoff day {}.\n\n| Line | Description | {unit_label} | Before | After | Delta |\n| --- | --- | ---: | ---: | ---: | ---: |",
             column.effective_through.0
         )?;
         for line in diff.lines() {

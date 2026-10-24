@@ -52,6 +52,14 @@ pub const STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v4";
 /// Existing native statements keep their v4 encoding and valuation semantics.
 pub const FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v5";
 pub const FUNCTIONAL_STATEMENT_OUTPUT_FORMAT: &str = "fa:functional-statement:v1";
+/// A consolidation run of a multi-entity book (fa-76hy): one more selector
+/// tag in its own format version, so earlier certificates keep their bytes.
+pub const CONSOLIDATION_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v6";
+pub const CONSOLIDATION_OUTPUT_FORMAT: &str = "fa:consolidation:v1";
+/// A consolidation in the book's functional currency, with retained FX evidence.
+/// Native v6 consolidation bytes and valuation semantics remain unchanged.
+pub const FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v7";
+pub const FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT: &str = "fa:functional-consolidation:v1";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -158,7 +166,7 @@ impl TrialBalanceSelection {
         }
     }
 
-    fn report<V: Vfs + Clone>(
+    pub(crate) fn report<V: Vfs + Clone>(
         &self,
         db: &Database<V>,
         book: &BookContext,
@@ -187,6 +195,15 @@ pub enum ReportSelection {
     /// The book's functional unit, using independently verified retained base
     /// valuations. No current-rate conversion or presentation translation.
     FunctionalStatement(Box<crate::StatementSelection>),
+    /// The consolidation of the book's legal entities for one period (plan §12.3).
+    Consolidation {
+        period: String,
+    },
+    /// Group stock and activity in the shared functional unit, from verified
+    /// retained base amounts. No current-rate translation is performed.
+    FunctionalConsolidation {
+        period: String,
+    },
 }
 
 impl From<TrialBalanceSelection> for ReportSelection {
@@ -210,6 +227,9 @@ impl ReportSelection {
             Self::Statement(selection) | Self::FunctionalStatement(selection) => {
                 selection.is_canonical()
             }
+            Self::Consolidation { period } | Self::FunctionalConsolidation { period } => {
+                !period.is_empty() && period.len() <= 128
+            }
         }
     }
 
@@ -224,6 +244,16 @@ impl ReportSelection {
         }
     }
 
+    /// Functional reports require the retained Rate documents and complete
+    /// Entry creation history used to verify each immutable base valuation.
+    #[must_use]
+    pub const fn uses_functional_valuations(&self) -> bool {
+        matches!(
+            self,
+            Self::FunctionalStatement(_) | Self::FunctionalConsolidation { .. }
+        )
+    }
+
     #[must_use]
     pub const fn output_format(&self) -> &'static str {
         match self {
@@ -232,6 +262,8 @@ impl ReportSelection {
             Self::OpenItems { .. } => "fa:open-items:v1",
             Self::Statement(_) => "fa:statement:v1",
             Self::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_OUTPUT_FORMAT,
+            Self::Consolidation { .. } => CONSOLIDATION_OUTPUT_FORMAT,
+            Self::FunctionalConsolidation { .. } => FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT,
         }
     }
 
@@ -255,6 +287,12 @@ impl ReportSelection {
                 w.u8(3);
                 selection.write(w)?;
             }
+            Self::Consolidation { period } => {
+                w.u8(4).str(period);
+            }
+            Self::FunctionalConsolidation { period } => {
+                w.u8(5).str(period);
+            }
         }
         Ok(())
     }
@@ -277,6 +315,12 @@ impl ReportSelection {
             3 if version == 5 => Ok(Self::FunctionalStatement(Box::new(
                 crate::StatementSelection::read(r)?,
             ))),
+            4 if version == 6 => Ok(Self::Consolidation {
+                period: r.str(128, "consolidation period")?.to_string(),
+            }),
+            5 if version == 7 => Ok(Self::FunctionalConsolidation {
+                period: r.str(128, "functional consolidation period")?.to_string(),
+            }),
             tag => Err(r.bad_tag("report selector", tag)),
         }
     }
@@ -310,6 +354,14 @@ impl ReportSelection {
                 db, book, selection, at,
             )?
             .map(|statement| ReportOutput::FunctionalStatement(Box::new(statement)))),
+            Self::Consolidation { period } => {
+                Ok(crate::consolidation::consolidate_at(db, book, period, at)?
+                    .map(|run| ReportOutput::Consolidation(Box::new(run))))
+            }
+            Self::FunctionalConsolidation { period } => Ok(
+                crate::consolidation::consolidate_functional_at(db, book, period, at)?
+                    .map(|run| ReportOutput::FunctionalConsolidation(Box::new(run))),
+            ),
         }
     }
 }
@@ -323,6 +375,8 @@ pub enum ReportOutput {
     OpenItems(OpenItemsReport),
     Statement(Box<fa_statements::Statement>),
     FunctionalStatement(Box<fa_statements::Statement>),
+    Consolidation(Box<crate::consolidation::Consolidation>),
+    FunctionalConsolidation(Box<crate::consolidation::FunctionalConsolidation>),
 }
 
 impl ReportOutput {
@@ -335,6 +389,8 @@ impl ReportOutput {
             Self::Statement(report) | Self::FunctionalStatement(report) => {
                 CommitSeq(report.known_at)
             }
+            Self::Consolidation(report) => report.known_at,
+            Self::FunctionalConsolidation(report) => report.group.known_at,
         }
     }
 
@@ -349,6 +405,8 @@ impl ReportOutput {
             Self::Statement(report) | Self::FunctionalStatement(report) => {
                 report.known_at = known_at.0;
             }
+            Self::Consolidation(report) => report.set_known_at(known_at),
+            Self::FunctionalConsolidation(report) => report.set_known_at(known_at),
         }
     }
 
@@ -365,6 +423,8 @@ impl ReportOutput {
                     .bytes(&report.canonical_bytes()?);
                 w.finish()
             }
+            Self::Consolidation(report) => report.canonical_bytes(),
+            Self::FunctionalConsolidation(report) => report.canonical_bytes(),
         }
     }
 }
@@ -523,6 +583,24 @@ fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static
                 include_str!("../../../registries/rounding_laws.toml"),
             ),
         ]);
+    }
+    // Account roles select the run's accounts, and the NCI rounds under a
+    // registered law.
+    if matches!(
+        selection,
+        ReportSelection::Consolidation { .. } | ReportSelection::FunctionalConsolidation { .. }
+    ) {
+        sources.push((
+            "account_roles",
+            include_str!("../../../registries/account_roles.toml"),
+        ));
+        if selection.uses_functional_valuations() {
+            sources.push(("fx_laws", include_str!("../../../registries/fx_laws.toml")));
+        }
+        sources.push((
+            "rounding_laws",
+            include_str!("../../../registries/rounding_laws.toml"),
+        ));
     }
     sources
 }
@@ -740,7 +818,7 @@ fn statements(at: CommitSeq, selection: &ReportSelection) -> Vec<String> {
             )
         })
         .collect();
-    if matches!(selection, ReportSelection::FunctionalStatement(_)) {
+    if selection.uses_functional_valuations() {
         // Restrict the payload closure to Rate documents. Unrelated documents
         // can require additional disclosure authority (for example bank data).
         // Every cited OID and the Rate mirror are independently bound below.
@@ -819,6 +897,10 @@ impl ReportCertificate {
             ReportSelection::TrialBalance(_) => CERTIFICATE_FORMAT,
             ReportSelection::Statement(_) => STATEMENT_CERTIFICATE_FORMAT,
             ReportSelection::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT,
+            ReportSelection::Consolidation { .. } => CONSOLIDATION_CERTIFICATE_FORMAT,
+            ReportSelection::FunctionalConsolidation { .. } => {
+                FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
+            }
             _ => REPORT_CERTIFICATE_FORMAT,
         }
     }
@@ -849,6 +931,8 @@ impl ReportCertificate {
         if self.format() == REPORT_CERTIFICATE_FORMAT
             || self.format() == STATEMENT_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
+            || self.format() == CONSOLIDATION_CERTIFICATE_FORMAT
+            || self.format() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -882,6 +966,10 @@ impl ReportCertificate {
                 4
             } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
                 5
+            } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
+                6
+            } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
+                7
             } else {
                 return Err(r.invalid("report certificate format"));
             };
@@ -901,7 +989,8 @@ impl ReportCertificate {
             let registry_digest = r.fixed("registry closure")?;
             let journal_root = r.fixed("journal root")?;
             let journal_leaves = r.u64("journal leaves")?;
-            let required_inputs = INPUTS.len() + usize::from(version == 5);
+            let required_inputs =
+                INPUTS.len() + usize::from(selection.uses_functional_valuations());
             let count = r.count(required_inputs, "native inputs")?;
             if count != required_inputs {
                 return Err(r.invalid("complete native input closure"));
@@ -1265,7 +1354,7 @@ fn certify_selected<V: Vfs + Clone>(
     // Empty as-of/open-item folds must not certify a coordinate before genesis,
     // or fold with a calendar/units context that the native closure never read.
     context_at(db, book, at)?;
-    if matches!(&selection, ReportSelection::FunctionalStatement(_))
+    if selection.uses_functional_valuations()
         && let Err(refusal) = functional::verify_sources(db, cx, book, at)?
     {
         return Ok(Err(refusal));
@@ -1425,6 +1514,8 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         && (matches!(
             &certificate.selection,
             ReportSelection::FunctionalStatement(_)
+                | ReportSelection::Consolidation { .. }
+                | ReportSelection::FunctionalConsolidation { .. }
         ) || (certificate.registry_digest != legacy_v2
             && certificate.registry_digest != legacy_registry_digest(&certificate.selection)))
     {
@@ -1505,10 +1596,8 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             }
         }
     }
-    if matches!(
-        &certificate.selection,
-        ReportSelection::FunctionalStatement(_)
-    ) && let Err(refusal) = functional::verify_sources(db, cx, book, certificate.known_at)?
+    if certificate.selection.uses_functional_valuations()
+        && let Err(refusal) = functional::verify_sources(db, cx, book, certificate.known_at)?
     {
         return Ok(Err(refusal));
     }
@@ -1734,10 +1823,11 @@ fn statement_chart_additions<V: Vfs + Clone>(
             }) => canonical_bytes,
             Some(ControlPayload::SchemaChange { kind: 2..=11, .. }) => continue,
             Some(ControlPayload::SchemaChange {
-                kind: 12 | 14..=16, ..
+                kind: 12 | 14..=20, ..
             }) => {
-                // Closing and FX routes, native subledger designations and
-                // account roles change no account membership. Validate the
+                // Closing and FX routes, native subledger designations,
+                // account roles, dimension values, requirements and closes,
+                // and Canon rule versions change no account membership. Validate the
                 // complete canonical chart history before treating one as an
                 // unrelated control; a malformed control is not skippable.
                 fa_journal::chart::read_at(db, book, journal.through_seq)?;
@@ -2129,21 +2219,16 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
             .iter()
             .map(|(vid, row)| (*vid, AccountMetadata::Complete(row.clone())))
             .collect(),
-        ReportOutput::Statement(report) | ReportOutput::FunctionalStatement(report) => report
-            .mappings
-            .iter()
-            .map(|mapping| {
-                (
-                    VId(mapping.account.id),
-                    AccountMetadata::Statement {
-                        code: mapping.account.code.clone(),
-                        name: mapping.account.name.clone(),
-                        account_type: mapping.account.account_type,
-                        is_leaf: mapping.account.is_leaf,
-                    },
-                )
-            })
-            .collect(),
+        ReportOutput::Statement(report) | ReportOutput::FunctionalStatement(report) => {
+            statement_account_metadata([report.as_ref()])
+        }
+        ReportOutput::Consolidation(report) => {
+            statement_account_metadata([&report.run.balance_sheet, &report.run.income_statement])
+        }
+        ReportOutput::FunctionalConsolidation(report) => statement_account_metadata([
+            &report.group.run.balance_sheet,
+            &report.group.run.income_statement,
+        ]),
     };
     for (vid, expected) in accounts {
         cx.checkpoint().map_err(BookError::Context)?;
@@ -2174,6 +2259,27 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
         }
     }
     Ok(Ok(()))
+}
+
+/// The displayed metadata of every account the statements map.
+fn statement_account_metadata<'a>(
+    statements: impl IntoIterator<Item = &'a fa_statements::Statement>,
+) -> BTreeMap<VId, AccountMetadata> {
+    statements
+        .into_iter()
+        .flat_map(|statement| &statement.mappings)
+        .map(|mapping| {
+            (
+                VId(mapping.account.id),
+                AccountMetadata::Statement {
+                    code: mapping.account.code.clone(),
+                    name: mapping.account.name.clone(),
+                    account_type: mapping.account.account_type,
+                    is_leaf: mapping.account.is_leaf,
+                },
+            )
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2211,6 +2317,48 @@ impl AccountMetadata {
     }
 }
 
+/// A consolidation reads ownership only between its members on the selected
+/// period's last day, and only the roles used by Concordat. Recording a future
+/// stake, a third party relationship or another workflow's role does not
+/// supersede that period's report.
+fn consolidation_control_selected(
+    effective_through: DateDay,
+    entity_codes: &BTreeMap<Id128, String>,
+    control: Option<&ControlPayload>,
+) -> Result<bool, BookError> {
+    let Some(ControlPayload::SchemaChange {
+        kind,
+        canonical_bytes,
+    }) = control
+    else {
+        return Ok(false);
+    };
+    match *kind {
+        // Chart membership and lifecycle controls remain relevant: even a
+        // zero balance account can change the statements' mandatory mapping.
+        1..=4 => Ok(true),
+        fa_model::rea::SCHEMA_CHANGE_RECORD_RELATIONSHIP => {
+            let relationship =
+                fa_model::RelationshipSpec::decode(canonical_bytes).map_err(|error| {
+                    fa_journal::KernelError::Corrupt(format!(
+                        "consolidation ownership control: {error}"
+                    ))
+                })?;
+            Ok(
+                matches!(relationship.kind, fa_model::RelationshipKind::Owns { .. })
+                    && relationship.is_active_on(effective_through)
+                    && entity_codes.contains_key(&Id128(relationship.from.0.to_be_bytes()))
+                    && entity_codes.contains_key(&Id128(relationship.to.0.to_be_bytes())),
+            )
+        }
+        fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE => {
+            let role = fa_journal::account_role::AccountRoleSpec::decode(canonical_bytes)?;
+            Ok(crate::consolidation::CONSOLIDATION_ROLES.contains(&role.role.as_str()))
+        }
+        _ => Ok(false),
+    }
+}
+
 pub(crate) fn selected(
     book: &BookContext,
     selection: &ReportSelection,
@@ -2219,11 +2367,43 @@ pub(crate) fn selected(
     entries: &BTreeMap<VId, Entry>,
 ) -> Result<bool, BookError> {
     // A control's nominal date is not a contribution. Releases and migration
-    // activation are checked explicitly by their targets in the caller.
+    // activation are checked explicitly by their targets in the caller. A
+    // consolidation also reads the chart, the active group ownership edges,
+    // and the account roles those schema controls journal.
     if entry.proposal.legs.is_empty() || fa_notary::journal::is_undated(entry.proposal.class) {
-        return Ok(false);
+        return match (selection, report) {
+            (ReportSelection::Consolidation { .. }, ReportOutput::Consolidation(report)) => {
+                consolidation_control_selected(
+                    report.effective_through,
+                    &report.entity_codes,
+                    entry.proposal.control.as_ref(),
+                )
+            }
+            (
+                ReportSelection::FunctionalConsolidation { .. },
+                ReportOutput::FunctionalConsolidation(report),
+            ) => consolidation_control_selected(
+                report.group.effective_through,
+                &report.group.entity_codes,
+                entry.proposal.control.as_ref(),
+            ),
+            _ => Ok(false),
+        };
     }
     match (selection, report) {
+        // Every member's posted stock through the period's last day, of
+        // which the period's activity is part.
+        (ReportSelection::Consolidation { .. }, ReportOutput::Consolidation(report)) => {
+            return Ok(entry.proposal.class != EntryClass::PENDING
+                && entry.proposal.effective_date <= report.effective_through);
+        }
+        (
+            ReportSelection::FunctionalConsolidation { .. },
+            ReportOutput::FunctionalConsolidation(report),
+        ) => {
+            return Ok(entry.proposal.class != EntryClass::PENDING
+                && entry.proposal.effective_date <= report.group.effective_through);
+        }
         (ReportSelection::OpenItems { account }, ReportOutput::OpenItems(_)) => {
             return open_item_selected(entry, entries, *account);
         }
@@ -2967,6 +3147,205 @@ mod tests {
         assert!(selected(&book, &selection, &report, &entry, &BTreeMap::new()).unwrap());
         entry.proposal.effective_period.as_mut().unwrap().code = "FY2026-P12".into();
         assert!(!selected(&book, &selection, &report, &entry, &BTreeMap::new()).unwrap());
+    }
+
+    #[test]
+    fn functional_consolidation_v7_preserves_native_v6_and_binds_fx_sources() {
+        let native = ReportSelection::Consolidation {
+            period: "FY2026-P03".into(),
+        };
+        let functional = ReportSelection::FunctionalConsolidation {
+            period: "FY2026-P03".into(),
+        };
+        for (selection, version, tag) in [(&native, 6, 4), (&functional, 7, 5)] {
+            let mut writer = Writer::new();
+            selection.write(&mut writer).unwrap();
+            let bytes = writer.finish().unwrap();
+            assert_eq!(bytes[0], tag);
+            let mut reader = Reader::new(&bytes);
+            assert_eq!(
+                &ReportSelection::read(&mut reader, version).unwrap(),
+                selection
+            );
+            reader.finish().unwrap();
+            for other_version in (1..=7).filter(|candidate| *candidate != version) {
+                assert!(ReportSelection::read(&mut Reader::new(&bytes), other_version).is_err());
+            }
+        }
+        let native_inputs = statements(CommitSeq(7), &native);
+        let functional_inputs = statements(CommitSeq(7), &functional);
+        assert_eq!(functional_inputs[..INPUTS.len()], native_inputs);
+        assert_eq!(functional_inputs.len(), INPUTS.len() + 1);
+        assert!(
+            functional_inputs
+                .last()
+                .unwrap()
+                .contains("WHERE n.code = 'Rate'")
+        );
+        assert_eq!(
+            report_registries(&native)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            [
+                "account_types",
+                "entry_classes",
+                "units",
+                "foundations",
+                "account_roles",
+                "rounding_laws"
+            ]
+        );
+        assert_eq!(
+            report_registries(&functional)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            [
+                "account_types",
+                "entry_classes",
+                "units",
+                "foundations",
+                "account_roles",
+                "fx_laws",
+                "rounding_laws"
+            ]
+        );
+        assert_ne!(
+            registry_digest(&native).unwrap(),
+            registry_digest(&functional).unwrap()
+        );
+        assert_eq!(
+            wire_fixture(native, None).format(),
+            CONSOLIDATION_CERTIFICATE_FORMAT
+        );
+        let certificate = wire_fixture(functional, None);
+        assert_eq!(
+            certificate.format(),
+            FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
+        );
+        assert_eq!(
+            certificate.output_format(),
+            FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT
+        );
+        assert_eq!(certificate.body_bytes().unwrap().last(), Some(&0));
+    }
+
+    #[test]
+    fn consolidation_status_selects_ownership_at_the_period_end_within_the_group() {
+        let through = DateDay::from_ymd(2026, 1, 31).unwrap();
+        let members = BTreeMap::from([
+            (Id128(1u128.to_be_bytes()), "PARENT".to_string()),
+            (Id128(2u128.to_be_bytes()), "SUB".to_string()),
+        ]);
+        let original = fa_model::RelationshipSpec {
+            from: VId(1),
+            to: VId(2),
+            kind: fa_model::RelationshipKind::Owns {
+                pct: fa_model::OwnershipPct::new(4, 5).unwrap(),
+            },
+            basis: "direct_equity_ownership".into(),
+            valid_from: DateDay::from_ymd(2026, 1, 1).unwrap(),
+            valid_to: None,
+        };
+        let selected = |relationship: &fa_model::RelationshipSpec| {
+            consolidation_control_selected(
+                through,
+                &members,
+                Some(&ControlPayload::SchemaChange {
+                    kind: fa_model::rea::SCHEMA_CHANGE_RECORD_RELATIONSHIP,
+                    canonical_bytes: relationship.encode().unwrap(),
+                }),
+            )
+            .unwrap()
+        };
+        assert!(selected(&original));
+        let mut changed = original.clone();
+        changed.valid_from = through;
+        assert!(selected(&changed));
+        changed.valid_from = DateDay::from_ymd(2026, 2, 1).unwrap();
+        assert!(
+            !selected(&changed),
+            "future ownership leaves January current"
+        );
+        let mut changed = original.clone();
+        changed.valid_to = Some(through);
+        assert!(!selected(&changed), "the ownership end is exclusive");
+        changed.valid_to = Some(DateDay::from_ymd(2026, 2, 1).unwrap());
+        assert!(selected(&changed));
+        for (from, to) in [(VId(1), VId(99)), (VId(99), VId(2))] {
+            let mut changed = original.clone();
+            changed.from = from;
+            changed.to = to;
+            assert!(!selected(&changed), "both endpoints must be group members");
+        }
+        for kind in [
+            fa_model::RelationshipKind::Controls,
+            fa_model::RelationshipKind::RelatedTo,
+        ] {
+            let mut changed = original.clone();
+            changed.kind = kind;
+            assert!(!selected(&changed));
+        }
+        let mut malformed = original.encode().unwrap();
+        malformed.push(0);
+        assert!(
+            consolidation_control_selected(
+                through,
+                &members,
+                Some(&ControlPayload::SchemaChange {
+                    kind: fa_model::rea::SCHEMA_CHANGE_RECORD_RELATIONSHIP,
+                    canonical_bytes: malformed,
+                }),
+            )
+            .is_err(),
+            "an undecodable relationship must not become an unrelated control"
+        );
+    }
+
+    #[test]
+    fn consolidation_status_selects_its_role_assignments_and_removals() {
+        let through = DateDay::from_ymd(2026, 1, 31).unwrap();
+        let members = BTreeMap::new();
+        for assigned in [true, false] {
+            for (role, relevant) in [
+                ("contributed_capital", true),
+                ("intercompany", true),
+                ("intercompany_activity", true),
+                ("investment_in_subsidiary", true),
+                ("noncontrolling_interest", true),
+                ("noncontrolling_interest_income", true),
+                ("cash", false),
+                ("receivable", false),
+            ] {
+                let control = ControlPayload::SchemaChange {
+                    kind: fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE,
+                    canonical_bytes: fa_journal::account_role::AccountRoleSpec {
+                        account: VId(9),
+                        role: role.into(),
+                        assigned,
+                    }
+                    .encode()
+                    .unwrap(),
+                };
+                assert_eq!(
+                    consolidation_control_selected(through, &members, Some(&control)).unwrap(),
+                    relevant,
+                    "role {role}, assigned {assigned}"
+                );
+            }
+        }
+        assert!(
+            consolidation_control_selected(
+                through,
+                &members,
+                Some(&ControlPayload::SchemaChange {
+                    kind: fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE,
+                    canonical_bytes: Vec::new(),
+                }),
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -644,6 +644,8 @@ struct Survey {
     register_lag: Vec<RegisterLag>,
     open_drafts: usize,
     drafts_awaiting_promotion: usize,
+    /// Restatement cases rehearsed and awaiting their approval.
+    cases_awaiting_approval: usize,
     finding_runs: u32,
     /// Open findings across every recorded run, by severity name, most
     /// severe first; every severity is listed, zero included.
@@ -750,6 +752,13 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         .iter()
         .filter(|d| !d.intents.is_empty())
         .collect();
+    // Restatement cases (plan §8.3): a rehearsed case waits for its
+    // dual-control approval, the other journaled approval a book holds open.
+    let cases = book.cases()?;
+    let rehearsed: Vec<_> = cases
+        .iter()
+        .filter(|c| c.state == fa_journal::CaseState::Rehearsed)
+        .collect();
     // Findings: every recorded run, and each finding's current review
     // status at the head (Open until acknowledged or dismissed).
     let mut open_findings: Vec<(&'static str, usize)> =
@@ -846,6 +855,16 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
             ),
         ));
     }
+    if let Some(case) = rehearsed.first() {
+        steps.push(step(
+            format!("fa case show {} --json", case.body.ordinal),
+            format!(
+                "{} restatement case(s) rehearsed and awaiting dual-control approval; `fa case approve {}` shows the manifest two Human approvers approve",
+                rehearsed.len(),
+                case.body.ordinal
+            ),
+        ));
+    }
     if pending_cells > 0 {
         steps.push(NextStep {
             // Resolutions are batchable intents: an Agent plans them into a
@@ -883,6 +902,7 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         register_lag,
         open_drafts: open_drafts.len(),
         drafts_awaiting_promotion: awaiting.len(),
+        cases_awaiting_approval: rehearsed.len(),
         finding_runs,
         open_findings,
         steps: rank_for(ctx, &capability, steps),
@@ -1010,9 +1030,10 @@ pub(crate) fn triage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     );
     let open_findings: usize = sv.open_findings.iter().map(|(_, n)| n).sum();
     text.push_str(&format!(
-        "\ndrafts: {} open, {} awaiting promotion · findings: {} open across {} run(s) ({}) · register lag: {}",
+        "\ndrafts: {} open, {} awaiting promotion · cases awaiting approval: {} · findings: {} open across {} run(s) ({}) · register lag: {}",
         sv.open_drafts,
         sv.drafts_awaiting_promotion,
+        sv.cases_awaiting_approval,
         open_findings,
         sv.finding_runs,
         sv.open_findings
@@ -1066,6 +1087,14 @@ pub(crate) fn triage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (
                 "drafts_awaiting_promotion",
                 Json::Int(sv.drafts_awaiting_promotion as i128),
+            ),
+            (
+                "cases_awaiting_approval",
+                Json::Int(sv.cases_awaiting_approval as i128),
+            ),
+            (
+                "pending_approvals",
+                Json::Int((sv.drafts_awaiting_promotion + sv.cases_awaiting_approval) as i128),
             ),
             ("finding_runs", Json::Int(i128::from(sv.finding_runs))),
             (

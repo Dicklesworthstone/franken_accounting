@@ -393,6 +393,8 @@ pub mod code {
     pub const BANK_MATCH_DRIFT: &str = "FA-REF-169";
     /// The declared provenance grade is one only a verified receipt chain may confer.
     pub const GRADE_UNVERIFIED: &str = "FA-REF-084";
+    /// A source document cannot be extracted by the method asked for: not a PDF, no text layer, an undecodable stream, a cipher that needs a password, or an extraction tool that failed.
+    pub const EXTRACTION_FAILED: &str = "FA-REF-193";
     /// A stored Document's mirrors disagree with its payload, or its payload does not verify.
     pub const DOCUMENT_DRIFT: &str = "FA-REF-085";
     /// The minimum is met only by counting self-sourced documents no reviewer other than the uploader has attested.
@@ -464,6 +466,14 @@ pub mod code {
     pub const DIMENSION_MISSING: &str = "FA-REF-005";
     /// A leg names a legal-entity value the book has not declared.
     pub const ENTITY_UNDECLARED: &str = "FA-REF-104";
+    /// A leg names a dimension value (cost center, department, project and
+    /// the other registered kinds) outside its valid-time effectivity on
+    /// the entry's effective date (plan §4.1).
+    pub const DIMENSION_NOT_EFFECTIVE: &str = "FA-REF-195";
+    /// A Canon rule source the checker refuses (a parse, unit, law, name or
+    /// balance-proof failure), or an evaluation that cannot be computed
+    /// exactly over the event it was given (plan §10.3).
+    pub const CANON_RULE: &str = "FA-REF-196";
     /// The migration run is not `Open`: it was finalized or abandoned, so it
     /// takes no more chunks and no second Finalize or Abandon (plan §8.6).
     pub const RUN_NOT_OPEN: &str = "FA-REF-130";

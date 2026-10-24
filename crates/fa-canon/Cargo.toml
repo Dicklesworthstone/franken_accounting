@@ -1,0 +1,20 @@
+[package]
+name = "fa-canon"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Canon posting rules: a small total typed rule language, its unit and balance checker, content-addressed IR and pure evaluator. Bead fa-c34."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-model = { path = "../fa-model", version = "=0.0.1" }
+fa-money = { path = "../fa-money", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }
+
+[dev-dependencies]
+# The naive Canon reader the differential compares against (tests only).
+fa-reference = { path = "../fa-reference", version = "=0.0.1" }

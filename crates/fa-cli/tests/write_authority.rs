@@ -433,6 +433,19 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(
+            &[
+                "assert-balance",
+                "--account",
+                "1200",
+                "--period",
+                "FY2026-P03",
+                "--balance",
+                "100.00 USD",
+            ],
+            &[Op::Reconcile],
+            Reaches,
+        ),
+        row(
             &["void-reserve", entry, "--date", DAY],
             &[Op::Post],
             Reaches,
@@ -837,6 +850,11 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Succeeds,
         ),
         row(
+            &["document", "extract", document],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        row(
             &["document", "import", "run", "junk.json"],
             &[Op::Post],
             Reaches,
@@ -914,6 +932,58 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             &["chart", "role", "1000", "suspense"],
             &[Op::Read, Op::SchemaChange],
             Succeeds,
+        ),
+        // fa-ficc: a dimension value is a schema control legs then tag.
+        row(
+            &["dimension", "add", "cost_center", "CC10", "--name", "Ops"],
+            &[Op::SchemaChange],
+            Succeeds,
+        ),
+        // --remove on an account never required writes nothing, so the
+        // later rows' legs on 6100 need no cost center.
+        row(
+            &["dimension", "require", "cost_center", "6100", "--remove"],
+            &[Op::Read, Op::SchemaChange],
+            Reaches,
+        ),
+        row(
+            &[
+                "dimension",
+                "close",
+                "cost_center",
+                "CC10",
+                "--on",
+                "2027-01-01",
+            ],
+            &[Op::SchemaChange],
+            Reaches,
+        ),
+        // fa-c34: a rule version is policy data under rule_change.
+        row(
+            &["rule", "propose", "fee.rule"],
+            &[Op::RuleChange],
+            Succeeds,
+        ),
+        // Deriving from an address the book does not hold reaches the
+        // kernel under read and post alone.
+        row(
+            &[
+                "rule",
+                "derive",
+                "--rule",
+                ZERO_DIGEST,
+                "--event",
+                "EV-NONE",
+            ],
+            &[Op::Read, Op::Post],
+            Reaches,
+        ),
+        // Planning an activation of an address the book does not hold
+        // reaches the kernel under rule_change alone.
+        row(
+            &["rule", "activate", ZERO_DIGEST, "--from", DAY, "--dry-run"],
+            &[Op::RuleChange],
+            Reaches,
         ),
         row(
             &["party", "add", "party.json"],
@@ -1208,6 +1278,10 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
             (
                 "party.json",
                 r#"{"code":"V-17","kind":"Vendor","name":"Acme Supplies"}"#,
+            ),
+            (
+                "fee.rule",
+                r#"rule fee v1 for event Sale { debit "1200" "1.00 USD" credit "4000" "1.00 USD" }"#,
             ),
             ("junk.json", "{}"),
             ("junk.plan", "not a plan"),

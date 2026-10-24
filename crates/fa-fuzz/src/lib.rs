@@ -98,6 +98,21 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
         run: fuzz_legacy_gl_formats,
     },
     FuzzTarget {
+        name: "ads_extract",
+        description: "fa-verify ads: arbitrary GL_Detail, Trial_Balance and coordinate-certificate text judged against an authentic complete-prefix bundle, without panic",
+        run: fuzz_ads_extract,
+    },
+    FuzzTarget {
+        name: "interop_readers",
+        description: "Interop readers on untrusted text: ADS package (each file), SAF-T, CSV GL, Beancount, hledger, NDJSON GL stream, XBRL instance/schema/linkbase and Concordance DAT, without panic",
+        run: fuzz_interop_readers,
+    },
+    FuzzTarget {
+        name: "daemon_wire",
+        description: "The fad socket wire: length-prefixed frame decoder in arbitrary pieces, canonical-JSON check, fad_request and fad_response decoders, without panic; decoded frames re-encode without loss",
+        run: fuzz_daemon_wire,
+    },
+    FuzzTarget {
         name: "gql_profile",
         description: "The FrankenAccounting GQL profile rewriter (lexer, selectors, amount law, aggregation planner) on arbitrary UTF-8 without panic",
         run: fuzz_gql_profile,
@@ -451,6 +466,59 @@ pub fn fuzz_fa_verify_inputs(bytes: &[u8]) {
     let _ = fa_verify::disclosure::verify(bytes, &[0], &golden.scope_root);
 }
 
+/// fa-verify ads over untrusted text: the bundle and receipt are the golden,
+/// authentic ones, so the GL_Detail, Trial_Balance and certificate readers
+/// and the proven-selection matcher are reached, not only the bundle check.
+pub fn fuzz_ads_extract(bytes: &[u8]) {
+    let g = golden_seeds();
+    let text = String::from_utf8_lossy(bytes);
+    let keys = [g.public_key];
+    let receipt = Some(g.receipt_bytes.as_slice());
+    let judge = |certificate: &str, gl: &str, tb: &str| {
+        let _ = fa_verify::ads::verify_ads(certificate, gl, tb, &g.bundle_bytes, &keys, receipt);
+    };
+    let ads = &g.ads_package;
+    judge(&ads.certificate_toml, &text, &ads.trial_balance);
+    judge(&ads.certificate_toml, &ads.gl_detail, &text);
+    judge(&text, &ads.gl_detail, &ads.trial_balance);
+}
+
+/// fa-yrhb: the interop readers an importer or an export's recipient feeds
+/// untrusted text (plan §16.8): the ADS package (the text in place of each
+/// of its four files), SAF-T, CSV GL, Beancount, hledger, the NDJSON GL
+/// stream, the XBRL instance, taxonomy schema and calculation linkbase,
+/// Concordance DAT load files and the fwc Plaid `transactions_sync` bank
+/// feed, without panic.
+pub fn fuzz_interop_readers(bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.as_ref();
+    if let Ok(units) = fa_formats::UnitCatalog::embedded() {
+        let golden = &golden_seeds().ads_package;
+        for slot in 0..4 {
+            let mut package = golden.clone();
+            let file = match slot {
+                0 => &mut package.chart_of_accounts,
+                1 => &mut package.gl_detail,
+                2 => &mut package.trial_balance,
+                _ => &mut package.certificate_toml,
+            };
+            text.clone_into(file);
+            let _ = fa_formats::ads::read_ads_package(&package, &units);
+        }
+        let _ = fa_formats::saft::read_saft_xml(text, &units);
+        let _ = fa_formats::csv_gl::read_csv_gl(text, &units);
+        let _ = fa_formats::beancount::read_beancount(text, &units);
+        let _ = fa_formats::beancount::read_hledger(text, &units);
+        let _ = fa_formats::fwc::parse_fwc_plaid_transactions_sync(text, &units);
+    }
+    let _ = fa_formats::csv_gl::verify_ndjson_gl_stream(text);
+    let _ = fa_formats::xbrl::read_xbrl_instance_xml(text);
+    let _ = fa_formats::xbrl::parse_xbrl_taxonomy_schema_xml(text);
+    let _ = fa_formats::xbrl::parse_xbrl_calculation_linkbase_xml(text);
+    let _ = fa_formats::xbrl::verify_format_journal_xbrl_xml(text);
+    let _ = fa_formats::load_file::parse_concordance_dat(text);
+}
+
 // ---------------------------------------------------------------------------
 // Target 5: registry_toml
 // ---------------------------------------------------------------------------
@@ -515,6 +583,57 @@ pub fn fuzz_cli_args(bytes: &[u8]) {
     let _ = fa_cli::cli::parse_cli_invocation(&argv);
 }
 
+/// fa-yrhb: the daemon wire, which `fad` reads from its socket before any
+/// admission. Three parsers are driven without panic: the length-prefixed
+/// frame decoder (fed in two pieces, split where the first byte says), the
+/// canonical-JSON check, and the request and response decoders. Every frame
+/// payload, and the input itself, is tried as a payload. A decoded request or
+/// response survives re-encoding unchanged, and any payload `encode` frames
+/// comes back out of a decoder exactly.
+pub fn fuzz_daemon_wire(bytes: &[u8]) {
+    use fa_cli::wire::{Decoder, Request, Response, canonical, encode};
+    let Ok(reg) = fa_cli::verbs::registry() else {
+        return;
+    };
+    let (max, protocol) = (reg.daemon.max_frame_bytes, reg.daemon.protocol);
+    let drain = |decoder: &mut Decoder, frames: &mut Vec<Vec<u8>>| {
+        while let Ok(Some(frame)) = decoder.next_frame() {
+            frames.push(frame);
+        }
+    };
+    let split = bytes
+        .first()
+        .map_or(0, |b| usize::from(*b) % bytes.len().max(1));
+    let mut decoder = Decoder::new(max);
+    let mut frames = Vec::new();
+    decoder.push(&bytes[..split]);
+    drain(&mut decoder, &mut frames);
+    decoder.push(&bytes[split..]);
+    drain(&mut decoder, &mut frames);
+    let _ = decoder.finish();
+    for payload in frames.iter().map(Vec::as_slice).chain([bytes]) {
+        let Ok(value) = canonical(payload) else {
+            continue;
+        };
+        if let Ok(request) = Request::from_json(&value, protocol) {
+            let again = canonical(request.to_json(protocol).render().as_bytes())
+                .and_then(|v| Request::from_json(&v, protocol));
+            assert_eq!(again, Ok(request), "a request re-encodes without loss");
+        }
+        if let Ok(response) = Response::from_json(&value, protocol) {
+            let again = canonical(response.to_json(protocol).render().as_bytes())
+                .and_then(|v| Response::from_json(&v, protocol));
+            assert_eq!(again, Ok(response), "a response re-encodes without loss");
+        }
+    }
+    if let Ok(frame) = encode(bytes, max) {
+        let mut decoder = Decoder::new(max);
+        decoder.push(&frame);
+        assert_eq!(decoder.next_frame(), Ok(Some(bytes.to_vec())));
+        assert_eq!(decoder.finish(), Ok(()));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Target 7: chart_import_json
 // ---------------------------------------------------------------------------
@@ -560,6 +679,7 @@ pub fn fuzz_legacy_gl_formats(bytes: &[u8]) {
         let _ = fa_formats::legacy::parse_xero_csv(&text, &units, &map, "USD");
         let _ = fa_formats::legacy::parse_netsuite_csv(&text, &units, &map, "USD");
         let _ = fa_formats::legacy::parse_beancount_ledger(&text, &units, &map);
+        let _ = fa_formats::legacy::parse_hledger_journal(&text, &units, &map);
         let _ = fa_formats::bank::parse_camt053(&text, &units);
         let _ = fa_formats::bank::parse_camt052(&text, &units);
         let _ = fa_formats::bank::parse_bai2(&text, &units);
@@ -627,6 +747,12 @@ struct GoldenSeeds {
     prefix_proof: Vec<u8>,
     balance_proof: Vec<u8>,
     bundle_bytes: Vec<u8>,
+    /// The ADS package `fa export ads --with-proofs` writes beside
+    /// `bundle_bytes`: the same book at the bundle's state.
+    ads_package: fa_formats::ads::AdsPackage,
+    /// The same journal in every other interop format the book exports
+    /// (SAF-T, CSV GL, Beancount, hledger, NDJSON GL stream, XBRL).
+    interop_exports: Vec<Vec<u8>>,
 }
 
 fn golden_seeds() -> &'static GoldenSeeds {
@@ -987,6 +1113,27 @@ fn build_golden_seeds() -> GoldenSeeds {
         .expect("produce bundle")
         .expect("bundle admitted")
         .expect("bundle produced");
+    let through = produced_bundle
+        .checkpoint
+        .checkpoint
+        .body
+        .statement
+        .through_seq;
+    let journal = book
+        .format_journal(date, Some(through))
+        .expect("golden interop selection");
+    let ads_package = fa_formats::ads::write_ads_package(&journal).expect("golden ADS package");
+    let interop_exports = vec![
+        fa_formats::saft::write_saft_xml(&journal).expect("golden SAF-T"),
+        fa_formats::csv_gl::write_csv_gl(&journal),
+        fa_formats::beancount::write_beancount(&journal),
+        fa_formats::beancount::write_hledger(&journal),
+        fa_formats::csv_gl::write_ndjson_gl_stream(&journal).expect("golden NDJSON stream"),
+        fa_formats::xbrl::write_format_journal_xbrl_xml(&journal).expect("golden XBRL"),
+    ]
+    .into_iter()
+    .map(String::into_bytes)
+    .collect();
     let bundle_bytes = produced_bundle.bundle.bytes;
     let receipt_bytes = produced_bundle.receipt;
 
@@ -1009,6 +1156,8 @@ fn build_golden_seeds() -> GoldenSeeds {
         prefix_proof,
         balance_proof,
         bundle_bytes,
+        ads_package,
+        interop_exports,
     }
 }
 
@@ -1066,12 +1215,61 @@ pub fn seeds_for_target(target_name: &str) -> Vec<Vec<u8>> {
             seeds.push(g.balance_proof.clone());
             seeds.push(g.bundle_bytes.clone());
         }
+        "ads_extract" => {
+            seeds.push(g.ads_package.gl_detail.clone().into_bytes());
+            seeds.push(g.ads_package.trial_balance.clone().into_bytes());
+            seeds.push(g.ads_package.certificate_toml.clone().into_bytes());
+        }
+        "interop_readers" => {
+            seeds.push(g.ads_package.chart_of_accounts.clone().into_bytes());
+            seeds.push(g.ads_package.gl_detail.clone().into_bytes());
+            seeds.extend(g.interop_exports.iter().cloned());
+            seeds.push(
+                fa_formats::fwc::FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON
+                    .as_bytes()
+                    .to_vec(),
+            );
+        }
         "registry_toml" => {
             seeds.push(include_bytes!("../../../registries/units.toml").to_vec());
             seeds.push(include_bytes!("../../../registries/entry_classes.toml").to_vec());
             seeds.push(include_bytes!("../../../registries/admissibility.toml").to_vec());
             seeds.push(include_bytes!("../../../registries/sod_policy.toml").to_vec());
             seeds.push(include_bytes!("../../../registries/verbs.toml").to_vec());
+        }
+        "daemon_wire" => {
+            use fa_cli::wire::{Op, Request, Response, encode};
+            if let Ok(reg) = fa_cli::verbs::registry() {
+                let (max, protocol) = (reg.daemon.max_frame_bytes, reg.daemon.protocol);
+                let request = Request {
+                    op: Op::Run,
+                    argv: ["tb", "--period", "FY2026-P03", "--json"]
+                        .map(str::to_string)
+                        .to_vec(),
+                    cwd: Some("/tmp".into()),
+                    stdin: Some(b"{}".to_vec()),
+                    token: Some(vec![0xfa; 8]),
+                }
+                .to_json(protocol)
+                .render()
+                .into_bytes();
+                let response = Response {
+                    op: Op::Run,
+                    exit: 3,
+                    stdout: "{\"event\":\"error\"}\n".into(),
+                    stderr: "refused\n".into(),
+                }
+                .to_json(protocol)
+                .render()
+                .into_bytes();
+                let mut stream = Vec::new();
+                for payload in [&request, &response] {
+                    if let Ok(frame) = encode(payload, max) {
+                        stream.extend(frame);
+                    }
+                }
+                seeds.extend([request, response, stream]);
+            }
         }
         "cli_args" => {
             seeds.push(b"tb --period FY2026-P03 --book /tmp/b --json".to_vec());
@@ -1134,6 +1332,104 @@ pub fn run_target_smoke(target: &FuzzTarget, mutations_per_seed: usize) -> (usiz
     (target.run)(&[0x00]);
     (target.run)(&[0xff]);
     (seeds.len(), mutated_count)
+}
+
+/// Whether `run` panics on `input`.
+fn panics(run: fn(&[u8]), input: &[u8]) -> bool {
+    std::panic::catch_unwind(|| run(input)).is_err()
+}
+
+/// A panicking `input` reduced by delta debugging (ddmin over byte chunks,
+/// down to single bytes) to a shorter input on which `run` still panics,
+/// within `budget` runs of the target. `None` when `input` does not panic.
+/// The result is a reproducer for triage, not a proof of minimality: it is
+/// 1-minimal only when the budget lasts.
+pub fn minimize_crash(run: fn(&[u8]), input: &[u8], budget: usize) -> Option<Vec<u8>> {
+    if !panics(run, input) {
+        return None;
+    }
+    let mut current = input.to_vec();
+    let mut parts = 2usize;
+    let mut runs = 1usize;
+    while current.len() >= 2 && runs < budget {
+        let chunk = current.len().div_ceil(parts);
+        let mut reduced = false;
+        let mut start = 0;
+        while start < current.len() && runs < budget {
+            let end = start.saturating_add(chunk).min(current.len());
+            let mut candidate = current[..start].to_vec();
+            candidate.extend_from_slice(&current[end..]);
+            runs += 1;
+            if panics(run, &candidate) {
+                current = candidate;
+                parts = parts.saturating_sub(1).max(2);
+                reduced = true;
+                break;
+            }
+            start = end;
+        }
+        if !reduced {
+            if parts >= current.len() {
+                break;
+            }
+            parts = parts.saturating_mul(2).min(current.len());
+        }
+    }
+    Some(current)
+}
+
+/// A panic a campaign found: the input that panicked and its minimized
+/// reproducer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Crash {
+    pub target: &'static str,
+    pub input: Vec<u8>,
+    pub minimized: Vec<u8>,
+}
+
+/// [`run_target_smoke`] that catches a panic instead of propagating it: the
+/// first panicking input is minimized within `minimize_budget` runs and
+/// returned as a [`Crash`], so a campaign leaves a reproducer to replay.
+pub fn run_target_campaign(
+    target: &FuzzTarget,
+    mutations_per_seed: usize,
+    minimize_budget: usize,
+) -> Result<(usize, usize), Crash> {
+    let seeds = seeds_for_target(target.name);
+    let mut rng = DetRng::new(
+        target
+            .name
+            .bytes()
+            .fold(0x517c_c1b7_2722_0a95u64, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(u64::from(b))
+            }),
+    );
+    let crash = |input: &[u8]| Crash {
+        target: target.name,
+        input: input.to_vec(),
+        minimized: minimize_crash(target.run, input, minimize_budget)
+            .unwrap_or_else(|| input.to_vec()),
+    };
+    let mut mutated_count = 0usize;
+    for seed in &seeds {
+        if panics(target.run, seed) {
+            return Err(crash(seed));
+        }
+        for _ in 0..mutations_per_seed {
+            let mutated = rng.mutate_bytes(seed);
+            mutated_count += 1;
+            if panics(target.run, &mutated) {
+                return Err(crash(&mutated));
+            }
+        }
+    }
+    let boundaries: [&[u8]; 3] = [&[], &[0x00], &[0xff]];
+    for boundary in boundaries {
+        if panics(target.run, boundary) {
+            return Err(crash(boundary));
+        }
+    }
+    Ok((seeds.len(), mutated_count))
 }
 
 /// Run the smoke campaign across all registered [`LIVE_TARGETS`].
@@ -1225,6 +1521,68 @@ mod tests {
         assert!(ScenarioDiffCertificate::decode(&bytes[..bytes.len() - 1]).is_err());
     }
 
+    /// The daemon-wire target starts from frames fad accepts: a canonical
+    /// request, a canonical response, and both framed in one stream.
+    #[test]
+    fn the_daemon_wire_seeds_are_accepted_frames() {
+        use fa_cli::wire::{Decoder, Request, Response, canonical};
+        let reg = fa_cli::verbs::registry().expect("verbs.toml");
+        let protocol = reg.daemon.protocol;
+        // The checked-in corpus comes first; the three golden seeds last.
+        let seeds = seeds_for_target("daemon_wire");
+        let [request_bytes, response_bytes, stream] = &seeds[seeds.len().saturating_sub(3)..]
+        else {
+            panic!("three golden seeds after the corpus: {}", seeds.len());
+        };
+        let request = canonical(request_bytes).expect("a canonical request");
+        assert!(Request::from_json(&request, protocol).is_ok());
+        let response = canonical(response_bytes).expect("a canonical response");
+        assert!(Response::from_json(&response, protocol).is_ok());
+        let mut decoder = Decoder::new(reg.daemon.max_frame_bytes);
+        decoder.push(stream);
+        assert_eq!(decoder.next_frame(), Ok(Some(request_bytes.clone())));
+        assert_eq!(decoder.next_frame(), Ok(Some(response_bytes.clone())));
+        assert_eq!(decoder.finish(), Ok(()));
+    }
+
+    /// The ADS target starts from a package that verifies against the
+    /// golden bundle, so its mutations reach the readers and the matcher.
+    #[test]
+    fn the_golden_ads_package_verifies_against_the_golden_bundle() {
+        let g = golden_seeds();
+        let ads = &g.ads_package;
+        let report = fa_verify::ads::verify_ads(
+            &ads.certificate_toml,
+            &ads.gl_detail,
+            &ads.trial_balance,
+            &g.bundle_bytes,
+            &[g.public_key],
+            Some(&g.receipt_bytes),
+        )
+        .expect("a well-formed bundle");
+        assert!(report.verified(), "{:?}", report.failures);
+        assert!(report.entries >= 1 && report.tb_rows >= 1, "{report:?}");
+        assert!(seeds_for_target("ads_extract").contains(&ads.gl_detail.clone().into_bytes()));
+        // Every interop seed is the golden journal itself, read back.
+        let units = fa_formats::UnitCatalog::embedded().expect("units");
+        fa_formats::ads::read_ads_package(ads, &units).expect("the golden ADS package reads");
+        let text = |i: usize| std::str::from_utf8(&g.interop_exports[i]).expect("UTF-8 export");
+        fa_formats::saft::read_saft_xml(text(0), &units).expect("golden SAF-T reads");
+        fa_formats::csv_gl::read_csv_gl(text(1), &units).expect("golden CSV GL reads");
+        fa_formats::beancount::read_beancount(text(2), &units).expect("golden Beancount reads");
+        fa_formats::beancount::read_hledger(text(3), &units).expect("golden hledger reads");
+        fa_formats::csv_gl::verify_ndjson_gl_stream(text(4)).expect("golden NDJSON verifies");
+        fa_formats::xbrl::verify_format_journal_xbrl_xml(text(5)).expect("golden XBRL verifies");
+        assert_eq!(g.interop_exports.len(), 6);
+        // The bank-feed seed is a payload the Plaid reader accepts, so its
+        // mutations start inside the parser rather than at its first check.
+        let plaid = fa_formats::fwc::FIXTURE_FWC_PLAID_TRANSACTIONS_SYNC_JSON;
+        assert!(seeds_for_target("interop_readers").contains(&plaid.as_bytes().to_vec()));
+        let feed = fa_formats::fwc::parse_fwc_plaid_transactions_sync(plaid, &units)
+            .expect("the Plaid fixture parses");
+        assert_eq!(feed.extract.lines.len(), 2);
+    }
+
     #[test]
     fn dormant_targets_name_their_activating_beads() {
         assert_eq!(DORMANT_TARGETS.len(), 4);
@@ -1259,6 +1617,34 @@ mod tests {
             caught,
             "entry_codec smoke campaign must catch an injected unwrap() on a length field"
         );
+    }
+
+    /// fa-yrhb crash minimization: a campaign over the planted entry-decoder
+    /// bug returns a reproducer, ddmin shrinks it to exactly the eight bytes
+    /// the bug needs (a length field at bytes 4..8 that overruns the rest),
+    /// and the minimized input still panics. A clean input is not a crash,
+    /// and a live target's campaign comes back clean.
+    #[test]
+    fn a_planted_crash_minimizes_to_the_eight_bytes_that_trigger_it() {
+        let planted = FuzzTarget {
+            name: "entry_codec",
+            description: "planted unwrap on a length field",
+            run: buggy_entry_decoder_with_planted_unwrap,
+        };
+        let crash = run_target_campaign(&planted, 64, 4096).expect_err("the planted bug is found");
+        assert_eq!(crash.target, "entry_codec");
+        assert!(crash.minimized.len() <= crash.input.len());
+        assert_eq!(crash.minimized.len(), 8, "{:?}", crash.minimized);
+        assert!(panics(
+            buggy_entry_decoder_with_planted_unwrap,
+            &crash.minimized
+        ));
+        assert_eq!(minimize_crash(fuzz_entry_codec, &[0u8; 4], 64), None);
+        let cli = LIVE_TARGETS
+            .iter()
+            .find(|t| t.name == "cli_args")
+            .expect("cli_args is live");
+        assert!(run_target_campaign(cli, 4, 64).is_ok());
     }
 
     #[test]

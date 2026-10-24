@@ -21,8 +21,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("jet.large_round_reversals", 1),
     ("jet.suspense_aging", 2),
     ("jet.intercompany_unmatched", 2),
-    ("benford.second_digit", 1),
-    ("benford.first_two_digits", 1),
+    ("benford.second_digit", 2),
+    ("benford.first_two_digits", 2),
     ("numbers.relative_size_factor", 1),
     ("numbers.threshold_splitting", 1),
     ("graph.circular_flows", 1),
@@ -34,7 +34,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.identity_resolution", 1),
     ("recon.intercompany", 2),
     ("recon.lapping", 2),
-    ("recon.book_to_book", 1),
+    ("recon.attested_register_compare", 1),
     ("recon.assertion_drift", 1),
     ("completeness.unrecorded_liabilities", 1),
     ("events.subsequent", 1),
@@ -51,7 +51,7 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("ponzi.net_investment", 2),
     ("distribution.rising_tide", 2),
     ("distribution.pro_rata", 2),
-    ("damages.but_for", 1),
+    ("damages.attested_baseline", 1),
 ];
 
 const INPUTS: &[(&str, &str)] = &[

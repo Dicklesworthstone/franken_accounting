@@ -27,6 +27,7 @@ pub mod sod_policy;
 pub mod threat_model;
 pub mod toml;
 pub mod topology;
+pub mod unwired_modules;
 
 pub use admissibility_plan::{ALL_KINDS, DispositionFamily, PlanAdmissibility};
 pub use capability_caveats::CapabilityCaveats;
@@ -1474,6 +1475,7 @@ mod tests {
                 (16, "engagement_transition"),
                 (17, "case_transition"),
                 (18, "recurring_schedule"),
+                (19, "rule_activation"),
             ]
         );
         assert_eq!(

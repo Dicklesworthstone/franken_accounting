@@ -1411,17 +1411,22 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // The typed reversal is the same law-enforced correction as the CLI:
     // missing and unknown reasons cannot post, and the persisted lineage
     // records the exact registered name/code the caller selected.
-    // The final protocol returns a tool error for schema validation. The
-    // advertised schema above requires reason; rejection must not post.
+    // The final protocol returns a tool error for schema validation, and the
+    // server names the missing argument with the tool's own mapping error.
+    // The advertised schema above requires reason; rejection must not post.
     let before_missing = cli_data(&["book", "info", "--book", &b, "--json"]);
     let (is_error, text, _) = call_tool(&mut mcp, "fa_post_reverse", json!({"vid": vid}));
     assert!(
         is_error,
         "missing reason must be refused before dispatch: {text}"
     );
+    let e = structured_error(&text);
+    assert_eq!(e["exit"], json!(2), "{e}");
+    assert_eq!(e["detector"], json!("arguments"), "{e}");
     assert_eq!(
-        text,
-        "Tool arguments do not match the declared input schema."
+        e["message"],
+        json!("fa_post_reverse: `reason` is required"),
+        "{e}"
     );
     assert_eq!(
         cli_data(&["book", "info", "--book", &b, "--json"]),
@@ -2777,20 +2782,31 @@ fn read_only_period_planning_is_inline_and_paths_cannot_touch_host_files() {
             }
         }
     }
-    // Ordinary missing required inputs retain the framework's schema error;
-    // response enrichment cannot admit them or dispatch a tool.
-    for wire in [
-        "fa_post_commit_plan",
-        "fa_read_replay",
-        "fa_read_certificate_status",
+    // Ordinary missing required inputs are still refused by the framework's
+    // schema check; the enrichment names the missing inline property and
+    // cannot admit the call or dispatch a tool.
+    for (wire, property) in [
+        ("fa_post_commit_plan", "plan"),
+        ("fa_read_replay", "certificate"),
+        ("fa_read_certificate_status", "certificate"),
     ] {
         let (error, text, _) = call_tool(&mut mcp, wire, json!({}));
         assert!(error, "{wire} must still require its inline content");
+        let refused = structured_error(&text);
+        assert_eq!(refused["exit"], json!(2), "{refused}");
+        assert_eq!(refused["detector"], json!("arguments"), "{refused}");
         assert_eq!(
-            text,
-            "Tool arguments do not match the declared input schema."
+            refused["message"],
+            json!(format!("{wire}: inline `{property}` is required")),
+            "{refused}"
         );
+        assert_eq!(refused["authority"]["ops"], json!(["read"]), "{refused}");
     }
+    assert_eq!(
+        cli(&["book", "info", "--book", &b, "--json"]),
+        before,
+        "refused missing inputs write nothing"
+    );
     let (error, text, result) = call_tool(
         &mut mcp,
         "fa_time_period_transition",

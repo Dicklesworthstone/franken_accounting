@@ -100,9 +100,20 @@ fn differences<V: asupersync::fs::Vfs + Clone>(
     };
     let mut diffs = Vec::new();
     if expected.amount != claim.amount {
+        let difference = claim
+            .amount
+            .mantissa
+            .checked_sub(expected.amount.mantissa)
+            .map_or_else(String::new, |d| {
+                format!(
+                    " (off by {})",
+                    Amount::new(expected.amount.unit, d).render(&book.units)
+                )
+            });
         diffs.push(format!(
-            "the cell's net is {} (mantissa), not {}",
-            expected.amount.mantissa, claim.amount.mantissa
+            "the cell's net (debits minus credits) is {}, not {}{difference}",
+            expected.amount.render(&book.units),
+            claim.amount.render(&book.units)
         ));
     }
     if expected.evaluated_known_at != claim.evaluated_known_at {
@@ -148,6 +159,12 @@ pub async fn record_register_equals<V: asupersync::fs::Vfs + Clone>(
     evidence: Vec<Oid>,
 ) -> Result<Result<Attested, Refusal>, RegisterError> {
     if let Err(r) = admit_reconciler(capability, book.book_id) {
+        return Ok(Err(r));
+    }
+    // Currency (expiry, revocation, the books caveat) is decided before the
+    // refold too: a claim's falsity names the cell's value, which a token
+    // that is no longer current must not learn.
+    if let Err(r) = fa_journal::policy::current_at(db, book, capability)? {
         return Ok(Err(r));
     }
     if let Some(why) = differences(db, book, claim)? {

@@ -306,6 +306,12 @@ trait Service {
     fn admits_foreign_peer(&self, _request: &Request) -> bool {
         false
     }
+    fn poll_interval_ns(&self) -> Option<u64> {
+        None
+    }
+    fn should_stop(&mut self) -> bool {
+        false
+    }
     fn handle(&mut self, request: Request) -> (Response, Next);
     fn deadline(&self) -> Option<Time>;
     async fn tick(&mut self, cx: &Cx);
@@ -1251,6 +1257,66 @@ pub async fn serve_book(
     serve_with(cx, listener, limits, &dir, server).await
 }
 
+struct UntilStop<'a, 'b, F> {
+    inner: &'a mut Server<'b>,
+    should_stop: F,
+}
+
+impl<F: FnMut() -> bool> Service for UntilStop<'_, '_, F> {
+    fn daemon_uid(&self) -> Option<u32> {
+        self.inner.daemon_uid()
+    }
+
+    fn admits_foreign_peer(&self, request: &Request) -> bool {
+        self.inner.admits_foreign_peer(request)
+    }
+
+    fn poll_interval_ns(&self) -> Option<u64> {
+        Some(25_000_000)
+    }
+
+    fn should_stop(&mut self) -> bool {
+        (self.should_stop)()
+    }
+
+    fn handle(&mut self, request: Request) -> (Response, Next) {
+        self.inner.handle(request)
+    }
+
+    fn deadline(&self) -> Option<Time> {
+        self.inner.deadline()
+    }
+
+    async fn tick(&mut self, cx: &Cx) {
+        self.inner.tick(cx).await;
+    }
+
+    fn on_connection_closed(&mut self, timing: ConnectionTiming) {
+        self.inner.on_connection_closed(timing);
+    }
+}
+
+/// Serve the held book until an authorized `stop` is answered or `should_stop`
+/// returns `true` (used when `fad serve --mcp stdio` hosts an `fa-mcp` child
+/// process over stdio and shuts down cleanly when the MCP session ends).
+pub async fn serve_book_until<F>(
+    cx: &Cx,
+    listener: &asupersync::net::unix::UnixListener,
+    limits: Limits,
+    server: &mut Server<'_>,
+    should_stop: F,
+) -> std::io::Result<()>
+where
+    F: FnMut() -> bool,
+{
+    let dir = server.dir.clone();
+    let mut service = UntilStop {
+        inner: server,
+        should_stop,
+    };
+    serve_with(cx, listener, limits, &dir, &mut service).await
+}
+
 async fn finish_connection<S, H: Service>(
     cx: &Cx,
     conn: ConnSlot<S>,
@@ -1292,7 +1358,23 @@ async fn serve_with<L: Listener, H: Service>(
             ));
         }
 
+        if service.should_stop() {
+            for remaining in connections.drain(..) {
+                finish_connection(cx, remaining, Ended::Closed, service).await;
+            }
+            return Ok(());
+        }
+
         let mut next_deadline = service.deadline();
+        if let Some(interval_ns) = service.poll_interval_ns()
+            && let Ok(timer) = clock::timer(cx)
+            && let Ok(poll_at) = clock::deadline_after(timer.now(), interval_ns)
+        {
+            next_deadline = Some(match next_deadline {
+                Some(cur) => cur.min(poll_at),
+                None => poll_at,
+            });
+        }
         for conn in &connections {
             if let Some(d) = conn.deadline() {
                 next_deadline = Some(match next_deadline {
@@ -1313,6 +1395,7 @@ async fn serve_with<L: Listener, H: Service>(
             .map_err(|e| std::io::Error::other(format!("{}", WaitError::Clock(e).frame())))?;
 
         enum Ready<S> {
+            Stop,
             Timer,
             Accepted(S, Option<PeerCred>),
             Conn(usize, ConnStep),
@@ -1332,6 +1415,9 @@ async fn serve_with<L: Listener, H: Service>(
                     std::io::ErrorKind::Interrupted,
                     "cancelled",
                 )));
+            }
+            if service.should_stop() {
+                return Poll::Ready(Ok(Ready::Stop));
             }
             if let Some(timer) = deadline.as_mut()
                 && let Poll::Ready(result) = Pin::new(timer).poll(task)
@@ -1383,6 +1469,12 @@ async fn serve_with<L: Listener, H: Service>(
         };
 
         match ready {
+            Ready::Stop => {
+                for remaining in connections.drain(..) {
+                    finish_connection(cx, remaining, Ended::Closed, service).await;
+                }
+                return Ok(());
+            }
             Ready::Timer => {
                 let now = clock::timer(cx)
                     .map_err(|e| std::io::Error::other(format!("{}", WaitError::Clock(e).frame())))?

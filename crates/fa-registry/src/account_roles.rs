@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::procedures::Procedures;
+use crate::procedures::{Claim, Procedures};
 use crate::toml::Value;
 use crate::{RegistryError, account_types_embedded, invalid, load, req_int, req_str};
 
@@ -22,6 +22,8 @@ pub struct AccountRole {
     pub meaning: String,
     /// Procedures that select a population by this role.
     pub consumers: Vec<String>,
+    /// Verbs (`verbs.toml`) that read accounts by this role outside Lantern.
+    pub verbs: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,20 +97,40 @@ impl AccountRoles {
             }
             let meaning = req_str(R, t, "meaning")?.to_string();
             let consumers = strings(t, "consumers", &name)?;
-            if consumers.is_empty() {
+            let verbs = if t.get("verbs").is_some() {
+                strings(t, "verbs", &name)?
+            } else {
+                Vec::new()
+            };
+            if consumers.is_empty() && verbs.is_empty() {
                 return Err(invalid(
                     R,
                     format!(
-                        "role `{name}` has no consumer: list a role once a procedure selects by it"
+                        "role `{name}` has no consumer: list a role once a procedure or verb selects by it"
                     ),
                 ));
             }
             for id in &consumers {
-                if procedures.get(id).is_none() {
-                    return Err(invalid(
-                        R,
-                        format!("role `{name}`: consumer `{id}` is not in procedures.toml"),
-                    ));
+                match procedures.get(id) {
+                    None => {
+                        return Err(invalid(
+                            R,
+                            format!("role `{name}`: consumer `{id}` is not in procedures.toml"),
+                        ));
+                    }
+                    // A role-selected population is whatever accounts hold
+                    // the role by registered assignment; nothing proves it
+                    // complete. A finding over it is statistical evidence,
+                    // never an invariant (doctrine 12, fa-kxc4).
+                    Some(procedure) if procedure.claim == Claim::Invariant => {
+                        return Err(invalid(
+                            R,
+                            format!(
+                                "role `{name}`: consumer `{id}` claims `invariant` over a role-selected population; a finding over a registered selection is statistical"
+                            ),
+                        ));
+                    }
+                    Some(_) => {}
                 }
             }
             rows.push(AccountRole {
@@ -116,6 +138,7 @@ impl AccountRoles {
                 account_types,
                 meaning,
                 consumers,
+                verbs,
             });
         }
         if rows.is_empty() {
@@ -166,10 +189,21 @@ mod tests {
         );
         assert_eq!(
             roles.listing(),
-            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, payroll"
+            "suspense, intercompany, receivable, payable, fixed_asset, accrued_expense, inventory, cash, investor_capital, payroll, intercompany_activity, investment_in_subsidiary, contributed_capital, noncontrolling_interest, noncontrolling_interest_income"
         );
         assert!(roles.get("payable").is_some_and(|r| !r.admits("Asset")));
-        assert!(roles.get("cash").is_some_and(|r| r.consumers.len() == 6));
+        assert!(roles.get("cash").is_some_and(|r| r.consumers.len() == 7));
+        // A role a verb reads outside Lantern lists the verb, not a procedure.
+        let nci = roles
+            .get("noncontrolling_interest_income")
+            .expect("nci income");
+        assert!(nci.consumers.is_empty() && nci.verbs == vec!["consolidate"]);
+        assert!(nci.admits("Expense") && !nci.admits("Equity"));
+        assert_eq!(
+            roles.get("intercompany").map(|r| r.verbs.clone()),
+            Some(vec!["consolidate".to_string()])
+        );
+        assert!(roles.get("suspense").is_some_and(|r| r.verbs.is_empty()));
     }
 
     #[test]
@@ -179,6 +213,12 @@ mod tests {
             "account_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = [\"jet.suspense_aging\"]";
         let cases = [
             (row(&format!("name = \"Cash\"\n{base}")), "snake_case"),
+            (
+                row(
+                    "name = \"a\"\naccount_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = [\"recon.assertion_drift\"]",
+                ),
+                "claims `invariant` over a role-selected population",
+            ),
             (
                 row(
                     "name = \"a\"\naccount_types = [\"Assets\"]\nmeaning = \"m\"\nconsumers = [\"jet.suspense_aging\"]",
@@ -194,6 +234,18 @@ mod tests {
             (
                 row("name = \"a\"\naccount_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = []"),
                 "has no consumer",
+            ),
+            (
+                row(
+                    "name = \"a\"\naccount_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = []\nverbs = []",
+                ),
+                "has no consumer",
+            ),
+            (
+                row(
+                    "name = \"a\"\naccount_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = []\nverbs = [\"\"]",
+                ),
+                "holds a non-string",
             ),
             (
                 row(

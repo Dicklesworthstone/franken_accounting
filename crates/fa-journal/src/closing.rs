@@ -298,16 +298,23 @@ fn selected_period<V: Vfs + Clone>(
 }
 
 fn closing_entity(spec: &BookSpec, leg: &LegPayload) -> Result<Option<VId>, Refusal> {
-    if leg
-        .dimension_set
-        .iter()
-        .any(|(dimension, _)| *dimension != LEGAL_ENTITY_DIMENSION)
-    {
+    // An analytic value (a cost center, department, project, product,
+    // region, grant or segment) closes with its account: the close moves the
+    // account's net per unit and entity and carries none (fa-ficc). A fund
+    // or a party has no closing treatment yet.
+    if leg.dimension_set.iter().any(|(dimension, _)| {
+        *dimension != LEGAL_ENTITY_DIMENSION && !crate::dimension::closes_with_account(*dimension)
+    }) {
         return Err(unsupported(
             "a nominal contribution uses a dimension without an implemented closing treatment",
         ));
     }
-    match leg.dimension_set.first().map(|(_, value)| *value) {
+    match leg
+        .dimension_set
+        .iter()
+        .find(|(dimension, _)| *dimension == LEGAL_ENTITY_DIMENSION)
+        .map(|(_, value)| *value)
+    {
         Some(value) if spec.entity_of(value).is_some() => Ok(Some(value)),
         Some(_) => Err(unsupported(
             "a nominal contribution names an undeclared legal entity",

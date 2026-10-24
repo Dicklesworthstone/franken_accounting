@@ -122,7 +122,7 @@ fn named(what: &str, given: &str, names: &[&str]) -> Fail {
     )
 }
 
-/// `fa document <add|read|redact|disclose|custody|erase|hold|attest|import> ...`.
+/// `fa document <add|read|redact|disclose|custody|erase|hold|attest|attach|extract|import|list> ...`.
 pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // Dispatch has already refused a subcommand verbs.toml does not register.
     match args.positional.get(1).map(String::as_str) {
@@ -135,8 +135,10 @@ pub(crate) fn document_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("hold") => hold_doc(ctx, args),
         Some("attest") => attest_doc(ctx, args),
         Some("attach") => attach_doc(ctx, args),
+        Some("extract") => extract_doc(ctx, args),
         Some("import") => import_doc(ctx, args),
         Some("list") => list_docs(ctx, args),
+        Some("show") => show_doc(ctx, args),
         None => Err(usage("`fa document` needs a subcommand", ADD_EXAMPLE)),
         other => Err(unhandled("document", other)),
     }
@@ -178,27 +180,7 @@ fn list_docs(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .collect();
     let rows: Vec<Json> = documents
         .iter()
-        .map(|d| {
-            obj(vec![
-                ("oid", s(hex(&d.oid.0))),
-                (
-                    "kind",
-                    s(policy
-                        .kind_by_tag(d.kind)
-                        .map_or_else(|| d.kind.to_string(), |k| k.name.clone())),
-                ),
-                ("mime", s(&d.mime)),
-                (
-                    "grade",
-                    s(policy
-                        .grade_by_tag(d.grade)
-                        .map_or_else(|| d.grade.to_string(), |g| g.name.clone())),
-                ),
-                ("size", Json::Int(i128::from(d.size))),
-                ("doc_commit", s(hex(&d.doc_commit))),
-                ("recorded_at", Json::Int(i128::from(d.recorded_at.0))),
-            ])
-        })
+        .map(|d| obj(summary_fields(&policy, d)))
         .collect();
     let human: Vec<String> = documents
         .iter()
@@ -218,6 +200,124 @@ fn list_docs(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ],
         &human.join("\n"),
     );
+    Ok(())
+}
+
+/// One held document's public metadata, as `document list` and `document
+/// show` report it.
+fn summary_fields(
+    policy: &EvidencePolicy,
+    d: &fa_journal::evidence::DocumentSummary,
+) -> Vec<(&'static str, Json)> {
+    vec![
+        ("oid", s(hex(&d.oid.0))),
+        (
+            "kind",
+            s(policy
+                .kind_by_tag(d.kind)
+                .map_or_else(|| d.kind.to_string(), |k| k.name.clone())),
+        ),
+        ("mime", s(&d.mime)),
+        (
+            "grade",
+            s(policy
+                .grade_by_tag(d.grade)
+                .map_or_else(|| d.grade.to_string(), |g| g.name.clone())),
+        ),
+        ("size", Json::Int(i128::from(d.size))),
+        ("doc_commit", s(hex(&d.doc_commit))),
+        ("recorded_at", Json::Int(i128::from(d.recorded_at.0))),
+    ]
+}
+
+/// `fa document show <oid>` (plan §15.3 `fa doc show`, §13.2): one held
+/// document as the book records it at the head. Its public metadata (as
+/// `document list` gives it), its custody chain, the legal holds active on
+/// it, and its Bates range in every matter that produced it. Never the
+/// bytes: `fa document read` needs read for those.
+fn show_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa document show <oid> --book <dir> --json";
+    let [_, _, oid_text] = args.positional.as_slice() else {
+        return Err(usage("`fa document show` takes one document oid", FIX));
+    };
+    let oid = Oid(hex32(
+        oid_text.strip_prefix("D:").unwrap_or(oid_text),
+        "document oid",
+    )?);
+    // Show reads the document at the head and takes none of the document
+    // verb's own flags: each is refused, never ignored (--as-known-at, say,
+    // which `fa document list` honours).
+    let verb_flags = fa_verbs::registry()
+        .ok()
+        .and_then(|reg| reg.verb("document"))
+        .map(|verb| verb.flags.clone())
+        .unwrap_or_default();
+    // --grant names the session's ops, as on every read.
+    if let Some(flag) = verb_flags
+        .iter()
+        .filter(|flag| flag.as_str() != "--grant")
+        .find(|flag| !args.flag_all(flag.as_str()).is_empty())
+    {
+        return Err(usage(
+            format!("`fa document show` reads the document at the head and takes no {flag}"),
+            "fa document show <oid> --json, or fa document list --as-known-at <seq> --json for the documents held then",
+        ));
+    }
+    let policy = policy()?;
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let book = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
+    let Some(summary) = book.documents(None)??.into_iter().find(|d| d.oid == oid) else {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::EVIDENCE_UNKNOWN,
+            fa_journal::refusal::exit::REFUSAL,
+            format!("document {} is not held by this book", hex(&oid.0)),
+            "plan §9 (a document is held once fa document add records it)",
+            "list the documents the book holds with `fa document list --json`",
+        )));
+    };
+    let custody = custody_events(&book.custody_chain(&oid)?)?;
+    let holds = book.legal_holds_on(document_vid(&oid))?;
+    let bates = book.document_bates_ranges(&oid)?;
+    ctx.out.at_book(&book)?;
+    let oid_hex = hex(&oid.0);
+    let human = format!(
+        "document {oid_hex}: {} bytes {} · {} custody event(s) · {} active legal hold(s) · produced in {} matter(s){}",
+        summary.size,
+        summary.mime,
+        custody.len(),
+        holds.len(),
+        bates.len(),
+        bates
+            .iter()
+            .map(|(p, r)| format!(
+                "\n  {}: {}..={}",
+                p.matter,
+                p.label(r.range.start),
+                p.label(r.range.end)
+            ))
+            .collect::<String>()
+    );
+    let mut fields = summary_fields(&policy, &summary);
+    fields.extend([
+        ("custody", Json::Arr(custody)),
+        (
+            "holds",
+            Json::Arr(holds.iter().map(|v| s(format!("{:032x}", v.0))).collect()),
+        ),
+        (
+            "bates",
+            Json::Arr(
+                bates
+                    .iter()
+                    .map(|(p, r)| crate::production::range_json(p, r, true))
+                    .collect(),
+            ),
+        ),
+    ]);
+    ctx.out.event("document_shown", fields, &human);
     Ok(())
 }
 
@@ -541,6 +641,237 @@ fn attach_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// `fa document extract <oid> [--tool pdf-text|focr|fw] [--kind <Kind>]`
+/// (plan §9.1; fa-646's pipeline): the source document's text as a derived
+/// text Document. Its bytes bind the source oid (`fa:derived-document:v1`),
+/// so the lineage is part of its identity. `pdf-text` (the default) reads a
+/// PDF's text layer deterministically, so the same source gives the same
+/// document; `focr` (OCR of an image or scan) and `fw` (an audio transcript)
+/// run the owner's tools as subprocesses and record `replayable = false`.
+/// The upload is admitted and graded like `fa document add`, by who runs it,
+/// never the source's grade.
+fn extract_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str =
+        "fa document extract <oid> [--tool pdf-text|focr|fw] [--kind Invoice] --book <dir> --json";
+    let oid_text = args.positional.get(2).ok_or_else(|| {
+        usage(
+            "`fa document extract` needs the source document's oid",
+            EXAMPLE,
+        )
+    })?;
+    if let Some(extra) = args.positional.get(3) {
+        return Err(usage(format!("unexpected argument `{extra}`"), EXAMPLE));
+    }
+    let source_oid = Oid(hex32(oid_text, "document oid")?);
+    let tool = args.flag("--tool").unwrap_or("pdf-text");
+    if !matches!(tool, "pdf-text" | "focr" | "fw") {
+        return Err(named("extraction tool", tool, &["pdf-text", "focr", "fw"]));
+    }
+    let policy = policy()?;
+    let kind_override = match args.flag("--kind") {
+        Some(name) => Some(
+            policy
+                .kind_by_name(name)
+                .ok_or_else(|| {
+                    let names: Vec<&str> = policy.kinds.iter().map(|k| k.name.as_str()).collect();
+                    named("document kind", name, &names)
+                })?
+                .tag,
+        ),
+        None => None,
+    };
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "post"])?;
+    let authority = ctx.authority().cloned();
+    let mut book = ctx.books.open(args)?;
+    // Authorization precedes observation (doctrine 8): the upload is
+    // admitted before the source is read.
+    if let Some(authority) = &authority {
+        book.preflight_intake(authority.capability(), fa::IntakeAction::Upload)??;
+    }
+    let source = match book.read_document_for(&capability, &source_oid)?? {
+        DocumentRead::Full(doc) => doc,
+        DocumentRead::Redacted(_) => {
+            return Err(usage(
+                "extraction reads the whole document; this capability sees its redacted view",
+                "extract under a capability that reveals the document (`--grant privileged`)",
+            ));
+        }
+    };
+    let kind = kind_override.unwrap_or(source.kind);
+    let derived = if tool == "pdf-text" {
+        fa::extract_pdf_text_layer(&source, who, kind).map_err(Fail::Refusal)?
+    } else {
+        run_extraction_tool(tool, &source, &source_oid, who, kind)?
+    };
+    let added = if let Some(authority) = &authority {
+        book.upload_document(
+            authority.capability(),
+            fa_journal::UploadRequest {
+                kind: derived.document.kind,
+                mime: derived.document.mime.clone(),
+                bytes: derived.document.bytes.clone(),
+                asserted_grade: None,
+            },
+        )??
+    } else {
+        // `fa document add`'s honest default: a derived text is never graded
+        // above who produced it.
+        let grade = policy
+            .grade_by_name("AgentUpload")
+            .ok_or_else(|| Fail::Internal("missing AgentUpload grade".into()))?;
+        book.add_document(&Document {
+            grade: grade.tag,
+            ..derived.document.clone()
+        })??
+    };
+    ctx.out.at_book(&book)?;
+    let kind_out = policy
+        .kind_by_tag(added.kind)
+        .map_or_else(|| added.kind.to_string(), |k| k.name.clone());
+    let grade_out = policy
+        .grade_by_tag(added.grade)
+        .map_or_else(|| added.grade.to_string(), |g| g.name.clone());
+    let oid = hex(&added.oid.0);
+    let commit = hex(&added.doc_commit);
+    let source_hex = hex(&source_oid.0);
+    ctx.out.event(
+        "document_extracted",
+        vec![
+            ("oid", s(&oid)),
+            ("doc_commit", s(&commit)),
+            ("source_oid", s(&source_hex)),
+            ("kind", s(&kind_out)),
+            ("grade", s(&grade_out)),
+            ("self_sourced", Json::Bool(self_sourced(&policy, added.grade))),
+            ("size", Json::Int(i128::from(added.size))),
+            ("recorded_at", Json::Int(i128::from(added.recorded_at.0))),
+            ("already_recorded", Json::Bool(added.already_recorded)),
+            (
+                "extraction",
+                extraction_json(&oid, &[derived.source_oid], &derived.metadata),
+            ),
+            (
+                "evidence",
+                obj(vec![
+                    ("document_oid", s(&oid)),
+                    ("doc_commit", s(&commit)),
+                    ("role", s(DEFAULT_ROLE)),
+                ]),
+            ),
+        ],
+        &format!(
+            "{} derived document {oid} ({kind_out}, {grade_out}): {} text of {source_hex}, {} bytes, at {}; read it with fa document read {oid}",
+            if added.already_recorded {
+                "already recorded:"
+            } else {
+                "recorded"
+            },
+            derived.metadata.method.name(),
+            derived.metadata.extracted_text.len(),
+            added.recorded_at.0
+        ),
+    );
+    Ok(())
+}
+
+/// The file extension an extraction tool reads `mime` by (focr takes images
+/// and PDFs, fw audio and video); `bin` for anything else.
+fn tool_input_extension(mime: &str) -> &'static str {
+    let base = mime.split(';').next().unwrap_or("").trim();
+    match base {
+        "application/pdf" => "pdf",
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/tiff" => "tiff",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/flac" => "flac",
+        "audio/ogg" => "ogg",
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" => "m4a",
+        "video/mp4" => "mp4",
+        _ => "bin",
+    }
+}
+
+/// Run an owner extraction tool (`focr` for images and scanned PDFs, `fw`
+/// for audio) over a private copy of the source (mode 0600, never an
+/// existing path), removed afterwards whatever the outcome. The tool's name
+/// is fixed and resolved in PATH, never a caller's path. A tool that is not
+/// installed, or has no model, did not run: an environment failure (exit 4),
+/// never invented text.
+fn run_extraction_tool(
+    tool: &str,
+    source: &Document,
+    source_oid: &Oid,
+    who: VId,
+    kind: u8,
+) -> Result<fa::DerivedDocumentResult, Fail> {
+    let input = std::env::temp_dir().join(format!(
+        "fa-extract-{}-{}.{}",
+        std::process::id(),
+        hex(&source_oid.0),
+        tool_input_extension(&source.mime)
+    ));
+    let shown = input.display().to_string();
+    write_new(
+        &input,
+        &shown,
+        &source.bytes,
+        "extraction input",
+        "temporary",
+    )?;
+    let outcome = if tool == "fw" {
+        fa::run_fw_extraction(source, &input, who, kind, &fa::FwConfig::default())
+    } else {
+        fa::run_focr_extraction(source, &input, who, kind, &fa::FocrConfig::default())
+    };
+    // The copy may hold privileged bytes: it goes whether the tool ran or not.
+    std::fs::remove_file(&input).map_err(|e| {
+        Fail::Io(format!(
+            "could not remove the extraction input {shown}: {e}; remove it by hand, it holds the source document's bytes"
+        ))
+    })?;
+    match outcome.map_err(Fail::Refusal)? {
+        fa::ExternalToolOutcome::Completed(derived) => Ok(derived),
+        fa::ExternalToolOutcome::Unrun { binary, reason } => Err(Fail::Environment(format!(
+            "`{binary}` did not run: {reason}; install it (franken_ocr provides focr, franken_whisper provides fw), or extract a PDF's text layer with --tool pdf-text"
+        ))),
+    }
+}
+
+/// The `extraction` shape of a derived text document `holder`: how it was
+/// extracted, the sources its bytes bind, and the text as untrusted content.
+fn extraction_json(
+    holder: &str,
+    sources: &[Oid],
+    meta: &fa_journal::DerivedExtractionMetadata,
+) -> Json {
+    obj(vec![
+        ("method", s(meta.method.name())),
+        ("tool_name", s(&meta.tool_name)),
+        ("tool_version", s(&meta.tool_version)),
+        (
+            "command_line",
+            Json::Arr(meta.command_line.iter().map(s).collect()),
+        ),
+        ("replayable", Json::Bool(meta.replayable)),
+        (
+            "sources",
+            Json::Arr(sources.iter().map(|o| s(hex(&o.0))).collect()),
+        ),
+        (
+            "text",
+            obj(vec![
+                ("untrusted_content", s(&meta.extracted_text)),
+                ("source", s(format!("D:{holder}"))),
+            ]),
+        ),
+    ])
+}
+
 fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let oid_text = args
         .positional
@@ -580,12 +911,18 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let oid_hex = hex(&oid.0);
             let commit_hex = hex(&doc.doc_commit());
             let bytes_hex = hex(&doc.bytes);
+            // A derived document's bytes are its binary envelope, readable
+            // UTF-8 or not: its text is `extraction.text`, never `text`.
+            let extraction = fa_journal::decode_extraction_derivation(&doc.bytes)
+                .map_or(Json::Null, |(sources, meta)| {
+                    extraction_json(&oid_hex, &sources, &meta)
+                });
             let text = match std::str::from_utf8(&doc.bytes) {
-                Ok(utf8) => Json::Obj(vec![
+                Ok(utf8) if extraction == Json::Null => Json::Obj(vec![
                     ("untrusted_content".into(), s(utf8)),
                     ("source".into(), s(format!("D:{oid_hex}"))),
                 ]),
-                Err(_) => Json::Null,
+                _ => Json::Null,
             };
             ctx.out.event(
                 "document_read",
@@ -599,6 +936,7 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("size", Json::Int(doc.bytes.len() as i128)),
                     ("bytes_hex", s(&bytes_hex)),
                     ("text", text),
+                    ("extraction", extraction),
                     ("disclosed_chunks", Json::Null),
                     ("withheld_chunks", Json::Null),
                     ("view_commit", Json::Null),
@@ -640,6 +978,7 @@ fn read_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("size", Json::Int(i128::from(view.size))),
                     ("bytes_hex", Json::Null),
                     ("text", Json::Null),
+                    ("extraction", Json::Null),
                     ("disclosed_chunks", Json::Int(disclosed as i128)),
                     ("withheld_chunks", Json::Int(withheld as i128)),
                     ("view_commit", s(hex(&view_commit))),
@@ -810,8 +1149,19 @@ fn custody_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let book = ctx.books.open(args)?;
     let chain = book.custody_chain(&oid)?;
     ctx.out.at_book(&book)?;
+    let events = custody_events(&chain)?;
+    ctx.out.event(
+        "custody_chain",
+        vec![("oid", s(&oid_hex)), ("events", Json::Arr(events))],
+        &format!("document {oid_hex}: {} custody event(s)", chain.len()),
+    );
+    Ok(())
+}
+
+/// A custody chain as `document custody` and `document show` report it.
+fn custody_events(chain: &[(fa_journal::CustodyEvent, CommitSeq)]) -> Result<Vec<Json>, Fail> {
     let mut events = Vec::with_capacity(chain.len());
-    for (ev, seq) in &chain {
+    for (ev, seq) in chain {
         let digest = ev.digest().map_err(BookError::Kernel)?;
         let (kind, from) = match &ev.body {
             CustodyBody::Receipt { .. } => ("receipt", Json::Null),
@@ -827,12 +1177,7 @@ fn custody_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("recorded_at", Json::Int(i128::from(seq.0))),
         ]));
     }
-    ctx.out.event(
-        "custody_chain",
-        vec![("oid", s(&oid_hex)), ("events", Json::Arr(events))],
-        &format!("document {oid_hex}: {} custody event(s)", chain.len()),
-    );
-    Ok(())
+    Ok(events)
 }
 
 fn erase_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -1475,22 +1820,15 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let account_code = args.require("--account", "1000")?;
             let period = args.require("--period", "FY2026-P03")?.to_string();
             let entity = args.flag("--entity").map(str::to_string);
-            let known_at = match args.flag("--as-known-at") {
-                None | Some("HEAD") => None,
-                Some(raw) => Some(CommitSeq(raw.parse::<u64>().map_err(|_| {
-                    usage(
-                        format!("--as-known-at `{raw}` must be a CommitSeq or HEAD"),
-                        "--as-known-at HEAD",
-                    )
-                })?)),
-            };
-            let mut evidence = Vec::new();
-            for e in args.flag_all("--evidence") {
-                evidence.push(Oid(hex32(e, "--evidence")?));
-            }
-            evidence.sort();
+            let known_at = head_or_seq(args)?;
+            let evidence = sorted_evidence(args)?;
             let capability = ctx.capability(args, &["reconcile"])?;
-            let mut book = ctx.books.open(args)?;
+            // Authority precedes observation: the record law's admission,
+            // decided from the capability alone, runs before the cell is
+            // evaluated, so a refused caller learns nothing about the book.
+            let mut book = ctx
+                .books
+                .open_admitted(args, |book| admit_reconciler(book, &capability))?;
             let unit_id = match args.flag("--unit") {
                 Some(u) => {
                     book.context()
@@ -1508,28 +1846,7 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 entity,
             };
             let claim = book.evaluate_register_equals(&key, known_at)?;
-            let attested = book.record_register_equals(&capability, &claim, evidence)??;
-            let holds = book.assertion_holds(attested.vid)?.unwrap_or(true);
-            ctx.out.at_book(&book)?;
-            let vid_hex = format!("{:032x}", attested.vid.0);
-            let cell_hex = hex(&claim.fold_digest);
-            ctx.out.event(
-                "attestation_recorded",
-                vec![
-                    ("attestation_vid", s(&vid_hex)),
-                    ("claim", s("RegisterEquals")),
-                    ("subject", s(&cell_hex)),
-                    ("signed_digest", s(hex(&attested.signed_digest))),
-                    ("recorded_at", Json::Int(i128::from(attested.recorded_at.0))),
-                    ("already_recorded", Json::Bool(attested.already_recorded)),
-                    ("holds", Json::Bool(holds)),
-                ],
-                &format!(
-                    "recorded RegisterEquals attestation {vid_hex} at {} (holds = {holds})",
-                    attested.recorded_at.0
-                ),
-            );
-            Ok(())
+            record_register_equals(&ctx.out, &mut book, &capability, &claim, evidence)
         }
         other => Err(usage(
             format!(
@@ -1539,6 +1856,111 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "fa attest review|manual|register-equals ...",
         )),
     }
+}
+
+/// The balance-assertion authority (plan §9.4): the capability is current
+/// (not expired or revoked, its books caveat admits this book, as `open`
+/// checks for a bound session), and fa-journal's `admit_reconciler` admits
+/// it (the holder's own, with `reconcile`, not an Agent's on trunk). The
+/// record law decides both again before its refold.
+fn admit_reconciler(book: &mut fa::Book, capability: &fa::Capability) -> Result<(), Fail> {
+    book.admit_current(capability)??;
+    fa_journal::attestation::admit_reconciler(capability, book.context().book_id)
+        .map_err(Fail::Refusal)
+}
+
+/// `--as-known-at HEAD|<seq>`: `None` is the head.
+fn head_or_seq(args: &Args) -> Result<Option<CommitSeq>, Fail> {
+    match args.flag("--as-known-at") {
+        None | Some("HEAD") => Ok(None),
+        Some(raw) => raw.parse::<u64>().map(|n| Some(CommitSeq(n))).map_err(|_| {
+            usage(
+                format!("--as-known-at `{raw}` must be a CommitSeq or HEAD"),
+                "--as-known-at HEAD",
+            )
+        }),
+    }
+}
+
+/// The `--evidence <oid>` citations, sorted.
+fn sorted_evidence(args: &Args) -> Result<Vec<Oid>, Fail> {
+    let mut evidence = Vec::new();
+    for e in args.flag_all("--evidence") {
+        evidence.push(Oid(hex32(e, "--evidence")?));
+    }
+    evidence.sort();
+    Ok(evidence)
+}
+
+/// Record `claim` through the RegisterEquals law (fa-registers
+/// record_register_equals: the cell is folded again and any difference is
+/// FA-REF-140) and report the attestation.
+fn record_register_equals(
+    out: &crate::cli::Out,
+    book: &mut fa::Book,
+    capability: &fa_journal::Capability,
+    claim: &fa::RegisterEquals,
+    evidence: Vec<Oid>,
+) -> Result<(), Fail> {
+    let attested = book.record_register_equals(capability, claim, evidence)??;
+    let holds = book.assertion_holds(attested.vid)?.unwrap_or(true);
+    out.at_book(book)?;
+    let vid_hex = format!("{:032x}", attested.vid.0);
+    let cell_hex = hex(&claim.fold_digest);
+    out.event(
+        "attestation_recorded",
+        vec![
+            ("attestation_vid", s(&vid_hex)),
+            ("claim", s("RegisterEquals")),
+            ("subject", s(&cell_hex)),
+            ("signed_digest", s(hex(&attested.signed_digest))),
+            ("recorded_at", Json::Int(i128::from(attested.recorded_at.0))),
+            ("already_recorded", Json::Bool(attested.already_recorded)),
+            ("holds", Json::Bool(holds)),
+        ],
+        &format!(
+            "recorded RegisterEquals attestation {vid_hex} at {} (holds = {holds})",
+            attested.recorded_at.0
+        ),
+    );
+    Ok(())
+}
+
+/// `fa assert-balance --account <code> --period <code> --balance "<amount>
+/// <UNIT>" [--entity <id>] [--evidence <oid>]... [--as-known-at HEAD|<seq>]`
+/// (plan §9.4, Appendix B AssertBalance): plain-text accounting's balance
+/// assertion as an attestation. The asserted amount is the cell's net,
+/// debits minus credits, at the period's end; its unit names the cell's
+/// unit. The RegisterEquals law folds the cell again: an assertion equal to
+/// the fold is recorded, and any other is refused (FA-REF-140, exit 3)
+/// naming both amounts. Nothing is written for a false assertion.
+pub(crate) fn assert_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const FIX: &str = "fa assert-balance --account 1000 --period FY2026-P03 --balance \"-1500.00 USD\" [--evidence <oid>]... --book <dir> --json";
+    if args.positional.len() != 1 {
+        return Err(usage("assert-balance takes no positional argument", FIX));
+    }
+    let account_code = args.require("--account", "1000")?;
+    let period = args.require("--period", "FY2026-P03")?.to_string();
+    let balance_text = args.require("--balance", "\"<amount> <UNIT>\"")?;
+    let entity = args.flag("--entity").map(str::to_string);
+    let known_at = head_or_seq(args)?;
+    let evidence = sorted_evidence(args)?;
+    let capability = ctx.capability(args, &["reconcile"])?;
+    // Admitted before the balance is parsed or the cell evaluated.
+    let mut book = ctx
+        .books
+        .open_admitted(args, |book| admit_reconciler(book, &capability))?;
+    let balance = fa_money::Amount::parse(balance_text, &book.context().units)
+        .map_err(|e| usage(format!("--balance `{balance_text}`: {e}"), FIX))?;
+    let key = fa::EntityCellKey {
+        account: account_vid(book.context().book_id, account_code),
+        unit_id: balance.unit.0,
+        period,
+        entity,
+    };
+    let mut claim = book.evaluate_register_equals(&key, known_at)?;
+    claim.amount = balance;
+    record_register_equals(&ctx.out, &mut book, &capability, &claim, evidence)
 }
 
 fn parse_intake_source(raw: Option<&str>, who: VId) -> fa_model::IntakeSource {

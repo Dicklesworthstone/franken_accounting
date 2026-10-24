@@ -144,19 +144,21 @@ fn select(states: &[StoredState], oid: Option<Oid>) -> Result<StoredState, Refus
         })
 }
 
-pub(crate) fn export<V: Vfs + Clone>(
+/// The recorded state chain, newest first, once the export is admitted and
+/// every state is recomputed from the journal.
+fn admitted_chain<V: Vfs + Clone>(
     db: &Database<V>,
     ctx: &fgdb_types::context::PurposeContexts,
     book: &BookContext,
     signer: &dyn fa_notary::CheckpointSigner,
     principal: VId,
     capability: &Capability,
-    request: ProofRequest,
-) -> Outcome<ProofArtifact> {
+) -> Outcome<Vec<StoredState>> {
     // Admission precedes even the current authority frontier. Prefix proofs
-    // reveal every envelope; PrefixWithRecords and v3 balances disclose every
-    // entry payload. All require whole-book read plus the production operation.
-    // Current capabilities support book caveats, not silently filtered views.
+    // reveal every envelope; PrefixWithRecords, v3 balances and suffixes
+    // disclose every entry payload. All require whole-book read plus the
+    // production operation. Current capabilities support book caveats, not
+    // silently filtered views.
     if let Err(denial) = fa_policy::admit_read(capability, principal, book.book_id)
         .and_then(|()| fa_policy::require(capability, Op::Produce, "exporting accounting proofs"))
     {
@@ -181,7 +183,88 @@ pub(crate) fn export<V: Vfs + Clone>(
             "run fa verify accumulator --json and preserve its findings; no proof is exported over a damaged chain",
         )));
     }
-    let states = fa_notary::chain(db, None)?;
+    Ok(Ok(fa_notary::chain(db, None)?))
+}
+
+/// Which suffix to export: from the recipient's retained recorded state to
+/// a later one (`None`: the latest).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SuffixRequest {
+    pub state: Oid,
+    pub next_state: Option<Oid>,
+}
+
+/// A complete record-bearing suffix between two recorded states (plan
+/// §13.2: extend previously verified state instead of sending the whole
+/// history again). It is the consistency proof from `checkpoint` to
+/// `next_checkpoint`, plus one record-bearing inclusion proof at
+/// `next_checkpoint` per appended leaf, in leaf order, undated controls and
+/// evidence records included. That is exactly what `fa-verify witness index
+/// --consistency … --delta-record …` advances a retained baseline with, in
+/// the existing v1 formats.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SuffixArtifact {
+    /// The recipient's retained state.
+    pub checkpoint: StoredState,
+    /// The state the suffix extends it to.
+    pub next_checkpoint: StoredState,
+    pub consistency: Vec<u8>,
+    /// Leaves `[checkpoint.leaf_count, next_checkpoint.leaf_count)`.
+    pub records: Vec<Vec<u8>>,
+}
+
+pub(crate) fn export_suffix<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &fgdb_types::context::PurposeContexts,
+    book: &BookContext,
+    signer: &dyn fa_notary::CheckpointSigner,
+    principal: VId,
+    capability: &Capability,
+    request: SuffixRequest,
+) -> Outcome<SuffixArtifact> {
+    let states = match admitted_chain(db, ctx, book, signer, principal, capability)? {
+        Ok(states) => states,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let checkpoint = match select(&states, Some(request.state)) {
+        Ok(state) => state,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let next_checkpoint = match select(&states, request.next_state) {
+        Ok(state) => state,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let suffix = match fa_notary::prefix::prove_suffix_with_records(
+        db,
+        book,
+        &checkpoint.state.statement(),
+        &next_checkpoint.state,
+        fa_notary::prefix::MAX_PREFIX_PROOF_BYTES,
+    )? {
+        Ok(suffix) => suffix,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    Ok(Ok(SuffixArtifact {
+        checkpoint,
+        next_checkpoint,
+        consistency: suffix.consistency_proof().to_vec(),
+        records: suffix.records().to_vec(),
+    }))
+}
+
+pub(crate) fn export<V: Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &fgdb_types::context::PurposeContexts,
+    book: &BookContext,
+    signer: &dyn fa_notary::CheckpointSigner,
+    principal: VId,
+    capability: &Capability,
+    request: ProofRequest,
+) -> Outcome<ProofArtifact> {
+    let states = match admitted_chain(db, ctx, book, signer, principal, capability)? {
+        Ok(states) => states,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let checkpoint = match select(&states, request.state) {
         Ok(state) => state,
         Err(refusal) => return Ok(Err(refusal)),

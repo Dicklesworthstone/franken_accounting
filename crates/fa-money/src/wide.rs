@@ -174,6 +174,8 @@ mod tests {
 
     const ORACLE_LIMIT: LimbLimit = LimbLimit::new(16);
 
+    // Each limb is a 64-bit word of the value: the narrowing is the split.
+    #[allow(clippy::cast_possible_truncation)]
     fn bigint(value: U256) -> BigInt {
         let mut limbs = vec![
             value.lo as u64,

@@ -803,3 +803,223 @@ fn workpaper_generation_never_discloses_an_unreplayable_comparison() {
     assert_eq!(r.exit, exit::VERIFICATION);
     assert_eq!(r.code, crate::certificate::code::CERTIFICATE_INVALID);
 }
+
+#[test]
+fn functional_comparison_retains_both_sources_and_replays_from_a_cold_head() {
+    let mut h = Harness::new();
+    h.post(
+        "functional-first",
+        "2026-03-10",
+        h.usd,
+        ("cash", "sales"),
+        11_000,
+        false,
+    );
+    let before = h.head();
+    h.post(
+        "functional-later",
+        "2026-03-15",
+        h.usd,
+        ("cash", "sales"),
+        1_200,
+        false,
+    );
+    let after = h.head();
+    let request = h.request(before, "balance-sheet");
+    let cx = h.cx();
+    let authority = cap(&["read", "produce"]);
+    let certified = h
+        .runtime
+        .block_on(
+            h.book
+                .certify_functional_statement_diff(&cx, PRINCIPAL, &authority, &request),
+        )
+        .unwrap()
+        .unwrap();
+    let ordinary = h
+        .runtime
+        .block_on(
+            h.book
+                .functional_statement_diff(&cx, PRINCIPAL, &cap(&["read"]), &request),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(ordinary, certified.report);
+    assert_eq!(certified.report.functional_unit(), Some(h.usd));
+    assert_eq!(delta(&certified.report, "assets", h.usd), vec![1_200, 0]);
+    let c = &certified.certificate;
+    assert!(c.uses_functional_valuations());
+    assert_eq!(c.output_format(), "fa:functional-statement-diff:v1");
+    assert_eq!(c.sources().0.known_at, before);
+    assert_eq!(c.sources().1.known_at, after);
+    for source in [c.sources().0, c.sources().1] {
+        assert!(matches!(
+            source.selection,
+            ReportSelection::FunctionalStatement(_)
+        ));
+    }
+    let retained = h
+        .book
+        .compare_statement_certificates(&cx, PRINCIPAL, &authority, c.sources().0, c.sources().1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained, certified);
+    let encoded = c.canonical_bytes().unwrap();
+    let decoded = StatementDiffCertificate::decode(&encoded).unwrap();
+    assert_eq!(decoded, *c);
+    let artifact = crate::ReportArtifact::decode(&encoded).unwrap();
+    assert!(artifact.uses_functional_valuations());
+    assert_eq!(
+        artifact.family(),
+        crate::ReportArtifactFamily::StatementDiff
+    );
+    assert_eq!(artifact.output(), c.output());
+    assert_eq!(
+        h.head(),
+        after,
+        "comparison never appends or revalues entries"
+    );
+
+    let mut h = h.reopen();
+    let cx = h.cx();
+    let replayed = h
+        .runtime
+        .block_on(h.book.replay_report_artifact_for_with_history(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read"]),
+            &encoded,
+            Some(decoded.digest()),
+            crate::ReportArtifactExpectation::AsSupplied,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(replayed.output, certified.report.canonical_bytes().unwrap());
+    assert_eq!(h.replay(&decoded), certified.report);
+    assert_eq!(h.head(), after);
+    let workpaper = h
+        .book
+        .statement_diff_workpaper(&cx, PRINCIPAL, &authority, &decoded)
+        .unwrap()
+        .unwrap();
+    assert!(workpaper.jsonl().contains("\"functional\":true"));
+    assert!(
+        workpaper
+            .jsonl()
+            .contains("\"valuation_basis\":\"retained-base-amounts\"")
+    );
+    assert!(workpaper.markdown().contains("Base unit ID"));
+    assert!(!workpaper.markdown().contains("Native unit ID"));
+}
+
+#[test]
+fn functional_comparison_rejects_mixed_basis_false_outputs_and_trace_conversion() {
+    let mut h = Harness::new();
+    let request = h.request(h.head(), "balance-sheet");
+    let cx = h.cx();
+    let authority = cap(&["read", "produce"]);
+    let native = h.certify(&request);
+    let functional = h
+        .runtime
+        .block_on(
+            h.book
+                .certify_functional_statement_diff(&cx, PRINCIPAL, &authority, &request),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        native
+            .report
+            .lines()
+            .iter()
+            .all(|line| line.before.iter().all(|n| *n == 0))
+    );
+    assert!(
+        functional
+            .report
+            .lines()
+            .iter()
+            .all(|line| line.before.iter().all(|n| *n == 0))
+    );
+    let n = native.certificate.sources().0;
+    let f = functional.certificate.sources().0;
+    for (before, after) in [(n, f), (f, n)] {
+        assert!(
+            h.book
+                .compare_statement_certificates(&cx, PRINCIPAL, &authority, before, after)
+                .unwrap()
+                .is_err(),
+            "equal zero totals cannot waive a native/functional basis mismatch"
+        );
+    }
+    let c = &functional.certificate;
+    let mut false_output = c.output.clone();
+    *false_output.last_mut().unwrap() ^= 1;
+    let resealed = StatementDiffCertificate::seal(
+        c.before.clone(),
+        c.after.clone(),
+        c.producer,
+        c.capability_commitment,
+        false_output,
+    )
+    .unwrap();
+    let forged = StatementDiffCertificate::decode(&resealed.canonical_bytes().unwrap()).unwrap();
+    assert!(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &cap(&["read"]), &forged)
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        StatementDiffCertificate::seal(
+            c.before.clone(),
+            c.after.clone(),
+            c.producer,
+            c.capability_commitment,
+            native.certificate.output().to_vec(),
+        )
+        .is_err()
+    );
+    let refusal = h
+        .book
+        .certify_statement_trace_from_diff(&cx, PRINCIPAL, &authority, c, 10)
+        .unwrap()
+        .unwrap_err();
+    assert!(refusal.message.contains("functional"));
+    assert_eq!(
+        h.runtime
+            .block_on(h.book.certify_functional_statement_diff(
+                &cx,
+                PRINCIPAL,
+                &cap(&["read"]),
+                &request,
+            ))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
+    let scoped = authority.clone().for_accounts(&["cash"]).unwrap();
+    let mut malformed = c.clone();
+    malformed.digest[0] ^= 1;
+    assert_eq!(
+        h.book
+            .replay_statement_diff(&cx, PRINCIPAL, &scoped, &malformed)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY,
+        "whole-book authority precedes even malformed functional input validation"
+    );
+    assert_eq!(
+        h.runtime
+            .block_on(
+                h.book
+                    .functional_statement_diff(&cx, PRINCIPAL, &scoped, &request)
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+        fa_journal::refusal::code::CAPABILITY
+    );
+}

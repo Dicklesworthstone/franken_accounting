@@ -1439,3 +1439,147 @@ fn witnesses_cosign_an_extending_history_and_refuse_a_rewritten_one() {
     );
     assert!(!f.dir.join("x4.cp").exists());
 }
+
+/// `fa proof suffix` (plan §13.2): a recipient that kept an old state gets
+/// everything appended since in one export, including a document's import
+/// receipt, which no entry vid names (so `proof inclusion` cannot cut it),
+/// and checks it offline. The consistency proof extends the old checkpoint
+/// to the new one, and each record is a recomputed inclusion at the new
+/// checkpoint, at consecutive leaves from the old leaf count. Written to a
+/// new directory, the files carry the same bytes. A missing --state, an
+/// existing directory and a reversed pair are refused, writing nothing.
+#[test]
+fn a_suffix_carries_every_appended_leaf_and_verifies_against_both_checkpoints() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    f.post("s-1", "2026-03-10", "5.00", &evidence);
+    let old_state = f.checkpoint();
+    let posted = f.post("s-2", "2026-03-11", "6.00", &evidence);
+    let memo = write(&f.dir, "memo.txt", "A later supporting memo.");
+    ok(
+        &f.book,
+        &[
+            "document",
+            "add",
+            &memo,
+            "--kind",
+            "Receipt",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let new_state = f.checkpoint();
+    let (old_oid, new_oid) = (text(&old_state, "oid"), text(&new_state, "oid"));
+    let checkpoint = |oid: &str| {
+        Checkpoint::decode(&bytes(&exported(&f.book, &["checkpoint", "--state", oid])))
+            .expect("a checkpoint statement")
+    };
+    let (old, new) = (checkpoint(old_oid), checkpoint(new_oid));
+
+    let line = ok(
+        &f.book,
+        &[
+            "proof",
+            "suffix",
+            "--state",
+            old_oid,
+            "--next-state",
+            new_oid,
+        ],
+    );
+    assert_eq!(text(&line, "event"), "proof_suffix_exported");
+    assert_eq!(integer(&line, "from_leaf") as u64, old.leaf_count);
+    assert_eq!(integer(&line, "to_leaf") as u64, new.leaf_count);
+    let records: Vec<Vec<u8>> = get(&line, "records")
+        .as_arr()
+        .expect("inline records")
+        .iter()
+        .map(|r| unhex(r.as_str().expect("hex")))
+        .collect();
+    assert_eq!(
+        records.len(),
+        2,
+        "the posting and the memo's import receipt"
+    );
+    assert_eq!(records.len() as u64, new.leaf_count - old.leaf_count);
+    let consistency = unhex(text(&line, "consistency"));
+    let extended = fa_verify::verify_consistency(&consistency, &old, &new)
+        .expect("the suffix extends the retained root");
+    assert_eq!((extended.trusted, extended.extended), (old, new));
+    let mut kinds = Vec::new();
+    for (leaf, record) in (old.leaf_count..).zip(&records) {
+        let included = fa_verify::verify_inclusion(record, &new)
+            .expect("each record verifies at the new root");
+        assert_eq!(included.leaf_index, leaf);
+        assert_eq!(included.record, RecordCheck::Recomputed);
+        kinds.push(included.envelope.kind);
+    }
+    assert!(
+        kinds.contains(&1) && kinds.iter().any(|k| *k != 1),
+        "an entry and an evidence record: {kinds:?}"
+    );
+    // The posting's record is exactly what `proof inclusion --with-record` cuts.
+    let single = exported(
+        &f.book,
+        &[
+            "inclusion",
+            "--entry",
+            text(&posted, "vid"),
+            "--with-record",
+            "--state",
+            new_oid,
+        ],
+    );
+    assert!(records.contains(&bytes(&single)));
+    // The latest state is the default end.
+    let latest = ok(&f.book, &["proof", "suffix", "--state", old_oid]);
+    assert_eq!(text(&latest, "next_state_oid"), new_oid);
+
+    // To a new directory: the same bytes, record files in leaf order.
+    let out = f.dir.join("suffix").display().to_string();
+    let written = ok(
+        &f.book,
+        &["proof", "suffix", "--state", old_oid, "--out", &out],
+    );
+    assert_eq!(get(&written, "records"), &Json::Null);
+    let files: Vec<String> = get(&written, "files")
+        .as_arr()
+        .expect("files")
+        .iter()
+        .map(|p| p.as_str().expect("a path").to_string())
+        .collect();
+    assert_eq!(files.len(), 3, "{}", written.render());
+    assert_eq!(std::fs::read(&files[0]).unwrap(), consistency);
+    for (file, record) in files[1..].iter().zip(&records) {
+        assert_eq!(&std::fs::read(file).unwrap(), record);
+    }
+    let mut sorted = files[1..].to_vec();
+    sorted.sort();
+    assert_eq!(sorted, files[1..], "name order is leaf order");
+
+    // Refused, nothing written.
+    let (code, refused) = run(&f.book, &["proof", "suffix"]);
+    assert_eq!(code, 2, "{}", refused.render());
+    let (code, refused) = run(
+        &f.book,
+        &["proof", "suffix", "--state", old_oid, "--out", &out],
+    );
+    assert_ne!(code, 0, "an existing directory: {}", refused.render());
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 3);
+    let reversed = f.dir.join("reversed").display().to_string();
+    let (code, refused) = run(
+        &f.book,
+        &[
+            "proof",
+            "suffix",
+            "--state",
+            new_oid,
+            "--next-state",
+            old_oid,
+            "--out",
+            &reversed,
+        ],
+    );
+    assert_ne!(code, 0, "a suffix runs forward: {}", refused.render());
+    assert!(!f.dir.join("reversed").exists());
+}

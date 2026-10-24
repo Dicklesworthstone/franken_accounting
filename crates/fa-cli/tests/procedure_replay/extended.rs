@@ -122,7 +122,7 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
         let mut certificates = Vec::new();
         for id in [
             "graph.identity_resolution",
-            "recon.book_to_book",
+            "recon.attested_register_compare",
             "confirm.coverage",
             "trace.restitution_order",
             "trace.network_fifo",
@@ -278,7 +278,7 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
             "replay, retries and refusals create no accounting or metadata writes"
         );
     }
-    // recon.book_to_book folds every posting regardless of effective date,
+    // recon.attested_register_compare folds every posting regardless of effective date,
     // so a new run refuses a date rather than ignoring it (fa-9pjp); the
     // retained certificate above, which carries one, still replays.
     let (code, stdout, _) = call(
@@ -286,7 +286,7 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
         &[
             "procedure",
             "run",
-            "recon.book_to_book",
+            "recon.attested_register_compare",
             "--effective-through",
             "2026-01-31",
         ],
@@ -297,7 +297,10 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
         stdout.contains("does not take --effective-through"),
         "{stdout}"
     );
-    let current = ok(&path, &["procedure", "run", "recon.book_to_book"]);
+    let current = ok(
+        &path,
+        &["procedure", "run", "recon.attested_register_compare"],
+    );
     let findings = data(&current[0])
         .get("findings")
         .and_then(Json::as_arr)
@@ -310,7 +313,7 @@ fn extended_analytics_replay_from_retained_handles_files_and_stdin_after_new_evi
     assert!(
         certificates
             .iter()
-            .find(|c| c.report().procedure == "recon.book_to_book")
+            .find(|c| c.report().procedure == "recon.attested_register_compare")
             .unwrap()
             .report()
             .findings

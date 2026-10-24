@@ -82,8 +82,14 @@ fa tb --book ./books/acme --as-of 2026-03-15 --as-known-at 42 --json
 fa verify registers --book ./books/acme --period FY2026-P03 --json
 # A multi-entity book: each legal entity's register refolds against the journal.
 fa verify entities --book ./books/acme --period FY2026-P03 --json
-# Find entries by their description or leg memos (an index rebuilt from the journal per query).
+# Consolidate that book's entities: eliminations from the OWNS edges and account roles, the NCI, and consolidated statements (nothing is posted).
+fa consolidate --period FY2026-P03 --book ./books/acme --json
+# Certify it: fa replay C:<oid> re-executes the run byte for byte, and fa certificate status names what supersedes it.
+fa consolidate --period FY2026-P03 --certify --book ./books/acme --json
+# Find entries by their description or leg memos, documents by their (extracted) text, and recorded findings by their narrative: one index rebuilt from the journal per query.
 fa search "office rent" --book ./books/acme --json
+# What changed since sequence 40: March balances then and now, and every entry recorded since, whatever date it carries.
+fa diff --from 40 --period FY2026-P03 --book ./books/acme --json
 # GQL over the book's graph: March's legs summed per unit and side, as known at sequence 42.
 # --certify retains the result's certificate; fa replay C:<oid> reproduces the rows byte for byte.
 fa query "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, l.side, SUM(l.amount) AS total FOR PERIOD 'FY2026-P03' AS KNOWN AT 42" --certify --book ./books/acme --json
@@ -908,7 +914,8 @@ fa case determine 1 --on 2025-03-03 --authority <minutes-oid> --book acme.fabook
 
 # Rehearse the close on a draft, diff it, let a human promote it (available today: close dry-run posts the draft's
 # plans as one scratch batch and shows the stock trial-balance change; --branch draft:<name> reads that rehearsal in
-# tb, statement, explain and gl; the generic fa diff verb is target fa-s7x).
+# tb, statement, explain and gl; fa diff compares two recorded frontiers of trunk today, and comparing a branch is
+# target fa-s7x).
 fa draft new close-2026-03 --book acme.fabook --json
 fa close dry-run --period FY2026-P03 --draft close-2026-03 --json
 # Target (fa-s7x):
@@ -973,6 +980,34 @@ fa entity add acme-de.json --book acme.fabook --json
 fa party bind V-17 --external-id qbo:55 --book acme.fabook --json
 fa party identifiers V-17 --identifier bank_routing=<routing> --identifier bank_account=<account> --key chg-2026-03-17 --book acme.fabook --json
 fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
+
+# Dimensions beside the legal entity and the party: a cost center (also department, project, product, region, fund, grant, segment) with a parent and valid time, which a leg tags with "dimensions": {"cost_center": "CC10"}; the kernel refuses a value the book does not hold, or one outside its window (FA-REF-195). An account may require a dimension on every leg: a leg that names none is refused (FA-REF-005); reversals, closings and settlements carry the values their source dictates, and a cost center closes with its account at year end. fa tb --dimension folds only the legs tagged with a value or one under it (available today; certified reports by dimension are not yet, fa-ficc).
+fa dimension add cost_center CC --name "All operations" --book acme.fabook --json
+fa dimension add cost_center CC10 --name Warehouse --parent CC --from 2026-01-01 --book acme.fabook --json
+fa dimension require cost_center 6100 --book acme.fabook --json
+fa dimension close cost_center CC10 --on 2026-07-01 --book acme.fabook --json
+fa dimension list cost_center --book acme.fabook --json
+fa tb --period FY2026-P03 --dimension cost_center=CC --book acme.fabook --json
+
+# A Canon posting rule (plan §10.3): a small, total, typed language from an REA event and declared inputs to legs. fa rule check compiles it against the book's units, resolves every rounding law and dimension, and refuses it unless its debits provably equal its credits in every unit; it reports the content address of its IR. fa rule propose journals it as a RuleVersion addressed by that digest under rule_change (the kernel compiles the source itself; the same IR again writes nothing), fa rule list|show read the versions, fa rule eval shows the legs a file or a journaled version derives from a recorded event, fa rule activate binds the rule's name to a version from a date under dual control (two independent Human approvers), and fa rule derive posts the entry the version in force derives from an event, which the kernel re-derives inside the commit and refuses unless it reproduces exactly (FA-INV-05 rule-reproduction); without --rule, every rule in force for the event's kind derives its entry. A rule names the class it produces: Original by default, or `produces Adjusting` for accruals, deferrals and depreciation, which a soft-closed period admits. fa rule backtest reports every recorded event whose entry a candidate version would change against the version in force (or --compare), and fa rule test runs a rule over its golden corpus of TOML cases, exiting 8 unless every case holds (available today; rule families bound to intents are next, fa-c34).
+#   rule sale_with_tax v1 for event Sale {
+#     inputs { as_of: date }
+#     let net = event.resource("net", "USD")
+#     let tax = net * 7 / 100 round HalfEven
+#     debit "1200" net + tax dims { cost_center = "CC10" }
+#     credit "4000" net
+#     credit "2300" tax
+#     effective as_of
+#   }
+fa rule check sale_with_tax.rule --book acme.fabook --json
+fa rule propose sale_with_tax.rule --book acme.fabook --json
+fa rule eval --rule <ir_digest> --event EV-1001 --input as_of=2026-03-31 --book acme.fabook --json
+fa rule activate <ir_digest> --from 2026-04-01 --dry-run --book acme.fabook --json   # then two approvers: fa approve --proposal <digest>
+fa rule activate --plan <plan-bytes-file> --approval <vid> --approval <vid> --book acme.fabook --json
+fa rule derive --rule <ir_digest> --event EV-1001 --input as_of=2026-04-30 --book acme.fabook --json
+fa rule derive --event EV-1002 --book acme.fabook --json   # every rule in force for the event; rules with inputs are listed as skipped
+fa rule backtest sale_with_tax_v2.rule --from 2026-01-01 --to 2026-03-31 --input as_of=2026-03-31 --book acme.fabook --json
+fa rule test sale_with_tax.rule --golden rules/sale_with_tax/golden --book acme.fabook --json   # exit 8 names each failing case
 ```
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
@@ -1062,8 +1097,10 @@ scenario branches, statement diffs and traces are not rendered yet. Over MCP,
 `render: md` returns the Markdown inline; file formats are host-only.
 
 This slice covers one book and native units. Custom company layouts, cash-flow
-and equity-roll-forward statements, consolidation, FX translation, and
-presentation rounding remain separate work. A certificate establishes replay
+and equity-roll-forward statements, FX translation, and presentation rounding
+remain separate work. `fa consolidate` consolidates one multi-entity book's
+legal entities (plan §12.3); consolidation across books, with translation and
+CTA, is not available yet (fa-76hy). A certificate establishes replay
 and arithmetic over the journal; it does not establish GAAP conformity.
 
 ### Statement issuance

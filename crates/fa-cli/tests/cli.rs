@@ -649,6 +649,8 @@ fn retained_trial_balances_replay_exactly_and_report_later_relevant_entries() ->
         assert_eq!(replayed, original, "{name}: complete robot line replays");
         assert_eq!(ok(&["replay", oid, "--json"]), original);
         assert_eq!(ok(&["replay", &format!("C:{oid}"), "--json"]), original);
+        // fa-waow: the plan's `fa verify certificate` is that replay.
+        assert_eq!(ok(&["verify", "certificate", &path, "--json"]), original);
         let status = ok(&["certificate", "status", &path, "--json"]);
         let status = doc(&status);
         assert_eq!(text(&status, "status"), "Current");
@@ -3241,6 +3243,34 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
             "HEAD",
             "--json",
         ],
+        // AS CURRENTLY STATED is a view too: one view, no known-at beside it.
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-currently-stated",
+            "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "tb",
+            "--period",
+            march,
+            "--as-currently-stated",
+            "--as-known-at",
+            "HEAD",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "balance-sheet",
+            "--for",
+            march,
+            "--as-currently-stated",
+            "--as-issued-to",
+            "board",
+            "--json",
+        ],
         // Balance-only switches are refused, never ignored, elsewhere.
         vec![
             "explain",
@@ -3249,6 +3279,15 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
             "--period",
             march,
             "--as-originally-reported",
+            "--json",
+        ],
+        vec![
+            "explain",
+            "register",
+            "6000",
+            "--period",
+            march,
+            "--as-currently-stated",
             "--json",
         ],
         vec![
@@ -3283,6 +3322,53 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
         "--as-originally-reported",
         "--json",
     ];
+    // fa-wrrw: AS CURRENTLY STATED is the head read, by name. It answers
+    // before anything was reported, where AS ORIGINALLY REPORTED refuses.
+    for (named, plain) in [
+        (
+            vec!["tb", "--period", march, "--as-currently-stated", "--json"],
+            vec!["tb", "--period", march, "--json"],
+        ),
+        (
+            vec![
+                "statement",
+                "income-statement",
+                "--for",
+                march,
+                "--compare",
+                "FY2026-P04",
+                "--as-currently-stated",
+                "--json",
+            ],
+            vec![
+                "statement",
+                "income-statement",
+                "--for",
+                march,
+                "--compare",
+                "FY2026-P04",
+                "--json",
+            ],
+        ),
+        (
+            vec![
+                "explain",
+                "balance",
+                "6000",
+                "--period",
+                march,
+                "--as-currently-stated",
+                "--json",
+            ],
+            vec!["explain", "balance", "6000", "--period", march, "--json"],
+        ),
+    ] {
+        let (code, stated, err) = fa(Some(&book), &named);
+        assert_eq!(code, 0, "{named:?}\n{stated}\n{err}");
+        let (code, head, err) = fa(Some(&book), &plain);
+        assert_eq!(code, 0, "{plain:?}\n{head}\n{err}");
+        assert_eq!(stated, head, "{named:?}");
+    }
     // Open, then Closed: nothing was reported yet; never HEAD, never a Close.
     let (code, out, _) = fa(Some(&book), &originally);
     assert_eq!(code, 3, "{out}");
@@ -4163,7 +4249,7 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         "restate", "--json",
     ]);
     let rehearsal = dir.join("rehearsal.cert").display().to_string();
-    ok(&[
+    let reviewed = ok(&[
         "scenario",
         "diff",
         "revised",
@@ -4173,6 +4259,11 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &rehearsal,
         "--json",
     ]);
+    // fa-waow: a case not yet rehearsed has no diff to show.
+    let (code, out) = run(&["case", "diff", "1", "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-176"), "{out}");
+    assert!(out.contains("fa case rehearse"), "{out}");
     ok(&[
         "case",
         "rehearse",
@@ -4181,6 +4272,51 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &rehearsal,
         "--json",
     ]);
+    // `fa case diff` replays the certificate the rehearsal retained: the
+    // same diff the approvers review, under that certificate.
+    let scenario_diff = |out: &str| -> Json {
+        let line = out
+            .lines()
+            .find(|l| l.contains("\"event\":\"scenario_diff\""))
+            .unwrap_or_default();
+        json::parse(line).unwrap_or(Json::Null)
+    };
+    let replayed = scenario_diff(&ok(&["case", "diff", "1", "--json"]));
+    let original = scenario_diff(&reviewed);
+    let data = |line: &Json| line.get("data").cloned().unwrap_or(Json::Null);
+    assert_eq!(data(&replayed), data(&original), "{replayed:?}");
+    assert_eq!(arr(&data(&replayed), "rows").len(), 2, "{replayed:?}");
+    let case = doc(&ok(&["case", "show", "1", "--json"]));
+    let retained = text(
+        case.get("case")
+            .and_then(|c| c.get("rehearsal"))
+            .unwrap_or(&Json::Null),
+        "certificate",
+    )
+    .to_string();
+    assert_eq!(
+        replayed.get("certificate").and_then(Json::as_str),
+        Some(retained.as_str()),
+        "{replayed:?}"
+    );
+    // The diff is the retained one: naming another certificate is refused,
+    // never ignored.
+    let (code, out) = run(&["case", "diff", "1", "--certificate", &rehearsal, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("takes only the case number"), "{out}");
+    // fa-g8em: triage counts the rehearsed case among pending approvals and
+    // points at it.
+    let triage = ok(&["triage", "--json"]);
+    assert_eq!(
+        int(&doc(&triage), "cases_awaiting_approval"),
+        Some(1),
+        "{triage}"
+    );
+    assert!(
+        int(&doc(&triage), "pending_approvals").is_some_and(|n| n >= 1),
+        "{triage}"
+    );
+    assert!(triage.contains("fa case show 1 --json"), "{triage}");
     let digest = text(
         &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
         "digest",
@@ -4211,6 +4347,13 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         &auditor,
         "--json",
     ]);
+    // Approved, the case no longer awaits approval.
+    let triage = ok(&["triage", "--json"]);
+    assert_eq!(
+        int(&doc(&triage), "cases_awaiting_approval"),
+        Some(0),
+        "{triage}"
+    );
     let out = ok(&["case", "post", "1", "--json"]);
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&case, "state"), "Posted", "{out}");
@@ -4674,8 +4817,75 @@ fn audit_samples_are_reproducible_from_the_seed_at_a_recorded_sequence() -> std:
         assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
         out
     };
+    // fa-waow (plan §15.6 `--population ar-open`): the population is the
+    // open items of the account holding the receivable role, so a book
+    // with no such role refuses with the assignment that fixes it.
+    let by_role = [
+        "uniform",
+        "--population",
+        "ar-open",
+        "--seed",
+        "7",
+        "--size",
+        "2",
+    ];
+    let (code, out, err) = fa(
+        Some(&book),
+        &[&["sample"][..], &by_role[..], &["--json"][..]].concat(),
+    );
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(out.contains("receivable role"), "{out}");
+    assert!(out.contains("fa chart role <account> receivable"), "{out}");
+    let (code, out, err) = fa(
+        Some(&book),
+        &["chart", "role", "1200", "receivable", "--json"],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
     let uniform = ["uniform", "--account", "1200", "--seed", "7", "--size", "2"];
     let out = draw(&uniform);
+    // The role names 1200: the same sample, its replay command included.
+    assert_eq!(draw(&by_role), out);
+    for args in [
+        vec![
+            "sample",
+            "uniform",
+            "--population",
+            "ar-open",
+            "--account",
+            "1200",
+            "--seed",
+            "7",
+            "--size",
+            "2",
+            "--json",
+        ],
+        vec![
+            "sample",
+            "uniform",
+            "--population",
+            "ar",
+            "--seed",
+            "7",
+            "--size",
+            "2",
+            "--json",
+        ],
+        // Nothing holds the payable role.
+        vec![
+            "sample",
+            "uniform",
+            "--population",
+            "ap-open",
+            "--seed",
+            "7",
+            "--size",
+            "2",
+            "--json",
+        ],
+    ] {
+        let (code, out, err) = fa(Some(&book), &args);
+        assert_eq!(code, 2, "{args:?}\n{out}\n{err}");
+    }
     let data = doc(&out);
     assert_eq!(text(&data, "method"), "uniform");
     assert_eq!(text(&data, "unit"), "USD");
@@ -6787,6 +6997,378 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     Ok(())
 }
 
+/// Dimensions (plan §4.1, fa-ficc): a cost-center value with a parent and a
+/// valid time is a journaled schema control; a leg tags it in its intent's
+/// `dimensions`, and the kernel refuses a value the book does not hold or
+/// one outside its window, writing nothing.
+#[test]
+fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::io::Result<()> {
+    let dir = tmp("dimension")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert!(
+            code == 0 || !out.is_empty(),
+            "{argv:?} wrote no robot line\n{err}"
+        );
+        (code, out)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Dimension Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivable","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"},{"code":"6200","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "cost_center",
+        "CC",
+        "--name",
+        "All operations",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let top = doc(&out);
+    let value = top.get("value").unwrap();
+    assert_eq!(text(value, "dimension"), "cost_center");
+    assert_eq!(int(value, "dimension_id"), Some(2));
+    assert_eq!(top.get("already_recorded"), Some(&Json::Bool(false)));
+    // An exact retry of the default key writes nothing.
+    let head = |run: &dyn Fn(&[&str]) -> (i32, String)| {
+        let (_, out) = run(&["book", "info"]);
+        out.lines()
+            .last()
+            .and_then(|line| json::parse(line).ok())
+            .and_then(|line| line.get("coordinate").and_then(|c| int(c, "known_at")))
+    };
+    let before = head(&run);
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "cost_center",
+        "CC",
+        "--name",
+        "All operations",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&run), before);
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "cost_center",
+        "CC10",
+        "--name",
+        "Warehouse",
+        "--parent",
+        "CC",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-20",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let warehouse = doc(&out).get("value").unwrap().clone();
+    assert_eq!(text(&warehouse, "parent"), "CC");
+    assert_eq!(text(&warehouse, "valid_from"), "2026-03-01");
+    assert_eq!(text(&warehouse, "valid_to"), "2026-03-20");
+    // Planted: an unregistered dimension, a missing parent, a code taken in
+    // its dimension and an empty window are usage errors.
+    for args in [
+        vec!["dimension", "add", "cost_centre", "CC30", "--name", "X"],
+        vec![
+            "dimension",
+            "add",
+            "cost_center",
+            "CC20",
+            "--name",
+            "X",
+            "--parent",
+            "NOPE",
+        ],
+        vec![
+            "dimension",
+            "add",
+            "cost_center",
+            "CC10",
+            "--name",
+            "Other",
+            "--key",
+            "other",
+        ],
+        vec![
+            "dimension",
+            "add",
+            "project",
+            "P-1",
+            "--name",
+            "X",
+            "--from",
+            "2026-03-20",
+            "--to",
+            "2026-03-20",
+        ],
+    ] {
+        let (code, out) = run(&args);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    let (code, out) = run(&["dimension", "list", "cost_center"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    let codes: Vec<&str> = arr(&listed, "values")
+        .iter()
+        .map(|v| text(v, "code"))
+        .collect();
+    assert_eq!(codes, ["CC", "CC10"]);
+    assert!(arr(&doc(&run(&["dimension", "list", "project"]).1), "values").is_empty());
+
+    let intent = |key: &str, date: &str, dimensions: &str| {
+        write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6100","amount":"42.00 USD","dimensions":{dimensions}}},{{"side":"credit","account":"1000","amount":"42.00 USD"}}]}}"#
+            ),
+        )
+    };
+    let post = |key: &str, date: &str, dimensions: &str| {
+        run(&[
+            "post",
+            "--intent",
+            &intent(key, date, dimensions),
+            "--evidence",
+            &ev,
+        ])
+    };
+    let (code, out) = post("tagged", "2026-03-15", r#"{"cost_center":"CC10"}"#);
+    assert_eq!(code, 0, "{out}");
+    let vid = text(&doc(&out), "vid").to_string();
+    let (code, out) = run(&["entry", "show", &vid]);
+    assert_eq!(code, 0, "{out}");
+    let shown = doc(&out);
+    let legs = arr(&shown, "legs");
+    let tags = arr(&legs[0], "dimensions");
+    assert_eq!(tags.len(), 1, "{out}");
+    assert_eq!(text(&tags[0], "dimension"), "cost_center");
+    assert_eq!(text(&tags[0], "value"), text(&warehouse, "vid"));
+    assert!(arr(&legs[1], "dimensions").is_empty());
+
+    // Planted, each writing nothing: a value the book does not hold, a value
+    // outside its window (FA-REF-195), a dimension with no values, and
+    // dimensions the leg names elsewhere or not at all.
+    let before = head(&run);
+    let (code, out) = post("unknown", "2026-03-15", r#"{"cost_center":"CC99"}"#);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("does not exist"), "{out}");
+    let (code, out) = post("late", "2026-03-25", r#"{"cost_center":"CC10"}"#);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
+    assert!(out.contains("2026-03-20"), "{out}");
+    for (key, dimensions) in [
+        ("department", r#"{"department":"D1"}"#),
+        ("entity", r#"{"legal_entity":"ACME"}"#),
+        ("color", r#"{"color":"red"}"#),
+        ("twice", r#"{"cost_center":"CC","cost_center":"CC10"}"#),
+    ] {
+        let (code, out) = post(key, "2026-03-15", dimensions);
+        assert_eq!(code, 2, "{key}: {out}");
+    }
+    assert_eq!(head(&run), before);
+    // The parent is always effective, so it tags a leg the child cannot.
+    let (code, out) = post("late-parent", "2026-03-25", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 0, "{out}");
+
+    // fa tb --dimension folds only the tagged legs, a value's descendants
+    // included; the untagged cash legs are left out, so it does not balance.
+    let tb = |filter: &str, extra: &[&str]| {
+        let mut argv = vec!["tb", "--period", "FY2026-P03", "--dimension", filter];
+        argv.extend_from_slice(extra);
+        run(&argv)
+    };
+    let (code, out) = tb("cost_center=CC", &[]);
+    assert_eq!(code, 0, "{out}");
+    let report = doc(&out);
+    let rows = arr(&report, "rows");
+    assert_eq!(rows.len(), 1, "{out}");
+    assert_eq!(text(&rows[0], "code"), "6100");
+    assert_eq!(text(&rows[0], "debits"), "84.00 USD");
+    assert_eq!(report.get("balanced"), Some(&Json::Bool(false)), "{out}");
+    let filter = report.get("dimension").unwrap();
+    assert_eq!(text(filter, "value"), "CC");
+    let included: Vec<&str> = arr(filter, "values")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(included, ["CC", "CC10"]);
+    let (code, out) = tb("cost_center=CC10", &["--activity"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(text(&arr(&doc(&out), "rows")[0], "debits"), "42.00 USD");
+    let (code, out) = run(&["tb", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    let whole = doc(&out);
+    assert_eq!(whole.get("dimension"), Some(&Json::Null));
+    assert_eq!(whole.get("balanced"), Some(&Json::Bool(true)));
+    // Planted: an unknown value, an unregistered dimension, no value, and a
+    // certificate, which a dimension report does not take.
+    for (filter, extra) in [
+        ("cost_center=NOPE", &[][..]),
+        ("nope=CC", &[][..]),
+        ("cost_center", &[][..]),
+        ("cost_center=CC", &["--certify"][..]),
+    ] {
+        let (code, out) = tb(filter, extra);
+        assert_eq!(code, 2, "{filter} {extra:?}: {out}");
+    }
+
+    // An untagged leg on 6100 before any requirement.
+    let (code, out) = post("untagged-before", "2026-03-25", "{}");
+    assert_eq!(code, 0, "{out}");
+    let untagged_before = text(&doc(&out), "vid").to_string();
+    // fa dimension require: from now on every leg on 6100 names a cost
+    // center; requiring it again writes nothing.
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(false)));
+    let before = head(&run);
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&run), before);
+    let listed = doc(&run(&["dimension", "list", "cost_center"]).1);
+    let requirements = arr(&listed, "requirements");
+    assert_eq!(requirements.len(), 1, "{listed:?}");
+    let accounts: Vec<&str> = arr(&requirements[0], "accounts")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(accounts, ["6100"]);
+    // A leg on 6100 naming no cost center is refused (FA-REF-005) with the
+    // values effective that day, CC only (CC10's window has closed), and
+    // nothing is written; the untagged cash leg needs none.
+    let (code, out) = post("untagged", "2026-03-25", "{}");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-005"), "{out}");
+    assert!(out.contains("fa dimension list cost_center"), "{out}");
+    assert_eq!(head(&run), before);
+    let (code, out) = post("required-tagged", "2026-03-25", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 0, "{out}");
+    // An exact reversal carries its target's values as dictated: neither the
+    // requirement nor CC10's closed window blocks reversing the untagged
+    // entry posted before it, or the CC10 entry dated after the window.
+    let (code, out) = run(&["reverse", &untagged_before, "--reason", "WrongAmount"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&[
+        "reverse",
+        &vid,
+        "--reason",
+        "WrongAmount",
+        "--effective",
+        "2026-03-25",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    // A Reclassification's destination is the preparer's: moving an
+    // untagged rent amount onto 6100 is refused like any untagged leg there.
+    let rent = write(
+        &dir,
+        "rent.json",
+        r#"{"effective_date":"2026-03-25","idempotency_key":"rent","legs":[{"side":"debit","account":"6200","amount":"30.00 USD"},{"side":"credit","account":"1000","amount":"30.00 USD"}]}"#,
+    );
+    let (code, out) = run(&["post", "--intent", &rent, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    let rent_vid = text(&doc(&out), "vid").to_string();
+    let before = head(&run);
+    let (code, out) = run(&[
+        "reclass",
+        &rent_vid,
+        "--from",
+        "6200",
+        "--to",
+        "6100",
+        "--amount",
+        "10.00 USD",
+        "--reason",
+        "WrongAccount",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-005"), "{out}");
+    assert_eq!(head(&run), before);
+    // Removed, an untagged leg is admitted again.
+    let (code, out) = run(&["dimension", "require", "cost_center", "6100", "--remove"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("required"), Some(&Json::Bool(false)));
+    let (code, out) = post("untagged-after", "2026-03-25", "{}");
+    assert_eq!(code, 0, "{out}");
+    // fa dimension close: CC's last tagged leg is effective 2026-03-25, so a
+    // close that day is refused (FA-REF-195) naming the next day; a later
+    // close ends its window, again writes nothing, and never extends it.
+    let close = |on: &str| run(&["dimension", "close", "cost_center", "CC", "--on", on]);
+    let (code, out) = close("2026-03-25");
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
+    assert!(out.contains("2026-03-26"), "{out}");
+    let (code, out) = close("2026-03-28");
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        text(doc(&out).get("value").unwrap(), "valid_to"),
+        "2026-03-28"
+    );
+    let before = head(&run);
+    let (code, out) = close("2026-03-28");
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(head(&run), before);
+    let (code, out) = close("2026-03-30");
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = post("after-close", "2026-03-29", r#"{"cost_center":"CC"}"#);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-195"), "{out}");
+    // An applying leg carries its open item's values as dictated: a receipt
+    // dated after P-7's window still settles the P-7 invoice, carrying P-7.
+    let (code, out) = run(&[
+        "dimension",
+        "add",
+        "project",
+        "P-7",
+        "--name",
+        "Warehouse fit-out",
+        "--from",
+        "2026-03-01",
+        "--to",
+        "2026-03-20",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let invoice = write(
+        &dir,
+        "invoice.json",
+        r#"{"effective_date":"2026-03-15","idempotency_key":"invoice","legs":[{"side":"debit","account":"1200","amount":"100.00 USD","dimensions":{"project":"P-7"}},{"side":"credit","account":"4000","amount":"100.00 USD"}]}"#,
+    );
+    let (code, out) = run(&["post", "--intent", &invoice, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    let invoice_vid = text(&doc(&out), "vid").to_string();
+    let receipt = write(
+        &dir,
+        "receipt.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-25","idempotency_key":"receipt","legs":[{{"side":"debit","account":"1000","amount":"100.00 USD"}},{{"side":"credit","account":"1200","amount":"100.00 USD","dimensions":{{"project":"P-7"}},"settles":[{{"entry":"{invoice_vid}","ordinal":0,"amount":"100.00 USD"}}]}}]}}"#
+        ),
+    );
+    let (code, out) = run(&["post", "--intent", &receipt, "--evidence", &ev]);
+    assert_eq!(code, 0, "{out}");
+    // Planted: an account the chart lacks, and a dimension with no value.
+    let (code, out) = run(&["dimension", "require", "cost_center", "9999"]);
+    assert_eq!(code, 3, "{out}");
+    let (code, out) = run(&["dimension", "require", "department", "6100"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // fa-9xt: the verb registry, the robot-mode schema, and `fa explain balance`
 // ---------------------------------------------------------------------------
@@ -7525,6 +8107,14 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["recover", "projections", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["recover", "outcomes", "--dry-run"]).0, 0);
     assert_eq!(run(true, &["proof", "signed-checkpoint"]).0, 0);
+    // The suffix from the only state to the latest (itself): an explicit
+    // consistency proof and no records.
+    let state_oid = states[0]
+        .get("oid")
+        .and_then(Json::as_str)
+        .expect("a state oid")
+        .to_string();
+    assert_eq!(run(true, &["proof", "suffix", "--state", &state_oid]).0, 0);
     assert_eq!(run(true, &["bundle", "produce"]).0, 0);
     let chart = write(
         &dir,
@@ -7536,6 +8126,29 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     // fa-kxc4: an account role, then every registered role and its holders.
     assert_eq!(run(true, &["chart", "role", "1000", "suspense"]).0, 0);
     assert_eq!(run(true, &["chart", "roles"]).0, 0);
+    // fa-ficc: a dimension value, then the values.
+    assert_eq!(
+        run(
+            true,
+            &["dimension", "add", "cost_center", "CC10", "--name", "Ops"]
+        )
+        .0,
+        0
+    );
+    // Required, then not, so the posts below need no cost center.
+    assert_eq!(
+        run(true, &["dimension", "require", "cost_center", "6000"]).0,
+        0
+    );
+    assert_eq!(
+        run(
+            true,
+            &["dimension", "require", "cost_center", "6000", "--remove"]
+        )
+        .0,
+        0
+    );
+    assert_eq!(run(true, &["dimension", "list"]).0, 0);
     // fa-waow: no drafts or scenarios yet; trunk is implicit.
     let (code, out) = run(true, &["branch", "list"]);
     assert_eq!(code, 0, "{out}");
@@ -7758,6 +8371,7 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "list"]).0, 0);
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
+    assert_eq!(run(true, &["document", "show", &ev]).0, 0);
     // Audit engagements (fa-zgn): open, propose, pass, list and show.
     assert_eq!(
         run(
@@ -7888,6 +8502,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     );
     assert_eq!(run(true, &["search", "rent"]).0, 0);
     assert_eq!(
+        run(true, &["diff", "--from", "HEAD", "--period", "FY2026-P03"]).0,
+        0
+    );
+    assert_eq!(
         run(
             true,
             &[
@@ -7970,6 +8588,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(code, 0, "{evaluated}");
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
     assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
+    assert_eq!(run(true, &["jet"]).0, 0);
+    assert_eq!(run(true, &["benford"]).0, 0);
     // Recorded findings: the Sunday rent is a jet.weekend observation; a
     // second principal reviews it; the canonical workpaper replays.
     let (code, out) = run(true, &["finding", "record", "jet.weekend"]);
@@ -9271,6 +9891,29 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     run2(&["explain", "entry", &fee_vid]);
     run2(&["explain", "lineage", &fee_vid]);
     run2(&["document", "attach", &fee_vid, "--evidence", &bank_oid]);
+    // fa-lzrn: a PDF's text layer as a derived document.
+    let pdf_stream = "BT /F1 12 Tf (EVENTS INVOICE) Tj ET";
+    let pdf_path = write(
+        &dir,
+        "events.pdf",
+        &format!(
+            "%PDF-1.7\n1 0 obj\n<< /Length {} >>\nstream\n{pdf_stream}\nendstream\nendobj\n%%EOF\n",
+            pdf_stream.len()
+        ),
+    );
+    let (_, added_pdf) = run2(&[
+        "document",
+        "add",
+        &pdf_path,
+        "--kind",
+        "Invoice",
+        "--mime",
+        "application/pdf",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let pdf_oid = field(&added_pdf, "oid").unwrap_or_default().to_string();
+    run2(&["document", "extract", &pdf_oid]);
     run2(&["explain", "evidence", &fee_vid]);
     run2(&["explain", "period", "FY2026-P03"]);
     run2(&["explain", "refusal", "FA-REF-001"]);
@@ -9309,6 +9952,69 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     ]);
     run2(&["event", "show", "EV-1001"]);
     run2(&["event", "list"]);
+    // fa-c34: a Canon rule checked against the book, then evaluated over EV-1001.
+    let fee_rule = write(
+        &dir,
+        "fee.rule",
+        r#"rule fee v1 for event Sale { debit "1000" "1.00 USD" credit "4000" "1.00 USD" }"#,
+    );
+    run2(&["rule", "check", &fee_rule]);
+    run2(&["rule", "eval", &fee_rule, "--event", "EV-1001"]);
+    let (_, proposed) = run2(&["rule", "propose", &fee_rule]);
+    let fee_digest = field(&proposed, "ir_digest")
+        .unwrap_or_default()
+        .to_string();
+    run2(&["rule", "list"]);
+    run2(&["rule", "show", &fee_digest]);
+    // fa-c34: the version activated under dual control.
+    let (_, planned_rule) = run2(&[
+        "rule",
+        "activate",
+        &fee_digest,
+        "--from",
+        "2026-04-01",
+        "--dry-run",
+    ]);
+    let rule_proposal = field(&planned_rule, "proposal_digest")
+        .unwrap_or_default()
+        .to_string();
+    let rule_plan = write(
+        &dir,
+        "fee-activate.plan",
+        field(&planned_rule, "bytes").unwrap_or_default(),
+    );
+    let (_, first) = run2(&[
+        "approve",
+        "--proposal",
+        &rule_proposal,
+        "--as",
+        "rule-approver-a",
+    ]);
+    let (_, second) = run2(&[
+        "approve",
+        "--proposal",
+        &rule_proposal,
+        "--as",
+        "rule-approver-b",
+    ]);
+    run2(&["rule", "derive", "--event", "EV-1001"]);
+    run2(&["rule", "backtest", &fee_rule]);
+    let fee_golden = write(
+        &dir,
+        "fee_golden.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-15\"\n\n[expect]\nlegs = [\"debit 1000 1.00 USD\", \"credit 4000 1.00 USD\"]\n",
+    );
+    run2(&["rule", "test", &fee_rule, "--golden", &fee_golden]);
+    run2(&[
+        "rule",
+        "activate",
+        "--plan",
+        &rule_plan,
+        "--approval",
+        field(&first, "approval_vid").unwrap_or_default(),
+        "--approval",
+        field(&second, "approval_vid").unwrap_or_default(),
+    ]);
     run2(&["verify", "periods"]);
     run2(&[
         "capability",
@@ -9894,22 +10600,23 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     ]));
     assert_eq!(reconciled.get("reconciled"), Some(&Json::Bool(true)));
 
-    // Exercise the external-detail and recurring handlers through the binary;
-    // registered event names alone are not evidence that a handler emits them.
-    let feed_book = dir.join("external-feed-events-book");
-    let mut run_feed = |args: &[&str]| -> String {
+    // An approved recurring schedule's life cycle and a reviewed external
+    // feed, each event through the binary. Their histories are covered by
+    // tests/recurring.rs and tests/subledger/external.rs.
+    let feed_book = dir.join("recurring-and-feed-events-book");
+    let mut run_feed = |args: &[&str]| -> Json {
         let mut argv = args.to_vec();
         argv.push("--json");
         let (code, out, err) = fa(Some(&feed_book), &argv);
         assert_eq!(code, 0, "{argv:?}: {out}\n{err}");
         seen.extend(check_robot_output(&argv, code, &out));
-        out
+        doc(&out)
     };
     run_feed(&[
         "book",
         "create",
         "--name",
-        "External feed events",
+        "Recurring and feed events",
         "--opening-date",
         "2026-01-01",
         "--time-zone",
@@ -9917,82 +10624,20 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     ]);
     let feed_chart = write(
         &dir,
-        "external-feed-chart.json",
-        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"}]}"#,
+        "feed-chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
     );
     run_feed(&["chart", "import", &feed_chart]);
     run_feed(&["period", "create", "--fiscal-year", "2026"]);
     run_feed(&["period", "open", "FY2026-P03"]);
-    let detail_input = write(
+    let vendor = write(
         &dir,
-        "external-feed-source.json",
-        &format!(
-            r#"{{"feed":"events-ar","batch_key":"march-001","effective_date":"2026-03-15","rows":[{{"source_digest":"{}","account":"1200","side":"debit","amount":"100.00 USD"}},{{"source_digest":"{}","account":"3000","side":"credit","amount":"100.00 USD"}}]}}"#,
-            "01".repeat(32),
-            "02".repeat(32),
-        ),
+        "feed-vendor.json",
+        r#"{"code":"V-1","kind":"Vendor","name":"V-1"}"#,
     );
-    let detail_path = dir.join("external-feed-detail.bin").display().to_string();
-    let detail = doc(&run_feed(&[
-        "subledger",
-        "detail",
-        "--input",
-        &detail_input,
-        "--out",
-        &detail_path,
-    ]));
-    assert_eq!(int(&detail, "detail_rows"), Some(2));
-    let document = doc(&run_feed(&[
-        "document",
-        "add",
-        &detail_path,
-        "--kind",
-        "Workpaper",
-        "--grade",
-        "HumanUpload",
-    ]));
-    run_feed(&[
-        "attest",
-        "review",
-        text(&document, "oid"),
-        "--as",
-        "reviewer",
-    ]);
-    let posted = doc(&run_feed(&[
-        "subledger",
-        "feed",
-        "--document",
-        &format!("D:{}", text(&document, "oid")),
-        "--date",
-        "2026-03-15",
-        "--key",
-        "external-feed-events",
-    ]));
-    let report = doc(&run_feed(&[
-        "subledger",
-        "verify-feed",
-        text(&posted, "vid"),
-    ]));
-    assert_eq!(report.get("reconciled"), Some(&Json::Bool(true)));
-    let feed_certificate = dir.join("external-feed.cert").display().to_string();
-    run_feed(&[
-        "subledger",
-        "reconcile-feed",
-        "events-ar",
-        "--control",
-        "1200",
-        "--as-of",
-        "2026-03-31",
-        "--certificate-out",
-        &feed_certificate,
-    ]);
-
-    let lease = write(
-        &dir,
-        "recurring-events-lease.txt",
-        "Fixture lease: monthly 1.00 USD.",
-    );
-    let lease_document = doc(&run_feed(&[
+    run_feed(&["party", "add", &vendor]);
+    let lease = write(&dir, "lease.txt", "Reviewed lease: monthly rent 50.00 USD.");
+    let lease = run_feed(&[
         "document",
         "add",
         &lease,
@@ -10000,23 +10645,23 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         "Invoice",
         "--grade",
         "HumanUpload",
-    ]));
-    let recurring_template = write(
+    ]);
+    let template = write(
         &dir,
-        "recurring-events-template.json",
+        "rent-template.json",
         &format!(
-            r#"{{"effective_date":"2026-03-31","description":"Recurring event fixture","idempotency_key":"recurring-event-template","evidence":["{}"],"legs":[{{"side":"debit","account":"1200","amount":"1.00 USD"}},{{"side":"credit","account":"3000","amount":"1.00 USD"}}]}}"#,
-            text(&lease_document, "oid"),
+            r#"{{"effective_date":"2026-03-31","description":"Monthly rent","idempotency_key":"rent-template","evidence":["{}"],"legs":[{{"side":"debit","account":"6000","amount":"50.00 USD"}},{{"side":"credit","account":"1000","amount":"50.00 USD"}}]}}"#,
+            text(&lease, "oid")
         ),
     );
-    let recurring_plan = dir.join("recurring-events.plan").display().to_string();
-    let planned = doc(&run_feed(&[
+    let rent_plan = dir.join("rent.plan").display().to_string();
+    let planned = run_feed(&[
         "schedule",
         "recurring",
         "create",
-        "events",
+        "rent",
         "--template",
-        &recurring_template,
+        &template,
         "--every-months",
         "1",
         "--month-end",
@@ -10025,35 +10670,103 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         "2026-12-31",
         "--dry-run",
         "--plan-out",
-        &recurring_plan,
-    ]));
-    let approval = doc(&run_feed(&[
+        &rent_plan,
+    ]);
+    let approval = run_feed(&[
         "approve",
         "--proposal",
         text(&planned, "proposal_digest"),
         "--as",
         "controller",
-    ]));
+    ]);
     run_feed(&[
         "schedule",
         "recurring",
         "create",
-        "events",
+        "rent",
         "--plan",
-        &recurring_plan,
+        &rent_plan,
         "--approval",
         text(&approval, "approval_vid"),
     ]);
-    let schedules = doc(&run_feed(&["schedule", "recurring", "list"]));
-    assert_eq!(arr(&schedules, "schedules").len(), 1);
+    assert_eq!(
+        arr(&run_feed(&["schedule", "recurring", "list"]), "schedules").len(),
+        1
+    );
     run_feed(&[
         "schedule",
         "recurring",
         "cancel",
-        "events",
+        "rent",
         "--reason",
-        "fixture complete",
+        "lease ended",
     ]);
+    let batch = write(
+        &dir,
+        "feed-batch.json",
+        &format!(
+            r#"{{"feed":"vendor-ap","batch_key":"events-001","effective_date":"2026-03-15","rows":[{{"source_digest":"{}","account":"6000","side":"debit","amount":"100.00 USD"}},{{"source_digest":"{}","account":"2000","side":"credit","amount":"100.00 USD","party":"V-1"}}]}}"#,
+            "01".repeat(32),
+            "02".repeat(32),
+        ),
+    );
+    let detail = dir.join("feed-detail.bin").display().to_string();
+    run_feed(&["subledger", "detail", "--input", &batch, "--out", &detail]);
+    let workpaper = run_feed(&[
+        "document",
+        "add",
+        &detail,
+        "--kind",
+        "Workpaper",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let workpaper = text(&workpaper, "oid").to_string();
+    run_feed(&["attest", "review", &workpaper, "--as", "reviewer"]);
+    let posted = run_feed(&[
+        "subledger",
+        "feed",
+        "--document",
+        &format!("D:{workpaper}"),
+        "--date",
+        "2026-03-15",
+        "--key",
+        "events-feed",
+    ]);
+    let verified = run_feed(&["subledger", "verify-feed", text(&posted, "vid")]);
+    assert_eq!(verified.get("reconciled"), Some(&Json::Bool(true)));
+    let fed = run_feed(&[
+        "subledger",
+        "reconcile-feed",
+        "vendor-ap",
+        "--control",
+        "2000",
+        "--as-of",
+        "2026-03-31",
+    ]);
+    assert_eq!(fed.get("reconciled"), Some(&Json::Bool(true)));
+
+    // A consolidation needs a book of two legal entities.
+    let group = dir.join("group");
+    let chart = write(
+        &dir,
+        "group-chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"}]}"#,
+    );
+    for args in [
+        vec![
+            "book", "create", "--name", "Group Co", "--entity", "A:Alpha", "--entity", "B:Beta",
+        ],
+        vec!["chart", "import", &chart],
+        vec!["period", "create", "--fiscal-year", "2026"],
+        vec!["consolidate", "--period", "FY2026-P03"],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(group.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+    }
 
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
@@ -13148,6 +13861,338 @@ fn concentration_refuses_overflow_from_individually_valid_posts() -> std::io::Re
     Ok(())
 }
 
+/// `jet.self_sourced_evidence` through the binary (fa-81lu, plan §9.3): an
+/// entry supported only by an agent's upload (reviewed by another principal,
+/// so it can post) is flagged Medium, citing the entry and the document; an
+/// entry with a person's upload beside the agent's is not flagged.
+#[test]
+fn procedure_run_flags_an_entry_whose_only_evidence_is_an_agent_upload() -> std::io::Result<()> {
+    let dir = tmp("self-sourced")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Self-sourced Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let add = |name: &str, text: &str, grade: &str| -> String {
+        let path = write(&dir, name, text);
+        let added = ok(&[
+            "document", "add", &path, "--kind", "Invoice", "--grade", grade,
+        ]);
+        field(&added, "oid").unwrap_or_default().to_string()
+    };
+    let agent = add("agent.txt", "RECEIPT (an agent's upload)", "AgentUpload");
+    let person = add("person.txt", "INVOICE (a person's upload)", "HumanUpload");
+    ok(&["attest", "review", &agent, "--as", "reviewer"]);
+    let intent = |name: &str, key: &str, cents: &str| {
+        write(
+            &dir,
+            name,
+            &format!(
+                r#"{{"effective_date":"2026-03-10","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"{cents} USD"}},{{"side":"credit","account":"1000","amount":"{cents} USD"}}],"description":"March rent"}}"#
+            ),
+        )
+    };
+    let own = ok(&[
+        "post",
+        "--intent",
+        &intent("own.json", "own", "42.00"),
+        "--evidence",
+        &agent,
+    ]);
+    let own_vid = field(&own, "vid").unwrap_or_default().to_string();
+    let mixed = intent("mixed.json", "mixed", "43.00");
+    ok(&[
+        "post",
+        "--intent",
+        &mixed,
+        "--evidence",
+        &agent,
+        "--evidence",
+        &person,
+    ]);
+
+    let out = ok(&["procedure", "run", "jet.self_sourced_evidence"]);
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "jet.self_sourced_evidence");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "only the agent-only entry: {out}");
+    // The run's population is every snapshot entry; the procedure's own is
+    // the postings that cite a document, in the finding's statistic.
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(int(statistic, "population"), Some(2), "{out}");
+    assert_eq!(int(statistic, "value"), Some(1), "{out}");
+    assert_eq!(
+        findings[0].get("severity").and_then(Json::as_str),
+        Some("Medium"),
+        "{out}"
+    );
+    let cites = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites");
+    assert!(
+        cites
+            .iter()
+            .any(|c| c.get("kind").and_then(Json::as_str) == Some("entry")
+                && c.get("entry").and_then(Json::as_str) == Some(own_vid.as_str())),
+        "the finding cites the entry by vid: {out}"
+    );
+    assert!(
+        cites
+            .iter()
+            .any(|c| c.get("kind").and_then(Json::as_str) == Some("document")),
+        "the finding cites the agent's document: {out}"
+    );
+    Ok(())
+}
+
+/// `duplicates.near` through the binary (fa-m35p, plan §11.3): two invoices on
+/// the same accounts, 50 bp apart, with the invoice number transposed, form
+/// one pair. The same text and amount on another account do not, and an
+/// out-of-range tolerance is refused as a usage error.
+#[test]
+fn procedure_run_pairs_near_duplicate_invoices() -> std::io::Result<()> {
+    let dir = tmp("near-duplicates")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Near Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Supplies","type":"Expense","unit":"USD"},{"code":"7000","name":"Utilities","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P01"]);
+    let path = write(&dir, "invoice.txt", "INVOICE 1043 (a person's upload)");
+    let added = ok(&[
+        "document",
+        "add",
+        &path,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = field(&added, "oid").unwrap_or_default().to_string();
+    let post = |key: &str, date: &str, account: &str, amount: &str, description: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{account}","amount":"{amount} USD"}},{{"side":"credit","account":"2000","amount":"{amount} USD"}}],"description":"{description}"}}"#
+            ),
+        );
+        let posted = ok(&["post", "--intent", &intent, "--evidence", &evidence]);
+        field(&posted, "vid").unwrap_or_default().to_string()
+    };
+    let first = post(
+        "first",
+        "2026-01-10",
+        "6000",
+        "1000.00",
+        "Invoice 1043 Acme Supplies",
+    );
+    post(
+        "other",
+        "2026-01-11",
+        "7000",
+        "1000.00",
+        "Invoice 1043 Acme Supplies",
+    );
+    let second = post(
+        "second",
+        "2026-01-20",
+        "6000",
+        "1005.00",
+        "INVOICE #1034 - ACME SUPPLIES",
+    );
+
+    let out = ok(&["procedure", "run", "duplicates.near"]);
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "duplicates.near");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "one pair: {out}");
+    assert_eq!(
+        findings[0].get("severity").and_then(Json::as_str),
+        Some("Low"),
+        "{out}"
+    );
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(int(statistic, "value"), Some(88), "similarity_pct: {out}");
+    assert_eq!(int(statistic, "population"), Some(3), "{out}");
+    let cited: Vec<&str> = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites")
+        .iter()
+        .filter(|c| c.get("kind").and_then(Json::as_str) == Some("entry"))
+        .filter_map(|c| c.get("entry").and_then(Json::as_str))
+        .collect();
+    assert_eq!(
+        cited,
+        vec![first.as_str(), second.as_str()],
+        "earlier, then later: {out}"
+    );
+
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "procedure",
+            "run",
+            "duplicates.near",
+            "--param",
+            "tolerance_bp=10001",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("tolerance_bp"), "{out}");
+    Ok(())
+}
+
+/// `graph.ponzi_motif` through the binary (fa-m35p, plan §11.4): with the
+/// cash and investor_capital roles assigned by `fa chart role`, a new
+/// investor's subscription that pays an earlier investor's distribution is
+/// flagged High, citing the payout and the new money. Without the cash role
+/// the procedure is refused, never run over nothing.
+#[test]
+fn procedure_run_flags_new_investor_money_paying_earlier_investors() -> std::io::Result<()> {
+    let dir = tmp("ponzi-motif")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Fund Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2000","name":"Investor capital","type":"Liability","unit":"USD"},{"code":"6000","name":"Distributions","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P01"]);
+    ok(&["period", "open", "FY2026-P02"]);
+    for code in ["INV-A", "INV-B"] {
+        let party = write(
+            &dir,
+            &format!("{code}.json"),
+            &format!(r#"{{"code":"{code}","kind":"Counterparty","name":"Investor {code}"}}"#),
+        );
+        ok(&["party", "add", &party]);
+    }
+    let path = write(&dir, "wire.txt", "WIRE CONFIRMATIONS (a person's upload)");
+    let added = ok(&[
+        "document",
+        "add",
+        &path,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = field(&added, "oid").unwrap_or_default().to_string();
+    // The investor is named on the leg that is not cash.
+    let post = |key: &str, date: &str, debit: &str, credit: &str, amount: &str, party: &str| {
+        let leg = |side: &str, account: &str| {
+            let named = if account == "1000" {
+                String::new()
+            } else {
+                format!(r#","party":"{party}""#)
+            };
+            format!(r#"{{"side":"{side}","account":"{account}"{named},"amount":"{amount} USD"}}"#)
+        };
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{},{}],"description":"{key}"}}"#,
+                leg("debit", debit),
+                leg("credit", credit)
+            ),
+        );
+        let posted = ok(&["post", "--intent", &intent, "--evidence", &evidence]);
+        field(&posted, "vid").unwrap_or_default().to_string()
+    };
+    // 30-day windows from Jan 5: A subscribes in the first; in the second, B
+    // subscribes 600.00 and A is paid 500.00, booked as an expense.
+    post("a-in", "2026-01-05", "1000", "2000", "1000.00", "INV-A");
+    let b_in = post("b-in", "2026-02-10", "1000", "2000", "600.00", "INV-B");
+    let a_paid = post("a-paid", "2026-02-15", "6000", "1000", "500.00", "INV-A");
+
+    let run = |extra: &[&str]| {
+        let mut argv = vec![
+            "procedure",
+            "run",
+            "graph.ponzi_motif",
+            "--param",
+            "window_days=30",
+        ];
+        argv.extend_from_slice(extra);
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    let (code, out, _) = run(&[]);
+    assert_eq!(code, 3, "no account holds the cash role yet: {out}");
+    assert!(out.contains("cash"), "{out}");
+
+    ok(&["chart", "role", "1000", "cash"]);
+    ok(&["chart", "role", "2000", "investor_capital"]);
+    let (code, out, err) = run(&[]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let data = doc(&out);
+    assert_eq!(text(&data, "procedure"), "graph.ponzi_motif");
+    let findings = arr(&data, "findings");
+    assert_eq!(findings.len(), 1, "the second window only: {out}");
+    assert_eq!(
+        findings[0].get("severity").and_then(Json::as_str),
+        Some("High"),
+        "no operating cash came in to pay A: {out}"
+    );
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(
+        int(statistic, "value"),
+        Some(12_000),
+        "600.00 of 500.00: {out}"
+    );
+    assert_eq!(int(statistic, "population"), Some(3), "{out}");
+    let cited: Vec<&str> = findings[0]
+        .get("cites")
+        .and_then(Json::as_arr)
+        .expect("cites")
+        .iter()
+        .filter_map(|c| c.get("entry").and_then(Json::as_str))
+        .collect();
+    assert_eq!(
+        cited,
+        vec![a_paid.as_str(), b_in.as_str()],
+        "the payout, then the new money: {out}"
+    );
+    Ok(())
+}
+
 /// `fa procedure list|run`: Lantern over a persisted book through the CLI
 /// (plan §11, Appendix D). The planted round amount is found and cited by
 /// its posted vid; a parameter override changes the result; the registry
@@ -13209,12 +14254,12 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     let listed = ok(&["procedure", "list"]);
     let listed_doc = doc(&listed);
     let rows = arr(&listed_doc, "procedures");
-    assert_eq!(rows.len(), 61, "{listed}");
+    assert_eq!(rows.len(), 65, "{listed}");
     for id in [
         "jet.round_amounts",
         "solvency.balance_sheet_test",
         "ponzi.net_investment",
-        "damages.but_for",
+        "damages.attested_baseline",
         "recon.bank_statement_drift",
     ] {
         assert!(
@@ -19293,6 +20338,1171 @@ fn a_scenario_runs_counterfactual_intents_and_diffs_them_without_touching_trunk(
     Ok(())
 }
 
+/// fa-c34: `fa rule check` compiles a Canon rule against the book's units
+/// and proves it balances in every unit; `fa rule eval` derives its legs
+/// from a recorded event and writes nothing. An unbalanced rule, a rule for
+/// another event kind, a missing or undeclared input and an unknown event
+/// are refused.
+#[test]
+fn a_canon_rule_is_checked_against_the_book_and_derives_legs_from_a_recorded_event()
+-> std::io::Result<()> {
+    let (book, ev, dir) = envelope_book("canon-rule")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let (code, out, err) = run(&[
+        "event",
+        "record",
+        "--code",
+        "EV-7",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:100.50 USD",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}{err}");
+    let rule = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale_with_tax v1 for event Sale {
+  inputs { as_of: date }
+  let net = event.resource("net", "USD")
+  let tax = net * 7 / 100 round HalfEven   # 7.035 is a tie: HalfEven gives 7.04
+  debit  "1000" net + tax dims { cost_center = "CC1" }
+  credit "6000" net
+  credit "2300" tax
+  effective as_of
+}"#,
+    );
+    let strs = |j: &Json, key: &str| -> Vec<String> {
+        arr(j, key)
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+
+    let (code, out, _) = run(&["rule", "check", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let checked = doc(&out);
+    assert!(out.contains("\"event\":\"rule_checked\""), "{out}");
+    assert_eq!(text(&checked, "rule"), "sale_with_tax");
+    assert_eq!(text(&checked, "event_kind"), "sale");
+    let digest = text(&checked, "ir_digest").to_string();
+    assert_eq!(digest.len(), 64, "{out}");
+    assert_eq!(strs(&checked, "accounts"), ["1000", "2300", "6000"]);
+    assert_eq!(strs(&checked, "laws"), ["HalfEven"]);
+    assert_eq!(strs(&checked, "inputs"), ["as_of: date"]);
+    assert_eq!(strs(&checked, "resources"), ["net:USD"]);
+    assert_eq!(strs(&checked, "dimensions"), ["cost_center=CC1"]);
+
+    let (_, before, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    let (code, out, _) = run(&[
+        "rule",
+        "eval",
+        &rule,
+        "--event",
+        "EV-7",
+        "--input",
+        "as_of=2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let derived = doc(&out);
+    assert_eq!(text(&derived, "ir_digest"), digest);
+    assert_eq!(text(&derived, "event_code"), "EV-7");
+    assert_eq!(text(&derived, "effective"), "2026-03-31");
+    let legs: Vec<(String, String, String, Vec<String>)> = arr(&derived, "legs")
+        .iter()
+        .map(|leg| {
+            (
+                text(leg, "side").to_string(),
+                text(leg, "account").to_string(),
+                text(leg, "amount").to_string(),
+                strs(leg, "dimensions"),
+            )
+        })
+        .collect();
+    let leg = |side: &str, account: &str, amount: &str, dims: &[&str]| {
+        (
+            side.to_string(),
+            account.to_string(),
+            amount.to_string(),
+            dims.iter().map(|d| (*d).to_string()).collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(
+        legs,
+        [
+            leg("debit", "1000", "107.54 USD", &["cost_center=CC1"]),
+            leg("credit", "6000", "100.50 USD", &[]),
+            leg("credit", "2300", "7.04 USD", &[]),
+        ],
+        "{out}"
+    );
+    // Evaluation posts nothing: the trial balance is unchanged.
+    let (_, after, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(arr(&doc(&after), "rows"), arr(&doc(&before), "rows"));
+
+    // Refusals: each names its law or the usage that fixes it.
+    let unbalanced = write(
+        &dir,
+        "unbalanced.rule",
+        r#"rule short v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net + net * 7 / 100 round HalfEven
+  credit "6000" net
+}"#,
+    );
+    let (code, out, _) = run(&["rule", "check", &unbalanced, "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("does not balance in USD"), "{out}");
+    let purchase = write(
+        &dir,
+        "purchase.rule",
+        r#"rule bill v1 for event Purchase { debit "6000" "1.00 USD" credit "1000" "1.00 USD" }"#,
+    );
+    let (code, out, _) = run(&["rule", "eval", &purchase, "--event", "EV-7", "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("purchase events"), "{out}");
+    for args in [
+        vec!["rule", "eval", rule.as_str(), "--event", "EV-7"],
+        vec![
+            "rule",
+            "eval",
+            rule.as_str(),
+            "--event",
+            "EV-7",
+            "--input",
+            "as_of=2026-03-31",
+            "--input",
+            "today=2026-03-31",
+        ],
+        vec![
+            "rule",
+            "eval",
+            rule.as_str(),
+            "--event",
+            "EV-404",
+            "--input",
+            "as_of=2026-03-31",
+        ],
+        vec!["rule", "lint", rule.as_str()],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    Ok(())
+}
+
+/// fa-c34: `fa rule propose` journals a rule version addressed by its IR
+/// digest under rule_change; the same IR again writes nothing whatever its
+/// key; `fa rule list|show` read the versions and `fa rule eval --rule`
+/// evaluates the journaled version exactly as its source file evaluates. A
+/// refused source journals nothing, and proposing needs rule_change.
+#[test]
+fn a_rule_version_is_journaled_by_its_content_and_evaluates_from_the_journal() -> std::io::Result<()>
+{
+    let (book, ev, dir) = envelope_book("canon-propose")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let (code, out, err) = run(&[
+        "event",
+        "record",
+        "--code",
+        "EV-8",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:40.00 USD",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}{err}");
+    let source = r#"rule fee_split v2 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net / 4 round HalfEven
+  credit "6000" net - net / 4 round HalfEven
+}"#;
+    let rule = write(&dir, "split.rule", source);
+    let head = |out: &str| -> i128 {
+        let envelope = robot_line(out);
+        let coordinate = envelope.get("coordinate").expect("book coordinate");
+        int(coordinate, "known_at").expect("coordinate known_at")
+    };
+
+    let (code, out, _) = run(&["rule", "propose", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let proposed = doc(&out);
+    assert!(out.contains("\"event\":\"rule_proposed\""), "{out}");
+    assert_eq!(proposed.get("already_recorded"), Some(&Json::Bool(false)));
+    let digest = text(&proposed, "ir_digest").to_string();
+    let (_, checked, _) = run(&["rule", "check", &rule, "--json"]);
+    assert_eq!(
+        text(&doc(&checked), "ir_digest"),
+        digest,
+        "check and propose agree"
+    );
+    let (_, tb_after_propose, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+
+    // The same text again is a retry of its default key; the same IR under
+    // another key (reformatted source) is the same version: nothing written.
+    let (code, out, _) = run(&["rule", "propose", &rule, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    let reflowed = write(&dir, "reflowed.rule", &source.replace('\n', " "));
+    let (code, out, _) = run(&["rule", "propose", &reflowed, "--key", "other", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(text(&doc(&out), "ir_digest"), digest);
+    assert_eq!(doc(&out).get("control_entry"), Some(&Json::Null), "{out}");
+
+    let (code, out, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let listed = doc(&out);
+    assert_eq!(int(&listed, "count"), Some(1), "{out}");
+    let row = &arr(&listed, "versions")[0];
+    assert_eq!(
+        (
+            text(row, "rule"),
+            int(row, "version"),
+            text(row, "ir_digest")
+        ),
+        ("fee_split", Some(2), digest.as_str())
+    );
+    let (code, out, _) = run(&["rule", "show", &digest, "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let shown = doc(&out);
+    assert_eq!(text(&shown, "source"), source);
+    assert_eq!(
+        arr(&shown, "laws")
+            .iter()
+            .filter_map(Json::as_str)
+            .collect::<Vec<_>>(),
+        ["HalfEven"]
+    );
+
+    // From the journal or from the file: the same derivation.
+    let (code, from_file, _) = run(&["rule", "eval", &rule, "--event", "EV-8", "--json"]);
+    assert_eq!(code, 0, "{from_file}");
+    let (code, from_journal, _) = run(&[
+        "rule", "eval", "--rule", &digest, "--event", "EV-8", "--json",
+    ]);
+    assert_eq!(code, 0, "{from_journal}");
+    assert_eq!(
+        arr(&doc(&from_journal), "legs"),
+        arr(&doc(&from_file), "legs")
+    );
+    assert_eq!(arr(&doc(&from_journal), "legs").len(), 3);
+
+    // Proposing posts nothing.
+    let (_, tb_now, _) = run(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert_eq!(
+        arr(&doc(&tb_now), "rows"),
+        arr(&doc(&tb_after_propose), "rows")
+    );
+
+    // A refused source journals nothing.
+    let (_, before, _) = run(&["rule", "list", "--json"]);
+    let bad = write(
+        &dir,
+        "bad.rule",
+        r#"rule bad v1 for event Sale { debit "1000" "1.00 USD" credit "6000" "2.00 USD" }"#,
+    );
+    let (code, out, _) = run(&["rule", "propose", &bad, "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    let (_, after, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(
+        head(&after),
+        head(&before),
+        "a refused proposal writes nothing"
+    );
+
+    // Unknown and malformed addresses are usage errors.
+    for args in [
+        vec!["rule", "show", "00"],
+        vec![
+            "rule",
+            "show",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ],
+        vec![
+            "rule",
+            "eval",
+            "--rule",
+            digest.as_str(),
+            rule.as_str(),
+            "--event",
+            "EV-8",
+        ],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 2, "{args:?}: {out}");
+    }
+    Ok(())
+}
+
+/// fa-c34: `fa rule activate` plans binding a proposed version's rule name
+/// to it from a date, writing nothing; two independent Human approvers
+/// approve its proposal; the commit journals the PolicyControl and the
+/// name's binding, which `fa rule list` reports. The planner's own approval,
+/// one approval alone, an activation at or before the name's last one and
+/// the version already in force are refused.
+#[test]
+fn a_rule_version_is_activated_from_a_date_under_dual_control() -> std::io::Result<()> {
+    let (book, _ev, dir) = envelope_book("canon-activate")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let head = |out: &str| -> i128 {
+        let envelope = robot_line(out);
+        let coordinate = envelope.get("coordinate").expect("book coordinate");
+        int(coordinate, "known_at").expect("coordinate known_at")
+    };
+    let propose = |name: &str, text: &str| -> String {
+        let file = write(&dir, name, text);
+        let (code, out, _) = run(&["rule", "propose", &file, "--json"]);
+        assert_eq!(code, 0, "{out}");
+        text_of(&out, "ir_digest")
+    };
+    let v1 = propose(
+        "fee1.rule",
+        r#"rule fee v1 for event Sale { debit "1000" "1.00 USD" credit "6000" "1.00 USD" }"#,
+    );
+    let v2 = propose(
+        "fee2.rule",
+        r#"rule fee v2 for event Sale { debit "1000" "2.00 USD" credit "6000" "2.00 USD" }"#,
+    );
+    let plan_for = |digest: &str, from: &str| -> (i32, String) {
+        let (code, out, _) = run(&[
+            "rule",
+            "activate",
+            digest,
+            "--from",
+            from,
+            "--dry-run",
+            "--json",
+        ]);
+        (code, out)
+    };
+    let (_, before, _) = run(&["rule", "list", "--json"]);
+    let (code, out) = plan_for(v1.as_str(), "2026-04-01");
+    assert_eq!(code, 0, "{out}");
+    let planned = doc(&out);
+    assert_eq!(text(&planned, "rule"), "fee");
+    assert_eq!(text(&planned, "effective_from"), "2026-04-01");
+    let proposal = text(&planned, "proposal_digest").to_string();
+    let plan = write(&dir, "fee1.plan", text(&planned, "bytes"));
+    let (_, after_plan, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(head(&after_plan), head(&before), "planning writes nothing");
+    assert!(arr(&doc(&after_plan), "bindings").is_empty());
+
+    let approve = |who: Option<&str>, digest: &str| -> String {
+        let mut argv = vec!["approve", "--proposal", digest];
+        if let Some(who) = who {
+            argv.extend(["--as", who]);
+        }
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 0, "{out}");
+        text_of(&out, "approval_vid")
+    };
+    let own = approve(None, proposal.as_str());
+    let a = approve(Some("controller-a"), proposal.as_str());
+    let b = approve(Some("controller-b"), proposal.as_str());
+    let commit = |plan: &str, approvals: &[&str]| -> (i32, String) {
+        let mut argv = vec!["rule", "activate", "--plan", plan];
+        for approval in approvals {
+            argv.extend(["--approval", approval]);
+        }
+        argv.push("--json");
+        let (code, out, _) = run(&argv);
+        (code, out)
+    };
+    // The planner's own approval and one approval alone are refused.
+    let (code, out) = commit(plan.as_str(), &[own.as_str(), a.as_str()]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-008")),
+        "{out}"
+    );
+    let (code, out) = commit(plan.as_str(), &[a.as_str()]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-012")),
+        "{out}"
+    );
+    let (_, unchanged, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(
+        head(&unchanged),
+        head(&after_plan),
+        "refusals write nothing"
+    );
+
+    // Two independent approvers: the activation commits, and a retry of the
+    // same plan returns it.
+    let (code, out) = commit(plan.as_str(), &[a.as_str(), b.as_str()]);
+    assert_eq!(code, 0, "{out}");
+    let activated = doc(&out);
+    assert!(out.contains("\"event\":\"rule_activated\""), "{out}");
+    assert_eq!(int(&activated, "approvals"), Some(2));
+    assert_eq!(activated.get("already_recorded"), Some(&Json::Bool(false)));
+    let (code, out) = commit(plan.as_str(), &[a.as_str(), b.as_str()]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(doc(&out).get("already_recorded"), Some(&Json::Bool(true)));
+    let (_, listed, _) = run(&["rule", "list", "--json"]);
+    let bindings = arr(&doc(&listed), "bindings").to_vec();
+    assert_eq!(bindings.len(), 1, "{listed}");
+    assert_eq!(
+        (
+            text(&bindings[0], "rule"),
+            text(&bindings[0], "effective_from"),
+            text(&bindings[0], "ir_digest")
+        ),
+        ("fee", "2026-04-01", v1.as_str())
+    );
+
+    // Activations move forward: the same version again, and another
+    // version at or before the last date, are refused at planning.
+    for (digest, from) in [
+        (v1.as_str(), "2026-05-01"),
+        (v2.as_str(), "2026-04-01"),
+        (v2.as_str(), "2026-03-01"),
+    ] {
+        let (code, out) = plan_for(digest, from);
+        assert_eq!(
+            (code, field(&out, "refusal_id")),
+            (3, Some("FA-REF-196")),
+            "{digest} from {from}: {out}"
+        );
+    }
+    // A later version from a later date plans.
+    let (code, out) = plan_for(v2.as_str(), "2026-05-01");
+    assert_eq!(code, 0, "{out}");
+    // An unknown version is a usage error.
+    let (code, out) = plan_for("0".repeat(64).as_str(), "2026-06-01");
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// The string field `key` of the last line's data.
+fn text_of(out: &str, key: &str) -> String {
+    text(&doc(out), key).to_string()
+}
+
+/// fa-c34, FA-INV-05 `rule-reproduction`: `fa rule derive` posts the entry
+/// an activated version derives from a recorded event, and the kernel
+/// re-runs the derivation inside the commit. A version not in force on the
+/// entry's date, legs other than the derivation's (posted through the
+/// library) and recorded inputs that do not digest to the entry's
+/// inputs_digest are refused, and none of them writes.
+#[test]
+fn a_rule_derived_entry_posts_only_what_its_active_version_reproduces() -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+    let (book, ev, dir) = envelope_book("canon-derive")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-9",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &ev,
+        "--resource",
+        "net:40.00 USD",
+        "--json",
+    ]);
+    let source = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    let digest = text(
+        &doc(&ok(&["rule", "propose", &source, "--json"])),
+        "ir_digest",
+    )
+    .to_string();
+    // Proposed is not active: the kernel refuses the derivation.
+    let (code, out, _) = run(&[
+        "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("not in force"), "{out}");
+    // Nor does any rule derive from the event by its kind.
+    let none = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    assert!(
+        arr(&none, "derived").is_empty() && arr(&none, "skipped").is_empty(),
+        "{}",
+        none.render()
+    );
+    let planned = doc(&ok(&[
+        "rule",
+        "activate",
+        &digest,
+        "--from",
+        "2026-03-01",
+        "--dry-run",
+        "--json",
+    ]));
+    let plan = write(&dir, "sale.plan", text(&planned, "bytes"));
+    let proposal = text(&planned, "proposal_digest").to_string();
+    let approval = |who: &str| -> String {
+        let out = ok(&["approve", "--proposal", &proposal, "--as", who, "--json"]);
+        field(&out, "approval_vid").unwrap_or_default().to_string()
+    };
+    let (a, b) = (approval("controller-a"), approval("controller-b"));
+    ok(&[
+        "rule",
+        "activate",
+        "--plan",
+        &plan,
+        "--approval",
+        &a,
+        "--approval",
+        &b,
+        "--json",
+    ]);
+
+    // Every active rule in force on the event's date derives its entry.
+    let all = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    let derived = arr(&all, "derived");
+    assert_eq!(
+        (derived.len(), arr(&all, "skipped").len()),
+        (1, 0),
+        "{}",
+        all.render()
+    );
+    assert_eq!(text(&derived[0], "rule"), "sale");
+    assert_eq!(text(&derived[0], "ir_digest"), digest);
+    assert_eq!(derived[0].get("already_recorded"), Some(&Json::Bool(false)));
+    let entry = text(&derived[0], "vid").to_string();
+    // Deriving it by version is a retry of the same derivation: one key.
+    let posted = ok(&[
+        "rule", "derive", "--rule", &digest, "--event", "EV-9", "--json",
+    ]);
+    assert!(posted.contains("\"event\":\"recorded\""), "{posted}");
+    assert_eq!(text(&doc(&posted), "vid"), entry);
+    let shown = ok(&["entry", "show", &entry, "--json"]);
+    assert!(shown.contains("40.00 USD"), "{shown}");
+    let again = doc(&ok(&["rule", "derive", "--event", "EV-9", "--json"]));
+    assert_eq!(text(&arr(&again, "derived")[0], "vid"), entry);
+    assert_eq!(
+        arr(&again, "derived")[0].get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    // Its lineage: GENERATED_BY to the version that derived it.
+    let lineage = doc(&ok(&[
+        "query",
+        "MATCH (e:Entry)-[:GENERATED_BY]->(r:RuleVersion) RETURN r.name",
+        "--json",
+    ]));
+    assert_eq!(int(&lineage, "row_count"), Some(1), "{}", lineage.render());
+
+    // Backtest (plan §10.6): v2 adds a dollar to both legs. EV-8 precedes
+    // v1's activation and carries no `net` resource.
+    let v2 = write(
+        &dir,
+        "sale2.rule",
+        r#"rule sale v2 for event Sale {
+  let net = event.resource("net", "USD") + "1.00 USD"
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-8",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-02-20",
+        "--evidence",
+        &ev,
+        "--resource",
+        "gross:9.00 USD",
+        "--json",
+    ]);
+    let tested = doc(&ok(&["rule", "backtest", &v2, "--json"]));
+    let counts =
+        |j: &Json| ["events", "same", "differs", "refused", "no_baseline"].map(|key| int(j, key));
+    assert_eq!(
+        counts(&tested),
+        [Some(2), Some(0), Some(1), Some(0), Some(1)],
+        "{}",
+        tested.render()
+    );
+    let rows = arr(&tested, "rows");
+    assert_eq!(
+        (text(&rows[0], "event_code"), text(&rows[0], "outcome")),
+        ("EV-8", "no_baseline")
+    );
+    assert!(
+        text(&rows[0], "detail").contains("`net`"),
+        "{}",
+        tested.render()
+    );
+    assert_eq!(
+        (text(&rows[1], "event_code"), text(&rows[1], "outcome")),
+        ("EV-9", "differs")
+    );
+    assert_eq!(text(&rows[1], "baseline"), digest);
+    assert_eq!(text(&arr(&rows[1], "legs")[1], "amount"), "41.00 USD");
+    assert_eq!(
+        text(&arr(&rows[1], "baseline_legs")[1], "amount"),
+        "40.00 USD"
+    );
+    // The version in force against itself changes nothing; --from narrows.
+    let itself = doc(&ok(&[
+        "rule",
+        "backtest",
+        "--rule",
+        &digest,
+        "--from",
+        "2026-03-01",
+        "--json",
+    ]));
+    assert_eq!(
+        counts(&itself),
+        [Some(1), Some(1), Some(0), Some(0), Some(0)],
+        "{}",
+        itself.render()
+    );
+    assert!(arr(&itself, "rows").is_empty());
+    // --compare names the baseline on every date, active or not.
+    let compared = doc(&ok(&[
+        "rule",
+        "backtest",
+        &v2,
+        "--compare",
+        &digest,
+        "--to",
+        "2026-02-28",
+        "--json",
+    ]));
+    assert_eq!(
+        counts(&compared),
+        [Some(1), Some(0), Some(0), Some(1), Some(0)],
+        "{}",
+        compared.render()
+    );
+    assert_eq!(text(&arr(&compared, "rows")[0], "outcome"), "both_refused");
+    let (code, out, _) = run(&[
+        "rule",
+        "backtest",
+        &v2,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-03-01",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+
+    // Lantern reads the derivations' origin: with three rule-derived
+    // entries on 1000 and 6000, a manual entry on them is a
+    // jet.manual_vs_rule finding (3 of 4 postings = 7500 bps >= 6000).
+    for (code, day) in [("EV-10", "2026-03-14"), ("EV-11", "2026-03-16")] {
+        ok(&[
+            "event",
+            "record",
+            "--code",
+            code,
+            "--kind",
+            "sale",
+            "--occurred-on",
+            day,
+            "--evidence",
+            &ev,
+            "--resource",
+            "net:12.00 USD",
+            "--json",
+        ]);
+        let all = doc(&ok(&["rule", "derive", "--event", code, "--json"]));
+        assert_eq!(arr(&all, "derived").len(), 1, "{}", all.render());
+    }
+    let manual = write(
+        &dir,
+        "manual.json",
+        r#"{"effective_date":"2026-03-20","idempotency_key":"manual-sale","legs":[{"side":"debit","account":"1000","amount":"5.00 USD"},{"side":"credit","account":"6000","amount":"5.00 USD"}],"description":"hand-keyed sale"}"#,
+    );
+    let manual = field(
+        &ok(&["post", "--intent", &manual, "--evidence", &ev, "--json"]),
+        "vid",
+    )
+    .unwrap_or_default()
+    .to_string();
+    let jet = doc(&ok(&["procedure", "run", "jet.manual_vs_rule", "--json"]));
+    let findings = arr(&jet, "findings");
+    assert_eq!(findings.len(), 1, "only the manual entry: {}", jet.render());
+    let statistic = findings[0].get("statistic").expect("statistic");
+    assert_eq!(
+        (int(statistic, "value"), int(statistic, "population")),
+        (Some(7500), Some(4)),
+        "{}",
+        jet.render()
+    );
+    assert!(
+        findings[0]
+            .get("cites")
+            .and_then(Json::as_arr)
+            .is_some_and(|cites| cites
+                .iter()
+                .any(|c| c.get("entry").and_then(Json::as_str) == Some(manual.as_str()))),
+        "the finding cites the manual entry: {}",
+        jet.render()
+    );
+
+    // A live rule's account cannot be closed out from under it (plan §10.3).
+    let (code, out, _) = run(&["chart", "close", "6000", "--on", "2026-12-31", "--json"]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    assert!(out.contains("rule sale v1"), "{out}");
+
+    // Through the library: what the kernel re-derives is what posts.
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let mut lib = Book::open_dir(&book, keys, Entropy::deterministic(0xc3)).unwrap();
+    let operator = fa_model::principal_vid("operator");
+    let cap = fa::Capability::embedded(operator, &["read", "post"]).unwrap();
+    let mut ir = [0u8; 32];
+    for (i, byte) in ir.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&digest[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    let rule = lib
+        .rule_version(&ir, None, &cap)
+        .unwrap()
+        .unwrap()
+        .1
+        .unwrap()
+        .rule;
+    let event = lib
+        .read_event(fa_model::event_vid(lib.context().book_id, "EV-9"), None)
+        .unwrap()
+        .unwrap();
+    let inputs = fa::rule::Inputs::new();
+    let inputs_bytes = fa::rule::encode_inputs(&rule, &inputs).unwrap();
+    let derivation = fa::rule::evaluate(&rule, &event.spec, &inputs).unwrap();
+    let propose = |derivation: &fa::rule::Derivation, key: &[u8]| {
+        let description = fa_model::Erasable::seal(
+            &"tampered".to_string(),
+            None,
+            &lib.context().seal_key,
+            [1u8; 32],
+            [2u8; 24],
+        );
+        fa::rule::rule_derived_proposal(
+            lib.context(),
+            &fa::rule::RuleDerivation {
+                rule: &rule,
+                event: event.vid,
+                inputs: &inputs_bytes,
+                derivation,
+                evidence: &event.spec.evidence,
+            },
+            operator,
+            key,
+            description,
+        )
+        .unwrap()
+    };
+    // Planted: both legs moved by one cent, still balanced.
+    let mut tampered = derivation.clone();
+    for leg in &mut tampered.legs {
+        leg.amount.mantissa += 1;
+    }
+    let moved = propose(&tampered, b"tampered-legs");
+    // Planted: the derivation's legs, with inputs that do not digest to the
+    // entry's inputs_digest.
+    let mut relabeled = propose(&derivation, b"tampered-inputs");
+    relabeled.extensions = vec![(fa_model::entry::RULE_INPUTS_EXTENSION, vec![0])];
+    // Planted: the derivation's legs and inputs, posted as Adjusting by a
+    // rule that produces Original entries.
+    let mut reclassed = propose(&derivation, b"tampered-class");
+    reclassed.class = fa_model::EntryClass::ADJUSTING;
+    // Planted: the exact derivation with a document date the rule does not
+    // derive, and with no evidence where the event cites some. (An
+    // auto-reversal on an Original is refused earlier, at step 1f.)
+    let mut dated = propose(&derivation, b"tampered-date");
+    dated.document_date = Some(derivation.effective);
+    let mut cited = propose(&derivation, b"tampered-evidence");
+    cited.evidence.clear();
+    let before = lib.head().unwrap();
+    for (what, proposal) in [
+        ("legs", moved),
+        ("inputs", relabeled),
+        ("class", reclassed),
+        ("document date", dated),
+        ("evidence", cited),
+    ] {
+        let refused = lib
+            .post(fa_journal::PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                capability: cap.clone(),
+                plan_certificate: None,
+            })
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, "FA-REF-196", "{what}: {refused:?}");
+    }
+    assert_eq!(lib.head().unwrap(), before, "the refusals write nothing");
+    Ok(())
+}
+
+/// fa-c34: a rule that `produces Adjusting` (plan §10.2's adjusting family)
+/// derives Adjusting entries. The admissibility matrix admits those into a
+/// soft-closed period and refuses the same derivation as an Original.
+#[test]
+fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> {
+    // A book that declares its civil-day policy, so an entry can schedule
+    // its reversal (plan §7.7).
+    let dir = tmp("canon-adjusting")?;
+    let book = dir.join("book");
+    for args in [
+        &[
+            "book",
+            "create",
+            "--name",
+            "Accrual Co",
+            "--time-zone",
+            "UTC",
+            "--json",
+        ][..],
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+        &["period", "open", "FY2026-P03", "--json"],
+    ] {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        if args[0] == "book" {
+            let chart = write(
+                &dir,
+                "chart.json",
+                r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","leaf":true,"unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+            );
+            let (code, out, err) = fa(Some(&book), &["chart", "import", &chart, "--json"]);
+            assert_eq!(code, 0, "{out}\n{err}");
+        }
+    }
+    let ev = source_doc(&dir, &book);
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-RENT",
+        "--kind",
+        "accrual",
+        "--occurred-on",
+        "2026-03-31",
+        "--evidence",
+        &ev,
+        "--resource",
+        "rent:100.00 USD",
+        "--json",
+    ]);
+    let activate = |name: &str, header: &str, reverses: &str| -> (String, String) {
+        let source = write(
+            &dir,
+            &format!("{name}.rule"),
+            &format!(
+                r#"rule {name} v1 for event Accrual {header} {{
+  inputs {{ back: date }}
+  let rent = event.resource("rent", "USD")
+  debit "6000" rent
+  credit "1000" rent
+  {reverses}
+}}"#
+            ),
+        );
+        let checked = doc(&ok(&["rule", "check", &source, "--json"]));
+        let digest = text(
+            &doc(&ok(&["rule", "propose", &source, "--json"])),
+            "ir_digest",
+        )
+        .to_string();
+        let planned = doc(&ok(&[
+            "rule",
+            "activate",
+            &digest,
+            "--from",
+            "2026-03-01",
+            "--dry-run",
+            "--json",
+        ]));
+        let plan = write(&dir, &format!("{name}.plan"), text(&planned, "bytes"));
+        let proposal = text(&planned, "proposal_digest").to_string();
+        let approval = |who: &str| -> String {
+            let out = ok(&["approve", "--proposal", &proposal, "--as", who, "--json"]);
+            field(&out, "approval_vid").unwrap_or_default().to_string()
+        };
+        let (a, b) = (approval("controller-a"), approval("controller-b"));
+        ok(&[
+            "rule",
+            "activate",
+            "--plan",
+            &plan,
+            "--approval",
+            &a,
+            "--approval",
+            &b,
+            "--json",
+        ]);
+        (text(&checked, "produces").to_string(), digest)
+    };
+    let (accrue_class, accrue) = activate("accrue_rent", "produces Adjusting", "reverses back");
+    let (plain_class, plain) = activate("plain_rent", "", "");
+    assert_eq!(
+        (accrue_class.as_str(), plain_class.as_str()),
+        ("Adjusting", "Original")
+    );
+    let listed = ok(&["rule", "list", "--json"]);
+    assert!(listed.contains("\"produces\":\"Adjusting\""), "{listed}");
+
+    ok(&["period", "soft-close", "FY2026-P03", "--json"]);
+    // The Original derivation is the period law's refusal (exit 7), not
+    // Canon's.
+    let (code, out, _) = run(&[
+        "rule",
+        "derive",
+        "--rule",
+        &plain,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-04-01",
+        "--json",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-011")),
+        "{out}"
+    );
+    assert!(out.contains("SoftClosed"), "{out}");
+    // A reversal date on or before the effective date is Canon's refusal.
+    let (code, out, _) = run(&[
+        "rule",
+        "derive",
+        "--rule",
+        &accrue,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-03-31",
+        "--json",
+    ]);
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (3, Some("FA-REF-196")),
+        "{out}"
+    );
+    let posted = ok(&[
+        "rule",
+        "derive",
+        "--rule",
+        &accrue,
+        "--event",
+        "EV-RENT",
+        "--input",
+        "back=2026-04-01",
+        "--json",
+    ]);
+    assert!(posted.contains("\"event\":\"posted\""), "{posted}");
+    assert_eq!(text(&doc(&posted), "class"), "Adjusting");
+    let entry = text(&doc(&posted), "vid").to_string();
+    let shown = ok(&["entry", "show", &entry, "--json"]);
+    assert!(
+        shown.contains("Adjusting") && shown.contains("100.00 USD"),
+        "{shown}"
+    );
+
+    // The entry carries the exact-negation reversal the rule scheduled, and
+    // the kernel refuses a derivation whose reversal was moved.
+    let keys = fa::BookKeys::load(&book.join("book.keys")).unwrap();
+    let mut lib = fa::Book::open_dir(&book, keys, fa::Entropy::deterministic(0xad)).unwrap();
+    let vid = fgdb_types::VId(u128::from_str_radix(&entry, 16).unwrap());
+    let (posted_entry, _) = lib.read_entry(vid).unwrap().unwrap();
+    let april = fa_time::DateDay::parse("2026-04-01").unwrap();
+    assert_eq!(
+        fa_journal::schedule::auto_reverse(&posted_entry.proposal).unwrap(),
+        Some((april, fa_journal::schedule::RULE_EXACT_NEGATION))
+    );
+    let operator = fa_model::principal_vid("operator");
+    let cap = fa::Capability::embedded(operator, &["read", "post"]).unwrap();
+    let mut ir = [0u8; 32];
+    for (i, byte) in ir.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&accrue[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    let rule = lib
+        .rule_version(&ir, None, &cap)
+        .unwrap()
+        .unwrap()
+        .1
+        .unwrap()
+        .rule;
+    let event = lib
+        .read_event(fa_model::event_vid(lib.context().book_id, "EV-RENT"), None)
+        .unwrap()
+        .unwrap();
+    let mut inputs = fa::rule::Inputs::new();
+    inputs.set("back", fa::rule::InputValue::Date(april));
+    let inputs_bytes = fa::rule::encode_inputs(&rule, &inputs).unwrap();
+    let mut moved = fa::rule::evaluate(&rule, &event.spec, &inputs).unwrap();
+    moved.reverse_on = fa_time::DateDay::parse("2026-04-15").ok();
+    let description = fa_model::Erasable::seal(
+        &"moved".to_string(),
+        None,
+        &lib.context().seal_key,
+        [3u8; 32],
+        [4u8; 24],
+    );
+    let proposal = fa::rule::rule_derived_proposal(
+        lib.context(),
+        &fa::rule::RuleDerivation {
+            rule: &rule,
+            event: event.vid,
+            inputs: &inputs_bytes,
+            derivation: &moved,
+            evidence: &event.spec.evidence,
+        },
+        operator,
+        b"moved-reversal",
+        description,
+    )
+    .unwrap();
+    let before = lib.head().unwrap();
+    let refused = lib
+        .post(fa_journal::PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            capability: cap,
+            plan_certificate: None,
+        })
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-196", "{refused:?}");
+    assert_eq!(lib.head().unwrap(), before);
+    Ok(())
+}
+
+/// fa-c34 slice 8: `fa rule test` runs a rule over its golden corpus (plan
+/// §10.5). Every case holding is `rule_tested`; a case that does not hold is
+/// a verification failure (exit 8) naming the case and the difference; a
+/// malformed case is a usage error naming it.
+#[test]
+fn a_rule_golden_corpus_holds_or_fails_verification() -> std::io::Result<()> {
+    let (book, _ev, dir) = envelope_book("canon-golden")?;
+    let run = |args: &[&str]| fa(Some(&book), args);
+    let source = write(
+        &dir,
+        "sale.rule",
+        r#"rule sale v1 for event Sale {
+  let net = event.resource("net", "USD")
+  debit "1000" net
+  credit "6000" net
+}"#,
+    );
+    let golden = dir.join("golden");
+    std::fs::create_dir_all(&golden)?;
+    write(
+        &golden,
+        "a_sale.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"net:40.00 USD\"]\n\n[expect]\neffective = \"2026-03-12\"\n# Legs compare in any order.\nlegs = [\"credit 6000 40.00 USD\", \"debit 1000 40.00 USD\"]\n",
+    );
+    write(
+        &golden,
+        "b_no_net.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"gross:9.00 USD\"]\n\n[expect]\nrefused = \"no resource labeled `net`\"\n",
+    );
+    write(&golden, "notes.txt", "not a case");
+    let corpus = golden.display().to_string();
+    let (code, out, err) = run(&["rule", "test", &source, "--golden", &corpus, "--json"]);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(out.contains("\"event\":\"rule_tested\""), "{out}");
+    let tested = doc(&out);
+    assert_eq!(
+        ["cases", "passed", "failed"].map(|key| int(&tested, key)),
+        [Some(2), Some(2), Some(0)],
+        "{}",
+        tested.render()
+    );
+    let rows = arr(&tested, "rows");
+    assert_eq!(arr(&rows[0], "legs").len(), 2);
+    assert!(
+        text(&rows[1], "refusal").contains("`net`"),
+        "{}",
+        tested.render()
+    );
+
+    // A case that does not hold fails verification, naming it and the difference.
+    let wrong = write(
+        &dir,
+        "c_wrong.toml",
+        "[event]\nkind = \"sale\"\noccurred_on = \"2026-03-12\"\nresources = [\"net:40.00 USD\"]\n\n[expect]\nlegs = [\"debit 1000 41.00 USD\", \"credit 6000 41.00 USD\"]\n",
+    );
+    let (code, out, _) = run(&[
+        "rule", "test", &source, "--golden", &corpus, "--golden", &wrong, "--json",
+    ]);
+    assert_eq!(code, 8, "{out}");
+    assert!(
+        out.contains("c_wrong.toml") && out.contains("where the golden expects"),
+        "{out}"
+    );
+    // A malformed case is a usage error naming it.
+    let malformed = write(&dir, "d_bad.toml", "[event]\nkind = \"sale\"\n");
+    let (code, out, _) = run(&["rule", "test", &source, "--golden", &malformed, "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("d_bad.toml") && out.contains("occurred_on"),
+        "{out}"
+    );
+    Ok(())
+}
+
 /// fa-f3bo: `fa event record|show|list` journals and queries REA `Event`
 /// vertices, `fa post --event` links entries via `DERIVED_FROM` and inherits
 /// the event's evidence closure, `fa explain entry` reports the cited event,
@@ -19884,6 +22094,919 @@ fn verify_entities_proves_each_legal_entitys_register_by_refold() -> std::io::Re
     Ok(())
 }
 
+/// fa-76hy, plan §12.3: `fa consolidate` over a three-entity book. P owns
+/// 80% of S1 and all of S2 (journaled OWNS edges); the accounts are read by
+/// role. The intercompany fee eliminates, each subsidiary's capital
+/// eliminates against the one investment account, and the NCI takes 20% of
+/// S1's capital and of its 40.00 of unclosed earnings on the balance sheet.
+/// The income statement is March's activity alone (S1's February sale stays
+/// out of it), with 20% of S1's 30.00 of March earnings charged to the NCI,
+/// and consolidated equity is proved. A missing role, a one-sided charge, a
+/// one-entity book and an unknown period are refused; the earlier prefix
+/// reruns to the same digest.
+#[test]
+fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_the_nci()
+-> std::io::Result<()> {
+    let dir = tmp("consolidate")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        eprintln!("$ fa {} -> {code}\n{out}{err}", argv.join(" "));
+        (code, out)
+    };
+    let (code, out) = run(&[
+        "book",
+        "create",
+        "--name",
+        "Group Co",
+        "--base-unit",
+        "USD",
+        "--entity",
+        "P:Parent Co",
+        "--entity",
+        "S1:Sub One",
+        "--entity",
+        "S2:Sub Two",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    // Every consolidation role but the NCI income allocation, which is
+    // assigned after the first run is refused for it.
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+{"code":"1300","name":"Due from affiliates","type":"Asset","unit":"USD","roles":["intercompany"]},
+{"code":"1500","name":"Investments in subsidiaries","type":"Asset","unit":"USD","roles":["investment_in_subsidiary"]},
+{"code":"2300","name":"Due to affiliates","type":"Liability","unit":"USD","roles":["intercompany"]},
+{"code":"3000","name":"Share capital","type":"Equity","unit":"USD","roles":["contributed_capital"]},
+{"code":"3200","name":"Noncontrolling interest","type":"Equity","unit":"USD","roles":["noncontrolling_interest"]},
+{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},
+{"code":"4300","name":"Intercompany fees","type":"Revenue","unit":"USD","roles":["intercompany_activity"]},
+{"code":"5000","name":"Operating expense","type":"Expense","unit":"USD"},
+{"code":"5300","name":"Intercompany fee expense","type":"Expense","unit":"USD","roles":["intercompany_activity"]},
+{"code":"5900","name":"Net income attributable to NCI","type":"Expense","unit":"USD"}]}"#,
+    );
+    let (code, out) = run(&["chart", "import", &chart]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P02"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "group.txt", "Group capital, investments and fees");
+    let (code, out) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let evidence = text(&doc(&out), "oid").to_string();
+    // legs: (side, account, amount, entity)
+    let post = |key: &str, date: &str, legs: &[(&str, &str, &str, &str)]| {
+        let legs: Vec<String> = legs
+            .iter()
+            .map(|(side, account, amount, entity)| {
+                format!(
+                    r#"{{"side":"{side}","account":"{account}","amount":"{amount} USD","entity":"{entity}"}}"#
+                )
+            })
+            .collect();
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"idempotency_key":"{key}","effective_date":"{date}","legs":[{}]}}"#,
+                legs.join(",")
+            ),
+        );
+        run(&["post", "--intent", &intent, "--evidence", &evidence])
+    };
+    for (key, legs) in [
+        (
+            "p-capital",
+            vec![
+                ("debit", "1000", "1000.00", "P"),
+                ("credit", "3000", "1000.00", "P"),
+            ],
+        ),
+        // P pays 400.00 for 80% of S1; outside holders pay 100.00.
+        (
+            "s1-formed",
+            vec![
+                ("debit", "1500", "400.00", "P"),
+                ("credit", "1000", "400.00", "P"),
+                ("debit", "1000", "500.00", "S1"),
+                ("credit", "3000", "500.00", "S1"),
+            ],
+        ),
+        (
+            "s2-formed",
+            vec![
+                ("debit", "1500", "200.00", "P"),
+                ("credit", "1000", "200.00", "P"),
+                ("debit", "1000", "200.00", "S2"),
+                ("credit", "3000", "200.00", "S2"),
+            ],
+        ),
+        (
+            "s1-trade",
+            vec![
+                ("debit", "1000", "60.00", "S1"),
+                ("debit", "5000", "40.00", "S1"),
+                ("credit", "4000", "100.00", "S1"),
+            ],
+        ),
+        // P charges S1 a 30.00 fee, booked by both.
+        (
+            "ic-fee",
+            vec![
+                ("debit", "1300", "30.00", "P"),
+                ("credit", "4300", "30.00", "P"),
+                ("debit", "5300", "30.00", "S1"),
+                ("credit", "2300", "30.00", "S1"),
+            ],
+        ),
+        (
+            "s2-loss",
+            vec![
+                ("debit", "5000", "25.00", "S2"),
+                ("credit", "1000", "25.00", "S2"),
+            ],
+        ),
+    ] {
+        let (code, out) = post(key, "2026-03-10", &legs);
+        assert_eq!(code, 0, "{key}: {out}");
+    }
+    // S1's February sale: on the balance sheet, not in March's income.
+    let (code, out) = post(
+        "s1-february",
+        "2026-02-15",
+        &[
+            ("debit", "1000", "10.00", "S1"),
+            ("credit", "4000", "10.00", "S1"),
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    for (owned, pct) in [("S1", "8000/10000"), ("S2", "10000/10000")] {
+        let (code, out) = run(&[
+            "party",
+            "relate",
+            "P",
+            owned,
+            "--kind",
+            "owns",
+            "--basis",
+            "equity_voting",
+            "--valid-from",
+            "2026-01-01",
+            "--pct",
+            pct,
+        ]);
+        assert_eq!(code, 0, "{out}");
+    }
+
+    // Planted: S1 is partly owned and no account holds the NCI income role.
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 3, "{out}");
+    let refused = doc(&out);
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-194", "{out}");
+    assert!(
+        out.contains("noncontrolling_interest_income")
+            && text(&refused, "fix").contains("fa chart role"),
+        "{out}"
+    );
+    let (code, out) = run(&["chart", "role", "5900", "noncontrolling_interest_income"]);
+    assert_eq!(code, 0, "{out}");
+
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(r#""event":"consolidation_run""#), "{out}");
+    let group = doc(&out);
+    let at = int(&group, "known_at").unwrap_or_default();
+    let digest = text(&group, "run_digest").to_string();
+    assert_eq!(digest.len(), 64, "{out}");
+    assert_eq!(text(&group, "effective_through"), "2026-03-31");
+    assert_eq!(text(&group, "rounding_law"), "HalfEven");
+    let members: Vec<(String, String, Option<i128>)> = arr(&group, "members")
+        .iter()
+        .map(|m| {
+            (
+                text(m, "code").to_string(),
+                text(m, "parent").to_string(),
+                int(m, "ownership_bps"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        members,
+        vec![
+            ("P".into(), String::new(), None),
+            ("S1".into(), "P".into(), Some(8000)),
+            ("S2".into(), "P".into(), Some(10000)),
+        ]
+    );
+    let eliminations = arr(&group, "eliminations");
+    let legs = |prefix: &str| -> Vec<(String, String, String, String)> {
+        eliminations
+            .iter()
+            .find(|e| text(e, "code").starts_with(prefix))
+            .map(|e| {
+                arr(e, "legs")
+                    .iter()
+                    .map(|l| {
+                        (
+                            text(l, "entity").to_string(),
+                            text(l, "code").to_string(),
+                            text(l, "debits").to_string(),
+                            text(l, "credits").to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let leg = |e: &str, a: &str, d: &str, c: &str| {
+        (e.to_string(), a.to_string(), d.to_string(), c.to_string())
+    };
+    // A group entry's legs follow Concordat's canonical order by entity id,
+    // which derives from the book's id: compare them as sets.
+    let sorted = |mut legs: Vec<(String, String, String, String)>| {
+        legs.sort();
+        legs
+    };
+    assert_eq!(eliminations.len(), 4, "{out}");
+    assert_eq!(
+        sorted(legs("ELIM-IC-GROUP-")),
+        sorted(vec![
+            leg("P", "1300", "0.00 USD", "30.00 USD"),
+            leg("S1", "2300", "30.00 USD", "0.00 USD"),
+            leg("P", "4300", "30.00 USD", "0.00 USD"),
+            leg("S1", "5300", "0.00 USD", "30.00 USD"),
+        ])
+    );
+    let s1 = |kind: &str| {
+        eliminations
+            .iter()
+            .filter(|e| text(e, "code").starts_with(kind))
+            .map(|e| text(e, "code").to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(s1("ELIM-EQ-").len(), 2, "{out}");
+    assert_eq!(s1("ELIM-NCI-").len(), 1, "only S1 is partly owned: {out}");
+    // S1's 500.00 of capital: 400.00 against P's investment, 100.00 NCI.
+    let capital: Vec<_> = eliminations
+        .iter()
+        .filter(|e| text(e, "code").starts_with("ELIM-EQ-"))
+        .map(|e| {
+            arr(e, "legs")
+                .iter()
+                .map(|l| {
+                    (
+                        text(l, "entity").to_string(),
+                        text(l, "code").to_string(),
+                        text(l, "debits").to_string(),
+                        text(l, "credits").to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        capital.contains(&vec![
+            leg("S1", "3000", "500.00 USD", "0.00 USD"),
+            leg("P", "1500", "0.00 USD", "400.00 USD"),
+            leg("S1", "3200", "0.00 USD", "100.00 USD"),
+        ]),
+        "{out}"
+    );
+    assert!(
+        capital.contains(&vec![
+            leg("S2", "3000", "200.00 USD", "0.00 USD"),
+            leg("P", "1500", "0.00 USD", "200.00 USD"),
+        ]),
+        "{out}"
+    );
+    // 20% of S1's 40.00 of unclosed earnings is the NCI's.
+    assert_eq!(
+        legs("ELIM-NCI-"),
+        vec![
+            leg("S1", "5900", "8.00 USD", "0.00 USD"),
+            leg("S1", "3200", "0.00 USD", "8.00 USD"),
+        ]
+    );
+    // March's income carries the fee both ways and 20% of S1's 30.00.
+    let income: Vec<Vec<(String, String, String, String)>> = arr(&group, "income_eliminations")
+        .iter()
+        .map(|e| {
+            arr(e, "legs")
+                .iter()
+                .map(|l| {
+                    (
+                        text(l, "entity").to_string(),
+                        text(l, "code").to_string(),
+                        text(l, "debits").to_string(),
+                        text(l, "credits").to_string(),
+                    )
+                })
+                .collect()
+        })
+        .map(sorted)
+        .collect();
+    assert_eq!(
+        income,
+        vec![
+            sorted(vec![
+                leg("P", "4300", "30.00 USD", "0.00 USD"),
+                leg("S1", "5300", "0.00 USD", "30.00 USD"),
+            ]),
+            sorted(vec![
+                leg("S1", "5900", "6.00 USD", "0.00 USD"),
+                leg("S1", "3200", "0.00 USD", "6.00 USD"),
+            ]),
+        ],
+        "{out}"
+    );
+    let equity = &arr(&group, "equity")[0];
+    for (key, value) in [
+        ("parent_total_equity", "1030.00 USD"),
+        ("subsidiaries_total_equity", "715.00 USD"),
+        ("equity_eliminations", "-708.00 USD"),
+        ("non_controlling_interest_equity", "108.00 USD"),
+        ("controlling_interest_equity", "1037.00 USD"),
+        ("consolidated_total_equity", "1145.00 USD"),
+    ] {
+        assert_eq!(text(equity, key), value, "{key}: {out}");
+    }
+    let line = |statement: &str, code: &str| {
+        group
+            .get(statement)
+            .map(|s| arr(s, "lines"))
+            .unwrap_or_default()
+            .iter()
+            .find(|l| text(l, "code") == code)
+            .and_then(|l| arr(l, "amounts").first())
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    // Cash 400.00 + 570.00 + 175.00; the intercompany balances and the
+    // investments eliminate.
+    assert_eq!(line("balance_sheet", "assets"), "1145.00 USD", "{out}");
+    assert_eq!(line("balance_sheet", "liabilities"), "0.00 USD", "{out}");
+    assert_eq!(
+        line("balance_sheet", "total_equity"),
+        "1145.00 USD",
+        "{out}"
+    );
+    assert_eq!(line("balance_sheet", "balance_check"), "0.00 USD", "{out}");
+    // March alone: S1's 100.00, without its February 10.00.
+    assert_eq!(line("income_statement", "revenue"), "100.00 USD", "{out}");
+    // 40.00 + 25.00 of operating expense and the NCI's 6.00: 29.00 is the parent's.
+    assert_eq!(line("income_statement", "expense"), "71.00 USD", "{out}");
+    assert_eq!(line("income_statement", "net_income"), "29.00 USD", "{out}");
+    assert_eq!(
+        group
+            .get("balance_sheet")
+            .map(|s| text(s, "scope").to_string()),
+        Some("multi-entity-book-consolidated".to_string())
+    );
+    let column = group
+        .get("income_statement")
+        .map(|s| arr(s, "columns").to_vec())
+        .unwrap_or_default();
+    assert_eq!(
+        column
+            .iter()
+            .map(|c| (
+                text(c, "mode").to_string(),
+                text(c, "effective_from").to_string(),
+                text(c, "effective_through").to_string()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            "activity".to_string(),
+            "2026-03-01".to_string(),
+            "2026-03-31".to_string()
+        )],
+        "{out}"
+    );
+
+    // The same prefix reruns to the same run.
+    let (code, again) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(text(&doc(&again), "run_digest"), digest);
+
+    // Certified (slice 2): the run is retained under a report certificate,
+    // replays to its complete robot line byte for byte, and is Current until
+    // a later contribution supersedes it.
+    let earlier = at.to_string();
+    let file = dir.join("consolidation.cert");
+    let file_arg = file.display().to_string();
+    let (code, certified) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &earlier,
+        "--certify",
+        "--certificate-out",
+        &file_arg,
+    ]);
+    assert_eq!(code, 0, "{certified}");
+    let lines: Vec<&str> = certified.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "the run and its retained certificate: {certified}"
+    );
+    assert_eq!(field(lines[0], "event"), Some("consolidation_run"));
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let certificate = doc(lines[1]);
+    let oid = text(&certificate, "oid").to_string();
+    assert_eq!(oid.len(), 64, "{certified}");
+    assert_eq!(field(lines[0], "certificate"), Some(oid.as_str()));
+    assert_eq!(text(&certificate, "output_format"), "fa:consolidation:v1");
+    assert_eq!(int(&certificate, "known_at"), Some(at));
+    assert_eq!(text(&certificate, "file"), file_arg);
+    assert_eq!(text(&doc(lines[0]), "run_digest"), digest);
+    let original = format!("{}\n", lines[0]);
+    let cert = format!("C:{oid}");
+    let bytes = std::fs::read(&file)?;
+    assert!(bytes.starts_with(fa::certificate::CONSOLIDATION_CERTIFICATE_FORMAT));
+    assert_consolidation_certificate_replay_laws(&book, &bytes);
+    let (code, replayed) = run(&["replay", &cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original, "the complete robot line replays");
+    let (code, replayed) = run(&["replay", &file_arg]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original, "a new process replays the saved file");
+    // Retention advanced HEAD. A fresh process must hydrate this explicit
+    // earlier prefix before re-certifying, without changing a single byte.
+    let (code, repeated) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &earlier,
+        "--certify",
+    ]);
+    assert_eq!(code, 0, "{repeated}");
+    let repeated: Vec<&str> = repeated.lines().collect();
+    assert_eq!(repeated.len(), 2);
+    assert_eq!(format!("{}\n", repeated[0]), original);
+    assert_eq!(
+        text(&doc(repeated[1]), "bytes"),
+        text(&certificate, "bytes"),
+        "fixed-prefix certification is byte deterministic after reopening"
+    );
+    let (code, status) = run(&["certificate", "status", &cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "Current", "{status}");
+    // Planted: an instant selector cannot be certified by this format.
+    let (code, out) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        "2026-03-31T00:00:00Z",
+        "--certify",
+    ]);
+    assert_ne!(code, 0, "{out}");
+
+    // A reader can inspect the group, but publishing a certificate needs
+    // Produce. The token session confines host files to its working directory.
+    let token = dir.join("group-reader.token").display().to_string();
+    let (code, out) = run(&[
+        "capability",
+        "issue",
+        "--holder",
+        "group-reader",
+        "--profile",
+        "human",
+        "--op",
+        "read",
+        "--out",
+        &token,
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let token_run = |extra: &[&str]| {
+        let mut argv = vec![
+            "--book",
+            "book",
+            "--token",
+            "group-reader.token",
+            "consolidate",
+            "--period",
+            "FY2026-P03",
+            "--json",
+        ];
+        argv.extend_from_slice(extra);
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .current_dir(&dir)
+            .args(&argv)
+            .env_remove("FA_BOOK")
+            .output()
+            .expect("run token-bound consolidation");
+        let code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        check_robot_output(&argv, code, &stdout);
+        (code, stdout)
+    };
+    let (code, out) = token_run(&[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("consolidation_run"));
+    for flags in [
+        vec!["--certify"],
+        vec!["--certificate-out", "reader-must-not-write.cert"],
+    ] {
+        let (code, out) = token_run(&flags);
+        assert_eq!(code, i32::from(fa_journal::exit::SAFETY), "{out}");
+        assert_eq!(out.lines().count(), 1, "no report is disclosed: {out}");
+        assert!(!dir.join("reader-must-not-write.cert").exists());
+    }
+
+    // These journaled controls do not contribute to March's consolidation:
+    // the OWNS edge starts after March, cash is not a consolidation role,
+    // and the economic event has not generated any accounting entry.
+    let (code, out) = run(&[
+        "party",
+        "relate",
+        "S1",
+        "S2",
+        "--kind",
+        "owns",
+        "--basis",
+        "equity_voting",
+        "--valid-from",
+        "2026-04-01",
+        "--pct",
+        "10000/10000",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["chart", "role", "1000", "cash"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&[
+        "event",
+        "record",
+        "--code",
+        "UNPOSTED-SALE",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-12",
+        "--evidence",
+        &evidence,
+        "--resource",
+        "net:40.00 USD",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, status) = run(&["certificate", "status", &cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "Current", "{status}");
+    assert!(arr(&doc(&status), "later_entries").is_empty());
+
+    // Planted: a charge P books alone leaves the group's balances 5.00 out.
+    let (code, out) = post(
+        "p-alone",
+        "2026-03-10",
+        &[
+            ("debit", "1300", "5.00", "P"),
+            ("credit", "4300", "5.00", "P"),
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-194", "{out}");
+    assert!(
+        out.contains("5.00 USD out of balance") && out.contains("P carries 35.00 USD on 1300"),
+        "the refusal names the entity and the account: {out}"
+    );
+    // The charge is dated in the period: the certificate is superseded by it,
+    // and still replays at its own prefix.
+    let (code, status) = run(&["certificate", "status", &cert]);
+    assert_eq!(code, 0, "{status}");
+    let status = doc(&status);
+    assert_eq!(text(&status, "status"), "SupersededBy", "{status:?}");
+    assert_eq!(arr(&status, "later_entries").len(), 1, "{status:?}");
+    let (code, replayed) = run(&["replay", &cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original);
+    // The prefix before it still consolidates, to the same run.
+    let (code, out) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &earlier,
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(text(&doc(&out), "run_digest"), digest, "{out}");
+
+    // Complete the counterparty side and certify a new, balanced group.
+    let (code, out) = post(
+        "s1-counterparty",
+        "2026-03-10",
+        &[
+            ("debit", "5300", "5.00", "S1"),
+            ("credit", "2300", "5.00", "S1"),
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, second) = run(&["consolidate", "--period", "FY2026-P03", "--certify"]);
+    assert_eq!(code, 0, "{second}");
+    let second: Vec<&str> = second.lines().collect();
+    assert_eq!(second.len(), 2);
+    let second_report = format!("{}\n", second[0]);
+    let second_cert = format!("C:{}", text(&doc(second[1]), "oid"));
+    assert_ne!(text(&doc(second[0]), "run_digest"), digest);
+    let (code, status) = run(&["certificate", "status", &second_cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "Current", "{status}");
+
+    // Removing an account role is a later contribution even if current
+    // consolidation now refuses. Replay still uses the role at its prefix.
+    let (code, out) = run(&[
+        "chart",
+        "role",
+        "5900",
+        "noncontrolling_interest_income",
+        "--remove",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-194");
+    let (code, status) = run(&["certificate", "status", &second_cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "SupersededBy", "{status}");
+    assert_eq!(arr(&doc(&status), "later_entries").len(), 1);
+    let (code, replayed) = run(&["replay", &second_cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, second_report);
+    let (code, out) = run(&["chart", "role", "5900", "noncontrolling_interest_income"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, status) = run(&["certificate", "status", &second_cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "SupersededBy", "{status}");
+    assert_eq!(
+        arr(&doc(&status), "later_entries").len(),
+        2,
+        "restoring the role does not erase either later contributing entry"
+    );
+
+    let (code, third) = run(&["consolidate", "--period", "FY2026-P03", "--certify"]);
+    assert_eq!(code, 0, "{third}");
+    let third: Vec<&str> = third.lines().collect();
+    assert_eq!(third.len(), 2);
+    let third_report = format!("{}\n", third[0]);
+    let third_cert = format!("C:{}", text(&doc(third[1]), "oid"));
+    // Unlike the future edge, this second parent is active in March and
+    // invalidates current consolidation without invalidating retained replay.
+    let (code, out) = run(&[
+        "party",
+        "relate",
+        "S1",
+        "S2",
+        "--kind",
+        "owns",
+        "--basis",
+        "equity_voting",
+        "--valid-from",
+        "2026-03-01",
+        "--valid-to",
+        "2026-04-01",
+        "--pct",
+        "10000/10000",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(&["consolidate", "--period", "FY2026-P03"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("owned by several group entities"), "{out}");
+    let (code, status) = run(&["certificate", "status", &third_cert]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(text(&doc(&status), "status"), "SupersededBy", "{status}");
+    assert_eq!(arr(&doc(&status), "later_entries").len(), 1);
+    let (code, replayed) = run(&["replay", &third_cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, third_report);
+    let (code, replayed) = run(&["replay", &file_arg]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original);
+    let (code, repeated) = run(&[
+        "consolidate",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &earlier,
+        "--certify",
+    ]);
+    assert_eq!(code, 0, "{repeated}");
+    let repeated: Vec<&str> = repeated.lines().collect();
+    assert_eq!(repeated.len(), 2);
+    assert_eq!(format!("{}\n", repeated[0]), original);
+    assert_eq!(
+        text(&doc(repeated[1]), "bytes"),
+        text(&certificate, "bytes")
+    );
+
+    // Planted: an unknown period, a missing --period, and a one-entity book.
+    let (code, out) = run(&[
+        "consolidate",
+        "--period",
+        "FY2099-P01",
+        "--as-known-at",
+        &earlier,
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-194", "{out}");
+    assert_eq!(run(&["consolidate"]).0, 2);
+    let solo = dir.join("solo");
+    let (code, out, _) = fa(Some(&solo), &["book", "create", "--name", "Solo", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out, _) = fa(
+        Some(&solo),
+        &["consolidate", "--period", "FY2026-P03", "--json"],
+    );
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("needs a group"), "{out}");
+    Ok(())
+}
+
+/// The native v6 artifact must refold the whole group, even when a supplied
+/// certificate's hashes have been recomputed after changing its claims.
+fn assert_consolidation_certificate_replay_laws(path: &Path, bytes: &[u8]) {
+    use fa::{ReportArtifactExpectation, ReportCertificate, ReportOutput, ReportSelection};
+    use fa_verify::blake3::hash_parts;
+
+    let certificate = ReportCertificate::decode(bytes).unwrap();
+    assert_eq!(certificate.canonical_bytes().unwrap(), bytes);
+    assert_eq!(
+        certificate.selection,
+        ReportSelection::Consolidation {
+            period: "FY2026-P03".to_string()
+        }
+    );
+    let principal = fa_model::principal_vid("operator");
+    let reader = fa_policy::Capability::embedded(principal, &["read"]).unwrap();
+    let producer = fa_policy::Capability::embedded(principal, &["read", "produce"]).unwrap();
+    let keys = fa::BookKeys::load(&path.join("book.keys")).unwrap();
+    let mut book = fa::Book::open_dir(path, keys, fa::Entropy::deterministic(227)).unwrap();
+    let head = book.head().unwrap();
+    let replayed = book
+        .replay_report_artifact_for_with_history(
+            principal,
+            &reader,
+            bytes,
+            Some(&certificate.digest),
+            ReportArtifactExpectation::AsSupplied,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(replayed.family, fa::ReportArtifactFamily::Native);
+    assert_eq!(replayed.output, certificate.output);
+    let historical = book.replay_report(&certificate).unwrap().unwrap();
+    assert!(matches!(historical, ReportOutput::Consolidation(_)));
+    assert_eq!(historical.canonical_bytes().unwrap(), certificate.output);
+    let repeated = book
+        .certify_report(certificate.selection.clone(), Some(certificate.known_at))
+        .unwrap()
+        .unwrap();
+    assert_eq!(repeated.report, historical);
+    assert_eq!(repeated.certificate.canonical_bytes().unwrap(), bytes);
+    assert_eq!(book.head().unwrap(), head, "certification is a read");
+
+    for authority in [
+        fa_policy::Capability::embedded(principal, &["produce"]).unwrap(),
+        reader.clone().for_accounts(&["1000"]).unwrap(),
+        reader.clone().expiring_at(head),
+    ] {
+        let refusal = book
+            .replay_report_artifact(principal, &authority, b"malformed", None)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            refusal.exit,
+            fa_journal::exit::SAFETY,
+            "current whole-book authority is checked before artifact decoding"
+        );
+    }
+    assert_eq!(
+        book.retain_report_artifact(principal, &reader, b"malformed", None)
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        fa_journal::exit::SAFETY,
+        "generic retention needs Produce before decoding supplied bytes"
+    );
+    assert_eq!(
+        book.replay_report_artifact(principal, &reader, bytes, Some(&[0; 32]))
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        fa_journal::exit::VERIFICATION,
+        "an independently expected digest binds the delivery"
+    );
+
+    // Hash independently with the portable verifier, using the native format's
+    // raw domain concatenation rather than fa_model's length-prefixed identity.
+    let reseal = |mut forged: ReportCertificate| {
+        forged.output_digest = hash_parts(b"fa:report-output:v1", &[&forged.output]);
+        let encoded = forged.canonical_bytes().unwrap();
+        forged.digest = hash_parts(
+            fa::certificate::CONSOLIDATION_CERTIFICATE_FORMAT,
+            &[&encoded[..encoded.len() - 32]],
+        );
+        forged.canonical_bytes().unwrap()
+    };
+    assert_eq!(
+        reseal(certificate.clone()),
+        bytes,
+        "independent format witness"
+    );
+    let mut false_member = certificate.clone();
+    let name = false_member
+        .output
+        .windows(b"Sub One".len())
+        .position(|slice| slice == b"Sub One")
+        .expect("the complete certificate binds displayed entity names");
+    false_member.output[name..name + b"Sub One".len()].copy_from_slice(b"Sub Xne");
+    let mut false_nci = certificate.clone();
+    let amount = false_nci
+        .output
+        .windows(16)
+        .position(|slice| slice == 10_800_i128.to_le_bytes())
+        .expect("the real 108.00 NCI equity is encoded exactly");
+    false_nci.output[amount..amount + 16].copy_from_slice(&10_801_i128.to_le_bytes());
+    let mut false_period = certificate.clone();
+    false_period.selection = ReportSelection::Consolidation {
+        period: "FY2026-P02".to_string(),
+    };
+    for forged in [false_member, false_nci, false_period] {
+        let forged = reseal(forged);
+        let decoded = fa::ReportArtifact::decode(&forged).unwrap();
+        assert_ne!(decoded.digest(), &certificate.digest);
+        assert_eq!(
+            book.replay_report_artifact(principal, &reader, &forged, Some(decoded.digest()))
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            fa_journal::exit::VERIFICATION,
+            "rehashed false membership, financial output or period fails full replay"
+        );
+        assert_eq!(
+            book.retain_report_artifact(principal, &producer, &forged, Some(decoded.digest()))
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            fa_journal::exit::VERIFICATION
+        );
+        assert_eq!(book.head().unwrap(), head, "a forgery never publishes");
+    }
+    for length in [0, 1, bytes.len() - 1] {
+        assert!(ReportCertificate::decode(&bytes[..length]).is_err());
+    }
+    let mut trailing = bytes.to_vec();
+    trailing.push(0);
+    assert!(ReportCertificate::decode(&trailing).is_err());
+    assert_eq!(book.head().unwrap(), head);
+}
+
+/// A role's `verbs` (registries/account_roles.toml) name registered verbs,
+/// and the roles that list `consolidate` are exactly the roles its code
+/// reads, as Lantern's role populations are held to `consumers`.
+#[test]
+fn roles_read_by_a_verb_are_the_roles_its_code_reads() {
+    let reg = registry().expect("verbs.toml");
+    let roles = fa_registry::account_roles::AccountRoles::embedded().expect("account_roles.toml");
+    for role in &roles.rows {
+        for verb in &role.verbs {
+            assert!(
+                reg.verbs.iter().any(|v| &v.name == verb),
+                "role `{}` names unregistered verb `{verb}`",
+                role.name
+            );
+        }
+    }
+    let mut listed: Vec<&str> = roles
+        .rows
+        .iter()
+        .filter(|r| r.verbs.iter().any(|v| v == "consolidate"))
+        .map(|r| r.name.as_str())
+        .collect();
+    listed.sort_unstable();
+    assert_eq!(listed, fa::consolidation::CONSOLIDATION_ROLES);
+}
+
 /// Explaining a summary account names the command that answers it: the
 /// summary trial balance rooted at that account, which runs as given.
 #[test]
@@ -20392,6 +23515,170 @@ fn search_finds_entries_by_their_text_at_a_recorded_frontier() -> std::io::Resul
     Ok(())
 }
 
+/// `fa diff --from … --to …` (plan §15.3): one trial-balance selection at
+/// two recorded frontiers. An entry dated into February but recorded after
+/// the frontier is listed in the window it was recorded in and moves
+/// February's activity; an empty window changes nothing; `--limit` caps
+/// the listed entries, never the total. A missing `--from` or selection,
+/// and `--from` after `--to`, are usage.
+#[test]
+fn diff_shows_what_changed_between_two_recorded_frontiers() -> std::io::Result<()> {
+    let dir = tmp("ledger-diff")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(&book), &argv)
+    };
+    assert_eq!(run(&["book", "create", "--name", "Diff Co"]).0, 0);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P02"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let source = write(&dir, "evidence.txt", "Diff evidence");
+    let (code, out, _) = run(&[
+        "document",
+        "add",
+        &source,
+        "--kind",
+        "Invoice",
+        "--grade",
+        "HumanUpload",
+    ]);
+    assert_eq!(code, 0, "{out}");
+    let evidence = text(&doc(&out), "oid").to_string();
+    let post = |key: &str, date: &str, debit: &str, credit: &str, amount: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"idempotency_key":"{key}","effective_date":"{date}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount}"}},{{"side":"credit","account":"{credit}","amount":"{amount}"}}]}}"#
+            ),
+        );
+        let (code, out, _) = run(&["post", "--intent", &intent, "--evidence", &evidence]);
+        assert_eq!(code, 0, "{out}");
+        text(&doc(&out), "vid").to_string()
+    };
+    post("rent", "2026-03-10", "6000", "1000", "9.00 USD");
+    let (_, info, _) = run(&["book", "info"]);
+    let frontier = json::parse(info.lines().last().unwrap_or_default())
+        .ok()
+        .and_then(|line| line.get("coordinate").and_then(|c| int(c, "known_at")))
+        .unwrap_or_default()
+        .to_string();
+    let sale = post("sale", "2026-03-12", "1000", "4000", "25.00 USD");
+    let late = post("late", "2026-02-20", "6000", "1000", "4.00 USD");
+
+    let diff = |args: &[&str]| -> Json {
+        let mut argv = vec!["diff"];
+        argv.extend_from_slice(args);
+        let (code, out, _) = run(&argv);
+        assert_eq!(code, 0, "{argv:?}: {out}");
+        doc(&out)
+    };
+    let deltas = |found: &Json| -> Vec<(String, String)> {
+        arr(found, "changes")
+            .iter()
+            .map(|row| {
+                (
+                    text(row, "code").to_string(),
+                    text(row, "delta").to_string(),
+                )
+            })
+            .collect()
+    };
+    let owned = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
+        rows.iter()
+            .map(|(code, delta)| ((*code).to_string(), (*delta).to_string()))
+            .collect()
+    };
+    // March's stock moves by both later entries; both are listed, in
+    // recorded order, the late one under the period it is dated in.
+    let march = diff(&["--from", &frontier, "--period", "FY2026-P03"]);
+    assert_eq!(
+        deltas(&march),
+        owned(&[
+            ("1000", "21.00 USD"),
+            ("4000", "-25.00 USD"),
+            ("6000", "4.00 USD")
+        ]),
+        "{march:?}"
+    );
+    let entries = arr(&march, "entries");
+    let listed: Vec<&str> = entries.iter().map(|e| text(e, "vid")).collect();
+    assert_eq!(listed, [sale.as_str(), late.as_str()], "{march:?}");
+    assert_eq!(text(&entries[1], "period"), "FY2026-P02");
+    assert_eq!(text(&entries[1], "effective_date"), "2026-02-20");
+    assert_eq!(int(&march, "entries_total"), Some(2));
+    assert!(int(&march, "to") > int(&march, "from"), "{march:?}");
+    // February's activity moves by the late entry alone, recorded after
+    // the frontier although it is dated before it.
+    let february = diff(&["--from", &frontier, "--period", "FY2026-P02", "--activity"]);
+    assert_eq!(
+        deltas(&february),
+        owned(&[("1000", "-4.00 USD"), ("6000", "4.00 USD")]),
+        "{february:?}"
+    );
+    // An empty window changes nothing and lists nothing.
+    let empty = diff(&[
+        "--from",
+        &frontier,
+        "--to",
+        &frontier,
+        "--period",
+        "FY2026-P03",
+    ]);
+    assert!(arr(&empty, "changes").is_empty(), "{empty:?}");
+    assert_eq!(int(&empty, "entries_total"), Some(0));
+    // --limit caps the listing, never the total.
+    let limited = diff(&[
+        "--from",
+        &frontier,
+        "--period",
+        "FY2026-P03",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(arr(&limited, "entries").len(), 1);
+    assert_eq!(int(&limited, "entries_total"), Some(2));
+    // Usage: no --from, no selection, --from after --to, a bad --limit.
+    let head = int(&march, "to").unwrap_or_default().to_string();
+    assert_eq!(run(&["diff", "--period", "FY2026-P03"]).0, 2);
+    assert_eq!(run(&["diff", "--from", &frontier]).0, 2);
+    assert_eq!(
+        run(&[
+            "diff",
+            "--from",
+            &head,
+            "--to",
+            &frontier,
+            "--period",
+            "FY2026-P03"
+        ])
+        .0,
+        2
+    );
+    assert_eq!(
+        run(&[
+            "diff",
+            "--from",
+            &frontier,
+            "--period",
+            "FY2026-P03",
+            "--limit",
+            "0"
+        ])
+        .0,
+        2
+    );
+    Ok(())
+}
+
 /// fa-kxc4: account roles are journaled per account, by `fa chart role` or
 /// by a chart import's `"roles"`, and listed with the procedures that read
 /// them. A role-selected procedure tests the accounts holding its role
@@ -20621,5 +23908,244 @@ fn account_roles_choose_lantern_populations_by_role_not_by_name() -> std::io::Re
         vec!["1600"],
         "{then:?}"
     );
+    Ok(())
+}
+
+/// fa-waow / fa-kxc4: `fa aging ar|ap` (plan §15.3) ages the one account
+/// holding the receivable or payable role, the same aging as naming it with
+/// --account. Planted: an explicit account or a reconciliation beside the
+/// role, an unknown word, a second account holding the role (both named), and
+/// a book where no account holds it are each refused with the way out.
+#[test]
+fn aging_ar_and_ap_age_the_account_holding_the_role() -> std::io::Result<()> {
+    let dir = tmp("aging-roles")?;
+    let book = dir.join("book");
+    let run = |book: &Path, args: &[&str]| -> (i32, String, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        fa(Some(book), &argv)
+    };
+    let ok = |book: &Path, args: &[&str]| -> String {
+        let (code, out, err) = run(book, args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&book, &["book", "create", "--name", "Aging Roles Co"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"1200","name":"Trade debtors","type":"Asset","unit":"USD","roles":["receivable"]},
+            {"code":"2000","name":"Trade creditors","type":"Liability","unit":"USD","roles":["payable"]},
+            {"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},
+            {"code":"6000","name":"Rent","type":"Expense","unit":"USD"}
+        ]}"#,
+    );
+    ok(&book, &["chart", "import", &chart]);
+    ok(&book, &["period", "create", "--fiscal-year", "2026"]);
+    ok(&book, &["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    for (key, debit, credit) in [("sale", "1200", "4000"), ("bill", "6000", "2000")] {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-02","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"40.00 USD"}},{{"side":"credit","account":"{credit}","amount":"40.00 USD"}}]}}"#
+            ),
+        );
+        ok(
+            &book,
+            &["post", "--intent", &intent, "--evidence", &evidence],
+        );
+    }
+
+    for (kind, code) in [("ar", "1200"), ("ap", "2000")] {
+        let by_role = doc(&ok(&book, &["aging", kind, "--as-of", "2026-03-31"]));
+        assert_eq!(text(&by_role, "account"), code, "{kind}: {by_role:?}");
+        assert!(!arr(&by_role, "items").is_empty(), "{kind}: {by_role:?}");
+        let by_code = doc(&ok(
+            &book,
+            &["gl", "aging", "--account", code, "--as-of", "2026-03-31"],
+        ));
+        assert_eq!(by_role, by_code, "{kind} is the aging of {code}");
+    }
+
+    // Planted refusals.
+    for (args, says) in [
+        (
+            vec!["aging", "ar", "--account", "1200", "--as-of", "2026-03-31"],
+            "names its account by role",
+        ),
+        (
+            vec!["aging", "ar", "--reconcile", "--as-of", "2026-03-31"],
+            "names its account by role",
+        ),
+        (
+            vec!["aging", "receivables", "--as-of", "2026-03-31"],
+            "unexpected gl aging argument",
+        ),
+    ] {
+        let (code, out, err) = run(&book, &args);
+        assert_eq!(code, 2, "{args:?}: {out}\n{err}");
+        assert!(out.contains(says), "{args:?}: {out}");
+    }
+    let second = write(
+        &dir,
+        "second.json",
+        r#"{"code":"1210","name":"Other debtors","type":"Asset","unit":"USD","roles":["receivable"]}"#,
+    );
+    ok(&book, &["chart", "open", &second, "--opened", "2026-01-01"]);
+    let (code, out, err) = run(&book, &["aging", "ar", "--as-of", "2026-03-31"]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(
+        out.contains("1200, 1210") && out.contains("--reconcile"),
+        "{out}"
+    );
+
+    let bare = dir.join("bare");
+    ok(&bare, &["book", "create", "--name", "No Roles Co"]);
+    let plain = write(
+        &dir,
+        "plain.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"}]}"#,
+    );
+    ok(&bare, &["chart", "import", &plain]);
+    let (code, out, err) = run(&bare, &["aging", "ar", "--as-of", "2026-03-31"]);
+    assert_eq!(code, 2, "{out}\n{err}");
+    assert!(
+        out.contains("no account holds the receivable role"),
+        "{out}"
+    );
+    assert!(out.contains("fa chart role"), "{out}");
+    Ok(())
+}
+
+/// `fa jet`, `fa benford` and `fa trace` (plan §15.3 Forensics): a family
+/// runs every registered member, each reported as `fa procedure run`
+/// reports it, and its procedure_family summary accounts for every member
+/// as ran or refused. `fa trace <law>` is exactly `fa procedure run
+/// trace.<law>`. Planted: an unknown law, and a benford population scope
+/// that is not registered.
+#[test]
+fn procedure_families_run_every_member_and_trace_is_procedure_run() -> std::io::Result<()> {
+    let dir = tmp("procedure-families")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert_eq!(code, 0, "{argv:?}\n{out}\n{err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Families Co"]);
+    ok(&["chart", "import", "--template", "us-gaap-smb"]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    let funding = write(
+        &dir,
+        "funding.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"funding","legs":[{"side":"debit","account":"1010","amount":"100.00 USD"},{"side":"credit","account":"3000","amount":"100.00 USD"}]}"#,
+    );
+    let deposit = doc(&ok(&[
+        "post",
+        "--intent",
+        &funding,
+        "--evidence",
+        &evidence,
+    ]));
+    let deposit = text(&deposit, "vid").to_string();
+
+    for (family, members) in [("jet", 13), ("benford", 3)] {
+        let out = ok(&[family]);
+        let lines: Vec<Json> = out
+            .lines()
+            .map(|l| fa_cli::json::parse(l).expect("one JSON object a line"))
+            .collect();
+        let event = |l: &Json| text(l, "event").to_string();
+        let runs: Vec<&Json> = lines
+            .iter()
+            .filter(|l| event(l) == "procedure_run")
+            .collect();
+        let summary = lines.last().expect("a summary");
+        assert_eq!(event(summary), "procedure_family", "{out}");
+        let data = summary.get("data").expect("data");
+        assert_eq!(text(data, "family"), family);
+        let ran = arr(data, "ran");
+        let refused = arr(data, "refused");
+        assert_eq!(ran.len() + refused.len(), members, "{out}");
+        assert_eq!(runs.len(), ran.len(), "{out}");
+        let prefix = format!("{family}.");
+        for run in &runs {
+            let procedure = text(run.get("data").expect("data"), "procedure");
+            assert!(procedure.starts_with(&prefix), "{procedure}");
+        }
+        assert!(
+            refused.iter().all(
+                |r| text(r, "procedure").starts_with(&prefix) && !text(r, "message").is_empty()
+            ),
+            "{out}"
+        );
+    }
+
+    let tail = [
+        "--account",
+        "1010",
+        "--source",
+        deposit.as_str(),
+        "--effective-through",
+        "2026-03-31",
+    ];
+    let traced = doc(&ok(&[&["trace", "libr"][..], &tail[..]].concat()));
+    let run = doc(&ok(
+        &[&["procedure", "run", "trace.libr"][..], &tail[..]].concat()
+    ));
+    assert_eq!(traced, run);
+    assert_eq!(text(&traced, "procedure"), "trace.libr");
+
+    // Plan §15.6 `fa benford --scope expenses`: each digit test over the
+    // Expense type's legs (account_type 5), exactly as procedure run with
+    // that parameter reports it, at version 2.
+    let scoped = ok(&["benford", "--scope", "expenses"]);
+    let runs: Vec<Json> = scoped
+        .lines()
+        .map(|l| fa_cli::json::parse(l).expect("one JSON object a line"))
+        .filter(|l| text(l, "event") == "procedure_run")
+        .collect();
+    assert_eq!(runs.len(), 3, "{scoped}");
+    for run in &runs {
+        let data = run.get("data").expect("data");
+        let procedure = text(data, "procedure").to_string();
+        assert_eq!(int(data, "version"), Some(2), "{procedure}");
+        let direct = doc(&ok(&[
+            "procedure",
+            "run",
+            &procedure,
+            "--param",
+            "account_type=5",
+        ]));
+        assert_eq!(data, &direct, "{procedure}");
+        assert!(
+            arr(data, "parameters")
+                .iter()
+                .any(|p| p.render().contains("\"account_type\"") && p.render().contains('5')),
+            "{procedure}: {data:?}"
+        );
+    }
+    assert_eq!(
+        ok(&["benford", "--scope", "expense"]),
+        scoped,
+        "singular and plural name one type"
+    );
+
+    // Planted: a law no procedure registers, and a scope that names no
+    // registered account type.
+    let (code, out, _) = fa(Some(&book), &["trace", "hindsight", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("restitution-order"), "{out}");
+    let (code, out, _) = fa(Some(&book), &["benford", "--scope", "cash", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("names no registered account type"), "{out}");
     Ok(())
 }

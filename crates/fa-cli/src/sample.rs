@@ -49,6 +49,42 @@ const STRATIFIED_EXAMPLE: &str = "fa sample stratified --account <code> --seed <
 /// band order.
 const MAX_BANDS: usize = 98;
 
+/// The code of the one account holding `role` at `known_at` (the head when
+/// `None`): none or several is a usage error naming the fix.
+fn role_account(
+    book: &fa::Book,
+    capability: &fa::Capability,
+    known_at: Option<fgdb_types::CommitSeq>,
+    role: &str,
+) -> Result<String, Fail> {
+    let (at, roles) = book.account_roles(known_at, capability)??;
+    let holders: Vec<fgdb_types::VId> = roles.accounts_with(role).into_iter().collect();
+    let mut codes: Vec<String> = book
+        .accounts_at(at, capability)??
+        .into_iter()
+        .filter(|a| holders.contains(&a.vid))
+        .map(|a| a.code)
+        .collect();
+    codes.sort();
+    match codes.as_slice() {
+        [only] => Ok(only.clone()),
+        [] => Err(usage(
+            format!("no account holds the {role} role at sequence {}", at.0),
+            format!(
+                "fa chart role <account> {role} assigns it (fa chart roles lists the roles), or sample an account with --account <code>"
+            ),
+        )),
+        many => Err(usage(
+            format!(
+                "{} accounts hold the {role} role ({})",
+                many.len(),
+                many.join(", ")
+            ),
+            "sample one of them with --account <code>",
+        )),
+    }
+}
+
 pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let method = match args.positional.get(1).map(String::as_str) {
         Some(method @ ("uniform" | "mus" | "stratified" | "evaluate"))
@@ -74,6 +110,7 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     for flag in [
         "--account",
+        "--population",
         "--seed",
         "--size",
         "--interval",
@@ -89,7 +126,29 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             return Err(usage(format!("sample takes only one {flag}"), EXAMPLE));
         }
     }
-    let code = args.require("--account", "<account code>, for example 1200")?;
+    // Plan §15.6: `--population ar-open|ap-open` is the open items of the one
+    // account holding the receivable or payable role (fa-kxc4 roles),
+    // resolved at the sample's own sequence after admission.
+    let population_role = match (args.flag("--account"), args.flag("--population")) {
+        (Some(_), Some(_)) => {
+            return Err(usage(
+                "--account and --population both name the sampled account; give one",
+                EXAMPLE,
+            ));
+        }
+        (None, Some("ar-open")) => Some("receivable"),
+        (None, Some("ap-open")) => Some("payable"),
+        (None, Some(other)) => {
+            return Err(usage(
+                format!("--population `{other}` is not ar-open or ap-open"),
+                "--population ar-open (the receivable role's open items), --population ap-open (the payable role's), or --account <code>",
+            ));
+        }
+        (_, None) => None,
+    };
+    if population_role.is_none() {
+        args.require("--account", "<account code>, for example 1200")?;
+    }
     let seed = args
         .require("--seed", "<u64>, the declared seed")?
         .parse::<u64>()
@@ -199,6 +258,11 @@ pub(crate) fn sample_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     let (requested, _) = known_at_flag(args, &book, &ctx.out)?;
+    let code: String = match population_role {
+        None => args.flag("--account").unwrap_or_default().to_string(),
+        Some(role) => role_account(&book, &capability, requested, role)?,
+    };
+    let code = code.as_str();
     let account = account_vid(book.context().book_id, code);
     let (known_at, items) = match as_of {
         Some(day) => {

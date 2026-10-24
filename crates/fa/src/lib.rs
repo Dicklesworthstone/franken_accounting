@@ -65,6 +65,8 @@ pub mod cash_flow_policy;
 pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;
+pub mod consolidation;
+pub mod dimension;
 pub mod document_disclosure;
 pub mod draft_review;
 pub mod equity_certificate;
@@ -77,7 +79,9 @@ pub mod general_ledger;
 pub mod indirect_cash_flow;
 pub mod intake;
 pub mod interop;
+pub mod ledger_diff;
 pub mod outcome_recovery;
+pub mod plan_warnings;
 pub mod procedure_certificate;
 pub mod production;
 pub mod projections;
@@ -86,6 +90,7 @@ pub mod query;
 pub mod recurring;
 pub mod report_artifact;
 pub mod roll_forward;
+pub mod rule;
 pub mod scenario;
 pub mod search;
 pub mod settlement;
@@ -135,6 +140,7 @@ pub use certificate::{
     ReportSelection, TrialBalanceSelection,
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
+pub use consolidation::FunctionalConsolidation;
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use draft_review::{
     CertifiedDraftDiff, DRAFT_DIFF_CERTIFICATE_FORMAT, DRAFT_DIFF_OUTPUT_FORMAT, DraftDiff,
@@ -153,7 +159,11 @@ pub use external_subledger::{
     ExternalSubledgerDetail, ExternalSubledgerReconciliation, MAX_EXTERNAL_DETAIL_BYTES,
     MAX_EXTERNAL_DETAIL_ROWS, MAX_EXTERNAL_FEED_CERTIFICATE_BYTES, MAX_EXTERNAL_SUMMARY_LEGS,
 };
-pub use fa_docket::search::{SearchHit, SearchRecordId, SearchRecordKind};
+pub use fa_docket::intake::{
+    DerivedDocumentResult, ExternalToolOutcome, FocrConfig, FwConfig, extract_pdf_text_layer,
+    run_focr_extraction, run_fw_extraction,
+};
+pub use fa_docket::search::{SearchHit, SearchIndexableRecord, SearchRecordId, SearchRecordKind};
 pub use fa_intents::{
     BatchPlan, BatchPlanCertificate, IntentError, MAX_BATCH_BYTES, MAX_BATCH_PLAN_BYTES,
     MAX_PLAN_BYTES, PlanCertificate, PostBatch, PostIntent, PostPlan, ReplacementPlan,
@@ -243,7 +253,9 @@ pub use indirect_cash_flow::{
     MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use intake::IntakeAction;
+pub use ledger_diff::{LedgerDiff, RecordedEntry, TrialBalanceChange};
 pub use outcome_recovery::{OutcomeRebuild, OutcomeRebuildPreview, PreparedOutcomeRebuild};
+pub use plan_warnings::{PlanWarning, PlanWarningKind, PlanWarnings};
 pub use procedure_certificate::{
     BANK_PROCEDURE_CERTIFICATE_FORMAT, CERTIFIABLE_PROCEDURES, CertifiedProcedure,
     MAX_PROCEDURE_CERTIFICATE_BYTES, PROCEDURE_CERTIFICATE_FORMAT, PROCEDURE_OUTPUT_FORMAT,
@@ -255,7 +267,8 @@ pub use production::{
 };
 pub use projections::{PreparedProjectionRebuild, ProjectionRebuild};
 pub use proof::{
-    MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest, WitnessRequest, Witnessed,
+    MAX_PROOF_BYTES, ProofArtifact, ProofKind, ProofRequest, SuffixArtifact, SuffixRequest,
+    WitnessRequest, Witnessed,
 };
 pub use query::{
     CertifiedQuery, MAX_QUERY_ROWS, QUERY_CERTIFICATE_FORMAT, QUERY_OUTPUT_FORMAT, QueryCell,
@@ -279,7 +292,7 @@ pub use scenario::{
     SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
     ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
-pub use search::SearchResults;
+pub use search::{SearchResults, document_search_text};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,

@@ -57,7 +57,12 @@ fn run(argv: &[String]) -> u8 {
         }
     };
     let d = &reg.daemon;
-    let flags: Vec<&str> = d.flags.iter().map(String::as_str).collect();
+    let mut flags: Vec<&str> = d.flags.iter().map(String::as_str).collect();
+    for flag in ["--mcp", "--token", "--cluster"] {
+        if !flags.contains(&flag) {
+            flags.push(flag);
+        }
+    }
     let mut switches: Vec<&str> = d.switches.iter().map(String::as_str).collect();
     if !switches.contains(&"--version") {
         switches.push("--version");
@@ -80,6 +85,7 @@ fn run(argv: &[String]) -> u8 {
         for u in &d.usage {
             text.push_str(&format!("  {u}\n"));
         }
+        text.push_str("  fad serve --book <dir> --mcp stdio|socket [--token <file>] [--cluster <name|all> ...] [--files-root <dir>]\n");
         print!("{text}");
         return 0;
     }
@@ -149,6 +155,37 @@ fn run(argv: &[String]) -> u8 {
             .0;
         }
     }
+    if (parsed.flag("--mcp").is_some()
+        || parsed.flag("--token").is_some()
+        || !parsed.flag_all("--cluster").is_empty())
+        && verb != Some("serve")
+    {
+        return cli::usage_error(
+            argv,
+            "--mcp, --token and --cluster are local daemon launch options for `fad serve`",
+            "fad serve --book <dir> --mcp stdio --token <file>",
+            false,
+        )
+        .0;
+    }
+    if parsed.flag_all("--mcp").len() > 1 {
+        return cli::usage_error(
+            argv,
+            "--mcp may be supplied at most once",
+            "fad serve --book <dir> --mcp stdio|socket",
+            false,
+        )
+        .0;
+    }
+    if parsed.flag_all("--token").len() > 1 {
+        return cli::usage_error(
+            argv,
+            "--token may be supplied at most once",
+            "fad serve --book <dir> --mcp stdio --token <file>",
+            false,
+        )
+        .0;
+    }
     match verb {
         Some("serve") => serve(argv, &parsed, d, &dir),
         Some("status") => status(argv, &parsed, d, &dir),
@@ -170,8 +207,108 @@ fn run(argv: &[String]) -> u8 {
     }
 }
 
+fn fa_mcp_binary() -> PathBuf {
+    if let Ok(bin) = std::env::var("FA_MCP_BIN")
+        && !bin.is_empty()
+    {
+        return PathBuf::from(bin);
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let sibling = parent.join("fa-mcp");
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    PathBuf::from("fa-mcp")
+}
+
 fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
     let json = parsed.switch("--json");
+    let mcp_mode = match parsed.flag("--mcp") {
+        None => None,
+        Some(mode @ ("stdio" | "socket")) => Some(mode),
+        Some(other) => {
+            return cli::usage_error(
+                argv,
+                format!("invalid --mcp mode `{other}`; expected `stdio` or `socket`"),
+                "fad serve --book <dir> --mcp stdio --token <file>",
+                false,
+            )
+            .0;
+        }
+    };
+    let mcp_stdio = mcp_mode == Some("stdio");
+    let token_path = parsed.flag("--token").map(PathBuf::from).or_else(|| {
+        std::env::var("FA_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty())
+            .map(PathBuf::from)
+    });
+    if (token_path.is_some() || !parsed.flag_all("--cluster").is_empty()) && mcp_mode.is_none() {
+        return cli::usage_error(
+            argv,
+            "--token and --cluster on `fad serve` require `--mcp stdio|socket`",
+            "fad serve --book <dir> --mcp stdio --token <file>",
+            false,
+        )
+        .0;
+    }
+    let hosted_token = if mcp_stdio {
+        let Some(path) = &token_path else {
+            return cli::usage_error(
+                argv,
+                "`fad serve --mcp stdio` requires `--token <file>` (or FA_TOKEN) to bind the hosted MCP session's capability",
+                "fad serve --book <dir> --mcp stdio --token <file>",
+                false,
+            )
+            .0;
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                return cli::usage_error(
+                    argv,
+                    format!(
+                        "--token {}: cannot read the token file: {e}",
+                        path.display()
+                    ),
+                    "supply a readable token file produced by `fa capability issue`",
+                    false,
+                )
+                .0;
+            }
+        };
+        let token = match fa_cli::authority::CapabilityToken::decode(&bytes) {
+            Ok(t) => t,
+            Err(e) => {
+                return cli::usage_error(
+                    argv,
+                    format!("--token {}: {e}", path.display()),
+                    "supply a valid token file produced by `fa capability issue`",
+                    false,
+                )
+                .0;
+            }
+        };
+        let authority =
+            match fa_cli::authority::LaunchAuthority::from_token(dir.to_path_buf(), None, &token) {
+                Ok(a) => a,
+                Err(e) => {
+                    return cli::usage_error(
+                        argv,
+                        format!("--token {}: {e}", path.display()),
+                        "supply a token whose profile is admissible for MCP (agent or preparer)",
+                        false,
+                    )
+                    .0;
+                }
+            };
+        Some((path.clone(), authority))
+    } else {
+        None
+    };
     let files_root = match parsed.flag("--files-root") {
         Some(raw) => match fa_cli::authority::validate_files_root(PathBuf::from(raw)) {
             Ok(root) => {
@@ -325,33 +462,79 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
         ];
         serving.extend(fad::timed::status_fields(timed.as_ref()));
         let serving = obj(serving);
-        print!(
-            "{}",
-            line(
-                json,
-                "fad_serving",
-                serving,
-                Some(&at),
-                &format!(
-                    "fad serving {} (book {book_id}) on {}; {}; stop with `fad stop --book {}`",
-                    dir.display(),
-                    socket.display(),
-                    fad::timed::status_text(timed.as_ref()),
-                    dir.display()
-                ),
-            )
+        let serving_line = line(
+            json,
+            "fad_serving",
+            serving,
+            Some(&at),
+            &format!(
+                "fad serving {} (book {book_id}) on {}; {}; stop with `fad stop --book {}`",
+                dir.display(),
+                socket.display(),
+                fad::timed::status_text(timed.as_ref()),
+                dir.display()
+            ),
         );
+        if mcp_stdio {
+            eprint!("{serving_line}");
+        } else {
+            print!("{serving_line}");
+        }
         let mut server = Server {
             book: &mut book,
             dir: dir.to_path_buf(),
             socket: socket.clone(),
-            files_root,
+            files_root: files_root.clone(),
             requests: 0,
             timed,
             daemon_uid: Some(daemon_uid),
             timings: Vec::new(),
         };
-        let served = fad::serve_book(region.cx(), &listener, limits, &mut server).await;
+        let served = if let Some((token_file, authority)) = &hosted_token {
+            if let Ok(Err(refusal)) = server.book.admit_current(authority.capability()) {
+                drop(listener);
+                let _ = region.close().await;
+                return Err(format!("token refused by book: {}", refusal.message));
+            }
+            let mut cmd = std::process::Command::new(fa_mcp_binary());
+            cmd.arg("--book")
+                .arg(dir)
+                .arg("--token")
+                .arg(token_file)
+                .env_remove("FA_BOOK")
+                .env_remove("FA_TOKEN");
+            if let Some(root) = &files_root {
+                cmd.arg("--files").arg(root);
+            }
+            for cluster in parsed.flag_all("--cluster") {
+                cmd.arg("--cluster").arg(cluster);
+            }
+            let mut child = cmd
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .map_err(|e| format!("spawn fa-mcp: {e}"))?;
+            let res = fad::serve_book_until(region.cx(), &listener, limits, &mut server, || {
+                child.try_wait().ok().flatten().is_some()
+            })
+            .await;
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            let status = child.wait().map_err(|e| format!("wait fa-mcp: {e}"))?;
+            if !status.success() {
+                drop(listener);
+                let _ = region.close().await;
+                return Err(format!(
+                    "hosted fa-mcp exited with status {:?}",
+                    status.code()
+                ));
+            }
+            res
+        } else {
+            fad::serve_book(region.cx(), &listener, limits, &mut server).await
+        };
         // Dropping the listener removes the socket path it created.
         drop(listener);
         let requests = server.requests;
@@ -370,19 +553,21 @@ fn serve(argv: &[String], parsed: &Args, d: &Daemon, dir: &Path) -> u8 {
                 ("dir", s(dir.display().to_string())),
                 ("requests", Json::Int(i128::from(requests))),
             ]);
-            print!(
-                "{}",
-                line(
-                    json,
-                    "fad_stopped",
-                    stopped,
-                    None,
-                    &format!(
-                        "fad for {} stopped after {requests} requests; the writer lease is released",
-                        dir.display()
-                    ),
-                )
+            let stopped_line = line(
+                json,
+                "fad_stopped",
+                stopped,
+                None,
+                &format!(
+                    "fad for {} stopped after {requests} requests; the writer lease is released",
+                    dir.display()
+                ),
             );
+            if mcp_stdio {
+                eprint!("{stopped_line}");
+            } else {
+                print!("{stopped_line}");
+            }
             0
         }
         Err(e) => cli::foundation_error(argv, e, false).0,
@@ -530,7 +715,12 @@ mod tests {
         // fourteen omitted its registered `foundations` fingerprint.
         let names: Vec<&str> = epochs
             .iter()
-            .map(|epoch| epoch.get("name").and_then(Json::as_str).expect("epoch name"))
+            .map(|epoch| {
+                epoch
+                    .get("name")
+                    .and_then(Json::as_str)
+                    .expect("epoch name")
+            })
             .collect();
         assert_eq!(
             names,

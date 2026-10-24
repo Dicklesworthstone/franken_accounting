@@ -330,6 +330,189 @@ fn documents_are_recorded_once_and_entries_must_cite_them() -> std::io::Result<(
 /// entry keeps its own evidence; `fa explain evidence` lists the supplement
 /// with its documents; the same attachment again is the recorded one; an
 /// unknown entry, an unknown document and a missing --evidence are refused.
+/// `fa assert-balance` (plan §9.4, Appendix B AssertBalance): an
+/// assertion equal to the cell's net (debits minus credits) records a
+/// RegisterEquals attestation that holds (asserting again later is a new
+/// assertion at the later sequence); a false one is refused FA-REF-140,
+/// exit 3, naming both amounts and the difference, and records nothing.
+#[test]
+fn assert_balance_records_a_true_assertion_and_refuses_a_false_one() -> std::io::Result<()> {
+    let dir = tmp("assert-balance")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Assert Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let statement = write(
+        &dir,
+        "statement.txt",
+        b"Bank statement: March closing balance",
+    );
+    let out = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            &statement,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    let oid = field(&out, "oid").expect("oid").to_string();
+    let rent = write(
+        &dir,
+        "rent.json",
+        format!("{{\"idempotency_key\":\"rent\",{RENT}}}").as_bytes(),
+    );
+    ok(
+        &book,
+        &["post", "--intent", &rent, "--evidence", &oid, "--json"],
+    );
+
+    // Cash was credited 1500.00: its net is negative. Rent's is positive.
+    let assert = |account: &str, balance: &str| -> Vec<String> {
+        [
+            "assert-balance",
+            "--account",
+            account,
+            "--period",
+            "FY2026-P03",
+            "--balance",
+            balance,
+            "--evidence",
+            &oid,
+            "--json",
+        ]
+        .iter()
+        .map(|a| (*a).to_string())
+        .collect()
+    };
+    fn args(v: &[String]) -> Vec<&str> {
+        v.iter().map(String::as_str).collect()
+    }
+    let cash = ok(&book, &args(&assert("1000", "-1500.00 USD")));
+    assert_eq!(
+        field(&cash, "event"),
+        Some("attestation_recorded"),
+        "{cash}"
+    );
+    assert_eq!(field(&cash, "claim"), Some("RegisterEquals"), "{cash}");
+    assert_eq!(field(&cash, "holds"), Some("true"), "{cash}");
+    assert_eq!(field(&cash, "already_recorded"), Some("false"), "{cash}");
+    // Asserting again later is a new assertion at the later sequence (the
+    // claim binds the sequence it was evaluated at); it holds too.
+    let again = ok(&book, &args(&assert("1000", "-1500.00 USD")));
+    assert_eq!(field(&again, "holds"), Some("true"), "{again}");
+    assert_eq!(field(&again, "already_recorded"), Some("false"), "{again}");
+    assert_ne!(
+        field(&again, "attestation_vid"),
+        field(&cash, "attestation_vid")
+    );
+    let rent_holds = ok(&book, &args(&assert("6000", "1500.00 USD")));
+    assert_eq!(field(&rent_holds, "holds"), Some("true"), "{rent_holds}");
+    let checked = ok(
+        &book,
+        &[
+            "document",
+            "attest",
+            "register-equals",
+            field(&cash, "attestation_vid").unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(field(&checked, "holds"), Some("true"), "{checked}");
+
+    // Planted: the wrong sign, and a wrong amount. Each is refused and
+    // records nothing.
+    let head = |out: &str| field(out, "known_at").map(str::to_string);
+    let before = ok(&book, &["book", "info", "--json"]);
+    assert!(head(&before).is_some(), "{before}");
+    let wrong_sign = refused(
+        &book,
+        &args(&assert("1000", "1500.00 USD")),
+        "FA-REF-140",
+        3,
+    );
+    assert!(
+        wrong_sign.contains("-1500.00 USD") && wrong_sign.contains("off by 3000.00 USD"),
+        "{wrong_sign}"
+    );
+    refused(
+        &book,
+        &args(&assert("6000", "1499.99 USD")),
+        "FA-REF-140",
+        3,
+    );
+    let after = ok(&book, &["book", "info", "--json"]);
+    assert_eq!(head(&after), head(&before), "a false assertion wrote");
+    let (code, _, _) = fa(&book, &["assert-balance", "--account", "1000", "--json"]);
+    assert_eq!(code, 2);
+
+    // Authority precedes observation: an Agent token holding reconcile
+    // passes the bound route, and the balance-assertion law refuses it on
+    // trunk before the cell is read, so an existing and a nonexistent period
+    // get the same refusal and the book learns nothing.
+    let token = dir.join("agent.token").display().to_string();
+    ok(
+        &book,
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "assert-agent",
+            "--profile",
+            "agent",
+            "--op",
+            "read",
+            "--op",
+            "reconcile",
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            "reconcile",
+            "--out",
+            &token,
+            "--json",
+        ],
+    );
+    let mut refusals = Vec::new();
+    for period in ["FY2026-P03", "FY2099-P01"] {
+        let (code, out, err) = fa(
+            &book,
+            &[
+                "--token",
+                &token,
+                "assert-balance",
+                "--account",
+                "1000",
+                "--period",
+                period,
+                "--balance",
+                "-1500.00 USD",
+                "--json",
+            ],
+        );
+        assert_eq!(code, 7, "{period}: {out}\n{err}");
+        refusals.push(field(&out, "refusal_id").map(str::to_string));
+    }
+    assert!(refusals[0].is_some(), "{refusals:?}");
+    assert_eq!(refusals[0], refusals[1], "the period was observed first");
+    Ok(())
+}
+
 #[test]
 fn attach_creates_supplemental_evidence() -> std::io::Result<()> {
     let dir = tmp("attach")?;
@@ -496,6 +679,515 @@ fn attach_creates_supplemental_evidence() -> std::io::Result<()> {
     let (code, out, _) = fa(&book, &["document", "attach", &entry, "--json"]);
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("--evidence"), "{out}");
+    Ok(())
+}
+
+/// fa-lzrn (plan §9.1, fa-646's pipeline): `fa document extract` records a
+/// PDF's text layer as a derived text document. Its bytes bind the source,
+/// `fa document read` shows the text and its lineage, the same extraction
+/// again is the recorded document, `--kind` names a different one, and it is
+/// graded by who ran it, never the source's HumanUpload. A source that is not
+/// a PDF is refused with FA-REF-193 and nothing is written; an unknown oid
+/// is refused.
+#[test]
+fn extract_records_a_pdf_text_layer_as_a_derived_document() -> std::io::Result<()> {
+    let dir = tmp("extract")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Extract Co", "--json"]);
+    let stream = b"BT /F1 12 Tf (ACME SUPPLIES INC.) Tj T* (TOTAL DUE: 1,234.56 USD) Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.7\n1 0 obj\n<< /Length {} >>\nstream\n",
+        stream.len()
+    )
+    .into_bytes();
+    pdf.extend_from_slice(stream);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF\n");
+    let add = |name: &str, bytes: &[u8], kind: &str, mime: &str| -> String {
+        let path = write(&dir, name, bytes);
+        let out = ok(
+            &book,
+            &[
+                "document",
+                "add",
+                &path,
+                "--kind",
+                kind,
+                "--mime",
+                mime,
+                "--grade",
+                "HumanUpload",
+                "--json",
+            ],
+        );
+        field(&out, "oid").unwrap().to_string()
+    };
+    let invoice = add("invoice.pdf", &pdf, "Invoice", "application/pdf");
+    let text = "ACME SUPPLIES INC.\\nTOTAL DUE: 1,234.56 USD";
+
+    let extract = ["document", "extract", invoice.as_str(), "--json"];
+    let out = ok(&book, &extract);
+    assert_eq!(field(&out, "event"), Some("document_extracted"), "{out}");
+    assert_eq!(field(&out, "source_oid"), Some(invoice.as_str()), "{out}");
+    assert_eq!(field(&out, "kind"), Some("Invoice"), "{out}");
+    assert_eq!(field(&out, "grade"), Some("AgentUpload"), "{out}");
+    assert_eq!(field(&out, "self_sourced"), Some("true"), "{out}");
+    assert_eq!(field(&out, "already_recorded"), Some("false"), "{out}");
+    assert_eq!(field(&out, "method"), Some("pdf_text_layer"), "{out}");
+    assert_eq!(field(&out, "replayable"), Some("true"), "{out}");
+    assert!(
+        out.contains(&format!("\"sources\":[\"{invoice}\"]")),
+        "{out}"
+    );
+    assert!(out.contains(text), "{out}");
+    let derived = field(&out, "oid").unwrap().to_string();
+    assert_ne!(derived, invoice);
+    assert!(
+        out.contains(&format!("\"source\":\"D:{derived}\"")),
+        "the text's handle is the derived document: {out}"
+    );
+
+    // Deterministic: the same source again is the recorded document.
+    let again = ok(&book, &extract);
+    assert_eq!(field(&again, "already_recorded"), Some("true"), "{again}");
+    assert_eq!(field(&again, "oid"), Some(derived.as_str()), "{again}");
+
+    // fa document read shows the derived text and its lineage; the source
+    // itself is no derivation.
+    let read = ok(&book, &["document", "read", &derived, "--json"]);
+    assert_eq!(field(&read, "event"), Some("document_read"), "{read}");
+    assert!(
+        read.contains("\"text\":null"),
+        "the envelope is never text: {read}"
+    );
+    assert_eq!(field(&read, "method"), Some("pdf_text_layer"), "{read}");
+    assert!(read.contains(text), "{read}");
+    assert!(
+        read.contains(&format!("\"sources\":[\"{invoice}\"]")),
+        "{read}"
+    );
+    let source = ok(&book, &["document", "read", &invoice, "--json"]);
+    assert!(source.contains("\"extraction\":null"), "{source}");
+
+    // The kind is part of the document's identity.
+    let workpaper = ok(
+        &book,
+        &[
+            "document",
+            "extract",
+            &invoice,
+            "--kind",
+            "Workpaper",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&workpaper, "kind"), Some("Workpaper"), "{workpaper}");
+    assert_ne!(
+        field(&workpaper, "oid"),
+        Some(derived.as_str()),
+        "{workpaper}"
+    );
+
+    // fa explain evidence names the derivation and its lineage when an entry
+    // cites the derived text beside its source; the unreviewed AgentUpload
+    // derivation does not count toward the minimum, the invoice does.
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let intent = write(
+        &dir,
+        "rent.json",
+        format!(
+            r#"{{"idempotency_key":"rent","evidence":["{invoice}",{{"document_oid":"{derived}","role":"Support"}}],{RENT}}}"#
+        )
+        .as_bytes(),
+    );
+    let posted = ok(&book, &["post", "--intent", &intent, "--json"]);
+    let entry = field(&posted, "vid").unwrap().to_string();
+    let explained = ok(&book, &["explain", "evidence", &entry, "--json"]);
+    let line = fa_cli::json::parse(explained.trim()).expect("one robot line");
+    let documents = line
+        .get("data")
+        .and_then(|data| data.get("documents"))
+        .and_then(fa_cli::json::Json::as_arr)
+        .unwrap_or_default();
+    let text = |v: &fa_cli::json::Json, key: &str| {
+        v.get(key)
+            .and_then(fa_cli::json::Json::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let cited = |oid: &str| {
+        documents
+            .iter()
+            .find(|d| text(d, "document_oid") == oid)
+            .unwrap_or_else(|| panic!("{oid} is cited: {explained}"))
+    };
+    let derived_doc = cited(&derived);
+    let extraction = derived_doc.get("extraction").expect("extraction");
+    assert_eq!(text(extraction, "method"), "pdf_text_layer", "{explained}");
+    assert_eq!(
+        extraction
+            .get("replayable")
+            .and_then(fa_cli::json::Json::as_bool),
+        Some(true)
+    );
+    let lineage = derived_doc
+        .get("derived_from")
+        .and_then(fa_cli::json::Json::as_arr)
+        .unwrap_or_default();
+    assert_eq!(lineage.len(), 1, "{explained}");
+    assert_eq!(text(&lineage[0], "document_oid"), invoice, "{explained}");
+    assert_eq!(text(&lineage[0], "grade"), "HumanUpload", "{explained}");
+    assert_eq!(
+        derived_doc
+            .get("counts_toward_minimum")
+            .and_then(fa_cli::json::Json::as_bool),
+        Some(false),
+        "{explained}"
+    );
+    let source_doc = cited(&invoice);
+    assert_eq!(
+        source_doc.get("extraction"),
+        Some(&fa_cli::json::Json::Null),
+        "{explained}"
+    );
+    assert_eq!(
+        source_doc
+            .get("derived_from")
+            .and_then(fa_cli::json::Json::as_arr)
+            .map(<[fa_cli::json::Json]>::len),
+        Some(0),
+        "{explained}"
+    );
+    assert_eq!(
+        source_doc
+            .get("counts_toward_minimum")
+            .and_then(fa_cli::json::Json::as_bool),
+        Some(true),
+        "{explained}"
+    );
+
+    // Planted: a source with no PDF text layer is refused, and nothing is
+    // recorded; an unknown oid and a missing oid are refused.
+    let note = add("note.txt", b"not a pdf", "Other", "text/plain");
+    let before = ok(&book, &["document", "list", "--json"]);
+    let refusal = refused(
+        &book,
+        &["document", "extract", &note, "--json"],
+        "FA-REF-193",
+        3,
+    );
+    assert!(refusal.contains("invalid_header"), "{refusal}");
+    let after = ok(&book, &["document", "list", "--json"]);
+    assert_eq!(
+        before.matches("\"oid\"").count(),
+        after.matches("\"oid\"").count(),
+        "a refused extraction records nothing"
+    );
+    // Derived text is governed as its source is (plan §9.6): a bank
+    // statement's text may only be recorded under a kind its redaction
+    // contract governs, so `--kind Invoice` is refused with nothing written.
+    let statement = add("statement.pdf", &pdf, "BankStatement", "application/pdf");
+    let before = ok(&book, &["document", "list", "--json"]);
+    let refusal = refused(
+        &book,
+        &[
+            "document",
+            "extract",
+            &statement,
+            "--kind",
+            "Invoice",
+            "--grant",
+            "privileged",
+            "--json",
+        ],
+        "FA-REF-083",
+        2,
+    );
+    assert!(refusal.contains("statement-account-block"), "{refusal}");
+    let after = ok(&book, &["document", "list", "--json"]);
+    assert_eq!(
+        before.matches("\"oid\"").count(),
+        after.matches("\"oid\"").count(),
+        "a derivation outside its source's contract records nothing"
+    );
+    let out = ok(
+        &book,
+        &[
+            "document",
+            "extract",
+            &statement,
+            "--grant",
+            "privileged",
+            "--json",
+        ],
+    );
+    assert_eq!(field(&out, "kind"), Some("BankStatement"), "{out}");
+    refused(
+        &book,
+        &["document", "extract", &"ab".repeat(32), "--json"],
+        "FA-REF-081",
+        3,
+    );
+    let (code, out, _) = fa(&book, &["document", "extract", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// fa-qip: `fa search` indexes documents beside entries, in one index. A text
+/// document is found by its own bytes; a PDF only through the text `fa
+/// document extract` derives from it, never its raw bytes (ASCII here, so
+/// they would decode). `--kind` keeps one kind of hit. A document recorded
+/// after a frontier is not found at it; an unknown kind is usage.
+#[test]
+fn search_finds_documents_by_their_own_or_extracted_text() -> std::io::Result<()> {
+    let dir = tmp("search-docs")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Search Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        br#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&book, &["chart", "import", &chart, "--json"]);
+    ok(
+        &book,
+        &["period", "create", "--fiscal-year", "2026", "--json"],
+    );
+    ok(&book, &["period", "open", "FY2026-P03", "--json"]);
+    let add = |name: &str, bytes: &[u8], mime: &str| -> String {
+        let path = write(&dir, name, bytes);
+        let out = ok(
+            &book,
+            &[
+                "document",
+                "add",
+                &path,
+                "--kind",
+                "Invoice",
+                "--mime",
+                mime,
+                "--grade",
+                "HumanUpload",
+                "--json",
+            ],
+        );
+        field(&out, "oid").unwrap().to_string()
+    };
+    let memo = add(
+        "memo.txt",
+        b"Harbor Street lease renewal memo",
+        "text/plain",
+    );
+    let intent = write(
+        &dir,
+        "rent.json",
+        br#"{"idempotency_key":"rent","effective_date":"2026-03-10","description":"Office rent for March","legs":[{"side":"debit","account":"6000","amount":"9.00 USD","memo":"Harbor Street lease"},{"side":"credit","account":"1000","amount":"9.00 USD"}]}"#,
+    );
+    let out = ok(
+        &book,
+        &["post", "--intent", &intent, "--evidence", &memo, "--json"],
+    );
+    let rent = field(&out, "vid").unwrap().to_string();
+    let search = |args: &[&str]| -> String {
+        let mut argv = vec!["search"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        let out = ok(&book, &argv);
+        assert_eq!(field(&out, "event"), Some("search_results"), "{out}");
+        out
+    };
+    let hit = |out: &str, id: &str| out.contains(&format!("\"id\":\"{id}\""));
+
+    // One query finds the document by its bytes and the entry by its memo;
+    // --kind searches one kind only, and `all` is the default's index.
+    let both = search(&["harbor"]);
+    assert!(hit(&both, &memo) && hit(&both, &rent), "{both}");
+    let documents = search(&["harbor", "--kind", "document"]);
+    assert!(
+        hit(&documents, &memo) && !hit(&documents, &rent),
+        "{documents}"
+    );
+    let entries = search(&["harbor", "--kind", "entry"]);
+    assert!(hit(&entries, &rent) && !hit(&entries, &memo), "{entries}");
+    assert_eq!(field(&documents, "records"), Some("1"), "{documents}");
+    let all = search(&["harbor", "--kind", "all"]);
+    assert_eq!(field(&all, "index_digest"), field(&both, "index_digest"));
+    assert_eq!(field(&all, "total"), field(&both, "total"), "{all}");
+    let frontier = field(&both, "known_at").unwrap().to_string();
+
+    // A PDF's raw bytes are never indexed; the text extracted from it is.
+    let stream = b"BT /F1 12 Tf (ACME SUPPLIES INC.) Tj T* (TOTAL DUE: 1,234.56 USD) Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.7\n1 0 obj\n<< /Length {} >>\nstream\n",
+        stream.len()
+    )
+    .into_bytes();
+    pdf.extend_from_slice(stream);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF\n");
+    let invoice = add("invoice.pdf", &pdf, "application/pdf");
+    let unextracted = search(&["acme"]);
+    assert_eq!(field(&unextracted, "total"), Some("0"), "{unextracted}");
+    let out = ok(&book, &["document", "extract", &invoice, "--json"]);
+    let derived = field(&out, "oid").unwrap().to_string();
+    let found = search(&["acme", "--kind", "document"]);
+    assert!(hit(&found, &derived) && !hit(&found, &invoice), "{found}");
+    assert!(
+        found.contains("[ACME] SUPPLIES"),
+        "the snippet is the extracted text: {found}"
+    );
+
+    // At the earlier frontier the derived document is not there to be found.
+    let early = search(&["acme", "--as-known-at", &frontier]);
+    assert_eq!(field(&early, "total"), Some("0"), "{early}");
+    let (code, out, _) = fa(&book, &["search", "harbor", "--kind", "invoice", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// fa-lzrn (plan §9.1, fa-646's subprocess graders): `fa document extract
+/// --tool focr` OCRs an image through the owner's `focr`, resolved in PATH,
+/// over a private copy of the source that is removed afterwards. The derived
+/// document records `franken_ocr`, the tool's version and `replayable =
+/// false`. Planted: with no focr in PATH the tool did not run (exit 4, an
+/// environment failure, never invented text); a focr that fails is
+/// FA-REF-193; an unknown tool is a usage error naming the three.
+#[cfg(unix)]
+#[test]
+fn extract_runs_the_owner_ocr_tool_and_refuses_when_it_is_absent() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp("ocr")?;
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Ocr Co", "--json"]);
+    let scan = write(
+        &dir,
+        "receipt.png",
+        b"\x89PNG\r\n\x1a\nscanned-receipt-pixels",
+    );
+    let added = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            &scan,
+            "--kind",
+            "Receipt",
+            "--mime",
+            "image/png",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    let receipt = field(&added, "oid").unwrap().to_string();
+
+    // A stand-in focr: it checks its argv and that it was handed the
+    // source's bytes, then prints robot JSON as `focr ocr --json` does.
+    let bin = dir.join("bin");
+    std::fs::create_dir(&bin)?;
+    let fake = |name: &str, body: &str| -> std::io::Result<()> {
+        let path = bin.join(name);
+        std::fs::write(&path, body)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+    };
+    fake(
+        "focr",
+        "#!/bin/sh\nPATH=/usr/bin:/bin\nif [ \"$1\" = \"--version\" ]; then echo 'focr 0.3.0-test'; exit 0; fi\n[ \"$1\" = ocr ] && [ \"$2\" = --json ] && [ -f \"$3\" ] || exit 9\ngrep -q scanned-receipt-pixels \"$3\" || exit 8\n# printf, not echo: dash's echo would turn the JSON's \\\\n into a newline.\nprintf '%s\\n' '{\"markdown\":\"CORNER CAFE RECEIPT\\nTOTAL 42.00 USD\",\"tool_version\":\"0.3.0-test\"}'\n",
+    )?;
+    let run = |path: &str, args: &[&str]| -> (i32, String) {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&book)
+            .args(args)
+            .env_remove("FA_BOOK")
+            .env("PATH", path)
+            .output()
+            .expect("run fa");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let reg = registry().expect("verbs.toml");
+        for line in stdout.lines() {
+            let checked = reg.check_line(line);
+            assert!(checked.is_ok(), "args={args:?}: {checked:?}\n{line}");
+        }
+        (out.status.code().unwrap_or(-1), stdout)
+    };
+    let with_focr = bin.display().to_string();
+    let extract = [
+        "document",
+        "extract",
+        receipt.as_str(),
+        "--tool",
+        "focr",
+        "--json",
+    ];
+    let (code, out) = run(&with_focr, &extract);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("document_extracted"), "{out}");
+    assert_eq!(field(&out, "source_oid"), Some(receipt.as_str()), "{out}");
+    assert_eq!(field(&out, "kind"), Some("Receipt"), "{out}");
+    assert_eq!(field(&out, "method"), Some("franken_ocr"), "{out}");
+    assert_eq!(field(&out, "tool_name"), Some("focr"), "{out}");
+    assert_eq!(field(&out, "tool_version"), Some("0.3.0-test"), "{out}");
+    assert_eq!(field(&out, "replayable"), Some("false"), "{out}");
+    assert!(
+        out.contains("CORNER CAFE RECEIPT\\nTOTAL 42.00 USD"),
+        "{out}"
+    );
+    // Provenance names the source by its handle, never the temporary path.
+    assert!(
+        out.contains(&format!(
+            "\"command_line\":[\"focr\",\"ocr\",\"--json\",\"D:{receipt}\"]"
+        )),
+        "{out}"
+    );
+    assert!(!out.contains("fa-extract-"), "{out}");
+    // The private copy of the source is gone.
+    let leftover: Vec<_> = std::fs::read_dir(std::env::temp_dir())?
+        .filter_map(Result::ok)
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("fa-extract-") && name.contains(&receipt)
+        })
+        .collect();
+    assert!(leftover.is_empty(), "{leftover:?}");
+
+    // No focr in PATH: the tool did not run.
+    let empty = dir.join("empty");
+    std::fs::create_dir(&empty)?;
+    let (code, out) = run(&empty.display().to_string(), &extract);
+    assert_eq!(code, 4, "{out}");
+    assert_eq!(field(&out, "event"), Some("error"), "{out}");
+    assert!(out.contains("did not run"), "{out}");
+    // A focr that fails is the extraction refusal.
+    fake(
+        "focr",
+        "#!/bin/sh\necho 'focr: unreadable image' >&2\nexit 2\n",
+    )?;
+    let (code, out) = run(&with_focr, &extract);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-193"), "{out}");
+    // An unknown tool is a usage error.
+    let (code, out) = run(
+        &with_focr,
+        &[
+            "document",
+            "extract",
+            &receipt,
+            "--tool",
+            "tesseract",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("pdf-text"), "{out}");
     Ok(())
 }
 

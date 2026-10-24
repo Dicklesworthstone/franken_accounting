@@ -24,8 +24,8 @@ use crate::refusal::{KernelError, Refusal, Why, code, exit};
 /// Why a leg's entity is not admissible.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LegEntityError {
-    /// A dimension other than the legal entity: the dimension registry
-    /// slice (plan §4.3) has not landed.
+    /// A dimension that is neither the legal entity, the party nor a
+    /// registered kind (`fa_model::DIMENSION_KINDS`).
     OtherDimension,
     Refused(Refusal),
 }
@@ -42,9 +42,9 @@ pub fn leg_entity(spec: &BookSpec, leg: &LegPayload) -> Option<String> {
 /// The entity every leg belongs to (plan §5.2): a declared entity's code,
 /// the book's single entity when a leg names none and exactly one is
 /// declared, or `None` in a book that declares none. Refused: a dimension
-/// other than the legal entity (not implemented), an entity value the book
-/// has not declared (FA-REF-104), a leg without an entity in a book that
-/// declares more than one (FA-REF-005).
+/// that is not the legal entity, the party or a registered kind (not
+/// implemented), an entity value the book has not declared (FA-REF-104), a
+/// leg without an entity in a book that declares more than one (FA-REF-005).
 pub(crate) fn leg_entities(
     spec: &BookSpec,
     legs: &[LegPayload],
@@ -52,11 +52,11 @@ pub(crate) fn leg_entities(
     let codes: Vec<&str> = spec.entities.iter().map(|e| e.code.as_str()).collect();
     let mut out = Vec::with_capacity(legs.len());
     for (i, leg) in legs.iter().enumerate() {
-        if leg
-            .dimension_set
-            .iter()
-            .any(|(d, _)| *d != LEGAL_ENTITY_DIMENSION && *d != fa_model::PARTY_DIMENSION)
-        {
+        if leg.dimension_set.iter().any(|(d, _)| {
+            *d != LEGAL_ENTITY_DIMENSION
+                && *d != fa_model::PARTY_DIMENSION
+                && fa_model::dimension_kind_of(*d).is_none()
+        }) {
             return Err(LegEntityError::OtherDimension);
         }
         let named = leg

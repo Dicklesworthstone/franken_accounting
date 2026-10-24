@@ -177,6 +177,9 @@ const READS: &[&[&str]] = &[
     &["verify", "registers", "--period", "FY2026-P03", "--json"],
     &["capabilities", "--json"],
     &["law", "list", "--json"],
+    // G1 names triage and doctor at the Polish Bar beside tb and explain.
+    &["triage", "--json"],
+    &["doctor", "--json"],
 ];
 
 /// Plan Appendix D `verify-determinism`: every read twice, in separate
@@ -199,6 +202,103 @@ fn verify_determinism() {
             "{args:?} is not byte-deterministic"
         );
     }
+}
+
+/// G1's Polish Bar for `fa post`: a dry run writes nothing (its plan seals
+/// the description under a fresh nonce, so plan bytes are not repeatable by
+/// design; reads are, see verify_determinism); the post prints exactly one
+/// `posted` envelope, and its exact retry names the same entry (the idempotency key
+/// is the identity), so an agent that retries after a lost reply never
+/// double-posts.
+#[test]
+fn post_meets_the_polish_bar() {
+    let (dir, book) = posted_book("post");
+    let fee = write(
+        &dir,
+        "fee.json",
+        r#"{"effective_date":"2026-03-18","idempotency_key":"fee","description":"bank fee","legs":[{"side":"debit","account":"6000","amount":"3.00 USD"},{"side":"credit","account":"1000","amount":"3.00 USD"}]}"#,
+    );
+    let source = write(&dir, "fee.txt", "BANK FEE NOTICE (polish bar fixture)");
+    let added = fa(
+        Some(&book),
+        &[
+            "document",
+            "add",
+            &source,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+            "--json",
+        ],
+    );
+    let oid = json::parse(added.stdout.lines().last().unwrap_or_default())
+        .ok()
+        .and_then(|j| {
+            j.get("data")
+                .and_then(|d| d.get("oid"))
+                .and_then(Json::as_str)
+                .map(str::to_string)
+        })
+        .expect("document oid");
+    let env = [("SOURCE_DATE_EPOCH", "1767225600")];
+    let dry = [
+        "post",
+        "--intent",
+        fee.as_str(),
+        "--evidence",
+        oid.as_str(),
+        "--dry-run",
+        "--json",
+    ];
+    let tb = ["tb", "--period", "FY2026-P03", "--json"];
+    let before = fa_env(Some(&book), &tb, &env);
+    let first = fa_env(Some(&book), &dry, &env);
+    log("post-dry-run", &dry, &first);
+    assert_eq!(first.code, 0, "{}\n{}", first.stdout, first.stderr);
+    let after = fa_env(Some(&book), &tb, &env);
+    assert_eq!(before.stdout, after.stdout, "a dry run wrote to the book");
+
+    let post = [
+        "post",
+        "--intent",
+        fee.as_str(),
+        "--evidence",
+        oid.as_str(),
+        "--json",
+    ];
+    let posted = fa(Some(&book), &post);
+    log("post", &post, &posted);
+    assert_eq!(posted.code, 0, "{}\n{}", posted.stdout, posted.stderr);
+    assert_eq!(
+        events(&posted.stdout)
+            .iter()
+            .filter(|e| e.as_str() == "posted")
+            .count(),
+        1,
+        "{}",
+        posted.stdout
+    );
+    let vid = |run: &Run| {
+        json::parse(run.stdout.lines().last().unwrap_or_default())
+            .ok()
+            .and_then(|j| {
+                j.get("data")
+                    .and_then(|d| d.get("vid"))
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    };
+    let retried = fa(Some(&book), &post);
+    log("post-retry", &post, &retried);
+    assert_eq!(retried.code, 0, "{}\n{}", retried.stdout, retried.stderr);
+    assert!(!vid(&posted).is_empty(), "{}", posted.stdout);
+    assert_eq!(
+        vid(&retried),
+        vid(&posted),
+        "an exact retry named another entry"
+    );
 }
 
 /// Plan Appendix D `verify-stdout-stderr-split`: in robot mode stdout holds
@@ -591,4 +691,98 @@ fn bare_fa_prints_triage_and_exits_zero() {
     }
     let run = fa(None, &["--json"]);
     assert_eq!(events(&run.stdout), ["triage"], "{}", run.stdout);
+}
+
+/// fa-waow: every `fa …` and `fad …` leaf of plan §15.3's verb taxonomy runs
+/// as a registered verb, subcommand or alias, or is listed in `PENDING` with
+/// the bead that owns it. A listed leaf that now resolves must leave the
+/// list, so the list is exactly the plan surface still missing.
+#[test]
+fn every_plan_leaf_present_or_registered() {
+    const PENDING: &[(&str, &str)] = &[
+        (
+            "fa book open",
+            "fa-waow: the plan gives it no meaning beyond fa book info",
+        ),
+        (
+            "fa bundle show",
+            "fa-waow: the standalone fa-verify reads a .fab",
+        ),
+        ("fa close run", "fa-4o0: the CloseRun task DAG"),
+        ("fa close status", "fa-4o0: the CloseRun task DAG"),
+        ("fa exhibit mark", "fa-6l9"),
+        (
+            "fa finding dismiss",
+            "fa-waow: today fa finding review --action dismiss",
+        ),
+        ("fa gen book", "fa-ykbp"),
+        (
+            "fa recon book-to-book",
+            "fa-259c: the multi-book bridge; fa-statements reconcile_book_to_book has no surface",
+        ),
+        ("fa rule backtest", "fa-c34"),
+        ("fa rule propose", "fa-c34"),
+        ("fa unit add", "fa-waow"),
+        (
+            "fa verify bundle",
+            "fa-waow: the standalone fa-verify verifies a bundle",
+        ),
+    ];
+    let plan = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md"
+    ))
+    .expect("the plan");
+    let start = plan.find("**Verb taxonomy (1.0).**").expect("the taxonomy");
+    let end = start + plan[start..].find("**Robot mode.**").expect("its end");
+    let reg = fa_cli::verbs::registry().expect("verbs.toml");
+    let mut unresolved = std::collections::BTreeSet::new();
+    let mut leaves = 0;
+    for span in plan[start..end].split('`').skip(1).step_by(2) {
+        let words: Vec<&str> = span.split_whitespace().collect();
+        let [binary @ ("fa" | "fad"), first, rest @ ..] = words.as_slice() else {
+            continue;
+        };
+        let second = rest
+            .first()
+            .filter(|w| !w.starts_with(['-', '<', '"', '…']));
+        for verb in first.split('|') {
+            let subs: Vec<Option<&str>> = match second {
+                Some(s) => s.split('|').map(Some).collect(),
+                None => vec![None],
+            };
+            for sub in subs {
+                leaves += 1;
+                let leaf = [Some(*binary), Some(verb), sub]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let resolved = if *binary == "fad" {
+                    reg.daemon.verbs.iter().any(|v| v == verb)
+                } else {
+                    let mut argv = vec![verb];
+                    argv.extend(sub);
+                    let expanded = reg.expand_alias(&argv);
+                    reg.verb(&expanded[0])
+                        .is_some_and(|v| match expanded.get(1) {
+                            Some(sub) if !v.subcommands.is_empty() => v.subcommands.contains(sub),
+                            _ => true,
+                        })
+                };
+                if !resolved {
+                    unresolved.insert(leaf);
+                }
+            }
+        }
+    }
+    assert!(leaves >= 140, "{leaves}: the taxonomy's leaves parsed");
+    let pending: std::collections::BTreeSet<String> = PENDING
+        .iter()
+        .map(|(leaf, _)| (*leaf).to_string())
+        .collect();
+    assert_eq!(
+        unresolved, pending,
+        "a plan leaf the binary lacks is listed with its bead, and a listed leaf that now resolves leaves the list"
+    );
 }

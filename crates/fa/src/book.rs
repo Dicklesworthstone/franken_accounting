@@ -959,6 +959,229 @@ impl Book {
         ))
     }
 
+    /// Create one value of a registered dimension (bead fa-ficc) under
+    /// SchemaChange authority; an identical retry writes nothing.
+    pub fn create_dimension_value(
+        &mut self,
+        spec: &crate::dimension::DimensionValueSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionValueRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.create_dimension_value(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Admit `capability` to change rules before anything is observed.
+    pub fn admit_rule_change(
+        &self,
+        principal: VId,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.admit_rule_change(&self.purposes(), principal, capability))
+    }
+
+    /// Journal a Canon rule version (bead fa-c34) under `rule_change`
+    /// authority; the kernel compiles the source itself.
+    pub fn propose_rule_version(
+        &mut self,
+        source: &str,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::rule::RuleVersionRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.propose_rule_version(
+            &purposes, source, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Plan activating a rule version from a date (bead fa-c34); nothing is
+    /// written. Two independent Human approvers approve its proposal.
+    pub fn plan_rule_activation(
+        &self,
+        capability: &fa_journal::Capability,
+        ir_digest: &[u8; 32],
+        effective_from: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<crate::rule::RuleActivationPlan> {
+        with_store!(&self.store, core => core.plan_rule_activation(
+            &self.purposes(), capability, ir_digest, effective_from, idempotency_key,
+        ))
+    }
+
+    /// Commit a planned rule activation under the cited approvals.
+    pub fn activate_rule_version(
+        &mut self,
+        capability: &fa_journal::Capability,
+        plan: crate::rule::RuleActivationPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<crate::rule::RuleActivated> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.activate_rule_version(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Derive and post a rule version's entry over a recorded event (bead
+    /// fa-c34); the kernel re-runs the derivation in the commit.
+    pub fn derive_rule_entry(
+        &mut self,
+        capability: &fa_journal::Capability,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &crate::rule::Inputs,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::Posted> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.derive_rule_entry(
+            &purposes, capability, ir_digest, event, inputs, idempotency_key,
+        )))
+    }
+
+    /// Every activated rule name and its bindings at `known_at`.
+    pub fn rule_names(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::rule::RuleNameRow>)> {
+        with_store!(&self.store, core => core.rule_names(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
+    /// Every rule version at `known_at` (the head when `None`), with the
+    /// prefix read, under current whole-book read authority.
+    pub fn rule_versions(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Vec<crate::rule::RuleVersionRow>)> {
+        with_store!(&self.store, core => core.rule_versions(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
+    /// The rule version addressed by `ir_digest` at `known_at`, if any.
+    pub fn rule_version(
+        &self,
+        ir_digest: &[u8; 32],
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(CommitSeq, Option<crate::rule::RuleVersionRow>)> {
+        with_store!(&self.store, core => core.rule_version(
+            &self.purposes(), ir_digest, known_at, capability,
+        ))
+    }
+
+    /// Every registered kind's dimension value at `known_at` (the head when
+    /// `None`), with the prefix read, under current whole-book read authority.
+    pub fn dimension_values(
+        &self,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<(
+        CommitSeq,
+        Vec<crate::dimension::DimensionValueRow>,
+        crate::dimension::DimensionRequirements,
+    )> {
+        with_store!(&self.store, core => core.dimension_values(
+            &self.purposes(), known_at, capability,
+        ))
+    }
+
+    /// Close one dimension value from a date (bead fa-ficc) under
+    /// SchemaChange authority; a value already closed then writes nothing.
+    pub fn close_dimension_value(
+        &mut self,
+        spec: &crate::dimension::DimensionCloseSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionValueRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.close_dimension_value(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// Require, or stop requiring, a dimension on one account's legs
+    /// (bead fa-ficc) under SchemaChange authority.
+    pub fn record_dimension_requirement(
+        &mut self,
+        spec: &crate::dimension::DimensionRequirementSpec,
+        principal: VId,
+        idempotency_key: &[u8],
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionRequirementRecorded> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.record_dimension_requirement(
+            &purposes, spec, principal, idempotency_key, capability,
+        )))
+    }
+
+    /// `selection` over only the legs tagged with `dimension`'s `value` or a
+    /// value under it (`fa tb --dimension`), folded literally under current
+    /// whole-book read authority.
+    pub fn dimension_trial_balance(
+        &self,
+        selection: &crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+        dimension: &str,
+        value: &str,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::dimension::DimensionTrialBalance> {
+        with_store!(&self.store, core => core.dimension_trial_balance(
+            &self.purposes(), selection, known_at, dimension, value, capability,
+        ))
+    }
+
+    /// Consolidate the book's legal entities for `period` at `known_at` (the
+    /// head when `None`) under current whole-book read authority (plan §12.3).
+    pub fn consolidation(
+        &self,
+        period: &str,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<crate::consolidation::Consolidation> {
+        with_store!(&self.store, core => core.consolidation(
+            &self.purposes(), period, known_at, capability,
+        ))
+    }
+
+    /// Consolidate in the historical book's shared functional currency,
+    /// using independently verified retained valuations. Whole-book Read
+    /// authority is required before loading complete source history.
+    pub fn functional_consolidation(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::consolidation::FunctionalConsolidation> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_consolidation(
+            &purposes, principal, capability, period, known_at,
+        )))
+    }
+
+    /// Certify the exact functional group report, its Rate sources and
+    /// valuation laws under current whole-book Read and Produce authority.
+    pub fn certify_functional_consolidation(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_consolidation(
+            &purposes, principal, capability, period, known_at,
+        )))
+    }
+
     /// Read journaled native subledgers at one prefix under current authority.
     pub fn native_subledgers(
         &self,
@@ -2194,6 +2417,17 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(
             core.plan_with_history(&purposes, intent, capability)
         ))
+    }
+
+    /// The dry-run warnings about `plan` (plan §5.1; see
+    /// [`crate::plan_warnings`]), read at its snapshot. `capability` is the
+    /// one that planned it; the duplicate check needs it to read the book.
+    pub fn plan_warnings(
+        &self,
+        plan: &fa_intents::PostPlan,
+        capability: &fa_journal::Capability,
+    ) -> Result<crate::PlanWarnings, BookError> {
+        with_store!(&self.store, core => core.plan_warnings(&self.purposes(), plan, capability))
     }
 
     /// Commit the exact rehearsed intent under the caller's current authority.
@@ -3837,6 +4071,20 @@ impl Book {
         with_store!(&self.store, core => core.export_proof(&self.purposes(), principal, capability, request))
     }
 
+    /// Export the complete record-bearing suffix from the recorded state
+    /// the recipient retained to a later one (default: the latest), under
+    /// current read and produce authority, as [`crate::SuffixArtifact`]:
+    /// every appended record is disclosed, controls and evidence records
+    /// included. Export never mutates the book.
+    pub fn export_suffix(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: crate::SuffixRequest,
+    ) -> Outcome<crate::SuffixArtifact> {
+        with_store!(&self.store, core => core.export_suffix(&self.purposes(), principal, capability, request))
+    }
+
     /// Cosign the recorded state `state` (default: the latest) with a
     /// witness's key (plan §13.5, fa-qtfd): the state's signed checkpoint
     /// with the witness's signature added, an attestation that this root was
@@ -4533,6 +4781,34 @@ impl Book {
         ))
     }
 
+    /// Compare two recorded frontiers in the book's functional currency under
+    /// current whole-book Read authority, hydrating complete retained history.
+    pub fn functional_statement_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementDiffRequest,
+    ) -> Outcome<crate::StatementDiff> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_statement_diff(
+            &purposes, principal, capability, request,
+        )))
+    }
+
+    /// Certify the functional comparison and both original statement closures
+    /// under current whole-book Read and Produce authority.
+    pub fn certify_functional_statement_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementDiffRequest,
+    ) -> Outcome<crate::CertifiedStatementDiff> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_statement_diff(
+            &purposes, principal, capability, request,
+        )))
+    }
+
     /// Replay a certified statement comparison under current read authority.
     pub fn replay_statement_diff(
         &self,
@@ -4908,15 +5184,29 @@ impl Book {
     }
 
     /// Rank the entries visible at `known_at` (the head when `None`) whose
-    /// description or memos match `query` (`fa search`; see
-    /// [`crate::search`]): an index rebuilt from the journal for this query
-    /// and never stored.
-    pub fn search_entries(
+    /// description or memos match `query`, with the caller's `documents`
+    /// records in the same index (`fa search`; see [`crate::search`]): an
+    /// index rebuilt from the journal for this query and never stored.
+    pub fn search(
         &self,
         query: &str,
         known_at: Option<CommitSeq>,
+        documents: &[crate::SearchIndexableRecord],
+        kind: Option<crate::SearchRecordKind>,
     ) -> Result<crate::SearchResults, BookError> {
-        with_store!(&self.store, core => core.search_entries(&self.purposes(), query, known_at))
+        with_store!(&self.store, core => core.search(&self.purposes(), query, known_at, documents, kind))
+    }
+
+    /// `selection` at `from` and at `to` (the head when `None`), what
+    /// changed between them, and every entry recorded after `from` through
+    /// `to` (`fa diff`; see [`crate::ledger_diff`]).
+    pub fn ledger_diff(
+        &self,
+        selection: &crate::TrialBalanceSelection,
+        from: CommitSeq,
+        to: Option<CommitSeq>,
+    ) -> Result<crate::LedgerDiff, BookError> {
+        with_store!(&self.store, core => core.ledger_diff(&self.purposes(), selection, from, to))
     }
 
     /// Run a compiled profile query at `known_at` (`fa query`; see
@@ -5822,9 +6112,10 @@ impl ReadScope<'_> {
                     fa_statements::Basis::Activity => self.authority.periods(book, seq, &reached),
                 }
             }
-            ReportSelection::OpenItems { .. } | ReportSelection::FunctionalStatement(_) => {
-                self.authority.whole_book(seq)
-            }
+            ReportSelection::OpenItems { .. }
+            | ReportSelection::FunctionalStatement(_)
+            | ReportSelection::Consolidation { .. }
+            | ReportSelection::FunctionalConsolidation { .. } => self.authority.whole_book(seq),
         };
         Ok(admitted.map(|()| seq))
     }

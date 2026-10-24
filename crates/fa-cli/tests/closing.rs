@@ -802,3 +802,61 @@ fn equity_roll_forward_ties_issuances_distributions_and_net_income_through_a_yea
         "reads and refusals write nothing"
     );
 }
+
+/// fa-ficc: an analytic value (a cost center) closes with its account, so a
+/// book whose expense account requires a cost center still closes its year;
+/// a fund has no closing treatment yet and is refused, writing nothing.
+#[test]
+fn closing_binary_closes_cost_center_tagged_nominal_legs_with_their_account() {
+    let tagged = |f: &Fixture, key: &str, dimension: &str, value: &str| {
+        let intent = write(
+            &f.dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-12-30","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"20.00 USD","dimensions":{{"{dimension}":"{value}"}}}},{{"side":"credit","account":"1000","amount":"20.00 USD"}}]}}"#
+            ),
+        );
+        ok(
+            &f.book,
+            &["post", "--intent", &intent, "--evidence", &f.evidence],
+        );
+    };
+    let f = Fixture::new(true);
+    ok(
+        &f.book,
+        &["dimension", "add", "cost_center", "CC10", "--name", "Ops"],
+    );
+    ok(&f.book, &["dimension", "require", "cost_center", "6000"]);
+    f.post("sale", "1000", "4000", "100.00");
+    tagged(&f, "tagged-expense", "cost_center", "CC10");
+    let closed = f.close_now("tagged-close");
+    assert_eq!(text(&closed, "class"), "Closing");
+    let verified = ok(&f.book, &["verify", "close", "FY2026"]);
+    assert_eq!(get(&verified, "nominal_zero_at_close"), &Json::Bool(true));
+
+    let g = Fixture::new(true);
+    ok(
+        &g.book,
+        &["dimension", "add", "fund", "F1", "--name", "General"],
+    );
+    tagged(&g, "fund-expense", "fund", "F1");
+    let before = head(&g.book);
+    let (code, refused) = run(
+        &g.book,
+        &[
+            "close",
+            "year-end",
+            "--fiscal-year",
+            "2026",
+            "--period",
+            "FY2026-CLOSE",
+            "--key",
+            "fund-close",
+            "--evidence",
+            &g.evidence,
+            "--yes",
+        ],
+    );
+    assert_eq!(code, 3, "{}", refused.render());
+    assert_eq!(head(&g.book), before);
+}

@@ -339,6 +339,20 @@ pub fn dimension_value_vid(book: Id128, dimension_code: &str, value_code: &str) 
     )
 }
 
+/// `vid(RuleVersion) = H("fa:vid:rule-version:v1" ‖ book_id ‖ ir_digest)`:
+/// a Canon rule version is addressed by its content (plan §10.3).
+#[must_use]
+pub fn rule_version_vid(book: Id128, ir_digest: &[u8; 32]) -> VId {
+    derive_vid(b"fa:vid:rule-version:v1", &[&book.0, ir_digest])
+}
+
+/// `vid(RuleName) = H("fa:vid:rule-name:v1" ‖ book_id ‖ name)`: where a
+/// rule's activations say which version is in force from which date.
+#[must_use]
+pub fn rule_name_vid(book: Id128, name: &str) -> VId {
+    derive_vid(b"fa:vid:rule-name:v1", &[&book.0, name.as_bytes()])
+}
+
 /// The `dimension_set` value of legal entity `code` in `book`.
 #[must_use]
 pub fn entity_value_vid(book: Id128, code: &str) -> VId {
@@ -362,6 +376,77 @@ pub fn party_vid(book: Id128, code: &str) -> VId {
 #[must_use]
 pub fn party_value_vid(book: Id128, code: &str) -> VId {
     dimension_value_vid(book, PARTY_DIMENSION_CODE, code)
+}
+
+/// A registered dimension kind whose values a book creates with
+/// `fa dimension add` (plan §4.1 `Dimension.kind`, bead fa-ficc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DimensionKind {
+    /// The dimension's code, which is also its kind's name.
+    pub code: &'static str,
+    /// The fixed dimension id a leg's `dimension_set` carries its values under.
+    pub id: u32,
+    /// The `dimension_kind` tag of its Dimension vertex.
+    pub tag: i64,
+}
+
+/// The registered dimension kinds besides the legal entity (id 1, created
+/// at genesis) and the party (id 12, created by `fa party add`). A book has
+/// at most one dimension of each kind, so the kind fixes its id; none of
+/// them balances. Ids ascend in this order, as a `dimension_set` does.
+pub const DIMENSION_KINDS: [DimensionKind; 8] = [
+    DimensionKind {
+        code: "cost_center",
+        id: 2,
+        tag: 3,
+    },
+    DimensionKind {
+        code: "department",
+        id: 3,
+        tag: 4,
+    },
+    DimensionKind {
+        code: "project",
+        id: 4,
+        tag: 5,
+    },
+    DimensionKind {
+        code: "product",
+        id: 5,
+        tag: 6,
+    },
+    DimensionKind {
+        code: "region",
+        id: 6,
+        tag: 7,
+    },
+    DimensionKind {
+        code: "fund",
+        id: 7,
+        tag: 8,
+    },
+    DimensionKind {
+        code: "grant",
+        id: 8,
+        tag: 9,
+    },
+    DimensionKind {
+        code: "segment",
+        id: 9,
+        tag: 10,
+    },
+];
+
+/// The registered kind named `code`.
+#[must_use]
+pub fn dimension_kind(code: &str) -> Option<DimensionKind> {
+    DIMENSION_KINDS.into_iter().find(|kind| kind.code == code)
+}
+
+/// The registered kind whose values carry dimension id `id`.
+#[must_use]
+pub fn dimension_kind_of(id: u32) -> Option<DimensionKind> {
+    DIMENSION_KINDS.into_iter().find(|kind| kind.id == id)
 }
 
 /// `vid(Instrument) = H("fa:vid:instrument:v1" ‖ book_id ‖ code)` (plan §4.5, §4.9).

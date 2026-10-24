@@ -95,6 +95,16 @@ calibration = "planted"
 summary = "Entries one of whose recorded approvals was made by the preparing principal, or migrated entries whose legacy source_approved_by matches source_entered_by. For a class sod_policy.toml covers a native hit proves a capability misconfiguration; for imported history or an uncovered class it is a control finding."
 
 [[procedure]]
+id = "jet.self_sourced_evidence"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L62"
+tie_break = "entry_vid"
+complexity = "O(entries + documents + attestations)"
+calibration = "planted"
+summary = "Entries whose only evidence, the documents they cite and every supplement known at the coordinate, carries a self-sourced grade (AgentUpload or Generated, evidence_policy.toml `self_sourced`; plan §9.3). High severity unless every such document carries a Reviewed attestation by a principal other than its uploader, then Medium: a review is what promotion needs, and the documents are still the book's own. Entries citing no document are outside the population."
+
+[[procedure]]
 id = "jet.thin_descriptions"
 version = 1
 claim = "statistical"
@@ -139,6 +149,34 @@ default = 30
 meaning = "Two same-leg entries whose effective dates differ by 1..=window_days days form a pair."
 
 [[procedure]]
+id = "duplicates.near"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L63"
+tie_break = "entry_vid"
+complexity = "O(legs log legs + entries × candidates)"
+calibration = "planted"
+summary = "Pairs of live entries with the same leg shape (account, side, unit and dimensions, so the same parties), effective dates at most window_days apart, every unit's debit total within tolerance_bp basis points of the larger, and descriptions at least min_similarity_pct similar (character-bigram Dice over the lowercased alphanumeric text, rounded down). Entries with identical legs are left to duplicates.same_same_same and same_same_different, supersession pairs are excluded, and each entry is paired with its nearest qualifying later entry only. Each entry is compared with at most 64 later entries of its shape; an entry past that cap, and an entry whose description cannot be opened, is reported."
+
+[[parameter]]
+procedure = "duplicates.near"
+name = "window_days"
+default = 30
+meaning = "Two entries whose effective dates differ by 0..=window_days days are compared."
+
+[[parameter]]
+procedure = "duplicates.near"
+name = "tolerance_bp"
+default = 100
+meaning = "Amounts are near when |a - b| * 10000 <= tolerance_bp * max(a, b) in every unit (0..=10000; 100 = 1%)."
+
+[[parameter]]
+procedure = "duplicates.near"
+name = "min_similarity_pct"
+default = 80
+meaning = "The least description similarity, in whole percent (1..=100), for a near pair."
+
+[[procedure]]
 id = "numbers.sequence_gaps"
 version = 1
 claim = "statistical"
@@ -150,13 +188,13 @@ summary = "Gaps in the numeric tail of external ids per (system, prefix): the co
 
 [[procedure]]
 id = "benford.first_digit"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L10"
 tie_break = "none"
 complexity = "O(legs)"
 calibration = "planted"
-summary = "First-digit distribution of live posted leg magnitudes on one side (debit by default) in one registered currency unit (USD by default) of at least one whole unit against Benford's law: the mean absolute deviation (Nigrini's conformity ranges) and the chi-square statistic in fixed point, with the population stated. Excludes reversals, superseded entries, the opposite side, other currencies and non-currency quantity units."
+summary = "First-digit distribution of live posted leg magnitudes on one side (debit by default) in one registered currency unit (USD by default) of at least one whole unit against Benford's law: the mean absolute deviation (Nigrini's conformity ranges) and the chi-square statistic in fixed point, with the population stated. Excludes reversals, superseded entries, the opposite side, other currencies and non-currency quantity units. With account_type (version 2), only legs on accounts of that one registered type are examined (fa benford --scope)."
 
 [[parameter]]
 procedure = "benford.first_digit"
@@ -193,6 +231,12 @@ procedure = "benford.first_digit"
 name = "side"
 default = 0
 meaning = "Which side of each live posting entry is sampled so a balanced two-leg entry is counted once, never twice: 0 = debit legs, 1 = credit legs."
+
+[[parameter]]
+procedure = "benford.first_digit"
+name = "account_type"
+default = 0
+meaning = "0 examines legs on every account; a type tag registered in registries/account_types.toml (1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense, ...) examines only legs on accounts of that type, so a scoped population (fa benford --scope expenses) is never pooled with the rest. Version 2 adds this parameter; the default population is version 1's."
 
 # ---- Cutoff and aging (plan §11.7) -----------------------------------------
 
@@ -885,13 +929,13 @@ summary = "Live postings on accounts holding the `intercompany` account role (re
 
 [[procedure]]
 id = "benford.second_digit"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L30"
 tie_break = "none"
 complexity = "O(legs)"
 calibration = "planted"
-summary = "Second-digit (0..=9) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's second-digit law: Nigrini MAD conformity bands (0.008 / 0.010 / 0.012), per-digit Z-score, and 10-bucket chi-square (df=9) in fixed point."
+summary = "Second-digit (0..=9) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's second-digit law: Nigrini MAD conformity bands (0.008 / 0.010 / 0.012), per-digit Z-score, and 10-bucket chi-square (df=9) in fixed point. With account_type (version 2), only legs on accounts of that one registered type are examined (fa benford --scope)."
 
 [[parameter]]
 procedure = "benford.second_digit"
@@ -929,15 +973,21 @@ name = "side"
 default = 0
 meaning = "0 = debit legs, 1 = credit legs."
 
+[[parameter]]
+procedure = "benford.second_digit"
+name = "account_type"
+default = 0
+meaning = "0 examines legs on every account; a type tag registered in registries/account_types.toml (1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense, ...) examines only legs on accounts of that type, so a scoped population (fa benford --scope expenses) is never pooled with the rest. Version 2 adds this parameter; the default population is version 1's."
+
 [[procedure]]
 id = "benford.first_two_digits"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L31"
 tie_break = "none"
 complexity = "O(legs)"
 calibration = "planted"
-summary = "First-two-digits (10..=99) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's first-two-digits law: Nigrini 90-bucket MAD conformity bands (0.0012 / 0.0018 / 0.0022 in ten-thousandths), max per-bucket Z-score, and chi-square (df=89) in fixed point."
+summary = "First-two-digits (10..=99) distribution of live posted leg magnitudes on one side in one currency unit of at least ten whole units against Benford's first-two-digits law: Nigrini 90-bucket MAD conformity bands (0.0012 / 0.0018 / 0.0022 in ten-thousandths), max per-bucket Z-score, and chi-square (df=89) in fixed point. With account_type (version 2), only legs on accounts of that one registered type are examined (fa benford --scope)."
 
 [[parameter]]
 procedure = "benford.first_two_digits"
@@ -975,6 +1025,12 @@ name = "side"
 default = 0
 meaning = "0 = debit legs, 1 = credit legs."
 
+[[parameter]]
+procedure = "benford.first_two_digits"
+name = "account_type"
+default = 0
+meaning = "0 examines legs on every account; a type tag registered in registries/account_types.toml (1 Asset, 2 Liability, 3 Equity, 4 Revenue, 5 Expense, ...) examines only legs on accounts of that type, so a scoped population (fa benford --scope expenses) is never pooled with the rest. Version 2 adds this parameter; the default population is version 1's."
+
 [[procedure]]
 id = "numbers.relative_size_factor"
 version = 1
@@ -996,6 +1052,34 @@ procedure = "numbers.relative_size_factor"
 name = "min_subset_size"
 default = 3
 meaning = "Minimum postings in a subset before RSF is evaluated."
+
+[[procedure]]
+id = "numbers.round_amount_density"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L64"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Accounts whose share of round legs (a nonzero magnitude that is a whole multiple of 10^round_power units, as in jet.round_amounts) exceeds the book's own share by a binomial z of at least sqrt(z_squared): (x N - n X)^2 >= z_squared * n X (N - X) with x N > n X, for the account's x round legs of n and the book's X of N, in exact integers. Accounts with fewer than min_legs nonzero legs are not tested, and nothing is flagged when the book has no round leg or only round legs. Medium, or High when z is at least twice the threshold; the finding cites the account and its first round legs."
+
+[[parameter]]
+procedure = "numbers.round_amount_density"
+name = "round_power"
+default = 2
+meaning = "A leg is round when its magnitude is a whole multiple of 10^round_power units (2 = a multiple of 100.00; at most 30)."
+
+[[parameter]]
+procedure = "numbers.round_amount_density"
+name = "min_legs"
+default = 20
+meaning = "The fewest nonzero legs an account needs before its round share is tested."
+
+[[parameter]]
+procedure = "numbers.round_amount_density"
+name = "z_squared"
+default = 9
+meaning = "The square of the least binomial z flagged (9 = z of 3); at least 1."
 
 [[procedure]]
 id = "numbers.threshold_splitting"
@@ -1204,14 +1288,14 @@ default = 10
 meaning = "Maximum civil days between overlapping counterparty receipts/applications in a lapping sequence."
 
 [[procedure]]
-id = "recon.book_to_book"
+id = "recon.attested_register_compare"
 version = 1
 claim = "invariant"
 evidence = "FA-EVID-L43"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "Exact reconciliation between Instrument vertices that mirror GL accounts (and RegisterEquals attestations) and the journal fold at the snapshot coordinate: any divergence between a mirrored instrument/attested register cell and the posted account balance is an invariant violation."
+summary = "Exact reconciliation between Instrument vertices that mirror GL accounts (and RegisterEquals attestations) and the journal fold at the snapshot coordinate: any divergence between a mirrored instrument/attested register cell and the posted account balance is an invariant violation. One book against what was attested about it; plan §12.2's recon.book_to_book (book against book, every difference explained by rule version) waits for multi-book (fa-259c). Registered as recon.book_to_book before fa-kxc4."
 
 [[procedure]]
 id = "recon.bank_statement_drift"
@@ -1469,6 +1553,29 @@ default = 90
 meaning = "Investor cohort bucket width in civil days from the earliest investor inflow."
 
 [[procedure]]
+id = "graph.ponzi_motif"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L65"
+tie_break = "entry_vid"
+complexity = "O(legs log legs)"
+calibration = "planted"
+summary = "Windows in which new investors' money funds payouts to earlier investors (plan §11.4). Cash is the accounts holding the `cash` account role; a subscription is cash in against an Equity account or one holding the `investor_capital` account role, in an entry naming exactly one party, and an investor's cohort is the window_days window of its first subscription, counted from the unit's first. Per window and unit: new money is what investors in that window's cohort subscribed in it, and redemptions are the cash paid in it to investors of earlier cohorts, whatever the contra account. A window is flagged when new money is at least min_coverage_bps of its redemptions: High when the window's operating cash in (cash in that is not a capital movement) is less than the redemptions, otherwise Medium. The statistic is new money over redemptions in basis points, and the finding cites the redemption entries, then the new-money entries. Refused when no account holds the cash role."
+effective_through = "optional"
+
+[[parameter]]
+procedure = "graph.ponzi_motif"
+name = "window_days"
+default = 90
+meaning = "The cohort and comparison window in civil days, counted from the unit's first subscription; at least 1."
+
+[[parameter]]
+procedure = "graph.ponzi_motif"
+name = "min_coverage_bps"
+default = 10000
+meaning = "The least new money, as basis points of the window's redemptions to earlier investors, that flags it (10000 = new money covers every redemption); at least 1."
+
+[[procedure]]
 id = "distribution.rising_tide"
 version = 2
 claim = "statistical"
@@ -1503,14 +1610,14 @@ default = 0
 meaning = "Explicit distributable cash pool in unit mantissa (0 = use the book's ending positive cash/asset balance in that unit)."
 
 [[procedure]]
-id = "damages.but_for"
+id = "damages.attested_baseline"
 version = 1
 claim = "statistical"
 evidence = "FA-EVID-L59"
 tie_break = "account_vid"
 complexity = "O(legs log legs)"
 calibration = "planted"
-summary = "But-for damages schedule (plan §11.6): computes per-account and per-period damages deltas between actual live postings and counterfactual baseline expectations (RegisterEquals baseline attestations, superseded/restated original folds, or scenario scratch-book snapshots)."
+summary = "Per-account and per-period deltas between actual live postings and a baseline taken from RegisterEquals attestations or superseded/restated original folds. Plan §11.6's damages.but_for (the certified delta between a counterfactual scenario and trunk) is fa scenario diff --certify. Registered as damages.but_for before fa-kxc4."
 effective_through = "optional"
 
 

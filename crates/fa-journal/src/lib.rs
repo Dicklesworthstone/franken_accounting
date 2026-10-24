@@ -28,6 +28,7 @@ pub mod case;
 pub mod chart;
 pub mod closing;
 pub mod custody;
+pub mod dimension;
 pub mod draft;
 pub mod engagement;
 pub mod entity;
@@ -58,6 +59,7 @@ pub mod redaction;
 pub mod refusal;
 pub mod revaluation;
 pub mod rows;
+pub mod rule;
 pub mod scenario;
 pub mod schedule;
 pub mod scratch;
@@ -79,7 +81,7 @@ pub use attestation::{
 };
 pub use batch::{
     BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
-    post_batch, read_outcome, request_digest,
+    post_batch, post_batch_with_crash, read_outcome, request_digest,
 };
 pub use blob::BlobStore;
 pub use carrying::{

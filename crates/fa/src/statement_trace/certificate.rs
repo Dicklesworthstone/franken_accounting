@@ -406,6 +406,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(h) => h,
             Err(r) => return Ok(Err(r)),
         };
+        if comparison.uses_functional_valuations() {
+            return Ok(Err(invalid(
+                "functional statement comparisons do not support publication attribution; replay the functional comparison directly",
+            )));
+        }
         let request = match comparison.request() {
             Ok(r) => r,
             Err(r) => return Ok(Err(r)),

@@ -451,6 +451,8 @@ pub(crate) fn functional_tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         "--root",
         "--certificate-out",
         "--branch",
+        "--as-issued-to",
+        "--as-reported-in",
     ] {
         if args.flag(flag).is_some() {
             return Err(usage(
@@ -459,7 +461,12 @@ pub(crate) fn functional_tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             ));
         }
     }
-    for flag in ["--summary", "--certify", "--as-originally-reported"] {
+    for flag in [
+        "--summary",
+        "--certify",
+        "--as-originally-reported",
+        "--as-currently-stated",
+    ] {
         if args.switch(flag) {
             return Err(usage(
                 format!("{flag} is not supported by functional period activity"),
@@ -587,7 +594,14 @@ fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             STOCK_USAGE,
         ));
     }
-    for flag in ["--fiscal-year", "--root", "--certificate-out", "--branch"] {
+    for flag in [
+        "--fiscal-year",
+        "--root",
+        "--certificate-out",
+        "--branch",
+        "--as-issued-to",
+        "--as-reported-in",
+    ] {
         if args.flag(flag).is_some() {
             return Err(usage(
                 format!("{flag} is not supported by functional stock"),
@@ -595,7 +609,12 @@ fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
     }
-    for flag in ["--summary", "--certify", "--as-originally-reported"] {
+    for flag in [
+        "--summary",
+        "--certify",
+        "--as-originally-reported",
+        "--as-currently-stated",
+    ] {
         if args.switch(flag) {
             return Err(usage(
                 format!("{flag} is not supported by functional stock"),

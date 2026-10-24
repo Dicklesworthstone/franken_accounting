@@ -1,7 +1,7 @@
 //! Exact statement bridges between two recorded frontiers (plan §8.3/§12.5).
 //!
 //! Both sides must ask the SAME accounting question: book, branch, definition,
-//! period columns and native-unit universe. Only recorded time may differ.
+//! period columns and valuation basis. Only recorded time may differ.
 //! This is not a restatement-case approval or an assertion that either prefix
 //! was issued to anyone. The storage-facing API certifies/replays both sources.
 //! The pure comparison checks structure, not journal membership or source truth.
@@ -10,19 +10,23 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::{Refusal, exit};
 use fa_model::{Id128, Writer, domain_digest};
+use fa_money::UnitId;
 use fa_statements::{AccountMapping, Statement, StatementDefinition};
 use fgdb_types::CommitSeq;
 
 use crate::StatementSelection;
 
 mod certificate;
-pub(crate) use certificate::CERTIFICATE_FORMAT;
+pub(crate) use certificate::{CERTIFICATE_FORMAT, FUNCTIONAL_CERTIFICATE_FORMAT};
 pub use certificate::{
     CertifiedStatementDiff, MAX_STATEMENT_DIFF_CERTIFICATE_BYTES, StatementDiffCertificate,
 };
 
 pub const OUTPUT_FORMAT: &[u8] = b"fa:statement-diff:v1";
+pub const FUNCTIONAL_OUTPUT_FORMAT: &[u8] = b"fa:functional-statement-diff:v1";
+const FUNCTIONAL_VALUATION_BASIS: &str = "retained-base-amounts";
 const SOURCE_DOMAIN: &[u8] = b"fa:statement-diff-source:v1";
+const FUNCTIONAL_SOURCE_DOMAIN: &[u8] = b"fa:functional-statement-diff-source:v1";
 const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_UNITS: usize = 4096;
 const MAX_COLUMNS: usize = 8;
@@ -44,7 +48,7 @@ pub struct StatementLineChange {
     pub unit_id: u32,
     pub before: Vec<i128>,
     pub after: Vec<i128>,
-    /// Exact `after - before`, in the corresponding native unit and column.
+    /// Exact `after - before`, in the corresponding report unit and column.
     pub delta: Vec<i128>,
 }
 
@@ -63,6 +67,7 @@ pub struct StatementMappingChange {
 pub struct StatementDiff {
     before: Statement,
     after: Statement,
+    functional_unit: Option<UnitId>,
     before_digest: [u8; 32],
     after_digest: [u8; 32],
     lines: Vec<StatementLineChange>,
@@ -75,7 +80,7 @@ pub(crate) fn invalid(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §8.3 / §12.5 (same statement question at two recorded frontiers)",
-        "use the same book, branch, definition, periods and native units on both sides, with before <= after; compare policy or presentation changes separately",
+        "use the same book, branch, definition, periods, valuation basis and units on both sides, with before <= after; compare policy or presentation changes separately",
     )
 }
 
@@ -223,6 +228,22 @@ impl StatementDiff {
     /// NOT certificate verification. Use `AsyncBook::certify_statement_diff`
     /// and `replay_statement_diff` to bind it to retained journal history.
     pub fn between(before: Statement, after: Statement) -> Result<Self, Refusal> {
+        Self::between_with_basis(before, after, false)
+    }
+
+    /// Compare reports already evaluated from retained functional valuations.
+    /// Both sides must contain the same single base unit. As with `between`,
+    /// this pure arithmetic operation does not authenticate the source basis;
+    /// retained-source APIs verify both functional certificates before calling it.
+    pub fn between_functional(before: Statement, after: Statement) -> Result<Self, Refusal> {
+        Self::between_with_basis(before, after, true)
+    }
+
+    fn between_with_basis(
+        before: Statement,
+        after: Statement,
+        functional: bool,
+    ) -> Result<Self, Refusal> {
         let before_units = validate_source(&before)?;
         let after_units = validate_source(&after)?;
         if before.book_id != after.book_id
@@ -237,8 +258,23 @@ impl StatementDiff {
                 "statement comparison changes more than the recorded frontier",
             ));
         }
-        let before_digest = domain_digest(SOURCE_DOMAIN, &[&bounded_source(&before)?]);
-        let after_digest = domain_digest(SOURCE_DOMAIN, &[&bounded_source(&after)?]);
+        let functional_unit = if functional {
+            if before_units.len() != 1 {
+                return Err(invalid(
+                    "functional statement comparison requires one identical base unit on both sides",
+                ));
+            }
+            Some(UnitId(before_units[0]))
+        } else {
+            None
+        };
+        let source_domain = if functional {
+            FUNCTIONAL_SOURCE_DOMAIN
+        } else {
+            SOURCE_DOMAIN
+        };
+        let before_digest = domain_digest(source_domain, &[&bounded_source(&before)?]);
+        let after_digest = domain_digest(source_domain, &[&bounded_source(&after)?]);
         let mut lines = Vec::with_capacity(before.lines.len());
         for (old, new) in before.lines.iter().zip(&after.lines) {
             let mut delta = Vec::with_capacity(old.amounts.len());
@@ -277,6 +313,7 @@ impl StatementDiff {
         Ok(Self {
             before,
             after,
+            functional_unit,
             before_digest,
             after_digest,
             lines,
@@ -291,6 +328,23 @@ impl StatementDiff {
     #[must_use]
     pub fn after(&self) -> &Statement {
         &self.after
+    }
+    /// The retained functional base unit, or `None` for native-unit reporting.
+    #[must_use]
+    pub fn functional_unit(&self) -> Option<UnitId> {
+        self.functional_unit
+    }
+    #[must_use]
+    pub fn is_functional(&self) -> bool {
+        self.functional_unit.is_some()
+    }
+    #[must_use]
+    pub fn output_format(&self) -> &'static [u8] {
+        if self.is_functional() {
+            FUNCTIONAL_OUTPUT_FORMAT
+        } else {
+            OUTPUT_FORMAT
+        }
     }
     #[must_use]
     pub fn lines(&self) -> &[StatementLineChange] {
@@ -329,8 +383,11 @@ impl StatementDiff {
                 .str(&m.line_code);
         }
         let mut w = Writer::new();
-        w.bytes(OUTPUT_FORMAT)
-            .fixed(&self.book_id().0)
+        w.bytes(self.output_format());
+        if let Some(unit) = self.functional_unit {
+            w.u32(unit.0).str(FUNCTIONAL_VALUATION_BASIS);
+        }
+        w.fixed(&self.book_id().0)
             .fixed(&self.before.branch_id.0)
             .u64(self.before.known_at)
             .u64(self.after.known_at)

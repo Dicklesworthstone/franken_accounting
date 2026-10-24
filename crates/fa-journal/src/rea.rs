@@ -38,7 +38,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
 
 use crate::KernelError;
 use crate::chart::{admit_schema_change, schema_control_proposal};
-use crate::genesis::{BookContext, DIMENSION_KIND_LEGAL_ENTITY, UnitPolicy, read_book_spec};
+use crate::genesis::{BookContext, DIMENSION_KIND_LEGAL_ENTITY, UnitPolicy};
 use crate::refusal::{Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, book_root, bytes, edge_id, prop, scalar_bytes, scalar_text, text};
 
@@ -2190,8 +2190,8 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
     if known_at > db.frontier()? {
         return Err(corrupt("requested frontier is beyond the book head"));
     }
-    let book_spec =
-        read_book_spec(db)?.ok_or_else(|| corrupt("no book spec on the root vertex"))?;
+    let book_spec = crate::genesis::read_book_spec_at(db, known_at)?
+        .ok_or_else(|| corrupt("no book spec at the selected frontier"))?;
     let rows = db.vertices_at(known_at)?;
     let stored_edges = db.edges_at(known_at)?;
     let vertices_by_vid: BTreeMap<VId, &VertexRow> = rows.iter().map(|r| (r.vid, r)).collect();

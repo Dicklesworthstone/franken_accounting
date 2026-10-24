@@ -204,6 +204,10 @@ pub const EXTERNAL_SUBLEDGER_EXTENSION: u16 = 30;
 /// Extension tag 31, a kernel-minted recurring occurrence: version, schedule,
 /// zero-based occurrence index and the committed TimeEvidence tick.
 pub const RECURRING_OCCURRENCE_EXTENSION: u16 = 31;
+/// `fa:rule-inputs:v1`: a rule-derived entry's inputs in Canon's canonical
+/// bytes (`fa_canon::encode_inputs`), so its derivation can be re-run
+/// (plan §10.3, FA-INV-05 `rule-reproduction`).
+pub const RULE_INPUTS_EXTENSION: u16 = 32;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -238,6 +242,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     RECURRING_SCHEDULE_EXTENSION,
     EXTERNAL_SUBLEDGER_EXTENSION,
     RECURRING_OCCURRENCE_EXTENSION,
+    RULE_INPUTS_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -412,6 +417,8 @@ impl ControlKind {
     pub const ENGAGEMENT_TRANSITION: Self = Self(16);
     pub const CASE_TRANSITION: Self = Self(17);
     pub const RECURRING_SCHEDULE: Self = Self(18);
+    /// A Canon rule version activated from a date (plan §10.3, fa-c34).
+    pub const RULE_ACTIVATION: Self = Self(19);
 
     /// Every registered kind: `(kind, name, the control class it mints)`.
     pub const ALL: &'static [(Self, &'static str, EntryClass)] = &[
@@ -492,6 +499,11 @@ impl ControlKind {
             Self::RECURRING_SCHEDULE,
             "recurring_schedule",
             EntryClass::SCHEDULE_CONTROL,
+        ),
+        (
+            Self::RULE_ACTIVATION,
+            "rule_activation",
+            EntryClass::POLICY_CONTROL,
         ),
     ];
 
@@ -2472,10 +2484,15 @@ mod tests {
                 }
             );
         }
-        // Keep the negative probes beyond every registered control kind.
-        // 18 is now the registered recurring-schedule control; the ALL loop
-        // above proves it decodes. Keep four genuinely unregistered probes.
-        for id in [0, 19, 20, u16::MAX] {
+        // The negative probes stay beyond every registered control kind, so
+        // registering the next kind does not turn one into a valid id.
+        let beyond = ControlKind::ALL
+            .iter()
+            .map(|(kind, _, _)| kind.id())
+            .max()
+            .unwrap()
+            + 1;
+        for id in [0, beyond, beyond + 1, u16::MAX] {
             assert!(
                 EntryOrigin::decode(&mut Reader::new(&origin(id))).is_err(),
                 "control_kind {id}"

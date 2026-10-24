@@ -623,6 +623,14 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // records, which the generation root each certificate binds and the
     // bundle's checkpoint cover. The fold and every report-byte pin are
     // unchanged.
+    // fa-0bi and fa-03s then moved the three certificates and the bundle,
+    // measured together on x86_64: the recurring_schedule control kind (18)
+    // is an `entry_classes` row every report certificate binds, and the
+    // RecurringSchedule (54) and ExternalSubledgerBatch (55) labels change
+    // the symbol-table digest the book's genesis records. The fx_laws edits
+    // of the same window bind only functional statements, which this
+    // fixture does not issue. The fold and every report-byte pin are
+    // unchanged.
     // fa-0bi (83efdee3) and fa-03s (0867169a) then add the recurring control
     // kind (18) to entry_classes and labels RecurringSchedule (54) and
     // ExternalSubledgerBatch (55) to symbols. Relative to the previous pin

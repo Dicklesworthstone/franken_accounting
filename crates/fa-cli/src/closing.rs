@@ -504,7 +504,7 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let intent = with_approvals(review, args)?;
         let plan = book.plan(intent, &capability)??;
         if args.switch("--dry-run") {
-            return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan);
+            return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);
         }
         let posted = book.commit_plan(plan, &capability)??;
         ctx.out.at_book(&book)?;
@@ -613,7 +613,7 @@ fn year_end(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let plan = book.plan(intent, &capability)??;
     if args.switch("--dry-run") {
-        return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan);
+        return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);
     }
     let posted = book.commit_plan(plan, &capability)??;
     ctx.out.at_book(&book)?;

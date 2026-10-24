@@ -1849,12 +1849,20 @@ impl ToolSpec {
                 let via_prop = self.via_property(spec);
                 let has_path = allow_files && obj.get(&via_prop).is_some_and(|v| !v.is_null());
                 if stdin.is_none() && !has_path {
-                    return Err(ArgError {
-                        message: format!("{wire}: inline `{}` is required", spec.property),
-                        fix: format!(
+                    let fix = if allow_files {
+                        format!(
+                            "pass the complete content in `{}`, or a relative path inside the launch --files root in `{via_prop}`",
+                            spec.property
+                        )
+                    } else {
+                        format!(
                             "pass the complete content in `{}`; host filesystem paths are not accepted",
                             spec.property
-                        ),
+                        )
+                    };
+                    return Err(ArgError {
+                        message: format!("{wire}: inline `{}` is required", spec.property),
+                        fix,
                     });
                 }
                 continue;
@@ -2430,6 +2438,11 @@ mod tests {
             ),
             (
                 "fa_read_statement",
+                json!({"name": "diff", "definition": "income-statement", "for": "P", "before": "5", "after": "9", "functional": true, "certify": true}),
+                "statement",
+            ),
+            (
+                "fa_read_statement",
                 json!({"name": "trace", "definition": "income-statement", "for": "P", "before": "5", "after": "9", "certify": true}),
                 "statement",
             ),
@@ -2442,6 +2455,16 @@ mod tests {
                 "fa_query_gql",
                 json!({"statement": "MATCH (a:Account) RETURN a.code", "certify": true}),
                 "query",
+            ),
+            (
+                "fa_close_consolidate",
+                json!({"period": "FY2026-P03", "as_known_at": "42", "certify": true}),
+                "consolidate",
+            ),
+            (
+                "fa_close_consolidate",
+                json!({"period": "FY2026-P03", "functional": true, "certify": true}),
+                "consolidate",
             ),
         ] {
             let tool = mcp.tool_by_wire(wire).expect("certifiable report");
@@ -2456,6 +2479,10 @@ mod tests {
                 .expect("inline report certification");
             assert_eq!(invocation.argv[0], verb);
             assert!(invocation.argv.iter().any(|arg| arg == "--certify"));
+            if arguments.get("functional") == Some(&json!(true)) {
+                assert_eq!(schema["properties"]["functional"]["type"], json!("boolean"));
+                assert!(invocation.argv.iter().any(|arg| arg == "--functional"));
+            }
             assert!(invocation.stdin.is_none());
             let mut disallowed = arguments;
             disallowed["certificate_out"] = json!("/tmp/report.cert");
@@ -2858,6 +2885,7 @@ mod tests {
                 "checkpoint",
                 "inclusion",
                 "consistency",
+                "suffix",
                 "prefix",
                 "balance",
                 "evidence-disclosure"
@@ -2865,7 +2893,11 @@ mod tests {
         );
         assert_eq!(
             tool.events(reg),
-            vec!["proof_exported", "evidence_disclosure_exported"]
+            vec![
+                "proof_exported",
+                "proof_suffix_exported",
+                "evidence_disclosure_exported"
+            ]
         );
         assert!(!reg.verb("proof").unwrap().writes);
         let state = "a".repeat(64);
@@ -2899,6 +2931,18 @@ mod tests {
                 vec![
                     "proof",
                     "consistency",
+                    "--state",
+                    &state,
+                    "--next-state",
+                    &next,
+                    "--json",
+                ],
+            ),
+            (
+                json!({"kind": "suffix", "state": state, "next_state": next}),
+                vec![
+                    "proof",
+                    "suffix",
                     "--state",
                     &state,
                     "--next-state",

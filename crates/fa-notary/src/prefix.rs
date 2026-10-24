@@ -172,6 +172,35 @@ pub fn prove_prefix_with_records<V: asupersync::fs::Vfs + Clone>(
     journal.prefix_proof_with_records()
 }
 
+/// The complete record-bearing suffix of `state`'s journal after the
+/// recipient's retained `previous` statement
+/// ([`Journal::suffix_proofs_with_records`]), read from the journal exactly
+/// as [`prove_prefix_with_records`] reads its prefix. Every appended record
+/// is disclosed, controls and evidence records included: the caller must
+/// authorize the whole suffix.
+pub fn prove_suffix_with_records<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    previous: &crate::Statement,
+    state: &AccumulatorState,
+    remaining_bytes: usize,
+) -> Outcome<suffix::RecordSuffix> {
+    let observed_at = db.frontier()?;
+    let journal = match Journal::read(db, book, Some(state.through_seq), state.evidence_after)? {
+        Ok(journal) => journal,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if AccumulatorState::of_journal(&journal, state.prev_state_oid) != *state {
+        return Ok(Err(drift(
+            "the journal does not reproduce the selected accumulator state",
+        )));
+    }
+    if let Err(refusal) = journal.verify_unchanged_at(db, observed_at)? {
+        return Ok(Err(refusal));
+    }
+    journal.suffix_proofs_with_records(previous, remaining_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

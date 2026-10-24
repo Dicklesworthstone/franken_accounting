@@ -695,6 +695,24 @@ pub fn read_book_spec<V: asupersync::fs::Vfs + Clone>(
     BookSpec::decode(&payload).map(Some)
 }
 
+/// The Book payload at one retained recorded frontier. Historical consumers
+/// must not let a later migration or metadata publication replace this input.
+pub fn read_book_spec_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    at: CommitSeq,
+) -> Result<Option<BookSpec>, KernelError> {
+    let Some(row) = db.vertex_at(book_root(), at)? else {
+        return Ok(None);
+    };
+    if !row.labels.contains(&label::BOOK) {
+        return Err(KernelError::Corrupt(
+            "historical book root has no Book label".into(),
+        ));
+    }
+    let payload = bytes(&row, property::FA_PAYLOAD, "historical book._fa_payload")?;
+    BookSpec::decode(&payload).map(Some)
+}
+
 /// Reconstruct the runtime unit table from the complete journaled payloads,
 /// checking every mirror and the binary's supported definitions. Additional
 /// binary rows are allowed but are not installed into an existing book.

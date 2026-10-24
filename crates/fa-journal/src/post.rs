@@ -374,6 +374,20 @@ impl PreparedPost {
         db: &mut Database<V>,
         ctx: &PurposeContexts,
     ) -> Outcome<Posted> {
+        self.commit_with_crash(db, ctx, None).await
+    }
+
+    /// [`Self::commit`] through the substrate's production crash-point seam
+    /// (`WriteTxn::commit_with_crash`), for the lab campaign that crashes a
+    /// post's publication at each registered point and checks the book after
+    /// reopening (fa-0fl). `None` is `commit`: both run this one path.
+    #[doc(hidden)]
+    pub async fn commit_with_crash<V: asupersync::fs::Vfs + Clone>(
+        self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<Posted> {
         let commit = ctx.commit();
         commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
         let Self {
@@ -414,7 +428,7 @@ impl PreparedPost {
             return Ok(Err(refusal));
         }
         let prepared_at = txn.basis();
-        match txn.commit(db, &commit).await {
+        match txn.commit_with_crash(db, &commit, crash_at).await {
             Ok(seq) => Ok(Ok(Posted::Committed {
                 entry_ref,
                 recorded_at: seq,
@@ -1348,11 +1362,21 @@ pub(crate) fn reconciliation_edges(
 pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
+    class: EntryClass,
     effective_date: fa_time::DateDay,
     legs: &[fa_model::LegPayload],
     mut read_vertex: impl FnMut(VId) -> Result<Option<VertexRow>, KernelError>,
 ) -> Outcome<Vec<AccountRow>> {
     let mut accounts: Vec<AccountRow> = Vec::with_capacity(legs.len());
+    // Each registered dimension's requiring accounts, by one point read of
+    // its Dimension vertex per entry (fa-ficc); none bind legs the law
+    // dictates.
+    let chooses = crate::dimension::preparer_chooses_legs(class);
+    let required = if chooses {
+        crate::dimension::required_dimensions(book, &mut read_vertex)?
+    } else {
+        std::collections::BTreeMap::new()
+    };
     for (i, leg) in legs.iter().enumerate() {
         let Some(row) = read_vertex(leg.account_ref)? else {
             return Ok(Err(Refusal::new(
@@ -1491,6 +1515,30 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
                     )));
                 }
             }
+        }
+        // An applying leg carries its open item's values as dictated
+        // (they must match the target's), so like a dictated class it is not
+        // judged against windows or requirements; each value must exist.
+        let chosen = chooses && leg.settles.is_empty();
+        if let Some(refusal) = crate::dimension::admit_leg_dimensions(
+            leg,
+            i,
+            effective_date,
+            chosen,
+            &mut read_vertex,
+        )? {
+            return Ok(Err(refusal));
+        }
+        if chosen
+            && let Some(refusal) = crate::dimension::admit_required_dimensions(
+                leg,
+                i,
+                &account.code,
+                effective_date,
+                &required,
+            )
+        {
+            return Ok(Err(refusal));
         }
         accounts.push(account);
     }
@@ -1691,11 +1739,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let unsupported_origin = match &proposal.origin {
-        EntryOrigin::Intent { .. } | EntryOrigin::Migration { .. } => None,
-        EntryOrigin::Rule { .. } => Some((
-            "Rule",
-            "leave the rule-derived entry unposted until Canon verifies its rule, event and inputs (fa-c34)",
-        )),
+        // A rule-derived entry is admitted by re-running its rule inside the
+        // transaction (step 5a'), never on its own word.
+        EntryOrigin::Intent { .. } | EntryOrigin::Migration { .. } | EntryOrigin::Rule { .. } => {
+            None
+        }
         EntryOrigin::Sweep { .. } => Some((
             "Sweep",
             "run the kernel expiry sweep under a committed tick; only that sweep may mint Sweep provenance",
@@ -2910,6 +2958,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         }
     }
 
+    // 5a'. Canon provenance (plan §10.3, FA-INV-05 `rule-reproduction`): a
+    //      rule-derived entry posts only when its version, in force on its
+    //      effective date, re-run over the witnessed event with its recorded
+    //      inputs, reproduces everything a derivation determines.
+    if let Err(refusal) = crate::rule::verify_rule_origin(&txn, db, book, proposal)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+
     // 5b. Evidence minimum (plan §9.2, FA-INV-05 `evidence-minimum`): every
     //     citation names a document this book holds under its exact
     //     commitment, read as a witness of this transaction, as is the
@@ -2976,9 +3033,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
 
     // 6. Account and native subledger laws are shared with automatic effects.
-    let accounts = match admit_accounts(db, book, proposal.effective_date, &proposal.legs, |vid| {
-        Ok(txn.vertex(db, vid)?)
-    })? {
+    let accounts = match admit_accounts(
+        db,
+        book,
+        proposal.class,
+        proposal.effective_date,
+        &proposal.legs,
+        |vid| Ok(txn.vertex(db, vid)?),
+    )? {
         Ok(accounts) => accounts,
         Err(refusal) => {
             txn.abort();
@@ -3911,6 +3973,22 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             vec![],
         );
         batches.push(derived_from);
+    }
+    // Canon lineage (plan §4.1 GENERATED_BY): a rule-derived entry -> the
+    // RuleVersion that derived it, beside its DERIVED_FROM to the event.
+    if let EntryOrigin::Rule {
+        rule_version_oid, ..
+    } = &entry.proposal.origin
+    {
+        let version = fa_model::rule_version_vid(book.book_id, &rule_version_oid.0);
+        let mut generated_by = WriteBatch::new(relation::GENERATED_BY);
+        generated_by.add_edge(
+            edge_id(relation::GENERATED_BY, evid, version),
+            evid,
+            version,
+            vec![],
+        );
+        batches.push(generated_by);
     }
     batches.extend(evidence_edges(evid, &evidence));
     if let Some(review) = external_review {

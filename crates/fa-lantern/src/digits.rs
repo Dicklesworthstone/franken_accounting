@@ -10,6 +10,7 @@
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_money::{Side, UnitKind};
+use fgdb_types::VId;
 
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{Finding, LanternError, Meter, Params, Procedure, Severity, Snapshot, Statistic};
@@ -34,6 +35,8 @@ pub const MAX_POPULATION: u64 = 1_000_000;
 
 /// The leading decimal digit of a positive magnitude.
 #[must_use]
+// The loop leaves m < 10, so the narrowing keeps every bit.
+#[allow(clippy::cast_possible_truncation)]
 pub fn first_digit(mut m: u128) -> u8 {
     while m >= 10 {
         m /= 10;
@@ -94,7 +97,8 @@ pub fn expected_counts_1e9(n: u64, expected_1e9: &[i128]) -> Result<Vec<u64>, La
         remainders.push((r, idx));
     }
 
-    let deficit = n.saturating_sub(floor_sum) as usize;
+    let deficit = usize::try_from(n.saturating_sub(floor_sum))
+        .map_err(|_| LanternError::Overflow("benford expected count deficit"))?;
     remainders.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     for &(_, idx) in remainders.iter().take(deficit) {
         floors[idx] += 1;
@@ -194,6 +198,47 @@ pub fn ks_critical_1e9(n: u64, alpha_bps: u32) -> Result<i128, LanternError> {
 }
 
 /// `benford.first_digit`.
+/// The account type a digit test's population is scoped to: `None` (0)
+/// examines every account; a registered type tag (registries/account_types.toml,
+/// e.g. 5 = Expense) examines only legs on accounts of that type, so a scoped
+/// population (`fa benford --scope expenses`) is never pooled with the rest.
+fn account_type_scope(params: &Params, procedure: &str) -> Result<Option<u8>, LanternError> {
+    let tag = params.get("account_type")?;
+    if tag == 0 {
+        return Ok(None);
+    }
+    u8::try_from(tag)
+        .ok()
+        .filter(|tag| {
+            fa_model::AccountType::ALL
+                .iter()
+                .any(|(registered, ..)| registered == tag)
+        })
+        .map(Some)
+        .ok_or_else(|| LanternError::Parameter {
+            procedure: procedure.into(),
+            name: "account_type".into(),
+            message:
+                "must be 0 (every account) or a type tag registered in account_types.toml (1..=8)"
+                    .into(),
+        })
+}
+
+/// Whether a leg on `account` belongs to the scoped population. The chart is
+/// the snapshot's own, read at its coordinate; a leg on an account it lacks
+/// is a corrupt snapshot, never silently dropped.
+fn in_scope(snapshot: &Snapshot, account: VId, scope: Option<u8>) -> Result<bool, LanternError> {
+    let Some(tag) = scope else {
+        return Ok(true);
+    };
+    let row = snapshot.accounts.get(&account).ok_or_else(|| {
+        LanternError::from(KernelError::Corrupt(
+            "a leg names an account the snapshot's chart lacks".into(),
+        ))
+    })?;
+    Ok(row.account_type == tag)
+}
+
 pub struct FirstDigit {
     params: Params,
 }
@@ -204,7 +249,7 @@ impl Procedure for FirstDigit {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -233,6 +278,7 @@ impl Procedure for FirstDigit {
                 message: "must be an ISO 4217 numeric code in 1..=999".into(),
             });
         }
+        let scope = account_type_scope(&self.params, Self::ID)?;
         let target_side = match self.params.get("side")? {
             0 => Side::Debit,
             1 => Side::Credit,
@@ -256,6 +302,7 @@ impl Procedure for FirstDigit {
                 };
                 if leg.side != target_side
                     || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                    || !in_scope(snapshot, leg.account_ref, scope)?
                 {
                     continue;
                 }
@@ -355,6 +402,8 @@ pub const BENFORD_FIRST_TWO_1E9: [i128; 90] = [
 
 /// The first two decimal digits (`10..=99`) of a magnitude `>= 10`.
 #[must_use]
+// The loop leaves m < 100, so the narrowing keeps every bit.
+#[allow(clippy::cast_possible_truncation)]
 pub fn first_two_digits(mut m: u128) -> u8 {
     while m >= 100 {
         m /= 10;
@@ -473,7 +522,7 @@ impl Procedure for SecondDigit {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -502,6 +551,7 @@ impl Procedure for SecondDigit {
                 message: "must be an ISO 4217 numeric code in 1..=999".into(),
             });
         }
+        let scope = account_type_scope(&self.params, Self::ID)?;
         let target_side = match self.params.get("side")? {
             0 => Side::Debit,
             1 => Side::Credit,
@@ -525,6 +575,7 @@ impl Procedure for SecondDigit {
                 };
                 if leg.side != target_side
                     || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                    || !in_scope(snapshot, leg.account_ref, scope)?
                 {
                     continue;
                 }
@@ -603,7 +654,7 @@ impl Procedure for FirstTwoDigits {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -632,6 +683,7 @@ impl Procedure for FirstTwoDigits {
                 message: "must be an ISO 4217 numeric code in 1..=999".into(),
             });
         }
+        let scope = account_type_scope(&self.params, Self::ID)?;
         let target_side = match self.params.get("side")? {
             0 => Side::Debit,
             1 => Side::Credit,
@@ -655,6 +707,7 @@ impl Procedure for FirstTwoDigits {
                 };
                 if leg.side != target_side
                     || !matches!(unit.kind, UnitKind::Currency { iso4217 } if iso4217 == currency)
+                    || !in_scope(snapshot, leg.account_ref, scope)?
                 {
                     continue;
                 }
@@ -756,11 +809,13 @@ mod tests {
         assert_eq!(second_digit(98_765), 8);
         // A population distributed exactly per the table (scaled by 1e9
         // legs) deviates by nothing but the table's own rounding.
-        let counts: [u64; 9] = core::array::from_fn(|d| BENFORD_1E9[d] as u64);
+        let counts: [u64; 9] = core::array::from_fn(|d| u64::try_from(BENFORD_1E9[d]).unwrap());
         assert_eq!(mad_1e9(&counts).unwrap(), 0);
-        let counts2: [u64; 10] = core::array::from_fn(|d| BENFORD_SECOND_1E9[d] as u64);
+        let counts2: [u64; 10] =
+            core::array::from_fn(|d| u64::try_from(BENFORD_SECOND_1E9[d]).unwrap());
         assert_eq!(mad_table_1e9(&counts2, &BENFORD_SECOND_1E9).unwrap(), 0);
-        let counts12: [u64; 90] = core::array::from_fn(|d| BENFORD_FIRST_TWO_1E9[d] as u64);
+        let counts12: [u64; 90] =
+            core::array::from_fn(|d| u64::try_from(BENFORD_FIRST_TWO_1E9[d]).unwrap());
         assert_eq!(mad_table_1e9(&counts12, &BENFORD_FIRST_TWO_1E9).unwrap(), 0);
         // A uniform population is far from Benford: MAD = Σ|1/9 − P_d| / 9
         // ≈ 0.0597 (0.53745 / 9), exactly 59_717_035e-9 in this arithmetic.

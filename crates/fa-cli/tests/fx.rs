@@ -37,6 +37,12 @@ fn rows<'a>(value: &'a Json, key: &str) -> &'a [Json] {
 }
 
 fn run(book: &Path, args: &[&str], stdin: Option<&str>) -> (i32, Json) {
+    let (status, mut output) = run_many(book, args, stdin);
+    assert_eq!(output.len(), 1, "{args:?}: {output:?}");
+    (status, output.remove(0))
+}
+
+fn run_many(book: &Path, args: &[&str], stdin: Option<&str>) -> (i32, Vec<Json>) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
         .arg(book)
@@ -64,16 +70,17 @@ fn run(book: &Path, args: &[&str], stdin: Option<&str>) -> (i32, Json) {
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let lines: Vec<_> = stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "{args:?}: {stdout}\n{stderr}");
-    fa_cli::verbs::registry()
-        .unwrap()
-        .check_line(lines[0])
-        .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}\n{stderr}"));
-    (
-        output.status.code().unwrap(),
-        json::parse(lines[0]).unwrap(),
-    )
+    let registry = fa_cli::verbs::registry().unwrap();
+    let lines = stdout
+        .lines()
+        .map(|line| {
+            registry
+                .check_line(line)
+                .unwrap_or_else(|error| panic!("{args:?}: {error}\n{stdout}\n{stderr}"));
+            json::parse(line).unwrap()
+        })
+        .collect();
+    (output.status.code().unwrap(), lines)
 }
 
 fn ok(book: &Path, args: &[&str]) -> Json {
@@ -109,6 +116,10 @@ impl Fixture {
     /// `BookKeys::for_development(seed)`, so a test can reopen its store
     /// directly (a planted defect); otherwise `fa book create` makes it.
     fn build(development_keys: Option<u8>) -> Self {
+        Self::build_with_group(development_keys, false)
+    }
+
+    fn build_with_group(development_keys: Option<u8>, group: bool) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let dir = std::env::temp_dir().join(format!(
@@ -125,6 +136,10 @@ impl Fixture {
         let book = dir.join("book");
         match development_keys {
             None => {
+                assert!(
+                    !group,
+                    "the group fixture uses known keys for corruption tests"
+                );
                 ok(&book, &["book", "create", "--name", "Exact FX"]);
             }
             Some(seed) => {
@@ -139,7 +154,18 @@ impl Fixture {
                         base_unit: units.lookup("USD").unwrap(),
                         calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).unwrap(),
                         time_zone_policy: None,
-                        entities: Vec::new(),
+                        entities: if group {
+                            [("P", "Parent"), ("S1", "Sub One"), ("S2", "Sub Two")]
+                                .into_iter()
+                                .map(|(code, name)| fa_journal::genesis::LegalEntitySpec {
+                                    code: code.into(),
+                                    name: name.into(),
+                                    functional_unit: units.lookup("USD").unwrap(),
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
                         opening_date: None,
                     },
                     Entropy::deterministic(u64::from(seed)),
@@ -150,7 +176,26 @@ impl Fixture {
             }
         }
         let chart = dir.join("chart.json");
-        std::fs::write(&chart, r#"{"accounts":[{"code":"1000","name":"EUR Cash","type":"Asset","unit":"EUR"},{"code":"1200","name":"EUR Receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR Revenue","type":"Revenue","unit":"EUR"},{"code":"1100","name":"USD Cash","type":"Asset","unit":"USD"},{"code":"4100","name":"USD Revenue","type":"Revenue","unit":"USD"}]}"#).unwrap();
+        let accounts = if group {
+            r#"{"accounts":[
+{"code":"1000","name":"EUR Cash","type":"Asset","unit":"EUR"},
+{"code":"1100","name":"USD Cash","type":"Asset","unit":"USD"},
+{"code":"1300","name":"EUR Due from affiliates","type":"Asset","unit":"EUR","roles":["intercompany"]},
+{"code":"1500","name":"USD Investments","type":"Asset","unit":"USD","roles":["investment_in_subsidiary"]},
+{"code":"2300","name":"EUR Due to affiliates","type":"Liability","unit":"EUR","roles":["intercompany"]},
+{"code":"3000","name":"USD Capital","type":"Equity","unit":"USD","roles":["contributed_capital"]},
+{"code":"3010","name":"EUR Capital","type":"Equity","unit":"EUR","roles":["contributed_capital"]},
+{"code":"3200","name":"NCI equity","type":"Equity","unit":"USD","roles":["noncontrolling_interest"]},
+{"code":"4000","name":"EUR Revenue","type":"Revenue","unit":"EUR"},
+{"code":"4300","name":"EUR Intercompany fees","type":"Revenue","unit":"EUR","roles":["intercompany_activity"]},
+{"code":"5000","name":"USD Expense","type":"Expense","unit":"USD"},
+{"code":"5100","name":"EUR Expense","type":"Expense","unit":"EUR"},
+{"code":"5300","name":"EUR Intercompany expense","type":"Expense","unit":"EUR","roles":["intercompany_activity"]},
+{"code":"5900","name":"NCI income","type":"Expense","unit":"USD","roles":["noncontrolling_interest_income"]}]}"#
+        } else {
+            r#"{"accounts":[{"code":"1000","name":"EUR Cash","type":"Asset","unit":"EUR"},{"code":"1200","name":"EUR Receivable","type":"Asset","unit":"EUR"},{"code":"4000","name":"EUR Revenue","type":"Revenue","unit":"EUR"},{"code":"1100","name":"USD Cash","type":"Asset","unit":"USD"},{"code":"4100","name":"USD Revenue","type":"Revenue","unit":"USD"}]}"#
+        };
+        std::fs::write(&chart, accounts).unwrap();
         ok(&book, &["chart", "import", chart.to_str().unwrap()]);
         ok(&book, &["period", "create", "--fiscal-year", "2026"]);
         ok(&book, &["period", "open", "FY2026-P03"]);
@@ -981,6 +1026,38 @@ fn functional_activity_requires_its_explicit_scope_and_refuses_unvalued_foreign_
             "2026-03-05",
         ],
         vec!["--functional", "--activity", "--fiscal-year", "2026"],
+        // The restatement views pin a native report's known-at; a functional
+        // report takes none of them, never silently ignoring one (fa-wrrw).
+        vec![
+            "--functional",
+            "--activity",
+            "--period",
+            "FY2026-P03",
+            "--as-currently-stated",
+            "--as-known-at",
+            "1",
+        ],
+        vec![
+            "--functional",
+            "--period",
+            "FY2026-P03",
+            "--as-currently-stated",
+        ],
+        vec![
+            "--functional",
+            "--period",
+            "FY2026-P03",
+            "--as-issued-to",
+            "board",
+        ],
+        vec![
+            "--functional",
+            "--activity",
+            "--period",
+            "FY2026-P03",
+            "--as-reported-in",
+            "C:0000000000000000000000000000000000000000000000000000000000000000",
+        ],
     ] {
         let mut args = vec!["tb"];
         args.extend(selection);
@@ -1270,6 +1347,752 @@ fn rewrite_entry(
     runtime
         .block_on(async { db.write(&ctx.commit(), batch).await })
         .expect("commit the planted rewrite");
+}
+
+/// One functional currency per group, with foreign transactions valued at
+/// their retained rates: capital, eliminations and NCI all reconcile in USD.
+#[test]
+fn functional_consolidation_replays_exact_valuations_and_refuses_unvalued_or_rewritten_sources() {
+    const SEED: u8 = 0x69;
+    let f = Fixture::build_with_group(Some(SEED), true);
+    ok(&f.book, &["period", "open", "FY2026-P02"]);
+    for (owned, pct) in [("S1", "4/5"), ("S2", "1/1")] {
+        ok(
+            &f.book,
+            &[
+                "party",
+                "relate",
+                "P",
+                owned,
+                "--kind",
+                "owns",
+                "--basis",
+                "equity_voting",
+                "--valid-from",
+                "2026-01-01",
+                "--pct",
+                pct,
+            ],
+        );
+    }
+    let february = f.rate(
+        "group-capital",
+        "spot_close",
+        "2026-02-01",
+        "5",
+        "4",
+        "HalfEven",
+    );
+    let march = f.rate(
+        "group-trading",
+        "spot_close",
+        "2026-03-10",
+        "6",
+        "5",
+        "HalfEven",
+    );
+    let february_rate = text(data(&february), "oid");
+    let march_rate = text(data(&march), "oid");
+    let post = |key: &str, date: &str, legs: &[(&str, &str, &str, &str)], rate: Option<&str>| {
+        let legs = legs.iter().map(|(side, account, amount, entity)| {
+            format!(r#"{{"side":"{side}","account":"{account}","amount":"{amount}","entity":"{entity}"}}"#)
+        }).collect::<Vec<_>>().join(",");
+        let fx = rate.map_or_else(String::new, |oid| {
+            format!(r#", "fx":{{"law":"SpotClose","rates":["D:{oid}"]}}"#)
+        });
+        let path = f.file(
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{legs}]{fx}}}"#
+            ),
+        );
+        f.post(&path)
+    };
+    post(
+        "group-usd-capital",
+        "2026-02-01",
+        &[
+            ("debit", "1100", "1000.00 USD", "P"),
+            ("credit", "3000", "1000.00 USD", "P"),
+            ("debit", "1500", "700.00 USD", "P"),
+            ("credit", "1100", "700.00 USD", "P"),
+            ("debit", "1100", "200.00 USD", "S2"),
+            ("credit", "3000", "200.00 USD", "S2"),
+        ],
+        None,
+    );
+    // S1's EUR 500 capital is USD 625: P's USD 500 is exactly its 80%.
+    // February's EUR 10 sale contributes USD 12.50 to stock, not March income.
+    post(
+        "group-eur-capital",
+        "2026-02-01",
+        &[
+            ("debit", "1000", "510.00 EUR", "S1"),
+            ("credit", "3010", "500.00 EUR", "S1"),
+            ("credit", "4000", "10.00 EUR", "S1"),
+        ],
+        Some(february_rate),
+    );
+    let trade = post(
+        "group-eur-trade",
+        "2026-03-10",
+        &[
+            ("debit", "1000", "80.00 EUR", "S1"),
+            ("debit", "5100", "20.00 EUR", "S1"),
+            ("credit", "4000", "100.00 EUR", "S1"),
+        ],
+        Some(march_rate),
+    );
+    post(
+        "group-eur-fee",
+        "2026-03-10",
+        &[
+            ("debit", "1300", "10.00 EUR", "P"),
+            ("credit", "4300", "10.00 EUR", "P"),
+            ("debit", "5300", "10.00 EUR", "S1"),
+            ("credit", "2300", "10.00 EUR", "S1"),
+        ],
+        Some(march_rate),
+    );
+    post(
+        "group-usd-loss",
+        "2026-03-10",
+        &[
+            ("debit", "5000", "25.00 USD", "S2"),
+            ("credit", "1100", "25.00 USD", "S2"),
+        ],
+        None,
+    );
+
+    // Native-unit consolidation cannot match a USD investment to EUR capital.
+    let (status, native) = run(&f.book, &["consolidate", "--period", "FY2026-P03"], None);
+    assert_eq!(status, 3, "{}", native.render());
+    assert_eq!(text(data(&native), "refusal_id"), "FA-REF-194");
+    let command = ["consolidate", "--functional", "--period", "FY2026-P03"];
+    let before = head(&f.book);
+    let report = ok(&f.book, &command);
+    assert_eq!(head(&f.book), before, "reporting never posts a conversion");
+    assert_eq!(text(&report, "event"), "consolidation_run");
+    assert_eq!(text(data(&report), "base_unit"), "USD");
+    assert_eq!(
+        text(data(&report), "valuation_basis"),
+        "retained-base-amounts"
+    );
+    assert_eq!(data(&report).get("functional"), Some(&Json::Bool(true)));
+    let amount = |report: &Json, statement: &str, line: &str| -> String {
+        let statement = data(report).get(statement).unwrap();
+        assert!(
+            rows(statement, "lines")
+                .iter()
+                .all(|line| text(line, "unit") == "USD")
+        );
+        let line = rows(statement, "lines")
+            .iter()
+            .find(|row| text(row, "code") == line)
+            .unwrap();
+        rows(line, "amounts")[0].as_str().unwrap().to_string()
+    };
+    for (statement, line, expected) in [
+        ("balance_sheet", "assets", "1208.50 USD"),
+        ("balance_sheet", "liabilities", "0.00 USD"),
+        ("balance_sheet", "total_equity", "1208.50 USD"),
+        ("balance_sheet", "balance_check", "0.00 USD"),
+        ("income_statement", "revenue", "120.00 USD"),
+        ("income_statement", "expense", "65.80 USD"),
+        ("income_statement", "net_income", "54.20 USD"),
+    ] {
+        assert_eq!(
+            amount(&report, statement, line),
+            expected,
+            "{statement}/{line}"
+        );
+    }
+    let equity = rows(data(&report), "equity");
+    assert_eq!(equity.len(), 1);
+    for (field, expected) in [
+        ("parent_total_equity", "1012.00 USD"),
+        ("subsidiaries_total_equity", "896.50 USD"),
+        ("equity_eliminations", "-844.30 USD"),
+        ("non_controlling_interest_equity", "144.30 USD"),
+        ("controlling_interest_equity", "1064.20 USD"),
+        ("consolidated_total_equity", "1208.50 USD"),
+    ] {
+        assert_eq!(text(&equity[0], field), expected, "{field}");
+    }
+    let legs = |name: &str| {
+        let mut legs = rows(data(&report), name)
+            .iter()
+            .flat_map(|entry| {
+                assert_eq!(text(entry, "unit"), "USD");
+                rows(entry, "legs").iter().map(|leg| {
+                    (
+                        text(leg, "entity").to_string(),
+                        text(leg, "code").to_string(),
+                        text(leg, "debits").to_string(),
+                        text(leg, "credits").to_string(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        legs.sort();
+        legs
+    };
+    let expected_legs = |items: &[(&str, &str, &str, &str)]| {
+        let mut items = items
+            .iter()
+            .map(|(entity, code, debit, credit)| {
+                (
+                    entity.to_string(),
+                    code.to_string(),
+                    format!("{debit} USD"),
+                    format!("{credit} USD"),
+                )
+            })
+            .collect::<Vec<_>>();
+        items.sort();
+        items
+    };
+    assert_eq!(
+        legs("eliminations"),
+        expected_legs(&[
+            ("P", "1300", "0.00", "12.00"),
+            ("P", "4300", "12.00", "0.00"),
+            ("S1", "2300", "12.00", "0.00"),
+            ("S1", "5300", "0.00", "12.00"),
+            ("S1", "3010", "625.00", "0.00"),
+            ("P", "1500", "0.00", "500.00"),
+            ("S1", "3200", "0.00", "125.00"),
+            ("S1", "5900", "19.30", "0.00"),
+            ("S1", "3200", "0.00", "19.30"),
+            ("S2", "3000", "200.00", "0.00"),
+            ("P", "1500", "0.00", "200.00"),
+        ])
+    );
+    assert_eq!(
+        legs("income_eliminations"),
+        expected_legs(&[
+            ("P", "4300", "12.00", "0.00"),
+            ("S1", "5300", "0.00", "12.00"),
+            ("S1", "5900", "16.80", "0.00"),
+            ("S1", "3200", "0.00", "16.80"),
+        ])
+    );
+
+    let file = f.dir.join("functional-consolidation.cert");
+    let mut certify = command.to_vec();
+    certify.extend(["--certify", "--certificate-out", file.to_str().unwrap()]);
+    let (status, original) = run_many(&f.book, &certify, None);
+    assert_eq!(status, 0, "{original:?}");
+    assert_eq!(original.len(), 2);
+    let certificate = data(&original[1]);
+    assert_eq!(
+        text(certificate, "output_format"),
+        "fa:functional-consolidation:v1"
+    );
+    let bytes = std::fs::read(&file).unwrap();
+    assert!(bytes.starts_with(b"fa:report-certificate:v7"));
+    let decoded = fa::ReportCertificate::decode(&bytes).unwrap();
+    assert!(matches!(
+        decoded.selection,
+        fa::ReportSelection::FunctionalConsolidation { .. }
+    ));
+    assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+    let reference = format!("C:{}", text(certificate, "oid"));
+    for source in [reference.as_str(), file.to_str().unwrap()] {
+        assert_eq!(ok(&f.book, &["replay", source]), original[0]);
+    }
+    let prefix = decoded.known_at.0.to_string();
+    let mut repeated = command.to_vec();
+    repeated.extend(["--as-known-at", &prefix, "--certify"]);
+    let (status, repeated) = run_many(&f.book, &repeated, None);
+    assert_eq!(status, 0, "{repeated:?}");
+    assert_eq!(repeated.len(), 2);
+    assert_eq!(repeated[0], original[0]);
+    assert_eq!(
+        text(data(&repeated[1]), "bytes"),
+        text(certificate, "bytes")
+    );
+
+    f.rate(
+        "unused-later-group-quote",
+        "spot_close",
+        "2026-03-10",
+        "9",
+        "1",
+        "HalfEven",
+    );
+    let unchanged = ok(&f.book, &command);
+    assert_eq!(amount(&unchanged, "balance_sheet", "assets"), "1208.50 USD");
+    assert_eq!(
+        amount(&unchanged, "income_statement", "net_income"),
+        "54.20 USD"
+    );
+    assert_eq!(
+        text(
+            data(&ok(&f.book, &["certificate", "status", &reference])),
+            "status"
+        ),
+        "Current"
+    );
+    post(
+        "group-backdated-sale",
+        "2026-03-10",
+        &[
+            ("debit", "1000", "10.00 EUR", "S1"),
+            ("credit", "4000", "10.00 EUR", "S1"),
+        ],
+        Some(march_rate),
+    );
+    let current = ok(&f.book, &command);
+    assert_eq!(amount(&current, "balance_sheet", "assets"), "1220.50 USD");
+    assert_eq!(
+        amount(&current, "income_statement", "revenue"),
+        "132.00 USD"
+    );
+    assert_eq!(amount(&current, "income_statement", "expense"), "68.20 USD");
+    assert_eq!(
+        amount(&current, "income_statement", "net_income"),
+        "63.80 USD"
+    );
+    assert_eq!(
+        text(
+            &rows(data(&current), "equity")[0],
+            "non_controlling_interest_equity"
+        ),
+        "146.70 USD"
+    );
+    let status = ok(&f.book, &["certificate", "status", &reference]);
+    assert_eq!(text(data(&status), "status"), "SupersededBy");
+    assert_eq!(rows(data(&status), "later_entries").len(), 1);
+    assert_eq!(ok(&f.book, &["replay", &reference]), original[0]);
+
+    post(
+        "group-unvalued",
+        "2026-03-10",
+        &[
+            ("debit", "1000", "1.00 EUR", "S1"),
+            ("credit", "4000", "1.00 EUR", "S1"),
+        ],
+        None,
+    );
+    let before = head(&f.book);
+    let refused_file = f.dir.join("unvalued-must-not-certify.cert");
+    for extra in [
+        Vec::new(),
+        vec!["--certificate-out", refused_file.to_str().unwrap()],
+    ] {
+        let mut args = command.to_vec();
+        args.extend(extra);
+        let (status, refused) = run_many(&f.book, &args, None);
+        assert_ne!(status, 0, "{refused:?}");
+        assert_eq!(refused.len(), 1, "no report before the refusal");
+        let refused = refused[0].render();
+        assert!(
+            refused.contains("base_amount") || refused.contains("valuation"),
+            "{refused}"
+        );
+        assert!(!refused_file.exists());
+        assert_eq!(head(&f.book), before);
+    }
+    assert_eq!(
+        ok(&f.book, &["replay", file.to_str().unwrap()]),
+        original[0]
+    );
+
+    // Balanced but false: move one base cent onto the cash debit and revenue
+    // credit only. Recomputed entry digests cannot authenticate the valuation.
+    let target = VId(u128::from_str_radix(text(data(&trade), "vid"), 16).unwrap());
+    let cash = f
+        .entry(text(data(&trade), "vid"))
+        .proposal
+        .legs
+        .iter()
+        .find(|leg| leg.side == fa_money::Side::Debit && leg.amount.mantissa == 8_000)
+        .unwrap()
+        .account_ref;
+    rewrite_entry(&f.book, SEED, target, |proposal| {
+        for leg in &mut proposal.legs {
+            if leg.account_ref == cash || leg.side == fa_money::Side::Credit {
+                leg.base_amount.as_mut().unwrap().mantissa += 1;
+            }
+        }
+        let totals = proposal.base_totals.as_mut().unwrap();
+        totals.debits += 1;
+        totals.credits += 1;
+    });
+    for args in [
+        vec!["replay", reference.as_str()],
+        vec!["certificate", "status", reference.as_str()],
+    ] {
+        let (status, refused) = run_many(&f.book, &args, None);
+        assert_ne!(status, 0, "{refused:?}");
+        assert_eq!(refused.len(), 1);
+        assert_eq!(text(&refused[0], "event"), "error");
+    }
+}
+
+/// A correction is explained in the functional amounts originally retained
+/// on each entry, even after a different quote and a cold process reopen.
+#[test]
+fn functional_statement_diff_replays_saved_sources_and_exact_base_currency_changes() {
+    const SEED: u8 = 0x6a;
+    let f = Fixture::build(Some(SEED));
+    let certify_source = |name: &str, functional: bool, at: Option<&str>| {
+        let path = f.dir.join(format!("{name}.cert"));
+        let mut args = vec![
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+            "--certificate-out",
+            path.to_str().unwrap(),
+        ];
+        if functional {
+            args.push("--functional");
+        }
+        if let Some(at) = at {
+            args.extend(["--as-known-at", at]);
+        }
+        let (status, events) = run_many(&f.book, &args, None);
+        assert_eq!(status, 0, "{events:?}");
+        assert_eq!(events.len(), 2);
+        let source = fa::ReportCertificate::decode(&std::fs::read(&path).unwrap()).unwrap();
+        let reference = format!("C:{}", text(data(&events[1]), "oid"));
+        (events[0].clone(), source, reference, path)
+    };
+
+    // Zero monetary totals do not make native and functional questions the
+    // same. Native statements additionally contain zero rows for other units.
+    let empty_prefix = head(&f.book).to_string();
+    let (native_zero, _, native_ref, _) = certify_source("native-zero", false, Some(&empty_prefix));
+    let (functional_zero, _, functional_ref, _) =
+        certify_source("functional-zero", true, Some(&empty_prefix));
+    assert_eq!(
+        rows(data(&native_zero), "lines")
+            .iter()
+            .filter(|line| text(line, "unit") == "USD")
+            .collect::<Vec<_>>(),
+        rows(data(&functional_zero), "lines")
+            .iter()
+            .collect::<Vec<_>>()
+    );
+    assert!(rows(data(&native_zero), "lines").iter().all(|line| {
+        rows(line, "amounts").iter().all(|amount| {
+            amount
+                .as_str()
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .chars()
+                .all(|c| c == '0' || c == '.')
+        })
+    }));
+    let before_refusal = head(&f.book);
+    let (status, mixed) = run(
+        &f.book,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &native_ref,
+            "--after-certificate",
+            &functional_ref,
+            "--certify",
+        ],
+        None,
+    );
+    assert_eq!(status, 8, "{}", mixed.render());
+    assert_eq!(head(&f.book), before_refusal);
+
+    let first_rate = f.rate(
+        "diff-recognition",
+        "spot_close",
+        "2026-03-05",
+        "11",
+        "10",
+        "HalfEven",
+    );
+    let first = f.post(&f.intent("diff-sale", text(data(&first_rate), "oid"), "SpotClose"));
+    let (_, before, before_ref, before_file) = certify_source("functional-before", true, None);
+    let second_rate = f.rate(
+        "diff-adjustment",
+        "spot_close",
+        "2026-03-05",
+        "6",
+        "5",
+        "HalfEven",
+    );
+    let adjustment = f.file(
+        "diff-backdated.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"diff-backdated","legs":[{{"side":"debit","account":"1000","amount":"10.00 EUR"}},{{"side":"credit","account":"4000","amount":"10.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+            text(data(&second_rate), "oid")
+        ),
+    );
+    f.post(&adjustment);
+    let (_, after, after_ref, after_file) = certify_source("functional-after", true, None);
+
+    // A newly available quote is neither endpoint's valuation basis.
+    f.rate(
+        "diff-unused-quote",
+        "spot_close",
+        "2026-03-05",
+        "9",
+        "1",
+        "HalfEven",
+    );
+    let before_seq = before.known_at.0.to_string();
+    let after_seq = after.known_at.0.to_string();
+    let sequence = [
+        "statement",
+        "diff",
+        "--functional",
+        "--definition",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        &before_seq,
+        "--after",
+        &after_seq,
+    ];
+    let check_amounts = |report: &Json| {
+        assert_eq!(text(report, "event"), "statement_diff");
+        assert_eq!(data(report).get("functional"), Some(&Json::Bool(true)));
+        assert_eq!(text(data(report), "base_unit"), "USD");
+        assert_eq!(
+            text(data(report), "valuation_basis"),
+            "retained-base-amounts"
+        );
+        assert_eq!(data(report).get("amounts_changed"), Some(&Json::Bool(true)));
+        assert!(rows(data(report), "mapping_changes").is_empty());
+        assert!(
+            rows(data(report), "lines")
+                .iter()
+                .all(|line| text(line, "unit") == "USD")
+        );
+        for (code, old, new, delta) in [
+            ("revenue", "110.00 USD", "122.00 USD", "12.00 USD"),
+            ("expense", "0.00 USD", "0.00 USD", "0.00 USD"),
+            ("net_income", "110.00 USD", "122.00 USD", "12.00 USD"),
+        ] {
+            let line = rows(data(report), "lines")
+                .iter()
+                .find(|line| text(line, "code") == code)
+                .unwrap();
+            for (field, expected) in [("before", old), ("after", new), ("delta", delta)] {
+                let actual = rows(line, field);
+                assert_eq!(actual.len(), 1);
+                assert_eq!(actual[0].as_str(), Some(expected), "{code}/{field}");
+            }
+        }
+    };
+    let before_read = head(&f.book);
+    let plain = ok(&f.book, &sequence);
+    check_amounts(&plain);
+    assert_eq!(
+        integer(data(&plain), "before_known_at"),
+        i128::from(before.known_at.0)
+    );
+    assert_eq!(
+        integer(data(&plain), "after_known_at"),
+        i128::from(after.known_at.0)
+    );
+    let pair = [
+        "statement",
+        "diff",
+        "--before-certificate",
+        before_ref.as_str(),
+        "--after-certificate",
+        after_ref.as_str(),
+    ];
+    assert_eq!(
+        ok(&f.book, &pair),
+        plain,
+        "saved functional sources select their own basis"
+    );
+    let mut through_head = sequence.to_vec();
+    *through_head.last_mut().unwrap() = "HEAD";
+    check_amounts(&ok(&f.book, &through_head));
+    assert_eq!(
+        head(&f.book),
+        before_read,
+        "comparison publishes no valuation or correction"
+    );
+
+    let sequence_file = f.dir.join("functional-sequence-diff.cert");
+    let mut certified_sequence = sequence.to_vec();
+    certified_sequence.extend([
+        "--certify",
+        "--certificate-out",
+        sequence_file.to_str().unwrap(),
+    ]);
+    let (status, by_sequence) = run_many(&f.book, &certified_sequence, None);
+    assert_eq!(status, 0, "{by_sequence:?}");
+    assert_eq!(by_sequence.len(), 2);
+    assert_eq!(data(&by_sequence[0]), data(&plain));
+    assert_eq!(
+        text(data(&by_sequence[1]), "output_format"),
+        "fa:functional-statement-diff:v1"
+    );
+
+    let file = f.dir.join("functional-saved-diff.cert");
+    let mut certify_pair = pair.to_vec();
+    certify_pair.extend(["--certify", "--certificate-out", file.to_str().unwrap()]);
+    let (status, certified) = run_many(&f.book, &certify_pair, None);
+    assert_eq!(status, 0, "{certified:?}");
+    assert_eq!(certified.len(), 2);
+    assert_eq!(data(&certified[0]), data(&plain));
+    assert_eq!(
+        text(data(&certified[1]), "output_format"),
+        "fa:functional-statement-diff:v1"
+    );
+    let bytes = std::fs::read(&file).unwrap();
+    let comparison = fa::StatementDiffCertificate::decode(&bytes).unwrap();
+    assert!(comparison.uses_functional_valuations());
+    assert_eq!(
+        comparison.output_format(),
+        "fa:functional-statement-diff:v1"
+    );
+    assert_eq!(comparison.canonical_bytes().unwrap(), bytes);
+    let (old, new) = comparison.sources();
+    assert_eq!(
+        old.canonical_bytes().unwrap(),
+        std::fs::read(&before_file).unwrap()
+    );
+    assert_eq!(
+        new.canonical_bytes().unwrap(),
+        std::fs::read(&after_file).unwrap()
+    );
+    let sequence_comparison =
+        fa::StatementDiffCertificate::decode(&std::fs::read(&sequence_file).unwrap()).unwrap();
+    assert_eq!(sequence_comparison.sources(), comparison.sources());
+    let reference = format!("C:{}", text(data(&certified[1]), "oid"));
+
+    // Every invocation opens a new process, with no warmed native-history
+    // cache. Replay must prepare the original entries and Rate documents too.
+    let before_replay = head(&f.book);
+    for source in [reference.as_str(), file.to_str().unwrap()] {
+        assert_eq!(ok(&f.book, &["replay", source]), certified[0]);
+    }
+    let workpaper = f.dir.join("functional-diff.jsonl");
+    let (status, exported) = run_many(
+        &f.book,
+        &[
+            "replay",
+            &reference,
+            "--workpaper-out",
+            workpaper.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(status, 0, "{exported:?}");
+    assert_eq!(exported.len(), 2);
+    assert_eq!(exported[0], certified[0]);
+    assert_eq!(text(&exported[1], "event"), "workpaper_exported");
+    assert_eq!(text(data(&exported[1]), "family"), "statement-diff");
+    let written = std::fs::read_to_string(&workpaper).unwrap();
+    let (status, inline) = run_many(&f.book, &["replay", &reference, "--workpaper"], None);
+    assert_eq!(status, 0, "{inline:?}");
+    assert_eq!(inline.len(), 2);
+    assert_eq!(inline[0], certified[0]);
+    assert_eq!(text(data(&inline[1]), "text"), written);
+    let workpaper_rows: Vec<_> = written
+        .lines()
+        .map(|line| json::parse(line).unwrap())
+        .collect();
+    let usd = fa_money::UnitRegistry::embedded()
+        .unwrap()
+        .lookup("USD")
+        .unwrap();
+    let manifest = &workpaper_rows[0];
+    assert_eq!(text(manifest, "event"), "manifest");
+    assert_eq!(manifest.get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(integer(manifest, "base_unit"), i128::from(usd.0));
+    assert_eq!(text(manifest, "valuation_basis"), "retained-base-amounts");
+    let revenue = workpaper_rows
+        .iter()
+        .find(|row| text(row, "event") == "line" && text(row, "code") == "revenue")
+        .unwrap();
+    for (field, expected) in [
+        ("before_mantissas", "11000"),
+        ("after_mantissas", "12200"),
+        ("delta_mantissas", "1200"),
+    ] {
+        assert_eq!(rows(revenue, field)[0].as_str(), Some(expected));
+    }
+    assert_eq!(integer(revenue, "unit"), i128::from(usd.0));
+    assert_eq!(
+        head(&f.book),
+        before_replay,
+        "replay and workpaper export write no journal entries"
+    );
+
+    let reader = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "functional-diff-reader",
+        LaunchProfile::Agent,
+        &["read"],
+    )
+    .unwrap();
+    let (status, read) = bound(&reader, &pair, None);
+    assert_eq!(status, 0, "{}", read.render());
+    assert_eq!(data(&read), data(&plain));
+    let (status, denied) = bound(
+        &reader,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            "-",
+            "--after-certificate",
+            &after_ref,
+            "--certify",
+        ],
+        Some("malformed certificate bytes"),
+    );
+    assert_eq!(status, 7, "{}", denied.render());
+    assert!(text(data(&denied), "message").contains("produce"));
+    assert_eq!(
+        head(&f.book),
+        before_replay,
+        "a reader cannot certify or write through a malformed source"
+    );
+
+    // Rehashing a balanced valuation rewrite cannot authenticate either
+    // endpoint or a workpaper derived from them.
+    let target = VId(u128::from_str_radix(text(data(&first), "vid"), 16).unwrap());
+    rewrite_entry(&f.book, SEED, target, |proposal| {
+        for leg in &mut proposal.legs {
+            leg.base_amount.as_mut().unwrap().mantissa += 1;
+        }
+        let totals = proposal.base_totals.as_mut().unwrap();
+        totals.debits += 1;
+        totals.credits += 1;
+    });
+    let refused_workpaper = f.dir.join("rewritten-source-must-not-export.jsonl");
+    for args in [
+        vec!["replay", reference.as_str()],
+        vec![
+            "replay",
+            file.to_str().unwrap(),
+            "--workpaper-out",
+            refused_workpaper.to_str().unwrap(),
+        ],
+    ] {
+        let (status, refused) = run_many(&f.book, &args, None);
+        assert_ne!(status, 0, "{refused:?}");
+        assert_eq!(
+            refused.len(),
+            1,
+            "neither report nor workpaper precedes failed source verification"
+        );
+        assert_eq!(text(&refused[0], "event"), "error");
+        assert!(!refused_workpaper.exists());
+    }
 }
 
 /// fa-3ock (plan §6.4, §15.3; FA-INV-01 `base`): `fa verify fx-conversion`

@@ -765,6 +765,58 @@ fn daemon_issuer_credentials_stay_inside_the_configured_files_root() {
     assert_eq!(fixture.head(), before);
 }
 
+/// fa-c34: a Canon rule's source and its golden corpus are host paths like
+/// every other input file: over fad they stay inside `--files-root`.
+#[test]
+fn daemon_rule_sources_and_golden_corpora_stay_inside_the_files_root() {
+    let fixture = Fixture::new(false);
+    let allowed = fixture.dir.join("allowed");
+    std::fs::create_dir(&allowed).unwrap();
+    let allowed = fa_cli::authority::validate_files_root(allowed).unwrap();
+    let rule = r#"rule fee v1 for event Sale { debit "1000" "1.00 USD" credit "6000" "1.00 USD" }"#;
+    let inside = allowed.join("fee.rule");
+    let outside = fixture.dir.join("fee.rule");
+    std::fs::write(&inside, rule).unwrap();
+    std::fs::write(&outside, rule).unwrap();
+    let before = fixture.head();
+    let run = |argv: &[&str]| {
+        let mut book = fixture.open();
+        let args: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
+        let (status, captured) = fa_cli::cli::run_for_daemon(
+            &args,
+            &mut book,
+            fixture.book.clone(),
+            Some(allowed.clone()),
+            None,
+            fa_cli::cli::Stdin::Missing,
+            true,
+        );
+        (status, captured.stdout)
+    };
+    let (status, out) = run(&["rule", "check", inside.to_str().unwrap(), "--json"]);
+    assert_eq!(status, 0, "{out}");
+    let outside_dir = fixture.dir.to_str().unwrap();
+    for argv in [
+        vec!["rule", "check", outside.to_str().unwrap(), "--json"],
+        vec![
+            "rule",
+            "test",
+            inside.to_str().unwrap(),
+            "--golden",
+            outside_dir,
+            "--json",
+        ],
+    ] {
+        let (status, out) = run(&argv);
+        assert_eq!(status, 2, "{argv:?}: {out}");
+        assert!(
+            out.contains("outside the daemon --files-root"),
+            "{argv:?}: {out}"
+        );
+    }
+    assert_eq!(fixture.head(), before);
+}
+
 #[test]
 fn token_bound_cli_cannot_replace_its_authority_with_an_issuer_token() {
     let fixture = Fixture::new(false);

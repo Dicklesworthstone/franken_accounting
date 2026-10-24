@@ -1,4 +1,5 @@
-//! `fa case open|determine|rehearse|approve|show|list` (plan §8.3, Appendix B
+//! `fa case open|determine|rehearse|approve|post|disclose|close|show|list|diff`
+//! (plan §8.3, Appendix B
 //! `OpenRestatementCase`; bead fa-75j4): restatement cases, the control
 //! objects that make a material correction legal in a `Closed` or `Locked`
 //! period.
@@ -28,6 +29,7 @@ const DISCLOSE_EXAMPLE: &str = "fa case disclose <case> --document <oid> [--key 
 const CLOSE_EXAMPLE: &str = "fa case close <case> [--key K] [--date YYYY-MM-DD] --json";
 const POST_EXAMPLE: &str = "fa case post <case> [--key K] [--date YYYY-MM-DD] --json  (after fa case approve; needs restate and post)";
 const REHEARSE_EXAMPLE: &str = "fa case rehearse <case> --certificate <scenario-diff-certificate> [--key K] --json  (fa scenario diff <name> --period <code> --certificate-out <file> writes one)";
+const DIFF_EXAMPLE: &str = "fa case diff <case> --json  (the as-reported vs as-restated diff its rehearsal retained, replayed)";
 
 pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
@@ -40,8 +42,9 @@ pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("close") => close(ctx, args),
         Some("show") => show(ctx, args),
         Some("list") => list(ctx, args),
+        Some("diff") => diff(ctx, args),
         _ => Err(usage(
-            "case needs open, determine, rehearse, approve, post, disclose, close, show or list",
+            "case needs open, determine, rehearse, approve, post, disclose, close, show, list or diff",
             OPEN_EXAMPLE,
         )),
     }
@@ -549,6 +552,64 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     ctx.out
         .event("case", vec![("case", case_json(&view))], &line(&view));
     Ok(())
+}
+
+/// `fa case diff <case>` (plan §15.3 Restatement): the case's as-reported vs
+/// as-restated difference, by replaying the scenario diff certificate its
+/// rehearsal retained, so it is the reviewed diff and not a fresh one. A
+/// case not yet rehearsed has none (FA-REF-176).
+fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let ordinal = ordinal(args, "diff", DIFF_EXAMPLE)?;
+    // The case verb's flags belong to its writing subcommands; diff takes
+    // only the case number, so each is refused rather than passed to a
+    // replay that would ignore it (--grant still names the session's ops).
+    if let Some(verb) = fa_verbs::registry().ok().and_then(|reg| reg.verb("case")) {
+        let flag = verb
+            .flags
+            .iter()
+            .filter(|flag| flag.as_str() != "--grant")
+            .find(|flag| !args.flag_all(flag.as_str()).is_empty())
+            .or_else(|| verb.switches.iter().find(|switch| args.switch(switch)));
+        if let Some(flag) = flag {
+            return Err(usage(
+                format!("`fa case diff` takes only the case number, not {flag}"),
+                DIFF_EXAMPLE,
+            ));
+        }
+    }
+    let who = ctx.principal(args);
+    let cap = ctx.capability(args, &["read"])?;
+    let view = ctx
+        .books
+        .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?
+        .case(ordinal)?;
+    let Some(view) = view else {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::CASE_UNKNOWN,
+            fa_journal::refusal::exit::REFUSAL,
+            format!("this book has no restatement case {ordinal}"),
+            "plan §8.3 (a RestatementCase is opened with OpenRestatementCase)",
+            "list the book's cases with `fa case list --json`",
+        )));
+    };
+    let Some(rehearsal) = view.rehearsal else {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::CASE_STATE,
+            fa_journal::refusal::exit::REFUSAL,
+            format!(
+                "restatement case {ordinal} is {} and has no rehearsal, so no diff",
+                view.state.name()
+            ),
+            "plan §8.3 (Rehearsed: with the as-reported-vs-as-restated diff certificate attached)",
+            format!("rehearse it first: {REHEARSE_EXAMPLE}"),
+        )));
+    };
+    let mut replay = args.clone();
+    replay.positional = vec![
+        "replay".into(),
+        format!("C:{}", hex(&rehearsal.certificate)),
+    ];
+    crate::notary::replay_cmd(ctx, &replay)
 }
 
 fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

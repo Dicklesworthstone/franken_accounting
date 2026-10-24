@@ -116,6 +116,20 @@ impl PreparedTransition {
         db: &mut Database<V>,
         ctx: &PurposeContexts,
     ) -> Outcome<Transitioned> {
+        self.commit_with_crash(db, ctx, None).await
+    }
+
+    /// [`Self::commit`] through the substrate's production crash-point seam
+    /// (`WriteTxn::commit_with_crash`), for the lab campaign that crashes a
+    /// transition's publication at each registered point and checks the book
+    /// after reopening (fa-0fl). `None` is `commit`: both run this one path.
+    #[doc(hidden)]
+    pub async fn commit_with_crash<V: asupersync::fs::Vfs + Clone>(
+        self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<Transitioned> {
         let commit = ctx.commit();
         commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
         let StagedTransition {
@@ -141,7 +155,7 @@ impl PreparedTransition {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
         }
-        match txn.commit(db, &commit).await {
+        match txn.commit_with_crash(db, &commit, crash_at).await {
             Ok(seq) => Ok(Ok(Transitioned {
                 period,
                 from,

@@ -12,7 +12,11 @@
 
 #![forbid(unsafe_code)]
 // 128-bit (amount) arithmetic only: clippy.toml exempts the narrower integers.
-#![deny(clippy::arithmetic_side_effects, clippy::disallowed_methods)]
+#![deny(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::disallowed_methods
+)]
 
 pub mod assertion;
 pub mod availability;
@@ -47,8 +51,9 @@ pub use availability::{
     AccountAvailability, AvailabilityDrift, AvailabilityVerification, verify_availability,
 };
 pub use entity::{
-    EntityCell, EntityCellKey, EntityFold, EntityVerification, RegisterEquals,
-    check_register_equals, fold_period_by_entity, register_equals, verify_entities,
+    EntityActivity, EntityBalance, EntityCell, EntityCellKey, EntityFold, EntityStock,
+    EntityVerification, RegisterEquals, check_register_equals, fold_period_by_entity,
+    period_activity_by_entity, register_equals, stock_by_entity, verify_entities,
 };
 pub use explain::{BalanceExplanation, explain_balance};
 pub use fx::{
@@ -188,6 +193,9 @@ pub struct Fold {
 
 /// `vid(Register) = H("fa:vid:register:v1" ‖ book ‖ account ‖ unit ‖ period)`.
 #[must_use]
+// The period code's length prefix: a period ref is at most
+// MAX_PERIOD_REF_BYTES (32) bytes, far inside u32.
+#[allow(clippy::cast_possible_truncation)]
 pub fn register_vid(book: Id128, key: &CellKey) -> VId {
     let mut h = Hasher::new();
     h.update(b"fa:vid:register:v1");
@@ -1129,6 +1137,16 @@ pub fn trial_balance_at<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<TrialBalance, RegisterError> {
+    trial_balance_filtered(db, book, periods, known_at, None)
+}
+
+fn trial_balance_filtered<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+    filter: Option<&DimensionFilter>,
+) -> Result<TrialBalance, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let selected = select_periods(db, book, periods, seq)?;
     let mut through = None;
@@ -1140,7 +1158,7 @@ pub fn trial_balance_at<V: asupersync::fs::Vfs + Clone>(
             .ok_or_else(|| KernelError::Corrupt("period end underflow".into()))?;
         through = Some(through.map_or(DateDay(end), |d: DateDay| d.max(DateDay(end))));
     }
-    report_at(db, book, selected, seq, through, &[])
+    report_at(db, book, selected, seq, through, &[], filter)
 }
 
 /// How a trial balance at the frontier was served (plan §17: a balance
@@ -1198,7 +1216,7 @@ pub fn trial_balance_served<V: asupersync::fs::Vfs + Clone>(
             Served::Maintained(served),
         )),
         Err(reason) => Ok((
-            report_at(db, book, selected, seq, through, &[])?,
+            report_at(db, book, selected, seq, through, &[], None)?,
             Served::Literal(reason),
         )),
     }
@@ -1302,7 +1320,7 @@ pub fn period_activity_served<V: asupersync::fs::Vfs + Clone>(
             None if period_has_postings(db, period_at(db, book, code, seq)?.vid)? => {
                 let reason = unservable(code);
                 return Ok((
-                    report_at(db, book, selected.clone(), seq, None, &[])?,
+                    report_at(db, book, selected.clone(), seq, None, &[], None)?,
                     Served::Literal(reason),
                 ));
             }
@@ -1350,6 +1368,16 @@ pub fn balance_as_of<V: asupersync::fs::Vfs + Clone>(
     day: DateDay,
     known_at: Option<CommitSeq>,
 ) -> Result<TrialBalance, RegisterError> {
+    balance_as_of_filtered(db, book, day, known_at, None)
+}
+
+fn balance_as_of_filtered<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    day: DateDay,
+    known_at: Option<CommitSeq>,
+    filter: Option<&DimensionFilter>,
+) -> Result<TrialBalance, RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let mut periods = BTreeSet::new();
     for row in db.vertices_at(seq)? {
@@ -1360,7 +1388,15 @@ pub fn balance_as_of<V: asupersync::fs::Vfs + Clone>(
             }
         }
     }
-    report_at(db, book, periods.into_iter().collect(), seq, Some(day), &[])
+    report_at(
+        db,
+        book,
+        periods.into_iter().collect(),
+        seq,
+        Some(day),
+        &[],
+        filter,
+    )
 }
 
 /// Movement within the explicitly selected periods. Overlapping civil dates
@@ -1400,10 +1436,72 @@ pub fn period_activity_excluding_classes<V: asupersync::fs::Vfs + Clone>(
         seq,
         None,
         excluded_classes,
+        None,
     )
 }
 
-fn select_periods<V: asupersync::fs::Vfs + Clone>(
+/// The legs a dimension-filtered report folds (plan §4.1, bead fa-ficc):
+/// those tagging `dimension` with one of `values`, typically a value and
+/// its descendants.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionFilter {
+    pub dimension: u32,
+    pub values: BTreeSet<VId>,
+}
+
+impl DimensionFilter {
+    fn admits(&self, leg: &fa_model::LegPayload) -> bool {
+        leg.dimension_set
+            .iter()
+            .any(|(dimension, value)| *dimension == self.dimension && self.values.contains(value))
+    }
+}
+
+/// [`trial_balance_at`] over only the legs `filter` admits. Always the
+/// literal journal fold: maintained cells carry no dimension. The other legs
+/// of a tagged entry are left out, so the report need not balance.
+pub fn trial_balance_tagged<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+    filter: &DimensionFilter,
+) -> Result<TrialBalance, RegisterError> {
+    trial_balance_filtered(db, book, periods, known_at, Some(filter))
+}
+
+/// [`period_activity`] over only the legs `filter` admits.
+pub fn period_activity_tagged<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+    filter: &DimensionFilter,
+) -> Result<TrialBalance, RegisterError> {
+    let seq = resolve_known_at(db, known_at)?;
+    report_at(
+        db,
+        book,
+        select_periods(db, book, periods, seq)?,
+        seq,
+        None,
+        &[],
+        Some(filter),
+    )
+}
+
+/// [`balance_as_of`] over only the legs `filter` admits.
+pub fn balance_as_of_tagged<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    day: DateDay,
+    known_at: Option<CommitSeq>,
+    filter: &DimensionFilter,
+) -> Result<TrialBalance, RegisterError> {
+    balance_as_of_filtered(db, book, day, known_at, Some(filter))
+}
+
+pub(crate) fn select_periods<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     periods: &[String],
@@ -1421,6 +1519,7 @@ fn select_periods<V: asupersync::fs::Vfs + Clone>(
     Ok(unique.into_iter().collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn report_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1428,6 +1527,7 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
     seq: CommitSeq,
     through: Option<DateDay>,
     excluded_classes: &[EntryClass],
+    filter: Option<&DimensionFilter>,
 ) -> Result<TrialBalance, RegisterError> {
     let mut sums: BTreeMap<(VId, u32), [i128; 4]> = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
@@ -1461,6 +1561,9 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
             continue;
         }
         for leg in &entry.proposal.legs {
+            if filter.is_some_and(|filter| !filter.admits(leg)) {
+                continue;
+            }
             let e = sums
                 .entry((leg.account_ref, leg.amount.unit.0))
                 .or_insert([0; 4]);
@@ -1537,7 +1640,7 @@ fn trial_balance_from_sums<V: asupersync::fs::Vfs + Clone>(
 /// Native and functional activity apply the same accounting-class policy.
 /// In particular, a Closing period can also contain operating adjustments;
 /// only the retained entry class and its verified reversal lineage decide.
-fn accounting_class_included<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn accounting_class_included<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     at: CommitSeq,

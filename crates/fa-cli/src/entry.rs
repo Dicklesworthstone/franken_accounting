@@ -338,13 +338,17 @@ pub fn fa_with_authority(
             path: authority.book().join(&reg.daemon.lease),
             holder,
         };
+        let mut daemon_files = files;
+        if daemon_files.cwd.is_none() {
+            daemon_files.cwd = authority.files().map(std::path::Path::to_path_buf);
+        }
         return through_daemon(
             argv,
             &parsed,
             authority.book(),
             Some(held),
             Some(token),
-            &files,
+            &daemon_files,
             capture,
         );
     }

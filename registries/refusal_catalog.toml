@@ -1174,6 +1174,40 @@ exit = "refusal"
 cite = "plan §11.12 (audit.sud under both SAB 108 methods with prior-year carry-forward)"
 fix = "carry forward another engagement of this book in the same unit whose scope periods all end before this one's begin, naming with --turned-around and --corrected only its uncorrected proposals (fa engagement sud <prior> --json lists them)"
 
+# ---- Consolidation (194) ----------------------------------------------------
+[[refusal]]
+code = "FA-REF-194"
+name = "CONSOLIDATION_REFUSED"
+owners = ["fa"]
+exit = "refusal"
+cite = "plan §12.3, FA-INV-13 (consolidation: eliminations from the ownership graph and intercompany accounts, NCI, consolidated equity reconciliation)"
+fix = "the refusal names what failed: give the book two or more legal entities, record each subsidiary's OWNS stake in whole basis points, assign the consolidation roles (fa chart role <account> <role>; fa chart roles), and post an intercompany balance's or charge's counterparty side; nothing is posted to balance a consolidation"
+
+# ---- Evidence extraction (193) ---------------------------------------------
+[[refusal]]
+code = "FA-REF-193"
+name = "EXTRACTION_FAILED"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §9.1–§9.3 (evidence intake pipeline: derived text Documents); fa-docket intake"
+fix = "the text layer needs a PDF that carries one; an image or a scan has none, so OCR it (fa document extract <oid> --tool focr); a password-protected PDF needs its owner to remove the password; a tool that failed names its own error; the source document itself stays the evidence"
+
+[[refusal]]
+code = "FA-REF-195"
+name = "DIMENSION_NOT_EFFECTIVE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §4.1 (DimensionValue valid-time effectivity: a value tags only legs effective inside [valid_from, valid_to))"
+fix = "tag the leg with a value of that dimension effective on the entry's date (fa dimension list <dimension> shows each value's window), or date the entry inside the value's window; a value's window is fixed when it is created"
+
+[[refusal]]
+code = "FA-REF-196"
+name = "CANON_RULE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §10.3 (Canon: a total, statically typed rule language whose units, laws and balance are checked before it runs; a rule that cannot be evaluated fails closed with a typed error instead of posting a guess)"
+fix = "revise the rule at the line and column the refusal names and run fa rule check <file> again; for an evaluation, choose an event of the rule's kind that carries each resource the rule reads exactly once, in the unit it reads it"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-192"

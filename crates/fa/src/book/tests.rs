@@ -877,6 +877,41 @@ fn prepared_post_and_close_preserve_witnesses_under_16_lab_schedules() {
     );
 }
 
+/// fa-0fl: the same post-vs-close race under asupersync's DPOR-guided
+/// explorer instead of a fixed seed sweep: each next schedule is derived
+/// from the races the previous run's trace exhibited, with Foata-class
+/// fingerprints and sleep-set pruning. The explorer's own contract is
+/// guided coverage, not a certified-optimal DPOR proof, so this asserts
+/// what it observed: races detected, no violation in any explored run, and
+/// both outcomes (the post wins, the close wins) reached.
+#[test]
+fn prepared_post_and_close_preserve_witnesses_under_dpor_guided_exploration() {
+    use asupersync::lab::{DporExplorer, ExplorerConfig};
+    use std::cell::RefCell;
+
+    let winners = RefCell::new(std::collections::BTreeSet::new());
+    let mut explorer = DporExplorer::new(
+        ExplorerConfig::new(0, 32)
+            .worker_count(2)
+            .max_steps(100_000),
+    );
+    let report = explorer.explore(|runtime| {
+        winners
+            .borrow_mut()
+            .insert(prepared_post_close_race(runtime));
+    });
+    let coverage = explorer.dpor_coverage();
+    assert!(!report.has_violations(), "{report:?}");
+    assert!(coverage.total_races > 0, "{coverage:?}");
+    assert_eq!(
+        winners.into_inner(),
+        std::collections::BTreeSet::from([false, true]),
+        "runs {} classes {}",
+        report.total_runs,
+        report.unique_classes
+    );
+}
+
 async fn unrelated_document(book: &mut LabBook, cx: &PurposeContexts) {
     book.add_document(
         cx,
@@ -943,6 +978,396 @@ fn prepared_post_rechecks_its_capability_expiry_without_rejecting_unrelated_comm
                         .is_green()
                 );
             }
+        });
+    }
+}
+
+/// fa-0fl, the crash-point matrix for one post: the prepared rent post's
+/// publication crashes at each of the substrate's seven registered commit
+/// crash points, the fault VFS then loses every unsynced byte, and the book
+/// reopens. A crash before the commit marker leaves no entry; a crash point
+/// the commit's write path never passes leaves an ordinary commit, which
+/// must survive. After the marker the commit may or may not have reached
+/// disk, but never partly:
+/// the entry is whole (read back, folded into its cells, registers verified)
+/// or absent, the earlier journal is untouched, and a retry of the same
+/// intent records it exactly once. The no-crash control commits.
+#[test]
+fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
+    use fgdb::CrashPoint;
+    let cases = [
+        (Some(CrashPoint::BeforeCapsule), Some(false)),
+        (Some(CrashPoint::AfterCapsuleBeforeD1), Some(false)),
+        (
+            Some(CrashPoint::AfterCapsuleFileSyncBeforeDirectorySync),
+            Some(false),
+        ),
+        (
+            Some(CrashPoint::AfterCapsuleDirectorySyncBeforeParentDirectorySync),
+            Some(false),
+        ),
+        (Some(CrashPoint::AfterD1), Some(false)),
+        (Some(CrashPoint::AfterMarkerBeforeD2), None),
+        (
+            Some(CrashPoint::AfterMarkerFileSyncBeforeDirectorySync),
+            None,
+        ),
+        (None, Some(true)),
+    ];
+    for (i, (point, expected)) in cases.into_iter().enumerate() {
+        let seed = 700 + i as u64;
+        under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let PreparedFixture {
+                mut book,
+                vfs,
+                request,
+                march,
+                usd,
+                ..
+            } = prepared_fixture(&root, seed).await;
+            let book_id = book.context().book_id;
+            let before = journal_entries(&book, &cx);
+            let prepared = prepare_fixture_post(&mut book, &cx, request.clone());
+            let outcome = prepared.commit_with_crash(&mut book.db, &cx, point).await;
+            // A crash point this publication's write path never passes (a
+            // parent directory that needs no sync, say) leaves an ordinary
+            // commit; one it passes fails the publication. Either way, a
+            // completed publication must survive the crash below.
+            let published = matches!(outcome, Ok(Ok(_)));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let after = journal_entries(&book, &cx);
+            assert!(
+                before.iter().all(|e| after.contains(e)),
+                "{point:?}: the earlier journal changed"
+            );
+            let committed = match after.len().checked_sub(before.len()) {
+                Some(0) => false,
+                Some(1) => true,
+                other => panic!("{point:?}: {other:?} new entries"),
+            };
+            if published {
+                assert!(committed, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
+                assert_eq!(committed, expected, "{point:?}");
+            }
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            if committed {
+                assert_rent_cells(&fold, book_id, usd, false);
+            } else {
+                assert!(fold.cells.is_empty(), "{point:?}: {fold:?}");
+            }
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            let retried = book.post(&cx, request).await.unwrap().unwrap();
+            assert_eq!(
+                matches!(retried, Posted::AlreadyRecorded { .. }),
+                committed,
+                "{point:?}: {retried:?}"
+            );
+            assert_eq!(journal_entries(&book, &cx).len(), before.len() + 1);
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_rent_cells(&fold, book_id, usd, false);
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+        });
+    }
+}
+
+/// fa-0fl, the crash-point matrix for an atomic batch (plan §5.8): three
+/// rent members in one PostBatch, one publication, crashed at each of the
+/// substrate's seven commit crash points; the fault VFS then loses every
+/// unsynced byte and the book reopens. All three members are journaled or
+/// none is, never a partial batch; the period's cells fold exactly what
+/// survived and verify; and the retried batch is the recorded outcome
+/// exactly when the crash kept it, leaving three entries either way. A
+/// crash before the commit marker keeps nothing; the control keeps all.
+#[test]
+fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
+    use fgdb::CrashPoint;
+    let cases = [
+        (Some(CrashPoint::BeforeCapsule), Some(false)),
+        (Some(CrashPoint::AfterCapsuleBeforeD1), Some(false)),
+        (
+            Some(CrashPoint::AfterCapsuleFileSyncBeforeDirectorySync),
+            Some(false),
+        ),
+        (
+            Some(CrashPoint::AfterCapsuleDirectorySyncBeforeParentDirectorySync),
+            Some(false),
+        ),
+        (Some(CrashPoint::AfterD1), Some(false)),
+        (Some(CrashPoint::AfterMarkerBeforeD2), None),
+        (
+            Some(CrashPoint::AfterMarkerFileSyncBeforeDirectorySync),
+            None,
+        ),
+        (None, Some(true)),
+    ];
+    for (i, (point, expected)) in cases.into_iter().enumerate() {
+        let seed = 900 + i as u64;
+        under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let PreparedFixture {
+                mut book,
+                vfs,
+                request,
+                march,
+                ..
+            } = prepared_fixture(&root, seed).await;
+            let members = (0..3)
+                .map(|i| {
+                    let mut proposal = request.proposal.clone();
+                    proposal.idempotency_key = format!("crash-batch-{i}").into_bytes();
+                    fa_intents::PostIntent::new(proposal, Vec::new()).unwrap()
+                })
+                .collect();
+            let batch = fa_intents::PostBatch::new(b"crash-batch".to_vec(), members).unwrap();
+            let before = journal_entries(&book, &cx);
+            let context = book.context().clone();
+            let outcome = fa_journal::post_batch_with_crash(
+                &mut book.db,
+                &cx,
+                &context,
+                request.capability.clone(),
+                batch.clone(),
+                point,
+            )
+            .await;
+            // A crash point this publication's write path never passes (a
+            // parent directory that needs no sync, say) leaves an ordinary
+            // commit; one it passes fails the publication. Either way, a
+            // completed publication must survive the crash below.
+            let published = matches!(outcome, Ok(Ok(_)));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let after = journal_entries(&book, &cx);
+            assert!(
+                before.iter().all(|e| after.contains(e)),
+                "{point:?}: the earlier journal changed"
+            );
+            let kept = match after.len().checked_sub(before.len()) {
+                Some(0) => false,
+                Some(3) => true,
+                other => panic!("{point:?}: {other:?} of the batch's 3 members survived"),
+            };
+            if published {
+                assert!(kept, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
+                assert_eq!(kept, expected, "{point:?}");
+            }
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(fold.entries, if kept { 3 } else { 0 }, "{point:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            let retried = book
+                .post_batch(&cx, batch, &request.capability)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retried.already_recorded, kept, "{point:?}");
+            assert_eq!(journal_entries(&book, &cx).len(), before.len() + 3);
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(fold.entries, 3, "{point:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+        });
+    }
+}
+
+/// The journal's own verifiers after a crash and reopen (fa-0fl in-sim
+/// oracles): every leg projection equals its entry's payload, and every
+/// period's state equals the fold of its journaled transitions.
+fn assert_journal_verifies(book: &LabBook, cx: &PurposeContexts, point: Option<fgdb::CrashPoint>) {
+    assert!(
+        book.verify_projections(cx, None).unwrap().is_green(),
+        "{point:?}: projections"
+    );
+    assert!(
+        book.verify_periods(cx, None).unwrap().is_green(),
+        "{point:?}: periods"
+    );
+}
+
+/// The state of `code` in `book`'s period table.
+fn period_state(book: &LabBook, cx: &PurposeContexts, code: &str) -> fa_time::PeriodState {
+    book.periods(cx)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.code == code)
+        .expect("the fixture's period")
+        .state
+}
+
+/// fa-0fl, the crash-point matrix for a period transition: the soft close
+/// of March crashes at each of the substrate's seven commit crash points,
+/// the fault VFS loses every unsynced byte, and the book reopens. March is
+/// then either still Open with no new transition journaled, or SoftClosed
+/// with exactly its one transition: never a state without its journaled
+/// transition, or the reverse. A crash before the commit marker leaves
+/// March Open; the control closes it. A retried soft close lands exactly
+/// once, and the period law holds after it: the fixture's plain post into
+/// March is refused (FA-REF-011, exit 7: the soft-closed period needs
+/// post_softclosed, which the fixture's capability lacks).
+#[test]
+fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
+    use fgdb::CrashPoint;
+    let cases = [
+        (Some(CrashPoint::BeforeCapsule), Some(false)),
+        (Some(CrashPoint::AfterCapsuleBeforeD1), Some(false)),
+        (
+            Some(CrashPoint::AfterCapsuleFileSyncBeforeDirectorySync),
+            Some(false),
+        ),
+        (
+            Some(CrashPoint::AfterCapsuleDirectorySyncBeforeParentDirectorySync),
+            Some(false),
+        ),
+        (Some(CrashPoint::AfterD1), Some(false)),
+        (Some(CrashPoint::AfterMarkerBeforeD2), None),
+        (
+            Some(CrashPoint::AfterMarkerFileSyncBeforeDirectorySync),
+            None,
+        ),
+        (None, Some(true)),
+    ];
+    for (i, (point, expected)) in cases.into_iter().enumerate() {
+        let seed = 800 + i as u64;
+        under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let PreparedFixture {
+                mut book,
+                vfs,
+                request,
+                march,
+                ..
+            } = prepared_fixture(&root, seed).await;
+            let close = Capability::embedded(VId(1), &["close"]).unwrap();
+            let before = book.period_transitions(&cx, &march).unwrap().len();
+            assert_eq!(period_state(&book, &cx, &march), fa_time::PeriodState::Open);
+            let prepared = prepare_fixture_transition(
+                &mut book,
+                &cx,
+                &march,
+                PeriodTransition::SoftClose,
+                &close,
+            );
+            let outcome = prepared.commit_with_crash(&mut book.db, &cx, point).await;
+            // A crash point this publication's write path never passes (a
+            // parent directory that needs no sync, say) leaves an ordinary
+            // commit; one it passes fails the publication. Either way, a
+            // completed publication must survive the crash below.
+            let published = matches!(outcome, Ok(Ok(_)));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let closed = match book
+                .period_transitions(&cx, &march)
+                .unwrap()
+                .len()
+                .checked_sub(before)
+            {
+                Some(0) => false,
+                Some(1) => true,
+                other => panic!("{point:?}: {other:?} new transitions"),
+            };
+            if published {
+                assert!(closed, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
+                assert_eq!(closed, expected, "{point:?}");
+            }
+            assert_eq!(
+                period_state(&book, &cx, &march),
+                if closed {
+                    fa_time::PeriodState::SoftClosed
+                } else {
+                    fa_time::PeriodState::Open
+                },
+                "{point:?}: the period state and its journaled transitions disagree"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            let retried = prepare_fixture_transition(
+                &mut book,
+                &cx,
+                &march,
+                PeriodTransition::SoftClose,
+                &close,
+            )
+            .commit(&mut book.db, &cx)
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(retried.already_recorded, closed, "{point:?}");
+            assert_eq!(
+                period_state(&book, &cx, &march),
+                fa_time::PeriodState::SoftClosed
+            );
+            assert_eq!(
+                book.period_transitions(&cx, &march).unwrap().len(),
+                before + 1
+            );
+            let refusal = book.post(&cx, request).await.unwrap().unwrap_err();
+            // The soft-closed period admits an Original entry only under
+            // post_softclosed, which the fixture's capability lacks.
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7), "{point:?}");
+            assert_journal_verifies(&book, &cx, point);
         });
     }
 }
@@ -1130,6 +1555,8 @@ fn prepared_open_conflicts_with_a_new_due_schedule_and_fresh_open_mints_once() {
             .await
             .unwrap()
             .unwrap();
+        // The fresh Open mints the due reversal, so the opener must also be
+        // able to post it; a close-only Open is refused atomically.
         let capability = Capability::embedded(VId(1), &["close", "post"]).unwrap();
         let prepared = prepare_fixture_transition(
             &mut fixture.book,
@@ -3302,7 +3729,9 @@ fn report_replay_keeps_historical_account_metadata_and_status_refuses_rebinding(
             ReportOutput::OpenItems(report) => assert_eq!(report.accounts[&cash].name, "Cash"),
             ReportOutput::TrialBalance(_)
             | ReportOutput::Statement(_)
-            | ReportOutput::FunctionalStatement(_) => {}
+            | ReportOutput::FunctionalStatement(_)
+            | ReportOutput::Consolidation(_)
+            | ReportOutput::FunctionalConsolidation(_) => {}
         }
         let refusal = book
             .certificate_status(&result.certificate)

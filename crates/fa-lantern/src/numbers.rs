@@ -5,12 +5,15 @@
 
 use std::collections::BTreeMap;
 
+use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fgdb_types::VId;
 
 use crate::amount::amount_share_bps;
-use crate::jet::{finding, procedure_boilerplate};
-use crate::{Cite, Finding, LanternError, Meter, Params, Procedure, Severity, Snapshot, Statistic};
+use crate::jet::{finding, ordinal, procedure_boilerplate};
+use crate::{
+    Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
+};
 
 /// The most bytes an external id is opened to.
 pub const MAX_EXTERNAL_ID_BYTES: usize = 256;
@@ -371,9 +374,176 @@ impl Procedure for ThresholdSplitting {
     }
 }
 
+/// The excess of an account's round legs over the book's rate, as the
+/// squared binomial z statistic's two sides: `(x * total - n * round)^2`
+/// and `n * round * (total - round)`. `None` when the account is not above
+/// the book's rate, or the book has no round leg or only round legs.
+fn round_excess(
+    x: u64,
+    n: u64,
+    round: u64,
+    total: u64,
+) -> Result<Option<(u128, u128)>, LanternError> {
+    let overflow = || LanternError::Overflow("round amount density");
+    let observed = u128::from(x)
+        .checked_mul(u128::from(total))
+        .ok_or_else(overflow)?;
+    let expected = u128::from(n)
+        .checked_mul(u128::from(round))
+        .ok_or_else(overflow)?;
+    if round == 0 || round == total || observed <= expected {
+        return Ok(None);
+    }
+    let excess = observed.checked_sub(expected).ok_or_else(overflow)?;
+    let squared = excess.checked_mul(excess).ok_or_else(overflow)?;
+    let variance = expected
+        .checked_mul(u128::from(total - round))
+        .ok_or_else(overflow)?;
+    Ok(Some((squared, variance)))
+}
+
+/// `numbers.round_amount_density`: accounts whose share of round legs (a
+/// magnitude that is a whole multiple of 10^round_power units) exceeds the
+/// book's own share by at least z, where `z^2 = z_squared`, under the
+/// binomial approximation: `(x N - n X)^2 >= z_squared * n X (N - X)` with
+/// `x N > n X`, for an account's x round legs of n and the book's X of N.
+/// Exact integers throughout.
+pub struct RoundAmountDensity {
+    params: Params,
+}
+procedure_boilerplate!(RoundAmountDensity, "numbers.round_amount_density");
+
+impl Procedure for RoundAmountDensity {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let power = self.params.get_u32("round_power")?;
+        if power > 30 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "round_power".into(),
+                message: "must be at most 30".into(),
+            });
+        }
+        let factor = 10i128
+            .checked_pow(power)
+            .ok_or(LanternError::Overflow("round factor"))?;
+        let min_legs = u64::from(self.params.get_u32("min_legs")?);
+        let z_squared = u128::from(self.params.get_u32("z_squared")?);
+        if z_squared == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "z_squared".into(),
+                message: "must be at least 1".into(),
+            });
+        }
+        // Per account: (round legs, legs, the round legs' citations).
+        let mut accounts: BTreeMap<VId, (u64, u64, Vec<Cite>)> = BTreeMap::new();
+        let (mut round, mut total) = (0u64, 0u64);
+        let mut live = snapshot.live_postings()?;
+        live.sort_by_key(|e| (e.recorded_at, e.vid));
+        for e in &live {
+            work.entry()?;
+            for (i, leg) in e.entry.proposal.legs.iter().enumerate() {
+                work.leg()?;
+                let m = leg.amount.mantissa;
+                if m == 0 {
+                    continue;
+                }
+                let Some(unit) = book.units.get(leg.amount.unit) else {
+                    return Err(
+                        KernelError::Corrupt("a leg names an unregistered unit".into()).into(),
+                    );
+                };
+                let base = unit
+                    .one()
+                    .checked_mul(factor)
+                    .ok_or(LanternError::Overflow("round base"))?;
+                let is_round = m.checked_rem(base) == Some(0);
+                total += 1;
+                let slot = accounts.entry(leg.account_ref).or_default();
+                slot.1 += 1;
+                if is_round {
+                    round += 1;
+                    slot.0 += 1;
+                    if slot.2.len() < MAX_CITES - 1 {
+                        slot.2.push(Cite::Leg {
+                            entry: e.vid,
+                            ordinal: ordinal(i)?,
+                        });
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (account, (x, n, legs)) in accounts {
+            work.compare(1)?;
+            if n < min_legs {
+                continue;
+            }
+            let Some((squared, variance)) = round_excess(x, n, round, total)? else {
+                continue;
+            };
+            let overflow = || LanternError::Overflow("round amount density");
+            let threshold = variance.checked_mul(z_squared).ok_or_else(overflow)?;
+            if squared < threshold {
+                continue;
+            }
+            // Twice the z threshold is four times its square.
+            let severity = if threshold.checked_mul(4).is_some_and(|high| squared >= high) {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            let mut cites = vec![Cite::Account(account)];
+            cites.extend(legs);
+            out.push(finding(
+                Self::ID,
+                severity,
+                Statistic::count("round_legs", x, n),
+                cites,
+                format!(
+                    "{x} of {n} legs on this account are whole multiples of 10^{power} units, against {round} of {total} across the book (z^2 >= {z_squared})"
+                ),
+            ));
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::split_sequence;
+    use super::{round_excess, split_sequence};
+
+    #[test]
+    fn round_excess_is_the_exact_binomial_z_squared() {
+        // 10 of 20 round against 24 of 120: (10*120 - 20*24)^2 = 720^2 over
+        // 20*24*(120-24) = 46_080, so z^2 = 518_400 / 46_080 = 11.25.
+        assert_eq!(
+            round_excess(10, 20, 24, 120).unwrap(),
+            Some((518_400, 46_080))
+        );
+        // At the book's own rate, or below it, there is no excess.
+        assert_eq!(round_excess(12, 60, 24, 120).unwrap(), None);
+        assert_eq!(round_excess(2, 40, 24, 120).unwrap(), None);
+        // No round leg anywhere, or only round legs: no baseline to exceed.
+        assert_eq!(round_excess(0, 20, 0, 120).unwrap(), None);
+        assert_eq!(round_excess(20, 20, 120, 120).unwrap(), None);
+        // Counts at u64::MAX overflow u128 in the square: refused, not wrapped.
+        assert!(round_excess(u64::MAX, u64::MAX, 1, u64::MAX).is_err());
+    }
 
     #[test]
     fn sequences_split_at_the_numeric_tail() {

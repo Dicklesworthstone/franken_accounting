@@ -14,24 +14,24 @@ use crate::aging::{InventoryAging, OpenItemsAging};
 use crate::assertion_drift::AssertionDrift;
 use crate::bank_reconciliation::BankStatementDrift;
 use crate::cutoff::{
-    ConfirmCoverage, DamagesButFor, DistributionProRata, DistributionRisingTide,
+    ConfirmCoverage, DamagesAttestedBaseline, DistributionProRata, DistributionRisingTide,
     ExpenseCapitalization, LookbackFraudulentTransfer, LookbackPreferences, PartyMasterChanges,
-    PayrollGhost, PeriodBoundary, PonziNetInvestment, ReconBookToBook, ReconIntercompany,
-    ReconLapping, ReversalPatterns, SolvencyBalanceSheetTest, SolvencyCashFlowTest,
-    SubsequentEvents, UnrecordedLiabilities,
+    PayrollGhost, PeriodBoundary, PonziMotif, PonziNetInvestment, ReconAttestedRegisterCompare,
+    ReconIntercompany, ReconLapping, ReversalPatterns, SolvencyBalanceSheetTest,
+    SolvencyCashFlowTest, SubsequentEvents, UnrecordedLiabilities,
 };
 use crate::digits::{FirstDigit, FirstTwoDigits, SecondDigit};
-use crate::duplicates::{SameSameDifferent, SameSameSame};
+use crate::duplicates::{Near, SameSameDifferent, SameSameSame};
 use crate::graph::{
     CircularFlows, Communities, Concentration, IdentityResolution, Layering, RelatedPartyExposure,
     RoundTrips, ShellSignature, Structuring,
 };
 use crate::jet::{
     IntercompanyUnmatched, LargeRoundReversals, ManualVsRule, PeriodEndTiming, PostClosing,
-    RoundAmounts, SelfApproved, SuspenseAging, ThinDescriptions, UnusualAccounts, UnusualPreparers,
-    Weekend,
+    RoundAmounts, SelfApproved, SelfSourcedEvidence, SuspenseAging, ThinDescriptions,
+    UnusualAccounts, UnusualPreparers, Weekend,
 };
-use crate::numbers::{RelativeSizeFactor, SequenceGaps, ThresholdSplitting};
+use crate::numbers::{RelativeSizeFactor, RoundAmountDensity, SequenceGaps, ThresholdSplitting};
 use crate::trace::{Law, Trace};
 use crate::{LanternError, Params, Procedure};
 
@@ -65,6 +65,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         PostClosing::ID => Box::new(PostClosing::with(params)),
         Weekend::ID => Box::new(Weekend::with(params)),
         SelfApproved::ID => Box::new(SelfApproved::with(params)),
+        SelfSourcedEvidence::ID => Box::new(SelfSourcedEvidence::with(params)),
         ThinDescriptions::ID => Box::new(ThinDescriptions::with(params)),
         UnusualAccounts::ID => Box::new(UnusualAccounts::with(params)),
         UnusualPreparers::ID => Box::new(UnusualPreparers::with(params)),
@@ -74,13 +75,15 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         IntercompanyUnmatched::ID => Box::new(IntercompanyUnmatched::with(params)),
         SameSameSame::ID => Box::new(SameSameSame::with(params)),
         SameSameDifferent::ID => Box::new(SameSameDifferent::with(params)),
+        Near::ID => Box::new(Near::with(params)),
         SequenceGaps::ID => Box::new(SequenceGaps::with(params)),
         RelativeSizeFactor::ID => Box::new(RelativeSizeFactor::with(params)),
+        RoundAmountDensity::ID => Box::new(RoundAmountDensity::with(params)),
         ThresholdSplitting::ID => Box::new(ThresholdSplitting::with(params)),
         PeriodBoundary::ID => Box::new(PeriodBoundary::with(params)),
         ReconIntercompany::ID => Box::new(ReconIntercompany::with(params)),
         ReconLapping::ID => Box::new(ReconLapping::with(params)),
-        ReconBookToBook::ID => Box::new(ReconBookToBook::with(params)),
+        ReconAttestedRegisterCompare::ID => Box::new(ReconAttestedRegisterCompare::with(params)),
         BankStatementDrift::ID => Box::new(BankStatementDrift::with(params)),
         AssertionDrift::ID => Box::new(AssertionDrift::with(params)),
         UnrecordedLiabilities::ID => Box::new(UnrecordedLiabilities::with(params)),
@@ -95,9 +98,10 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         LookbackPreferences::ID => Box::new(LookbackPreferences::with(params)),
         LookbackFraudulentTransfer::ID => Box::new(LookbackFraudulentTransfer::with(params)),
         PonziNetInvestment::ID => Box::new(PonziNetInvestment::with(params)),
+        PonziMotif::ID => Box::new(PonziMotif::with(params)),
         DistributionRisingTide::ID => Box::new(DistributionRisingTide::with(params)),
         DistributionProRata::ID => Box::new(DistributionProRata::with(params)),
-        DamagesButFor::ID => Box::new(DamagesButFor::with(params)),
+        DamagesAttestedBaseline::ID => Box::new(DamagesAttestedBaseline::with(params)),
         FirstDigit::ID => Box::new(FirstDigit::with(params)),
         SecondDigit::ID => Box::new(SecondDigit::with(params)),
         FirstTwoDigits::ID => Box::new(FirstTwoDigits::with(params)),

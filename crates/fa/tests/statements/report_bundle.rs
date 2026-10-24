@@ -755,3 +755,101 @@ fn resealed_statement_forgeries_and_missing_authenticated_records_are_refused() 
         "legacy explicit units must still reproduce every zero-activity line"
     );
 }
+
+/// fa-70h4 equivalence campaign. Over seeded histories of later and
+/// backdated postings, every certified trial balance and statement the book
+/// replays in place is reproduced, from the report bundle the book produces
+/// for it, by the independent verifier's own fold against the book's signed
+/// checkpoint. Its output bytes and certificate digest must equal the
+/// certificate's. A bundle with one flipped byte never verifies.
+#[test]
+fn produced_report_bundles_recompute_every_certified_report_across_seeded_histories() {
+    let pairs = [
+        ("1000", "4000"),
+        ("6000", "1000"),
+        ("1000", "2000"),
+        ("1000", "3000"),
+        ("6100", "2000"),
+    ];
+    let periods = [JANUARY, FEBRUARY, MARCH];
+    let mut checked = 0usize;
+    for seed in 0..4u8 {
+        let mut fixture = Fixture::new(0xb0 + seed);
+        let usd = fixture.usd;
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64 ^ u64::from(seed);
+        let mut draw = move |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n
+        };
+        let mut frontiers = Vec::new();
+        for n in 0..12u64 {
+            let date = day(2026, 1 + draw(3) as u8, 1 + draw(27) as u8);
+            let accounts = pairs[draw(pairs.len() as u64) as usize];
+            let key = format!("campaign-{seed}-{n}");
+            fixture.transfer(date, key.as_bytes(), usd, accounts, 1 + draw(9_000) as i128);
+            if n % 4 == 3 {
+                frontiers.push(fixture.book.head().unwrap());
+            }
+        }
+        for at in frontiers {
+            let period = periods[draw(periods.len() as u64) as usize];
+            let mut chosen: Vec<fa::ReportSelection> =
+                vec![fa::TrialBalanceSelection::Periods(vec![period.into()]).into()];
+            for name in ["balance-sheet", "income-statement"] {
+                chosen.push(selection(name, FEBRUARY, JANUARY).into());
+            }
+            for selection in chosen {
+                let what = format!("seed {seed} at {} {selection:?}", at.0);
+                let certificate = fixture
+                    .book
+                    .certify_report(selection, Some(at))
+                    .unwrap()
+                    .unwrap()
+                    .certificate;
+                let produced = produce(&mut fixture.book, &certificate);
+                let key = fixture.book.checkpoint_public_key();
+                let anchor =
+                    fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+                let statement = matches!(certificate.selection, fa::ReportSelection::Statement(_));
+                let units = unit_ids(&fixture.book);
+                let check = |bytes: &[u8]| {
+                    if statement {
+                        fa_verify::report::verify_statement_report_expected(
+                            bytes,
+                            &[key],
+                            Some(&anchor.checkpoint),
+                            Some(&produced.receipt),
+                            &units,
+                            Some(&certificate.digest),
+                        )
+                    } else {
+                        fa_verify::report::verify_report_expected(
+                            bytes,
+                            &[key],
+                            Some(&anchor.checkpoint),
+                            Some(&produced.receipt),
+                            Some(&certificate.digest),
+                        )
+                    }
+                };
+                let verified = check(&produced.bundle.bytes)
+                    .unwrap_or_else(|e| panic!("{what}: the verifier refused the bundle: {e:?}"));
+                assert_eq!(verified.output, certificate.output, "{what}: output bytes");
+                assert_eq!(verified.certificate_digest, certificate.digest, "{what}");
+                assert_eq!(verified.known_at, at.0, "{what}");
+                assert_eq!(verified.scope, "recomputation", "{what}");
+                let mut forged = produced.bundle.bytes.clone();
+                let flip = draw(forged.len() as u64) as usize;
+                forged[flip] ^= 0x01;
+                assert!(
+                    check(&forged).is_err(),
+                    "{what}: a bundle with byte {flip} flipped verified"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 4 * 3 * 3, "every seeded report was checked");
+}

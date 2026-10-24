@@ -893,7 +893,9 @@ pub fn parse_date_iso(format: &'static str, text: &str) -> Result<DateDay, Forma
     })
 }
 
-/// Encode bytes as lowercase hex characters (64 characters for a 32-byte digest).
+/// Encode bytes as lowercase hex, two characters per byte: a 32-byte
+/// digest becomes 64 characters, and ADS v3's UTF-8 name fields their own
+/// length doubled.
 pub fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));

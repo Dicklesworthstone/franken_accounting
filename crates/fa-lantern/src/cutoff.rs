@@ -333,15 +333,21 @@ impl Procedure for ReconLapping {
     }
 }
 
-/// `recon.book_to_book` (plan §11.4, `FA-EVID-L43`, `claim = "invariant"`):
+/// `recon.attested_register_compare` (`FA-EVID-L43`, `claim = "invariant"`):
 /// exact reconciliation between `RegisterEquals` attestations / mirrored
 /// `Instrument` vertices and the posted journal fold at the snapshot coordinate.
-pub struct ReconBookToBook {
+/// Not plan §12.2's `recon.book_to_book` (one book against another, every
+/// difference explained by rule version), which needs multi-book (fa-259c);
+/// this procedure compares one book with what was attested about it.
+pub struct ReconAttestedRegisterCompare {
     params: Params,
 }
-procedure_boilerplate!(ReconBookToBook, "recon.book_to_book");
+procedure_boilerplate!(
+    ReconAttestedRegisterCompare,
+    "recon.attested_register_compare"
+);
 
-impl Procedure for ReconBookToBook {
+impl Procedure for ReconAttestedRegisterCompare {
     fn id(&self) -> &'static str {
         Self::ID
     }
@@ -399,13 +405,14 @@ impl Procedure for ReconBookToBook {
                     let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                     fold_net = fold_net
                         .checked_add(signed)
-                        .ok_or(LanternError::Overflow("book_to_book fold sum"))?;
+                        .ok_or(LanternError::Overflow("attested_register fold sum"))?;
                     matching_entries.push(e.vid);
                 }
             }
             if fold_net != claim.mantissa {
-                let diff = reconciliation_arithmetic::discrepancy(fold_net, claim.mantissa)
-                    .ok_or(LanternError::Overflow("book_to_book discrepancy magnitude"))?;
+                let diff = reconciliation_arithmetic::discrepancy(fold_net, claim.mantissa).ok_or(
+                    LanternError::Overflow("attested_register discrepancy magnitude"),
+                )?;
                 let mut cites = vec![Cite::Account(claim.account)];
                 if snapshot.periods.contains_key(&claim.period) {
                     cites.push(Cite::Period(claim.period.clone()));
@@ -424,7 +431,7 @@ impl Procedure for ReconBookToBook {
                     Self::ID,
                     Severity::Critical,
                     Statistic {
-                        name: "book_to_book_discrepancy".into(),
+                        name: "attested_register_discrepancy".into(),
                         value: diff,
                         scale,
                         population: population.max(1),
@@ -2511,6 +2518,261 @@ impl Procedure for PonziNetInvestment {
     }
 }
 
+/// One party's cash in one entry and unit, for `graph.ponzi_motif`.
+struct InvestorMovement {
+    day: DateDay,
+    vid: VId,
+    party: VId,
+    unit: u32,
+    cash_in: i128,
+    cash_out: i128,
+    /// A leg in the same unit is on an Equity account or one holding the
+    /// `investor_capital` role: a subscription or redemption of capital.
+    capital: bool,
+}
+
+/// Per window and unit, for `graph.ponzi_motif`.
+#[derive(Default)]
+struct MotifWindow {
+    new_money: i128,
+    redemptions: i128,
+    operating_in: i128,
+    new_investors: BTreeSet<VId>,
+    paid_investors: BTreeSet<VId>,
+    new_entries: BTreeSet<VId>,
+    redemption_entries: BTreeSet<VId>,
+}
+
+/// `graph.ponzi_motif` (plan §11.4, `FA-EVID-L65`): inflows from new
+/// investors in a window funding outflows to earlier investors, with the
+/// new-money-to-redemptions ratio by window, and investor cohorts by
+/// first-subscription date.
+pub struct PonziMotif {
+    params: Params,
+}
+procedure_boilerplate!(PonziMotif, "graph.ponzi_motif");
+
+impl Procedure for PonziMotif {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        _book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        let window_days = self.params.get_u32("window_days")?;
+        if window_days == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "window_days".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+        let window =
+            i32::try_from(window_days).map_err(|_| LanternError::Overflow("window_days"))?;
+        let min_coverage_bps = i128::from(self.params.get_u32("min_coverage_bps")?);
+        if min_coverage_bps == 0 {
+            return Err(LanternError::Parameter {
+                procedure: Self::ID.into(),
+                name: "min_coverage_bps".into(),
+                message: "must be >= 1".into(),
+            });
+        }
+        let cash = snapshot.required_role(Self::ID, "cash")?;
+        let investor_capital = snapshot.role_accounts(Self::ID, "investor_capital")?;
+        let (pval_to_party, party_codes) = party_lookup_tables(snapshot);
+        let mut live = snapshot.live_postings_through(snapshot.coordinate.effective_through)?;
+        live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
+
+        // Cash in and out per entry and unit; an entry naming exactly one
+        // known party attributes its cash to that party, and cash in that is
+        // not a capital movement is the book's operating inflow.
+        let mut movements: Vec<InvestorMovement> = Vec::new();
+        let mut operating: Vec<(DateDay, u32, i128)> = Vec::new();
+        for e in &live {
+            work.entry()?;
+            let mut parties: BTreeSet<VId> = BTreeSet::new();
+            let mut by_unit: BTreeMap<u32, (i128, i128, bool)> = BTreeMap::new();
+            for leg in &e.entry.proposal.legs {
+                work.leg()?;
+                for &(dimension, value) in &leg.dimension_set {
+                    if dimension == fa_model::PARTY_DIMENSION
+                        && let Some(&party) = pval_to_party.get(&value)
+                    {
+                        parties.insert(party);
+                    }
+                }
+                let slot = by_unit.entry(leg.amount.unit.0).or_default();
+                let magnitude = amount_magnitude(leg.amount.mantissa, "leg magnitude")?;
+                if cash.contains(&leg.account_ref) {
+                    match leg.side {
+                        Side::Debit => slot.0 = amount_sum(slot.0, magnitude, "motif cash in")?,
+                        Side::Credit => slot.1 = amount_sum(slot.1, magnitude, "motif cash out")?,
+                    }
+                } else if investor_capital.contains(&leg.account_ref)
+                    || snapshot
+                        .accounts
+                        .get(&leg.account_ref)
+                        .is_some_and(|account| {
+                            AccountType(account.account_type) == AccountType::EQUITY
+                        })
+                {
+                    slot.2 = true;
+                }
+            }
+            let party = (parties.len() == 1)
+                .then(|| parties.first().copied())
+                .flatten();
+            for (unit, (cash_in, cash_out, capital)) in by_unit {
+                if cash_in == 0 && cash_out == 0 {
+                    continue;
+                }
+                if !capital && cash_in > 0 {
+                    operating.push((e.entry.proposal.effective_date, unit, cash_in));
+                }
+                if let Some(party) = party {
+                    movements.push(InvestorMovement {
+                        day: e.entry.proposal.effective_date,
+                        vid: e.vid,
+                        party,
+                        unit,
+                        cash_in,
+                        cash_out,
+                        capital,
+                    });
+                }
+            }
+        }
+
+        // An investor subscribed capital; its cohort starts at its first
+        // subscription. Windows are counted from the unit's first one.
+        let mut first: BTreeMap<(VId, u32), DateDay> = BTreeMap::new();
+        for m in movements.iter().filter(|m| m.capital && m.cash_in > 0) {
+            first
+                .entry((m.party, m.unit))
+                .and_modify(|day| *day = (*day).min(m.day))
+                .or_insert(m.day);
+        }
+        let mut start: BTreeMap<u32, DateDay> = BTreeMap::new();
+        for (&(_, unit), &day) in &first {
+            start
+                .entry(unit)
+                .and_modify(|d| *d = (*d).min(day))
+                .or_insert(day);
+        }
+        let window_of = |unit: u32, day: DateDay| -> Option<i32> {
+            let origin = *start.get(&unit)?;
+            (day >= origin).then(|| (day.0 - origin.0) / window)
+        };
+
+        let population = movements.len() as u64;
+        let mut windows: BTreeMap<(u32, i32), MotifWindow> = BTreeMap::new();
+        for m in &movements {
+            work.compare(1)?;
+            let Some(&joined) = first.get(&(m.party, m.unit)) else {
+                continue;
+            };
+            let (Some(k), Some(cohort)) = (window_of(m.unit, m.day), window_of(m.unit, joined))
+            else {
+                continue;
+            };
+            let w = windows.entry((m.unit, k)).or_default();
+            if m.capital && m.cash_in > 0 && cohort == k {
+                w.new_money = amount_sum(w.new_money, m.cash_in, "motif new money")?;
+                w.new_investors.insert(m.party);
+                w.new_entries.insert(m.vid);
+            }
+            if m.cash_out > 0 && cohort < k {
+                w.redemptions = amount_sum(w.redemptions, m.cash_out, "motif redemptions")?;
+                w.paid_investors.insert(m.party);
+                w.redemption_entries.insert(m.vid);
+            }
+        }
+        for &(day, unit, cash_in) in &operating {
+            work.compare(1)?;
+            if let Some(k) = window_of(unit, day)
+                && let Some(w) = windows.get_mut(&(unit, k))
+            {
+                w.operating_in = amount_sum(w.operating_in, cash_in, "motif operating in")?;
+            }
+        }
+
+        let mut out = Vec::new();
+        for ((unit, k), w) in windows {
+            work.compare(1)?;
+            if w.redemptions == 0 || w.new_money == 0 {
+                continue;
+            }
+            let coverage = amount_share_bps(w.new_money, w.redemptions, "motif coverage")?;
+            if coverage < min_coverage_bps {
+                continue;
+            }
+            // Returns the book's own operating cash could not have paid.
+            let severity = if w.operating_in < w.redemptions {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            let origin = start.get(&unit).copied().unwrap_or(DateDay(0));
+            let from = DateDay(origin.0 + k * window);
+            let through = DateDay(from.0 + window - 1);
+            let mut cites: Vec<Cite> = w
+                .redemption_entries
+                .iter()
+                .copied()
+                .map(Cite::Entry)
+                .collect();
+            for vid in &w.new_entries {
+                if cites.len() < MAX_CITES && !w.redemption_entries.contains(vid) {
+                    cites.push(Cite::Entry(*vid));
+                }
+            }
+            cites.truncate(MAX_CITES);
+            let code = |party: &VId| {
+                party_codes
+                    .get(party)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{:032x}", party.0))
+            };
+            let joined: Vec<String> = w.new_investors.iter().map(code).collect();
+            let paid: Vec<String> = w.paid_investors.iter().map(code).collect();
+            out.push(finding(
+                Self::ID,
+                severity,
+                Statistic {
+                    name: "new_money_to_redemptions_bps".into(),
+                    value: coverage,
+                    scale: 0,
+                    population,
+                },
+                cites,
+                format!(
+                    "window {k} ({from}..={through}, unit {unit}): new investors [{}] paid in {}; earlier investors [{}] received {}; new money is {coverage} bps of those redemptions (min {min_coverage_bps}); operating cash in {}{}",
+                    joined.join(", "),
+                    w.new_money,
+                    paid.join(", "),
+                    w.redemptions,
+                    w.operating_in,
+                    if severity == Severity::High {
+                        ", less than the redemptions"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
+        }
+        Ok(out)
+    }
+}
+
 /// `distribution.rising_tide` (plan §11.5, `FA-EVID-L57`):
 /// Rising-tide receivership distribution (*SEC v. Huber*, 702 F.3d 903).
 /// Equalizes cumulative recovery rates `(cash_out + distribution) / cash_in`
@@ -2765,18 +3027,18 @@ impl Procedure for DistributionProRata {
     }
 }
 
-/// `damages.but_for` (plan §11.6, `FA-EVID-L59`):
-/// But-for damages schedule. Computes per-account and per-period damages deltas
-/// between the actual live posted fold and counterfactual baseline expectations
-/// (from `RegisterEquals` baseline attestations or pre-supersession / restated
-/// entry lineages). See also [`compute_scenario_but_for_damages`] for comparing
-/// a trunk snapshot directly against a counterfactual scenario scratch-book snapshot.
-pub struct DamagesButFor {
+/// `damages.attested_baseline` (`FA-EVID-L59`): per-account and per-period
+/// deltas between the actual live posted fold and a baseline taken from
+/// `RegisterEquals` attestations or pre-supersession / restated entry
+/// lineages. Not plan §11.6's `damages.but_for`, which is the certified delta
+/// between a counterfactual scenario and trunk: `fa scenario diff --certify`,
+/// and [`compute_scenario_but_for_damages`] over two snapshots.
+pub struct DamagesAttestedBaseline {
     params: Params,
 }
-procedure_boilerplate!(DamagesButFor, "damages.but_for");
+procedure_boilerplate!(DamagesAttestedBaseline, "damages.attested_baseline");
 
-impl Procedure for DamagesButFor {
+impl Procedure for DamagesAttestedBaseline {
     fn id(&self) -> &'static str {
         Self::ID
     }
@@ -2807,10 +3069,9 @@ impl Procedure for DamagesButFor {
                 let cell = actual_fold
                     .entry((leg.account_ref, e.period.clone(), leg.amount.unit.0))
                     .or_default();
-                cell.0 = cell
-                    .0
-                    .checked_add(signed)
-                    .ok_or(LanternError::Overflow("damages.but_for actual fold"))?;
+                cell.0 = cell.0.checked_add(signed).ok_or(LanternError::Overflow(
+                    "damages.attested_baseline actual fold",
+                ))?;
                 cell.1.insert(e.vid);
             }
         }
@@ -2847,10 +3108,9 @@ impl Procedure for DamagesButFor {
                     let signed = signed_leg(leg.side, leg.amount.mantissa)?;
                     let key = (leg.account_ref, e.period.clone(), leg.amount.unit.0);
                     let cell = original_fold.entry(key.clone()).or_default();
-                    cell.0 = cell
-                        .0
-                        .checked_add(signed)
-                        .ok_or(LanternError::Overflow("damages.but_for original fold"))?;
+                    cell.0 = cell.0.checked_add(signed).ok_or(LanternError::Overflow(
+                        "damages.attested_baseline original fold",
+                    ))?;
                     cell.1.insert(e.vid);
                     if was_superseded {
                         has_superseded_cell.insert(key);
@@ -2880,7 +3140,7 @@ impl Procedure for DamagesButFor {
                 continue;
             }
             let delta = reconciliation_arithmetic::discrepancy(actual_net, but_for_net)
-                .ok_or(LanternError::Overflow("damages.but_for delta"))?;
+                .ok_or(LanternError::Overflow("damages.attested_baseline delta"))?;
             let mut cites = vec![Cite::Account(acct_vid)];
             if snapshot.periods.contains_key(&period) {
                 cites.push(Cite::Period(period.clone()));
@@ -2899,7 +3159,7 @@ impl Procedure for DamagesButFor {
                 Self::ID,
                 Severity::High,
                 Statistic {
-                    name: "but_for_damages_delta".into(),
+                    name: "attested_baseline_delta".into(),
                     value: delta,
                     scale,
                     population,
@@ -2914,7 +3174,13 @@ impl Procedure for DamagesButFor {
     }
 }
 
-/// Compute a certified `damages.but_for` schedule by comparing an actual trunk
+/// Plan §11.6's name for the damages schedule between a counterfactual
+/// scenario and trunk. It labels [`compute_scenario_but_for_damages`]'s
+/// findings; it is not a registered Lantern procedure, because `fa scenario
+/// diff --certify` is that schedule's certified surface.
+pub const SCENARIO_BUT_FOR: &str = "damages.but_for";
+
+/// Compute a `damages.but_for` schedule by comparing an actual trunk
 /// [`Snapshot`] directly against a counterfactual scenario scratch-book [`Snapshot`]
 /// (plan §11.6).
 pub fn compute_scenario_but_for_damages(
@@ -2980,7 +3246,7 @@ pub fn compute_scenario_but_for_damages(
             .map_or("?", |a| a.code.as_str());
         let scale = crate::unit_scale(book, *unit_id)?;
         out.push(finding(
-            DamagesButFor::ID,
+            SCENARIO_BUT_FOR,
             Severity::High,
             Statistic {
                 name: "but_for_damages_delta".into(),

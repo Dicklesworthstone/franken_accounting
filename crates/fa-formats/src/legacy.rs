@@ -42,6 +42,7 @@ pub enum LegacyFormat {
     NetSuiteCsv,
     GenericCsv,
     Beancount,
+    Hledger,
 }
 
 impl LegacyFormat {
@@ -54,6 +55,7 @@ impl LegacyFormat {
             Self::NetSuiteCsv => "netsuite_csv_v1",
             Self::GenericCsv => "csv_gl_v1",
             Self::Beancount => "beancount_v3",
+            Self::Hledger => "hledger_journal",
         }
     }
 
@@ -66,6 +68,7 @@ impl LegacyFormat {
             Self::NetSuiteCsv => "netsuite-csv",
             Self::GenericCsv => "legacy-csv",
             Self::Beancount => "beancount",
+            Self::Hledger => "hledger",
         }
     }
 }
@@ -159,6 +162,15 @@ pub struct LegacyColumnMap {
     pub debit_column: Option<String>,
     pub credit_column: Option<String>,
     pub signed_amount_column: Option<String>,
+    /// A debit/credit indicator column read with `amount_column`, an unsigned
+    /// amount: the shape of an export that writes `D`/`C` beside the amount
+    /// (FrankenAccounting's own csv-gl among them).
+    pub side_column: Option<String>,
+    pub amount_column: Option<String>,
+    /// The indicator values for a debit and a credit, compared ignoring case
+    /// (`D` and `C` unless declared).
+    pub debit_marker: String,
+    pub credit_marker: String,
     pub unit_column: Option<String>,
     pub description_column: Option<String>,
     pub memo_column: Option<String>,
@@ -228,10 +240,29 @@ impl LegacyColumnMap {
         let debit_column = opt("debit_column");
         let credit_column = opt("credit_column");
         let signed_amount_column = opt("signed_amount_column");
-        if (debit_column.is_none() || credit_column.is_none()) && signed_amount_column.is_none() {
+        let side_column = opt("side_column");
+        let amount_column = opt("amount_column");
+        if side_column.is_some() != amount_column.is_some() {
             return Err(FormatError::Parse {
                 format: FMT,
-                detail: "must declare either (`debit_column` and `credit_column`) or `signed_amount_column` in [columns]".to_owned(),
+                detail: "`side_column` and `amount_column` are declared together".to_owned(),
+            });
+        }
+        if (debit_column.is_none() || credit_column.is_none())
+            && signed_amount_column.is_none()
+            && side_column.is_none()
+        {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: "must declare either (`debit_column` and `credit_column`), `signed_amount_column`, or (`side_column` and `amount_column`) in [columns]".to_owned(),
+            });
+        }
+        let debit_marker = opt("debit_marker").unwrap_or_else(|| "D".to_owned());
+        let credit_marker = opt("credit_marker").unwrap_or_else(|| "C".to_owned());
+        if debit_marker.eq_ignore_ascii_case(&credit_marker) {
+            return Err(FormatError::Parse {
+                format: FMT,
+                detail: format!("`debit_marker` and `credit_marker` are both `{debit_marker}`"),
             });
         }
 
@@ -245,6 +276,10 @@ impl LegacyColumnMap {
             debit_column,
             credit_column,
             signed_amount_column,
+            side_column,
+            amount_column,
+            debit_marker,
+            credit_marker,
             unit_column: opt("unit_column"),
             description_column: opt("description_column"),
             memo_column: opt("memo_column"),
@@ -1013,6 +1048,10 @@ pub fn parse_quickbooks_csv(
         debit_column: Some("Debit".to_owned()),
         credit_column: Some("Credit".to_owned()),
         signed_amount_column: None,
+        side_column: None,
+        amount_column: None,
+        debit_marker: "D".to_owned(),
+        credit_marker: "C".to_owned(),
         unit_column: Some("Currency".to_owned()),
         description_column: Some("Memo/Description".to_owned()),
         memo_column: Some("Memo/Description".to_owned()),
@@ -1050,6 +1089,10 @@ pub fn parse_xero_csv(
         debit_column: Some("Debit".to_owned()),
         credit_column: Some("Credit".to_owned()),
         signed_amount_column: Some("Gross".to_owned()),
+        side_column: None,
+        amount_column: None,
+        debit_marker: "D".to_owned(),
+        credit_marker: "C".to_owned(),
         unit_column: Some("Currency".to_owned()),
         description_column: Some("Description".to_owned()),
         memo_column: Some("Reference".to_owned()),
@@ -1081,6 +1124,10 @@ pub fn parse_netsuite_csv(
         debit_column: Some("Debit".to_owned()),
         credit_column: Some("Credit".to_owned()),
         signed_amount_column: None,
+        side_column: None,
+        amount_column: None,
+        debit_marker: "D".to_owned(),
+        credit_marker: "C".to_owned(),
         unit_column: Some("Currency".to_owned()),
         description_column: Some("Memo".to_owned()),
         memo_column: Some("Document Number".to_owned()),
@@ -1194,6 +1241,8 @@ fn parse_tabular_csv_with_format(
         let dr_str = get_opt(&column_map.debit_column);
         let cr_str = get_opt(&column_map.credit_column);
         let signed_str = get_opt(&column_map.signed_amount_column);
+        let side_str = get_opt(&column_map.side_column);
+        let amount_str = get_opt(&column_map.amount_column);
 
         let (side, mantissa) = if !dr_str.is_empty() || !cr_str.is_empty() {
             let dr = if dr_str.is_empty() {
@@ -1233,11 +1282,38 @@ fn parse_tabular_csv_with_format(
             } else {
                 (Side::Credit, -signed)
             }
+        } else if !side_str.is_empty() || !amount_str.is_empty() {
+            let side = if side_str.eq_ignore_ascii_case(&column_map.debit_marker) {
+                Side::Debit
+            } else if side_str.eq_ignore_ascii_case(&column_map.credit_marker) {
+                Side::Credit
+            } else {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {}: side `{side_str}` is neither the debit marker `{}` nor the credit marker `{}`",
+                        line_idx + 1,
+                        column_map.debit_marker,
+                        column_map.credit_marker
+                    ),
+                });
+            };
+            let amount = parse_exact_decimal(fmt_name, amount_str, scale)?;
+            if amount <= 0 {
+                return Err(FormatError::Parse {
+                    format: fmt_name,
+                    detail: format!(
+                        "line {}: a side-indicated amount is positive (got `{amount_str}`); its side says which way it moves",
+                        line_idx + 1
+                    ),
+                });
+            }
+            (side, amount)
         } else {
             return Err(FormatError::Parse {
                 format: fmt_name,
                 detail: format!(
-                    "line {}: missing debit/credit or signed amount",
+                    "line {}: missing debit/credit, signed amount, or side and amount",
                     line_idx + 1
                 ),
             });
@@ -1416,7 +1492,7 @@ pub fn parse_beancount_ledger(
             continue;
         }
         if let Some(txn) = current.take() {
-            chunks.push(finish_beancount_txn(txn)?);
+            chunks.push(finish_ledger_txn(txn, LegacyFormat::Beancount)?);
         }
         if line.starts_with('*') {
             // An org-mode heading.
@@ -1480,7 +1556,7 @@ pub fn parse_beancount_ledger(
         });
     }
     if let Some(txn) = current.take() {
-        chunks.push(finish_beancount_txn(txn)?);
+        chunks.push(finish_ledger_txn(txn, LegacyFormat::Beancount)?);
     }
     finalize_legacy_batch(
         LegacyFormat::Beancount,
@@ -1635,10 +1711,13 @@ fn beancount_posting(
 }
 
 /// The transaction as an entry; its posting without an amount takes each
-/// unit's remainder, negated.
-fn finish_beancount_txn(txn: BeancountTxn) -> Result<LegacyChunkEntry, FormatError> {
+/// unit's remainder, negated (Beancount's and hledger's rule alike).
+fn finish_ledger_txn(
+    txn: BeancountTxn,
+    format: LegacyFormat,
+) -> Result<LegacyChunkEntry, FormatError> {
     let overflow = || FormatError::Overflow {
-        format: "beancount_v3",
+        format: format.registry_name(),
         detail: format!("line {}: the remainder overflows", txn.line),
     };
     let mut legs = txn.legs;
@@ -1672,7 +1751,7 @@ fn finish_beancount_txn(txn: BeancountTxn) -> Result<LegacyChunkEntry, FormatErr
     }
     Ok(LegacyChunkEntry {
         provenance: MigratedProvenance {
-            source_system: LegacyFormat::Beancount.default_source_system().to_owned(),
+            source_system: format.default_source_system().to_owned(),
             source_id: format!("L{}", txn.line),
             source_recorded_at_ns: None,
             source_entered_by: None,
@@ -1682,6 +1761,358 @@ fn finish_beancount_txn(txn: BeancountTxn) -> Result<LegacyChunkEntry, FormatErr
         description: txn.description,
         legs,
     })
+}
+
+/// Parse an hledger journal into a `LegacyImportBatch` (plan §8.6, bead
+/// `fa-waow`). Each transaction is one entry whose source id is `L<line>`,
+/// its header's line number in the retained source; each posting is a leg on
+/// its full account name, resolved through `account_map`. A positive amount
+/// is a debit.
+///
+/// The subset maps a journal without inference beyond hledger's own:
+/// - a header is `DATE[=DATE2] [*|!] [(CODE)] DESCRIPTION`, the date
+///   `YYYY-MM-DD`, `YYYY/MM/DD` or `YYYY.MM.DD`; a secondary date is not the
+///   posting date and is dropped;
+/// - a posting is `[*|!] ACCOUNT` then two spaces or a tab and its amount; one
+///   posting per transaction may omit its amount and takes the negated
+///   remainder of each unit;
+/// - an amount names its commodity by a registered unit code, before or
+///   after the number (`USD 100.00`, `-100.00 EUR`). A symbol such as `$`
+///   is refused, since it names no one currency, and so is an amount without
+///   a commodity;
+/// - the decimal mark is `.` with `,` digit groups, or the reverse after
+///   `decimal-mark ,`;
+/// - a balance assertion (`= …`) is stripped and not re-checked (hledger is
+///   the source's own checker). A cost or price (`@`, `@@`) converts between
+///   units and is refused. So are virtual postings (`(…)`, `[…]`), `include`,
+///   `alias` and `apply account` (they rewrite accounts), auto postings
+///   (`=`), and a year directive (partial dates);
+/// - comments (`;`, `#`, `*` and `%` lines, `comment … end comment` blocks,
+///   `;` to the end of a line), `account`, `commodity`, `payee`, `tag`, `P`
+///   and `D` directives, and periodic transactions (`~`, a forecast) are
+///   skipped;
+/// - a zero posting moves nothing and is dropped.
+pub fn parse_hledger_journal(
+    src: &str,
+    units: &UnitCatalog,
+    account_map: &AccountMap,
+) -> Result<LegacyImportBatch, FormatError> {
+    const FMT: &str = "hledger_journal";
+    let refuse = |line: usize, detail: String| FormatError::Parse {
+        format: FMT,
+        detail: format!("line {line}: {detail}"),
+    };
+    let reprint = "import the journal as hledger prints it (hledger print)";
+    let mut chunks = Vec::new();
+    let mut row_count = 0usize;
+    let mut current: Option<BeancountTxn> = None;
+    let mut decimal_comma = false;
+    let mut in_comment = false;
+    let mut in_forecast = false;
+    for (idx, raw) in src.lines().enumerate() {
+        let line_no = idx + 1;
+        let raw = raw.trim_end_matches('\r');
+        if in_comment {
+            in_comment = raw.trim_end() != "end comment";
+            continue;
+        }
+        if raw.starts_with([';', '#', '*', '%']) {
+            continue;
+        }
+        let line = raw.split(';').next().unwrap_or_default();
+        if raw.trim().is_empty() {
+            continue;
+        }
+        if raw.starts_with([' ', '\t']) {
+            // A posting, a comment of the transaction, or the indented body
+            // of a directive or forecast.
+            if in_forecast {
+                continue;
+            }
+            let Some(txn) = current.as_mut() else {
+                continue;
+            };
+            // A `date:` tag gives a posting a date of its own; a legacy entry
+            // has one date.
+            if let Some((_, comment)) = raw.split_once(';')
+                && comment
+                    .split(|c: char| c == ',' || c.is_whitespace())
+                    .any(|word| word.starts_with("date:"))
+            {
+                return Err(refuse(
+                    line_no,
+                    "a `date:` tag dates a posting apart from its transaction; split that posting into a transaction of its own date".into(),
+                ));
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            row_count += 1;
+            hledger_posting(txn, line.trim(), line_no, units, account_map, decimal_comma)?;
+            continue;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(txn) = current.take() {
+            chunks.push(finish_ledger_txn(txn, LegacyFormat::Hledger)?);
+        }
+        in_forecast = false;
+        let line = line.trim_end();
+        let first = line.split_whitespace().next().unwrap_or_default();
+        match first {
+            "comment" => {
+                in_comment = true;
+                continue;
+            }
+            "account" | "commodity" | "payee" | "tag" | "P" | "D" => continue,
+            "~" => {
+                in_forecast = true;
+                continue;
+            }
+            "decimal-mark" => {
+                decimal_comma = match line[first.len()..].trim() {
+                    "," => true,
+                    "." => false,
+                    other => {
+                        return Err(refuse(
+                            line_no,
+                            format!("decimal-mark `{other}` is neither . nor ,"),
+                        ));
+                    }
+                };
+                continue;
+            }
+            "include" => {
+                return Err(refuse(
+                    line_no,
+                    format!("include names another file; {reprint}"),
+                ));
+            }
+            "alias" | "apply" | "end" => {
+                return Err(refuse(
+                    line_no,
+                    format!("`{first}` rewrites account names; {reprint}"),
+                ));
+            }
+            "=" => {
+                return Err(refuse(
+                    line_no,
+                    format!("an auto posting rule adds postings; {reprint}"),
+                ));
+            }
+            "Y" | "year" => {
+                return Err(refuse(
+                    line_no,
+                    format!("a year directive completes partial dates; {reprint}"),
+                ));
+            }
+            _ => {}
+        }
+        // hledger also writes 2025/3/5; the month and day take two digits.
+        let primary = first
+            .split('=')
+            .next()
+            .unwrap_or_default()
+            .replace(['/', '.'], "-")
+            .split('-')
+            .enumerate()
+            .map(|(i, part)| {
+                if i > 0 && part.len() == 1 {
+                    format!("0{part}")
+                } else {
+                    part.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("-");
+        let date = Some(primary.as_str())
+            .filter(|text| text.split('-').next().is_some_and(|year| year.len() == 4))
+            .and_then(|text| parse_date_iso(FMT, text).ok())
+            .ok_or_else(|| {
+                refuse(
+                    line_no,
+                    format!(
+                        "`{first}` is neither a dated transaction (YYYY-MM-DD) nor a known directive"
+                    ),
+                )
+            })?;
+        let mut header = line[first.len()..].trim_start();
+        if let Some(rest) = header
+            .strip_prefix('*')
+            .or_else(|| header.strip_prefix('!'))
+            .filter(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
+        {
+            header = rest.trim_start();
+        }
+        if header.starts_with('(')
+            && let Some(close) = header.find(')')
+        {
+            header = header[close + 1..].trim_start();
+        }
+        current = Some(BeancountTxn {
+            line: line_no,
+            date,
+            description: header.trim().to_string(),
+            legs: Vec::new(),
+            elided: None,
+        });
+    }
+    if let Some(txn) = current.take() {
+        chunks.push(finish_ledger_txn(txn, LegacyFormat::Hledger)?);
+    }
+    finalize_legacy_batch(
+        LegacyFormat::Hledger,
+        LegacyFormat::Hledger.default_source_system().to_owned(),
+        src,
+        row_count,
+        chunks,
+    )
+}
+
+/// `number` (digits, `.` and `,`) as a plain `123.45`, read under the
+/// journal's decimal mark: at most one decimal mark, no digit-group mark
+/// after it, and digit groups of three after a first group of one to three.
+/// Anything else (`1,5` or `1.000,00` under `.`, `1,234.5` under `,`) has no
+/// single reading and is `None`, never guessed: a misread mark scales an
+/// amount by a power of ten.
+fn hledger_number(number: &str, decimal_comma: bool) -> Option<String> {
+    let (mark, group) = if decimal_comma {
+        (',', '.')
+    } else {
+        ('.', ',')
+    };
+    let (whole, fraction) = match number.split_once(mark) {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (number, None),
+    };
+    if fraction.is_some_and(|f| f.contains([mark, group])) {
+        return None;
+    }
+    if whole.contains(group) {
+        let mut groups = whole.split(group);
+        let first = groups.next().unwrap_or_default();
+        if !(1..=3).contains(&first.len()) || groups.any(|g| g.len() != 3) {
+            return None;
+        }
+    }
+    let whole = whole.replace(group, "");
+    Some(match fraction {
+        Some(fraction) => format!("{whole}.{fraction}"),
+        None => whole,
+    })
+}
+
+/// One hledger posting: its account up to two spaces or a tab, then its
+/// amount, if any.
+fn hledger_posting(
+    txn: &mut BeancountTxn,
+    body: &str,
+    line: usize,
+    units: &UnitCatalog,
+    account_map: &AccountMap,
+    decimal_comma: bool,
+) -> Result<(), FormatError> {
+    const FMT: &str = "hledger_journal";
+    let refuse = |detail: String| FormatError::Parse {
+        format: FMT,
+        detail: format!("line {line}: {detail}"),
+    };
+    let mut body = body;
+    if let Some(rest) = body
+        .strip_prefix('*')
+        .or_else(|| body.strip_prefix('!'))
+        .filter(|rest| rest.starts_with([' ', '\t']))
+    {
+        body = rest.trim_start();
+    }
+    let split = body
+        .find('\t')
+        .into_iter()
+        .chain(body.find("  "))
+        .min()
+        .unwrap_or(body.len());
+    let account = body[..split].trim();
+    if account.starts_with(['(', '[']) {
+        return Err(refuse(format!(
+            "`{account}` is a virtual posting; a ledger leg is always real and balanced"
+        )));
+    }
+    let account_code = account_map.resolve(FMT, account)?;
+    let amount = body[split..].split('=').next().unwrap_or_default().trim();
+    if amount.is_empty() {
+        if txn.elided.is_some() {
+            return Err(refuse(
+                "a second posting without an amount; hledger infers at most one".into(),
+            ));
+        }
+        txn.elided = Some(account_code);
+        return Ok(());
+    }
+    if amount.contains('@') {
+        return Err(refuse(format!(
+            "the posting on {account} has a cost or price, which converts between units; a legacy leg carries one unit"
+        )));
+    }
+    let (negative, unsigned) = match amount.strip_prefix('-') {
+        Some(rest) => (true, rest.trim_start()),
+        None => (
+            false,
+            amount.strip_prefix('+').unwrap_or(amount).trim_start(),
+        ),
+    };
+    let numeric = |c: char| c.is_ascii_digit() || c == '.' || c == ',';
+    let (commodity, number) = if unsigned.starts_with(|c: char| c.is_ascii_digit()) {
+        let end = unsigned
+            .find(|c: char| !numeric(c))
+            .unwrap_or(unsigned.len());
+        (unsigned[end..].trim(), &unsigned[..end])
+    } else {
+        let start = unsigned
+            .find(|c: char| c.is_ascii_digit() || c == '-' || c == '+')
+            .unwrap_or(unsigned.len());
+        (unsigned[..start].trim(), unsigned[start..].trim())
+    };
+    let (negative, number) = match number.strip_prefix('-') {
+        Some(rest) if !negative => (true, rest),
+        _ => (negative, number.strip_prefix('+').unwrap_or(number)),
+    };
+    let commodity = commodity.trim_matches('"');
+    if commodity.is_empty() {
+        return Err(refuse(format!(
+            "`{amount}` names no commodity; write the unit's code (100.00 USD)"
+        )));
+    }
+    if number.is_empty() || !number.chars().all(numeric) {
+        return Err(refuse(format!(
+            "`{amount}` is not one decimal amount with its commodity"
+        )));
+    }
+    let (uid, scale) = units
+        .lookup_code(commodity)
+        .ok_or_else(|| FormatError::UnknownUnit {
+            format: FMT,
+            unit: commodity.to_owned(),
+        })?;
+    let plain = hledger_number(number, decimal_comma).ok_or_else(|| {
+        refuse(format!(
+            "`{amount}`: its digit groups and decimal mark do not read as the journal's decimal mark `{}`; declare `decimal-mark ,` or `decimal-mark .` before it",
+            if decimal_comma { ',' } else { '.' }
+        ))
+    })?;
+    let magnitude = parse_exact_decimal(FMT, &plain, scale)?;
+    if magnitude == 0 {
+        return Ok(());
+    }
+    txn.legs.push(FormatLeg {
+        account_code,
+        side: if negative { Side::Credit } else { Side::Debit },
+        amount: Amount::new(uid, magnitude),
+        unit_code: commodity.to_owned(),
+        unit_scale: scale,
+        memo: None,
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1855,6 +2286,79 @@ ENTRY-1,2025-12-31,,4000,-25.00,Revenue,,
     }
 
     #[test]
+    fn a_side_column_reads_unsigned_amounts_by_their_indicator() {
+        let units = UnitCatalog::embedded().expect("units");
+        let accounts = test_account_map();
+        let toml = |extra: &str| {
+            format!(
+                "[columns]\nsource_system = \"csv-gl\"\nentry_id_column = \"entry_id\"\neffective_date_column = \"effective_date\"\naccount_column = \"account_code\"\nside_column = \"side\"\namount_column = \"amount\"\nunit_column = \"currency\"\n{extra}"
+            )
+        };
+        let columns = LegacyColumnMap::parse_toml(&toml("")).expect("columns");
+        // The shape of FrankenAccounting's own csv-gl: `#` metadata, then a
+        // D/C indicator beside an unsigned amount.
+        let source = "# fa_csv_gl_v1|book=x\nentry_id,effective_date,account_code,side,amount,currency\nE1,2025-12-31,1000,D,125.00,USD\nE1,2025-12-31,3000,c,125.00,USD\n";
+        let batch =
+            parse_generic_csv(source, &columns, &units, &accounts).expect("side and amount");
+        let legs: Vec<(&str, Side, i128)> = batch.chunks[0]
+            .legs
+            .iter()
+            .map(|l| (l.account_code.as_str(), l.side, l.amount.mantissa))
+            .collect();
+        assert_eq!(
+            legs,
+            [
+                ("1000", Side::Debit, 12_500),
+                ("3000", Side::Credit, 12_500)
+            ]
+        );
+        // Declared markers, compared ignoring case.
+        let dr_cr =
+            LegacyColumnMap::parse_toml(&toml("debit_marker = \"Dr\"\ncredit_marker = \"Cr\"\n"))
+                .expect("markers");
+        let read = parse_generic_csv(
+            &source.replace(",D,", ",Dr,").replace(",c,", ",CR,"),
+            &dr_cr,
+            &units,
+            &accounts,
+        )
+        .expect("declared markers");
+        assert_eq!(read.chunks[0].legs[1].side, Side::Credit);
+        // Planted negatives: an unknown indicator, and an amount that is not
+        // positive (the indicator, not the sign, says which way it moves).
+        for (rows, why) in [
+            (source.replace(",c,", ",X,"), "neither the debit marker"),
+            (
+                source
+                    .replace("1000,D,125.00", "1000,D,-125.00")
+                    .replace("3000,c,125.00", "3000,c,-125.00"),
+                "is positive",
+            ),
+            (source.replace(",D,125.00,", ",D,0.00,"), "is positive"),
+        ] {
+            let err = parse_generic_csv(&rows, &columns, &units, &accounts)
+                .expect_err(why)
+                .to_string();
+            assert!(err.contains(why), "{why}: {err}");
+        }
+        for (config, why) in [
+            (
+                toml("").replace("amount_column = \"amount\"\n", ""),
+                "declared together",
+            ),
+            (
+                toml("debit_marker = \"X\"\ncredit_marker = \"x\"\n"),
+                "are both",
+            ),
+        ] {
+            let err = LegacyColumnMap::parse_toml(&config)
+                .expect_err(why)
+                .to_string();
+            assert!(err.contains(why), "{why}: {err}");
+        }
+    }
+
+    #[test]
     fn iif_splits_bind_declared_dates_and_preserve_optional_timestamps() {
         let units = UnitCatalog::embedded().expect("units");
         let accounts = test_account_map();
@@ -2022,6 +2526,170 @@ poptag #migration
         assert!(matches!(
             parse_beancount_ledger(&unknown, &units, &map),
             Err(FormatError::UnknownUnit { unit, .. }) if unit == "ZZZ"
+        ));
+    }
+
+    #[test]
+    fn hledger_journal_maps_account_names_amount_styles_and_the_elided_remainder() {
+        let units = UnitCatalog::embedded().expect("units");
+        let mut map = AccountMap::new(["1000", "3000", "4000", "5000"]);
+        map.insert("assets:bank:checking", "1000");
+        map.insert("equity:opening balances", "3000");
+        map.insert("income:sales", "4000");
+        map.insert("expenses:auto:fuel", "5000");
+        let journal = "\
+; A journal as hledger print writes it.
+account assets:bank:checking
+commodity USD 1,000.00
+P 2025-12-01 EUR 1.10 USD
+
+2025-12-01 * (A-17) Opening | capital contributed  ; deposit slip
+    assets:bank:checking      USD 1,000.00  ; slip: A-17
+    equity:opening balances
+
+2025/12/15=2025/12/16 ! Fuel and a sale
+    ! expenses:auto:fuel          40.25 USD
+    assets:bank:checking        -40.25 USD = USD 959.75
+    income:sales                 0.00 USD
+
+comment
+2025-12-20 not a transaction
+end comment
+
+~ monthly from 2026-01
+    expenses:auto:fuel   USD 50.00
+    assets:bank:checking
+";
+        let batch = parse_hledger_journal(journal, &units, &map).expect("valid journal");
+        assert_eq!(batch.source_system, "hledger");
+        assert_eq!(batch.row_count, 5, "the forecast's postings are not rows");
+        assert_eq!(batch.chunks.len(), 2);
+        let opening = &batch.chunks[0];
+        assert_eq!(opening.provenance.source_id, "L6");
+        assert_eq!(opening.description, "Opening | capital contributed");
+        let legs: Vec<(&str, Side, i128)> = opening
+            .legs
+            .iter()
+            .map(|l| (l.account_code.as_str(), l.side, l.amount.mantissa))
+            .collect();
+        assert_eq!(
+            legs,
+            [
+                ("1000", Side::Debit, 100_000),
+                ("3000", Side::Credit, 100_000)
+            ]
+        );
+        // The secondary date is dropped, the zero posting moves nothing,
+        // the status marks are not accounts and the assertion is stripped.
+        let fuel = &batch.chunks[1];
+        assert_eq!(fuel.provenance.source_id, "L10");
+        assert_eq!(fuel.effective_date, DateDay::parse("2025-12-15").unwrap());
+        assert_eq!(fuel.description, "Fuel and a sale");
+        let legs: Vec<(&str, Side, i128)> = fuel
+            .legs
+            .iter()
+            .map(|l| (l.account_code.as_str(), l.side, l.amount.mantissa))
+            .collect();
+        assert_eq!(
+            legs,
+            [("5000", Side::Debit, 4_025), ("1000", Side::Credit, 4_025)]
+        );
+        let cash = batch
+            .trial_balance
+            .iter()
+            .find(|l| l.account_code == "1000")
+            .expect("cash line");
+        assert_eq!(cash.mantissa, 95_975);
+        // hledger's single-digit month and day.
+        let short =
+            "2025/12/5 Opening\n    assets:bank:checking  USD 10.00\n    equity:opening balances\n";
+        let read = parse_hledger_journal(short, &units, &map).expect("a short date");
+        assert_eq!(
+            read.chunks[0].effective_date,
+            DateDay::parse("2025-12-05").unwrap()
+        );
+        // A comma decimal mark, after its directive.
+        let european = "decimal-mark ,\n2025-12-01 Opening\n    assets:bank:checking  EUR 1.000,50\n    equity:opening balances\n";
+        let read = parse_hledger_journal(european, &units, &map).expect("comma decimals");
+        assert_eq!(read.chunks[0].legs[0].amount.mantissa, 100_050);
+        assert_eq!(read.chunks[0].legs[0].unit_code, "EUR");
+
+        // Planted negatives: each names its line and what to do instead.
+        for (planted, expected) in [
+            (
+                journal.replace("-40.25 USD = USD 959.75", "-40.25 USD @ 1.00 USD"),
+                "cost or price",
+            ),
+            (
+                journal.replace("    income:sales ", "    (income:sales) "),
+                "virtual posting",
+            ),
+            (format!("include other.journal\n{journal}"), "include names another file"),
+            (format!("alias checking = assets:bank:checking\n{journal}"), "rewrites account names"),
+            (format!("apply account business\n{journal}"), "rewrites account names"),
+            (format!("= expenses:auto\n    (budget)  1\n{journal}"), "auto posting rule"),
+            (format!("Y 2025\n{journal}"), "year directive"),
+            (journal.replace("2025/12/15=2025/12/16", "12/15"), "neither a dated transaction"),
+            (format!("decimal-mark ;\n{journal}"), "neither . nor ,"),
+            (format!("decimal-mark x\n{journal}"), "neither . nor ,"),
+            (
+                journal.replace(
+                    "    assets:bank:checking        -40.25 USD = USD 959.75\n    income:sales                 0.00 USD",
+                    "    assets:bank:checking\n    income:sales",
+                ),
+                "a second posting without an amount",
+            ),
+            (journal.replace("40.25 USD\n", "40.25\n"), "names no commodity"),
+            (journal.replace("-40.25 USD", "-40.20 USD"), "unbalanced"),
+            // A mark that does not read as the journal's decimal mark is
+            // refused, never guessed: `1,5` is 1.5 to a comma journal and 15
+            // to a period one, and `1.000,5` at BTC's scale would read as
+            // 1.0005 instead of 1000.5.
+            (
+                journal.replace("USD 1,000.00  ;", "USD 1,5  ;"),
+                "digit groups and decimal mark",
+            ),
+            (
+                format!(
+                    "{journal}\n2025-12-31 Coins\n    assets:bank:checking  BTC 1.000,5\n    equity:opening balances\n"
+                ),
+                "digit groups and decimal mark",
+            ),
+            (
+                "decimal-mark ,\n2025-12-31 Coins\n    assets:bank:checking  1,234.5 BTC\n    equity:opening balances\n"
+                    .to_string(),
+                "digit groups and decimal mark",
+            ),
+            // A posting date of its own, on the posting or below it.
+            (
+                journal.replace("; slip: A-17", "; slip: A-17, date:2025-12-20"),
+                "`date:` tag",
+            ),
+            (
+                journal.replace(
+                    "    equity:opening balances\n",
+                    "    equity:opening balances\n    ; date:2025-12-02\n",
+                ),
+                "`date:` tag",
+            ),
+        ] {
+            let err = parse_hledger_journal(&planted, &units, &map)
+                .expect_err(expected)
+                .to_string();
+            assert!(err.to_lowercase().contains(&expected.to_lowercase()), "{expected}: {err}");
+        }
+        let dollar = journal.replace("USD 1,000.00  ;", "$1,000.00  ;");
+        assert!(matches!(
+            parse_hledger_journal(&dollar, &units, &map),
+            Err(FormatError::UnknownUnit { unit, .. }) if unit == "$"
+        ));
+        let unmapped = journal.replace(
+            "expenses:auto:fuel          40.25",
+            "expenses:auto:tolls          40.25",
+        );
+        assert!(matches!(
+            parse_hledger_journal(&unmapped, &units, &map),
+            Err(FormatError::UnmappedAccount { legacy_account, .. }) if legacy_account == "expenses:auto:tolls"
         ));
     }
 
