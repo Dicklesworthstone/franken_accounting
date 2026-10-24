@@ -353,8 +353,21 @@ fn fiscal_year_launch_maintains_future_created_periods_and_posted_amounts_over_t
         ]);
         assert!(verified.contains("\"green\":true"), "{verified}");
         let tb = ok(&["tb", "--period", "FY2027-P01", "--book", &b, "--json"]);
-        assert!(tb.contains("\"debits\":\"1.00 USD\""), "{tb}");
-        assert!(tb.contains("\"credits\":\"1.00 USD\""), "{tb}");
+        // Stock carries the fixture's 10 USD forward; selected-period activity
+        // contains only the new 1 USD posting. Neither may lose prior history.
+        assert!(tb.contains("\"debits\":\"11.00 USD\""), "{tb}");
+        assert!(tb.contains("\"credits\":\"11.00 USD\""), "{tb}");
+        let activity = ok(&[
+            "tb",
+            "--activity",
+            "--period",
+            "FY2027-P01",
+            "--book",
+            &b,
+            "--json",
+        ]);
+        assert!(activity.contains("\"debits\":\"1.00 USD\""), "{activity}");
+        assert!(activity.contains("\"credits\":\"1.00 USD\""), "{activity}");
         let other = ok(&[
             "verify",
             "registers",
