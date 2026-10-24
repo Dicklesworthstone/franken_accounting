@@ -431,6 +431,26 @@ impl PreparedPost {
             entry.proposal.book_id,
             &capacity_entries,
         )? {
+            // Two individually fitting preparations may compete for the
+            // remaining capacity. Preserve that race's conflict contract;
+            // a fresh retry then receives the ordinary capacity refusal.
+            let refusal = if refusal.code == code::REGISTER_CAPACITY
+                && txn.basis() != db.frontier()?
+            {
+                Refusal::new(
+                    code::CONFLICT,
+                    exit::CONFLICT,
+                    format!(
+                        "a publication after prepared prefix {} exhausted register capacity: {}",
+                        txn.basis().0,
+                        refusal.message
+                    ),
+                    "plan §5.2 (register capacity at publication)",
+                    "re-plan against the current journal; reduce gross activity if the fresh plan exceeds register capacity",
+                )
+            } else {
+                refusal
+            };
             txn.abort();
             return Ok(Err(refusal));
         }

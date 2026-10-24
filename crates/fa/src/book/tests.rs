@@ -1003,7 +1003,7 @@ fn prepared_post_checks_capacity_against_intervening_financial_publications() {
             .await
             .unwrap()
             .unwrap_err();
-        assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3));
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-030", 6));
         assert!(
             refusal
                 .message
