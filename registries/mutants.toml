@@ -314,7 +314,7 @@ file = "crates/fa-policy/src/admit.rs"
 find = "Some(ceiling) if mantissa > ceiling => {"
 replace = "Some(ceiling) if false && mantissa > ceiling => {"
 law = "FA-INV-10.core"
-killed_by = ["fa-policy::lib::admit::tests::admission_order_is_holder_then_agent_then_op_then_ceilings"]
+killed_by = ["fa-policy::lib::admit::tests::ceilings_bound_every_leg_and_a_bounded_token_admits_only_its_units"]
 description = "Bypass per-unit amount ceiling enforcement in fa_policy::admit_base."
 
 # ---- 10. Escrow availability & TimeTick bounds (fa-escrow, fa-model) --------
