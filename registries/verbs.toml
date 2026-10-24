@@ -5855,7 +5855,7 @@ ops = ["read"]
 
 [[bound]]
 verbs = ["rule"]
-subcommands = ["check", "list", "show", "eval"]
+subcommands = ["check", "list", "show", "eval", "backtest"]
 ops = ["read"]
 
 [[bound]]
