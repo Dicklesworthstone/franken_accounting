@@ -11298,7 +11298,8 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let summary = book.summary_trial_balance(who, &capability, &request)??;
         return render_summary_trial_balance(out, &book, &summary, &selection, None);
     }
-    book.read_scope(who, &read_cap)??
+    let admitted_at = book
+        .read_scope(who, &read_cap)??
         .admit_report(&selection.clone().into(), known_at)??;
     let (tb, certificate, served) = if let Some(capability) = certify_cap.as_ref() {
         prepare_native_certificate_history(&mut book, capability, known_at)?;
@@ -11329,21 +11330,27 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         match (&selection, window) {
             (TrialBalanceSelection::Periods(periods), Some(Ok(()))) => {
-                let (report, served) = book.trial_balance_served(periods)?;
+                let (report, served) = book
+                    .read_scope(who, &read_cap)??
+                    .trial_balance_served(periods)??;
                 (report, None, Some(served))
             }
             (TrialBalanceSelection::Activity(periods), Some(Ok(()))) => {
-                let (report, served) = book.period_activity_served(periods)?;
+                let (report, served) = book
+                    .read_scope(who, &read_cap)??
+                    .period_activity_served(periods)??;
                 (report, None, Some(served))
             }
             (TrialBalanceSelection::Periods(periods), Some(Err(refusal))) => (
-                book.trial_balance_at(periods, None)?,
+                book.trial_balance_at(periods, Some(admitted_at))?,
                 None,
                 refused(refusal),
             ),
-            (TrialBalanceSelection::Activity(periods), Some(Err(refusal))) => {
-                (book.period_activity(periods, None)?, None, refused(refusal))
-            }
+            (TrialBalanceSelection::Activity(periods), Some(Err(refusal))) => (
+                book.period_activity(periods, Some(admitted_at))?,
+                None,
+                refused(refusal),
+            ),
             (TrialBalanceSelection::AsOf(day), _) => {
                 (book.balance_as_of(*day, known_at)?, None, None)
             }

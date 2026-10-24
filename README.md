@@ -117,6 +117,13 @@ Register verification compares both amount columns, counts, identity, period mem
 
 The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Uncertified head trial balances and period activity can use checked native cells plus an exact tail; other selections retain literal folds.
 
+Authorized embedded readers use `Book::read_scope` before reading. Its
+`trial_balance_served` and `period_activity_served` methods return the report
+and its actual maintenance cursor/tail or literal fallback reason. The existing
+scope methods also use maintained cells for HEAD when resident history permits;
+an explicit known-at sequence remains a literal historical read. These reads
+load no history, repair no cache and preserve the same capability caveats.
+
 `fad serve --book ./books/acme --register-period FY2026-P03` selects native
 register maintenance without granting System authority. It attempts one selected
 period per timer cycle in fair rotation. The commit-wake implementation also

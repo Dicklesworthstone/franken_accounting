@@ -2524,6 +2524,201 @@ fn checkpoint_requires_its_holder_witness_authority_and_current_capability() {
     assert_eq!(book.verify_accumulator().unwrap().states.len(), 2);
 }
 
+/// The authorized facade reaches the existing maintained HEAD path while
+/// fixed prefixes, scope caveats and damaged-cache fallback remain exact.
+#[test]
+fn authorized_head_reads_use_maintained_cells_and_preserve_history_and_scope() {
+    use fa_model::symbols::{property, relation};
+    use fa_registers::Served;
+
+    let book_id = Id128([0xb3; 16]);
+    let (spec, usd) = spec(book_id);
+    let mut book = Book::create_memory(
+        BookKeys::for_development(0xb3),
+        spec,
+        Entropy::deterministic(0xb3),
+    )
+    .unwrap();
+    let principal = VId(0xb3);
+    let day = DateDay::from_ymd(2026, 3, 15).unwrap();
+    book.install_chart(
+        &chart(usd),
+        principal,
+        day,
+        b"chart",
+        &Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    book.create_periods(
+        2026,
+        principal,
+        &Capability::embedded(principal, &["schema_change"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let march = "FY2026-P03".to_string();
+    let periods = [march.clone()];
+    book.transition_period(
+        &march,
+        PeriodTransition::Open,
+        principal,
+        1,
+        b"open",
+        &Capability::embedded(principal, &["close"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let first = post_rent(&mut book, usd, principal, day, b"first", 150_000)
+        .unwrap()
+        .unwrap();
+    let first_at = first.recorded_at();
+    let reader = Capability::embedded(principal, &["read"]).unwrap();
+    let snapshot = |book: &Book| {
+        let query = book.purposes().query();
+        query.with_restriction(|| with_store!(&book.store, core => core.db.vertices()).unwrap())
+    };
+
+    // With no cache, the new API reports its literal fallback honestly.
+    let before = snapshot(&book);
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    for (report, served) in [
+        scope.trial_balance_served(&periods).unwrap().unwrap(),
+        scope.period_activity_served(&periods).unwrap().unwrap(),
+    ] {
+        assert!(matches!(served, Served::Literal(_)), "{served:?}");
+        assert_eq!(report.unit_totals[&usd.0], (150_000, 150_000));
+    }
+    assert_eq!(snapshot(&book), before);
+
+    let advance = book.advance_registers(&march).unwrap();
+    assert!(advance.wrote);
+    post_rent(&mut book, usd, principal, day, b"tail", 150_000)
+        .unwrap()
+        .unwrap();
+    let head = book.head().unwrap();
+    let literal_stock = book.trial_balance_at(&periods, Some(head)).unwrap();
+    let literal_activity = book.period_activity(&periods, Some(head)).unwrap();
+    let historical = book.trial_balance_at(&periods, Some(first_at)).unwrap();
+    assert_eq!(literal_stock.unit_totals[&usd.0], (300_000, 300_000));
+    assert_eq!(literal_activity.unit_totals[&usd.0], (300_000, 300_000));
+    assert_eq!(historical.unit_totals[&usd.0], (150_000, 150_000));
+    let before = snapshot(&book);
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    for (actual, served, expected) in [
+        {
+            let (report, served) = scope.trial_balance_served(&periods).unwrap().unwrap();
+            (report, served, &literal_stock)
+        },
+        {
+            let (report, served) = scope.period_activity_served(&periods).unwrap().unwrap();
+            (report, served, &literal_activity)
+        },
+    ] {
+        assert_eq!(
+            actual.canonical_bytes().unwrap(),
+            expected.canonical_bytes().unwrap()
+        );
+        let Served::Maintained(cursors) = served else {
+            panic!("expected maintained cells plus the committed tail: {served:?}");
+        };
+        assert_eq!(cursors.len(), 1);
+        assert_eq!((&cursors[0].0, cursors[0].1), (&march, advance.through));
+        assert!(cursors[0].2 > 0, "the later posting must be decoded");
+    }
+    assert_eq!(
+        scope.trial_balance_at(&periods, None).unwrap().unwrap(),
+        literal_stock
+    );
+    assert_eq!(
+        scope.period_activity(&periods, None).unwrap().unwrap(),
+        literal_activity
+    );
+    assert_eq!(
+        scope
+            .trial_balance_at(&periods, Some(first_at))
+            .unwrap()
+            .unwrap(),
+        historical
+    );
+
+    let limited = reader.clone().for_periods(&[&march]).unwrap();
+    let scope = book.read_scope(principal, &limited).unwrap().unwrap();
+    let (activity, served) = scope.period_activity_served(&periods).unwrap().unwrap();
+    assert_eq!(activity, literal_activity);
+    assert!(matches!(served, Served::Maintained(_)));
+    let assert_caveat = |refusal: Refusal, name: &str| {
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+        assert!(
+            refusal.message.contains(&format!("`{name}` caveat")),
+            "{refusal:?}"
+        );
+    };
+    assert_caveat(
+        scope.trial_balance_served(&periods).unwrap().unwrap_err(),
+        "periods",
+    );
+    assert_caveat(
+        scope
+            .period_activity_served(&["FY2026-P04".into()])
+            .unwrap()
+            .unwrap_err(),
+        "periods",
+    );
+    let pinned = reader.clone().known_at_most(first_at);
+    let scope = book.read_scope(principal, &pinned).unwrap().unwrap();
+    assert_caveat(
+        scope.trial_balance_served(&periods).unwrap().unwrap_err(),
+        "known_at",
+    );
+    assert_caveat(
+        scope.period_activity_served(&periods).unwrap().unwrap_err(),
+        "known_at",
+    );
+    assert_eq!(
+        scope
+            .trial_balance_at(&periods, Some(first_at))
+            .unwrap()
+            .unwrap(),
+        historical
+    );
+    assert_eq!(book.head().unwrap(), head);
+    assert_eq!(snapshot(&book), before);
+
+    // Corrupt only a derived cell. Reads must abandon it without repairing
+    // it or changing any immutable source; the literal result stays exact.
+    let cell = fa_registers::register_vid(
+        book_id,
+        &fa_registers::CellKey {
+            account: account_vid(book_id, "6000"),
+            unit_id: usd.0,
+            period: march,
+        },
+    );
+    let contexts = book.purposes();
+    let mut change = fgdb::WriteBatch::new(relation::IN_PERIOD);
+    change.set_vertex_property(
+        cell,
+        property::DEBITS_POSTED,
+        Some(fa_journal::rows::mantissa_scalar("damaged register", 999_999).unwrap()),
+    );
+    with_store!(&mut book.store, core => book.runtime.block_on(core.db.write(&contexts.commit(), change)))
+        .unwrap();
+    let damaged_at = book.head().unwrap();
+    let before = snapshot(&book);
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    for (report, served) in [
+        scope.trial_balance_served(&periods).unwrap().unwrap(),
+        scope.period_activity_served(&periods).unwrap().unwrap(),
+    ] {
+        assert!(matches!(served, Served::Literal(_)), "{served:?}");
+        assert_eq!(report.known_at, damaged_at);
+        assert_eq!(report.unit_totals[&usd.0], (300_000, 300_000));
+    }
+    assert_eq!(book.head().unwrap(), damaged_at);
+    assert_eq!(snapshot(&book), before);
+}
+
 /// Reads under a capability (fa-llx; fa-t6m "historical read using a
 /// revoked token"): admitted once against current policy, then every
 /// read judged by the scope caveats before its query is constructed —

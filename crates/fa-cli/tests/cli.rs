@@ -1988,6 +1988,150 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
     Ok(())
 }
 
+/// The actual binary uses the authorized HEAD readers after rehydration;
+/// historical and period-restricted reads retain their declared basis.
+#[test]
+fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pinned()
+-> std::io::Result<()> {
+    let dir = tmp("authorized-head-reports")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut argv = vec!["--book", "book"];
+        argv.extend_from_slice(args);
+        argv.push("--json");
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .current_dir(&dir)
+            .args(&argv)
+            .env_remove("FA_BOOK")
+            .output()
+            .expect("run native fa");
+        let code = output.status.code().unwrap_or(-1);
+        let out = String::from_utf8(output.stdout).unwrap();
+        let err = String::from_utf8(output.stderr).unwrap();
+        check_robot_output(&argv, code, &out);
+        eprintln!("$ fa {} -> {code}\n{out}{err}", argv.join(" "));
+        (code, out, err)
+    };
+    let ok = |args: &[&str]| {
+        let (code, out, err) = run(args);
+        assert_eq!(code, 0, "{args:?}: {out}{err}");
+        assert!(err.is_empty(), "{args:?}: {err}");
+        out
+    };
+    ok(&["book", "create", "--name", "Authorized head reads"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    let period = "FY2026-P03";
+    ok(&["period", "open", period]);
+    let evidence = source_doc(&dir, &book);
+    let mut posted_at = Vec::new();
+    let mut cursor = None;
+    for (key, amount) in [("first", "10.00 USD"), ("tail", "2.00 USD")] {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"{amount}"}},{{"side":"credit","account":"1000","amount":"{amount}"}}]}}"#,
+            ),
+        );
+        let posted = doc(&ok(&["post", "--intent", &intent, "--evidence", &evidence]));
+        posted_at.push(int(&posted, "recorded_at").unwrap());
+        if key == "first" {
+            cursor = int(
+                &doc(&ok(&["registers", "advance", "--period", period])),
+                "through",
+            );
+        }
+    }
+    let cursor = cursor.expect("published maintenance cursor");
+    for activity in [false, true] {
+        let mut args = vec!["tb", "--period", period];
+        if activity {
+            args.push("--activity");
+        }
+        let data = doc(&ok(&args));
+        assert_eq!(int(&data, "known_at"), Some(posted_at[1]));
+        assert!(data.render().contains("\"debits\":\"12.00 USD\""));
+        assert!(data.render().contains("\"credits\":\"12.00 USD\""));
+        let served = data.get("served").unwrap();
+        assert_eq!(
+            served.get("mode").and_then(Json::as_str),
+            Some("maintained")
+        );
+        assert!(int(served, "tail_length").unwrap() > 0);
+        let rows = arr(served, "periods");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(int(&rows[0], "served_at"), Some(cursor));
+        assert_eq!(rows[0].get("period").and_then(Json::as_str), Some(period));
+
+        let before = posted_at[0].to_string();
+        args.extend(["--as-known-at", &before]);
+        let historical = doc(&ok(&args));
+        assert_eq!(int(&historical, "known_at"), Some(posted_at[0]));
+        assert_eq!(historical.get("served"), Some(&Json::Null));
+        assert!(historical.render().contains("\"debits\":\"10.00 USD\""));
+        assert!(historical.render().contains("\"credits\":\"10.00 USD\""));
+    }
+    ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "march-reader",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--period",
+        period,
+        "--out",
+        "march.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+    ]);
+    let restricted = doc(&ok(&[
+        "--token",
+        "march.token",
+        "tb",
+        "--activity",
+        "--period",
+        period,
+    ]));
+    let served = restricted.get("served").unwrap();
+    assert_eq!(served.get("mode").and_then(Json::as_str), Some("literal"));
+    assert!(
+        served
+            .get("reason")
+            .and_then(Json::as_str)
+            .unwrap()
+            .contains("cannot load the register window")
+    );
+    assert!(restricted.render().contains("\"debits\":\"12.00 USD\""));
+    assert!(restricted.render().contains("\"credits\":\"12.00 USD\""));
+    for args in [
+        vec!["--token", "march.token", "tb", "--period", period],
+        vec![
+            "--token",
+            "march.token",
+            "tb",
+            "--activity",
+            "--period",
+            "FY2026-P04",
+        ],
+    ] {
+        let (code, out, _) = run(&args);
+        assert_eq!(code, 7, "{out}");
+        assert!(out.contains("FA-REF-011"), "{out}");
+    }
+    Ok(())
+}
+
 /// Exercise the incremental engine through fresh binary invocations and a
 /// real persisted book. A full-fold rebuild on every call cannot satisfy
 /// the suffix decode count or the no-write retry below.

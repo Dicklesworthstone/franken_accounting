@@ -6256,13 +6256,34 @@ impl ReadScope<'_> {
         )?))
     }
 
+    /// The authorized head trial balance and its actual serving basis.
+    /// Admission precedes the maintained read; the scope's immutable book
+    /// borrow prevents a publication between those operations. This reads
+    /// resident history only and never loads history or repairs a cache.
+    pub fn trial_balance_served(
+        &self,
+        periods: &[String],
+    ) -> Outcome<(TrialBalance, fa_registers::Served)> {
+        let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
+        if let Err(refusal) = self.admit_report(&selection.into(), None)? {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(self.book.trial_balance_served(periods)?))
+    }
+
     /// [`Book::trial_balance_at`] under the scope caveats (see
-    /// [`Self::admit_report`]).
+    /// [`Self::admit_report`]). HEAD uses the maintained path when available;
+    /// an explicit recorded sequence keeps the literal historical path.
     pub fn trial_balance_at(
         &self,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
+        if known_at.is_none() {
+            return Ok(self
+                .trial_balance_served(periods)?
+                .map(|(report, _)| report));
+        }
         let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
         let seq = match self.admit_report(&selection.into(), known_at)? {
             Ok(seq) => seq,
@@ -6285,13 +6306,34 @@ impl ReadScope<'_> {
         Ok(Ok(self.book.balance_as_of(day, Some(seq))?))
     }
 
+    /// Authorized activity at HEAD, with the actual cache cursor and tail
+    /// or the reason for a literal fallback. Only the selected periods are
+    /// admitted. Like [`Self::trial_balance_served`], this loads no history
+    /// and cannot repair or advance a cache.
+    pub fn period_activity_served(
+        &self,
+        periods: &[String],
+    ) -> Outcome<(TrialBalance, fa_registers::Served)> {
+        let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
+        if let Err(refusal) = self.admit_report(&selection.into(), None)? {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(self.book.period_activity_served(periods)?))
+    }
+
     /// [`Book::period_activity`] under the scope caveats: it reaches exactly
-    /// the selected periods.
+    /// the selected periods. HEAD may use maintained cells; an explicit
+    /// recorded sequence remains a literal historical read.
     pub fn period_activity(
         &self,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
+        if known_at.is_none() {
+            return Ok(self
+                .period_activity_served(periods)?
+                .map(|(report, _)| report));
+        }
         let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
         let seq = match self.admit_report(&selection.into(), known_at)? {
             Ok(seq) => seq,
