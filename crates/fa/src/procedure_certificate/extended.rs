@@ -50,11 +50,12 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("confirm.coverage", 2),
     ("solvency.balance_sheet_test", 2),
     ("solvency.cash_flow_test", 2),
-    ("lookback.preferences", 2),
+    // fa-6l8g: version 3 attributes party cash through each party's own legs.
+    ("lookback.preferences", 3),
     ("lookback.fraudulent_transfer", 1),
-    ("ponzi.net_investment", 2),
-    ("distribution.rising_tide", 2),
-    ("distribution.pro_rata", 2),
+    ("ponzi.net_investment", 3),
+    ("distribution.rising_tide", 3),
+    ("distribution.pro_rata", 3),
     ("damages.attested_baseline", 1),
 ];
 

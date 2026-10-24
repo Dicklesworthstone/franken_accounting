@@ -1,6 +1,7 @@
 //! Cutoff, reconciliation, completeness, and audit procedures (plan §11.4, §11.7;
 //! beads fa-nlu, fa-g6rj).
 
+mod attribution;
 mod reconciliation_arithmetic;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,7 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::attestation::{AttestationClaim, review_vid};
 use fa_journal::genesis::BookContext;
 use fa_model::rea::SCHEMA_CHANGE_UPDATE_PARTY_IDENTIFIERS;
-use fa_model::{AccountType, ControlPayload, EntryClass, PartyIdentifierUpdate};
+use fa_model::{AccountType, ControlPayload, EntryClass, LegPayload, PartyIdentifierUpdate};
+
+use attribution::{Leg, Named, attribute, named, owners};
 use fa_money::Side;
 use fa_time::{DateDay, Weekday};
 use fgdb_types::VId;
@@ -1669,6 +1672,113 @@ fn party_lookup_tables(snapshot: &Snapshot) -> (BTreeMap<VId, VId>, BTreeMap<VId
     (pval_to_party, party_codes)
 }
 
+/// A party's code, or its vid in hex when it is not registered.
+fn code_of(party_codes: &BTreeMap<VId, String>, party: VId) -> String {
+    party_codes
+        .get(&party)
+        .cloned()
+        .unwrap_or_else(|| format!("{:032x}", party.0))
+}
+
+/// A fully paid obligation leg's parts (fa-6l8g): each settlement target's
+/// amount dated by that target, and any unsettled rest dated `fallback`, so a
+/// payment of several invoices keeps each invoice's own date.
+fn settled_parts(
+    leg: &LegPayload,
+    by_vid: &BTreeMap<VId, &crate::SnapshotEntry>,
+    fallback: Option<DateDay>,
+) -> Result<Vec<(i128, Option<DateDay>)>, LanternError> {
+    let mut rest = amount_magnitude(leg.amount.mantissa, "leg magnitude")?;
+    let mut parts = Vec::new();
+    for settlement in &leg.settles {
+        if settlement.amount.unit != leg.amount.unit {
+            continue;
+        }
+        let take = amount_magnitude(settlement.amount.mantissa, "settlement magnitude")?.min(rest);
+        if take == 0 {
+            continue;
+        }
+        let dated = by_vid
+            .get(&settlement.target.vid)
+            .map(|target| target.entry.proposal.effective_date);
+        parts.push((take, dated.or(fallback)));
+        rest = amount_difference(rest, take, "settled parts")?;
+    }
+    if rest > 0 {
+        parts.push((rest, fallback));
+    }
+    Ok(parts)
+}
+
+/// One unit's cash that no party's own legs account for (fa-6l8g,
+/// [`attribution`]): its total, the entries and accounts that carry it, and
+/// the parties those partitions name, whose figures it leaves incomplete.
+#[derive(Clone, Debug, Default)]
+struct Unresolved {
+    amount: i128,
+    entries: BTreeSet<VId>,
+    accounts: BTreeSet<VId>,
+    parties: BTreeSet<VId>,
+}
+
+impl Unresolved {
+    fn add(
+        &mut self,
+        amount: i128,
+        entry: VId,
+        accounts: &BTreeSet<VId>,
+        legs: &[Leg],
+    ) -> Result<(), LanternError> {
+        self.amount = amount_sum(self.amount, amount, "unresolved attribution")?;
+        self.entries.insert(entry);
+        self.accounts.extend(accounts.iter().copied());
+        self.parties
+            .extend(legs.iter().filter_map(|leg| match leg.named {
+                Named::One(party) => Some(party),
+                Named::None | Named::Several => None,
+            }));
+        Ok(())
+    }
+
+    /// The finding that reports it, with what it leaves incomplete.
+    fn finding(
+        &self,
+        procedure: &str,
+        scale: u8,
+        population: u64,
+        party_codes: &BTreeMap<VId, String>,
+        incomplete: &str,
+    ) -> Finding {
+        let mut cites: Vec<Cite> = self.entries.iter().copied().map(Cite::Entry).collect();
+        cites.extend(self.accounts.iter().copied().map(Cite::Account));
+        cites.truncate(MAX_CITES);
+        // By code, so the narrative reads the same whatever the parties' vids.
+        let mut parties: Vec<String> = self
+            .parties
+            .iter()
+            .map(|party| code_of(party_codes, *party))
+            .collect();
+        parties.sort();
+        finding(
+            procedure,
+            Severity::Medium,
+            Statistic {
+                name: "unresolved_attribution".into(),
+                value: self.amount,
+                scale,
+                population: population.max(1),
+            },
+            cites,
+            format!(
+                "unresolved attribution: {} of cash in {} entries is not accounted for by any one party's own legs (parties named: [{}]); {incomplete}",
+                self.amount,
+                self.entries.len(),
+                parties.join(", ")
+            ),
+        )
+    }
+}
+
 fn is_insider_at(snapshot: &Snapshot, party_vid: VId, as_of: DateDay) -> bool {
     if let Some(p) = snapshot.rea.parties.get(&party_vid)
         && matches!(
@@ -1705,7 +1815,12 @@ fn is_insider_at(snapshot: &Snapshot, party_vid: VId, as_of: DateDay) -> bool {
 ///
 /// emitting net avoidable preference exposure per creditor. A transfer is a
 /// credit to an account holding the `cash` role. Version 2 selects cash by
-/// role; version 1 guessed it from code and name tokens (fa-kxc4).
+/// role; version 1 guessed it from code and name tokens (fa-kxc4). Version 3
+/// pays each creditor only through its own obligation legs, each settlement
+/// target keeping its own invoice date, and reports a transfer no one
+/// creditor's legs account for as `unresolved_attribution` ([`attribution`],
+/// fa-6l8g); version 2 gave every party an entry named the entry's whole
+/// cash and one shared invoice date.
 pub struct LookbackPreferences {
     params: Params,
 }
@@ -1716,7 +1831,7 @@ impl Procedure for LookbackPreferences {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -1813,95 +1928,155 @@ impl Procedure for LookbackPreferences {
         // Per (party_vid, unit_id): chronological creditor events + latest unpaid invoice date
         let mut events_by_creditor: BTreeMap<(VId, u32), Vec<CreditorEvent>> = BTreeMap::new();
         let mut open_invoice_date: BTreeMap<(VId, u32), DateDay> = BTreeMap::new();
+        // Payments no one creditor's own legs account for, inside the widest
+        // (insider) lookback, per unit: they leave the exposure of every
+        // creditor they name incomplete.
+        let widest_start = DateDay(
+            petition_date
+                .0
+                .saturating_sub(i32::try_from(insider_window_days).unwrap_or(i32::MAX)),
+        );
+        let mut unresolved: BTreeMap<u32, Unresolved> = BTreeMap::new();
         let mut population = 0u64;
+        let scope =
+            crate::projection::entity_scope(live.iter().flat_map(|e| &e.entry.proposal.legs))?;
+
+        /// One `(unit, legal entity)` partition of an entry (fa-6l8g): its
+        /// cash credits (the transfer), its obligation debits (what the
+        /// transfer pays), its liability credits (new value) and its debits.
+        #[derive(Default)]
+        struct Partition<'a> {
+            cash: Vec<Leg>,
+            obligations: Vec<(Leg, &'a LegPayload)>,
+            liabilities: Vec<Leg>,
+            debits: Vec<Leg>,
+            accounts: BTreeSet<VId>,
+        }
 
         for e in &live {
             work.entry()?;
             let eff = e.entry.proposal.effective_date;
-            let mut parties_in_entry: BTreeSet<VId> = BTreeSet::new();
-            let mut cash_credit_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
-            let mut ob_debit_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
-            let mut liab_credit_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
-            let mut accts_by_unit: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
-
+            let mut partitions: BTreeMap<(u32, Option<VId>), Partition<'_>> = BTreeMap::new();
             for leg in &e.entry.proposal.legs {
                 work.leg()?;
-                for &(_, d) in &leg.dimension_set {
-                    if let Some(&pvid) = pval_to_party.get(&d) {
-                        parties_in_entry.insert(pvid);
-                    }
-                }
                 let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                     continue;
                 };
                 let at = AccountType(acct.account_type);
-                let mag = amount_magnitude(leg.amount.mantissa, "leg magnitude")?;
-                let u = leg.amount.unit.0;
-                accts_by_unit.entry(u).or_default().insert(leg.account_ref);
-
-                let total = match (leg.side, at) {
+                let one = Leg {
+                    named: named(leg, &pval_to_party),
+                    amount: amount_magnitude(leg.amount.mantissa, "leg magnitude")?,
+                };
+                let entity = crate::projection::scoped_entity(&scope, leg)?;
+                let part = partitions.entry((leg.amount.unit.0, entity)).or_default();
+                part.accounts.insert(leg.account_ref);
+                if leg.side == Side::Debit {
+                    part.debits.push(one);
+                }
+                match (leg.side, at) {
                     (Side::Credit, AccountType::ASSET) if cash.contains(&leg.account_ref) => {
-                        cash_credit_by_unit.entry(u).or_default()
+                        part.cash.push(one);
                     }
                     (Side::Debit, AccountType::LIABILITY | AccountType::EXPENSE) => {
-                        ob_debit_by_unit.entry(u).or_default()
+                        part.obligations.push((one, leg));
                     }
-                    (Side::Credit, AccountType::LIABILITY) => {
-                        liab_credit_by_unit.entry(u).or_default()
-                    }
-                    _ => continue,
-                };
-                *total = amount_sum(*total, mag, "preference entry sum")?;
+                    (Side::Credit, AccountType::LIABILITY) => part.liabilities.push(one),
+                    _ => {}
+                }
             }
 
-            if parties_in_entry.is_empty() {
-                continue;
-            }
-
-            let settled_date = e
-                .entry
-                .proposal
-                .legs
-                .iter()
-                .flat_map(|l| l.settles.iter())
-                .filter_map(|s| {
-                    by_vid
-                        .get(&s.target.vid)
-                        .map(|t| t.entry.proposal.effective_date)
-                })
-                .min();
-
-            for &party_vid in &parties_in_entry {
-                for (&unit_id, accts) in &accts_by_unit {
-                    let cash_cr = cash_credit_by_unit.get(&unit_id).copied().unwrap_or(0);
-                    let ob_dr = ob_debit_by_unit.get(&unit_id).copied().unwrap_or(0);
-                    let liab_cr = liab_credit_by_unit.get(&unit_id).copied().unwrap_or(0);
-
-                    if cash_cr > 0 && ob_dr > 0 {
+            for (&(unit_id, _), part) in &partitions {
+                if !part.cash.is_empty() && !part.obligations.is_empty() {
+                    // A transfer: each creditor is paid only through its own
+                    // obligation legs.
+                    let group: Vec<Leg> = part.obligations.iter().map(|(leg, _)| *leg).collect();
+                    let paid = attribute(&part.cash, &group)?;
+                    if !paid.party_movement {
+                        continue;
+                    }
+                    if paid.unresolved > 0 && eff >= widest_start && eff <= petition_date {
+                        let mut named_legs = part.cash.clone();
+                        named_legs.extend(group.iter().copied());
+                        unresolved.entry(unit_id).or_default().add(
+                            paid.unresolved,
+                            e.vid,
+                            &part.accounts,
+                            &named_legs,
+                        )?;
+                    }
+                    for (&party_vid, share) in &paid.parties {
+                        if share.cash == 0 {
+                            continue;
+                        }
                         population += 1;
-                        let amt = cash_cr.min(ob_dr);
-                        let inv_date = settled_date
-                            .or(e.entry.proposal.document_date)
-                            .or_else(|| open_invoice_date.get(&(party_vid, unit_id)).copied());
-                        let dtp = inv_date.map(|d| i128::from((eff.0 - d.0).max(0)));
-                        open_invoice_date.remove(&(party_vid, unit_id));
-                        events_by_creditor
-                            .entry((party_vid, unit_id))
-                            .or_default()
-                            .push(CreditorEvent {
+                        let key = (party_vid, unit_id);
+                        let fallback = e
+                            .entry
+                            .proposal
+                            .document_date
+                            .or_else(|| open_invoice_date.get(&key).copied());
+                        let own: Vec<&LegPayload> = part
+                            .obligations
+                            .iter()
+                            .zip(&paid.owners)
+                            .filter(|(_, owner)| **owner == Some(party_vid))
+                            .map(|((_, leg), _)| *leg)
+                            .collect();
+                        // Paid in full, each settlement target keeps its own
+                        // invoice date; paid short (one creditor), the
+                        // payment is dated from its earliest target.
+                        let parts = if share.cash == share.margin {
+                            let mut parts = Vec::new();
+                            for leg in own {
+                                parts.extend(settled_parts(leg, &by_vid, fallback)?);
+                            }
+                            parts
+                        } else {
+                            let earliest = own
+                                .iter()
+                                .flat_map(|leg| leg.settles.iter())
+                                .filter_map(|s| {
+                                    by_vid
+                                        .get(&s.target.vid)
+                                        .map(|t| t.entry.proposal.effective_date)
+                                })
+                                .min();
+                            vec![(share.cash, earliest.or(fallback))]
+                        };
+                        open_invoice_date.remove(&key);
+                        let events = events_by_creditor.entry(key).or_default();
+                        for (amount, invoice) in parts {
+                            events.push(CreditorEvent {
                                 date: eff,
                                 vid: e.vid,
                                 kind: CreditorEventKind::Payment {
-                                    amount: amt,
-                                    days_to_pay: dtp,
+                                    amount,
+                                    days_to_pay: invoice.map(|d| i128::from((eff.0 - d.0).max(0))),
                                 },
-                                accounts: accts.clone(),
+                                accounts: part.accounts.clone(),
                             });
-                    } else if liab_cr > 0 && cash_cr == 0 {
+                        }
+                    }
+                } else if part.cash.is_empty() && !part.liabilities.is_empty() {
+                    // New value: credit each creditor extends through its own
+                    // liability legs (or the one party the debits name).
+                    let mut extended: BTreeMap<VId, i128> = BTreeMap::new();
+                    for (leg, owner) in part
+                        .liabilities
+                        .iter()
+                        .zip(owners(&part.liabilities, &part.debits))
+                    {
+                        if let Some(party_vid) = owner {
+                            let total = extended.entry(party_vid).or_default();
+                            *total = amount_sum(*total, leg.amount, "preference new value")?;
+                        }
+                    }
+                    for (party_vid, amount) in extended {
                         population += 1;
+                        let key = (party_vid, unit_id);
                         let inv_d = e.entry.proposal.document_date.unwrap_or(eff);
                         open_invoice_date
-                            .entry((party_vid, unit_id))
+                            .entry(key)
                             .and_modify(|d| {
                                 if inv_d < *d {
                                     *d = inv_d;
@@ -1909,13 +2084,13 @@ impl Procedure for LookbackPreferences {
                             })
                             .or_insert(inv_d);
                         events_by_creditor
-                            .entry((party_vid, unit_id))
+                            .entry(key)
                             .or_default()
                             .push(CreditorEvent {
                                 date: eff,
                                 vid: e.vid,
-                                kind: CreditorEventKind::NewValue { amount: liab_cr },
-                                accounts: accts.clone(),
+                                kind: CreditorEventKind::NewValue { amount },
+                                accounts: part.accounts.clone(),
                             });
                     }
                 }
@@ -2024,11 +2199,11 @@ impl Procedure for LookbackPreferences {
                     cites.push(Cite::Entry(evid));
                 }
             }
-            let party_code = party_codes
-                .get(&party_vid)
-                .cloned()
-                .unwrap_or_else(|| format!("{:032x}", party_vid.0));
+            let party_code = code_of(&party_codes, party_vid);
             let scale = crate::unit_scale(book, unit_id)?;
+            let complete = !unresolved
+                .get(&unit_id)
+                .is_some_and(|u| u.parties.contains(&party_vid));
             out.push(finding(
                 Self::ID,
                 Severity::High,
@@ -2040,8 +2215,18 @@ impl Procedure for LookbackPreferences {
                 },
                 cites,
                 format!(
-                    "creditor {party_code} (insider={insider}): gross_preference={gross_preference}, c1_contemporaneous={c1_contemporaneous}, c2_ordinary_course={c2_ordinary_course}, c4_new_value={c4_new_value}, net_exposure={unprotected_running}"
+                    "creditor {party_code} (insider={insider}): gross_preference={gross_preference}, c1_contemporaneous={c1_contemporaneous}, c2_ordinary_course={c2_ordinary_course}, c4_new_value={c4_new_value}, net_exposure={unprotected_running}, attribution={}",
+                    if complete { "complete" } else { "incomplete" }
                 ),
+            ));
+        }
+        for (unit_id, u) in &unresolved {
+            out.push(u.finding(
+                Self::ID,
+                crate::unit_scale(book, *unit_id)?,
+                population,
+                &party_codes,
+                "the exposure of each creditor named is incomplete",
             ));
         }
         Ok(out)
@@ -2269,14 +2454,24 @@ struct InvestorPosition {
     entries: BTreeSet<VId>,
 }
 
-type InvestorPopulation = (Vec<InvestorPosition>, BTreeMap<u32, i128>, u64);
+/// The investor population: positions, ending cash per unit, the movement
+/// count, and per unit the cash no one investor's own legs account for.
+struct InvestorPopulation {
+    positions: Vec<InvestorPosition>,
+    cash_by_unit: BTreeMap<u32, i128>,
+    population: u64,
+    unresolved: BTreeMap<u32, Unresolved>,
+}
 
 /// Collect investor cash-in and cash-out positions per `(party_vid, unit_id)`,
 /// plus ending positive cash balance per `unit_id`, for `procedure`. Cash is
 /// the accounts holding its `cash` role (required); an entry is an investor
 /// movement when its contra leg is on an Equity account or one holding the
 /// `investor_capital` role. Version 1 guessed both from code and name tokens
-/// and from words in the entry's description (fa-kxc4).
+/// and from words in the entry's description (fa-kxc4). Version 3 attributes
+/// each entry's cash per `(unit, legal entity)` partition to the investors
+/// whose own legs fund or receive it ([`attribution`], fa-6l8g); version 2
+/// gave every party an entry named its whole cash.
 fn collect_investor_positions(
     procedure: &str,
     snapshot: &Snapshot,
@@ -2287,72 +2482,103 @@ fn collect_investor_positions(
     let through = snapshot.coordinate.effective_through;
     let mut live = snapshot.live_postings_through(through)?;
     live.sort_by_key(|e| (e.entry.proposal.effective_date, e.vid));
+    let scope = crate::projection::entity_scope(live.iter().flat_map(|e| &e.entry.proposal.legs))?;
 
     let (pval_to_party, party_codes) = party_lookup_tables(snapshot);
     let mut positions: BTreeMap<(VId, u32), InvestorPosition> = BTreeMap::new();
     let mut explicit_investor_party: BTreeSet<(VId, u32)> = BTreeSet::new();
     let mut cash_balance_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
+    let mut unresolved: BTreeMap<u32, Unresolved> = BTreeMap::new();
     let mut population = 0u64;
+
+    /// One `(unit, legal entity)` partition of an entry: cash in and out,
+    /// the non-cash credits that fund cash in, the non-cash debits that
+    /// receive cash out, whether a contra leg is investor capital, and every
+    /// account.
+    #[derive(Default)]
+    struct Partition {
+        cash_in: Vec<Leg>,
+        cash_out: Vec<Leg>,
+        funders: Vec<Leg>,
+        payees: Vec<Leg>,
+        investor_contra: bool,
+        accounts: BTreeSet<VId>,
+    }
 
     for e in &live {
         work.entry()?;
         let eff = e.entry.proposal.effective_date;
-
-        let mut parties_in_entry: BTreeSet<VId> = BTreeSet::new();
-        let mut cash_dr_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
-        let mut cash_cr_by_unit: BTreeMap<u32, i128> = BTreeMap::new();
-        let mut contra_investor_flag: BTreeMap<u32, bool> = BTreeMap::new();
-        let mut accts_by_unit: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
+        let mut partitions: BTreeMap<(u32, Option<VId>), Partition> = BTreeMap::new();
 
         for leg in &e.entry.proposal.legs {
             work.leg()?;
-            for &(_, d) in &leg.dimension_set {
-                let pvid = pval_to_party.get(&d).copied().unwrap_or(d);
-                parties_in_entry.insert(pvid);
-            }
             let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
                 continue;
             };
             let at = AccountType(acct.account_type);
             let mag = amount_magnitude(leg.amount.mantissa, "leg magnitude")?;
             let u = leg.amount.unit.0;
-            accts_by_unit.entry(u).or_default().insert(leg.account_ref);
+            let one = Leg {
+                named: named(leg, &pval_to_party),
+                amount: mag,
+            };
+            let entity = crate::projection::scoped_entity(&scope, leg)?;
+            let part = partitions.entry((u, entity)).or_default();
+            part.accounts.insert(leg.account_ref);
 
             if cash.contains(&leg.account_ref) {
                 let balance = cash_balance_by_unit.entry(u).or_default();
                 match leg.side {
                     Side::Debit => {
-                        let total = cash_dr_by_unit.entry(u).or_default();
-                        *total = amount_sum(*total, mag, "investor entry cash in")?;
                         *balance = amount_sum(*balance, mag, "investor cash balance")?;
+                        part.cash_in.push(one);
                     }
                     Side::Credit => {
-                        let total = cash_cr_by_unit.entry(u).or_default();
-                        *total = amount_sum(*total, mag, "investor entry cash out")?;
                         *balance = amount_difference(*balance, mag, "investor cash balance")?;
+                        part.cash_out.push(one);
                     }
                 }
-            } else if at == AccountType::EQUITY || investor_capital.contains(&leg.account_ref) {
-                contra_investor_flag.insert(u, true);
+                continue;
+            }
+            if at == AccountType::EQUITY || investor_capital.contains(&leg.account_ref) {
+                part.investor_contra = true;
+            }
+            match leg.side {
+                Side::Credit => part.funders.push(one),
+                Side::Debit => part.payees.push(one),
             }
         }
 
-        if parties_in_entry.is_empty() {
-            continue;
-        }
-
-        for &party_vid in &parties_in_entry {
-            let code = party_codes
-                .get(&party_vid)
-                .cloned()
-                .unwrap_or_else(|| format!("{:032x}", party_vid.0));
-            for (&unit_id, accts) in &accts_by_unit {
-                let dr = cash_dr_by_unit.get(&unit_id).copied().unwrap_or(0);
-                let cr = cash_cr_by_unit.get(&unit_id).copied().unwrap_or(0);
+        for (&(unit_id, _), part) in &partitions {
+            let inflow = attribute(&part.cash_in, &part.funders)?;
+            let outflow = attribute(&part.cash_out, &part.payees)?;
+            for (flow, cash_legs, group) in [
+                (&inflow, &part.cash_in, &part.funders),
+                (&outflow, &part.cash_out, &part.payees),
+            ] {
+                if flow.unresolved > 0 {
+                    let mut legs = cash_legs.clone();
+                    legs.extend(group.iter().copied());
+                    unresolved.entry(unit_id).or_default().add(
+                        flow.unresolved,
+                        e.vid,
+                        &part.accounts,
+                        &legs,
+                    )?;
+                }
+            }
+            let mut moved: BTreeMap<VId, (i128, i128)> = BTreeMap::new();
+            for (party_vid, share) in &inflow.parties {
+                moved.entry(*party_vid).or_default().0 = share.cash;
+            }
+            for (party_vid, share) in &outflow.parties {
+                moved.entry(*party_vid).or_default().1 = share.cash;
+            }
+            for (party_vid, (dr, cr)) in moved {
                 if dr == 0 && cr == 0 {
                     continue;
                 }
-                if contra_investor_flag.get(&unit_id).copied().unwrap_or(false) {
+                if part.investor_contra {
                     explicit_investor_party.insert((party_vid, unit_id));
                 }
                 population += 1;
@@ -2361,7 +2587,7 @@ fn collect_investor_positions(
                         .entry((party_vid, unit_id))
                         .or_insert_with(|| InvestorPosition {
                             party_vid,
-                            party_code: code.clone(),
+                            party_code: code_of(&party_codes, party_vid),
                             unit_id,
                             cash_in: 0,
                             cash_out: 0,
@@ -2388,20 +2614,25 @@ fn collect_investor_positions(
                         .checked_add(cr)
                         .ok_or(LanternError::Overflow("investor cash_out sum"))?;
                 }
-                pos.accounts.extend(accts.iter().copied());
+                pos.accounts.extend(part.accounts.iter().copied());
                 pos.entries.insert(e.vid);
             }
         }
     }
 
     // Retain parties that invested principal (cash_in > 0) or touched an explicit investor account
-    let filtered: Vec<InvestorPosition> = positions
+    let positions: Vec<InvestorPosition> = positions
         .into_iter()
         .filter(|(k, p)| p.cash_in > 0 || explicit_investor_party.contains(k))
         .map(|(_, p)| p)
         .collect();
 
-    Ok((filtered, cash_balance_by_unit, population))
+    Ok(InvestorPopulation {
+        positions,
+        cash_by_unit: cash_balance_by_unit,
+        population,
+        unresolved,
+    })
 }
 
 /// The net losers' total unrecovered principal, `sum(cash_in - cash_out)`.
@@ -2423,7 +2654,11 @@ fn unrecovered_total(
 /// Securities LLC*, 654 F.3d 229). Computes per-investor `cash_in - cash_out`,
 /// assigns investor cohorts by first-inflow date (`cohort_window_days`), and
 /// classifies net losers (net equity claims) and net winners (fictitious
-/// profits subject to clawback).
+/// profits subject to clawback). Version 3 reads investor cash attributed
+/// through each investor's own legs ([`collect_investor_positions`],
+/// fa-6l8g), marks an investor whose figures unresolved cash may touch
+/// `attribution=incomplete`, and reports that cash as
+/// `unresolved_attribution`.
 pub struct PonziNetInvestment {
     params: Params,
 }
@@ -2434,7 +2669,7 @@ impl Procedure for PonziNetInvestment {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2454,10 +2689,25 @@ impl Procedure for PonziNetInvestment {
             });
         }
 
-        let (investors, _, population) = collect_investor_positions(Self::ID, snapshot, work)?;
-        if investors.is_empty() {
+        let InvestorPopulation {
+            positions: investors,
+            population,
+            unresolved,
+            ..
+        } = collect_investor_positions(Self::ID, snapshot, work)?;
+        if investors.is_empty() && unresolved.is_empty() {
             return Ok(Vec::new());
         }
+        let complete = |pos: &InvestorPosition| {
+            if unresolved
+                .get(&pos.unit_id)
+                .is_some_and(|u| u.parties.contains(&pos.party_vid))
+            {
+                "incomplete"
+            } else {
+                "complete"
+            }
+        };
 
         let earliest_inflow = investors
             .iter()
@@ -2468,6 +2718,7 @@ impl Procedure for PonziNetInvestment {
         let mut out = Vec::new();
         for pos in investors {
             work.compare(1)?;
+            let attribution = complete(&pos);
             let cohort = pos.first_inflow_date.map_or(1, |d| {
                 ((d.0 - earliest_inflow.0).max(0) as u32 / cohort_window_days) + 1
             });
@@ -2491,7 +2742,7 @@ impl Procedure for PonziNetInvestment {
                     },
                     cites,
                     format!(
-                        "investor {} (cohort {cohort}, status=net_winner): cash_in={}, cash_out={}, fictitious_profit_clawback={clawback}",
+                        "investor {} (cohort {cohort}, status=net_winner): cash_in={}, cash_out={}, fictitious_profit_clawback={clawback}, attribution={attribution}",
                         pos.party_code, pos.cash_in, pos.cash_out
                     ),
                 ));
@@ -2508,11 +2759,21 @@ impl Procedure for PonziNetInvestment {
                     },
                     cites,
                     format!(
-                        "investor {} (cohort {cohort}, status=net_loser): cash_in={}, cash_out={}, net_equity_claim={claim}",
+                        "investor {} (cohort {cohort}, status=net_loser): cash_in={}, cash_out={}, net_equity_claim={claim}, attribution={attribution}",
                         pos.party_code, pos.cash_in, pos.cash_out
                     ),
                 ));
             }
+        }
+        let (_, party_codes) = party_lookup_tables(snapshot);
+        for (unit_id, u) in &unresolved {
+            out.push(u.finding(
+                Self::ID,
+                crate::unit_scale(book, *unit_id)?,
+                population,
+                &party_codes,
+                "the net investment of each investor named is incomplete",
+            ));
         }
         Ok(out)
     }
@@ -2778,6 +3039,10 @@ impl Procedure for PonziMotif {
 /// Equalizes cumulative recovery rates `(cash_out + distribution) / cash_in`
 /// across net-loser investors up to the exact rational water level supported
 /// by the distributable pool under `LargestRemainder`.
+/// Version 3 reads investor cash attributed through each investor's own
+/// legs ([`collect_investor_positions`], fa-6l8g); a unit holding cash that no
+/// one investor's legs account for reports `unresolved_attribution` and no
+/// schedule.
 pub struct DistributionRisingTide {
     params: Params,
 }
@@ -2788,7 +3053,7 @@ impl Procedure for DistributionRisingTide {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2808,8 +3073,12 @@ impl Procedure for DistributionRisingTide {
             });
         }
 
-        let (investors, cash_by_unit, population) =
-            collect_investor_positions(Self::ID, snapshot, work)?;
+        let InvestorPopulation {
+            positions: investors,
+            cash_by_unit,
+            population,
+            unresolved,
+        } = collect_investor_positions(Self::ID, snapshot, work)?;
         let mut by_unit: BTreeMap<u32, Vec<InvestorPosition>> = BTreeMap::new();
         for pos in investors {
             if pos.cash_in > pos.cash_out {
@@ -2817,10 +3086,23 @@ impl Procedure for DistributionRisingTide {
             }
         }
 
+        // A unit holding cash that no one investor's own legs account for
+        // has no complete claims to distribute over (fa-6l8g): it reports
+        // that instead of a schedule.
         let mut out = Vec::new();
+        let (_, party_codes) = party_lookup_tables(snapshot);
+        for (unit_id, u) in &unresolved {
+            out.push(u.finding(
+                Self::ID,
+                crate::unit_scale(book, *unit_id)?,
+                population,
+                &party_codes,
+                "no distribution is computed for this unit until it is attributed",
+            ));
+        }
         for (unit_id, mut losers) in by_unit {
             work.compare(1)?;
-            if losers.is_empty() {
+            if losers.is_empty() || unresolved.contains_key(&unit_id) {
                 continue;
             }
             // Sort ascending by pre-receivership recovery ratio w_i / p_i via exact
@@ -2930,6 +3212,10 @@ impl Procedure for DistributionRisingTide {
 /// *Cunningham v. Brown* pro-rata receivership distribution. Allocates the
 /// distributable pool across net-loser investors in exact proportion to their
 /// net unrecovered principal (`cash_in - cash_out`) under `LargestRemainder`.
+/// Version 3 reads investor cash attributed through each investor's own
+/// legs ([`collect_investor_positions`], fa-6l8g); a unit holding cash that no
+/// one investor's legs account for reports `unresolved_attribution` and no
+/// schedule.
 pub struct DistributionProRata {
     params: Params,
 }
@@ -2940,7 +3226,7 @@ impl Procedure for DistributionProRata {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        3
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2960,8 +3246,12 @@ impl Procedure for DistributionProRata {
             });
         }
 
-        let (investors, cash_by_unit, population) =
-            collect_investor_positions(Self::ID, snapshot, work)?;
+        let InvestorPopulation {
+            positions: investors,
+            cash_by_unit,
+            population,
+            unresolved,
+        } = collect_investor_positions(Self::ID, snapshot, work)?;
         let mut by_unit: BTreeMap<u32, Vec<InvestorPosition>> = BTreeMap::new();
         for pos in investors {
             if pos.cash_in > pos.cash_out {
@@ -2969,10 +3259,23 @@ impl Procedure for DistributionProRata {
             }
         }
 
+        // A unit holding cash that no one investor's own legs account for
+        // has no complete claims to distribute over (fa-6l8g): it reports
+        // that instead of a schedule.
         let mut out = Vec::new();
+        let (_, party_codes) = party_lookup_tables(snapshot);
+        for (unit_id, u) in &unresolved {
+            out.push(u.finding(
+                Self::ID,
+                crate::unit_scale(book, *unit_id)?,
+                population,
+                &party_codes,
+                "no distribution is computed for this unit until it is attributed",
+            ));
+        }
         for (unit_id, mut losers) in by_unit {
             work.compare(1)?;
-            if losers.is_empty() {
+            if losers.is_empty() || unresolved.contains_key(&unit_id) {
                 continue;
             }
             losers.sort_by_key(|p| (p.first_entry_vid, p.party_vid));
