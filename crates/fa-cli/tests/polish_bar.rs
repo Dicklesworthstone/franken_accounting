@@ -720,8 +720,6 @@ fn every_plan_leaf_present_or_registered() {
             "fa recon book-to-book",
             "fa-259c: the multi-book bridge; fa-statements reconcile_book_to_book has no surface",
         ),
-        ("fa rule backtest", "fa-c34"),
-        ("fa rule propose", "fa-c34"),
         ("fa unit add", "fa-waow"),
         (
             "fa verify bundle",
