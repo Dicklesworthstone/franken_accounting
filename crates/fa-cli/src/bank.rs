@@ -24,6 +24,7 @@ use crate::json::{Json, obj, s};
 mod layout;
 
 const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv|plaid-sync --account <cash-account-code> [--layout <JSON-file|inline-JSON>] [--previous-import <manifest_oid> --grant privileged] --json";
+const FETCH_EXAMPLE: &str = "fa bank fetch --connector plaid --connector-account <id> --since YYYY-MM-DD --account <cash-account-code> [--previous-import <manifest_oid> --grant privileged] --json (runs the host's `fwc` connector; the fetched payload is retained as a plaid-sync statement)";
 const MATCH_EXAMPLE: &str = "fa bank match --import <manifest_oid> --grant privileged [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>] --json (embedded-owner CLI with explicit full-source authority)";
 const CONFIRM_EXAMPLE: &str = "fa bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <seq> --proposer <hex32> --date-window <days> --grant privileged --json (use the exact confirmation_command printed by bank match)";
 const STATUS_EXAMPLE: &str = "fa bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>] --json";
@@ -41,6 +42,13 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--account",
             "--previous-import",
             "--layout",
+        ],
+        Some("fetch") => &[
+            "--account",
+            "--previous-import",
+            "--connector",
+            "--connector-account",
+            "--since",
         ],
         Some("match") => &["--import", "--date-window", "--as-known-at"],
         Some("confirm") => &[
@@ -72,6 +80,9 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--proposer",
         "--match",
         "--digest",
+        "--connector",
+        "--connector-account",
+        "--since",
     ] {
         if args.flag(flag).is_some() && !allowed.contains(&flag) {
             return Err(usage(
@@ -83,6 +94,7 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             args,
             flag,
             match sub {
+                Some("fetch") => FETCH_EXAMPLE,
                 Some("match") => MATCH_EXAMPLE,
                 Some("confirm") => CONFIRM_EXAMPLE,
                 Some("status") => STATUS_EXAMPLE,
@@ -102,6 +114,7 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     match args.positional.get(1).map(String::as_str) {
         Some("import") => import(ctx, args),
+        Some("fetch") => fetch(ctx, args),
         Some("match") => match_statement(ctx, args),
         Some("confirm") => confirm_statement(ctx, args),
         Some("status") => confirmation_status(ctx, args),
@@ -110,7 +123,7 @@ pub(crate) fn bank_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("reconcile") => reconcile_statement(ctx, args),
         Some("reconciliation") => reconciliation_status(ctx, args),
         _ => Err(usage(
-            "bank has the subcommands import, match, confirm, unmatch, history, status, reconcile and reconciliation",
+            "bank has the subcommands import, fetch, match, confirm, unmatch, history, status, reconcile and reconciliation",
             IMPORT_EXAMPLE,
         )),
     }
@@ -229,6 +242,19 @@ fn predecessor_json(manifest: &BankImportManifest, book: &fa::Book) -> Result<Js
     ]))
 }
 
+/// Where a statement's bytes come from.
+enum Source<'a> {
+    /// A statement file, or `-` for stdin (`bank import`).
+    File(&'a str),
+    /// The host's `fwc` connector, run as a supervised subprocess
+    /// (`bank fetch`): its robot payload is the statement.
+    Fwc {
+        connector: &'a str,
+        account: &'a str,
+        since: fa_time::DateDay,
+    },
+}
+
 fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let [_, _, path] = args.positional.as_slice() else {
         return Err(usage(
@@ -243,6 +269,58 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             IMPORT_EXAMPLE,
         )
     })?;
+    statement(ctx, args, format, Source::File(path))
+}
+
+/// `bank fetch` (plan §9.5; fa-lzrn): run the host's `fwc` connector for a
+/// Plaid account's `transactions_sync` since a date, then retain and parse
+/// its payload exactly as `bank import --bank-format plaid-sync` does. The
+/// fetch runs only after the capability is admitted; a missing or failing
+/// `fwc` did not run (exit 4) and nothing is written.
+fn fetch(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "bank fetch takes no statement file: the connector's payload is the statement",
+            FETCH_EXAMPLE,
+        ));
+    }
+    let connector = required(args, "--connector", FETCH_EXAMPLE)?;
+    if connector != "plaid" {
+        return Err(usage(
+            format!(
+                "connector `{connector}` has no bank feed parser in this build; plaid is the one"
+            ),
+            FETCH_EXAMPLE,
+        ));
+    }
+    let account = required(args, "--connector-account", FETCH_EXAMPLE)?;
+    let since_text = required(args, "--since", FETCH_EXAMPLE)?;
+    let since = fa_time::DateDay::parse(since_text).map_err(|e| {
+        usage(
+            format!("--since `{since_text}`: {e:?}"),
+            "--since YYYY-MM-DD",
+        )
+    })?;
+    statement(
+        ctx,
+        args,
+        BankFormat::PlaidSync,
+        Source::Fwc {
+            connector,
+            account,
+            since,
+        },
+    )
+}
+
+/// Retain one statement under `format` on `--account`, from `source`, and
+/// emit its import receipt: `bank import` and `bank fetch` share it.
+fn statement(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    format: BankFormat,
+    source: Source<'_>,
+) -> Result<(), Fail> {
     let account_code = required(args, "--account", IMPORT_EXAMPLE)?;
     let layout_input = one_flag(args, "--layout", IMPORT_EXAMPLE)?;
     if layout_input.is_some() && format != BankFormat::Csv {
@@ -284,7 +362,45 @@ fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let max_statement_bytes = fa_registry::evidence_policy::EvidencePolicy::embedded()
         .map_err(|error| Fail::Internal(format!("the embedded evidence policy: {error}")))?
         .max_document_bytes;
-    let bytes = crate::intake::read_document_with_limit(&ctx.files, path, max_statement_bytes)?;
+    let bytes = match source {
+        Source::File(path) => {
+            crate::intake::read_document_with_limit(&ctx.files, path, max_statement_bytes)?
+        }
+        Source::Fwc {
+            connector,
+            account,
+            since,
+        } => {
+            let payload = fa_formats::fwc::fetch_fwc_payload(
+                std::path::Path::new("fwc"),
+                connector,
+                account,
+                since,
+            )
+            .map_err(|error| match error {
+                fa_formats::fwc::FwcSubprocessError::Environment(refusal) => {
+                    Fail::Environment(format!(
+                        "`fwc` did not run: {}; install flywheel_connectors (`fwc` on PATH), or import a saved payload with fa bank import <file> --bank-format plaid-sync",
+                        refusal.message
+                    ))
+                }
+                fa_formats::fwc::FwcSubprocessError::Format(error) => usage(
+                    format!("the fwc payload: {error}"),
+                    "rerun fa bank fetch, or import a saved payload with fa bank import <file> --bank-format plaid-sync",
+                ),
+            })?;
+            if payload.len() as u64 > max_statement_bytes {
+                return Err(usage(
+                    format!(
+                        "the fwc payload is {} bytes, over the {max_statement_bytes}-byte statement limit",
+                        payload.len()
+                    ),
+                    "fetch a shorter --since window",
+                ));
+            }
+            payload.into_bytes()
+        }
+    };
     let account = account_vid(book.context().book_id, account_code);
     let request = BankImportRequest {
         account,
