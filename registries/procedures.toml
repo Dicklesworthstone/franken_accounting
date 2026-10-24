@@ -1152,6 +1152,34 @@ default = 7000
 meaning = "Minimum ratio of cycle bottleneck flow to first-hop flow in basis points (7000 = 70.00%)."
 
 [[procedure]]
+id = "graph.party_circular_flows"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L67"
+tie_break = "entry_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
+calibration = "planted"
+summary = "graph.circular_flows over the party-level PAID projection (plan §4.1 PAID, §11.4; fa-b6xs): directed k-cycles (2..=max_hops) between parties within window_days whose bottleneck retains at least min_retention_bps of the first hop, decomposed by fnx strongly_connected_components with a CGSE witness, naming the parties. It sees money returning to a counterparty through others when every hop runs through one clearing account, which the account-level graph cannot."
+
+[[parameter]]
+procedure = "graph.party_circular_flows"
+name = "window_days"
+default = 14
+meaning = "Maximum civil days from the cycle's first transfer to its closing transfer."
+
+[[parameter]]
+procedure = "graph.party_circular_flows"
+name = "max_hops"
+default = 6
+meaning = "Maximum cycle length in directed transfers between parties (2..=8)."
+
+[[parameter]]
+procedure = "graph.party_circular_flows"
+name = "min_retention_bps"
+default = 7000
+meaning = "Minimum ratio of cycle bottleneck flow to first-hop flow in basis points (7000 = 70.00%)."
+
+[[procedure]]
 id = "graph.layering"
 version = 1
 claim = "statistical"
