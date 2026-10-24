@@ -11390,7 +11390,7 @@ fn year_end_close_refuses_nonzero_retired_accounts_with_or_without_a_route() {
         assert!(
             refusal
                 .message
-                .contains("nonzero fiscal-year carrying balance")
+                .contains("nonzero fiscal-year balance at carrying value")
         );
         assert!(refusal.message.contains("6000"));
         assert!(
