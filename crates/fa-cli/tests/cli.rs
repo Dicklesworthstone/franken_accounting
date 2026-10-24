@@ -17201,23 +17201,25 @@ fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<
         }
     }
 
-    // 3. Check `fa robot-docs guide` does not advertise unimplemented correction classes
-    // (`Replacement`, `Reclassification`, `Revision`, `Restatement`, `PriorPeriodAdjustment`)
-    // as live without noting `FA-REF-102`.
+    // 3. `fa robot-docs guide` names each correction class only together with
+    // the route the kernel admits it by, so an agent never meets a class the
+    // guide presents as live with no working command: a Replacement only as a
+    // pair with its Reversal, a Reclassification through `fa reclass`, and
+    // the case-bound classes only through an approved case's `fa case post`.
     let (_, guide_out, _) = run_cmd(&["robot-docs", "guide", "--json"]);
     let guide_doc = doc(&guide_out);
     let guide_text = text(&guide_doc, "text");
-    for unimplemented in [
-        "Replacement",
-        "Reclassification",
-        "Revision",
-        "Restatement",
-        "PriorPeriodAdjustment",
+    for (class, route) in [
+        ("Replacement", "--replace-with"),
+        ("Reclassification", "fa reclass"),
+        ("Revision", "fa case post"),
+        ("Restatement", "fa case post"),
+        ("PriorPeriodAdjustment", "fa case post"),
     ] {
-        if guide_text.contains(unimplemented) {
+        if guide_text.contains(class) {
             assert!(
-                guide_text.contains("FA-REF-102"),
-                "robot-docs guide mentions unimplemented class `{unimplemented}` without noting FA-REF-102"
+                guide_text.contains(route),
+                "robot-docs guide mentions correction class `{class}` without its route `{route}`"
             );
         }
     }
