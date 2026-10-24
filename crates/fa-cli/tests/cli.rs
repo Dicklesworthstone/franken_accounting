@@ -21013,6 +21013,9 @@ fn a_rule_version_is_activated_from_a_date_under_dual_control() -> std::io::Resu
     let own = approve(None, proposal.as_str());
     let a = approve(Some("controller-a"), proposal.as_str());
     let b = approve(Some("controller-b"), proposal.as_str());
+    // Each approval is a journaled record of its own.
+    let (_, approved, _) = run(&["rule", "list", "--json"]);
+    assert_eq!(head(&approved), head(&after_plan) + 3, "three approvals");
     let commit = |plan: &str, approvals: &[&str]| -> (i32, String) {
         let mut argv = vec!["rule", "activate", "--plan", plan];
         for approval in approvals {
@@ -21036,11 +21039,7 @@ fn a_rule_version_is_activated_from_a_date_under_dual_control() -> std::io::Resu
         "{out}"
     );
     let (_, unchanged, _) = run(&["rule", "list", "--json"]);
-    assert_eq!(
-        head(&unchanged),
-        head(&after_plan),
-        "refusals write nothing"
-    );
+    assert_eq!(head(&unchanged), head(&approved), "refusals write nothing");
 
     // Two independent approvers: the activation commits, and a retry of the
     // same plan returns it.
