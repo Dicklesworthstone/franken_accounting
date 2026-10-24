@@ -1352,15 +1352,21 @@ The local disk preflight now passes (about 350 GB available). Strict RCH
 `evaluate_in`, which requires `Witnessed`. No workspace test denominator was
 reached. The log is `workspace-test-attempt3.log` in the current evidence folder.
 This used an isolated diagnostic source mirror on `trj`, not the canonical warm
-gate worktree, and supplies no landing verdict. A separate README/scoreboard
-diagnostic and the required `scripts/check.sh` results are recorded below when
-complete; neither can erase this full-workspace failure.
+gate worktree, and supplies no landing verdict. A separate frozen no-overlay
+diagnostic passed all six README tests and both scoreboard tests (exit 0,
+`readme-scoreboard-test.log`). It executes the full `Try it today` walkthrough
+against the real binary, checks declared surfaces and exercises planted drift
+controls. It proves that bounded workflow and the sampled scoreboard's declared
+contract; it does not establish the full plan gates or erase the workspace RED.
+The required `scripts/check.sh` result is recorded below when complete.
 
 Shared HEAD subsequently advanced to `84b7da390ef258cb61e09c0b24b65926e8cc63e2`,
 including calibration and decoder work, and peer working-tree edits were
 preserved. The three script hashes in the two counterexample receipts are
-unchanged at that committed cut. New calibration records and any uncommitted
-policy-test correction cannot be composed into the frozen run's result.
+unchanged at that committed cut. The policy-test correction subsequently landed
+as `0e2a0fd1`, followed by rule/reference repairs; those sources require a new
+composed verdict. New calibration records and these corrections cannot be
+composed into the frozen run's result.
 
 #### Earlier audit evidence and its exact scope
 
@@ -1396,11 +1402,11 @@ Evidence retained under
   `fa-verify=445de3b74e96a92aa2e0cb759213170661dcbd3b9612bee3989ef55a4b7f2903`.
   They predate the inspected source. Their results do **not** qualify new
   carrying-close, recurrence, external-feed or portable-report code.
-- **Current-source shell counterexample:** invoking `install.sh --offline`
+- **Earlier-cut shell counterexample:** invoking `install.sh --offline`
   with a new empty artifact directory, a new empty destination and `--verify`
   exits 0 and prints `self-verification passed`, installing no binaries. The
   artifact-directory path also skips checksum verification when SHA256SUMS is
-  absent. `install.sh` therefore cannot yet establish successful verified
+  absent. At that cut `install.sh` could not establish successful verified
   installation. No existing executable or destination was overwritten.
 - **Current lightweight checks:** formatting and the six mechanical doctrine
   lint checks exit 0; the latter's graph fallback inspects Cargo.lock, not fresh
@@ -1475,7 +1481,7 @@ these labels promotes a sampled command into a passed integration gate.
 | V26 Statements and journaled definitions | PARTIAL native/functional statements, certified GL/aging/roll-forward/cash-flow families and rendering; custom-definition activation/lint, presentation rounding and full family parity remain | fa-qh60, fa-nzix, fa-y1vr, fa-oimc, fa-cet |
 | V27 Multi-book and consolidation | PARTIAL real CLI/native certified single-book consolidation from retained shared-functional-unit entities, eliminations and NCI; this read posts nothing. Cross-book basis layers, commit-time intercompany pairing, branch-posted eliminations, foreign-functional-currency translation and CTA remain | fa-259c, fa-22v5, fa-76hy, fa-bwri |
 | V28 Reproducible forensic observations | PARTIAL broad registered procedures, tracing, findings and sampling; signed solvency screen is not documented fair value, posting dates are not maturities, and remaining network work must be charged inside execution | fa-8j3g, fa-5dpd, fa-6l8g, fa-1tvm, fa-v0m2 |
-| V29 Calibrated graph and sampling methods | PARTIAL role-driven populations, algorithms and seeded sampling; kiting and measured labeled-corpus precision/recall, method assumptions and complexity locks remain | fa-m35p, fa-4psc, fa-b6xs, fa-kxc4, fa-k1ts |
+| V29 Calibrated graph and sampling methods | PARTIAL role-driven populations, algorithms and seeded sampling; later `84b7da39` source pins synthetic P/R/Wilson tallies for 12 procedures, 30 seeds and seven scenarios at scale 1. Its safe background makes perfect precision/zero clean flags construction effects, not an informative false-positive estimate; realistic near-miss calibration, full method/conformal/FDR coverage, kiting and complexity remain unqualified | fa-m35p, fa-4psc, fa-b6xs, fa-kxc4, fa-k1ts |
 | V30 Audit and litigation work products | PARTIAL engagement/SUD, confirmations, Bates/privilege/load files and receipt bundles; exhibit marks, carry-forward limits and complete closure remain | fa-zgn, fa-6l9, fa-ge0y |
 | V31 Real standards and regulatory delivery | PARTIAL self round trips, own linkbase and ordinary ADS proofs; real Beancount/hledger comparisons, published ADS/SAF-T/XBRL validation, Part 370 data inputs and schedule edits remain | fa-sa4w, fa-ipom, fa-w3n6, fa-p370, fa-doa9 |
 | V32 Independent reference and full simulation | PARTIAL independent reference arithmetic/state machine, bounded seeded histories with coverage checks and shrinking, 24-seed report-oracle source, real DPOR/prepared post-close tests and seven-point fault-VFS post/batch/soft-close matrices; full cross-subsystem barrier/interleaving campaign, crashpacks and 1,000-seed Genesis qualification remain | fa-2ihd, fa-0fl, fa-eid6 |
@@ -1573,6 +1579,23 @@ The earlier audit's final graph had 319 issues: 110 open, 25 in progress and 184
 `br ready` reports 40 ready and 72 blocked. Both `br dep cycles` and the
 computed `bv --robot-insights` cycle result are empty; robot triage and plan
 exit 0. A final review found no additional gap within this audited source cut.
+
+**Current refresh review outcome (GrayStork).** Two ambition passes and six
+refinement passes rechecked current implementations, every V01–V37 owner,
+authority and currency boundaries, independent negative controls, regression
+acceptance and dependency ordering. The sixth independent pass found no further
+revision after correcting the limited calibration claim and historical/source
+labels. Every goal appears once and has at least one nonclosed owner. The graph
+now has 323 issues (105 open, 27 in progress, 191 closed), including one new
+focused repair, fa-hlnd.1. A peer's fa-b6xs claim is preserved. No initial issue
+or original comment author/text pair was lost. Both active and archived
+`br dep cycles` checks are empty; `bv --robot-triage`, `--robot-plan` and
+`--robot-insights` exit 0, with cycle computation completed and no cycles.
+The exact 85-record JSONL export-attribution helper passed; this set preserves
+prior local audit follow-ups as well as this refresh's changes. The original
+guarded database/WAL was not repaired or replaced. No implementation bead was
+closed. Detailed frozen prompts, review rounds, goal-owner mapping and receipts
+are retained in the current evidence directory.
 
 ## Appendix A — Canonical Object Schemas (normative contract)
 
