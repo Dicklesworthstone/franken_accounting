@@ -77,6 +77,9 @@ mod numbers;
 #[path = "lantern/ponzi_motif.rs"]
 mod ponzi_motif;
 
+#[path = "lantern/party_layering.rs"]
+mod party_layering;
+
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 

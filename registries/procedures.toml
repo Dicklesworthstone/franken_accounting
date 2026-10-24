@@ -1180,6 +1180,34 @@ default = 8500
 meaning = "Minimum basis points of incoming transfer forwarded at each intermediary hop (8500 = 85.00%)."
 
 [[procedure]]
+id = "graph.party_layering"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L66"
+tie_break = "entry_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
+calibration = "planted"
+summary = "graph.layering over the party-level PAID projection (plan §4.1 PAID, §11.4; fa-b6xs): each balanced (unit, legal entity) partition of a live posting allocated from its credit legs' parties to its debit legs' parties under the registered largest-remainder law, a leg naming no single party being the book's, self-flows dropped. Flags multi-hop pass-through chains of at least min_hops transfers within window_days through intermediary parties that forward at least min_passthrough_bps, with a CGSE witness, naming the parties. It sees a counterparty chain that runs through one clearing account, which the account-level graph cannot."
+
+[[parameter]]
+procedure = "graph.party_layering"
+name = "min_hops"
+default = 3
+meaning = "Minimum directed hops between parties in a layering chain (2..=8)."
+
+[[parameter]]
+procedure = "graph.party_layering"
+name = "window_days"
+default = 10
+meaning = "Maximum civil days from the first hop to the last hop of the chain."
+
+[[parameter]]
+procedure = "graph.party_layering"
+name = "min_passthrough_bps"
+default = 8500
+meaning = "Minimum basis points of the incoming transfer an intermediary party forwards at each hop (8500 = 85.00%)."
+
+[[procedure]]
 id = "graph.communities"
 version = 2
 claim = "statistical"
