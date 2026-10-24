@@ -211,6 +211,13 @@ make_v1_proof "$pass_proof" "$v2_proof"
 for file in tree-before.txt tree-after.txt check-script-blob.txt; do
   cp "$pass_proof/$file" "$v2_proof/$file"
 done
+sed 's/^format_version=3$/format_version=2/' "$pass_proof/manifest.txt" >"$v2_proof/manifest.txt"
+rehash "$v2_proof"
+bash scripts/local_proof_verify.sh --repository "$fixture" "$v2_proof" >/dev/null
+if FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/legacy-v2-resume" --resume-from "$v2_proof" \
+    >"$base/legacy-v2-resume.stdout" 2>"$base/legacy-v2-resume.stderr"; then
+  fail "producer reused v2 proof without retained evidence"
+fi
 
 # These are synthetic compiler transcripts testing the evidence validator,
 # never evidence that Rust ran. Rehash outer sums and step digests so the
@@ -249,14 +256,6 @@ PY
     expect_red "$altered" "rehashed $mutation compiler evidence"
   fi
 done
-sed 's/^format_version=3$/format_version=2/' "$pass_proof/manifest.txt" >"$v2_proof/manifest.txt"
-rehash "$v2_proof"
-bash scripts/local_proof_verify.sh --repository "$fixture" "$v2_proof" >/dev/null
-if FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/legacy-v2-resume" --resume-from "$v2_proof" \
-    >"$base/legacy-v2-resume.stdout" 2>"$base/legacy-v2-resume.stderr"; then
-  fail "producer reused v2 proof without retained evidence"
-fi
-
 if FAKE_PROOF_MODE=split-2 FAKE_PROOF_COPY_FAILURE=1 \
     bash scripts/local_proof.sh --output "$base/copy-failure" --resume-from "$split1_proof" \
     >"$base/copy-failure.stdout" 2>"$base/copy-failure.stderr"; then

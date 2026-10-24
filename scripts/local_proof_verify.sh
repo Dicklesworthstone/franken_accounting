@@ -292,6 +292,9 @@ try:
     pass_labels = re.findall(r"^PASS ([A-Za-z0-9_.-]+)(?=\s|$)", stdout, re.M)
     expected_pass = [name for name, record in records.items() if record.get("status") == "PASS"]
     require(collections.Counter(pass_labels) == collections.Counter(expected_pass), "stdout/step PASS inventory mismatch")
+    unrun_labels = re.findall(r"^UNRUN ([A-Za-z0-9_.-]+)(?=\s|$)", stdout, re.M)
+    expected_unrun = [name for name, record in records.items() if record.get("status") == "UNRUN"]
+    require(collections.Counter(unrun_labels) == collections.Counter(expected_unrun), "stdout/step UNRUN inventory mismatch")
     if verdict == "pass":
         require(all(record.get("status") == "PASS" for record in records.values()), "pass proof has non-PASS steps")
     if for_resume == "1":
