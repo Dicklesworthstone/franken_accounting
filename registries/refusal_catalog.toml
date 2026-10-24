@@ -1225,6 +1225,14 @@ exit = "refusal"
 cite = "plan §5.6 / FA-INV-12 (a uniquely identified external source batch must have an independently reviewed retained Workpaper and exactly reproduce its complete gross summary effects)"
 fix = "prepare complete native source detail with fa subledger detail, retain and independently review its Workpaper, then fa subledger feed --document D:<oid> --date <effective-date> --key <key>; retry an already summarized batch with its original key, or give an explicit correction batch a new source identity"
 
+[[refusal]]
+code = "FA-REF-198"
+name = "REGISTER_CAPACITY"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.2; limits.toml register_capacity (gross native and functional register representability before publication)"
+fix = "reduce the proposed gross activity or use an admissible registered unit; a reversal adds gross activity and cannot repair a historical over-cap prefix; preserve that prefix for diagnosis"
+
 # ---- Proof export (145–146) ---
 [[refusal]]
 code = "FA-REF-145"

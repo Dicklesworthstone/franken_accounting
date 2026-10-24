@@ -2106,6 +2106,36 @@ pub fn limits_embedded() -> Result<BTreeMap<String, u64>, RegistryError> {
     Ok(out)
 }
 
+/// Representability ceiling of each registered gross register column.
+pub fn register_capacity_embedded() -> Result<i128, RegistryError> {
+    const R: &str = "limits.toml";
+    let doc = load(R, LIMITS)?;
+    let rows = doc
+        .arrays
+        .get("register_capacity")
+        .ok_or_else(|| invalid(R, "missing register capacity"))?;
+    if rows.len() != 1 {
+        return Err(invalid(R, "exactly one register capacity is required"));
+    }
+    let row = &rows[0];
+    if req_str(R, row, "domain")?
+        != "account-unit-stock-gross-posted-and-unresolved-pending-native-and-functional"
+    {
+        return Err(invalid(R, "unsupported register capacity domain"));
+    }
+    let text = req_str(R, row, "max_register_mantissa")?;
+    let value = text
+        .parse::<i128>()
+        .map_err(|_| invalid(R, "register capacity is not an i128"))?;
+    if value <= 0 || value.to_string() != text {
+        return Err(invalid(
+            R,
+            "register capacity must be canonical positive decimal text",
+        ));
+    }
+    Ok(value)
+}
+
 // ---------------------------------------------------------------------------
 // Account types
 // ---------------------------------------------------------------------------

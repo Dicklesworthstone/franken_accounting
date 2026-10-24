@@ -47,6 +47,8 @@ mod outcome_batch_integrity_tests;
 mod outcome_key_tests;
 #[path = "genesis/recurring.rs"]
 mod recurring_tests;
+#[path = "genesis/register_capacity.rs"]
+mod register_capacity_tests;
 #[path = "genesis/scheduled_admission.rs"]
 mod scheduled_admission_tests;
 #[path = "genesis/subledger.rs"]

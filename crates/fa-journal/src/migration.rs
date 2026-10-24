@@ -612,6 +612,41 @@ fn counts_from(body: &RunBody) -> Option<DateDay> {
     (body.mode == RunMode::FullDetail && !body.sole_opening_source).then_some(body.opening_date)
 }
 
+/// The same visibility law over a staged transaction, including a Finalize
+/// whose state compare-and-set has not yet been published.
+pub(crate) fn visible_in<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    entry: &Entry,
+    cache: &mut BTreeMap<VId, RunVisibility>,
+) -> Result<bool, KernelError> {
+    let EntryOrigin::Migration { run_ref, .. } = &entry.proposal.origin else {
+        return Ok(true);
+    };
+    let visibility = match cache.get(run_ref) {
+        Some(v) => *v,
+        None => {
+            let row = txn
+                .vertex(db, *run_ref)?
+                .ok_or_else(|| KernelError::Corrupt("migration run is missing".into()))?;
+            let run = run_from_row(&row)?;
+            let state =
+                RunState::from_scalar(txn.vertex_property(db, *run_ref, property::STATE)?.as_ref())
+                    .ok_or_else(|| KernelError::Corrupt("migration run state is missing".into()))?;
+            let visibility = RunVisibility {
+                finalized: state == RunState::Finalized,
+                counts_from: counts_from(&run.body),
+            };
+            cache.insert(*run_ref, visibility);
+            visibility
+        }
+    };
+    Ok(visibility.finalized
+        && visibility
+            .counts_from
+            .is_none_or(|day| entry.proposal.effective_date >= day))
+}
+
 /// A migrated leg as a settlement target (ruling 3733 C1): it is an open
 /// item iff its run is `Finalized` and its chunk counts, exactly the
 /// [`visible_at`] predicate at the head. The run's state is read inside
@@ -1557,6 +1592,18 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     }
     batches.extend(crate::post::reconciliation_edges(evid, &reconciliation));
     txn.write_ordered(db, batches)?;
+    if control_kind == kind::FINALIZE {
+        let accounts = activated_accounts
+            .keys()
+            .map(|(account, _)| *account)
+            .collect();
+        if let Err(refusal) =
+            crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts)?
+        {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    }
     let dependency = fa_registry::IntentDependencies::embedded()
         .and_then(|registry| {
             registry.get(
