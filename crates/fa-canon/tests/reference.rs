@@ -11,8 +11,9 @@
 //! rules. The test counts what it compared, so a vacuous run fails.
 //!
 //! No-claim: agreement shows the engine computes what the language says for
-//! these rules; it does not show a rule encodes the right policy, and values
-//! stay far inside i128, so the overflow path is not compared.
+//! these rules; it does not show a rule encodes the right policy. The
+//! generated rules' values stay far inside i128; the overflow law (§6.1) is
+//! compared only by the hand-written intermediate_overflow test.
 
 use std::collections::BTreeMap;
 
@@ -247,6 +248,76 @@ fn every_law_at_every_tie_agrees_with_the_naive_reader() {
         differential.run(&source, &cases);
     }
     assert_eq!(differential.count("derived"), LAWS.len() * gaps.len());
+}
+
+/// Plan §6.1: addition and subtraction are checked `i128` operations, so a
+/// sum that leaves `i128` mid-expression is refused even when the leg it
+/// feeds would fit; multiplication by a rational factor keeps its product
+/// and quotient wide and narrows only each term's rounded result.
+#[test]
+fn intermediate_overflow_follows_the_arithmetic_law() {
+    let mut differential = Differential::new();
+    let sum = r#"rule wide_sum v1 for event Sale {
+  let a = event.resource("a", "USD")
+  let b = event.resource("b", "USD")
+  debit "1000" (a + b) - b
+  credit "2000" (a + b) - b
+}"#;
+    let half = i128::MAX / 2 + 1;
+    differential.run(
+        sum,
+        &[
+            // a + b is i128::MAX + 1: refused, though (a + b) - b fits.
+            case(sale(&[("a", "USD", half), ("b", "USD", half)]), &[]),
+            case(sale(&[("a", "USD", 10), ("b", "USD", 5)]), &[]),
+        ],
+    );
+    assert_eq!(
+        differential.count("OutOfRange"),
+        1,
+        "{:?}",
+        differential.outcomes
+    );
+    let product = r#"rule wide_product v1 for event Sale {
+  let a = event.resource("a", "USD")
+  debit "1000" a * 9 / 10 round HalfEven
+  credit "2000" a * 9 / 10 round HalfEven
+}"#;
+    let large: i128 = 150_000_000_000_000_000_000_000_000_000_000_000_000;
+    differential.run(
+        product,
+        &[
+            // a * 9 passes u128, but the rounded result fits i128.
+            case(sale(&[("a", "USD", large)]), &[]),
+            case(sale(&[("a", "USD", i128::MAX)]), &[]),
+        ],
+    );
+    let narrowed = r#"rule narrowed v1 for event Sale {
+  let a = event.resource("a", "USD")
+  debit "1000" a * 3 / 2 round HalfEven
+  credit "2000" a * 3 / 2 round HalfEven
+}"#;
+    let nested = r#"rule nested v1 for event Sale {
+  let a = event.resource("a", "USD")
+  debit "1000" (a * 9) * 1 / 9 round HalfEven
+  credit "2000" (a * 9) * 1 / 9 round HalfEven
+}"#;
+    for source in [narrowed, nested] {
+        // The result past i128, and an inner term's result past i128.
+        differential.run(source, &[case(sale(&[("a", "USD", large)]), &[])]);
+    }
+    assert_eq!(
+        differential.count("derived"),
+        3,
+        "{:?}",
+        differential.outcomes
+    );
+    assert_eq!(
+        differential.count("OutOfRange"),
+        3,
+        "{:?}",
+        differential.outcomes
+    );
 }
 
 #[test]
