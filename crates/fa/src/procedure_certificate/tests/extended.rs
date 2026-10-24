@@ -385,20 +385,40 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
     f.post(1, "1000", "6000", i128::MAX, false);
     let exact = f.certify(&f.request("recon.attested_register_compare", source));
     assert_eq!(exact.report.findings[0].statistic.value, i128::MAX);
-    f.post(1, "1000", "3000", 1, false);
     let head = f.head();
-    assert!(matches!(
-        f.book.certify_procedure(
+    let rows = f.book.db.vertices().unwrap();
+    // This extra balanced credit would make the cash cell's gross credits
+    // MAX+1. The current publication law must stop it before an invalid
+    // journal can reach certification. The unchanged Lantern arithmetic
+    // tests retain direct full-width discrepancy/refusal coverage.
+    let (source_entry, _) = f.book.read_entry(&cx, source).unwrap().unwrap();
+    let mut over_capacity = source_entry.proposal;
+    over_capacity.idempotency_key = b"over-capacity-certificate-source".to_vec();
+    for leg in &mut over_capacity.legs {
+        leg.side = leg.side.flipped();
+    }
+    over_capacity.unit_totals = EntryPayload::fold_unit_totals(&over_capacity.legs).unwrap();
+    let refusal = f
+        .runtime
+        .block_on(f.book.post(
             &cx,
-            PRINCIPAL,
-            &cap(&["read", "produce"]),
-            &f.request("recon.attested_register_compare", source)
-        ),
-        Err(crate::BookError::Lantern(
-            fa_lantern::LanternError::Overflow("attested_register discrepancy magnitude")
+            PostRequest {
+                proposal: over_capacity,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
         ))
-    ));
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3));
     assert_eq!(f.head(), head);
+    assert_eq!(f.book.db.vertices().unwrap(), rows);
+    assert_eq!(
+        f.certify(&f.request("recon.attested_register_compare", source))
+            .report,
+        exact.report
+    );
     assert_eq!(
         f.book
             .replay_procedure(&cx, PRINCIPAL, &cap(&["read"]), &exact.certificate)
