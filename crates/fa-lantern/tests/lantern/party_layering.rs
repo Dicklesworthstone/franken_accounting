@@ -731,3 +731,97 @@ fn money_leaving_a_party_is_traced_to_where_it_finally_rests() {
         r.findings
     );
 }
+
+/// fa-b6xs: `graph.party_concentration`. A hub H takes 100,000 each from A,
+/// B and C through clearing account 1010 and pays D 250,000; A also sends
+/// the book 50,000. H takes part in 550,000 of 600,000 (9,166 bps); D's
+/// 250,000 (4,166 bps) joins at 4,000 bps; the book is never flagged.
+#[test]
+fn a_party_through_which_most_money_flows_is_concentrated() {
+    use fa_lantern::graph::PartyConcentration;
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = None;
+    let (_, a) = party(&h, &mut snapshot, "SHELL-A");
+    let (_, b) = party(&h, &mut snapshot, "SHELL-B");
+    let (_, c) = party(&h, &mut snapshot, "SHELL-C");
+    let (_, d) = party(&h, &mut snapshot, "SHELL-D");
+    let (_, hub) = party(&h, &mut snapshot, "SHELL-HUB");
+    for (vid, dd, from, to, cents) in [
+        (1201, 5, a, hub, 100_000),
+        (1202, 6, b, hub, 100_000),
+        (1203, 7, c, hub, 100_000),
+        (1204, 8, hub, d, 250_000),
+    ] {
+        let entry = transfer(
+            &mut h,
+            vid,
+            day(2026, 1, dd),
+            "1010",
+            Some(to),
+            "1010",
+            Some(from),
+            cents,
+        );
+        snapshot.entries.push(entry);
+    }
+    let receipt = transfer(
+        &mut h,
+        1205,
+        day(2026, 1, 9),
+        "1000",
+        None,
+        "1200",
+        Some(a),
+        50_000,
+    );
+    snapshot.entries.push(receipt);
+
+    let procedure = PartyConcentration::new().unwrap();
+    let r = run_over(&snapshot, &h.book, &procedure).unwrap();
+    println!("party concentration: {:?}", r.findings);
+    assert_eq!(r.findings.len(), 1, "{:?}", r.findings);
+    let found = &r.findings[0];
+    assert_eq!(found.statistic.name, "flow_share_bps");
+    assert_eq!(found.statistic.value, 9_166);
+    assert!(
+        found.narrative.contains("party SHELL-HUB")
+            && found.narrative.contains("(550000 of 600000;"),
+        "{}",
+        found.narrative
+    );
+    assert_eq!(found.cites.len(), 4, "the hub's four transfers");
+    let row = fa_lantern::bind(PartyConcentration::ID).unwrap();
+    assert!(
+        r.work.within_registered_bound(&row.complexity, &snapshot),
+        "{:?}",
+        r.work
+    );
+    assert!(
+        determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+
+    let lower = PartyConcentration::with(
+        Params::defaults(PartyConcentration::ID)
+            .unwrap()
+            .set("min_share_bps", 4_000)
+            .unwrap(),
+    );
+    let r = run_over(&snapshot, &h.book, &lower).unwrap();
+    assert_eq!(r.findings.len(), 2, "{:?}", r.findings);
+    assert!(
+        r.findings
+            .iter()
+            .any(|f| f.statistic.value == 4_166 && f.narrative.contains("party SHELL-D ")),
+        "{:?}",
+        r.findings
+    );
+    assert!(
+        r.findings
+            .iter()
+            .all(|f| !f.narrative.contains("party book "))
+    );
+}

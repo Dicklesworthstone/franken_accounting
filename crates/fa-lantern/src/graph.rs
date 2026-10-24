@@ -2048,6 +2048,129 @@ impl Procedure for Concentration {
     }
 }
 
+/// `graph.party_concentration` (bead fa-b6xs): [`Concentration`] over the
+/// party-level PAID projection. Within each native unit and legal entity, a
+/// party's exact share of the directed PAID volume it takes part in (as
+/// sender or receiver); a party at or above `min_share_bps` is flagged,
+/// naming it and citing the entries that carried its flows. The book itself
+/// counts in the volume but is never flagged. As in `graph.concentration`,
+/// fnx betweenness and degree centrality enter the witness only, never an
+/// amount.
+pub struct PartyConcentration {
+    params: Params,
+}
+crate::jet::procedure_boilerplate!(PartyConcentration, "graph.party_concentration");
+
+impl Procedure for PartyConcentration {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        const WHAT: &str = "graph.party_concentration volume";
+        /// One scope's total volume, each node's volume with the entries
+        /// that carried it, and its directed edges.
+        #[derive(Default)]
+        struct Scope {
+            total: i128,
+            nodes: BTreeMap<VId, (i128, BTreeSet<VId>)>,
+            edges: BTreeSet<(VId, VId)>,
+        }
+        let min_share_bps = i128::from(self.params.get_u32("min_share_bps")?);
+        let book_node = crate::projection::BOOK_NODE;
+        let mut scopes: BTreeMap<MonetaryScope, Scope> = BTreeMap::new();
+        for scoped in crate::projection::party_flow_legs(snapshot)? {
+            work.leg()?;
+            let e = &scoped.leg;
+            if e.from == e.to || e.mantissa <= 0 {
+                continue;
+            }
+            let scope = scopes.entry((scoped.legal_entity, e.unit_id)).or_default();
+            scope.total = amount_sum(scope.total, e.mantissa, WHAT)?;
+            for node in [e.from, e.to] {
+                let slot = scope.nodes.entry(node).or_default();
+                slot.0 = amount_sum(slot.0, e.mantissa, WHAT)?;
+                slot.1.insert(e.entry);
+            }
+            scope.edges.insert((e.from, e.to));
+        }
+        let mut out = Vec::new();
+        for (coordinate, scope) in scopes {
+            if scope.total <= 0 {
+                continue;
+            }
+            let mut dg = fnx_classes::digraph::DiGraph::strict();
+            for &node in scope.nodes.keys() {
+                dg.add_node(vid_node(node));
+            }
+            for &(u, v) in &scope.edges {
+                let _ = dg.add_edge(vid_node(u), vid_node(v));
+            }
+            let ((bet, deg), _) = fnx_cgse::collect_witnesses(|| {
+                (
+                    fnx_algorithms::betweenness_centrality_directed(&dg),
+                    fnx_algorithms::degree_centrality_directed(&dg),
+                )
+            });
+            let scope_text = monetary_scope_text(book, coordinate)?;
+            let population = dg.node_count() as u64;
+            for (party, (volume, entries)) in &scope.nodes {
+                work.compare(1)?;
+                if *party == book_node {
+                    continue;
+                }
+                let share_bps = amount_share_bps(*volume, scope.total, WHAT)?;
+                if share_bps < min_share_bps {
+                    continue;
+                }
+                let node_str = vid_node(*party);
+                let cgse = cgse_digest_hex(
+                    &[
+                        (&node_str, &bet.witness.algorithm),
+                        (&node_str, &deg.witness.algorithm),
+                    ],
+                    dg.node_count(),
+                    dg.edge_count(),
+                    "centrality",
+                );
+                let cites: Vec<Cite> = entries
+                    .iter()
+                    .copied()
+                    .take(MAX_CITES)
+                    .map(Cite::Entry)
+                    .collect();
+                out.push(finding(
+                    (Self::ID, self.version()),
+                    Severity::Medium,
+                    Statistic {
+                        name: "flow_share_bps".into(),
+                        value: share_bps,
+                        scale: 0,
+                        population,
+                    },
+                    cites,
+                    format!(
+                        "party {} takes part in {share_bps} bps of the directed PAID volume in {scope_text} ({volume} of {}; cgse_witness={cgse})",
+                        party_label(snapshot, *party),
+                        scope.total
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// `graph.identity_resolution`: deterministic entity-resolution candidate
 /// generator over `Party` identifiers using `fnx_algorithms::connected_components`
 /// with a CGSE witness (`SAME_AS` candidate findings).

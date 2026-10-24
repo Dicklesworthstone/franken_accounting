@@ -25,8 +25,8 @@ use crate::digits::{FirstDigit, FirstTwoDigits, SecondDigit};
 use crate::duplicates::{Near, SameSameDifferent, SameSameSame};
 use crate::graph::{
     CircularFlows, Communities, Concentration, IdentityResolution, Layering, PartyCircularFlows,
-    PartyCommunities, PartyLayering, RelatedPartyExposure, RoundTrips, ShellSignature, Structuring,
-    UltimateBeneficiary,
+    PartyCommunities, PartyConcentration, PartyLayering, RelatedPartyExposure, RoundTrips,
+    ShellSignature, Structuring, UltimateBeneficiary,
 };
 use crate::jet::{
     IntercompanyUnmatched, LargeRoundReversals, ManualVsRule, PeriodEndTiming, PostClosing,
@@ -122,6 +122,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         PartyCircularFlows::ID => Box::new(PartyCircularFlows::with(params)),
         PartyCommunities::ID => Box::new(PartyCommunities::with(params)),
         UltimateBeneficiary::ID => Box::new(UltimateBeneficiary::with(params)),
+        PartyConcentration::ID => Box::new(PartyConcentration::with(params)),
         Layering::ID => Box::new(Layering::with(params)),
         PartyLayering::ID => Box::new(PartyLayering::with(params)),
         Communities::ID => Box::new(Communities::with(params)),

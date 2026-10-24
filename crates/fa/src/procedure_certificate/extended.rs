@@ -39,6 +39,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("graph.related_party_exposure", 2),
     ("graph.shell_signature", 2),
     ("graph.concentration", 1),
+    // fa-b6xs: reads live postings and the REA parties this closure binds.
+    ("graph.party_concentration", 1),
     ("graph.identity_resolution", 1),
     ("recon.intercompany", 2),
     ("recon.lapping", 2),

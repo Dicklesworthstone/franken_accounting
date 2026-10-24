@@ -1248,6 +1248,22 @@ default = 64
 meaning = "Augmenting paths per source (1..=64); a search that reaches it reports a lower bound."
 
 [[procedure]]
+id = "graph.party_concentration"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L70"
+tie_break = "entry_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
+calibration = "planted"
+summary = "graph.concentration over the party-level PAID projection (fa-b6xs): within each native unit and legal entity, each party's exact share of the directed PAID volume it takes part in as sender or receiver, flagged at or above min_share_bps, naming the party and citing the entries that carried its flows. The book itself counts in the volume and is never flagged. fnx betweenness_centrality_directed and degree_centrality_directed enter the CGSE witness only, never an amount."
+
+[[parameter]]
+procedure = "graph.party_concentration"
+name = "min_share_bps"
+default = 5000
+meaning = "Minimum share of the scope's directed PAID volume a party takes part in, in basis points (5000 = 50.00%)."
+
+[[procedure]]
 id = "graph.layering"
 version = 1
 claim = "statistical"

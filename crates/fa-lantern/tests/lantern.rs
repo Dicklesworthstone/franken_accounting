@@ -1897,7 +1897,7 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
             .expect("registered role and account type admitted");
     }
     let rows = fa_lantern::catalog::registered().unwrap();
-    assert_eq!(rows.len(), 69, "every registry row is listed");
+    assert_eq!(rows.len(), 70, "every registry row is listed");
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
