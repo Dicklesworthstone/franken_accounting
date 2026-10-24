@@ -2369,9 +2369,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // base-currency cost leg, so its application is not a foreign one.
     let foreign_currency = |unit: fa_money::UnitId| {
         unit != spec.base_unit
-            && book.units.get(unit).is_none_or(|u| {
-                matches!(u.kind, fa_money::UnitKind::Currency { .. })
-            })
+            && book
+                .units
+                .get(unit)
+                .is_none_or(|u| matches!(u.kind, fa_money::UnitKind::Currency { .. }))
     };
     if proposal.class != EntryClass::REVERSAL
         && proposal
