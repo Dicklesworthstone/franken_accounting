@@ -10,12 +10,15 @@
 //! document (`Determined`). It is rehearsed on a scenario whose diff
 //! certificate is replayed, retained and attached (`Rehearsed`). Two Human
 //! approvers who planned none of its entries approve its effect manifest
-//! (`Approved`). Posting, disclosure and closing are later slices: a case
-//! cannot yet leave `Approved`.
+//! (`Approved`). Its entries post in one batch (`Posted`), a reviewed
+//! Disclosure document discloses it (`Disclosed`), and it closes (`Closed`).
+//! `fa case diff` shows the rehearsed diff, and with `--statements` what the
+//! Post changed in the affected periods' statements.
 
-use fa_journal::{CaseKind, CaseRecorded, CaseView, Determination};
+use fa_journal::{CaseKind, CaseRecorded, CaseState, CaseView, Determination};
 use fa_model::Oid;
-use fa_time::DateDay;
+use fa_time::{DateDay, PeriodKind};
+use fgdb_types::CommitSeq;
 
 use crate::args::Args;
 use crate::cli::{Ctx, Fail, control_date, hex, usage};
@@ -30,6 +33,7 @@ const CLOSE_EXAMPLE: &str = "fa case close <case> [--key K] [--date YYYY-MM-DD] 
 const POST_EXAMPLE: &str = "fa case post <case> [--key K] [--date YYYY-MM-DD] --json  (after fa case approve; needs restate and post)";
 const REHEARSE_EXAMPLE: &str = "fa case rehearse <case> --certificate <scenario-diff-certificate> [--key K] --json  (fa scenario diff <name> --period <code> --certificate-out <file> writes one)";
 const DIFF_EXAMPLE: &str = "fa case diff <case> --json  (the as-reported vs as-restated diff its rehearsal retained, replayed)";
+const STATEMENTS_EXAMPLE: &str = "fa case diff <case> --statements [--certify] --json  (after fa case post: what the Post changed in each affected period's balance sheet and income statement, and in the balance sheet that opens the earliest)";
 
 pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
@@ -560,22 +564,39 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// case not yet rehearsed has none (FA-REF-176).
 fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let ordinal = ordinal(args, "diff", DIFF_EXAMPLE)?;
+    let statements = args.switch("--statements");
     // The case verb's flags belong to its writing subcommands; diff takes
-    // only the case number, so each is refused rather than passed to a
-    // replay that would ignore it (--grant still names the session's ops).
+    // only the case number (and --statements, which --certify may certify),
+    // so each other is refused rather than passed to a replay that would
+    // ignore it (--grant still names the session's ops).
     if let Some(verb) = fa_verbs::registry().ok().and_then(|reg| reg.verb("case")) {
         let flag = verb
             .flags
             .iter()
             .filter(|flag| flag.as_str() != "--grant")
             .find(|flag| !args.flag_all(flag.as_str()).is_empty())
-            .or_else(|| verb.switches.iter().find(|switch| args.switch(switch)));
+            .or_else(|| {
+                verb.switches
+                    .iter()
+                    .filter(|switch| {
+                        switch.as_str() != "--statements"
+                            && !(statements && switch.as_str() == "--certify")
+                    })
+                    .find(|switch| args.switch(switch))
+            });
         if let Some(flag) = flag {
             return Err(usage(
                 format!("`fa case diff` takes only the case number, not {flag}"),
-                DIFF_EXAMPLE,
+                if flag == "--certify" {
+                    STATEMENTS_EXAMPLE
+                } else {
+                    DIFF_EXAMPLE
+                },
             ));
         }
+    }
+    if statements {
+        return posted_statements(ctx, args, ordinal);
     }
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read"])?;
@@ -610,6 +631,120 @@ fn diff(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         format!("C:{}", hex(&rehearsal.certificate)),
     ];
     crate::notary::replay_cmd(ctx, &replay)
+}
+
+/// `fa case diff <case> --statements [--certify]` (plan §8.3, the
+/// restatement diff): what the case's Post changed in each affected
+/// period's balance sheet and income statement, then in the balance sheet of
+/// the normal period that ends where the earliest of them starts (IAS 1.40A's
+/// opening statement of financial position), when the book holds that
+/// period. Each is a statement diff from the frontier just before the Post
+/// to the Post. The case's entries commit in that one batch, so each line's
+/// delta is the correction's own effect (the ASC 250-10-50-7 line items),
+/// whatever else was posted before it. With --certify each diff is a
+/// retained statement-diff certificate that `fa replay` re-executes.
+fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(), Fail> {
+    let certify = args.switch("--certify");
+    let who = ctx.principal(args);
+    let cap = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        crate::cli::admit_whole_book_read(
+            book,
+            &cap,
+            if certify {
+                &[fa_policy::Op::Produce]
+            } else {
+                &[]
+            },
+            "comparing a case's statements across its Post",
+        )
+    })?;
+    let Some(view) = book.case(ordinal)? else {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::CASE_UNKNOWN,
+            fa_journal::refusal::exit::REFUSAL,
+            format!("this book has no restatement case {ordinal}"),
+            "plan §8.3 (a RestatementCase is opened with OpenRestatementCase)",
+            "list the book's cases with `fa case list --json`",
+        )));
+    };
+    let posted_at = view
+        .transitions
+        .iter()
+        .find(|transition| transition.to == CaseState::Posted)
+        .map(|transition| transition.recorded_at);
+    let Some((before, posted_at)) =
+        posted_at.and_then(|at| at.0.checked_sub(1).map(|before| (CommitSeq(before), at)))
+    else {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::CASE_STATE,
+            fa_journal::refusal::exit::REFUSAL,
+            format!(
+                "restatement case {ordinal} is {} and has posted nothing, so no statement changed",
+                view.state.name()
+            ),
+            "plan §8.3 (Posted: the case's entries commit in one batch)",
+            format!(
+                "read the diff its rehearsal retained with `fa case diff {ordinal} --json`, or post it: {POST_EXAMPLE}"
+            ),
+        )));
+    };
+    if certify {
+        book.prepare_report_history(who, &cap, Some(before))??;
+    }
+    let periods = book.periods()?;
+    let opening = view
+        .body
+        .periods
+        .iter()
+        .filter_map(|code| periods.iter().find(|period| period.code == *code))
+        .min_by_key(|period| (period.start, period.code.as_str()))
+        .and_then(|earliest| {
+            periods
+                .iter()
+                .find(|period| period.kind == PeriodKind::Normal && period.end == earliest.start)
+        })
+        .map(|period| period.code.clone())
+        .filter(|code| !view.body.periods.contains(code));
+    let mut selected: Vec<(&str, &str)> = Vec::new();
+    for period in &view.body.periods {
+        selected.push(("balance-sheet", period));
+        selected.push(("income-statement", period));
+    }
+    if let Some(opening) = &opening {
+        selected.push(("balance-sheet", opening));
+    }
+    ctx.out.at_book(&book)?;
+    for (definition, period) in selected {
+        let definition = fa::StatementDefinition::embedded(definition)
+            .map_err(|error| Fail::Internal(format!("statement definition: {error}")))?;
+        let request = fa::StatementDiffRequest {
+            selection: fa::StatementSelection {
+                definition,
+                periods: vec![period.to_string()],
+                comparative: Vec::new(),
+            },
+            before,
+            after: Some(posted_at),
+        };
+        if certify {
+            let certified = book.certify_statement_diff(who, &cap, &request)??;
+            crate::cli::emit_certified_statement_diff(
+                &ctx.out, &ctx.files, args, &mut book, &cap, &certified,
+            )?;
+        } else {
+            let diff = book.statement_diff(who, &cap, &request)??;
+            crate::cli::render_statement_diff(&ctx.out, &book, &diff, None)?;
+        }
+    }
+    Ok(())
 }
 
 fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

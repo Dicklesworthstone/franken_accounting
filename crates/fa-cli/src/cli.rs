@@ -12110,7 +12110,7 @@ fn max_publications(args: &Args) -> Result<usize, Fail> {
 
 /// Retain a certified statement comparison (after its replay), then render
 /// the bridge and its certificate.
-fn emit_certified_statement_diff(
+pub(crate) fn emit_certified_statement_diff(
     out: &Out,
     files: &Files,
     args: &Args,

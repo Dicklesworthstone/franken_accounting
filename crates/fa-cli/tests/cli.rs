@@ -4396,6 +4396,10 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         Some(0),
         "{triage}"
     );
+    // Until its Post, a case changed no statement (FA-REF-176).
+    let (code, out) = run(&["case", "diff", "1", "--statements", "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-176"), "{out}");
     let out = ok(&["case", "post", "1", "--json"]);
     let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
     assert_eq!(text(&case, "state"), "Posted", "{out}");
@@ -4410,6 +4414,92 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
         tb.contains("1020.00 USD"),
         "the closed March moves by the delta: {tb}"
     );
+    // The restatement diff (plan §8.3): March's balance sheet and income
+    // statement, then the February balance sheet that opens March (IAS
+    // 1.40A), each from the frontier just before the Post to the Post.
+    let statement_diffs = |out: &str| -> Vec<Json> {
+        out.lines()
+            .filter(|l| l.contains("\"event\":\"statement_diff\""))
+            .map(|l| json::parse(l).unwrap_or(Json::Null))
+            .collect()
+    };
+    let diffs = statement_diffs(&ok(&["case", "diff", "1", "--statements", "--json"]));
+    let names: Vec<String> = diffs
+        .iter()
+        .map(|d| text(&data(d), "name").to_string())
+        .collect();
+    assert_eq!(
+        names,
+        ["balance-sheet", "income-statement", "balance-sheet"],
+        "{diffs:?}"
+    );
+    let periods = |d: &Json| -> Vec<String> {
+        arr(&data(d), "columns")
+            .iter()
+            .flat_map(|column| arr(column, "periods").iter())
+            .filter_map(Json::as_str)
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(periods(&diffs[0]), ["FY2026-P03"]);
+    assert_eq!(periods(&diffs[1]), ["FY2026-P03"]);
+    assert_eq!(periods(&diffs[2]), ["FY2026-P02"]);
+    let after = int(&data(&diffs[0]), "after_known_at");
+    for d in &diffs {
+        assert_eq!(int(&data(d), "after_known_at"), after, "{d:?}");
+        assert_eq!(
+            int(&data(d), "before_known_at").map(|seq| seq + 1),
+            after,
+            "the frontier just before the Post: {d:?}"
+        );
+    }
+    // The correction's own effect: March's expense line moves by 20.00 and
+    // both March statements change; the opening February position does not.
+    let expense = arr(&data(&diffs[1]), "lines")
+        .iter()
+        .find(|line| {
+            arr(line, "after")
+                .iter()
+                .any(|a| a.as_str() == Some("1020.00 USD"))
+        })
+        .cloned()
+        .unwrap_or(Json::Null);
+    assert!(
+        arr(&expense, "delta")
+            .iter()
+            .any(|d| d.as_str() == Some("20.00 USD")),
+        "{diffs:?}"
+    );
+    for (d, changed) in diffs.iter().zip([true, true, false]) {
+        assert_eq!(
+            data(d).get("amounts_changed"),
+            Some(&Json::Bool(changed)),
+            "{d:?}"
+        );
+    }
+    // Certified, each is a retained statement-diff certificate that replays.
+    let certified = ok(&["case", "diff", "1", "--statements", "--certify", "--json"]);
+    let certified = statement_diffs(&certified);
+    assert_eq!(certified.len(), 3, "{certified:?}");
+    for (d, plain) in certified.iter().zip(&diffs) {
+        assert_eq!(data(d), data(plain), "{d:?}");
+        let oid = d
+            .get("certificate")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(oid.len(), 64, "{d:?}");
+        let replayed = statement_diffs(&ok(&["replay", &format!("C:{oid}"), "--json"]));
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(data(&replayed[0]), data(d), "C:{oid} replays");
+    }
+    // Planted: --certify certifies only the statements, and an unknown case
+    // has none.
+    let (code, out) = run(&["case", "diff", "1", "--certify", "--json"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("--statements"), "{out}");
+    let (code, out) = run(&["case", "diff", "9", "--statements", "--json"]);
+    assert_eq!(code, 3, "{out}");
     // Outside its case a Revision is refused, even confirmed and with restate.
     let (code, out) = run(&[
         "post", "--intent", &revision, "--grant", "restate", "--yes", "--json",
