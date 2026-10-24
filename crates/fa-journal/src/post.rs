@@ -2363,11 +2363,22 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
     }
+    // A foreign-currency application records its functional relief under
+    // the carrying law (plan §5.7). A quantity unit (shares, a commodity,
+    // time) relieves its lots by their lot law while the value moves on the
+    // base-currency cost leg, so its application is not a foreign one.
+    let foreign_currency = |unit: fa_money::UnitId| {
+        unit != spec.base_unit
+            && book
+                .units
+                .get(unit)
+                .is_some_and(|u| matches!(u.kind, fa_money::UnitKind::Currency { .. }))
+    };
     if proposal.class != EntryClass::REVERSAL
         && proposal
             .legs
             .iter()
-            .any(|leg| leg.amount.unit != spec.base_unit && !leg.settles.is_empty())
+            .any(|leg| foreign_currency(leg.amount.unit) && !leg.settles.is_empty())
         && !crate::carrying::is_source_bound(proposal)
     {
         txn.abort();
