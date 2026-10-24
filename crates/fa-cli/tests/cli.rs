@@ -23476,6 +23476,34 @@ fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
         "CALL fa.trial_balance FOR PERIOD 'FY2026-P03' AS KNOWN AT {march}"
     ));
     assert_eq!(called.render(), tb.render());
+    // So are CALL fa.explain_balance and CALL fa.open_items (fa-5c1).
+    let explained = doc(&ok(&[
+        "explain",
+        "balance",
+        "6000",
+        "--period",
+        "FY2026-P03",
+        "--as-known-at",
+        &march.to_string(),
+        "--json",
+    ]));
+    let called = query(&format!(
+        "CALL fa.explain_balance('6000') FOR PERIOD 'FY2026-P03' AS KNOWN AT {march}"
+    ));
+    assert_eq!(called.render(), explained.render());
+    let open = doc(&ok(&[
+        "open-items",
+        "--as-known-at",
+        &march.to_string(),
+        "--json",
+    ]));
+    let called = query(&format!("CALL fa.open_items AS KNOWN AT {march}"));
+    assert_eq!(called.render(), open.render());
+    let receivable = doc(&ok(&["open-items", "--account", "1200", "--json"]));
+    assert_eq!(
+        query("CALL fa.open_items('1200')").render(),
+        receivable.render()
+    );
 
     for (statement, code) in [
         ("MATCH (l:Leg) RETURN SUM(l.amount) AS total", "FA-REF-189"),

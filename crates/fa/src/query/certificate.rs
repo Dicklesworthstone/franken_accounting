@@ -126,8 +126,10 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
     }
     match profiled.selection {
         Selection::Native(native) => Ok((native, profiled.period)),
-        Selection::TrialBalance => Err(invalid(
-            "CALL fa.trial_balance is certified as a trial balance (fa tb --certify), not as a query",
+        Selection::TrialBalance
+        | Selection::ExplainBalance { .. }
+        | Selection::OpenItems { .. } => Err(invalid(
+            "a CALL is certified as the report it runs (fa tb, fa explain balance or fa open-items --certify), not as a query",
         )),
     }
 }
@@ -399,9 +401,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(Refusal::new(
                 code::QUERY_PROFILE,
                 exit::REFUSAL,
-                "CALL fa.trial_balance is certified as the trial balance it is",
+                "a CALL is certified as the report it runs",
                 super::CITE,
-                "fa query \"CALL fa.trial_balance FOR PERIOD '<code>'\" --certify, which is fa tb --certify",
+                "fa query \"CALL fa.trial_balance FOR PERIOD '<code>'\" --certify, which is fa tb --certify (likewise fa explain balance and fa open-items)",
             )));
         };
         let requested = match profiled.known_at {

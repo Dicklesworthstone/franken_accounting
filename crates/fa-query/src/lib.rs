@@ -19,7 +19,10 @@
 //! - `AT BRANCH trunk`, or `AT BRANCH 'scenario:<name>'` / `'draft:<name>'`: the scenario's
 //!   materialization (its trunk prefix replayed at the fork plus its
 //!   intents), read at its own head and uncertified;
-//! - `CALL fa.trial_balance`, which is the registered trial balance itself;
+//! - `CALL fa.trial_balance`, `CALL fa.explain_balance('<account>')` and
+//!   `CALL fa.open_items(['<account>'])`, which are the registered reads
+//!   themselves (`fa tb`, `fa explain balance`, `fa open-items`) at the
+//!   statement's period and known-at;
 //! - `EXPLAIN (CERTIFICATE)` leading the statement: the caller certifies the
 //!   result, as `fa query --certify` does.
 //!
@@ -125,6 +128,12 @@ pub enum Selection {
     /// `CALL fa.trial_balance`: the registered trial balance at the
     /// statement's period and known-at.
     TrialBalance,
+    /// `CALL fa.explain_balance('<account>')`: the account's balance in the
+    /// statement's period, explained as `fa explain balance` does.
+    ExplainBalance { account: String },
+    /// `CALL fa.open_items(['<account>'])`: the open items at the
+    /// statement's known-at, as `fa open-items` reads them.
+    OpenItems { account: Option<String> },
 }
 
 /// A native read with its selectors compiled in, waiting only for the
@@ -157,7 +166,9 @@ impl Native {
 }
 
 /// The profile procedures this build runs.
-pub const PROCEDURES: &[&str] = &["fa.trial_balance"];
+pub const PROCEDURES: &[&str] = &["fa.trial_balance", "fa.explain_balance", "fa.open_items"];
+
+const CALL_FIX: &str = "CALL fa.trial_balance FOR PERIOD '<code>' | CALL fa.explain_balance('<account>') FOR PERIOD '<code>' | CALL fa.open_items(['<account>']), each [AS KNOWN AT <seq>]; Lantern procedures: fa procedure run <id>";
 
 /// The longest statement the profile reads (bytes).
 pub const MAX_STATEMENT_BYTES: usize = 16 * 1024;
@@ -618,17 +629,12 @@ fn reserved(lexed: &Lexed<'_>) -> Result<(), Refusal> {
 }
 
 fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> {
-    let name_end = 4;
     let named = lexed.word(1, "fa") && lexed.punct(2, '.') && lexed.kind(3) == Some(Kind::Word);
     let procedure = if named {
         format!("fa.{}", lexed.str(3))
     } else {
         String::new()
     };
-    let mut end = name_end;
-    if lexed.punct(end, '(') && lexed.punct(end + 1, ')') {
-        end += 2;
-    }
     let at = |i: usize| lexed.tokens.get(i).map_or(lexed.text.len(), |t| t.start);
     if !named || !PROCEDURES.contains(&procedure.as_str()) {
         return Err(Refusal::new(
@@ -642,26 +648,67 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
                     lexed.str(1)
                 }
             ),
-            "CALL fa.trial_balance FOR PERIOD '<code>' [AS KNOWN AT <seq>]; Lantern procedures: fa procedure run <id>",
+            CALL_FIX,
         ));
     }
+    // `()` or `('<account code>')`, then nothing.
+    let mut end = 4;
+    let mut account = None;
+    if lexed.punct(end, '(') {
+        if lexed.punct(end + 1, ')') {
+            end += 2;
+        } else if lexed.kind(end + 1) == Some(Kind::Quoted) && lexed.punct(end + 2, ')') {
+            account = Some(lexed.unquoted(end + 1));
+            end += 3;
+        }
+    }
+    let refuse = |at: usize, message: &str| Err(Refusal::new(Law::Profile, at, message, CALL_FIX));
     if end != lexed.tokens.len() {
-        return Err(Refusal::new(
-            Law::Profile,
+        return refuse(
             at(end),
-            "CALL fa.trial_balance stands alone in this build (no arguments, YIELD or further clauses)",
-            "CALL fa.trial_balance FOR PERIOD '<code>' AS KNOWN AT <seq>",
-        ));
+            &format!(
+                "CALL {procedure} stands alone in this build (at most one quoted account argument; no YIELD or further clauses)"
+            ),
+        );
     }
     if selectors.effective.is_some() {
         return Err(Refusal::new(
             Law::Profile,
             0,
-            "a trial balance is selected by period, not by EFFECTIVE BETWEEN",
-            "CALL fa.trial_balance FOR PERIOD '<code>'; a civil-date cutoff: fa tb --as-of YYYY-MM-DD",
+            &format!("{procedure} is selected by period and known-at, not by EFFECTIVE BETWEEN"),
+            "CALL fa.trial_balance FOR PERIOD '<code>'; a civil-date cutoff: fa tb --as-of YYYY-MM-DD or fa open-items --as-of YYYY-MM-DD",
         ));
     }
-    Ok(Selection::TrialBalance)
+    match procedure.as_str() {
+        "fa.trial_balance" => match account {
+            Some(_) => refuse(at(4), "fa.trial_balance takes no argument"),
+            None => Ok(Selection::TrialBalance),
+        },
+        "fa.explain_balance" => match (account, &selectors.period) {
+            (None, _) => refuse(
+                at(4),
+                "fa.explain_balance takes the account code: CALL fa.explain_balance('6000') FOR PERIOD '<code>'",
+            ),
+            (Some(_), None) => refuse(
+                0,
+                "fa.explain_balance explains one period's balance; the statement names no FOR PERIOD",
+            ),
+            (Some(account), Some(_)) => Ok(Selection::ExplainBalance { account }),
+        },
+        _ => {
+            if selectors.period.is_some()
+                || matches!(selectors.known_at, Some(KnownAt::Reported(_)))
+            {
+                return Err(Refusal::new(
+                    Law::Profile,
+                    0,
+                    "fa.open_items reads the open items at a known-at, not for a period or a restatement view",
+                    "CALL fa.open_items('<account>') AS KNOWN AT <seq>; a civil-date cutoff: fa open-items --as-of YYYY-MM-DD",
+                ));
+            }
+            Ok(Selection::OpenItems { account })
+        }
+    }
 }
 
 /// The root clause keywords: a native statement's clauses begin with one.

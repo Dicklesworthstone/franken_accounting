@@ -71,44 +71,26 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "drop EXPLAIN (CERTIFICATE) and AS KNOWN AT, or read trunk without --branch",
         ));
     }
-    let native = match profiled.selection {
+    // A CALL is the registered read itself: the same command, so the same
+    // admission, rows and certificate options as `fa tb`, `fa explain
+    // balance` or `fa open-items`.
+    let native = match &profiled.selection {
+        QuerySelection::Native(native) => native.clone(),
         QuerySelection::TrialBalance => {
-            // The registered trial balance itself: the same command, so the
-            // same admission, rows and certificate options as `fa tb`.
-            let mut tb = args.clone();
-            tb.positional = vec!["tb".to_string()];
-            if profiled.certify && !tb.switch("--certify") {
-                tb.switches.push("--certify".to_string());
-            }
-            if let Some(code) = &profiled.period {
-                tb.flags.insert("--period".to_string(), vec![code.clone()]);
-            }
-            match &profiled.known_at {
-                QueryKnownAt::Head => {}
-                QueryKnownAt::Seq(seq) => {
-                    tb.flags
-                        .insert("--as-known-at".to_string(), vec![seq.to_string()]);
-                }
-                QueryKnownAt::Instant(instant) => {
-                    tb.flags
-                        .insert("--as-known-at".to_string(), vec![instant.clone()]);
-                }
-                // A restatement view is fa tb's own view flag.
-                QueryKnownAt::Reported(QueryReported::Originally) => {
-                    tb.switches.push("--as-originally-reported".to_string());
-                }
-                QueryKnownAt::Reported(QueryReported::IssuedTo(audience)) => {
-                    tb.flags
-                        .insert("--as-issued-to".to_string(), vec![audience.clone()]);
-                }
-                QueryKnownAt::Reported(QueryReported::In(certificate)) => {
-                    tb.flags
-                        .insert("--as-reported-in".to_string(), vec![certificate.clone()]);
-                }
-            }
-            return crate::cli::tb_cmd(ctx, &tb);
+            return crate::cli::tb_cmd(ctx, &procedure_args(args, &profiled, &["tb"]));
         }
-        QuerySelection::Native(native) => native,
+        QuerySelection::ExplainBalance { account } => {
+            let read = procedure_args(args, &profiled, &["explain", "balance", account]);
+            return crate::cli::explain_cmd(ctx, &read);
+        }
+        QuerySelection::OpenItems { account } => {
+            let mut read = procedure_args(args, &profiled, &["open-items"]);
+            if let Some(code) = account {
+                read.flags
+                    .insert("--account".to_string(), vec![code.clone()]);
+            }
+            return crate::cli::open_items_cmd(ctx, &read);
+        }
     };
     let certify =
         profiled.certify || args.switch("--certify") || args.flag("--certificate-out").is_some();
@@ -219,6 +201,45 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let rows = book.query_native(&native, known_at, profiled.period.as_deref())??;
     render(&ctx.out, text, profiled.period.as_deref(), &rows, None);
     Ok(())
+}
+
+/// The command a `CALL fa.<read>` runs: `positional`, with the statement's
+/// period, known-at (or restatement view) and certification written as that
+/// command's own flags.
+fn procedure_args(args: &Args, profiled: &fa::ProfiledQuery, positional: &[&str]) -> Args {
+    let mut read = args.clone();
+    read.positional = positional.iter().map(|word| (*word).to_string()).collect();
+    if profiled.certify && !read.switch("--certify") {
+        read.switches.push("--certify".to_string());
+    }
+    if let Some(code) = &profiled.period {
+        read.flags
+            .insert("--period".to_string(), vec![code.clone()]);
+    }
+    match &profiled.known_at {
+        QueryKnownAt::Head => {}
+        QueryKnownAt::Seq(seq) => {
+            read.flags
+                .insert("--as-known-at".to_string(), vec![seq.to_string()]);
+        }
+        QueryKnownAt::Instant(instant) => {
+            read.flags
+                .insert("--as-known-at".to_string(), vec![instant.clone()]);
+        }
+        // A restatement view is the command's own view flag.
+        QueryKnownAt::Reported(QueryReported::Originally) => {
+            read.switches.push("--as-originally-reported".to_string());
+        }
+        QueryKnownAt::Reported(QueryReported::IssuedTo(audience)) => {
+            read.flags
+                .insert("--as-issued-to".to_string(), vec![audience.clone()]);
+        }
+        QueryKnownAt::Reported(QueryReported::In(certificate)) => {
+            read.flags
+                .insert("--as-reported-in".to_string(), vec![certificate.clone()]);
+        }
+    }
+    read
 }
 
 /// The `query_rows` event: the statement, the native read that ran and its
