@@ -221,6 +221,8 @@ impl fmt::Display for Refusal {
 /// Refusal codes this crate emits. The catalog (`refusal_catalog.toml`) is a
 /// later bead; until it lands these constants are the registry.
 pub mod code {
+    /// A gross native or functional register column would exceed its bound.
+    pub const REGISTER_CAPACITY: &str = "FA-REF-198";
     /// An external source batch lacks its reviewed exact summary or was
     /// already summarized under its book/feed/batch identity.
     pub const EXTERNAL_SUBLEDGER: &str = "FA-REF-192";

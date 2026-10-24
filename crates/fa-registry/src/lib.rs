@@ -2106,6 +2106,78 @@ pub fn limits_embedded() -> Result<BTreeMap<String, u64>, RegistryError> {
     Ok(out)
 }
 
+/// Representability ceiling of each registered gross register column.
+pub fn register_capacity_embedded() -> Result<i128, RegistryError> {
+    parse_register_capacity(LIMITS)
+}
+
+fn parse_register_capacity(text: &str) -> Result<i128, RegistryError> {
+    const R: &str = "limits.toml";
+    let doc = load(R, text)?;
+    let rows = doc
+        .arrays
+        .get("register_capacity")
+        .ok_or_else(|| invalid(R, "missing register capacity"))?;
+    if rows.len() != 1 {
+        return Err(invalid(R, "exactly one register capacity is required"));
+    }
+    let row = &rows[0];
+    if req_str(R, row, "domain")?
+        != "account-unit-stock-gross-posted-and-unresolved-pending-native-and-functional"
+    {
+        return Err(invalid(R, "unsupported register capacity domain"));
+    }
+    let text = req_str(R, row, "max_register_mantissa")?;
+    let value = text
+        .parse::<i128>()
+        .map_err(|_| invalid(R, "register capacity is not an i128"))?;
+    if value <= 0 || value.to_string() != text {
+        return Err(invalid(
+            R,
+            "register capacity must be canonical positive decimal text",
+        ));
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod register_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn register_capacity_rejects_ambiguous_domains_and_noncanonical_bounds() {
+        let domain = "account-unit-stock-gross-posted-and-unresolved-pending-native-and-functional";
+        let row = |amount: &str, domain: &str| {
+            format!(
+                "[[register_capacity]]\nmax_register_mantissa = \"{amount}\"\ndomain = \"{domain}\"\n"
+            )
+        };
+        assert_eq!(register_capacity_embedded().unwrap(), i128::MAX);
+        assert_eq!(
+            parse_register_capacity(&row(&i128::MAX.to_string(), domain)).unwrap(),
+            i128::MAX
+        );
+        for amount in [
+            "0",
+            "-1",
+            "+1",
+            "01",
+            "170141183460469231731687303715884105728",
+        ] {
+            assert!(
+                parse_register_capacity(&row(amount, domain)).is_err(),
+                "{amount}"
+            );
+        }
+        assert!(parse_register_capacity(&row("1", "account-net")).is_err());
+        assert!(parse_register_capacity("schema_version = 1\n").is_err());
+        assert!(
+            parse_register_capacity(&format!("{}{}", row("1", domain), row("1", domain))).is_err()
+        );
+        assert!(parse_register_capacity(&row("1", domain).replace("\"1\"", "1")).is_err());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Account types
 // ---------------------------------------------------------------------------

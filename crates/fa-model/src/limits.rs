@@ -5,6 +5,8 @@
 /// Hard bound on one `fa:entry:v1` payload; the substrate's scalar bound
 /// (64 MiB) is the outer wall.
 pub const MAX_ENTRY_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum nonnegative gross column of an account/unit stock register.
+pub const MAX_REGISTER_MANTISSA: i128 = i128::MAX;
 /// One document-commit Merkle leaf. Object storage uses one leaf per row.
 /// 4 KiB plus the fixed three-property envelope fits the 16 KiB substrate row.
 pub const OBJECT_CHUNK_BYTES: usize = 4096;
@@ -113,6 +115,10 @@ mod tests {
 
     #[test]
     fn code_limits_match_registry() {
+        assert_eq!(
+            MAX_REGISTER_MANTISSA,
+            fa_registry::register_capacity_embedded().expect("registered capacity")
+        );
         let reg = fa_registry::limits_embedded().expect("limits.toml loads");
         let code: std::collections::BTreeMap<String, u64> =
             ALL.iter().map(|(n, v)| ((*n).to_string(), *v)).collect();

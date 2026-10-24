@@ -76,8 +76,8 @@ today_barrier_count = 2
 derived_objects = "1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome; an external subledger summary additionally creates 1 ExternalSubledgerBatch identity and 1 REVIEWED_BY edge in the same publication"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none; a rate lookup is a document already in the book, never a synchronous call"
-complexity_witness = "O(legs) point reads + 1 period witness + 1 Entry vertex + O(legs) Leg vertices and projection edges + 1 common-key IntentOutcome claim; key admission uses metadata point probes and authentic coverage, checking the bounded original genesis publication or O(log K) immutable key-tree nodes for K recovered keys"
-notes = "One native publication includes the successful common-key claim. Reversal, resolution and replacement identities retain their target-derived Entry VIds while reserving the same (book, principal, key) namespace as ordinary posts and batches. Dedicated control writers and Migration run keys are outside this successful-posting claim protocol; durable refusals remain unimplemented. A limited account's LimitCell (the registered §5.5 exception) is compare-and-set when the entry moves that account; no other shared cell is registered. A settling leg also moves each target leg's `applied` mirror by compare-and-set (plan §5.7), for which Appendix G registers no exception (recorded on fa-vz7e for an owner ruling)."
+complexity_witness = "O(legs) point reads + 1 period witness + 1 Entry vertex + O(legs) Leg vertices and projection edges + 1 common-key IntentOutcome claim; final-overlay register capacity adds O(snapshot vertices + journal legs), O(snapshot vertices) retained row/insertion witnesses and transient memory, with cancellation checkpoints and no extra writes; key admission uses metadata point probes and authentic coverage, checking the bounded original genesis publication or O(log K) immutable key-tree nodes for K recovered keys"
+notes = "One native publication includes the successful common-key claim. Reversal, resolution and replacement identities retain their target-derived Entry VIds while reserving the same (book, principal, key) namespace as ordinary posts and batches. Dedicated control writers and Migration run keys are outside this successful-posting claim protocol; durable refusals remain unimplemented. Automatic scheduled reversals require one capacity prefix scan per candidate, including when composed into period Open; a sweep blocks refused candidates before staging, while Open refuses atomically. This is a conservative interim cost, not a measured SLO. A limited account's LimitCell (the registered §5.5 exception) is compare-and-set when the entry moves that account; no other shared cell is registered. A settling leg also moves each target leg's `applied` mirror by compare-and-set (plan §5.7), for which Appendix G registers no exception (recorded on fa-vz7e for an owner ruling)."
 
 [[operation_class]]
 id = "portable_single_entry_plan_and_commit"
@@ -196,7 +196,7 @@ today_barrier_count = 2
 derived_objects = "batch census + DraftSet transition"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
-complexity_witness = "O(N * legs) intent replay + 1 DraftSet LifecycleTransition"
+complexity_witness = "O(N * legs) intent replay + 1 DraftSet LifecycleTransition + one final-overlay capacity fold O(snapshot vertices + journal legs), retaining conservative native row/insertion witnesses without extra writes"
 notes = "intent replay with revalidation"
 
 [[operation_class]]
@@ -241,7 +241,7 @@ today_barrier_count = 2
 derived_objects = "N case Entry/Leg censuses + N common-key IntentOutcome member claims + 1 batch IntentOutcome root + N IN_BATCH edges + 1 CaseControl Post entry + N+1 IN_CASE edges; the diff Certificate is a prior Rehearse transaction's"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
-complexity_witness = "Sum of N member preparations, each re-reading the Approved case state (a point witness), its manifest and the scenario Plan record and re-deriving its entry, + 1 Post entry + 1 state compare-and-set in one transaction"
+complexity_witness = "Sum of N member preparations, each re-reading the Approved case state (a point witness), its manifest and the scenario Plan record and re-deriving its entry, + final-overlay capacity fold O(snapshot vertices + journal legs) with native row/insertion witnesses + 1 Post entry + 1 state compare-and-set in one transaction"
 notes = "dual-control approvals and the rehearsal's diff Certificate are prior transactions; the case state compare-and-set is on the case's own RestatementCase vertex, not a book-wide cell"
 
 [[operation_class]]
@@ -346,7 +346,7 @@ today_barrier_count = 2
 derived_objects = "Migration entries; opening attestation"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(chunks * legs) staged migration entries + 1 finalizing MigrationControl(Finalize) with tie_out_digest"
+complexity_witness = "O(chunks * legs) staged migration entries + 1 finalizing MigrationControl(Finalize) with tie_out_digest + final-overlay capacity fold O(snapshot vertices + journal legs), including newly activated chunks, with native row/insertion witnesses and no extra writes"
 notes = "gap-free chunk manifests"
 
 # ---- Counted Kernel Operation Witnesses (bead fa-i5s) -----------------------

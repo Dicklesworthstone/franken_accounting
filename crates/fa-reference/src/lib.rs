@@ -498,6 +498,7 @@ pub struct Resolve {
 
 /// Refusal codes, as independent constants (see the module docs).
 pub mod code {
+    pub const REGISTER_CAPACITY: &str = "FA-REF-198";
     pub const UNBALANCED: &str = "FA-REF-001";
     pub const NOT_A_LEAF: &str = "FA-REF-002";
     pub const UNIT_POLICY: &str = "FA-REF-003";
@@ -989,6 +990,8 @@ pub struct Oracle {
     account_effectivity: BTreeMap<String, Effectivity>,
     /// Optional parent code per account code (`fa-up7`).
     account_parents: BTreeMap<String, String>,
+    /// Only atomic model batches defer representability until final state.
+    capacity_deferred: bool,
 }
 
 impl Oracle {
@@ -1041,6 +1044,7 @@ impl Oracle {
             account_types: BTreeMap::new(),
             account_effectivity: BTreeMap::new(),
             account_parents: BTreeMap::new(),
+            capacity_deferred: false,
         }
     }
 
@@ -1598,6 +1602,7 @@ impl Oracle {
             };
         }
         let mut trial = self.clone();
+        trial.capacity_deferred = true;
         let mut indices = Vec::with_capacity(members.len());
         for (i, intent) in members.iter().enumerate() {
             match trial.post(intent) {
@@ -1615,6 +1620,17 @@ impl Oracle {
                     };
                 }
             }
+        }
+        trial.capacity_deferred = false;
+        let accounts = members
+            .iter()
+            .flat_map(|i| i.legs.iter().map(|l| l.account.clone()))
+            .collect();
+        if !trial.capacity_accepts(&accounts, None, None) {
+            return BatchVerdict::Refused {
+                member: None,
+                code: code::REGISTER_CAPACITY,
+            };
         }
         trial
             .batches
@@ -3119,7 +3135,7 @@ impl Oracle {
             }
         }
         let index = self.journal.len();
-        self.journal.push(Entry {
+        let entry = Entry {
             class: intent.class.clone(),
             date: intent.date,
             period: period.clone(),
@@ -3129,7 +3145,17 @@ impl Oracle {
             resolves: intent.resolves.as_ref().map(|r| r.target),
             settles: intent.settles.clone(),
             run,
-        });
+        };
+        let accounts = entry.legs.iter().map(|l| l.account.clone()).collect();
+        if !self.capacity_deferred
+            && run.is_none()
+            && !self.capacity_accepts(&accounts, Some(&entry), None)
+        {
+            return Verdict::Refused {
+                code: code::REGISTER_CAPACITY,
+            };
+        }
+        self.journal.push(entry);
         if let Some(r) = run {
             self.runs[r].chunks.push(index);
         }
@@ -3377,6 +3403,16 @@ impl Oracle {
         if finalize && approvals < 2 {
             return Err(code::APPROVALS);
         }
+        if finalize {
+            let accounts = self.runs[run]
+                .chunks
+                .iter()
+                .flat_map(|i| self.journal[*i].legs.iter().map(|l| l.account.clone()))
+                .collect();
+            if !self.capacity_accepts(&accounts, None, Some(run)) {
+                return Err(code::REGISTER_CAPACITY);
+            }
+        }
         let control = self.run_controls.len();
         self.run_controls.push(self.journal.len());
         let r = &mut self.runs[run];
@@ -3620,6 +3656,58 @@ impl Oracle {
                     && run.spec.counts_from().is_none_or(|day| e.date >= day)
             }
         }
+    }
+
+    /// Literal independent gross sums with unbounded limb integers. No
+    /// checked-i128 arithmetic or engine/register implementation is shared.
+    fn capacity_accepts(
+        &self,
+        accounts: &BTreeSet<String>,
+        extra: Option<&Entry>,
+        activating: Option<usize>,
+    ) -> bool {
+        let mut resolved: BTreeSet<usize> = self.resolved.keys().copied().collect();
+        if let Some(target) = extra.and_then(|e| e.resolves) {
+            resolved.insert(target);
+        }
+        let mut sums: BTreeMap<(String, u32, bool, bool), Int> = BTreeMap::new();
+        let known = self.known();
+        for (i, entry) in self
+            .journal
+            .iter()
+            .enumerate()
+            .chain(extra.map(|e| (self.journal.len(), e)))
+        {
+            let visible = self.visible(entry, known)
+                || entry.run.is_some_and(|r| {
+                    Some(r) == activating
+                        && self.runs[r]
+                            .spec
+                            .counts_from()
+                            .is_none_or(|day| entry.date >= day)
+                });
+            if !visible || (entry.class == "Pending" && resolved.contains(&i)) {
+                continue;
+            }
+            for leg in &entry.legs {
+                if !accounts.contains(&leg.account) {
+                    continue;
+                }
+                let sum = sums
+                    .entry((
+                        leg.account.clone(),
+                        leg.unit,
+                        entry.class == "Pending",
+                        leg.side == Side::Credit,
+                    ))
+                    .or_insert_with(Int::zero);
+                *sum = sum.add(&Int::from_i128(leg.mantissa));
+                if sum.is_negative() || sum.to_i128().is_none() {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn fold_entries<'a>(entries: impl Iterator<Item = &'a Entry>) -> BTreeMap<(String, u32), Cell> {

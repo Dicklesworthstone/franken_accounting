@@ -636,6 +636,11 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         stage.add_edge(edge_id(relation::IN_BATCH, evid, ovid), evid, ovid, vec![]);
     }
     txn.write_ordered(db, vec![stage])?;
+    let accounts = crate::register_capacity::accounts(resolved.iter().map(|e| &e.proposal));
+    if let Err(refusal) = crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     Ok(Ok(BatchStage::Staged(Box::new(StagedBatch {
         txn,
         outcome: ovid,

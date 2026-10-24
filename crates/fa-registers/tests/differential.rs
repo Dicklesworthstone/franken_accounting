@@ -659,21 +659,20 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
             maintained_matches_oracle(&maintain(&mut k, period), &oracle, k.book.book_id);
         }
         let small = maintenance_intent("Pending", date, 1, "small-hold");
-        refs.push(kernel_post(&mut k, &small, usd, &refs).unwrap().entry_ref());
-        assert!(matches!(oracle.post(&small), Verdict::Posted { .. }));
-
-        // Unlimited accounts admit both holds. While both are live, the
-        // final pending column cannot be represented: refuse without moving
-        // the cells or cursor, rather than saturating or wrapping the sum.
         let before = k.db.frontier().unwrap();
-        let ctx = k.ctx();
-        let overflow = k
-            .runtime
-            .block_on(fa_registers::advance(&mut k.db, &ctx, &k.book, period));
-        assert!(matches!(
-            overflow,
-            Err(fa_registers::RegisterError::Overflow)
-        ));
+        let refusal = kernel_post(&mut k, &small, usd, &refs).unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-198", "{refusal}");
+        assert_eq!(oracle.post(&small), Verdict::Refused { code: "FA-REF-198" });
+        // Even unlimited accounts have representability bounds. Refusing
+        // before publication preserves both the journal and cached cursor.
+        let at_cap = fold_period(&k.db, &k.book, period).unwrap();
+        assert_eq!(at_cap.pending.len(), 2);
+        assert!(
+            at_cap
+                .pending
+                .iter()
+                .all(|cell| cell.debits.checked_add(cell.credits) == Some(i128::MAX))
+        );
         assert_eq!(k.db.frontier().unwrap(), before);
 
         let mut release = maintenance_intent("Resolution", date, 0, "release-large-hold");
@@ -687,9 +686,12 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
                 .entry_ref(),
         );
         assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
+        // The rejected key was not consumed; freeing the old reservation
+        // makes this exact proposal legal, without changing either amount.
+        refs.push(kernel_post(&mut k, &small, usd, &refs).unwrap().entry_ref());
+        assert!(matches!(oracle.post(&small), Verdict::Posted { .. }));
 
-        // The unread suffix briefly exceeds i128, but at its actual target
-        // frontier only the one-unit hold contributes. Both a cold rebuild
+        // At the target frontier only the one-unit hold contributes. Both a cold rebuild
         // and advancement from a cached large hold must reach that result.
         let recovered = maintain(&mut k, period);
         assert!(recovered.rebuilt);
@@ -705,7 +707,7 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
         assert!(!maintain(&mut k, period).wrote);
 
         release.key = b"release-small-hold".to_vec();
-        release.resolves.as_mut().unwrap().target = 1;
+        release.resolves.as_mut().unwrap().target = 2;
         kernel_post(&mut k, &release, usd, &refs).unwrap();
         assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
         let empty = maintain(&mut k, period);

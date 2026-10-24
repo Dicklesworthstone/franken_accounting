@@ -8,6 +8,13 @@
 
 schema_version = 1
 
+# Stock cells bound every nonnegative period/entity/dimension subset. This
+# does not bound arbitrary report totals across different accounts. Decimal
+# text preserves i128::MAX without relying on a TOML i64 extension.
+[[register_capacity]]
+max_register_mantissa = "170141183460469231731687303715884105727"
+domain = "account-unit-stock-gross-posted-and-unresolved-pending-native-and-functional"
+
 [[limit]]
 name = "max_entry_bytes"
 value = 8388608

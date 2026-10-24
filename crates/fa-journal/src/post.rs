@@ -393,7 +393,7 @@ impl PreparedPost {
         let Self {
             mut txn,
             request,
-            entry: _,
+            entry,
             entry_ref,
             period,
             period_vertex,
@@ -420,6 +420,16 @@ impl PreparedPost {
         if let Err(d) = fa_policy::current(&request.capability, db.frontier()?) {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
+        }
+        let accounts = crate::register_capacity::accounts(
+            std::iter::once(&entry.proposal)
+                .chain(paired_reversal.iter().map(|m| &m.entry.proposal)),
+        );
+        if let Err(refusal) =
+            crate::register_capacity::admit(&txn, db, ctx, entry.proposal.book_id, &accounts)?
+        {
+            txn.abort();
+            return Ok(Err(refusal));
         }
         if requires_aggregate_basis(&request.proposal)?
             && let Err(refusal) = check_aggregate_basis(txn.basis(), db.frontier()?)
@@ -1081,7 +1091,22 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, Admission::Plan, None)
+    let prepared = prepare_post_in(db, ctx, book, req, None, Admission::Plan, None)?;
+    if let Ok(PostPreparation::Ready(p)) = &prepared {
+        let accounts = crate::register_capacity::accounts(
+            std::iter::once(&p.entry.proposal)
+                .chain(p.paired_reversal.iter().map(|m| &m.entry.proposal)),
+        );
+        if let Err(refusal) =
+            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts)?
+        {
+            if let Ok(PostPreparation::Ready(p)) = prepared {
+                p.abort();
+            }
+            return Ok(Err(refusal));
+        }
+    }
+    Ok(prepared)
 }
 
 /// Private recurring preparation: every normal accounting law remains live.
@@ -4854,10 +4879,22 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         }
         Ok(PostPreparation::Ready(prepared)) => (None, ReplacementBasis::Staged(prepared)),
     };
-    Ok(
-        prepare_post_in(db, ctx, book, replacement_req, Some(basis), admission, None)?
-            .map(|prepared| (prior, prepared)),
-    )
+    let prepared = prepare_post_in(db, ctx, book, replacement_req, Some(basis), admission, None)?;
+    if let Ok(PostPreparation::Ready(p)) = &prepared {
+        let accounts = crate::register_capacity::accounts(
+            std::iter::once(&p.entry.proposal)
+                .chain(p.paired_reversal.iter().map(|m| &m.entry.proposal)),
+        );
+        if let Err(refusal) =
+            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts)?
+        {
+            if let Ok(PostPreparation::Ready(p)) = prepared {
+                p.abort();
+            }
+            return Ok(Err(refusal));
+        }
+    }
+    Ok(prepared.map(|prepared| (prior, prepared)))
 }
 
 /// Explain the complete `SUPERSEDES` lineage component containing `vid` and its

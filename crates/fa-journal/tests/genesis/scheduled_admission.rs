@@ -113,6 +113,48 @@ fn closer() -> Capability {
     Capability::embedded(PRINCIPAL, &["close", "post"]).unwrap()
 }
 
+#[test]
+fn register_capacity_governs_scheduled_sweep_and_atomic_period_open() {
+    for via_open in [false, true] {
+        let mut h = fixture();
+        let target = accrue(&mut h, 1, b"capacity-accrual");
+        if !via_open {
+            open(&mut h, &closer(), b"capacity-open-before-due").unwrap();
+        }
+        let mut opposite = h.proposal(
+            h.rent_legs(i128::MAX),
+            b"opposite-gross-cap",
+            EntryClass::ORIGINAL,
+        );
+        for leg in &mut opposite.legs {
+            leg.side = leg.side.flipped();
+        }
+        opposite.unit_totals = EntryPayload::fold_unit_totals(&opposite.legs).unwrap();
+        h.post(h.request(opposite, &["post"])).unwrap();
+        tick(&mut h, april(), 125);
+        let head = h.db.frontier().unwrap();
+        if via_open {
+            let refusal = open(&mut h, &closer(), b"capacity-open-at-due").unwrap_err();
+            assert_eq!(refusal.code, "FA-REF-198", "{refusal}");
+            assert_eq!(
+                h.db.frontier().unwrap(),
+                head,
+                "period and reversal are both absent"
+            );
+            let row = h.db.vertex(period_vid("cal", &h.april)).unwrap().unwrap();
+            assert_eq!(PeriodRow::decode(&row).unwrap().state, PeriodState::Future);
+        } else {
+            let capability = executor(&h);
+            let result = sweep(&mut h, capability).unwrap().unwrap();
+            assert!(result.minted.is_empty());
+            assert_eq!(result.blocked.len(), 1);
+            assert!(result.blocked[0].1.contains("FA-REF-198"));
+        }
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+        assert_leg_projections(&h);
+    }
+}
+
 fn issue_quota(h: &mut Harness, capability: Capability, limit: i128) -> Capability {
     let capability = capability
         .holder_bound(fa_policy::possession_digest(&[120; 32]))

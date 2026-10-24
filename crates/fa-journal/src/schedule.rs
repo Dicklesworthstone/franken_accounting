@@ -901,6 +901,9 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         Ok(usage) => usage,
         Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
     };
+    if let Err(refusal) = crate::register_capacity::admit_addition(txn, db, ctx, rvid, &entry)? {
+        return execution_refusal(mints, schedule, trigger, refusal);
+    }
     if let Some(why) = judge_limits(
         |vid| Ok(txn.vertex(db, vid)?),
         book,

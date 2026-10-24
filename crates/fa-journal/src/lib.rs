@@ -57,6 +57,7 @@ pub mod rea;
 pub mod recurring;
 pub mod redaction;
 pub mod refusal;
+mod register_capacity;
 pub mod revaluation;
 pub mod rows;
 pub mod rule;

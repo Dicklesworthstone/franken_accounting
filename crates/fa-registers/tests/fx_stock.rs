@@ -523,16 +523,41 @@ fn unvalued_foreign_legs_refuse_only_when_selected_and_stock_sums_are_checked() 
     let mut large = Fixture::new();
     let amount = i128::MAX / 2 + 1;
     large.post(large.proposal("large-a", day(2025, 12, 5), large.usd, amount));
-    large.post(large.proposal("large-b", day(2026, 1, 5), large.usd, amount));
     let head = large.db.frontier().unwrap();
+    let proposal = large.proposal("large-b", day(2026, 1, 5), large.usd, amount);
+    let ctx = large.ctx();
+    let refusal = large
+        .runtime
+        .block_on(post(
+            &mut large.db,
+            &ctx,
+            &large.book,
+            PostRequest {
+                proposal,
+                approvals: vec![],
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3), "{refusal}");
+    assert_eq!(large.db.frontier().unwrap(), head);
     assert_eq!(
         large.stock(day(2025, 12, 31), None).total_debits().unwrap(),
         amount
     );
-    assert!(matches!(
-        fold_functional_stock(&large.db, &large.book, day(2026, 1, 31), None),
-        Err(RegisterError::Overflow)
-    ));
+    assert_eq!(
+        fold_functional_stock(&large.db, &large.book, day(2026, 1, 31), None)
+            .unwrap()
+            .total_debits()
+            .unwrap(),
+        amount
+    );
+    assert!(
+        verify_functional_stock(&large.db, &large.book, &large.stock(day(2026, 1, 31), None))
+            .is_ok()
+    );
     assert_eq!(large.db.frontier().unwrap(), head);
 }
 
