@@ -152,6 +152,107 @@ fn native_v2_and_legacy_v1_keep_different_assurance_for_the_same_checkpoint() {
 }
 
 #[test]
+fn library_cli_and_explicit_anchor_dispatch_preserve_native_prefix_assurance() {
+    let f = Fixture::mixed();
+    for (bytes, full) in [(f.prefix(), true), (legacy(&f), false)] {
+        let verified = verify_prefix_with_status(&bytes, &f.checkpoint).unwrap();
+        assert_eq!(
+            verified.record_check,
+            if full {
+                RecordCheck::Recomputed
+            } else {
+                RecordCheck::NotSupplied
+            }
+        );
+        let (proof, anchor) = inputs(&bytes, &f.checkpoint);
+        for named_proof in [false, true] {
+            let mut args = vec!["prefix".to_string()];
+            if named_proof {
+                args.push("--proof".into());
+            }
+            args.extend([
+                proof.to_str().unwrap().into(),
+                "--checkpoint".into(),
+                anchor.to_str().unwrap().into(),
+                "--unsigned-checkpoint".into(),
+                "--json".into(),
+            ]);
+            let library = fa_verify::cli::run(&args, &|path| fs::read(path));
+            assert_eq!(library.exit, 0, "{}\n{}", library.stdout, library.stderr);
+            assert!(library.stderr.is_empty());
+            assert!(library.stdout.contains("\"verdict\":\"verified\""));
+            assert!(library.stdout.contains("\"scope\":\"seq_range_complete\""));
+            assert!(library.stdout.contains(if full {
+                "\"record_check\":\"recomputed\""
+            } else {
+                "\"record_check\":\"not_supplied\""
+            }));
+            assert!(library.stdout.contains(if full {
+                "\"scope_derivation\":\"all_prefix_payloads_checked\""
+            } else {
+                "\"scope_derivation\":\"not_verified\""
+            }));
+            no_payload(&library.stdout);
+            no_payload(&library.stderr);
+            let binary = Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+                .args(&args)
+                .output()
+                .unwrap();
+            assert_eq!(binary.status.code(), Some(0));
+            assert_eq!(binary.stdout, library.stdout.as_bytes());
+            assert_eq!(binary.stderr, library.stderr.as_bytes());
+            assert_eq!(fs::read(&proof).unwrap(), bytes);
+        }
+    }
+
+    let mut invalid = Vec::new();
+    for indexes in [vec![], vec![0, 1, 2, 3, 4, 5], vec![0, 1, 2, 3, 4, 5, 5]] {
+        invalid.push((with_indexes(&f, &indexes), f.checkpoint));
+    }
+    // The final byte is inside the final record payload. A same-length
+    // change must fail recomputation against the unchanged trusted root.
+    let mut changed = f.prefix();
+    let last = changed.len() - 1;
+    changed[last] ^= 1;
+    invalid.push((changed, f.checkpoint));
+    let mut selector = record(1, 0, 1, 10, Some(10));
+    selector.envelope.account_vids.clear();
+    let selector = Fixture::new(vec![selector], 1);
+    invalid.push((selector.prefix(), selector.checkpoint));
+    let mut wrong = f.checkpoint;
+    wrong.root[0] ^= 1;
+    invalid.push((f.prefix(), wrong));
+    let complete = f.prefix();
+    invalid.push((complete[..complete.len() - 1].to_vec(), f.checkpoint));
+    for (bytes, checkpoint) in invalid {
+        let (proof, anchor) = inputs(&bytes, &checkpoint);
+        let args = [
+            "prefix",
+            proof.to_str().unwrap(),
+            "--checkpoint",
+            anchor.to_str().unwrap(),
+            "--unsigned-checkpoint",
+            "--json",
+        ]
+        .map(str::to_string);
+        let library = fa_verify::cli::run(&args, &|path| fs::read(path));
+        assert_eq!(library.exit, 8, "{}\n{}", library.stdout, library.stderr);
+        assert!(library.stdout.contains("\"verdict\":\"failed\""));
+        assert!(!library.stdout.contains("\"record_check\":\"recomputed\""));
+        no_payload(&library.stdout);
+        no_payload(&library.stderr);
+        let binary = Command::new(env!("CARGO_BIN_EXE_fa-verify"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(binary.status.code(), Some(8));
+        assert_eq!(binary.stdout, library.stdout.as_bytes());
+        assert_eq!(binary.stderr, library.stderr.as_bytes());
+        assert_eq!(fs::read(&proof).unwrap(), bytes);
+    }
+}
+
+#[test]
 fn missing_duplicate_and_out_of_order_payloads_never_publish_partial_success() {
     let f = Fixture::mixed();
     for indexes in [
