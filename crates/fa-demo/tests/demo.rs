@@ -174,6 +174,18 @@ fn role_selected_and_party_procedures_run_on_demo_books() {
         "{:?}",
         r.findings
     );
+    // The three conduits move 58,500.00 among themselves and 19,500.00 with
+    // the book: one community at 7,500 bps (fa-b6xs).
+    let r = run(&shell, "graph.party_communities", &[]);
+    println!("shell-network party communities: {:?}", r.findings);
+    assert!(
+        r.findings
+            .iter()
+            .any(|f| f.statistic.value == 7_500
+                && f.narrative.contains("[SHELL-A, SHELL-B, SHELL-C]")),
+        "{:?}",
+        r.findings
+    );
 
     let ponzi = open(Scenario::Ponzi);
     let r = run(&ponzi, "ponzi.net_investment", &[]);
