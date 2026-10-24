@@ -518,9 +518,11 @@ mod tests {
                 "unknown trust_boundary",
             ),
             (
+                // Every threat is live since FA-THR-05 (fa-qtfd), so the plant
+                // points live FA-THR-08 at a clause that is still dormant.
                 "live threat citing dormant clause",
-                "status = \"dormant\"\nactivating_beads = [\"fa-l3c\"]",
-                "status = \"live\"",
+                "mitigation_clauses = [\"FA-INV-05.closure\", \"FA-INV-14.public-commitment\"]",
+                "mitigation_clauses = [\"FA-INV-05.closure\", \"FA-INV-14.erasure\"]",
                 "at least one mitigation clause is dormant",
             ),
             (
