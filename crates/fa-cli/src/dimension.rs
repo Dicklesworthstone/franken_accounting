@@ -378,13 +378,13 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 /// `fa tb … --dimension <dimension>=<value>`: the trial balance over only
 /// the legs tagged with that value or a value under it, folded literally
-/// under whole-book read. Not certified, and only the plain stock, activity
-/// and as-of selections.
+/// under whole-book read, and with `--certify` a retained report
+/// certificate (`fa:report-certificate:v8`) that `fa replay` re-executes.
+/// Only the plain stock, activity and as-of selections.
 pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    const TB: &str = "fa tb --period <code> --dimension <dimension>=<value> [--activity] | fa tb --as-of YYYY-MM-DD --dimension <dimension>=<value>";
+    const TB: &str = "fa tb --period <code> --dimension <dimension>=<value> [--activity] [--certify [--certificate-out <new-file>]] | fa tb --as-of YYYY-MM-DD --dimension <dimension>=<value>";
     for flag in [
         "--root",
-        "--certificate-out",
         "--branch",
         "--as-issued-to",
         "--as-reported-in",
@@ -398,9 +398,11 @@ pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ));
         }
     }
+    if args.flag_all("--certificate-out").len() > 1 {
+        return Err(usage("--certificate-out may be supplied only once", TB));
+    }
     for switch in [
         "--summary",
-        "--certify",
         "--functional",
         "--as-originally-reported",
         "--as-currently-stated",
@@ -430,11 +432,12 @@ pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     registered(dimension, TB)?;
     let who = ctx.principal(args);
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let cap = ctx.capability(args, &["read"])?;
-    let book = ctx
+    let mut book = ctx
         .books
         .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
-    let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
+    let (known_at, requested_utc_ns) = known_at_read_flag(args, &book, &ctx.out, &cap)?;
     let selection = if let Some(date) = args.flag("--as-of") {
         if args.flag("--period").is_some()
             || args.flag("--fiscal-year").is_some()
@@ -457,6 +460,57 @@ pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             TrialBalanceSelection::Periods(periods)
         }
     };
+    if certify {
+        // As `fa tb --certify`: current authority and whole-book reach are
+        // admitted, and the certified history prepared, before the fold.
+        let report_selection = fa::ReportSelection::DimensionTrialBalance {
+            selection: selection.clone(),
+            dimension: dimension.to_string(),
+            value: value.to_string(),
+        };
+        crate::cli::prepare_native_certificate_history(&mut book, &cap, known_at)?;
+        book.read_scope(who, &cap)??
+            .admit_report(&report_selection, known_at)??;
+        let certified = match requested_utc_ns {
+            Some(instant) => book.certify_report_at_instant(report_selection, instant)??,
+            None => book.certify_report(report_selection, known_at)??,
+        };
+        ctx.out
+            .time_selection(certified.certificate.time_selection.as_ref());
+        let fa::ReportOutput::DimensionTrialBalance(report) = certified.report else {
+            return Err(Fail::Internal(
+                "dimension certification returned another report kind".into(),
+            ));
+        };
+        let (bytes, retained) = crate::notary::retain_report_certificate(
+            &mut book,
+            &ctx.files,
+            args,
+            &certified.certificate,
+            &cap,
+        )?;
+        ctx.out.at_book(&book)?;
+        render_tagged_trial_balance(
+            &ctx.out,
+            &book,
+            &report.trial_balance,
+            &selection,
+            &TbDimension {
+                dimension: &report.dimension,
+                value: &report.value,
+                values: &report.values,
+            },
+            Some(&crate::cli::hex(&certified.certificate.digest)),
+        )?;
+        crate::notary::emit_report_certificate(
+            &ctx.out,
+            args,
+            &certified.certificate,
+            &bytes,
+            &retained,
+        );
+        return Ok(());
+    }
     let report = book.dimension_trial_balance(&selection, known_at, dimension, value, &cap)??;
     ctx.out.at_book(&book)?;
     render_tagged_trial_balance(
@@ -469,6 +523,7 @@ pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             value: &report.value,
             values: &report.values,
         },
+        None,
     )
 }
 

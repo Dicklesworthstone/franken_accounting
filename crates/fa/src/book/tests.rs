@@ -3731,7 +3731,8 @@ fn report_replay_keeps_historical_account_metadata_and_status_refuses_rebinding(
             | ReportOutput::Statement(_)
             | ReportOutput::FunctionalStatement(_)
             | ReportOutput::Consolidation(_)
-            | ReportOutput::FunctionalConsolidation(_) => {}
+            | ReportOutput::FunctionalConsolidation(_)
+            | ReportOutput::DimensionTrialBalance(_) => {}
         }
         let refusal = book
             .certificate_status(&result.certificate)

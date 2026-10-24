@@ -60,6 +60,11 @@ pub const CONSOLIDATION_OUTPUT_FORMAT: &str = "fa:consolidation:v1";
 /// Native v6 consolidation bytes and valuation semantics remain unchanged.
 pub const FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v7";
 pub const FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT: &str = "fa:functional-consolidation:v1";
+/// A trial balance over only the legs one dimension value or a value under
+/// it tags (fa-ficc). It also binds that dimension's values, whose parents
+/// decide which values it folds.
+pub const DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v8";
+pub const DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT: &str = "fa:dimension-trial-balance:v1";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -204,6 +209,14 @@ pub enum ReportSelection {
     FunctionalConsolidation {
         period: String,
     },
+    /// `selection` over only the legs tagged with `dimension`'s `value` or
+    /// a value under it (`fa tb --dimension`); the other legs of a tagged
+    /// entry are left out, so it need not balance.
+    DimensionTrialBalance {
+        selection: TrialBalanceSelection,
+        dimension: String,
+        value: String,
+    },
 }
 
 impl From<TrialBalanceSelection> for ReportSelection {
@@ -230,12 +243,31 @@ impl ReportSelection {
             Self::Consolidation { period } | Self::FunctionalConsolidation { period } => {
                 !period.is_empty() && period.len() <= 128
             }
+            Self::DimensionTrialBalance {
+                selection,
+                dimension,
+                value,
+            } => {
+                selection.is_canonical()
+                    && fa_model::dimension_kind(dimension).is_some()
+                    && !value.is_empty()
+                    && value.len() <= fa_model::rea::MAX_REA_CODE_BYTES
+            }
         }
     }
 
     fn normalize(self) -> Self {
         match self {
             Self::TrialBalance(selection) => Self::TrialBalance(selection.normalize()),
+            Self::DimensionTrialBalance {
+                selection,
+                dimension,
+                value,
+            } => Self::DimensionTrialBalance {
+                selection: selection.normalize(),
+                dimension,
+                value,
+            },
             Self::Statement(selection) => Self::Statement(Box::new((*selection).normalize())),
             Self::FunctionalStatement(selection) => {
                 Self::FunctionalStatement(Box::new((*selection).normalize()))
@@ -264,6 +296,16 @@ impl ReportSelection {
             Self::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_OUTPUT_FORMAT,
             Self::Consolidation { .. } => CONSOLIDATION_OUTPUT_FORMAT,
             Self::FunctionalConsolidation { .. } => FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT,
+            Self::DimensionTrialBalance { .. } => DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT,
+        }
+    }
+
+    /// The registered dimension whose values a dimension-filtered report
+    /// binds as one more native input.
+    fn bound_dimension(&self) -> Option<fa_model::DimensionKind> {
+        match self {
+            Self::DimensionTrialBalance { dimension, .. } => fa_model::dimension_kind(dimension),
+            _ => None,
         }
     }
 
@@ -293,6 +335,15 @@ impl ReportSelection {
             Self::FunctionalConsolidation { period } => {
                 w.u8(5).str(period);
             }
+            Self::DimensionTrialBalance {
+                selection,
+                dimension,
+                value,
+            } => {
+                w.u8(6);
+                selection.write(w);
+                w.str(dimension).str(value);
+            }
         }
         Ok(())
     }
@@ -320,6 +371,15 @@ impl ReportSelection {
             }),
             5 if version == 7 => Ok(Self::FunctionalConsolidation {
                 period: r.str(128, "functional consolidation period")?.to_string(),
+            }),
+            6 if version == 8 => Ok(Self::DimensionTrialBalance {
+                selection: TrialBalanceSelection::read(r)?,
+                dimension: r
+                    .str(fa_model::rea::MAX_REA_CODE_BYTES, "report dimension")?
+                    .to_string(),
+                value: r
+                    .str(fa_model::rea::MAX_REA_CODE_BYTES, "report dimension value")?
+                    .to_string(),
             }),
             tag => Err(r.bad_tag("report selector", tag)),
         }
@@ -362,6 +422,14 @@ impl ReportSelection {
                 crate::consolidation::consolidate_functional_at(db, book, period, at)?
                     .map(|run| ReportOutput::FunctionalConsolidation(Box::new(run))),
             ),
+            Self::DimensionTrialBalance {
+                selection,
+                dimension,
+                value,
+            } => Ok(
+                crate::dimension::trial_balance_at(db, book, selection, dimension, value, at)?
+                    .map(|report| ReportOutput::DimensionTrialBalance(Box::new(report))),
+            ),
         }
     }
 }
@@ -377,6 +445,7 @@ pub enum ReportOutput {
     FunctionalStatement(Box<fa_statements::Statement>),
     Consolidation(Box<crate::consolidation::Consolidation>),
     FunctionalConsolidation(Box<crate::consolidation::FunctionalConsolidation>),
+    DimensionTrialBalance(Box<crate::dimension::DimensionTrialBalance>),
 }
 
 impl ReportOutput {
@@ -384,6 +453,7 @@ impl ReportOutput {
     pub fn known_at(&self) -> CommitSeq {
         match self {
             Self::TrialBalance(report) => report.known_at,
+            Self::DimensionTrialBalance(report) => report.trial_balance.known_at,
             Self::ExplainBalance(report) => report.known_at,
             Self::OpenItems(report) => report.known_at,
             Self::Statement(report) | Self::FunctionalStatement(report) => {
@@ -400,6 +470,7 @@ impl ReportOutput {
     fn normalize_known_at(&mut self, known_at: CommitSeq) {
         match self {
             Self::TrialBalance(report) => report.known_at = known_at,
+            Self::DimensionTrialBalance(report) => report.trial_balance.known_at = known_at,
             Self::ExplainBalance(report) => report.known_at = known_at,
             Self::OpenItems(report) => report.known_at = known_at,
             Self::Statement(report) | Self::FunctionalStatement(report) => {
@@ -425,6 +496,7 @@ impl ReportOutput {
             }
             Self::Consolidation(report) => report.canonical_bytes(),
             Self::FunctionalConsolidation(report) => report.canonical_bytes(),
+            Self::DimensionTrialBalance(report) => report.canonical_bytes(),
         }
     }
 }
@@ -827,6 +899,15 @@ fn statements(at: CommitSeq, selection: &ReportSelection) -> Vec<String> {
             at.0
         ));
     }
+    if let Some(kind) = selection.bound_dimension() {
+        // Only the selected dimension's values: their declared parents decide
+        // which tagged legs the report folds. Party and legal-entity values
+        // carry other dimension ids and stay out of the closure.
+        statements.push(format!(
+            "MATCH (n:DimensionValue) FOR SYSTEM_TIME AS OF SEQ {} WHERE n.dimension_id = {} RETURN n,n._fa_payload,n.dimension_id ORDER BY n",
+            at.0, kind.id
+        ));
+    }
     statements
 }
 
@@ -901,6 +982,9 @@ impl ReportCertificate {
             ReportSelection::FunctionalConsolidation { .. } => {
                 FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
             }
+            ReportSelection::DimensionTrialBalance { .. } => {
+                DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
+            }
             _ => REPORT_CERTIFICATE_FORMAT,
         }
     }
@@ -933,6 +1017,7 @@ impl ReportCertificate {
             || self.format() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT
             || self.format() == CONSOLIDATION_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
+            || self.format() == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -970,6 +1055,8 @@ impl ReportCertificate {
                 6
             } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
                 7
+            } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
+                8
             } else {
                 return Err(r.invalid("report certificate format"));
             };
@@ -989,8 +1076,9 @@ impl ReportCertificate {
             let registry_digest = r.fixed("registry closure")?;
             let journal_root = r.fixed("journal root")?;
             let journal_leaves = r.u64("journal leaves")?;
-            let required_inputs =
-                INPUTS.len() + usize::from(selection.uses_functional_valuations());
+            let required_inputs = INPUTS.len()
+                + usize::from(selection.uses_functional_valuations())
+                + usize::from(selection.bound_dimension().is_some());
             let count = r.count(required_inputs, "native inputs")?;
             if count != required_inputs {
                 return Err(r.invalid("complete native input closure"));
@@ -1516,6 +1604,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             ReportSelection::FunctionalStatement(_)
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
+                | ReportSelection::DimensionTrialBalance { .. }
         ) || (certificate.registry_digest != legacy_v2
             && certificate.registry_digest != legacy_registry_digest(&certificate.selection)))
     {
@@ -1558,11 +1647,14 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
             book.symbols.clone(),
             policy(),
         ) {
+            let extra = if certificate.selection.bound_dimension().is_some() {
+                "dimension values"
+            } else {
+                "Rate documents"
+            };
             return Ok(Err(invalid(format!(
                 "native input {index} ({}) does not replay: {error}",
-                INPUTS
-                    .get(index)
-                    .map_or("Rate documents", |(kind, _)| *kind)
+                INPUTS.get(index).map_or(extra, |(kind, _)| *kind)
             ))));
         }
     }
@@ -1668,7 +1760,30 @@ pub(crate) fn status<V: Vfs + Clone>(
         Ok(additions) => additions,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let relevance_report = additional_report.as_ref().unwrap_or(&report);
+    // A value created under the reported one since joins what a rerun at
+    // HEAD folds: its creation and later legs tagged with it are relevant.
+    let dimension_report = match &report {
+        ReportOutput::DimensionTrialBalance(tagged) => {
+            let Some(kind) = fa_model::dimension_kind(&tagged.dimension) else {
+                return Ok(Err(invalid("the certified dimension is not registered")));
+            };
+            let Some(values) = crate::dimension::values_under(db, &kind, &tagged.value, head)?
+            else {
+                return Ok(Err(invalid(format!(
+                    "the certified {} value `{}` is absent at HEAD",
+                    tagged.dimension, tagged.value
+                ))));
+            };
+            let mut current = tagged.as_ref().clone();
+            current.values = values.into_keys().collect();
+            Some(ReportOutput::DimensionTrialBalance(Box::new(current)))
+        }
+        _ => None,
+    };
+    let relevance_report = additional_report
+        .as_ref()
+        .or(dimension_report.as_ref())
+        .unwrap_or(&report);
     if let Err(refusal) = unchanged_account_metadata(db, &query, relevance_report, head)? {
         return Ok(Err(refusal));
     }
@@ -2195,8 +2310,8 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
     report: &ReportOutput,
     at: CommitSeq,
 ) -> Outcome<()> {
-    let accounts: BTreeMap<VId, AccountMetadata> = match report {
-        ReportOutput::TrialBalance(report) => report
+    let trial_balance_metadata = |report: &TrialBalance| -> BTreeMap<VId, AccountMetadata> {
+        report
             .rows
             .iter()
             .map(|row| {
@@ -2209,7 +2324,13 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
                     },
                 )
             })
-            .collect(),
+            .collect()
+    };
+    let accounts: BTreeMap<VId, AccountMetadata> = match report {
+        ReportOutput::TrialBalance(report) => trial_balance_metadata(report),
+        ReportOutput::DimensionTrialBalance(report) => {
+            trial_balance_metadata(&report.trial_balance)
+        }
         ReportOutput::ExplainBalance(report) => BTreeMap::from([(
             report.account,
             AccountMetadata::Complete(report.account_row.clone()),
@@ -2387,6 +2508,20 @@ pub(crate) fn selected(
                 &report.group.entity_codes,
                 entry.proposal.control.as_ref(),
             ),
+            // A value created under the reported one: its rerun folds it.
+            (
+                ReportSelection::DimensionTrialBalance { .. },
+                ReportOutput::DimensionTrialBalance(report),
+            ) => match entry.proposal.control.as_ref() {
+                Some(ControlPayload::SchemaChange {
+                    kind: fa_journal::dimension::SCHEMA_CHANGE_DIMENSION_VALUE,
+                    canonical_bytes,
+                }) => {
+                    let spec = fa_journal::dimension::DimensionValueSpec::decode(canonical_bytes)?;
+                    Ok(spec.dimension == report.dimension && report.values.contains(&spec.code))
+                }
+                _ => Ok(false),
+            },
             _ => Ok(false),
         };
     }
@@ -2409,6 +2544,22 @@ pub(crate) fn selected(
         }
         (ReportSelection::TrialBalance(_), ReportOutput::TrialBalance(report)) => {
             if let Some(through) = report.effective_through {
+                return Ok(entry.proposal.effective_date <= through);
+            }
+        }
+        (
+            ReportSelection::DimensionTrialBalance { .. },
+            ReportOutput::DimensionTrialBalance(report),
+        ) => {
+            if !entry
+                .proposal
+                .legs
+                .iter()
+                .any(|leg| report.tags(book.book_id, leg))
+            {
+                return Ok(false);
+            }
+            if let Some(through) = report.trial_balance.effective_through {
                 return Ok(entry.proposal.effective_date <= through);
             }
         }
@@ -2507,9 +2658,11 @@ pub(crate) fn selected(
         )))
     })?;
     Ok(match selection {
-        ReportSelection::TrialBalance(TrialBalanceSelection::Activity(periods)) => {
-            periods.binary_search(&period.code).is_ok()
-        }
+        ReportSelection::TrialBalance(TrialBalanceSelection::Activity(periods))
+        | ReportSelection::DimensionTrialBalance {
+            selection: TrialBalanceSelection::Activity(periods),
+            ..
+        } => periods.binary_search(&period.code).is_ok(),
         // The explanation also names the entire period's fold digest and
         // watermark, so a contribution to another account changes its output.
         ReportSelection::ExplainBalance {
@@ -3229,6 +3382,81 @@ mod tests {
             FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT
         );
         assert_eq!(certificate.body_bytes().unwrap().last(), Some(&0));
+    }
+
+    #[test]
+    fn dimension_trial_balance_v8_binds_its_dimension_values_and_reserves_its_tag() {
+        let selection = ReportSelection::DimensionTrialBalance {
+            selection: TrialBalanceSelection::Activity(vec!["FY2026-P03".into()]),
+            dimension: "cost_center".into(),
+            value: "CC10".into(),
+        };
+        let mut writer = Writer::new();
+        selection.write(&mut writer).unwrap();
+        let bytes = writer.finish().unwrap();
+        assert_eq!(bytes[0], 6);
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(ReportSelection::read(&mut reader, 8).unwrap(), selection);
+        reader.finish().unwrap();
+        // No earlier format reads the tag, and v8 reads no other selector.
+        for version in 3..=7 {
+            assert!(ReportSelection::read(&mut Reader::new(&bytes), version).is_err());
+        }
+        let mut consolidation = Writer::new();
+        ReportSelection::Consolidation {
+            period: "FY2026-P03".into(),
+        }
+        .write(&mut consolidation)
+        .unwrap();
+        assert!(
+            ReportSelection::read(&mut Reader::new(&consolidation.finish().unwrap()), 8).is_err()
+        );
+        let certificate = wire_fixture(selection.clone(), None);
+        assert_eq!(
+            certificate.format(),
+            DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
+        );
+        assert_eq!(
+            certificate.output_format(),
+            DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT
+        );
+        assert_eq!(
+            certificate.body_bytes().unwrap().last(),
+            Some(&0),
+            "no TimeEvidence selection"
+        );
+        // One more native input, holding only cost_center's values (id 2):
+        // party and legal-entity values never enter the closure.
+        let inputs = statements(CommitSeq(7), &selection);
+        assert_eq!(inputs.len(), INPUTS.len() + 1);
+        let bound = inputs.last().unwrap();
+        assert!(
+            bound.starts_with(
+                "MATCH (n:DimensionValue) FOR SYSTEM_TIME AS OF SEQ 7 WHERE n.dimension_id = 2 "
+            ),
+            "{bound}"
+        );
+        let plain =
+            ReportSelection::from(TrialBalanceSelection::Activity(vec!["FY2026-P03".into()]));
+        assert_eq!(statements(CommitSeq(7), &plain).len(), INPUTS.len());
+        // An unregistered dimension and an empty or oversized value are not
+        // canonical selectors.
+        let long = "C".repeat(fa_model::rea::MAX_REA_CODE_BYTES + 1);
+        for (dimension, value) in [
+            ("cost_centre", "CC10"),
+            ("cost_center", ""),
+            ("cost_center", long.as_str()),
+        ] {
+            assert!(
+                !ReportSelection::DimensionTrialBalance {
+                    selection: TrialBalanceSelection::AsOf(DateDay(1)),
+                    dimension: dimension.into(),
+                    value: value.into(),
+                }
+                .is_canonical(),
+                "{dimension}={value}"
+            );
+        }
     }
 
     #[test]

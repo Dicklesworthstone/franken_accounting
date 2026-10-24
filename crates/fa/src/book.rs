@@ -6113,10 +6113,13 @@ impl ReadScope<'_> {
                     fa_statements::Basis::Activity => self.authority.periods(book, seq, &reached),
                 }
             }
+            // A dimension filter crosses accounts and periods: a scoped
+            // capability is refused, never filtered.
             ReportSelection::OpenItems { .. }
             | ReportSelection::FunctionalStatement(_)
             | ReportSelection::Consolidation { .. }
-            | ReportSelection::FunctionalConsolidation { .. } => self.authority.whole_book(seq),
+            | ReportSelection::FunctionalConsolidation { .. }
+            | ReportSelection::DimensionTrialBalance { .. } => self.authority.whole_book(seq),
         };
         Ok(admitted.map(|()| seq))
     }

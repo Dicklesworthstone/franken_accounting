@@ -7477,12 +7477,13 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     assert_eq!(whole.get("dimension"), Some(&Json::Null));
     assert_eq!(whole.get("balanced"), Some(&Json::Bool(true)));
     // Planted: an unknown value, an unregistered dimension, no value, and a
-    // certificate, which a dimension report does not take.
+    // certificate of a mode a dimension report does not take.
     for (filter, extra) in [
         ("cost_center=NOPE", &[][..]),
         ("nope=CC", &[][..]),
         ("cost_center", &[][..]),
-        ("cost_center=CC", &["--certify"][..]),
+        ("cost_center=CC", &["--certify", "--summary"][..]),
+        ("cost_center=CC", &["--certify", "--functional"][..]),
     ] {
         let (code, out) = tb(filter, extra);
         assert_eq!(code, 2, "{filter} {extra:?}: {out}");
@@ -7628,6 +7629,157 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
     assert_eq!(code, 3, "{out}");
     let (code, out) = run(&["dimension", "require", "department", "6100"]);
     assert_eq!(code, 2, "{out}");
+    Ok(())
+}
+
+/// fa-ficc: a trial balance by dimension is certified like any trial
+/// balance (`fa:report-certificate:v8`), binding that dimension's values.
+/// `fa replay` reproduces its robot line byte for byte, and `fa certificate
+/// status` names a value created under the selected one and a later leg
+/// tagged with a folded value; a leg tagged with another value, or a value
+/// created elsewhere, leaves it current.
+#[test]
+fn a_dimension_trial_balance_certifies_replays_and_names_what_supersedes_it() -> std::io::Result<()>
+{
+    let dir = tmp("dimension-certificate")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(&book), &argv);
+        assert!(
+            code == 0 || !out.is_empty(),
+            "{argv:?} wrote no robot line\n{err}"
+        );
+        (code, out)
+    };
+    assert_eq!(
+        run(&["book", "create", "--name", "Dimension Certificate Co"]).0,
+        0
+    );
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    assert_eq!(run(&["chart", "import", &chart]).0, 0);
+    assert_eq!(run(&["period", "create", "--fiscal-year", "2026"]).0, 0);
+    assert_eq!(run(&["period", "open", "FY2026-P03"]).0, 0);
+    let ev = source_doc(&dir, &book);
+    let add = |code: &str, parent: Option<&str>| {
+        let mut argv = vec!["dimension", "add", "cost_center", code, "--name", code];
+        if let Some(parent) = parent {
+            argv.extend(["--parent", parent]);
+        }
+        let (exit, out) = run(&argv);
+        assert_eq!(exit, 0, "{argv:?}: {out}");
+        text(&doc(&out), "control_entry").to_string()
+    };
+    add("CC", None);
+    add("CC10", Some("CC"));
+    add("OTHER", None);
+    let post = |key: &str, value: &str| {
+        let intent = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-15","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6100","amount":"42.00 USD","dimensions":{{"cost_center":"{value}"}}}},{{"side":"credit","account":"1000","amount":"42.00 USD"}}]}}"#
+            ),
+        );
+        let (code, out) = run(&["post", "--intent", &intent, "--evidence", &ev]);
+        assert_eq!(code, 0, "{out}");
+        text(&doc(&out), "vid").to_string()
+    };
+    post("warehouse", "CC10");
+    post("elsewhere", "OTHER");
+
+    let file = dir.join("cc.cert");
+    let file_arg = file.display().to_string();
+    let (code, certified) = run(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--dimension",
+        "cost_center=CC",
+        "--certify",
+        "--certificate-out",
+        &file_arg,
+    ]);
+    assert_eq!(code, 0, "{certified}");
+    let lines: Vec<&str> = certified.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "the report and its retained certificate: {certified}"
+    );
+    assert_eq!(field(lines[0], "event"), Some("trial_balance"));
+    assert_eq!(field(lines[1], "event"), Some("report_certificate"));
+    let certificate = doc(lines[1]);
+    let oid = text(&certificate, "oid").to_string();
+    assert_eq!(field(lines[0], "certificate"), Some(oid.as_str()));
+    assert_eq!(
+        text(&certificate, "output_format"),
+        "fa:dimension-trial-balance:v1"
+    );
+    let report = doc(lines[0]);
+    let rows = arr(&report, "rows");
+    assert_eq!(rows.len(), 1, "{certified}");
+    assert_eq!(
+        text(&rows[0], "debits"),
+        "42.00 USD",
+        "the OTHER leg is left out: {certified}"
+    );
+    let included: Vec<&str> = arr(report.get("dimension").unwrap(), "values")
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(included, ["CC", "CC10"]);
+    let bytes = std::fs::read(&file)?;
+    assert!(bytes.starts_with(b"fa:report-certificate:v8"));
+    let original = format!("{}\n", lines[0]);
+    let cert = format!("C:{oid}");
+    for source in [cert.as_str(), file_arg.as_str()] {
+        let (code, replayed) = run(&["replay", source]);
+        assert_eq!(code, 0, "{replayed}");
+        assert_eq!(replayed, original, "{source}: the robot line replays");
+    }
+    // Planted: one flipped byte of the output digest fails verification
+    // (exit 8).
+    let mut tampered = bytes.clone();
+    let last = tampered.len() - 40;
+    tampered[last] ^= 1;
+    let tampered_file = dir.join("tampered.cert");
+    std::fs::write(&tampered_file, &tampered)?;
+    let (code, out) = run(&["replay", &tampered_file.display().to_string()]);
+    assert_eq!(code, 8, "{out}");
+
+    let status = || {
+        let (code, out) = run(&["certificate", "status", &cert]);
+        assert_eq!(code, 0, "{out}");
+        let status = doc(&out);
+        let later: Vec<String> = arr(&status, "later_entries")
+            .iter()
+            .filter_map(Json::as_str)
+            .map(str::to_string)
+            .collect();
+        (text(&status, "status").to_string(), later)
+    };
+    assert_eq!(status(), ("Current".to_string(), Vec::new()));
+    // A leg tagged with another value, and a value created elsewhere, are
+    // not what this report folds.
+    post("elsewhere-later", "OTHER");
+    add("OTHER2", Some("OTHER"));
+    assert_eq!(status(), ("Current".to_string(), Vec::new()));
+    // A value created under CC joins what a rerun folds, and so does a later
+    // leg tagged with it.
+    let annex = add("CC11", Some("CC10"));
+    assert_eq!(status(), ("SupersededBy".to_string(), vec![annex.clone()]));
+    let tagged = post("annex", "CC11");
+    assert_eq!(status(), ("SupersededBy".to_string(), vec![annex, tagged]));
+    // The certificate still replays its own prefix.
+    let (code, replayed) = run(&["replay", &cert]);
+    assert_eq!(code, 0, "{replayed}");
+    assert_eq!(replayed, original);
     Ok(())
 }
 

@@ -1125,6 +1125,21 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 report,
                 Some(&digest),
             )?,
+            (
+                ReportOutput::DimensionTrialBalance(report),
+                ReportSelection::DimensionTrialBalance { selection, .. },
+            ) => crate::cli::render_tagged_trial_balance(
+                &ctx.out,
+                &book,
+                &report.trial_balance,
+                selection,
+                &crate::cli::TbDimension {
+                    dimension: &report.dimension,
+                    value: &report.value,
+                    values: &report.values,
+                },
+                Some(&digest),
+            )?,
             _ => {
                 return Err(certificate_invalid(
                     "replayed report kind differs from the retained certificate selector",
@@ -1371,7 +1386,8 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     let (name, checked_at, later_entries) = status;
     ctx.out.known_at(checked_at);
     match &certificate.selection {
-        ReportSelection::TrialBalance(selection) => {
+        ReportSelection::TrialBalance(selection)
+        | ReportSelection::DimensionTrialBalance { selection, .. } => {
             ctx.out.effective(match selection {
                 TrialBalanceSelection::AsOf(day) => format!("as-of:{day}"),
                 TrialBalanceSelection::Periods(periods)

@@ -13337,20 +13337,21 @@ pub(crate) struct TbDimension<'a> {
 }
 
 /// A trial balance over only the legs tagged with `dimension`'s values
-/// (`fa tb --dimension`).
+/// (`fa tb --dimension`), with its certificate's digest when certified.
 pub(crate) fn render_tagged_trial_balance(
     out: &Out,
     book: &Book,
     tb: &fa_registers::TrialBalance,
     selection: &TrialBalanceSelection,
     dimension: &TbDimension<'_>,
+    certificate: Option<&str>,
 ) -> Result<(), Fail> {
     render_trial_balance_filtered(
         out,
         &book.context().units,
         tb,
         selection,
-        None,
+        certificate,
         None,
         Some(dimension),
     )
