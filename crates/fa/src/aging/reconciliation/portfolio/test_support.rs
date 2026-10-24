@@ -8,6 +8,7 @@ use fa_model::{
     AccountType, EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, LegPayload, Oid,
     Settlement, account_vid,
 };
+use fa_money::rate::{ArithmeticBudget, BudgetLimits};
 use fa_money::{Amount, Side, UnitRegistry};
 use fa_time::{FiscalCalendar, PeriodTransition};
 use fgdb::MemVfs;
@@ -173,7 +174,6 @@ impl Harness {
         amount: i128,
         target: Option<EntryRef>,
     ) -> EntryRef {
-        let cx = self.cx();
         let mut legs = vec![
             LegPayload::simple(Side::Debit, self.id(accounts.0), Amount::new(unit, amount)),
             LegPayload::simple(Side::Credit, self.id(accounts.1), Amount::new(unit, amount)),
@@ -185,14 +185,17 @@ impl Harness {
                 amount: Amount::new(unit, amount),
             });
         }
-        let proposal = EntryPayload {
+        self.try_post(self.proposal(key, date, legs)).unwrap()
+    }
+    pub(super) fn proposal(&self, key: &str, date: &str, legs: Vec<LegPayload>) -> EntryPayload {
+        EntryPayload {
             schema_minor: 0,
             book_id: BOOK,
             branch_id: Id128::TRUNK,
             class: EntryClass::ORIGINAL,
             effective_date: day(date),
             document_date: None,
-            description: self.book.seal_text(&cx, key).unwrap(),
+            description: self.book.seal_text(&self.cx(), key).unwrap(),
             effective_period: None,
             unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
             legs,
@@ -211,7 +214,13 @@ impl Harness {
             external_ids: Vec::new(),
             extensions: Vec::new(),
             tags: Vec::new(),
-        };
+        }
+    }
+    pub(super) fn try_post(
+        &mut self,
+        proposal: EntryPayload,
+    ) -> Result<EntryRef, fa_journal::Refusal> {
+        let cx = self.cx();
         self.runtime
             .block_on(self.book.post(
                 &cx,
@@ -223,8 +232,68 @@ impl Harness {
                 },
             ))
             .unwrap()
+            .map(|posted| posted.entry_ref())
+    }
+    pub(super) fn fx_rate(
+        &mut self,
+        date: &str,
+        purpose: crate::FxRatePurpose,
+        numerator: u128,
+    ) -> Oid {
+        let cx = self.cx();
+        let rate = crate::FxRateDocument::new(
+            crate::FxRateTerms {
+                base_unit: self.usd,
+                quote_unit: self.eur,
+                rate_num: numerator,
+                rate_den: 1,
+                rounding: fa_money::RoundingLaw::HalfEven,
+            },
+            day(date),
+            1,
+            purpose,
+            "Portfolio fixture rate evidence",
+        )
+        .unwrap();
+        self.runtime
+            .block_on(self.book.upload_fx_rate(&cx, &cap(&["post"]), &rate))
             .unwrap()
-            .entry_ref()
+            .unwrap()
+            .oid
+    }
+    pub(super) fn value_fx(&mut self, proposal: EntryPayload, rate: Oid) -> EntryPayload {
+        let cx = self.cx();
+        let pure = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = ArithmeticBudget::new(&pure, BudgetLimits::uniform(1_000_000, 0), 4096);
+        self.runtime
+            .block_on(self.book.value_fx_proposal(
+                &cx,
+                &cap(&["read", "post"]),
+                proposal,
+                crate::FxLawId::SpotClose,
+                &[rate],
+                &mut budget,
+            ))
+            .unwrap()
+            .unwrap()
+    }
+    pub(super) fn prepare_fx(
+        &mut self,
+        request: &crate::FxSettlementRequest,
+        template: EntryPayload,
+    ) -> Result<crate::PreparedFxSettlement, fa_journal::Refusal> {
+        let cx = self.cx();
+        let pure = self.root.restrict::<asupersync::cx::cap::None>();
+        let mut budget = ArithmeticBudget::new(&pure, BudgetLimits::uniform(1_000_000, 0), 4096);
+        self.runtime
+            .block_on(self.book.prepare_fx_settlement(
+                &cx,
+                &cap(&["read", "post"]),
+                request,
+                template,
+                &mut budget,
+            ))
+            .unwrap()
     }
     pub(super) fn post_allocation(
         &mut self,
