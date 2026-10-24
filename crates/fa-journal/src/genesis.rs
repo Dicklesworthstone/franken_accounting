@@ -530,6 +530,9 @@ pub async fn create_book<V: asupersync::fs::Vfs + Clone>(
     units: &UnitRegistry,
     symbols: &SymbolTable,
 ) -> Result<CommitSeq, KernelError> {
+    if let Err(why) = spec.validate() {
+        return Err(KernelError::Corrupt(format!("invalid book spec: {why}")));
+    }
     if units.get(spec.base_unit).is_none() {
         return Err(KernelError::Corrupt(format!(
             "book.base_unit {} is absent from the genesis unit table",
@@ -608,9 +611,6 @@ pub async fn create_book<V: asupersync::fs::Vfs + Clone>(
     // `DimensionValue` per entity, bound to it by `REPRESENTS` — the value a
     // leg's `dimension_set` names. A second relation is a second batch,
     // staged in order in one commit.
-    if let Err(why) = spec.validate() {
-        return Err(KernelError::Corrupt(format!("invalid book spec: {why}")));
-    }
     let book_id = scalar_bytes("book_id", spec.book_id.0.to_vec())?;
     let dim = fa_model::dimension_vid(spec.book_id, fa_model::LEGAL_ENTITY_DIMENSION_CODE);
     let dim_id = CanonicalScalar::Int(i64::from(fa_model::LEGAL_ENTITY_DIMENSION));
