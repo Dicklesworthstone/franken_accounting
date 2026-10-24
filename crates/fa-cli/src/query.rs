@@ -3,6 +3,11 @@
 //! certified native read at one recorded sequence. `CALL fa.trial_balance`
 //! is `fa tb` itself, with the statement's period and known-at.
 //!
+//! A restatement view (`AS ORIGINALLY REPORTED`, `AS ISSUED TO '<audience>'`,
+//! `AS REPORTED IN 'C:<certificate>'`) reads its `FOR PERIOD` at the sequence
+//! `fa tb`'s view flag of the same name resolves; a native read is not
+//! certified there (certify it AS KNOWN AT that sequence).
+//!
 //! A query reads the whole graph, so it is admitted as a whole-book read
 //! before anything is observed: a token carrying any scope caveat is
 //! refused, never filtered. `AT BRANCH 'scenario:<name>'` or
@@ -15,7 +20,7 @@
 //! the rows byte for byte and `fa certificate status` says whether the same
 //! statement still answers the same at the head.
 
-use fa::{QueryCell, QueryKnownAt, QueryRows, QuerySelection};
+use fa::{QueryCell, QueryKnownAt, QueryReported, QueryRows, QuerySelection};
 use fgdb_types::CommitSeq;
 
 use crate::args::Args;
@@ -88,6 +93,18 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     tb.flags
                         .insert("--as-known-at".to_string(), vec![instant.clone()]);
                 }
+                // A restatement view is fa tb's own view flag.
+                QueryKnownAt::Reported(QueryReported::Originally) => {
+                    tb.switches.push("--as-originally-reported".to_string());
+                }
+                QueryKnownAt::Reported(QueryReported::IssuedTo(audience)) => {
+                    tb.flags
+                        .insert("--as-issued-to".to_string(), vec![audience.clone()]);
+                }
+                QueryKnownAt::Reported(QueryReported::In(certificate)) => {
+                    tb.flags
+                        .insert("--as-reported-in".to_string(), vec![certificate.clone()]);
+                }
             }
             return crate::cli::tb_cmd(ctx, &tb);
         }
@@ -143,6 +160,24 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             ctx.out.time_selection(Some(&time));
             CommitSeq(time.resolution.resolved_seq)
+        }
+        QueryKnownAt::Reported(view) => {
+            // The profile refuses a view without FOR PERIOD.
+            let period = profiled.period.as_deref().ok_or_else(|| {
+                Fail::Internal("a restatement view compiled without its period".into())
+            })?;
+            let view = crate::issuance::query_view(view)?;
+            let seq = crate::issuance::reported_known_at(&book, &capability, &view, period)?;
+            if certify {
+                return Err(usage(
+                    "a query certificate binds a recorded sequence; this statement selects a restatement view",
+                    format!(
+                        "replace the view with AS KNOWN AT {} to certify the period as it was reported",
+                        seq.0
+                    ),
+                ));
+            }
+            seq
         }
     };
     if certify {
