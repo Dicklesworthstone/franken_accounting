@@ -336,12 +336,7 @@ impl MutantLedger {
             mutant.apply_in_memory(&source)?;
 
             for checker in &mutant.killed_by {
-                let resolved = checker
-                    .candidate_files()
-                    .into_iter()
-                    .filter_map(|rel| read_file(&rel))
-                    .any(|text| checker.is_defined_in(&text));
-                if !resolved {
+                if !checker.resolves_with(&read_file) {
                     return Err(format!(
                         "{REGISTRY}: {} references nonexistent `#[test]` `{checker}`",
                         mutant.id
