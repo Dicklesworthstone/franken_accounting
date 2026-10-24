@@ -2791,7 +2791,9 @@ mod tests {
         assert_eq!(fx_laws.application_difference_kinds.len(), 5);
 
         let formats = Formats::embedded().expect("formats.toml");
-        assert_eq!(formats.rows.len(), 24);
+        // Row 25 (fwc_plaid_transactions_sync_v1) is fa bank import's
+        // plaid-sync reader (fa-lzrn).
+        assert_eq!(formats.rows.len(), 25);
     }
 
     #[test]

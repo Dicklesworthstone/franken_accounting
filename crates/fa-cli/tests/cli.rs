@@ -4379,14 +4379,15 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
 
 /// fa-651f slice 1: a Restatement case restates a Closed period from the CLI.
 /// - The analyst plans the Restatement in the case's scenario: `restates`
-///   names the posting and the legs are the delta.
-/// - Two approvals sharing a session lineage are refused at `fa case
-///   approve` (FA-REF-008, exit 7), and the case stays Rehearsed. One
-///   pairing is a token the controller issued itself; the other is a token
-///   the analyst, the case's planner, issued.
-/// - Two independent Humans approve; `fa case post` posts the Restatement
-///   into the closed March, whose trial balance moves by the delta, and
-///   lineage names Restates. Outside its case the intent is FA-REF-178.
+///   names the posting and the legs are the delta; `revises` on a
+///   Restatement is a usage error.
+/// - An issued token cannot approve on the CLI (the Preparer ceiling,
+///   FA-REF-011), so lineage over issued capabilities is the library's to
+///   exercise (fa restatement_case). One approval is refused (FA-REF-012)
+///   and the case stays Rehearsed.
+/// - Two Humans approve; `fa case post` posts the Restatement into the
+///   closed March, whose trial balance moves by the delta, and lineage names
+///   Restates. Outside its case the intent is FA-REF-178.
 #[test]
 fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result<()> {
     let dir = tmp("restatement")?;
@@ -4512,55 +4513,50 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         args.extend(["approve", "--proposal", digest.as_str(), "--json"]);
         text(&doc(&ok(&args)), "approval_vid").to_string()
     };
-    // Tokens issued by a party to the work: the controller's own, and one
-    // the analyst (the case's planner) issued.
-    let issue = |holder: &str, issuer: &str| {
-        let token = dir.join(format!("{holder}.token")).display().to_string();
-        ok(&[
-            "capability",
-            "issue",
-            "--holder",
-            holder,
-            "--profile",
-            "human",
-            "--op",
-            "approve",
-            "--out",
-            &token,
-            "--as",
-            issuer,
-            "--grant",
-            "issue_capability",
-            "--grant",
-            "approve",
-            "--json",
-        ]);
-        token
-    };
-    let delegate = issue("delegate", "controller");
-    let proxy = issue("proxy", "analyst");
+    // An issued token cannot approve on the CLI: a token-bound session stays
+    // within the Preparer ceiling, which holds no `approve` (FA-REF-011). So
+    // a CLI approval is never under an issued capability, and the
+    // session_lineage refusals over issued tokens live in the library test
+    // (fa restatement_case).
+    let token = dir.join("delegate.token").display().to_string();
+    ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "delegate",
+        "--profile",
+        "human",
+        "--op",
+        "approve",
+        "--out",
+        &token,
+        "--as",
+        "controller",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "approve",
+        "--json",
+    ]);
+    let (code, out) = run(&[
+        "--token",
+        &token,
+        "approve",
+        "--proposal",
+        &digest,
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-011"), "{out}");
     let controller = approval(&["--as", "controller"]);
     let auditor = approval(&["--as", "auditor"]);
-    let delegated = approval(&["--token", &delegate]);
-    let proxied = approval(&["--token", &proxy]);
-    for (second, issuer) in [(&delegated, "controller"), (&proxied, "analyst")] {
-        let (code, out) = run(&[
-            "case",
-            "approve",
-            "1",
-            "--approval",
-            &controller,
-            "--approval",
-            second.as_str(),
-            "--json",
-        ]);
-        assert_eq!(code, 7, "{issuer}: {out}");
-        assert!(out.contains("FA-REF-008"), "{out}");
-        assert!(out.contains("session lineage"), "{out}");
-        let case = doc(&ok(&["case", "show", "1", "--json"]));
-        let state = case.get("case").map(|c| text(c, "state").to_string());
-        assert_eq!(state.as_deref(), Some("Rehearsed"), "{issuer}");
-    }
+    // One approval is not dual control; the case stays Rehearsed.
+    let (code, out) = run(&["case", "approve", "1", "--approval", &controller, "--json"]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-012"), "{out}");
+    let case = doc(&ok(&["case", "show", "1", "--json"]));
+    let state = case.get("case").map(|c| text(c, "state").to_string());
+    assert_eq!(state.as_deref(), Some("Rehearsed"));
     ok(&[
         "case",
         "approve",
