@@ -96,8 +96,8 @@ pub const REGISTER_CAPACITY: &str = "FA-REF-198";
 
 /// A retained registered cell cannot be represented. This is a diagnosis of
 /// immutable source, never an instruction to rebalance or edit its history.
-/// Native cells aggregate entities; functional cells name their entity partition
-/// (`None` is the book's default entity). Cross-account totals are not cells.
+/// `by_entity` distinguishes a partition (`None` is the book's default entity)
+/// from an aggregate across all entities. Cross-account totals are not cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisterCapacity {
     pub account: VId,
@@ -107,6 +107,7 @@ pub struct RegisterCapacity {
     pub side: Side,
     pub periods: Vec<String>,
     pub effective_through: Option<DateDay>,
+    pub by_entity: bool,
     pub entity: Option<String>,
     pub source: fa_model::EntryRef,
     pub recorded_at: CommitSeq,
@@ -131,7 +132,7 @@ impl fmt::Display for RegisterCapacity {
             self.unit_id,
             self.periods,
             self.effective_through,
-            if self.functional {
+            if self.by_entity {
                 self.entity.as_deref().unwrap_or("<default>")
             } else {
                 "<all>"
@@ -580,6 +581,7 @@ fn add_entry(
             side: leg.side,
             periods: vec![period.into()],
             effective_through: None,
+            by_entity: false,
             entity: None,
             source: entry.entry_ref(vid),
             recorded_at,
@@ -1702,6 +1704,7 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
                         periods.clone()
                     },
                     effective_through: through,
+                    by_entity: false,
                     entity: None,
                     source: entry.entry_ref(*vid),
                     recorded_at: *recorded_at,

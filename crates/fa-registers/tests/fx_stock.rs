@@ -54,6 +54,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_entity(false)
+    }
+
+    fn with_entity(declared: bool) -> Self {
         let runtime = RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(Budget::INFINITE);
         let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -75,7 +79,15 @@ impl Fixture {
             base_unit: usd,
             calendar: calendar.clone(),
             time_zone_policy: None,
-            entities: Vec::new(),
+            entities: if declared {
+                vec![fa_journal::genesis::LegalEntitySpec {
+                    code: "Estate".into(),
+                    name: "Estate".into(),
+                    functional_unit: usd,
+                }]
+            } else {
+                Vec::new()
+            },
             // The 2025 Opening period is genuinely born Locked for the
             // migration test, while the selected later normal periods open.
             opening_date: Some(day(2025, 1, 2)),
@@ -589,6 +601,151 @@ fn unvalued_foreign_legs_refuse_only_when_selected_and_stock_sums_are_checked() 
 }
 
 #[test]
+fn native_entity_capacity_diagnosis_preserves_exact_scope_source_and_history() {
+    for declared in [false, true] {
+        for pending in [false, true] {
+            let mut f = Fixture::with_entity(declared);
+            let date = day(2026, 1, 5);
+            let through = day(2026, 1, 31);
+            let periods = vec!["FY2026-P01".to_string()];
+            let as_pending = |mut proposal: EntryPayload| {
+                if pending {
+                    proposal.class = EntryClass::PENDING;
+                    proposal.pending = Some(Pending {
+                        timeout_ns: None,
+                        resolution_of: None,
+                        disposition: None,
+                    });
+                }
+                proposal
+            };
+            f.post(as_pending(f.proposal(
+                "entity-maximum",
+                date,
+                f.usd,
+                i128::MAX,
+            )));
+            let safe = f.db.frontier().unwrap();
+            let original = fa_registers::entity::fold_period_by_entity(
+                &f.db,
+                &f.book,
+                &periods[0],
+                Some(safe),
+            )
+            .unwrap();
+            let one = as_pending(f.proposal("retained-entity-one", date, f.usd, 1));
+            let (source, recorded_at) = f.append_retained_fault(one);
+            let head = f.db.frontier().unwrap();
+            let rows = f.db.vertices().unwrap();
+            let period_error =
+                fa_registers::entity::fold_period_by_entity(&f.db, &f.book, &periods[0], None)
+                    .unwrap_err();
+            let mut errors = vec![(period_error, periods.clone(), None)];
+            if pending {
+                // These two reports select posted activity, not reservations.
+                assert!(
+                    fa_registers::entity::stock_by_entity(&f.db, &f.book, through, None)
+                        .unwrap()
+                        .cells
+                        .is_empty()
+                );
+                assert!(
+                    fa_registers::entity::period_activity_by_entity(
+                        &f.db,
+                        &f.book,
+                        &periods,
+                        None,
+                        &[]
+                    )
+                    .unwrap()
+                    .cells
+                    .is_empty()
+                );
+            } else {
+                errors.push((
+                    fa_registers::entity::stock_by_entity(&f.db, &f.book, through, None)
+                        .unwrap_err(),
+                    Vec::new(),
+                    Some(through),
+                ));
+                errors.push((
+                    fa_registers::entity::period_activity_by_entity(
+                        &f.db,
+                        &f.book,
+                        &periods,
+                        None,
+                        &[],
+                    )
+                    .unwrap_err(),
+                    periods.clone(),
+                    None,
+                ));
+                // Selection precedes arithmetic: the same source remains a
+                // valid empty report before its effective day or in March.
+                assert!(
+                    fa_registers::entity::stock_by_entity(&f.db, &f.book, day(2026, 1, 4), None)
+                        .unwrap()
+                        .cells
+                        .is_empty()
+                );
+                assert!(
+                    fa_registers::entity::period_activity_by_entity(
+                        &f.db,
+                        &f.book,
+                        &["FY2026-P03".into()],
+                        None,
+                        &[]
+                    )
+                    .unwrap()
+                    .cells
+                    .is_empty()
+                );
+            }
+            for (error, selected_periods, effective_through) in errors {
+                let RegisterError::Capacity(diagnosis) = error else {
+                    panic!("typed native entity diagnosis required: {error:?}")
+                };
+                assert_eq!(diagnosis.source, source);
+                assert_eq!(
+                    (diagnosis.recorded_at, diagnosis.known_at),
+                    (recorded_at, head)
+                );
+                assert!(!diagnosis.functional);
+                assert!(diagnosis.by_entity);
+                assert_eq!(diagnosis.pending, pending);
+                assert_eq!(diagnosis.entity.as_deref(), declared.then_some("Estate"));
+                assert_eq!(
+                    (diagnosis.periods.clone(), diagnosis.effective_through),
+                    (selected_periods, effective_through)
+                );
+                assert_eq!(diagnosis.account, account_vid(f.book.book_id, "1200"));
+                assert_eq!((diagnosis.unit_id, diagnosis.side), (f.usd.0, Side::Debit));
+                assert_eq!((diagnosis.accumulated, diagnosis.incoming), (i128::MAX, 1));
+                let refusal = diagnosis.refusal();
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3));
+                let entity = if declared { "Estate" } else { "<default>" };
+                assert!(
+                    refusal.message.contains(&format!("entity {entity};")),
+                    "{refusal}"
+                );
+            }
+            assert_eq!(
+                fa_registers::entity::fold_period_by_entity(
+                    &f.db,
+                    &f.book,
+                    &periods[0],
+                    Some(safe)
+                )
+                .unwrap(),
+                original
+            );
+            assert_eq!(f.db.frontier().unwrap(), head);
+            assert_eq!(f.db.vertices().unwrap(), rows);
+        }
+    }
+}
+
+#[test]
 fn retained_cell_capacity_diagnoses_native_functional_and_pending_without_mutation() {
     for (functional, pending) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut f = Fixture::new();
@@ -678,6 +835,7 @@ fn retained_cell_capacity_diagnoses_native_functional_and_pending_without_mutati
                 (diagnosis.functional, diagnosis.pending),
                 (functional, pending)
             );
+            assert_eq!(diagnosis.by_entity, functional);
             assert_eq!((diagnosis.accumulated, diagnosis.incoming), (i128::MAX, 1));
             assert_eq!(diagnosis.unit_id, f.usd.0);
             assert_eq!(diagnosis.account, account_vid(f.book.book_id, "1200"));
