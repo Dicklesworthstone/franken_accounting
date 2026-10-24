@@ -1165,10 +1165,13 @@ fn functional_migration_activation_agrees_with_independent_capacity_and_rate_ora
                 .collect(),
         };
         assert_eq!(
-            admit_register_capacity(&[migrated.clone()], f.usd.0),
+            admit_register_capacity(std::slice::from_ref(&migrated), f.usd.0),
             Ok(())
         );
-        assert_eq!(admit_register_capacity(&[live.clone()], f.usd.0), Ok(()));
+        assert_eq!(
+            admit_register_capacity(std::slice::from_ref(&live), f.usd.0),
+            Ok(())
+        );
         let verdict = admit_register_capacity(&[live, migrated], f.usd.0);
         assert_eq!(verdict.is_ok(), base == i128::MAX - 1);
 
