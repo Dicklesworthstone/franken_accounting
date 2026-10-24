@@ -122,6 +122,35 @@ fn an_agent_launch_rehearses_typed_documents_but_never_posts_them_to_trunk() {
             );
         }
     }
+    // A reclassification moves an amount on trunk too (fa-i7e): refused the
+    // same way before anything is read, and rehearsable the same way.
+    let reclass = [
+        "reclass",
+        "E:00000000000000000000000000000001",
+        "--from",
+        "6100",
+        "--to",
+        "6200",
+        "--amount",
+        "1.00 USD",
+        "--reason",
+        "WrongAccount",
+    ];
+    let refused = fa_cli::cli::bound_command_admissible(reg, "reclass", &parse(&reclass), &agent)
+        .expect_err("an Agent never reclassifies on trunk");
+    assert!(refused.contains("FA-REF-013"), "reclass: {refused}");
+    assert!(
+        fa_cli::cli::bound_command_admissible(reg, "reclass", &parse(&reclass), &preparer).is_ok(),
+        "reclass: a Preparer launch posts to trunk"
+    );
+    for planning in [&["--dry-run"][..], &["--draft", "close-03"][..]] {
+        let mut argv = reclass.to_vec();
+        argv.extend_from_slice(planning);
+        assert!(
+            fa_cli::cli::bound_command_admissible(reg, "reclass", &parse(&argv), &agent).is_ok(),
+            "reclass {planning:?}: an Agent may rehearse or draft a reclassification"
+        );
+    }
 }
 
 /// A bank-detail change is the business-email-compromise vector (plan

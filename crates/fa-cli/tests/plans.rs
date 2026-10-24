@@ -121,6 +121,12 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_chart(
+            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+        )
+    }
+
+    fn with_chart(accounts: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = loop {
             let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -133,11 +139,7 @@ impl Fixture {
         };
         let book = dir.join("book");
         ok(&book, &["book", "create", "--name", "Plans Co"]);
-        let chart = write(
-            &dir,
-            "chart.json",
-            r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
-        );
+        let chart = write(&dir, "chart.json", accounts);
         ok(&book, &["chart", "import", &chart]);
         ok(&book, &["period", "create", "--fiscal-year", "2026"]);
         ok(&book, &["period", "open", "FY2026-P03"]);
@@ -685,6 +687,126 @@ fn tampered_wrong_caller_and_stale_plans_cannot_publish_or_consume_the_key() {
     );
     assert_eq!(code, 0, "{}", committed.render());
     assert_eq!(get(&committed, "already_recorded"), &Json::Bool(false));
+}
+
+/// fa-i7e: a typed document plans and commits as `fa post` does. The README's
+/// example, `fa invoice … --dry-run --plan-out` then `fa commit --plan`, posts
+/// an entry whose proposal digest is the dry run's. An invoice plan the book
+/// has moved past is refused FA-REF-034 (exit 6) with a fresh plan of the
+/// same invoice, which commits.
+#[test]
+fn a_typed_invoice_plan_commits_its_reviewed_proposal_and_goes_stale_like_a_post() {
+    let f = Fixture::with_chart(
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    let customer = write(
+        &f.dir,
+        "customer.json",
+        r#"{"code":"ACME-CUST-17","kind":"Customer","name":"Acme Customer"}"#,
+    );
+    ok(&f.book, &["party", "add", &customer]);
+    let source = write(&f.dir, "invoice.txt", "Invoice 10442 for ten widgets.");
+    let evidence = ok(
+        &f.book,
+        &[
+            "document",
+            "add",
+            &source,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let evidence = text(&evidence, "oid").to_string();
+    let invoice = |number: &'static str| {
+        vec![
+            "invoice",
+            "--party",
+            "ACME-CUST-17",
+            "--number",
+            number,
+            "--date",
+            "2026-03-14",
+            "--receivable",
+            "1200",
+            "--revenue",
+            "4000",
+            "--line",
+            r#"qty=10 unit_price="125.00 USD""#,
+            "--evidence",
+            evidence.as_str(),
+            "--dry-run",
+        ]
+    };
+
+    let before = head(&f.book);
+    let output = f.dir.join("inv-10442.plan");
+    let output_path = output.display().to_string();
+    let mut args = invoice("10442");
+    args.extend(["--plan-out", output_path.as_str()]);
+    let planned = ok(&f.book, &args);
+    assert_eq!(text(&planned, "event"), "plan");
+    assert_eq!(integer(&planned, "snapshot_seq"), before);
+    assert_eq!(head(&f.book), before, "a dry run publishes nothing");
+    let plan = fa::PostPlan::decode(&std::fs::read(&output).expect("saved plan"))
+        .expect("canonical portable plan");
+    let legs = &plan.proposal().legs;
+    assert_eq!(legs.len(), 2, "receivable and revenue");
+    assert!(legs.iter().all(|leg| leg.amount.mantissa == 125_000));
+    let committed = ok(&f.book, &["commit", "--plan", &output_path]);
+    assert_eq!(text(&committed, "event"), "plan_committed");
+    assert_eq!(get(&committed, "already_recorded"), &Json::Bool(false));
+    for field in ["plan_digest", "certificate_digest"] {
+        assert_eq!(text(&committed, field), text(&planned, field));
+    }
+    let entry = ok(&f.book, &["entry", "show", text(&committed, "vid")]);
+    assert_eq!(
+        text(&entry, "proposal_digest"),
+        text(&planned, "proposal_digest"),
+        "the committed entry is the reviewed proposal"
+    );
+
+    let stale = text(&ok(&f.book, &invoice("10443")), "bytes").to_string();
+    let moved = write(
+        &f.dir,
+        "moved.txt",
+        "A document added between plan and commit.",
+    );
+    ok(
+        &f.book,
+        &[
+            "document",
+            "add",
+            &moved,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let advanced = head(&f.book);
+    let (code, error) = run(&f.book, &["commit", "--plan", "-"], Some(stale.as_bytes()));
+    assert_eq!(code, 6, "{}", error.render());
+    assert_eq!(text(&error, "refusal_id"), "FA-REF-034");
+    assert_eq!(
+        head(&f.book),
+        advanced,
+        "nothing is committed for the caller"
+    );
+    let detail = get(&error, "detail");
+    let changed = names(get(detail, "changed"));
+    assert!(changed.contains(&"basis"), "{changed:?}");
+    let fresh = get(detail, "fresh_plan");
+    assert_eq!(integer(fresh, "snapshot_seq"), advanced);
+    let (code, committed) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(fresh, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", committed.render());
+    assert_eq!(text(&committed, "plan_digest"), text(fresh, "plan_digest"));
+    assert_eq!(head(&f.book), advanced + 1);
 }
 
 /// fa-we7: a stale correction (Reversal and Replacement) or atomic batch
