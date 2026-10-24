@@ -1358,7 +1358,55 @@ diagnostic passed all six README tests and both scoreboard tests (exit 0,
 against the real binary, checks declared surfaces and exercises planted drift
 controls. It proves that bounded workflow and the sampled scoreboard's declared
 contract; it does not establish the full plan gates or erase the workspace RED.
-The required `scripts/check.sh` result is recorded below when complete.
+The broader shared-tree `scripts/check.sh` diagnostic, started with tree label
+`d83274e0170e137cb67f5b2444df3c60cd74a84e`, later compiles the full test inventory
+but its `cargo test --workspace` exits 101 in the first `fa` library target:
+**547 passed, 10 failed, zero ignored**. The failures are an aging-reconciliation
+workpaper and nine settlement-group/review/approval cases receiving unexpected
+`FA-REF-071` from the RemainingCarryingValue foreign-application law. This may
+require lawful fixture adaptation or workflow repair; it is not permission to
+weaken carrying-value admission. Existing fa-ze0y/fa-pvt7 retain the failures and
+test names. Later workspace targets were not executed. The log is
+`check/test.log`; this changing-tree diagnostic is not exact-tree qualification.
+The wrapper separately reports check, Clippy and test inventory UNRUN because
+the required remote-completion marker is absent despite underlying command exit
+0; invariant checker aggregation remains UNRUN after the failed test target.
+**Full chain terminal result: exit 1, 11 PASS / 7 FAIL / 11 UNRUN.** The driver
+voided its verdict because HEAD moved from `8ffe4a39` to `159e1222` and the plan
+and Beads changed during inspection. Only those two tracked paths differed; this
+is still not a settled-tree proof. Preserve its diagnostics, then reproduce on
+the canonical, settled candidate before attributing a full verdict to code.
+The following additional observations are deliberately bounded:
+
+- Installer mechanics pass 43 real-process shell fixture tests. They do not
+  qualify actual Rust release artifacts or the newly reproduced target-dir case.
+- The decoder smoke process reports 13 targets, 66 seeds and 4,224 mutations;
+  the benchmark driver reports zero measured workloads, 19 unmeasured and nine
+  operation witnesses. Both offloads exit 102 after incompatible Linux artifacts
+  are refused for Mac retrieval; no transport-complete gate pass is claimed.
+- All 13 conformance mutation runs are UNRUN (exit 103): RCH refuses an unfinished
+  overlapping source owner. Registry-check and reachability are also UNRUN.
+  Recoverable source ownership and artifact guards were preserved, not bypassed.
+- Cargo-deny exits 5: Canon/Query inherit the real license, but their exact-name
+  clarification policy does not classify it; `ctutils 0.4.3` is flagged by the
+  [official RUSTSEC-2026-0385 advisory](https://rustsec.org/advisories/RUSTSEC-2026-0385.html),
+  issued that day and patched in `>=0.4.4`. Application exploitability is not
+  established. New fa-hlnd.2 owns narrow policy and dependency-closure repair;
+  fa-q5kx depends on it. No blanket exception or license change is authorized.
+- Whole-project UBS exits 2 with an incomplete AST analysis: 837 files,
+  24 untriaged critical candidates, output over 16 MiB and truncated diagnostic
+  JSON. Those are not 24 confirmed bugs. The audit's Markdown/JSONL-only scan
+  separately exits 3 because no scanner applies. Neither is a clean scan.
+- Doctrine lint flags 16 float tokens in `fa-notary/src/ct_harness.rs`, imported
+  only under `cfg(test)` for timing statistics. This is not proof of a float on
+  an amount path. fa-vz7e/fa-cs80 own the domain/guard reconciliation, retaining
+  production prohibitions and independently discriminating negative controls.
+
+The complete step records and transcripts are in `check/`. No invariant,
+performance, release, canonical landing or implementation closure follows from
+this diagnostic. The reviewed work graph and remaining acceptance are concrete;
+the next full proof requires the existing fixes, correct target/ownership
+admission and a settled canonical tree.
 
 Shared HEAD subsequently advanced to `84b7da390ef258cb61e09c0b24b65926e8cc63e2`,
 including calibration and decoder work, and peer working-tree edits were
@@ -1487,7 +1535,7 @@ these labels promotes a sampled command into a passed integration gate.
 | V32 Independent reference and full simulation | PARTIAL independent reference arithmetic/state machine, bounded seeded histories with coverage checks and shrinking, 24-seed report-oracle source, real DPOR/prepared post-close tests and seven-point fault-VFS post/batch/soft-close matrices; full cross-subsystem barrier/interleaving campaign, crashpacks and 1,000-seed Genesis qualification remain | fa-2ihd, fa-0fl, fa-eid6 |
 | V33 Formal/model and fuzz evidence | PARTIAL source hygiene and bounded Rust models; actual Lean/TLC execution with theorem/state inventory, trace conformance and coverage-guided decoder campaigns remain | fa-09q8, fa-dj6j, fa-apde, fa-yrhb |
 | V34 Measured performance and bounded costs | UNPROVEN all §17 targets; 20 rows correctly inactive; execute actual workloads, count work, measure barriers/memory/endurance, compare an independent incumbent in the same invocation | fa-ykbp, fa-vtzt, fa-7mhm |
-| V35 Exact-tree gates, truthful closure and scoreboard | PARTIAL drivers exist, frozen workspace test is compile RED, no current full verdict; fresh helper controls reproduce unbound resumed PASS evidence and exposed-capability mapping is incomplete. Sample scoreboard's 32/33 workflows and 17/18 active criteria omit substantial §19 obligations | fa-hlnd.1, fa-1qk0, fa-j1fc, fa-8jcr, fa-ubl0, fa-ldfy, fa-abhg, fa-vz7e |
+| V35 Exact-tree gates, truthful closure and scoreboard | PARTIAL drivers exist, frozen workspace test is compile RED and later shared-tree fa-lib execution has 547 passes/10 failures; full check exits 1 with a void verdict. Fresh helper controls reproduce unbound resumed PASS evidence; capability mapping, dependency policy and static-gate qualification remain incomplete. Sample scoreboard's 32/33 workflows and 17/18 active criteria omit substantial §19 obligations | fa-hlnd.1, fa-hlnd.2, fa-1qk0, fa-j1fc, fa-8jcr, fa-ubl0, fa-ldfy, fa-abhg, fa-vz7e |
 | V36 Delivered release and matching publications | UNPROVEN DSR/repro recipe and improved installer exist; fresh fixtures reproduce stale source-artifact selection under nondefault CARGO_TARGET_DIR. Final composed six-workflow campaign, distinct-builder/linkage/offline qualification and four scoped papers remain | fa-nfq2, fa-o3zg, fa-wwip, fa-q5kx, fa-rdid |
 | V37 Quantity lots and scheduled asset costs | PARTIAL `fa-registers/src/lots.rs` folds paired quantity/cost open items and `fa gl lots` plans FIFO/LIFO/SpecificId/weighted-average relief with regime checks; lot certification explicitly refuses. Depreciation/amortization rule families remain owned by Canon/close comments, not established by a fixed recurring entry | fa-y1vr, fa-oimc, fa-c34, fa-4o0, fa-4aym |
 
@@ -1576,7 +1624,7 @@ review explicitly gates the reader campaign on red-main repair, Tier 0,
 published verdicts and admitted worker capacity. No existing
 dependency, feature, test or acceptance condition was removed.
 The earlier audit's final graph had 319 issues: 110 open, 25 in progress and 184 closed;
-`br ready` reports 40 ready and 72 blocked. Both `br dep cycles` and the
+At that time `br ready` reported 40 ready and 72 blocked. Both `br dep cycles` and the
 computed `bv --robot-insights` cycle result are empty; robot triage and plan
 exit 0. A final review found no additional gap within this audited source cut.
 
@@ -1586,13 +1634,17 @@ authority and currency boundaries, independent negative controls, regression
 acceptance and dependency ordering. The sixth independent pass found no further
 revision after correcting the limited calibration claim and historical/source
 labels. Every goal appears once and has at least one nonclosed owner. The graph
-now has 323 issues (105 open, 27 in progress, 191 closed), including one new
-focused repair, fa-hlnd.1. A peer's fa-b6xs claim is preserved. No initial issue
+now has 324 issues (106 open, 27 in progress, 191 closed), including two new
+focused repairs, fa-hlnd.1 and fa-hlnd.2. The final evidence review found no
+additional acceptance or claim-scope revision; existing owners cover the static
+gate findings. A peer's fa-b6xs claim is preserved. No initial issue
 or original comment author/text pair was lost. Both active and archived
 `br dep cycles` checks are empty; `bv --robot-triage`, `--robot-plan` and
 `--robot-insights` exit 0, with cycle computation completed and no cycles.
-The exact 85-record JSONL export-attribution helper passed; this set preserves
-prior local audit follow-ups as well as this refresh's changes. The original
+The first publication's exact 85-record JSONL export-attribution helper passed;
+the final evidence refresh's exact 88-record attribution also passed, including
+the dependency and gate findings.
+This preserves prior local audit follow-ups as well as this refresh's changes. The original
 guarded database/WAL was not repaired or replaced. No implementation bead was
 closed. Detailed frozen prompts, review rounds, goal-owner mapping and receipts
 are retained in the current evidence directory.
