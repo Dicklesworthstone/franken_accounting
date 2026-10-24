@@ -737,8 +737,12 @@ fn functional_statement_cli_reopens_cold_history_certifies_replays_and_tracks_ba
 #[test]
 fn functional_statement_cli_refuses_unsupported_workflows_and_unvalued_foreign_rows() {
     let fixture = Fixture::new();
-    for args in [
-        vec![
+    // A functional statement diff is a supported workflow (ef8b3dee8): it is
+    // judged on the journal, so a frontier before the period existed is a
+    // law refusal naming the period and the sequence, not a usage error.
+    let (code, refused) = run(
+        &fixture.book,
+        &[
             "statement",
             "diff",
             "--functional",
@@ -749,6 +753,16 @@ fn functional_statement_cli_refuses_unsupported_workflows_and_unvalued_foreign_r
             "--before",
             "1",
         ],
+    );
+    assert_eq!(code, 3, "{}", refused.render());
+    assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-152");
+    assert!(
+        text(data(&refused), "message")
+            .contains("unknown statement period `FY2026-P01` at sequence 1"),
+        "{}",
+        refused.render()
+    );
+    for args in [
         vec![
             "statement",
             "lint",
