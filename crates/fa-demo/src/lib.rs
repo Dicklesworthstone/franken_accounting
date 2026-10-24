@@ -2685,6 +2685,7 @@ pub fn render_readme(info: &DemoInitialized) -> String {
             out.push_str("\n# The conduit cycle through its parties (PAID projection)\n");
             out.push_str("fa procedure run graph.party_circular_flows --book . --json\n");
             out.push_str("fa procedure run graph.party_layering --book . --json\n");
+            out.push_str("fa procedure run graph.party_communities --book . --json\n");
         }
         Scenario::Ponzi => {
             out.push_str("\n# The investor schedule through each investor's own legs\n");
