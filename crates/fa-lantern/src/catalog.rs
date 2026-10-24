@@ -7,6 +7,7 @@
 mod network;
 pub use network::{NetworkTrace, RestitutionOrder};
 
+use fa_registry::lantern_calibration::LanternCalibration;
 use fa_registry::procedures::{Procedure as Row, Procedures};
 use fgdb_types::VId;
 
@@ -46,6 +47,13 @@ pub struct Inputs {
 /// Every registered row, in registry order.
 pub fn registered() -> Result<Vec<Row>, LanternError> {
     Ok(Procedures::embedded()?.rows)
+}
+
+/// The measured precision, recall and clean-corpus flag rate of every
+/// `calibration = "corpus"` procedure (registries/lantern_calibration.toml,
+/// fa-4psc).
+pub fn calibration() -> Result<LanternCalibration, LanternError> {
+    Ok(LanternCalibration::embedded()?)
 }
 
 /// Build the registered procedure `id` with `params` (which must belong to

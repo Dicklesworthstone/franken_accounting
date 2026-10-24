@@ -20222,7 +20222,46 @@ pub(crate) fn refuse_untaken_date(
     }
 }
 
-fn procedure_row_json(row: &fa_registry::procedures::Procedure) -> Json {
+/// Basis points as a percentage with two decimals: 9210 -> "92.10%".
+fn bps_percent(bps: u32) -> String {
+    format!("{}.{:02}%", bps / 100, bps % 100)
+}
+
+/// A corpus-calibrated procedure's measurement (lantern_calibration.toml,
+/// fa-4psc): the seeds and scale it rests on, its counts, and the 95% Wilson
+/// intervals of precision, recall and the clean-corpus flag rate.
+fn procedure_calibration_json(
+    calibration: &fa_registry::lantern_calibration::LanternCalibration,
+    m: &fa_registry::lantern_calibration::CalibrationRow,
+) -> Json {
+    let n = |v: u64| Json::Int(i128::from(v));
+    let bps = |v: u32| Json::Int(i128::from(v));
+    obj(vec![
+        ("seeds", n(calibration.seeds)),
+        ("scale", n(calibration.scale)),
+        ("true_positives", n(m.true_positives)),
+        ("false_positives", n(m.false_positives)),
+        ("false_negatives", n(m.false_negatives)),
+        ("precision_bps", bps(m.precision_bps)),
+        ("precision_lower_bps", bps(m.precision_lower_bps)),
+        ("precision_upper_bps", bps(m.precision_upper_bps)),
+        ("recall_bps", bps(m.recall_bps)),
+        ("recall_lower_bps", bps(m.recall_lower_bps)),
+        ("recall_upper_bps", bps(m.recall_upper_bps)),
+        ("clean_entries", n(m.clean_entries)),
+        ("clean_flagged", n(m.clean_flagged)),
+        ("clean_rate_bps", bps(m.clean_rate_bps)),
+        ("clean_rate_upper_bps", bps(m.clean_rate_upper_bps)),
+    ])
+}
+
+fn procedure_row_json(
+    row: &fa_registry::procedures::Procedure,
+    calibration: &fa_registry::lantern_calibration::LanternCalibration,
+) -> Json {
+    let measured = calibration
+        .row(&row.id)
+        .map_or(Json::Null, |m| procedure_calibration_json(calibration, m));
     obj(vec![
         ("id", s(&row.id)),
         ("version", Json::Int(i128::from(row.version))),
@@ -20231,6 +20270,7 @@ fn procedure_row_json(row: &fa_registry::procedures::Procedure) -> Json {
         ("tie_break", s(tie_break_name(&row.tie_break))),
         ("complexity", s(&row.complexity)),
         ("calibration", s(calibration_name(&row.calibration))),
+        ("measured", measured),
         ("summary", s(&row.summary)),
         ("effective_through", s(row.effective_through.name())),
         (
@@ -20491,11 +20531,24 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
             let rows = fa_lantern::catalog::registered().map_err(lantern_usage)?;
+            let calibration = fa_lantern::catalog::calibration().map_err(lantern_usage)?;
             // Human mode lists one procedure per line; robot mode carries the
             // same rows in the event alone (stdout is one JSON object a line).
             for row in rows.iter().filter(|_| !out.json) {
+                let measured = calibration.row(&row.id).map_or(String::new(), |m| {
+                    format!(
+                        " [measured over {} seeds: precision {} ({}-{}), recall {} ({}-{}), 95% Wilson]",
+                        calibration.seeds,
+                        bps_percent(m.precision_bps),
+                        bps_percent(m.precision_lower_bps),
+                        bps_percent(m.precision_upper_bps),
+                        bps_percent(m.recall_bps),
+                        bps_percent(m.recall_lower_bps),
+                        bps_percent(m.recall_upper_bps),
+                    )
+                });
                 out.line(format!(
-                    "{} v{} {} {}",
+                    "{} v{} {} {}{measured}",
                     row.id,
                     row.version,
                     row.claim.name(),
@@ -20507,7 +20560,11 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 vec![
                     (
                         "procedures",
-                        Json::Arr(rows.iter().map(procedure_row_json).collect()),
+                        Json::Arr(
+                            rows.iter()
+                                .map(|row| procedure_row_json(row, &calibration))
+                                .collect(),
+                        ),
                     ),
                     ("count", Json::Int(rows.len() as i128)),
                 ],

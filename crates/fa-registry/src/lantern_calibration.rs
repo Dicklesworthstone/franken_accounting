@@ -295,12 +295,22 @@ mod tests {
     /// `corpus` procedure with no row.
     #[test]
     fn malformed_calibrations_are_refused() {
-        let procedures = Procedures::embedded().unwrap();
-        let corpus: Vec<_> = procedures
+        // Two procedures registered as `corpus` here, whatever the embedded
+        // registry currently says, so every planted case has rows to break.
+        let mut procedures = Procedures::embedded().unwrap();
+        for p in procedures
+            .rows
+            .iter_mut()
+            .filter(|p| p.id == "jet.round_amounts" || p.id == "jet.weekend")
+        {
+            p.calibration = Calibration::Corpus;
+        }
+        let mut corpus: Vec<_> = procedures
             .rows
             .iter()
             .filter(|p| p.calibration == Calibration::Corpus)
             .collect();
+        corpus.sort_by(|a, b| a.id.cmp(&b.id));
         let planted = procedures
             .rows
             .iter()
