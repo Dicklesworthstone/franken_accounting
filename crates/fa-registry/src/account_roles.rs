@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::procedures::Procedures;
+use crate::procedures::{Claim, Procedures};
 use crate::toml::Value;
 use crate::{RegistryError, account_types_embedded, invalid, load, req_int, req_str};
 
@@ -111,11 +111,26 @@ impl AccountRoles {
                 ));
             }
             for id in &consumers {
-                if procedures.get(id).is_none() {
-                    return Err(invalid(
-                        R,
-                        format!("role `{name}`: consumer `{id}` is not in procedures.toml"),
-                    ));
+                match procedures.get(id) {
+                    None => {
+                        return Err(invalid(
+                            R,
+                            format!("role `{name}`: consumer `{id}` is not in procedures.toml"),
+                        ));
+                    }
+                    // A role-selected population is whatever accounts hold
+                    // the role by registered assignment; nothing proves it
+                    // complete. A finding over it is statistical evidence,
+                    // never an invariant (doctrine 12, fa-kxc4).
+                    Some(procedure) if procedure.claim == Claim::Invariant => {
+                        return Err(invalid(
+                            R,
+                            format!(
+                                "role `{name}`: consumer `{id}` claims `invariant` over a role-selected population; a finding over a registered selection is statistical"
+                            ),
+                        ));
+                    }
+                    Some(_) => {}
                 }
             }
             rows.push(AccountRole {
@@ -198,6 +213,12 @@ mod tests {
             "account_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = [\"jet.suspense_aging\"]";
         let cases = [
             (row(&format!("name = \"Cash\"\n{base}")), "snake_case"),
+            (
+                row(
+                    "name = \"a\"\naccount_types = [\"Asset\"]\nmeaning = \"m\"\nconsumers = [\"recon.assertion_drift\"]",
+                ),
+                "claims `invariant` over a role-selected population",
+            ),
             (
                 row(
                     "name = \"a\"\naccount_types = [\"Assets\"]\nmeaning = \"m\"\nconsumers = [\"jet.suspense_aging\"]",
