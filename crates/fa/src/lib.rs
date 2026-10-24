@@ -204,7 +204,8 @@ pub use fa_policy::{
 pub use fa_query::{
     KnownAt as QueryKnownAt, Law as QueryLaw, MAX_STATEMENT_BYTES as MAX_QUERY_STATEMENT_BYTES,
     Native as NativeQuery, PROCEDURES as QUERY_PROCEDURES, Profiled as ProfiledQuery,
-    Refusal as QueryProfileRefusal, Selection as QuerySelection, rewrite as compile_query,
+    Refusal as QueryProfileRefusal, Reported as QueryReported, Selection as QuerySelection,
+    rewrite as compile_query,
 };
 pub use fa_registers::open_items::OpenItemsReport;
 pub use fa_registers::{

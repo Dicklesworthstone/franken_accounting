@@ -118,6 +118,11 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
                 "a v1 query certificate binds a recorded sequence, not an instant",
             ));
         }
+        KnownAt::Reported(_) => {
+            return Err(invalid(
+                "a v1 query certificate binds a recorded sequence, not a restatement view",
+            ));
+        }
     }
     match profiled.selection {
         Selection::Native(native) => Ok((native, profiled.period)),
@@ -409,6 +414,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "a query certificate binds a recorded sequence; this one is selected by an instant",
                     super::CITE,
                     "run the statement once to read the sequence its instant resolves to, then certify it AS KNOWN AT <that sequence>",
+                )));
+            }
+            KnownAt::Reported(_) => {
+                return Ok(Err(Refusal::new(
+                    code::QUERY_PROFILE,
+                    exit::REFUSAL,
+                    "a query certificate binds a recorded sequence; this one is selected by a restatement view",
+                    super::CITE,
+                    "run the statement once to read the sequence its period was reported at, then certify it AS KNOWN AT <that sequence>",
                 )));
             }
         };
