@@ -17,6 +17,7 @@ pub mod foundations;
 pub mod g0;
 pub mod intake_sources;
 pub mod invariants;
+pub mod lantern_calibration;
 pub mod mutants;
 pub mod procedures;
 pub mod reason_codes;

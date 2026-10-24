@@ -59,6 +59,9 @@ mod graph_unit_tests;
 #[path = "lantern/meter.rs"]
 mod meter_tests;
 
+#[path = "lantern/calibration.rs"]
+mod calibration_tests;
+
 #[path = "lantern/roles.rs"]
 mod roles;
 

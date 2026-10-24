@@ -1,0 +1,29 @@
+# lantern_calibration.toml — the measured precision and recall of every
+# Lantern procedure an fa-gen scenario labels (plan §11.10, G3; bead fa-4psc).
+#
+# Consumer: fa-registry (a procedure with calibration = "corpus" in
+# procedures.toml has exactly one row here, under its FA-EVID-L id, and a row
+# names a "corpus" procedure; registry-check runs the same law), and
+# fa-lantern's labeled_procedures_measure_what_the_calibration_registry_pins,
+# which re-runs the measurement and fails on any drift, printing the
+# regenerated rows. Gate: a "corpus" claim without its measurement, or a
+# measurement the procedure no longer reproduces.
+#
+# How it is measured: every procedure a scenario's labels name runs, at its
+# registered default parameters, over seeds 1..=`seeds` of all seven fa-gen
+# scenarios at `scale`. A finding's cited entries are its flags. Over the
+# fraud scenarios a flagged labeled entry is a true positive, a flagged
+# unlabeled one a false positive, and a labeled one not flagged a false
+# negative; precision and recall are 95% Wilson intervals in basis points
+# (fa_lantern::conformal::wilson_interval_95_bps, exact integers). Over the
+# clean retailer every flag counts toward the clean rate, with its 95% upper
+# bound.
+#
+# No-claim: these are rates on fa-gen's synthetic labeled corpora at one
+# scale. They say how a procedure behaves on the patterns fa-gen plants, not
+# on any real book, and an unlabeled flag counted as a false positive may be a
+# true instance of the procedure's predicate that the generator did not label.
+
+schema_version = 1
+seeds = 30
+scale = 1

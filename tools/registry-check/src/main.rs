@@ -22,6 +22,7 @@ use fa_registry::g0::{
 };
 use fa_registry::intake_sources::IntakeSources;
 use fa_registry::invariants::Invariants;
+use fa_registry::lantern_calibration::LanternCalibration;
 use fa_registry::mutants::MutantLedger;
 use fa_registry::procedures::Procedures;
 use fa_registry::reason_codes::ReasonCodes;
@@ -110,6 +111,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "intake_sources.toml",
     "intents.toml",
     "invariants.toml",
+    "lantern_calibration.toml",
     "limits.toml",
     "lot_laws.toml",
     "mutants.toml",
@@ -755,6 +757,9 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let _supersession_kinds = SupersessionKinds::parse(&read("supersession_kinds.toml")?, &classes)
         .map_err(|e| e.to_string())?;
     let procedures = Procedures::from_text(&read("procedures.toml")?).map_err(|e| e.to_string())?;
+    let _calibration =
+        LanternCalibration::from_text(&read("lantern_calibration.toml")?, &procedures)
+            .map_err(|e| e.to_string())?;
     let _tracing_laws =
         TracingLaws::parse(&read("tracing_laws.toml")?, &procedures).map_err(|e| e.to_string())?;
     let _fx_laws = FxLaws::parse(&read("fx_laws.toml")?, &classes).map_err(|e| e.to_string())?;
