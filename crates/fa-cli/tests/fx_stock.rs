@@ -905,7 +905,7 @@ fn check_retained_source_exports(
     payload: &[u8],
     recorded_at: CommitSeq,
     earlier_state: &Json,
-) -> i128 {
+) -> (i128, [u8; 32]) {
     use fa_verify::proof::production::derivation::verify_prefix_with_status;
 
     let key_hex = text(data(earlier_state), "public_key");
@@ -961,6 +961,8 @@ fn check_retained_source_exports(
     );
     let signed_bytes = std::fs::read(&signed_path).unwrap();
     let anchor = fa_verify::verify_checkpoint(&signed_bytes, &[key]).unwrap();
+    let state_oid: [u8; 32] = unhex(oid).try_into().unwrap();
+    assert_eq!(anchor.state_oid, state_oid);
     assert!(anchor.checkpoint.through_seq >= recorded_at.0);
     let mut stranger = key;
     stranger[0] ^= 0x80;
@@ -1102,7 +1104,7 @@ fn check_retained_source_exports(
     assert_eq!(status, 3, "{}", refusal.render());
     assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-198");
     assert_eq!(head(&fixture.book), published);
-    published
+    (published, state_oid)
 }
 
 #[test]
@@ -1355,7 +1357,7 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
             let payload =
                 fa_journal::rows::bytes(&source_row, property::FA_PAYLOAD, "source").unwrap();
             drop(reopened);
-            let published = check_retained_source_exports(
+            let (published, state_oid) = check_retained_source_exports(
                 &fixture,
                 entry.entry_ref(vid),
                 &payload,
@@ -1371,7 +1373,33 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
                 .unwrap();
             assert_eq!(i128::from(after.frontier().unwrap().0), published);
             for row in before_rows {
-                assert_eq!(after.vertex(row.vid).unwrap().as_ref(), Some(&row));
+                let mut current = after.vertex(row.vid).unwrap().unwrap();
+                // Explicit checkpoint publication advances only the Book's
+                // derived head pointer. Its earlier version remains readable;
+                // journal entries and every unrelated property stay exact.
+                if row.labels.contains(&fa_model::symbols::label::BOOK) {
+                    assert_eq!(
+                        after.vertex_at(row.vid, invalid_head).unwrap().as_ref(),
+                        Some(&row)
+                    );
+                    assert_eq!(
+                        fa_journal::rows::bytes(&current, property::ACCUMULATOR_HEAD, "head")
+                            .unwrap(),
+                        state_oid
+                    );
+                    assert_eq!(i128::from(current.created_at.0), published);
+                    current.created_at = row.created_at;
+                    current
+                        .props
+                        .retain(|(key, _)| *key != property::ACCUMULATOR_HEAD);
+                    let mut original = row;
+                    original
+                        .props
+                        .retain(|(key, _)| *key != property::ACCUMULATOR_HEAD);
+                    assert_eq!(current, original);
+                } else {
+                    assert_eq!(current, row);
+                }
             }
         }
     }
