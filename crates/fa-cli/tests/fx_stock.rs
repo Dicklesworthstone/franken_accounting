@@ -1378,10 +1378,14 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
                 // derived head pointer. Its earlier version remains readable;
                 // journal entries and every unrelated property stay exact.
                 if row.labels.contains(&fa_model::symbols::label::BOOK) {
+                    let mut historical = after.vertex_at(row.vid, invalid_head).unwrap().unwrap();
+                    assert_eq!(row.retired_at, None);
                     assert_eq!(
-                        after.vertex_at(row.vid, invalid_head).unwrap().as_ref(),
-                        Some(&row)
+                        historical.retired_at.map(|seq| i128::from(seq.0)),
+                        Some(published)
                     );
+                    historical.retired_at = None;
+                    assert_eq!(historical, row);
                     assert_eq!(
                         fa_journal::rows::bytes(&current, property::ACCUMULATOR_HEAD, "head")
                             .unwrap(),
