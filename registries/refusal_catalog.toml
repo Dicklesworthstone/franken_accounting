@@ -1228,9 +1228,9 @@ fix = "prepare complete native source detail with fa subledger detail, retain an
 [[refusal]]
 code = "FA-REF-198"
 name = "REGISTER_CAPACITY"
-owners = ["fa-journal"]
+owners = ["fa-journal", "fa-registers"]
 exit = "refusal"
-cite = "plan §5.2; limits.toml register_capacity (gross native and functional register representability before publication)"
+cite = "plan §4.4 / §5.2; limits.toml register_capacity (gross native and functional cell representability before publication and retained-history diagnosis)"
 fix = "reduce the proposed gross activity or use an admissible registered unit; a reversal adds gross activity and cannot repair a historical over-cap prefix; preserve that prefix for diagnosis"
 
 # ---- Proof export (145–146) ---

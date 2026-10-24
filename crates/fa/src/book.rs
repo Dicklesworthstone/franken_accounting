@@ -389,9 +389,10 @@ fn current_process_uid() -> std::io::Result<u32> {
 
 /// Errors a `Book` can return. Each maps to one exit-code class in the CLI
 /// contract (plan Appendix D): `Runtime`, `Open`, `Io`, `KeyFile`,
-/// `KeyFilePermissions`, and `NoBook` are environment errors (4); the rest are
-/// foundation failures (5). Lawful refusals are not errors: they are the `Err`
-/// of the inner result each method returns.
+/// `KeyFilePermissions`, and `NoBook` are environment errors (4). A retained
+/// register-cell capacity diagnosis is a catalog law refusal (3); other storage
+/// failures remain foundation errors (5). Ordinary posting refusals are the
+/// `Err` of the inner result each method returns.
 #[derive(Debug)]
 pub enum BookError {
     Runtime(String),
@@ -425,6 +426,7 @@ impl BookError {
     #[must_use]
     pub fn exit(&self) -> u8 {
         match self {
+            Self::Registers(fa_registers::RegisterError::Capacity(_)) => fa_journal::exit::REFUSAL,
             Self::Registers(fa_registers::RegisterError::InvalidSelection(_))
             | Self::Lantern(
                 fa_lantern::LanternError::Unregistered { .. }
@@ -458,6 +460,9 @@ impl BookError {
     #[must_use]
     pub fn refusal(&self) -> Option<Refusal> {
         match self {
+            Self::Registers(fa_registers::RegisterError::Capacity(diagnosis)) => {
+                Some(diagnosis.refusal())
+            }
             Self::KeyFilePermissions {
                 path,
                 mode,

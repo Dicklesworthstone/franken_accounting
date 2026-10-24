@@ -254,6 +254,33 @@ impl Fixture {
             .unwrap()
     }
 
+    /// Fault-inject a canonical retained payload through the substrate. This
+    /// does not bypass the production writer through a public accounting API,
+    /// fabricate a recorded timestamp, or claim genuine old-producer proof.
+    fn append_retained_fault(&mut self, proposal: EntryPayload) -> (fa_model::EntryRef, CommitSeq) {
+        let vid = fa_model::entry_vid(
+            proposal.book_id,
+            &proposal.principal_ref.0.to_le_bytes(),
+            &proposal.idempotency_key,
+        );
+        let entry = proposal.seal(Vec::new(), None).unwrap();
+        let mut batch = WriteBatch::new(relation::HAS_LEG);
+        batch.create_vertex(
+            vid,
+            vec![label::ENTRY],
+            fa_model::entry_mirrors(&entry).unwrap(),
+        );
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(self.db.write(&ctx.commit(), batch))
+            .unwrap();
+        let source = fa_journal::post::read_entry(&self.db, vid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.0, entry);
+        (entry.entry_ref(vid), source.1)
+    }
+
     fn approvals(&mut self, digest: [u8; 32]) -> Vec<ApprovalRef> {
         let ctx = self.ctx();
         [VId(8), VId(9)]
@@ -559,6 +586,281 @@ fn unvalued_foreign_legs_refuse_only_when_selected_and_stock_sums_are_checked() 
         amount
     );
     assert_eq!(large.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn retained_cell_capacity_diagnoses_native_functional_and_pending_without_mutation() {
+    for (functional, pending) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut f = Fixture::new();
+        let date = day(2026, 1, 5);
+        let mut first = if functional {
+            let rate = f.rate(date, i128::MAX as u128, "retained maximum");
+            f.valued(f.proposal("maximum", date, f.eur, 10), &rate)
+        } else {
+            f.proposal("maximum", date, f.usd, i128::MAX)
+        };
+        if pending {
+            first.class = EntryClass::PENDING;
+            first.pending = Some(Pending {
+                timeout_ns: None,
+                resolution_of: None,
+                disposition: None,
+            });
+        }
+        let first_posted = f.post(first).entry_ref();
+        if !functional {
+            let ctx = f.ctx();
+            f.runtime
+                .block_on(fa_registers::advance(
+                    &mut f.db,
+                    &ctx,
+                    &f.book,
+                    "FY2026-P01",
+                ))
+                .unwrap();
+        }
+        let safe = f.db.frontier().unwrap();
+        let original =
+            fa_registers::fold_period_at(&f.db, &f.book, "FY2026-P01", Some(safe)).unwrap();
+        let mut next = if functional {
+            let rate = f.rate(date, 10, "retained one-to-one");
+            f.valued(f.proposal("retained-one", date, f.eur, 1), &rate)
+        } else {
+            f.proposal("retained-one", date, f.usd, 1)
+        };
+        if pending {
+            next.class = EntryClass::PENDING;
+            next.pending = Some(Pending {
+                timeout_ns: None,
+                resolution_of: None,
+                disposition: None,
+            });
+        }
+        let (source, recorded_at) = f.append_retained_fault(next);
+        let head = f.db.frontier().unwrap();
+        let rows = f.db.vertices().unwrap();
+        if !functional {
+            let ctx = f.ctx();
+            let error = f
+                .runtime
+                .block_on(fa_registers::advance(
+                    &mut f.db,
+                    &ctx,
+                    &f.book,
+                    "FY2026-P01",
+                ))
+                .unwrap_err();
+            assert!(matches!(error, RegisterError::Capacity(_)), "{error:?}");
+        }
+        let period_error = if functional {
+            fold_period_functional(&f.db, &f.book, "FY2026-P01", None).unwrap_err()
+        } else {
+            fa_registers::fold_period(&f.db, &f.book, "FY2026-P01").unwrap_err()
+        };
+        let stock_error = if functional {
+            fold_functional_stock(&f.db, &f.book, day(2026, 1, 31), None).unwrap_err()
+        } else {
+            balance_as_of(&f.db, &f.book, day(2026, 1, 31), None).unwrap_err()
+        };
+        for (error, periods, through) in [
+            (period_error, vec!["FY2026-P01".to_string()], None),
+            (stock_error, Vec::new(), Some(day(2026, 1, 31))),
+        ] {
+            let RegisterError::Capacity(diagnosis) = error else {
+                panic!("typed cell diagnosis required: {error:?}")
+            };
+            assert_eq!(diagnosis.source, source);
+            assert_eq!(
+                (diagnosis.recorded_at, diagnosis.known_at),
+                (recorded_at, head)
+            );
+            assert_eq!(
+                (diagnosis.functional, diagnosis.pending),
+                (functional, pending)
+            );
+            assert_eq!((diagnosis.accumulated, diagnosis.incoming), (i128::MAX, 1));
+            assert_eq!(diagnosis.unit_id, f.usd.0);
+            assert_eq!(diagnosis.account, account_vid(f.book.book_id, "1200"));
+            assert_eq!(diagnosis.side, Side::Debit);
+            assert_eq!(
+                (diagnosis.periods.clone(), diagnosis.effective_through),
+                (periods, through)
+            );
+            let refusal = diagnosis.refusal();
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3));
+            assert!(refusal.fix.contains("preserve"));
+            assert!(refusal.fix.contains("reversal adds gross"));
+        }
+        assert_eq!(
+            fa_registers::fold_period_at(&f.db, &f.book, "FY2026-P01", Some(safe)).unwrap(),
+            original,
+        );
+        assert!(
+            fa_journal::post::read_entry(&f.db, source.vid)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(f.db.frontier().unwrap(), head);
+        assert_eq!(f.db.vertices().unwrap(), rows);
+        if pending {
+            // Explicitly resolving a reservation changes the current state,
+            // while the over-cap historical coordinate stays invalid.
+            let mut release = f.proposal("release-large", date, f.usd, 1);
+            release.class = EntryClass::RESOLUTION;
+            release.legs.clear();
+            release.unit_totals.clear();
+            release.pending = Some(Pending {
+                timeout_ns: None,
+                resolution_of: Some(first_posted),
+                disposition: Some(Disposition::Voids),
+            });
+            f.post(release);
+            let ctx = f.ctx();
+            let recovered = f
+                .runtime
+                .block_on(fa_registers::advance(
+                    &mut f.db,
+                    &ctx,
+                    &f.book,
+                    "FY2026-P01",
+                ))
+                .unwrap();
+            if !functional {
+                assert!(
+                    recovered.rebuilt,
+                    "overflowing pending tail must refold its final state"
+                );
+            }
+            assert_eq!(recovered.fold.pending.len(), 2);
+            assert!(
+                recovered
+                    .fold
+                    .pending
+                    .iter()
+                    .all(|cell| cell.debits.checked_add(cell.credits) == Some(1))
+            );
+            if functional {
+                let native =
+                    fa_registers::fold_period_at(&f.db, &f.book, "FY2026-P01", Some(head)).unwrap();
+                assert!(
+                    native
+                        .pending
+                        .iter()
+                        .all(|cell| cell.debits.checked_add(cell.credits) == Some(11))
+                );
+                assert!(matches!(
+                    fold_period_functional(&f.db, &f.book, "FY2026-P01", Some(head)),
+                    Err(RegisterError::Capacity(_))
+                ));
+            } else {
+                assert!(
+                    matches!(
+                        fa_registers::fold_period_at(&f.db, &f.book, "FY2026-P01", Some(head)),
+                        Err(RegisterError::Capacity(_))
+                    ),
+                    "the historical native prefix remains over-cap"
+                );
+            }
+            let current = fold_period_functional(&f.db, &f.book, "FY2026-P01", None).unwrap();
+            assert_eq!(current.pending.len(), 2);
+            assert!(
+                current
+                    .pending
+                    .iter()
+                    .all(|cell| cell.debits.checked_add(cell.credits) == Some(1))
+            );
+        }
+    }
+}
+
+#[test]
+fn cross_account_report_overflow_is_distinct_from_a_retained_cell_violation() {
+    let mut f = Fixture::new();
+    let accounts = [("1280", AccountType::ASSET), ("4080", AccountType::REVENUE)]
+        .into_iter()
+        .map(|(code, kind)| AccountSpec {
+            code: code.into(),
+            name: code.into(),
+            account_type: kind.0,
+            normal_balance: u8::from(kind == AccountType::REVENUE),
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        })
+        .collect::<Vec<_>>();
+    let ctx = f.ctx();
+    let description = f.sealed("independent columns");
+    f.runtime
+        .block_on(install_chart(
+            &mut f.db,
+            &ctx,
+            &f.book,
+            &accounts,
+            PRINCIPAL,
+            day(2026, 1, 1),
+            b"independent-columns",
+            description,
+            &cap(&["schema_change"]),
+        ))
+        .unwrap()
+        .unwrap();
+    f.post(f.proposal("column-a", day(2026, 1, 5), f.usd, i128::MAX));
+    let mut second = f.proposal("column-b", day(2026, 1, 5), f.usd, i128::MAX);
+    second.legs[0].account_ref = account_vid(f.book.book_id, "1280");
+    second.legs[1].account_ref = account_vid(f.book.book_id, "4080");
+    f.post(second);
+    let head = f.db.frontier().unwrap();
+    let fold = fa_registers::fold_period(&f.db, &f.book, "FY2026-P01").unwrap();
+    assert_eq!(fold.cells.len(), 4);
+    assert!(matches!(
+        balance_as_of(&f.db, &f.book, day(2026, 1, 31), None),
+        Err(RegisterError::Overflow),
+    ));
+    assert_eq!(f.db.frontier().unwrap(), head);
+}
+
+#[test]
+fn maintained_cross_period_overflow_refolds_to_identify_the_retained_source() {
+    let mut f = Fixture::new();
+    f.post(f.proposal("december-maximum", day(2025, 12, 5), f.usd, i128::MAX));
+    let ctx = f.ctx();
+    f.runtime
+        .block_on(fa_registers::advance(
+            &mut f.db,
+            &ctx,
+            &f.book,
+            "FY2025-P12",
+        ))
+        .unwrap();
+    let next = f.proposal("january-one", day(2026, 1, 5), f.usd, 1);
+    let (source, recorded_at) = f.append_retained_fault(next);
+    let ctx = f.ctx();
+    f.runtime
+        .block_on(fa_registers::advance(
+            &mut f.db,
+            &ctx,
+            &f.book,
+            "FY2026-P01",
+        ))
+        .unwrap();
+    let head = f.db.frontier().unwrap();
+    let before = f.db.vertices().unwrap();
+    let error =
+        fa_registers::trial_balance_served(&f.db, &f.book, &["FY2026-P01".into()]).unwrap_err();
+    let RegisterError::Capacity(diagnosis) = error else {
+        panic!("exact source diagnosis required: {error:?}")
+    };
+    assert_eq!(diagnosis.source, source);
+    assert_eq!(
+        (diagnosis.recorded_at, diagnosis.known_at),
+        (recorded_at, head)
+    );
+    assert_eq!((diagnosis.accumulated, diagnosis.incoming), (i128::MAX, 1));
+    assert_eq!(diagnosis.effective_through, Some(day(2026, 1, 31)));
+    assert!(diagnosis.periods.is_empty());
+    assert_eq!(f.db.frontier().unwrap(), head);
+    assert_eq!(f.db.vertices().unwrap(), before);
 }
 
 #[test]

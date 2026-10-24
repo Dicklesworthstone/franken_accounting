@@ -885,3 +885,200 @@ fn functional_statement_file_at_cold_head_replays_and_reports_status_without_ret
     assert_eq!(text(data(&status), "status"), "Current");
     assert_eq!(head(&fixture.book), before);
 }
+
+#[test]
+fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_and_export() {
+    for fitting_net in [false, true] {
+        let seed = 0xe7;
+        let fixture = Fixture::create(Some(seed));
+        fixture.post("retained-safe", "2026-01-05", "1.00", 10);
+        ok(
+            &fixture.book,
+            &["registers", "advance", "--period", "FY2026-P01"],
+        );
+        let safe = head(&fixture.book);
+        if fitting_net {
+            // The current writer lawfully fills the opposite gross columns.
+            // The later injected entry then overflows gross with a fitting net.
+            let rate = fixture.rate("retained-opposite", "2026-01-05", 10);
+            let intent = fixture.file("opposite.json", &format!(r#"{{"effective_date":"2026-01-05","idempotency_key":"retained-opposite","legs":[{{"side":"credit","account":"1200","amount":"1701411834604692317316873037158841057.27 EUR"}},{{"side":"debit","account":"4000","amount":"1701411834604692317316873037158841057.27 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{rate}"]}}}}"#));
+            ok(
+                &fixture.book,
+                &["post", "--intent", &intent, "--evidence", &fixture.evidence],
+            );
+        }
+        let runtime = RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(Budget::INFINITE);
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut db = runtime
+            .block_on(Database::open(
+                &cx.commit(),
+                &fixture.book.join("store"),
+                db_keys(seed),
+            ))
+            .unwrap();
+        let original = db
+            .vertices()
+            .unwrap()
+            .iter()
+            .filter(|row| row.labels.contains(&fa_model::symbols::label::ENTRY))
+            .map(|row| {
+                fa_model::Entry::decode(
+                    &fa_journal::rows::bytes(row, property::FA_PAYLOAD, "retained payload")
+                        .unwrap(),
+                )
+                .unwrap()
+            })
+            .find(|entry| entry.proposal.idempotency_key == b"retained-safe")
+            .unwrap();
+        let mut proposal = original.proposal;
+        proposal.idempotency_key = b"retained-over-cap".to_vec();
+        for leg in &mut proposal.legs {
+            leg.amount.mantissa = i128::MAX;
+            leg.base_amount.as_mut().unwrap().mantissa = i128::MAX;
+        }
+        proposal.unit_totals = fa_model::EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        let base = proposal.base_totals.as_mut().unwrap();
+        base.debits = i128::MAX;
+        base.credits = i128::MAX;
+        let vid = fa_model::entry_vid(
+            proposal.book_id,
+            &proposal.principal_ref.0.to_le_bytes(),
+            &proposal.idempotency_key,
+        );
+        let entry = proposal.seal(Vec::new(), None).unwrap();
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        let mut has_leg = WriteBatch::new(relation::HAS_LEG);
+        has_leg.create_vertex(
+            vid,
+            vec![fa_model::symbols::label::ENTRY],
+            fa_model::entry_mirrors(&entry).unwrap(),
+        );
+        let mut posts = WriteBatch::new(relation::POSTS_TO);
+        let mut in_unit = WriteBatch::new(relation::IN_UNIT);
+        for (ordinal, leg) in entry.proposal.legs.iter().enumerate() {
+            let ordinal = u16::try_from(ordinal).unwrap();
+            let leg_vid = fa_journal::rows::leg_vid(vid, ordinal);
+            let mut mirrors =
+                fa_model::leg_mirrors(leg, ordinal, entry.proposal.effective_date, &units).unwrap();
+            mirrors.push((
+                property::APPLIED,
+                fa_journal::rows::mantissa_scalar("applied", 0).unwrap(),
+            ));
+            has_leg.create_vertex(leg_vid, vec![fa_model::symbols::label::LEG], mirrors);
+            has_leg.add_edge(
+                fa_journal::rows::edge_id(relation::HAS_LEG, vid, leg_vid),
+                vid,
+                leg_vid,
+                vec![(property::ORDINAL, CanonicalScalar::Int(i64::from(ordinal)))],
+            );
+            posts.add_edge(
+                fa_journal::rows::edge_id(relation::POSTS_TO, leg_vid, leg.account_ref),
+                leg_vid,
+                leg.account_ref,
+                Vec::new(),
+            );
+            let unit = units.get(leg.amount.unit).unwrap();
+            let unit_vid = fa_model::unit_vid(
+                entry.proposal.book_id,
+                &format!("{}@v{}", unit.code, unit.version),
+            );
+            in_unit.add_edge(
+                fa_journal::rows::edge_id(relation::IN_UNIT, leg_vid, unit_vid),
+                leg_vid,
+                unit_vid,
+                Vec::new(),
+            );
+        }
+        let mut in_period = WriteBatch::new(relation::IN_PERIOD);
+        let period = fa_model::period_vid("fx-stock-cold", "FY2026-P01");
+        in_period.add_edge(
+            fa_journal::rows::edge_id(relation::IN_PERIOD, vid, period),
+            vid,
+            period,
+            Vec::new(),
+        );
+        // Fault-injection of retained source, not a current-writer escape hatch.
+        // The native marker assigns recorded time; no timestamp is supplied.
+        let mut txn = db.begin(&cx.txn()).unwrap();
+        txn.write_ordered(&mut db, vec![has_leg, posts, in_unit, in_period])
+            .unwrap();
+        runtime.block_on(txn.commit(&mut db, &cx.commit())).unwrap();
+        let invalid_head = db.frontier().unwrap();
+        let before_rows = db.vertices().unwrap();
+        drop(db);
+
+        for args in [
+            vec!["tb", "--period", "FY2026-P01"],
+            vec!["tb", "--functional", "--period", "FY2026-P01"],
+            vec!["registers", "advance", "--period", "FY2026-P01"],
+            vec!["verify", "registers", "--period", "FY2026-P01"],
+        ] {
+            let (status, refusal) = run(&fixture.book, &args);
+            assert_eq!(status, 3, "{args:?}: {}", refusal.render());
+            assert_eq!(text(&refusal, "event"), "error");
+            assert_eq!(text(&refusal, "refusal_id"), "FA-REF-198");
+            assert!(refusal.render().contains(&format!("{:032x}", vid.0)));
+            assert!(
+                fa_cli::verbs::registry()
+                    .unwrap()
+                    .check_line(&refusal.render())
+                    .is_ok()
+            );
+            assert_eq!(head(&fixture.book), i128::from(invalid_head.0));
+        }
+        let historic = ok(
+            &fixture.book,
+            &[
+                "tb",
+                "--functional",
+                "--period",
+                "FY2026-P01",
+                "--as-known-at",
+                &safe.to_string(),
+            ],
+        );
+        assert_eq!(total_debits(&historic), "1.00 USD");
+        let source = format!("{:032x}", vid.0);
+        ok(&fixture.book, &["entry", "show", &source]);
+        let output = fixture.dir.join("retained-source.ndjson");
+        let args = [
+            "export",
+            "ndjson",
+            "--period",
+            "FY2026-P01",
+            "--out",
+            output.to_str().unwrap(),
+        ];
+        if fitting_net {
+            let exported = ok(&fixture.book, &args);
+            assert_eq!(integer(data(&exported), "entries"), 3);
+            let exported_bytes = std::fs::read_to_string(&output).unwrap();
+            assert!(
+                exported_bytes.contains(&source),
+                "retained source must be exported"
+            );
+        } else {
+            // FormatJournal requires representable net balances. Retain this
+            // unsupported escape-path boundary, with no truncated output.
+            let (status, refused) = run(&fixture.book, &args);
+            assert_eq!(status, 5, "{}", refused.render());
+            assert_eq!(text(&refused, "event"), "error");
+            assert!(!output.exists());
+        }
+        let reopened = runtime
+            .block_on(Database::open(
+                &cx.commit(),
+                &fixture.book.join("store"),
+                db_keys(seed),
+            ))
+            .unwrap();
+        assert_eq!(reopened.frontier().unwrap(), invalid_head);
+        assert_eq!(reopened.vertices().unwrap(), before_rows);
+        let (retained, recorded_at) = fa_journal::post::read_entry(&reopened, vid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained, entry);
+        assert_eq!(recorded_at, invalid_head);
+    }
+}
