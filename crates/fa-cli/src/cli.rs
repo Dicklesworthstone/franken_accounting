@@ -2138,6 +2138,7 @@ fn post_plan_only(verb: &str, args: &Args) -> bool {
             | "allocate"
             | "settle"
             | "reverse"
+            | "reclass"
             | "reserve"
             | "resolve"
             | "invoice"
@@ -2304,12 +2305,14 @@ pub fn bound_command_admissible(
         return Err(format!("{} ({})", refusal.message, refusal.code));
     }
     // The typed documents (fa invoice, bill, receipt, payment) post through
-    // fa post's own path, so they are trunk posts like it.
+    // fa post's own path, so they are trunk posts like it. So does a
+    // reclassification.
     let is_monetary_trunk_post = matches!(
         verb,
         "post"
             | "commit"
             | "reverse"
+            | "reclass"
             | "reserve"
             | "resolve"
             | "invoice"
@@ -2336,6 +2339,7 @@ pub fn bound_command_admissible(
         verb,
         "post"
             | "reverse"
+            | "reclass"
             | "reserve"
             | "resolve"
             | "invoice"
