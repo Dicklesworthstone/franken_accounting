@@ -17131,8 +17131,9 @@ fn correction_guide_boundaries(guide: &str) -> Result<(), String> {
 fn correction_guide_boundary_check_rejects_each_missing_restriction() {
     let (code, out, err) = fa(None, &["robot-docs", "guide", "--json"]);
     assert_eq!(code, 0, "{err}");
-    let guide = text(&doc(&out), "text");
-    correction_guide_boundaries(&guide).unwrap();
+    let guide_doc = doc(&out);
+    let guide = text(&guide_doc, "text");
+    correction_guide_boundaries(guide).unwrap();
     for boundary in CORRECTION_GUIDE_BOUNDARIES {
         let missing = guide.replace(boundary, "unrestricted correction");
         let refusal = correction_guide_boundaries(&missing).unwrap_err();
@@ -17346,7 +17347,7 @@ fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<
     let (_, guide_out, _) = run_cmd(&["robot-docs", "guide", "--json"]);
     let guide_doc = doc(&guide_out);
     let guide_text = text(&guide_doc, "text");
-    correction_guide_boundaries(&guide_text).unwrap();
+    correction_guide_boundaries(guide_text).unwrap();
 
     // 4. On a launch-bound surface, a kernel refusal whose catalog fix mentions `--grant`
     // (`FA-REF-011`) rewrites its fix so that it never instructs the caller to pass `--grant`.
