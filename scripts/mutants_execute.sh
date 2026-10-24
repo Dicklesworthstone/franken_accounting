@@ -17,8 +17,12 @@
 #   FAIL  the mutant survived: a killed_by test passed or matched no test, or
 #         the mutated tree does not compile (the row tests nothing), or the
 #         `find` text no longer occurs exactly once
-#   UNRUN a test did not execute (offloader refusal), or the mutated file
-#         has uncommitted changes and was left alone
+#   UNRUN a test did not execute (offloader refusal), a killed_by test
+#         already fails on the unmutated tree (it cannot judge a mutant), or
+#         the mutated file has uncommitted changes and was left alone
+#
+# Every killed_by test first runs once on the unmutated tree (cached per
+# test): a kill counts only for a test that passes there.
 #
 # --results <file> records one `<MUT-id> KILLED|SURVIVED|UNRUN` line per
 # mutant, which `xtask mutants --results <file>` judges.
@@ -70,6 +74,32 @@ record() {
   fi
 }
 
+# The unmutated verdict of each killed_by test, run once and cached: green,
+# red or unrun (did not execute). Sets BASE_STATE; call it directly, not in a
+# command substitution, so the cache survives.
+declare -A BASELINE
+BASE_STATE=""
+BASE_RUNS=0
+baseline() {
+  local line="$1" args log rc plain
+  if [ -z "${BASELINE[$line]:-}" ]; then
+    IFS=$'\t' read -r -a args <<< "$line"
+    BASE_RUNS=$((BASE_RUNS + 1))
+    log="$LOG_DIR/baseline-$BASE_RUNS.log"
+    cargo test --locked "${args[@]}" > "$log" 2>&1
+    rc=$?
+    plain="$(sed 's/\x1b\[[0-9;]*m//g' "$log")"
+    if [ "$rc" -eq 0 ] && grep -qE '^test result: ok\. [1-9][0-9]* passed' <<< "$plain"; then
+      BASELINE[$line]=green
+    elif [ "$rc" -ne 0 ] && gate_env_failure_class "$log" > /dev/null; then
+      BASELINE[$line]=unrun
+    else
+      BASELINE[$line]="red (log $log)"
+    fi
+  fi
+  BASE_STATE="${BASELINE[$line]}"
+}
+
 for id in "${IDS[@]}"; do
   if ! file="$("${LEDGER[@]}" file "$id")"; then
     gate_fail "$id — no such row in registries/mutants.toml"
@@ -81,6 +111,18 @@ for id in "${IDS[@]}"; do
     continue
   fi
   mapfile -t TESTS < <("${LEDGER[@]}" tests "$id")
+  unjudged=""
+  for line in "${TESTS[@]}"; do
+    baseline "$line"
+    if [ "$BASE_STATE" != green ]; then
+      unjudged="$unjudged ${line//$'\t'/ } [$BASE_STATE]"
+    fi
+  done
+  if [ -n "$unjudged" ]; then
+    gate_unrun "$id — a killed_by test is not green unmutated, so it cannot judge the mutant:$unjudged"
+    record "$id" UNRUN
+    continue
+  fi
   if ! "${LEDGER[@]}" apply "$id" "$LOG_DIR/$id.orig"; then
     gate_fail "$id — its find text does not occur exactly once in $file"
     record "$id" SURVIVED

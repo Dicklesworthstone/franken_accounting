@@ -2074,7 +2074,8 @@ fn kernel_and_oracle_agree_on_period_transition_reasons() {
 
 #[test]
 fn kernel_and_oracle_agree_on_a_generated_history() {
-    generated_history_campaign(0x9E37_79B9_7F4A_7C15).assert_minimums("seed 0x9e3779b97f4a7c15");
+    generated_history_campaign(0x9E37_79B9_7F4A_7C15, false)
+        .assert_minimums("seed 0x9e3779b97f4a7c15");
 }
 
 /// fa-2ihd: the same campaign, every assertion included, over more seeds.
@@ -2089,7 +2090,7 @@ fn kernel_and_oracle_agree_on_generated_histories_across_seeds() {
     let mut total = Coverage::default();
     for i in 1..=seeds {
         let seed = splitmix(i);
-        match std::panic::catch_unwind(|| generated_history_campaign(seed)) {
+        match std::panic::catch_unwind(|| generated_history_campaign(seed, true)) {
             Ok(coverage) => total.add(&coverage),
             Err(_) => {
                 panic!("the generated history diverged at seed {seed:#018x} (seed {i} of {seeds})")
@@ -2151,7 +2152,7 @@ fn campaign_failure(
     plant: Option<&'static str>,
 ) -> Option<String> {
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        campaign(seed, schedule, plant)
+        campaign(seed, schedule, plant, false)
     }));
     run.err().map(|payload| {
         payload
@@ -2173,7 +2174,7 @@ fn campaign_failure(
 fn planted_mutation_found_and_shrunk() {
     let seed = 0x9E37_79B9_7F4A_7C15;
     let plant = Some("FA-REF-011");
-    let trace = campaign(seed, Schedule::All, None).trace;
+    let trace = campaign(seed, Schedule::All, None, false).trace;
     assert_eq!(trace.len(), 640);
     let full = campaign_failure(seed, Schedule::Steps(&trace), plant)
         .expect("the canonical history reaches a closed-period refusal");
@@ -2381,8 +2382,13 @@ fn splitmix(i: u64) -> u64 {
 /// reversals, replacements, invoices and receipts and period transitions,
 /// each compared with the reference oracle, then the registers, open items
 /// and planted corruption. Returns what it exercised.
-fn generated_history_campaign(seed: u64) -> Coverage {
-    campaign(seed, Schedule::All, None)
+///
+/// `steering` aims some draws at unhit Appendix C cells (the multi-seed
+/// coverage campaign). Off, the generator draws exactly as it did before
+/// steering existed, so the canonical seed's history, its per-seed floors
+/// and the shrinker's reproducer stay what they were.
+fn generated_history_campaign(seed: u64, steering: bool) -> Coverage {
+    campaign(seed, Schedule::All, None, steering)
 }
 
 /// The classes coverage steering aims at, and the ops it may grant.
@@ -2453,7 +2459,12 @@ struct TraceStep {
 /// treats as a divergence (`step N: planted divergence`), standing in for a
 /// kernel that admits what the oracle refuses, so the shrinker can be
 /// exercised without mutating the kernel.
-fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> Coverage {
+fn campaign(
+    seed: u64,
+    schedule: Schedule<'_>,
+    plant: Option<&'static str>,
+    steering: bool,
+) -> Coverage {
     let (mut k, mut oracle, periods) = setup();
     let usd = k.book.units.lookup("USD").unwrap();
     // The serial replay starts from the book as set up, and replays each
@@ -2765,7 +2776,7 @@ fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> C
             // admissible (class, state) cell this history has not posted,
             // dated into a period in that state under the op its Appendix C
             // cell needs.
-            let steer = if rng.chance(20) {
+            let steer = if steering && rng.chance(20) {
                 unposted_cell(&matrix, &cells, &oracle, &period_defs, &dates)
             } else {
                 None
@@ -2780,7 +2791,9 @@ fn campaign(seed: u64, schedule: Schedule<'_>, plant: Option<&'static str>) -> C
                 Some((_, _, "post")) => vec!["post".into()],
                 Some((_, _, op)) => vec!["post".into(), op.into()],
                 None if rng.chance(35) => vec!["post".into(), "post_closed".into()],
-                None if rng.chance(30) => vec!["post".into(), "post_softclosed".into()],
+                None if steering && rng.chance(30) => {
+                    vec!["post".into(), "post_softclosed".into()]
+                }
                 None => vec!["post".into()],
             };
             let key = format!("k{step}").into_bytes();
@@ -4681,6 +4694,94 @@ fn serial_equivalence_oracle() {
     }
     eprintln!("fa-2ihd races over {seeds} seeds: {:?}", total.races);
     total.assert_minimums(&format!("{seeds} seeds"));
+}
+
+/// The message a caught panic carried.
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_default()
+}
+
+/// fa-2ihd planted negatives for the serial replay itself. The replay
+/// re-judges the committed journal, so it must fail a history the reference
+/// would not admit in commit order. A real book opens February, posts into
+/// it, soft-closes it, and posts again under `post_softclosed`. Replayed
+/// faithfully, all four operations are re-admitted. Told that the second
+/// key held only `post`, the replay refuses that entry (FA-REF-011). Started
+/// from a reference whose February is already soft closed, it refuses the
+/// first operation.
+#[test]
+fn serial_replay_refuses_a_history_the_reference_would_not_admit() {
+    let (mut k, mut oracle, periods) = setup();
+    let usd = k.book.units.lookup("USD").unwrap();
+    let genesis = oracle.clone();
+    let since = k.db.frontier().unwrap();
+    let feb = &periods[1];
+    let day = DateDay::from_ymd(2026, 2, 10).unwrap();
+    let mut authority: BTreeMap<Vec<u8>, Vec<String>> = BTreeMap::new();
+    let mut posted = Vec::new();
+    for (n, (key, ops)) in [
+        ("replay-open", &["post"][..]),
+        ("replay-softclosed", &["post", "post_softclosed"][..]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let t = if n == 0 {
+            PeriodTransition::Open
+        } else {
+            PeriodTransition::SoftClose
+        };
+        let kernel = kernel_transition(&mut k, feb, t, 700_000 + n as u64);
+        let model = oracle.transition(feb, t);
+        assert!(
+            kernel.is_ok() && model.is_ok(),
+            "{feb} {t:?}: kernel {kernel:?}, reference {model:?}"
+        );
+        let legs = two_legs(usd, "6000", "1000", 500 + n as i128);
+        let intent = race_intent("Original", day, legs, key.as_bytes().to_vec(), ops);
+        let kernel = kernel_post(&mut k, &intent, usd, &[]);
+        let model = oracle.post(&intent);
+        assert!(
+            matches!(kernel, Ok(Posted::Committed { .. }))
+                && matches!(model, Verdict::Posted { .. }),
+            "{key}: kernel {kernel:?}, reference {model:?}"
+        );
+        authority.insert(intent.key.clone(), intent.ops.clone());
+        posted.push(intent);
+    }
+    assert_eq!(
+        assert_serial_replay(&k, &genesis, since, &authority, &oracle, &periods),
+        4,
+        "two transitions and two posts"
+    );
+    let refused = |from: &Oracle, authority: &BTreeMap<Vec<u8>, Vec<String>>| {
+        panic_text(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert_serial_replay(&k, from, since, authority, &oracle, &periods)
+            }))
+            .expect_err("the replay admitted a history the reference refuses"),
+        )
+    };
+    let mut weaker = authority.clone();
+    weaker.insert(posted[1].key.clone(), vec!["post".into()]);
+    let message = refused(&genesis, &weaker);
+    assert!(
+        message.contains("FA-REF-011") && message.contains("mantissa: 501"),
+        "{message}"
+    );
+    let mut soft_closed = genesis.clone();
+    for t in [PeriodTransition::Open, PeriodTransition::SoftClose] {
+        soft_closed.transition(feb, t).expect("the planted start");
+    }
+    let message = refused(&soft_closed, &authority);
+    assert!(
+        message.contains("serial replay at") && message.contains("Open"),
+        "{message}"
+    );
 }
 
 fn create_year(k: &mut Kernel, oracle: &mut Oracle, year: i32) -> CommitSeq {
