@@ -554,9 +554,9 @@ fn unvalued_foreign_legs_refuse_only_when_selected_and_stock_sums_are_checked() 
             .unwrap(),
         amount
     );
-    assert!(
-        verify_functional_stock(&large.db, &large.book, &large.stock(day(2026, 1, 31), None))
-            .is_ok()
+    assert_eq!(
+        large.stock(day(2026, 1, 31), None).total_credits().unwrap(),
+        amount
     );
     assert_eq!(large.db.frontier().unwrap(), head);
 }

@@ -66,6 +66,7 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
     accounts: &BTreeSet<VId>,
     extra: Option<(VId, &Entry)>,
 ) -> Outcome<()> {
+    ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if accounts.is_empty() {
         return Ok(Ok(()));
     }
@@ -174,4 +175,37 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
         }
     }
     Ok(Ok(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_capacity_cancellation_precedes_any_prefix_observation() {
+        let runtime = asupersync::runtime::RuntimeBuilder::new().build().unwrap();
+        let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+        let ctx = PurposeContexts::narrow_runtime_root(&root);
+        let keys = fgdb::DatabaseKeys::new(
+            [0x5a; 32],
+            fgdb_types::ids::DatabaseSecurityNamespaceId([0x5b; 32]),
+            [0x5c; 32],
+        );
+        let mut db = runtime
+            .block_on(Database::open_memory(&ctx.commit(), keys))
+            .unwrap();
+        let head = db.frontier().unwrap();
+        let txn = db.begin(&ctx.txn()).unwrap();
+        root.cancel_fast(asupersync::types::CancelKind::User);
+        let accounts = BTreeSet::from([VId(1)]);
+        // This database deliberately has no Book. Observing its prefix
+        // before cancellation would produce Corrupt instead of Interrupted.
+        let result = admit(&txn, &db, &ctx, Id128([1; 16]), &accounts);
+        assert!(
+            matches!(result, Err(KernelError::Txn(WriteTxnError::Interrupted(_)))),
+            "{result:?}"
+        );
+        txn.abort();
+        assert_eq!(db.frontier().unwrap(), head);
+    }
 }
