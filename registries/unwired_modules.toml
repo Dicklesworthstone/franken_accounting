@@ -27,12 +27,6 @@
 schema_version = 1
 
 [[unwired]]
-path = "fa_formats::fwc"
-owner_bead = "fa-lzrn"
-reason = "Plaid transactions_sync bank feeds and warehouse export through flywheel_connectors (fa-ff6, closed) have no surface command."
-expires = "2026-11-21"
-
-[[unwired]]
 path = "fa_formats::part370"
 owner_bead = "fa-p370"
 reason = "FDIC Part 370 files need ORC capacity codes on account-participant edges, which the REA model does not carry; no fa export part370."

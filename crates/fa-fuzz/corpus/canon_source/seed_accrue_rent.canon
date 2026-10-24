@@ -1,0 +1,8 @@
+rule accrue_rent v2 for event Accrual produces Adjusting {
+  inputs { as_of: date, back: date, fee: amount("USD") }
+  let rent = event.resource("rent", "USD") + fee
+  debit "6000" rent
+  credit "2100" rent
+  effective as_of
+  reverses back
+}

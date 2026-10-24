@@ -958,6 +958,7 @@ name = "fa-fuzz"
 version = "0.0.1"
 dependencies = [
  "fa",
+ "fa-canon",
  "fa-cli",
  "fa-formats",
  "fa-intents",

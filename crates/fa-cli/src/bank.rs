@@ -23,7 +23,7 @@ use crate::json::{Json, obj, s};
 
 mod layout;
 
-const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv --account <cash-account-code> [--layout <JSON-file|inline-JSON>] [--previous-import <manifest_oid> --grant privileged] --json";
+const IMPORT_EXAMPLE: &str = "fa bank import <statement|-> --bank-format camt053|camt052|bai2|ofx|mt940|csv|plaid-sync --account <cash-account-code> [--layout <JSON-file|inline-JSON>] [--previous-import <manifest_oid> --grant privileged] --json";
 const MATCH_EXAMPLE: &str = "fa bank match --import <manifest_oid> --grant privileged [--date-window <days>] [--as-known-at HEAD|<seq>|<RFC3339>] --json (embedded-owner CLI with explicit full-source authority)";
 const CONFIRM_EXAMPLE: &str = "fa bank confirm --import <manifest_oid> --line-ordinal <ordinal> --proposal-digest <hex64> --source-known-at <seq> --proposer <hex32> --date-window <days> --grant privileged --json (use the exact confirmation_command printed by bank match)";
 const STATUS_EXAMPLE: &str = "fa bank status --import <manifest_oid> --grant privileged [--as-known-at HEAD|<seq>|<RFC3339>] --json";

@@ -319,3 +319,16 @@ round_trip_identity = true
 certified_coordinate = true
 plan_ref = "§8.6, §16.3"
 summary = "ADS-shaped GL package with lossless canonical backslash text escapes and UTF-8 hex coordinate names. Selected when literal v2 text is unrepresentable. Preserves descriptions, memos and identifiers; this repository profile is not external AICPA conformance evidence."
+
+[[format]]
+id = 25
+name = "fwc_plaid_transactions_sync_v1"
+kind = "bank_statement"
+direction = "import"
+mime = "application/json"
+extension = "json"
+oracle_tool = "none"
+round_trip_identity = false
+certified_coordinate = false
+plan_ref = "§9.5"
+summary = "A saved flywheel_connectors (`fwc`) Plaid `transactions_sync` robot payload (`fwc.robot.v1`), imported with `fa bank import --bank-format plaid-sync`: robot schema version, connector, operation and receipt hash checked, exact fixed-scale amounts, opening plus activity equal to closing; the retained payload is the BankStatement document and every BankLine derives from it. Fetching live from Plaid through the `fwc` subprocess has no surface."

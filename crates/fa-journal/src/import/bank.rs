@@ -99,6 +99,9 @@ pub enum BankFormat {
     Ofx,
     Mt940,
     Csv,
+    /// A saved `fwc` Plaid `transactions_sync` robot payload (`fa_formats::fwc`,
+    /// plan §9.5): the connector's output, retained and parsed like a statement.
+    PlaidSync,
 }
 
 impl BankFormat {
@@ -111,6 +114,7 @@ impl BankFormat {
             Self::Ofx => "ofx",
             Self::Mt940 => "mt940",
             Self::Csv => "csv",
+            Self::PlaidSync => "plaid-sync",
         }
     }
 
@@ -123,6 +127,7 @@ impl BankFormat {
             "ofx" => Some(Self::Ofx),
             "mt940" => Some(Self::Mt940),
             "csv" => Some(Self::Csv),
+            "plaid-sync" => Some(Self::PlaidSync),
             _ => None,
         }
     }
@@ -135,6 +140,7 @@ impl BankFormat {
             Self::Ofx => 4,
             Self::Mt940 => 5,
             Self::Csv => 6,
+            Self::PlaidSync => 7,
         }
     }
 
@@ -146,6 +152,7 @@ impl BankFormat {
             4 => Some(Self::Ofx),
             5 => Some(Self::Mt940),
             6 => Some(Self::Csv),
+            7 => Some(Self::PlaidSync),
             _ => None,
         }
     }
@@ -157,6 +164,7 @@ impl BankFormat {
             Self::Csv => "text/csv",
             Self::Ofx => "application/x-ofx",
             Self::Bai2 | Self::Mt940 => "text/plain",
+            Self::PlaidSync => "application/json",
         }
     }
 }

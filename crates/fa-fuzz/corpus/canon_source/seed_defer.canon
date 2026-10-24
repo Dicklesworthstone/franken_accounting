@@ -1,0 +1,6 @@
+rule defer v1 for event Accrual produces Adjusting {
+  let rent = event.resource("rent", "USD")
+  debit "1500" rent
+  credit "6000" rent
+  reverses event.occurred_on
+}
