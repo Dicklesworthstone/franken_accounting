@@ -332,12 +332,19 @@ fn render_consolidation_basis(
         ("balance_sheet", balance_sheet),
         ("income_statement", income_statement),
     ];
-    if let Some(base_unit) = functional_unit {
-        fields.extend([
+    // The event declares all three fields (nullable), so native mode carries
+    // them too, as its statements do: no shared unit, native amounts.
+    match functional_unit {
+        Some(base_unit) => fields.extend([
             ("functional", Json::Bool(true)),
             ("base_unit", s(registered_unit_code(base_unit, units)?)),
             ("valuation_basis", s("retained-base-amounts")),
-        ]);
+        ]),
+        None => fields.extend([
+            ("functional", Json::Bool(false)),
+            ("base_unit", Json::Null),
+            ("valuation_basis", s("native-amounts")),
+        ]),
     }
     out.event_with_certificate("consolidation_run", fields, &human.join("\n"), certificate);
     Ok(())
