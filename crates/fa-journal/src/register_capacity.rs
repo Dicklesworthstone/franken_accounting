@@ -35,6 +35,37 @@ pub(crate) fn admit<V: asupersync::fs::Vfs + Clone>(
     book_id: Id128,
     accounts: &BTreeSet<VId>,
 ) -> Outcome<()> {
+    admit_including(txn, db, ctx, book_id, accounts, None)
+}
+
+/// Automatic effects need a verdict before staging, so a blocked schedule
+/// can be skipped without leaving any of its financial effects in the batch.
+pub(crate) fn admit_addition<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    vid: VId,
+    entry: &Entry,
+) -> Outcome<()> {
+    let accounts = accounts([&entry.proposal]);
+    admit_including(
+        txn,
+        db,
+        ctx,
+        entry.proposal.book_id,
+        &accounts,
+        Some((vid, entry)),
+    )
+}
+
+fn admit_including<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book_id: Id128,
+    accounts: &BTreeSet<VId>,
+    extra: Option<(VId, &Entry)>,
+) -> Outcome<()> {
     if accounts.is_empty() {
         return Ok(Ok(()));
     }
@@ -70,6 +101,9 @@ pub(crate) fn admit<V: asupersync::fs::Vfs + Clone>(
             resolved.insert(target.vid);
         }
         entries.push((row.vid, entry));
+    }
+    if let Some((vid, entry)) = extra {
+        entries.push((vid, entry.clone()));
     }
     // Resolve first: an old hold may have exceeded a prospective sum yet be
     // released in this same atomic publication, including across periods.

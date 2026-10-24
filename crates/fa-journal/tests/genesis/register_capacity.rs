@@ -177,6 +177,18 @@ fn cumulative_gross_capacity_is_admitted_before_publication() {
         head,
         "no entry or outcome was published"
     );
+    let invalid_plan = h.proposal(
+        h.rent_legs(1),
+        b"invalid-capacity-plan",
+        EntryClass::ORIGINAL,
+    );
+    let refusal = h.post_plan(h.request(invalid_plan, &["post"])).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-198");
+    assert_eq!(
+        h.db.frontier().unwrap(),
+        head,
+        "planning cannot approve over-cap effects"
+    );
     assert_eq!(
         reference.post(&intent(&h, 1, b"correctable")),
         fa_reference::Verdict::Refused { code: "FA-REF-198" }
@@ -343,5 +355,43 @@ fn atomic_batch_capacity_refusal_publishes_neither_members_nor_outcome() {
     );
     h.post_batch(corrected)
         .expect("refused batch and member keys stay free");
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn replacement_capacity_refusal_keeps_the_entire_pair_unpublished() {
+    let mut h = harness();
+    let original = h
+        .post(h.request(
+            h.proposal(
+                h.rent_legs(i128::MAX - 1),
+                b"pair-basis",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .unwrap();
+    let target = original.entry_ref();
+    let reversal = h.reversal_of(target, i128::MAX - 1, b"capacity-pair-reversal");
+    let mut replacement = h.proposal(
+        h.rent_legs(2),
+        b"capacity-pair-replacement",
+        EntryClass::REPLACEMENT,
+    );
+    replacement.supersession = vec![Supersession {
+        target,
+        kind: SupersessionKind::Replaces,
+        reason_code: 1,
+    }];
+    let before = h.db.frontier().unwrap();
+    let refusal = h
+        .post_pair(
+            h.request(reversal, &["post"]),
+            h.request(replacement, &["post"]),
+        )
+        .unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-198", "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
     assert_leg_projections(&h);
 }
