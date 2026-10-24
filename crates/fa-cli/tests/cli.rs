@@ -17129,7 +17129,8 @@ fn correction_guide_boundaries(guide: &str) -> Result<(), String> {
 
 #[test]
 fn correction_guide_boundary_check_rejects_each_missing_restriction() {
-    let out = ok(&["robot-docs", "guide", "--json"]);
+    let (code, out, err) = fa(None, &["robot-docs", "guide", "--json"]);
+    assert_eq!(code, 0, "{err}");
     let guide = text(&doc(&out), "text");
     correction_guide_boundaries(&guide).unwrap();
     for boundary in CORRECTION_GUIDE_BOUNDARIES {
