@@ -837,7 +837,7 @@ impl Procedure for PartyMasterChanges {
     }
 }
 
-/// `payroll.ghost` (plan §11.7, `FA-EVID-L47`, `calibration = "corpus"`):
+/// `payroll.ghost` (plan §11.7, `FA-EVID-L47`, `calibration = "planted"`):
 /// ghost-employee and anomalous payroll detector. A payroll posting is one
 /// with a leg on an account holding the `payroll` role. Flags those that:
 /// (1) share an identical disbursement amount with another payroll posting in
@@ -1033,7 +1033,7 @@ impl Procedure for PayrollGhost {
     }
 }
 
-/// `expense.capitalization` (plan §11.7, `FA-EVID-L48`, `calibration = "corpus"`):
+/// `expense.capitalization` (plan §11.7, `FA-EVID-L48`, `calibration = "planted"`):
 /// improper expense capitalization detector (WorldCom motif). Flags entries that
 /// debit an account holding the `fixed_asset` role while crediting an Expense
 /// account or a liability holding the `accrued_expense` role. Version 2
