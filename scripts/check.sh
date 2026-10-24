@@ -93,6 +93,10 @@ extract_worker() {
   local w=""
   if [ -f "$f" ]; then
     w="$(sed -n 's/.*Selected worker: \([^ ]*\) at .*/\1/p' "$f" | tail -n 1)"
+    if [ -z "$w" ]; then
+      w="$(sed -n 's/^\[RCH\] remote \([^ ]*\) (.*/\1/p' "$f" | tail -n 1)"
+    fi
+    if [ -z "$w" ] && grep -q '^\[RCH\]' "$f"; then w=unassigned; fi
   fi
   printf '%s\n' "${w:-local}"
 }
