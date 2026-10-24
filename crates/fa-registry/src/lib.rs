@@ -2108,8 +2108,12 @@ pub fn limits_embedded() -> Result<BTreeMap<String, u64>, RegistryError> {
 
 /// Representability ceiling of each registered gross register column.
 pub fn register_capacity_embedded() -> Result<i128, RegistryError> {
+    parse_register_capacity(LIMITS)
+}
+
+fn parse_register_capacity(text: &str) -> Result<i128, RegistryError> {
     const R: &str = "limits.toml";
-    let doc = load(R, LIMITS)?;
+    let doc = load(R, text)?;
     let rows = doc
         .arrays
         .get("register_capacity")
@@ -2134,6 +2138,44 @@ pub fn register_capacity_embedded() -> Result<i128, RegistryError> {
         ));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod register_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn register_capacity_rejects_ambiguous_domains_and_noncanonical_bounds() {
+        let domain = "account-unit-stock-gross-posted-and-unresolved-pending-native-and-functional";
+        let row = |amount: &str, domain: &str| {
+            format!(
+                "[[register_capacity]]\nmax_register_mantissa = \"{amount}\"\ndomain = \"{domain}\"\n"
+            )
+        };
+        assert_eq!(register_capacity_embedded().unwrap(), i128::MAX);
+        assert_eq!(
+            parse_register_capacity(&row(&i128::MAX.to_string(), domain)).unwrap(),
+            i128::MAX
+        );
+        for amount in [
+            "0",
+            "-1",
+            "+1",
+            "01",
+            "170141183460469231731687303715884105728",
+        ] {
+            assert!(
+                parse_register_capacity(&row(amount, domain)).is_err(),
+                "{amount}"
+            );
+        }
+        assert!(parse_register_capacity(&row("1", "account-net")).is_err());
+        assert!(parse_register_capacity("schema_version = 1\n").is_err());
+        assert!(
+            parse_register_capacity(&format!("{}{}", row("1", domain), row("1", domain))).is_err()
+        );
+        assert!(parse_register_capacity(&row("1", domain).replace("\"1\"", "1")).is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------

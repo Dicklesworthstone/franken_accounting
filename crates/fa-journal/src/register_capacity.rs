@@ -69,6 +69,8 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
     if accounts.is_empty() {
         return Ok(Ok(()));
     }
+    let maximum = fa_registry::register_capacity_embedded()
+        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let base = crate::genesis::read_book_spec_at(db, txn.basis())?
         .ok_or_else(|| KernelError::Corrupt("register capacity requires a book".into()))?
         .base_unit;
@@ -145,8 +147,7 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
                 if mantissa < 0 {
                     return Err(KernelError::Corrupt("negative register leg".into()));
                 }
-                let Some(next) = next.filter(|v| *v <= fa_model::limits::MAX_REGISTER_MANTISSA)
-                else {
+                let Some(next) = next.filter(|v| *v <= maximum) else {
                     return Ok(Err(Refusal::new(
                         code::REGISTER_CAPACITY,
                         exit::REFUSAL,
@@ -161,7 +162,7 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
                                 "pending debit",
                                 "pending credit"
                             ][column],
-                            fa_model::limits::MAX_REGISTER_MANTISSA,
+                            maximum,
                             txn.basis().0
                         ),
                         "plan §5.2; limits.toml register_capacity",
