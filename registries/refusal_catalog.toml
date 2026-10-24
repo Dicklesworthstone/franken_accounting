@@ -1231,7 +1231,7 @@ name = "REGISTER_CAPACITY"
 owners = ["fa-journal", "fa-registers"]
 exit = "refusal"
 cite = "plan §4.4 / §5.2; limits.toml register_capacity (gross native and functional cell representability before publication and retained-history diagnosis)"
-fix = "reduce the proposed gross activity or use an admissible registered unit; a reversal adds gross activity and cannot repair a historical over-cap prefix; preserve that prefix for diagnosis"
+fix = "reduce proposed gross activity or use an admissible registered unit; for retained history preserve the source, inspect fa entry show <vid> --json, and export fa proof inclusion --entry <vid> --with-record --state <covering-state-oid> --out <new-file> --json or fa proof prefix --with-record --state <covering-state-oid> --out <new-file> --json under existing read/produce authority; an authorized owner can create a covering state with fa checkpoint create --grant witness --json; bounded payload proofs do not establish accounting validity or document bytes; a reversal adds gross activity and cannot repair a historical over-cap prefix"
 
 # ---- Proof export (145–146) ---
 [[refusal]]

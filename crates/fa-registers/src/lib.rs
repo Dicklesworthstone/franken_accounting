@@ -155,8 +155,9 @@ impl RegisterCapacity {
             self.to_string(),
             "plan §4.4 / §5.2; limits.toml register_capacity (retained-history diagnosis)",
             format!(
-                "preserve the immutable book and its source; inspect fa entry show {:032x} --json; a reversal adds gross activity and cannot repair this historical capacity violation",
-                self.source.vid.0
+                "preserve the immutable book and its source; inspect fa entry show {entry:032x} --json; an authorized owner can create a covering checkpoint with fa checkpoint create --grant witness --json, then export the source with fa proof inclusion --entry {entry:032x} --with-record --state <covering-state-oid> --out <new-file> --json, or the complete payload prefix with fa proof prefix --with-record --state <covering-state-oid> --out <new-file> --json; the checkpoint must cover known-at {known_at}; these bounded proofs preserve payloads, not accounting validity or document bytes; a reversal adds gross activity and cannot repair this historical capacity violation",
+                entry = self.source.vid.0,
+                known_at = self.known_at.0,
             ),
         )
         .at("account", format!("{:032x}", self.account.0))

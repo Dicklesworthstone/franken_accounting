@@ -32,6 +32,17 @@ fn integer(value: &Json, key: &str) -> i128 {
     }
 }
 
+fn unhex(value: &str) -> Vec<u8> {
+    assert!(value.len().is_multiple_of(2));
+    value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
 fn rows<'a>(value: &'a Json, key: &str) -> &'a [Json] {
     value.get(key).and_then(Json::as_arr).expect(key)
 }
@@ -886,6 +897,214 @@ fn functional_statement_file_at_cold_head_replays_and_reports_status_without_ret
     assert_eq!(head(&fixture.book), before);
 }
 
+/// The checkpoint key is an explicit fixture-owner trust premise. The
+/// dependency-free verifier owns its signature, record and selector parsers.
+fn check_retained_source_exports(
+    fixture: &Fixture,
+    source: fa_model::EntryRef,
+    payload: &[u8],
+    recorded_at: CommitSeq,
+    earlier_state: &Json,
+) -> i128 {
+    use fa_verify::proof::production::derivation::verify_prefix_with_status;
+
+    let key_hex = text(data(earlier_state), "public_key");
+    let key: [u8; 32] = unhex(key_hex).try_into().unwrap();
+    let earlier_oid = text(data(earlier_state), "oid");
+    let before = head(&fixture.book);
+    let old_signed = ok(
+        &fixture.book,
+        &["proof", "signed-checkpoint", "--state", earlier_oid],
+    );
+    let old_anchor =
+        fa_verify::verify_checkpoint(&unhex(text(data(&old_signed), "bytes")), &[key]).unwrap();
+    assert!(old_anchor.checkpoint.through_seq < recorded_at.0);
+    let old_export = ok(
+        &fixture.book,
+        &["proof", "prefix", "--with-record", "--state", earlier_oid],
+    );
+    let old_bytes = unhex(text(data(&old_export), "bytes"));
+    let old_prefix = verify_prefix_with_status(&old_bytes, &old_anchor.checkpoint).unwrap();
+    assert_eq!(old_prefix.record_check, fa_verify::RecordCheck::Recomputed);
+    assert!(
+        old_prefix
+            .prefix
+            .envelopes
+            .iter()
+            .all(|leaf| leaf.record_digest != source.entry_digest),
+        "an earlier authentic checkpoint does not preserve this later source"
+    );
+    assert_eq!(head(&fixture.book), before);
+
+    // Publication is an explicit authorized action. Export never silently
+    // creates a checkpoint, repairs the journal, or blesses its accounting.
+    let state = ok(
+        &fixture.book,
+        &["checkpoint", "create", "--grant", "witness"],
+    );
+    assert!(integer(data(&state), "through_seq") >= i128::from(recorded_at.0));
+    assert_eq!(text(data(&state), "public_key"), key_hex);
+    let published = head(&fixture.book);
+    assert!(published > before);
+    let oid = text(data(&state), "oid");
+    let signed_path = fixture.dir.join("retained-source.ckpt");
+    ok(
+        &fixture.book,
+        &[
+            "proof",
+            "signed-checkpoint",
+            "--state",
+            oid,
+            "--out",
+            signed_path.to_str().unwrap(),
+        ],
+    );
+    let signed_bytes = std::fs::read(&signed_path).unwrap();
+    let anchor = fa_verify::verify_checkpoint(&signed_bytes, &[key]).unwrap();
+    assert!(anchor.checkpoint.through_seq >= recorded_at.0);
+    let mut stranger = key;
+    stranger[0] ^= 0x80;
+    assert!(fa_verify::verify_checkpoint(&signed_bytes, &[stranger]).is_err());
+
+    let prefix_path = fixture.dir.join("retained-source.prefix");
+    let prefix_args = [
+        "proof",
+        "prefix",
+        "--with-record",
+        "--state",
+        oid,
+        "--out",
+        prefix_path.to_str().unwrap(),
+    ];
+    let prefix_export = ok(&fixture.book, &prefix_args);
+    let claim = data(&prefix_export).get("claim").unwrap();
+    assert_eq!(claim.get("with_record"), Some(&Json::Bool(true)));
+    assert_eq!(text(claim, "payload_coverage"), "all_checkpoint_entries");
+    let prefix_bytes = std::fs::read(&prefix_path).unwrap();
+    let prefix = verify_prefix_with_status(&prefix_bytes, &anchor.checkpoint).unwrap();
+    assert_eq!(prefix.record_check, fa_verify::RecordCheck::Recomputed);
+    assert_eq!(prefix.prefix.scope, "seq_range_complete");
+    let source_leaves = prefix
+        .prefix
+        .envelopes
+        .iter()
+        .filter(|leaf| leaf.record_digest == source.entry_digest)
+        .collect::<Vec<_>>();
+    assert_eq!(source_leaves.len(), 1);
+    assert_eq!(source_leaves[0].commit_seq, recorded_at.0);
+    let positions = prefix_bytes
+        .windows(payload.len())
+        .enumerate()
+        .filter_map(|(index, bytes)| (bytes == payload).then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(positions.len(), 1, "exact native payload must be preserved");
+    assert!(verify_prefix_with_status(&prefix_bytes, &old_anchor.checkpoint).is_err());
+    assert!(verify_prefix_with_status(&old_bytes, &anchor.checkpoint).is_err());
+    let mut changed_amount = prefix_bytes.clone();
+    let amount_offset = payload
+        .windows(16)
+        .position(|bytes| bytes == i128::MAX.to_le_bytes())
+        .unwrap();
+    changed_amount[positions[0] + amount_offset] ^= 1;
+    assert!(verify_prefix_with_status(&changed_amount, &anchor.checkpoint).is_err());
+    assert!(
+        verify_prefix_with_status(&prefix_bytes[..prefix_bytes.len() - 1], &anchor.checkpoint)
+            .is_err()
+    );
+
+    let inclusion_path = fixture.dir.join("retained-source.inclusion");
+    let entry_id = format!("{:032x}", source.vid.0);
+    ok(
+        &fixture.book,
+        &[
+            "proof",
+            "inclusion",
+            "--entry",
+            &entry_id,
+            "--with-record",
+            "--state",
+            oid,
+            "--out",
+            inclusion_path.to_str().unwrap(),
+        ],
+    );
+    let inclusion_bytes = std::fs::read(&inclusion_path).unwrap();
+    let included = fa_verify::verify_inclusion(&inclusion_bytes, &anchor.checkpoint).unwrap();
+    assert_eq!(included.record, fa_verify::RecordCheck::Recomputed);
+    assert_eq!(included.envelope.record_digest, source.entry_digest);
+    assert_eq!(included.envelope.commit_seq, recorded_at.0);
+    assert!(
+        inclusion_bytes
+            .windows(payload.len())
+            .any(|bytes| bytes == payload)
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [&signed_path, &prefix_path, &inclusion_path] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+    let (status, _) = run(&fixture.book, &prefix_args);
+    assert_eq!(
+        status, 5,
+        "existing source export must never be overwritten"
+    );
+    assert_eq!(std::fs::read(&prefix_path).unwrap(), prefix_bytes);
+    assert_eq!(head(&fixture.book), published);
+
+    for (kind, path) in [("inclusion", &inclusion_path), ("prefix", &prefix_path)] {
+        let argv = [
+            kind,
+            path.to_str().unwrap(),
+            "--checkpoint",
+            signed_path.to_str().unwrap(),
+            "--key",
+            key_hex,
+            "--json",
+        ]
+        .map(str::to_string);
+        let output = fa_verify::cli::run(&argv, &|path| std::fs::read(path));
+        assert_eq!(
+            output.exit, 0,
+            "{kind}: {}\n{}",
+            output.stdout, output.stderr
+        );
+        let report = json::parse(output.stdout.trim()).unwrap();
+        assert_eq!(text(&report, "verdict"), "verified");
+        let check = rows(&report, "checks")
+            .iter()
+            .find(|check| text(check, "check") == kind)
+            .unwrap();
+        let detail = check.get("detail").unwrap();
+        assert_eq!(
+            text(
+                detail,
+                if kind == "prefix" {
+                    "record_check"
+                } else {
+                    "record"
+                }
+            ),
+            "recomputed"
+        );
+        if kind == "prefix" {
+            assert_eq!(
+                text(detail, "scope_derivation"),
+                "all_prefix_payloads_checked"
+            );
+        }
+    }
+    let (status, refusal) = run(&fixture.book, &["tb", "--period", "FY2026-P01"]);
+    assert_eq!(status, 3, "{}", refusal.render());
+    assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-198");
+    assert_eq!(head(&fixture.book), published);
+    published
+}
+
 #[test]
 fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_and_export() {
     for (fitting_net, cached) in [(false, false), (false, true), (true, false), (true, true)] {
@@ -900,6 +1119,12 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
             integer(data(&advanced), "through")
         });
         let safe = head(&fixture.book);
+        let earlier_state = (!fitting_net).then(|| {
+            ok(
+                &fixture.book,
+                &["checkpoint", "create", "--grant", "witness"],
+            )
+        });
         if fitting_net {
             // The current writer lawfully fills the opposite gross columns.
             // The later injected entry then overflows gross with a fitting net.
@@ -1125,5 +1350,29 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
             .unwrap();
         assert_eq!(retained, entry);
         assert_eq!(recorded_at, invalid_head);
+        if let Some(earlier_state) = earlier_state {
+            let source_row = reopened.vertex(vid).unwrap().unwrap();
+            let payload =
+                fa_journal::rows::bytes(&source_row, property::FA_PAYLOAD, "source").unwrap();
+            drop(reopened);
+            let published = check_retained_source_exports(
+                &fixture,
+                entry.entry_ref(vid),
+                &payload,
+                recorded_at,
+                &earlier_state,
+            );
+            let after = runtime
+                .block_on(Database::open(
+                    &cx.commit(),
+                    &fixture.book.join("store"),
+                    db_keys(seed),
+                ))
+                .unwrap();
+            assert_eq!(i128::from(after.frontier().unwrap().0), published);
+            for row in before_rows {
+                assert_eq!(after.vertex(row.vid).unwrap().as_ref(), Some(&row));
+            }
+        }
     }
 }
