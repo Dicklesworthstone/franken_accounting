@@ -119,8 +119,10 @@ The embedded API's `Book::advance_registers(period)` consumes new committed entr
 
 Authorized embedded readers use `Book::read_scope` before reading. Its
 `trial_balance_served` and `period_activity_served` methods return the report
-and its actual maintenance cursor/tail or literal fallback reason. The existing
-scope methods also use maintained cells for HEAD when resident history permits;
+and its actual maintenance cursor/tail or literal fallback reason. The global
+delta window requires whole-book authority; narrower admitted reports fold
+literally without exposing that window's metadata. The existing scope methods
+also use maintained cells for HEAD when authority and resident history permit;
 an explicit known-at sequence remains a literal historical read. These reads
 load no history, repair no cache and preserve the same capability caveats.
 

@@ -2596,6 +2596,28 @@ fn authorized_head_reads_use_maintained_cells_and_preserve_history_and_scope() {
     post_rent(&mut book, usd, principal, day, b"tail", 150_000)
         .unwrap()
         .unwrap();
+    // The resident delta window also contains another period's entries.
+    // A March-only reader may read its report, not that global tail metadata.
+    book.transition_period(
+        "FY2026-P04",
+        PeriodTransition::Open,
+        principal,
+        1,
+        b"open-april",
+        &Capability::embedded(principal, &["close"]).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    post_rent(
+        &mut book,
+        usd,
+        principal,
+        DateDay::from_ymd(2026, 4, 15).unwrap(),
+        b"outside-period",
+        150_000,
+    )
+    .unwrap()
+    .unwrap();
     let head = book.head().unwrap();
     let literal_stock = book.trial_balance_at(&periods, Some(head)).unwrap();
     let literal_activity = book.period_activity(&periods, Some(head)).unwrap();
@@ -2646,7 +2668,23 @@ fn authorized_head_reads_use_maintained_cells_and_preserve_history_and_scope() {
     let scope = book.read_scope(principal, &limited).unwrap().unwrap();
     let (activity, served) = scope.period_activity_served(&periods).unwrap().unwrap();
     assert_eq!(activity, literal_activity);
-    assert!(matches!(served, Served::Maintained(_)));
+    assert!(
+        matches!(&served, Served::Literal(reason) if reason.contains("`periods` caveat")),
+        "a scoped report must not expose the whole-book tail: {served:?}"
+    );
+    let through_march = reader
+        .clone()
+        .effective_through(DateDay::from_ymd(2026, 3, 31).unwrap());
+    let effective_scope = book.read_scope(principal, &through_march).unwrap().unwrap();
+    let (stock, served) = effective_scope
+        .trial_balance_served(&periods)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stock, literal_stock);
+    assert!(
+        matches!(&served, Served::Literal(reason) if reason.contains("`effective` caveat")),
+        "a date-bound report must not expose the whole-book tail: {served:?}"
+    );
     let assert_caveat = |refusal: Refusal, name: &str| {
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
         assert!(

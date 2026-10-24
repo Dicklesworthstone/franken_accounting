@@ -6260,13 +6260,25 @@ impl ReadScope<'_> {
     /// Admission precedes the maintained read; the scope's immutable book
     /// borrow prevents a publication between those operations. This reads
     /// resident history only and never loads history or repairs a cache.
+    /// Inspecting the delta window requires whole-book authority; a narrower
+    /// admitted report uses its literal fixed-prefix path instead.
     pub fn trial_balance_served(
         &self,
         periods: &[String],
     ) -> Outcome<(TrialBalance, fa_registers::Served)> {
         let selection = crate::TrialBalanceSelection::Periods(periods.to_vec());
-        if let Err(refusal) = self.admit_report(&selection.into(), None)? {
-            return Ok(Err(refusal));
+        let seq = match self.admit_report(&selection.into(), None)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = self.authority.whole_book(seq) {
+            return Ok(Ok((
+                self.book.trial_balance_at(periods, Some(seq))?,
+                fa_registers::Served::Literal(format!(
+                    "this capability cannot inspect the register window ({}: {}); the read folds the journal",
+                    refusal.code, refusal.message
+                )),
+            )));
         }
         Ok(Ok(self.book.trial_balance_served(periods)?))
     }
@@ -6309,14 +6321,25 @@ impl ReadScope<'_> {
     /// Authorized activity at HEAD, with the actual cache cursor and tail
     /// or the reason for a literal fallback. Only the selected periods are
     /// admitted. Like [`Self::trial_balance_served`], this loads no history
-    /// and cannot repair or advance a cache.
+    /// and cannot repair or advance a cache. A period or effective-date caveat
+    /// uses the admitted literal report without inspecting the global window.
     pub fn period_activity_served(
         &self,
         periods: &[String],
     ) -> Outcome<(TrialBalance, fa_registers::Served)> {
         let selection = crate::TrialBalanceSelection::Activity(periods.to_vec());
-        if let Err(refusal) = self.admit_report(&selection.into(), None)? {
-            return Ok(Err(refusal));
+        let seq = match self.admit_report(&selection.into(), None)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = self.authority.whole_book(seq) {
+            return Ok(Ok((
+                self.book.period_activity(periods, Some(seq))?,
+                fa_registers::Served::Literal(format!(
+                    "this capability cannot inspect the register window ({}: {}); the read folds the journal",
+                    refusal.code, refusal.message
+                )),
+            )));
         }
         Ok(Ok(self.book.period_activity_served(periods)?))
     }
