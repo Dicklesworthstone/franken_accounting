@@ -1464,6 +1464,9 @@ pub struct PaidLeg {
 /// The book itself as a PAID node: a leg naming no party value, or several.
 pub const PAID_BOOK: u128 = 0;
 
+/// The PAID fold's cells: `(from, to, unit, entity) -> total`.
+pub type PaidCells = BTreeMap<(u128, u128, u32, Option<u128>), i128>;
+
 /// The literal PAID fold, `(from, to, unit, entity) -> total`, over live
 /// posting entries given as their legs, with `parties` mapping a party
 /// dimension value to its party. Per entry and `(unit, entity)`: a leg's node
@@ -1477,7 +1480,7 @@ pub const PAID_BOOK: u128 = 0;
 pub fn paid_fold(
     entries: &[Vec<PaidLeg>],
     parties: &BTreeMap<u128, u128>,
-) -> Result<BTreeMap<(u128, u128, u32, Option<u128>), i128>, &'static str> {
+) -> Result<PaidCells, &'static str> {
     type Legs = Vec<(u128, i128)>;
     let named: BTreeSet<u128> = entries.iter().flatten().filter_map(|l| l.entity).collect();
     let mut totals: BTreeMap<(u128, u128, u32, Option<u128>), crate::Int> = BTreeMap::new();
