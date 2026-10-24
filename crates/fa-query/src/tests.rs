@@ -4,7 +4,9 @@ fn native(text: &str) -> (Profiled, Native) {
     let profiled = rewrite(text).map_err(|r| format!("{r:?}")).expect(text);
     let native = match &profiled.selection {
         Selection::Native(native) => Some(native.clone()),
-        Selection::TrialBalance => None,
+        Selection::TrialBalance
+        | Selection::ExplainBalance { .. }
+        | Selection::OpenItems { .. } => None,
     }
     .expect("a native read");
     (profiled, native)
@@ -292,6 +294,57 @@ fn branches_procedures_and_certificates() {
         rewrite("CALL fa.trial_balance()").unwrap().selection,
         Selection::TrialBalance
     );
+    // The other registered reads, each with its own selection law.
+    let explained =
+        rewrite("CALL fa.explain_balance('6000') FOR PERIOD 'FY2026-P03' AS KNOWN AT 12").unwrap();
+    assert_eq!(
+        explained.selection,
+        Selection::ExplainBalance {
+            account: "6000".into()
+        }
+    );
+    assert_eq!(explained.known_at, KnownAt::Seq(12));
+    assert_eq!(
+        rewrite("CALL fa.explain_balance('6000') FOR PERIOD 'FY2026-P03' AS ORIGINALLY REPORTED")
+            .unwrap()
+            .known_at,
+        KnownAt::Reported(Reported::Originally)
+    );
+    for (text, account) in [
+        ("CALL fa.open_items", None),
+        ("CALL fa.open_items() AS KNOWN AT 4", None),
+        ("CALL fa.open_items('1200')", Some("1200".to_string())),
+    ] {
+        assert_eq!(
+            rewrite(text).unwrap().selection,
+            Selection::OpenItems { account },
+            "{text}"
+        );
+    }
+    for (text, says) in [
+        ("CALL fa.trial_balance('1000')", "takes no argument"),
+        (
+            "CALL fa.explain_balance FOR PERIOD 'FY2026-P03'",
+            "takes the account code",
+        ),
+        ("CALL fa.explain_balance('6000')", "names no FOR PERIOD"),
+        (
+            "CALL fa.explain_balance('6000', '6100') FOR PERIOD 'FY2026-P03'",
+            "stands alone",
+        ),
+        (
+            "CALL fa.open_items('1200') FOR PERIOD 'FY2026-P03'",
+            "not for a period",
+        ),
+        (
+            "CALL fa.open_items EFFECTIVE BETWEEN '2026-01-01' AND '2026-01-31'",
+            "by period and known-at",
+        ),
+    ] {
+        let r = refused(text);
+        assert_eq!(r.law, Law::Profile, "{text}");
+        assert!(r.message.contains(says), "{text}: {r:?}");
+    }
     for (text, says) in [
         ("CALL fa.open_amount(l)", "not a profile procedure"),
         ("CALL db.labels()", "not a profile procedure"),

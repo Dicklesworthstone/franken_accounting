@@ -14451,7 +14451,7 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
-fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let who = ctx.principal(args);
     let read_cap = ctx.capability(args, &["read"])?;
     let certify_cap = if args.flag("--as-of").is_none()
@@ -18129,7 +18129,7 @@ fn side_name(side: Side) -> &'static str {
 }
 
 /// `fa explain balance|entry|lineage|evidence|refusal|period|register ...`.
-fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+pub(crate) fn explain_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let sub = args.positional.get(1).map(String::as_str);
     // verbs.toml registers flags per verb, so the other subcommands would
     // otherwise accept these and silently answer without them.

@@ -4452,6 +4452,142 @@ fn the_correct_cluster_reclassifies_like_the_cli() {
     log("fa_correct_reclass: a partial move posts, an exceeding one is FA-REF-185, lineage agrees");
 }
 
+/// fa-i7e: the on-demand fa.billing and fa.adjust clusters post typed
+/// documents as `fa invoice` and `fa accrue` do. An invoice's dry run is a
+/// plan that commits through fa_post_commit_plan to the reviewed proposal;
+/// an invoice and an accrual post with their classes; an Agent launch may
+/// rehearse an invoice but is refused FA-REF-013 on trunk, and nothing it
+/// does publishes.
+#[test]
+fn the_billing_and_adjust_clusters_post_typed_documents_like_the_cli() {
+    let dir = tmp("billing");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Billing Co",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"},{"code":"2100","name":"Accrued liabilities","type":"Liability","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Utilities","type":"Expense","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
+    cli_data(&["period", "open", "FY2026-P04", "--book", &b, "--json"]);
+    let customer = dir.join("customer.json");
+    std::fs::write(
+        &customer,
+        r#"{"code":"ACME-CUST-17","kind":"Customer","name":"Acme Customer"}"#,
+    )
+    .unwrap();
+    let customer = customer.display().to_string();
+    cli_data(&["party", "add", &customer, "--book", &b, "--json"]);
+    let oid = source_document(&dir, &b);
+    let parse = |text: &str| -> JsonValue { fastmcp_rust::serde_json::from_str(text).unwrap() };
+    let head = || cli_data(&["book", "info", "--book", &b, "--json"]);
+    let invoice = |number: &str| {
+        json!({
+            "party": "ACME-CUST-17", "number": number, "date": "2026-03-14",
+            "receivable": "1200", "revenue": "4000",
+            "line": ["qty=10 unit_price=\"125.00 USD\""], "evidence": [oid],
+        })
+    };
+    let launch = [
+        "--profile",
+        "preparer",
+        "--principal",
+        "operator",
+        "--cluster",
+        "fa.billing",
+        "--cluster",
+        "fa.adjust",
+    ];
+
+    // An Agent launch rehearses the invoice, is refused on trunk, publishes nothing.
+    let before = head();
+    let mut agent = Mcp::start_with(&book, &launch[4..]);
+    agent.discover();
+    let mut rehearsal = invoice("10441");
+    rehearsal["dry_run"] = json!(true);
+    let (is_error, text, _) = call_tool(&mut agent, "fa_billing_invoice", rehearsal);
+    assert!(!is_error, "an Agent may rehearse an invoice: {text}");
+    assert_eq!(parse(&text)["scope"], json!("same-snapshot-post"), "{text}");
+    let (is_error, text, _) = call_tool(&mut agent, "fa_billing_invoice", invoice("10441"));
+    assert!(is_error, "an Agent never posts an invoice to trunk: {text}");
+    assert!(text.contains("FA-REF-013"), "{text}");
+    assert_eq!(agent.finish(), 0);
+    assert_eq!(head(), before, "the Agent launch published nothing");
+
+    let mut mcp = Mcp::start_with(&book, &launch);
+    mcp.discover();
+    // The dry run is the plan; committing it posts the reviewed proposal.
+    let mut planned = invoice("10442");
+    planned["dry_run"] = json!(true);
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_billing_invoice", planned);
+    assert!(!is_error, "{text}");
+    let plan = parse(&text);
+    assert_eq!(plan["scope"], json!("same-snapshot-post"), "{text}");
+    assert_eq!(head(), before, "a dry run publishes nothing");
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_post_commit_plan",
+        json!({"plan": plan["bytes"]}),
+    );
+    assert!(!is_error, "{text}");
+    let committed = parse(&text);
+    assert_eq!(committed["plan_digest"], plan["plan_digest"], "{text}");
+    let vid = committed["vid"].as_str().unwrap().to_string();
+    let entry = parse(&cli_data(&["entry", "show", &vid, "--book", &b, "--json"]));
+    assert_eq!(entry["proposal_digest"], plan["proposal_digest"]);
+    assert_eq!(entry["class"], json!("Original"), "{entry}");
+
+    // A direct invoice and an accrual with its scheduled reversal post.
+    let (is_error, text, _) = call_tool(&mut mcp, "fa_billing_invoice", invoice("10443"));
+    assert!(!is_error, "{text}");
+    let posted = parse(&text);
+    let (is_error, text, _) = call_tool(
+        &mut mcp,
+        "fa_adjust_accrue",
+        json!({
+            "date": "2026-03-31", "debit": "6000", "credit": "2100",
+            "amount": "75.00 USD", "reverse_on": "2026-04-01", "evidence": [oid],
+        }),
+    );
+    assert!(!is_error, "{text}");
+    let accrued = parse(&text);
+    for (vid, class) in [(&posted["vid"], "Original"), (&accrued["vid"], "Adjusting")] {
+        let vid = vid.as_str().unwrap();
+        let entry = parse(&cli_data(&["entry", "show", vid, "--book", &b, "--json"]));
+        assert_eq!(entry["class"], json!(class), "{entry}");
+    }
+    let tb = cli_data(&["tb", "--period", "FY2026-P03", "--book", &b, "--json"]);
+    assert!(
+        tb.contains("2500.00 USD"),
+        "two 1,250.00 USD invoices: {tb}"
+    );
+    assert_eq!(mcp.finish(), 0);
+    log(
+        "fa.billing and fa.adjust: Agent rehearses, plan commits the reviewed proposal, invoice and accrual post",
+    );
+}
+
 /// fa-i7e: the fa.correct cluster's replace tool commits the Reversal and
 /// its Replacement as one pair, like `fa replace`; without the corrected
 /// entry it is refused and nothing is written; a retry is the recorded pair,
