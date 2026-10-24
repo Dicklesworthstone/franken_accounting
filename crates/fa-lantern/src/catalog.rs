@@ -24,8 +24,8 @@ use crate::cutoff::{
 use crate::digits::{FirstDigit, FirstTwoDigits, SecondDigit};
 use crate::duplicates::{Near, SameSameDifferent, SameSameSame};
 use crate::graph::{
-    CircularFlows, Communities, Concentration, IdentityResolution, Layering, PartyLayering,
-    RelatedPartyExposure, RoundTrips, ShellSignature, Structuring,
+    CircularFlows, Communities, Concentration, IdentityResolution, Layering, PartyCircularFlows,
+    PartyLayering, RelatedPartyExposure, RoundTrips, ShellSignature, Structuring,
 };
 use crate::jet::{
     IntercompanyUnmatched, LargeRoundReversals, ManualVsRule, PeriodEndTiming, PostClosing,
@@ -118,6 +118,7 @@ pub fn build(id: &str, params: Params, inputs: Inputs) -> Result<Box<dyn Procedu
         RoundTrips::ID => Box::new(RoundTrips::with(params)),
         Structuring::ID => Box::new(Structuring::with(params)),
         CircularFlows::ID => Box::new(CircularFlows::with(params)),
+        PartyCircularFlows::ID => Box::new(PartyCircularFlows::with(params)),
         Layering::ID => Box::new(Layering::with(params)),
         PartyLayering::ID => Box::new(PartyLayering::with(params)),
         Communities::ID => Box::new(Communities::with(params)),

@@ -241,3 +241,82 @@ fn a_counterparty_chain_through_one_clearing_account_is_found_through_parties() 
     let none = run_over(&weaker, &h.book, &PartyLayering::new().unwrap()).unwrap();
     assert!(none.findings.is_empty(), "{:?}", none.findings);
 }
+
+/// fa-b6xs slice 2: money that returns to a counterparty through others,
+/// A -> B -> C -> A, every hop through clearing account 1010, is a cycle of
+/// self-flows the account graph drops and a 3-hop cycle between parties.
+/// Planted: a closing hop that keeps under 70% of the first is not flagged.
+#[test]
+fn a_counterparty_cycle_through_one_clearing_account_is_found_through_parties() {
+    use fa_lantern::graph::{CircularFlows, PartyCircularFlows};
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = None;
+    let (_, a_val) = party(&h, &mut snapshot, "SHELL-A");
+    let (_, b_val) = party(&h, &mut snapshot, "SHELL-B");
+    let (_, c_val) = party(&h, &mut snapshot, "SHELL-C");
+    let ab = transfer(
+        &mut h,
+        911,
+        day(2026, 1, 5),
+        "1010",
+        Some(b_val),
+        "1010",
+        Some(a_val),
+        100_000,
+    );
+    let bc = transfer(
+        &mut h,
+        912,
+        day(2026, 1, 6),
+        "1010",
+        Some(c_val),
+        "1010",
+        Some(b_val),
+        95_000,
+    );
+    let ca = transfer(
+        &mut h,
+        913,
+        day(2026, 1, 7),
+        "1010",
+        Some(a_val),
+        "1010",
+        Some(c_val),
+        90_000,
+    );
+    let (ab_vid, bc_vid, ca_vid) = (ab.vid, bc.vid, ca.vid);
+    snapshot.entries = vec![ab, bc, ca];
+
+    let accounts = run_over(&snapshot, &h.book, &CircularFlows::new().unwrap()).unwrap();
+    assert!(accounts.findings.is_empty(), "{:?}", accounts.findings);
+
+    let found = run_over(&snapshot, &h.book, &PartyCircularFlows::new().unwrap()).unwrap();
+    assert_eq!(found.findings.len(), 1, "{:?}", found.findings);
+    let finding = &found.findings[0];
+    assert_eq!(finding.procedure, "graph.party_circular_flows");
+    assert!(
+        finding.narrative.contains(
+            "3-hop directed cycle in SCC retaining 90000 of 100000 through parties SHELL-A -> SHELL-B -> SHELL-C -> SHELL-A (9000 bps"
+        ),
+        "{}",
+        finding.narrative
+    );
+    let cited: Vec<VId> = finding
+        .cites
+        .iter()
+        .filter_map(|cite| match cite {
+            Cite::Entry(vid) => Some(*vid),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cited, vec![ab_vid, bc_vid, ca_vid]);
+    witness::determinism(&snapshot, &h.book, &PartyCircularFlows::new().unwrap()).unwrap();
+
+    let mut leaky = snapshot.clone();
+    for leg in &mut leaky.entries[2].entry.proposal.legs {
+        leg.amount = Amount::new(h.usd, 60_000);
+    }
+    let none = run_over(&leaky, &h.book, &PartyCircularFlows::new().unwrap()).unwrap();
+    assert!(none.findings.is_empty(), "{:?}", none.findings);
+}

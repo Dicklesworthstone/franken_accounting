@@ -26,6 +26,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("numbers.relative_size_factor", 1),
     ("numbers.threshold_splitting", 1),
     ("graph.circular_flows", 1),
+    // fa-b6xs: reads live postings and the REA parties this closure binds.
+    ("graph.party_circular_flows", 1),
     ("graph.layering", 1),
     // fa-b6xs: reads live postings and the REA parties this closure binds.
     ("graph.party_layering", 1),
