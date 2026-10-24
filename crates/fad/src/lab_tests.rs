@@ -46,6 +46,139 @@ const BOOK: &str = "/books/lab";
 /// Real dispatcher and memory book, with a long timer so the commit hook
 /// itself must make maintenance ready. No virtual handler stands in for it.
 #[test]
+fn fiscal_year_cohort_picks_up_later_period_creation_without_widening_to_another_year() {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_money::UnitRegistry;
+    use fa_time::{CustomYear, DateDay, FiscalCalendar};
+
+    let date = |year| DateDay::from_ymd(year, 1, 1).unwrap();
+    let calendar = FiscalCalendar::custom(
+        "cohort",
+        vec![
+            CustomYear {
+                fiscal_year: 2026,
+                bounds: vec![date(2026), date(2027)],
+            },
+            CustomYear {
+                fiscal_year: 2027,
+                bounds: vec![date(2027), date(2028)],
+            },
+        ],
+        0,
+    )
+    .unwrap();
+    let mut book = Book::create_memory(
+        BookKeys::for_development(164),
+        BookSpec {
+            book_id: Id128([164; 16]),
+            name: "Future period cohort".into(),
+            base_unit: UnitRegistry::embedded().unwrap().lookup("USD").unwrap(),
+            calendar: calendar.clone(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(164),
+    )
+    .unwrap();
+    assert!(book.periods().unwrap().is_empty());
+    let periods = timed::registers::fiscal_year_periods(&calendar, 2026).unwrap();
+    assert_eq!(periods, ["FY2026-P01", "FY2026-OPEN", "FY2026-CLOSE"]);
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let cx = runtime.request_cx_with_budget(Budget::INFINITE);
+    let work = timed::TimedWork::maintenance_only(
+        &cx,
+        timed::Policy {
+            tick_ns: 3_600_000_000_000,
+            sweep_batch: 1,
+            clock_drift_ns: 0,
+        },
+        periods,
+    )
+    .unwrap();
+    let scheduled = work.deadline();
+    let mut server = Server {
+        book: &mut book,
+        dir: PathBuf::from(BOOK),
+        socket: PathBuf::from(BOOK).join("fad.sock"),
+        files_root: None,
+        requests: 0,
+        timed: Some(work),
+        daemon_uid: None,
+        timings: Vec::new(),
+    };
+    for (index, args) in [
+        vec!["period", "create", "--fiscal-year", "2027", "--json"],
+        vec!["period", "create", "--fiscal-year", "2026", "--json"],
+        vec!["period", "open", "FY2026-P01", "--json"],
+        vec!["period", "open", "FY2027-P01", "--json"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (response, _) = server.handle(Request {
+            op: Op::Run,
+            argv: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            cwd: None,
+            stdin: None,
+            token: None,
+        });
+        assert_eq!(
+            response.exit, 0,
+            "{args:?}: {}{}",
+            response.stdout, response.stderr
+        );
+        let committed = server.book.head().unwrap();
+        runtime.block_on(server.tick(&cx));
+        let work = server.timed.as_ref().unwrap();
+        assert!(!work.timing_enabled());
+        assert_eq!(work.deadline(), scheduled);
+        let registers = work.register_maintenance().unwrap();
+        assert_eq!(registers.attempts(), (index + 1) as u64);
+        assert!(
+            registers
+                .periods()
+                .iter()
+                .all(|period| period.period.starts_with("FY2026-"))
+        );
+        if index == 0 {
+            assert!(registers.periods()[0].error.is_some());
+            assert!(registers.periods()[0].last_success.is_none());
+            assert_eq!(server.book.head().unwrap(), committed);
+        } else {
+            assert_eq!(
+                registers.periods()[index % 3]
+                    .last_success
+                    .as_ref()
+                    .unwrap()
+                    .through,
+                committed.0
+            );
+        }
+    }
+    let work = server
+        .timed
+        .as_ref()
+        .unwrap()
+        .register_maintenance()
+        .unwrap();
+    assert!(
+        work.periods()
+            .iter()
+            .all(|period| period.error.is_none() && period.last_success.is_some())
+    );
+    let maintained = server.book.verify_registers("FY2026-P01").unwrap();
+    assert!(maintained.is_green(), "{maintained:?}");
+    assert!(maintained.verified_through.is_some());
+    let unselected = server.book.verify_registers("FY2027-P01").unwrap();
+    assert_eq!(unselected.verified_through, None);
+}
+
+#[test]
 fn server_wakes_configured_registers_only_when_a_request_commits() {
     use asupersync::Budget;
     use asupersync::runtime::RuntimeBuilder;

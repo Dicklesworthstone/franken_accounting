@@ -61,6 +61,54 @@ fn publication(through: u64) -> Publication {
 }
 
 #[test]
+fn fiscal_year_selection_uses_custom_boundaries_and_preserves_the_scheduling_bound() {
+    use fa_time::{CustomYear, DateDay, FiscalCalendar};
+    let start = DateDay::from_ymd(2026, 1, 1).unwrap();
+    let calendar = FiscalCalendar::custom(
+        "short",
+        vec![CustomYear {
+            fiscal_year: 2026,
+            bounds: vec![
+                start,
+                start.add_days(10).unwrap(),
+                start.add_days(30).unwrap(),
+            ],
+        }],
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        fiscal_year_periods(&calendar, 2026).unwrap(),
+        [
+            "FY2026-P01",
+            "FY2026-P02",
+            "FY2026-OPEN",
+            "FY2026-A1",
+            "FY2026-A2",
+            "FY2026-CLOSE",
+        ]
+    );
+    assert!(fiscal_year_periods(&calendar, 2027).is_err());
+    let largest = FiscalCalendar::custom(
+        "largest",
+        vec![CustomYear {
+            fiscal_year: 2026,
+            bounds: (0..=fa_time::calendar::MAX_CUSTOM_PERIODS)
+                .map(|n| start.add_days(n as i32).unwrap())
+                .collect(),
+        }],
+        fa_time::calendar::MAX_ADJUSTMENT_PERIODS,
+    )
+    .unwrap();
+    let selected = fiscal_year_periods(&largest, 2026).unwrap();
+    assert_eq!(selected.len(), 59);
+    assert!(selected.len() <= MAX_PERIODS);
+    assert!(
+        fiscal_year_periods(&FiscalCalendar::monthly("monthly", 1, 0).unwrap(), i32::MAX).is_err()
+    );
+}
+
+#[test]
 fn configuration_is_bounded_exact_and_never_silently_repaired() {
     for periods in [
         vec![],

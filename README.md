@@ -124,7 +124,14 @@ makes one attempt ready when a served request advances the journal; repeated
 notifications coalesce, and reads or idempotent retries that change nothing do
 not wake it. This early attempt does not record clock evidence, run sweeps or
 postpone the regular timer. Its Rust regressions still require qualification.
-Period selection remains explicit: new periods are not discovered automatically.
+`fad serve --book ./books/acme --register-fiscal-year 2026` selects the complete
+year from the book's actual fiscal calendar, including Opening, Adjustment and
+Closing periods. This is an alternative to exact `--register-period` options.
+The selected cohort includes periods created later in that year, so creating
+the year after startup makes those periods maintainable without a restart.
+Missing periods remain visible as per-period errors until creation; other years
+are outside the selection. Custom calendars accept only their declared years.
+The existing 64-period scheduling bound and one-attempt rotation still apply.
 Historical checkpoints, cadence policies, functional-value maintenance, other
 register families and the remaining cached report reads are unfinished.
 
