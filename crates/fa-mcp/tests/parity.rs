@@ -130,7 +130,11 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             || (e.verb == "verify" && e.subcommand.as_deref() == Some("export"))
             // fa-i7e: a void releases a hold for good and needs --yes, which
             // no MCP session carries; fa_post_resolve is the safe path.
-            || (e.verb == "void-reserve" && e.subcommand.is_none());
+            || (e.verb == "void-reserve" && e.subcommand.is_none())
+            // fa-c34: a rule's golden corpus is a host directory of case
+            // files (like an export verify, fa-lzrn); MCP evaluates a rule
+            // over a recorded event inline through fa_rules_rule.
+            || (e.verb == "rule" && e.subcommand.as_deref() == Some("test"));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"
