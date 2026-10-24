@@ -1745,9 +1745,10 @@ impl Book {
     /// matrix row and SoD rule are decided over the case's approvals, with
     /// the poster as preparer and the planners as the case's preparers. The
     /// entries, the Post record and the case's state change are one commit,
-    /// and a case's entry reaches trunk no other way. This build posts
-    /// PriorPeriodAdjustment cases; a Revision or Restatement case's entries
-    /// supersede a target with delta legs and are refused (FA-REF-178).
+    /// and a case's entry reaches trunk no other way. Every kind posts: a
+    /// PriorPeriodAdjustment case's entries are new; a Revision's (Revises)
+    /// and a Restatement's or PolicyChangeRetrospective's (Restates) each
+    /// supersede one standing target with delta legs.
     pub fn post_case(
         &mut self,
         capability: fa_journal::Capability,

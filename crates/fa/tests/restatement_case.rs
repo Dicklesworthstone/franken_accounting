@@ -2,7 +2,9 @@
 //! a journaled case body, its determination, its numbering and its
 //! refusals, over a real memory book.
 
-use fa::{Book, BookKeys, Entropy};
+use std::collections::{BTreeMap, BTreeSet};
+
+use fa::{Book, BookKeys, Entropy, ScenarioDiff};
 use fa_intents::PostIntent;
 use fa_journal::refusal::code;
 use fa_journal::{
@@ -18,6 +20,40 @@ use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
 use fgdb_types::VId;
 
 const PRINCIPAL: VId = VId(1);
+
+/// fa-75j4 acceptance: the rehearsal's diff is the posted diff. Every
+/// (account, unit) the case's Post moved moved by exactly the rehearsal's
+/// delta, and nothing else moved.
+fn assert_posted_diff_is_the_rehearsed_one(
+    before: &fa_registers::TrialBalance,
+    after: &fa_registers::TrialBalance,
+    rehearsed: &ScenarioDiff,
+) {
+    let net = |tb: &fa_registers::TrialBalance| -> BTreeMap<(String, u32), i128> {
+        tb.rows
+            .iter()
+            .map(|row| ((row.code.clone(), row.unit_id), row.debits - row.credits))
+            .collect()
+    };
+    let (before, after) = (net(before), net(after));
+    let cells: BTreeSet<(String, u32)> = before.keys().chain(after.keys()).cloned().collect();
+    let posted: BTreeMap<(String, u32), i128> = cells
+        .into_iter()
+        .filter_map(|cell| {
+            let moved =
+                after.get(&cell).copied().unwrap_or(0) - before.get(&cell).copied().unwrap_or(0);
+            (moved != 0).then_some((cell, moved))
+        })
+        .collect();
+    let rehearsal: BTreeMap<(String, u32), i128> = rehearsed
+        .rows
+        .iter()
+        .filter(|row| row.delta != 0)
+        .map(|row| ((row.code.clone(), row.unit_id), row.delta))
+        .collect();
+    assert!(!rehearsal.is_empty(), "the rehearsal changes something");
+    assert_eq!(posted, rehearsal, "the posted diff is the rehearsed diff");
+}
 
 fn day(year: i32, month: u8, day: u8) -> DateDay {
     DateDay::from_ymd(year, month, day).unwrap()
@@ -1047,7 +1083,7 @@ fn a_revision_case_revises_a_closed_periods_posting_through_its_post() {
     )
     .unwrap()
     .unwrap();
-    let certificate = book
+    let rehearsed = book
         .certify_scenario_diff(
             PRINCIPAL,
             &restate,
@@ -1056,8 +1092,8 @@ fn a_revision_case_revises_a_closed_periods_posting_through_its_post() {
             false,
         )
         .unwrap()
-        .unwrap()
-        .certificate;
+        .unwrap();
+    let certificate = rehearsed.certificate.clone();
     book.rehearse_case(restate.clone(), 1, &certificate, date, b"rehearsal")
         .unwrap()
         .unwrap();
@@ -1134,6 +1170,7 @@ fn a_revision_case_revises_a_closed_periods_posting_through_its_post() {
     };
     assert_eq!(cash(&before), Some(15_000));
     assert_eq!(cash(&after), Some(20_000), "the target plus the delta");
+    assert_posted_diff_is_the_rehearsed_one(&before, &after, &rehearsed.report);
 }
 
 /// fa-651f slice 1 (plan §8.3, §14.3): a Restatement case restates a Locked
@@ -1354,7 +1391,7 @@ fn a_restatement_case_restates_a_locked_periods_posting_under_independent_approv
     )
     .unwrap()
     .unwrap();
-    let certificate = book
+    let rehearsed = book
         .certify_scenario_diff(
             PRINCIPAL,
             &restate,
@@ -1363,8 +1400,8 @@ fn a_restatement_case_restates_a_locked_periods_posting_under_independent_approv
             false,
         )
         .unwrap()
-        .unwrap()
-        .certificate;
+        .unwrap();
+    let certificate = rehearsed.certificate.clone();
     book.rehearse_case(restate.clone(), 1, &certificate, date, b"rehearsal")
         .unwrap()
         .unwrap();
@@ -1450,4 +1487,5 @@ fn a_restatement_case_restates_a_locked_periods_posting_under_independent_approv
     };
     assert_eq!(cash(&before), Some(15_000));
     assert_eq!(cash(&after), Some(20_000), "the target plus the delta");
+    assert_posted_diff_is_the_rehearsed_one(&before, &after, &rehearsed.report);
 }
