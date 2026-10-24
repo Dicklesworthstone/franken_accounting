@@ -80,6 +80,9 @@ mod ponzi_motif;
 #[path = "lantern/party_layering.rs"]
 mod party_layering;
 
+#[path = "lantern/party_attribution.rs"]
+mod party_attribution;
+
 const PREPARER: VId = VId(7);
 const REVIEWER: VId = VId(8);
 

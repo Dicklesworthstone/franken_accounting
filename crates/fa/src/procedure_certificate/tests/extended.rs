@@ -129,7 +129,15 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
     f.assign_procedure_roles();
     for (id, _) in selected {
         let certified = f.certify(&f.request(id, source));
-        assert_eq!(certified.report.version, 2, "{id}");
+        // fa-6l8g moved the party-attributing procedures to version 3.
+        let version = match id {
+            "lookback.preferences"
+            | "ponzi.net_investment"
+            | "distribution.rising_tide"
+            | "distribution.pro_rata" => 3,
+            _ => 2,
+        };
+        assert_eq!(certified.report.version, version, "{id}");
         assert_eq!(
             f.book
                 .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &certified.certificate)
