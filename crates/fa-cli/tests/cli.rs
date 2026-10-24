@@ -3396,6 +3396,12 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
     let (code, out, _) = fa(Some(&book), &originally);
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
+    // fa-5c1: the query profile's view refuses the same way.
+    let entries = "MATCH (e:Entry) FOR PERIOD 'FY2026-P03' RETURN COUNT(*) AS entries";
+    let reported_entries = format!("{entries} AS ORIGINALLY REPORTED");
+    let (code, out, _) = fa(Some(&book), &["query", &reported_entries, "--json"]);
+    assert_eq!(code, 3, "{out}");
+    assert_eq!(field(&out, "refusal_id"), Some("FA-REF-161"), "{out}");
 
     // Lock under a second principal's approval.
     let plan = dir.join("lock.plan").display().to_string();
@@ -3459,6 +3465,42 @@ fn tb_as_originally_reported_pins_the_first_lock_never_the_close() -> std::io::R
     assert_eq!(field(&reported, "known_at"), Some(locked_at.as_str()));
     let current = report(&book, &["tb", "--period", march, "--json"]);
     assert_ne!(field(&current, "known_at"), Some(locked_at.as_str()));
+    // fa-5c1: so does the query profile. CALL fa.trial_balance AS ORIGINALLY
+    // REPORTED is the trial balance read the same way; a native read runs at
+    // the lock and answers as it does AS KNOWN AT the lock; certifying it is
+    // refused with that sequence, which certifies.
+    let query = |statement: &str, extra: &[&str]| {
+        let mut args = vec!["query", statement, "--json"];
+        args.extend_from_slice(extra);
+        fa(Some(&book), &args)
+    };
+    let (code, called, err) = query(
+        "CALL fa.trial_balance FOR PERIOD 'FY2026-P03' AS ORIGINALLY REPORTED",
+        &[],
+    );
+    assert_eq!(code, 0, "{called}\n{err}");
+    let (code, tb, err) = fa(Some(&book), &originally);
+    assert_eq!(code, 0, "{tb}\n{err}");
+    assert_eq!(doc(&called).render(), doc(&tb).render());
+    let (code, as_reported, err) = query(&reported_entries, &[]);
+    assert_eq!(code, 0, "{as_reported}\n{err}");
+    assert_eq!(
+        field(&as_reported, "known_at"),
+        Some(locked_at.as_str()),
+        "{as_reported}"
+    );
+    let at_lock = format!("{entries} AS KNOWN AT {locked_at}");
+    let (code, explicit, err) = query(&at_lock, &[]);
+    assert_eq!(code, 0, "{explicit}\n{err}");
+    assert_eq!(
+        field(&as_reported, "result_digest"),
+        field(&explicit, "result_digest")
+    );
+    let (code, out, _) = query(&reported_entries, &["--certify"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains(&format!("AS KNOWN AT {locked_at}")), "{out}");
+    let (code, out, err) = query(&at_lock, &["--certify"]);
+    assert_eq!(code, 0, "{out}\n{err}");
     // The same period read explicitly at the lock is the same report.
     assert_eq!(
         report(

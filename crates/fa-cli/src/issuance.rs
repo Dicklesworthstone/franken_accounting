@@ -146,6 +146,28 @@ pub(crate) fn reported_view(args: &Args, example: &str) -> Result<Option<Reporte
     }))
 }
 
+/// The restatement view a query statement names (fa-5c1), checked as the
+/// view flags are: a registered audience, a retained certificate's digest.
+pub(crate) fn query_view(view: &fa::QueryReported) -> Result<ReportedView, Fail> {
+    Ok(match view {
+        fa::QueryReported::Originally => ReportedView::Originally,
+        fa::QueryReported::IssuedTo(text) => {
+            let names = IssuedTo::ALL.map(IssuedTo::name).join("|");
+            ReportedView::IssuedTo(IssuedTo::parse(text).ok_or_else(|| {
+                usage(
+                    format!("AS ISSUED TO '{text}' is not a registered audience"),
+                    format!("AS ISSUED TO '<{names}>'"),
+                )
+            })?)
+        }
+        fa::QueryReported::In(text) => ReportedView::ReportedIn(hex32(
+            text.strip_prefix("C:").unwrap_or(text),
+            "AS REPORTED IN",
+            "AS REPORTED IN 'C:<64-hex>' names a retained statement certificate",
+        )?),
+    })
+}
+
 /// The known-at `view` pins a read of `period` at.
 pub(crate) fn reported_known_at(
     book: &fa::Book,
