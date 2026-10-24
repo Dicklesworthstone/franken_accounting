@@ -928,6 +928,296 @@ fn historical_book_spec_and_claim_verification_preserve_the_selected_coordinate(
 }
 
 #[test]
+fn functional_migration_activation_agrees_with_independent_capacity_and_rate_oracles() {
+    use fa_reference::fx::{
+        OracleCapacityError, OracleFunctionalEntry, OracleFxLeg, OracleRateQuote,
+        OracleRealizedLeg, admit_register_capacity, value_entity_legs,
+    };
+
+    for base in [i128::MAX, i128::MAX - 1] {
+        let mut f = Fixture::new();
+        let opening = day(2025, 1, 1);
+        let through = day(2026, 1, 31);
+        // Expectations start with the unvalued source, not the kernel's
+        // valued legs, visibility predicate or observed publication result.
+        let foreign: Vec<_> = [
+            ("1200", fa_reference::Side::Debit),
+            ("4000", fa_reference::Side::Credit),
+        ]
+        .into_iter()
+        .map(|(code, side)| OracleFxLeg {
+            side,
+            account: account_vid(f.book.book_id, code).0,
+            unit: f.eur.0,
+            mantissa: 10,
+            entity: None,
+        })
+        .collect();
+        let rates = std::collections::BTreeMap::from([(
+            f.eur.0,
+            OracleRateQuote {
+                quote_unit: f.eur.0,
+                quote_scale: f.book.units.get(f.eur).unwrap().scale,
+                rate_num: base as u128,
+                rate_den: 10,
+                rounding_law: "HalfEven".into(),
+            },
+        )]);
+        let valuation = value_entity_legs(
+            &foreign,
+            f.usd.0,
+            f.book.units.get(f.usd).unwrap().scale,
+            &rates,
+        )
+        .unwrap();
+        assert_eq!(valuation.base_mantissas, vec![base, base]);
+        let migrated = OracleFunctionalEntry {
+            period: "FY2025-OPEN".into(),
+            is_pending: false,
+            is_resolved: false,
+            legs: foreign
+                .iter()
+                .zip(&valuation.base_mantissas)
+                .map(|(leg, &base_mantissa)| OracleRealizedLeg {
+                    side: leg.side,
+                    account: leg.account,
+                    unit: leg.unit,
+                    mantissa: leg.mantissa,
+                    base_unit: f.usd.0,
+                    base_mantissa,
+                    entity: None,
+                })
+                .collect(),
+        };
+        let live = OracleFunctionalEntry {
+            period: "FY2026-P01".into(),
+            is_pending: false,
+            is_resolved: false,
+            legs: foreign
+                .iter()
+                .map(|leg| OracleRealizedLeg {
+                    side: leg.side,
+                    account: leg.account,
+                    unit: f.usd.0,
+                    mantissa: 1,
+                    base_unit: f.usd.0,
+                    base_mantissa: 1,
+                    entity: None,
+                })
+                .collect(),
+        };
+        assert_eq!(
+            admit_register_capacity(&[migrated.clone()], f.usd.0),
+            Ok(())
+        );
+        assert_eq!(admit_register_capacity(&[live.clone()], f.usd.0), Ok(()));
+        let verdict = admit_register_capacity(&[live, migrated], f.usd.0);
+        assert_eq!(verdict.is_ok(), base == i128::MAX - 1);
+
+        let rate = f.rate(opening, base as u128, "Retained migration capacity rate");
+        let document = Document {
+            book_id: f.book.book_id,
+            kind: 18,
+            mime: "text/csv".into(),
+            grade: 3,
+            retrieved_by: PRINCIPAL,
+            bytes: b"account,unit,net\n1200,EUR,0.10\n4000,EUR,-0.10\n".to_vec(),
+        };
+        let ctx = f.ctx();
+        f.runtime
+            .block_on(add_document(&mut f.db, &ctx, &f.book, &document))
+            .unwrap()
+            .unwrap();
+        let evidence = document.evidence_ref(1);
+        let body = RunBody {
+            book_id: f.book.book_id,
+            run_key: "functional-capacity-opening".into(),
+            source_system: "legacy".into(),
+            mode: RunMode::OpeningOnly,
+            trial_balance: evidence.document_oid,
+            opening_date: opening,
+            lines: vec![
+                TrialBalanceLine {
+                    account_code: "1200".into(),
+                    unit: f.eur,
+                    mantissa: 10,
+                },
+                TrialBalanceLine {
+                    account_code: "4000".into(),
+                    unit: f.eur,
+                    mantissa: -10,
+                },
+            ],
+            periods: Vec::new(),
+            detail_base: Vec::new(),
+            sole_opening_source: false,
+        };
+        let proposal = open_proposal(
+            &f.book,
+            PRINCIPAL,
+            &body,
+            vec![evidence],
+            b"open-functional-capacity",
+            f.sealed("open migration"),
+        )
+        .unwrap();
+        let opened = f
+            .runtime
+            .block_on(open_run(
+                &mut f.db,
+                &ctx,
+                &f.book,
+                &body,
+                RunControlRequest {
+                    proposal,
+                    capability: cap(&["post", "migrate"]),
+                    approvals: Vec::new(),
+                },
+            ))
+            .unwrap()
+            .unwrap();
+        let mut chunk = f.proposal("functional-capacity-chunk", opening, f.eur, 10);
+        chunk.class = EntryClass::MIGRATION;
+        chunk.effective_period = Some(PeriodRef {
+            calendar: f.book.calendar.id.clone(),
+            code: "FY2025-OPEN".into(),
+        });
+        chunk.evidence = vec![evidence];
+        chunk.origin = EntryOrigin::Migration {
+            run_ref: opened.run,
+            source_system: "legacy".into(),
+            source_id: f.sealed("functional-opening-entry"),
+            source_recorded_at_ns: None,
+            source_entered_by: None,
+            source_approved_by: None,
+            batch_oid: evidence.document_oid,
+        };
+        let chunk = f.valued(chunk, &rate);
+        assert_eq!(
+            chunk
+                .legs
+                .iter()
+                .map(|leg| leg.base_amount.unwrap().mantissa)
+                .collect::<Vec<_>>(),
+            valuation.base_mantissas
+        );
+        let approvals = f.approvals(chunk.proposal_digest().unwrap());
+        let staged = f
+            .runtime
+            .block_on(post(
+                &mut f.db,
+                &ctx,
+                &f.book,
+                PostRequest {
+                    proposal: chunk,
+                    approvals,
+                    plan_certificate: None,
+                    capability: cap(&["post", "migrate"]),
+                },
+            ))
+            .unwrap()
+            .unwrap();
+        let staged_at = f.db.frontier().unwrap();
+        let invisible = f.stock(through, Some(staged_at));
+        assert!(invisible.cells.is_empty());
+        assert_eq!((invisible.entries, invisible.watermark), (0, None));
+
+        // The real live posting must succeed despite the staged foreign
+        // value. Both native cells fit; only their functional sum can fail.
+        f.post(f.proposal("live-native-unit", day(2026, 1, 5), f.usd, 1));
+        let live_at = f.db.frontier().unwrap();
+        let live_stock = f.stock(through, Some(live_at));
+        assert_eq!(
+            (
+                live_stock.entries,
+                live_stock.total_debits().unwrap(),
+                live_stock.total_credits().unwrap()
+            ),
+            (1, 1, 1)
+        );
+
+        let proposal = plan_run_transition(
+            &f.db,
+            &f.book,
+            opened.run,
+            kind::FINALIZE,
+            PRINCIPAL,
+            b"finalize-functional-capacity",
+            f.sealed("finalize migration"),
+        )
+        .unwrap()
+        .unwrap();
+        let approvals = f.approvals(proposal.proposal_digest().unwrap());
+        let before = f.db.frontier().unwrap();
+        let rows = f.db.vertices().unwrap();
+        let result = f
+            .runtime
+            .block_on(transition_run(
+                &mut f.db,
+                &ctx,
+                &f.book,
+                RunControlRequest {
+                    proposal,
+                    capability: cap(&["post", "migrate"]),
+                    approvals,
+                },
+            ))
+            .unwrap();
+        match verdict {
+            Err(OracleCapacityError::Exceeded {
+                functional: true,
+                pending: false,
+                ..
+            }) => {
+                let refusal = result.unwrap_err();
+                assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3), "{refusal}");
+                assert!(refusal.message.contains("functional"), "{refusal}");
+                assert_eq!(f.db.frontier().unwrap(), before);
+                assert_eq!(f.db.vertices().unwrap(), rows);
+                assert_eq!(
+                    fa_journal::migration::read_run(&f.db, opened.run, None)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    RunState::Open
+                );
+                assert_eq!(f.stock(through, None).total_debits().unwrap(), 1);
+            }
+            Ok(()) => {
+                let finalized = result.unwrap();
+                assert!(finalized.recorded_at > staged.recorded_at());
+                assert_eq!(
+                    fa_journal::migration::read_run(&f.db, opened.run, None)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    RunState::Finalized
+                );
+                let stock = f.stock(through, None);
+                assert_eq!(
+                    (
+                        stock.entries,
+                        stock.total_debits().unwrap(),
+                        stock.total_credits().unwrap()
+                    ),
+                    (2, i128::MAX, i128::MAX)
+                );
+                assert_eq!(stock.watermark, Some(finalized.recorded_at));
+                let period = fold_period_functional(&f.db, &f.book, "FY2025-OPEN", None).unwrap();
+                assert_eq!(period.total_debits().unwrap(), base);
+                assert_eq!(period.total_credits().unwrap(), base);
+                let native = balance_as_of(&f.db, &f.book, through, None).unwrap();
+                assert_eq!(native.unit_totals.get(&f.eur.0), Some(&(10, 10)));
+                assert_eq!(native.unit_totals.get(&f.usd.0), Some(&(1, 1)));
+            }
+            other => panic!("unexpected independent capacity verdict: {other:?}"),
+        }
+        assert_eq!(f.stock(through, Some(staged_at)), invisible);
+        assert_eq!(f.stock(through, Some(live_at)), live_stock);
+    }
+}
+
+#[test]
 fn migration_stock_appears_only_at_finalization_and_uses_its_activation_watermark() {
     for damage_kind in 0..4 {
         let mut f = Fixture::new();
