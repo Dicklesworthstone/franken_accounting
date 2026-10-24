@@ -17103,6 +17103,42 @@ fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::R
     Ok(())
 }
 
+const CORRECTION_GUIDE_BOUNDARIES: &[&str] = &[
+    "Replacement posts only as a pair with its Reversal",
+    "fa reverse <vid> --reason <name> --replace-with <file>",
+    "standalone Replacement is FA-REF-160",
+    "A Reclassification moves part of an entry to another account",
+    "fa reclass <vid>",
+    "FA-REF-185 when it moves more than the target's legs have left",
+    "PriorPeriodAdjustment, a Revision or a Restatement posts only as an approved restatement case's entry",
+    "fa case post <case>",
+    "FA-REF-178 otherwise",
+    "with `revises` or `restates` naming the posting it corrects and the delta legs",
+];
+
+fn correction_guide_boundaries(guide: &str) -> Result<(), String> {
+    for boundary in CORRECTION_GUIDE_BOUNDARIES {
+        if !guide.contains(boundary) {
+            return Err(format!(
+                "correction guide omits its live protocol boundary: {boundary}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn correction_guide_boundary_check_rejects_each_missing_restriction() {
+    let out = ok(&["robot-docs", "guide", "--json"]);
+    let guide = text(&doc(&out), "text");
+    correction_guide_boundaries(&guide).unwrap();
+    for boundary in CORRECTION_GUIDE_BOUNDARIES {
+        let missing = guide.replace(boundary, "unrestricted correction");
+        let refusal = correction_guide_boundaries(&missing).unwrap_err();
+        assert!(refusal.contains(boundary), "{refusal}");
+    }
+}
+
 #[test]
 fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<()> {
     let dir = tmp("teller-truthfulness")?;
@@ -17303,26 +17339,13 @@ fn teller_truthfulness_gate_next_actions_and_refusal_fixes() -> std::io::Result<
         }
     }
 
-    // 3. Check `fa robot-docs guide` does not advertise unimplemented correction classes
-    // (`Replacement`, `Reclassification`, `Revision`, `Restatement`, `PriorPeriodAdjustment`)
-    // as live without noting `FA-REF-102`.
+    // 3. These corrections are live through constrained protocols, exercised
+    // by the replacement, reclassification and case integration tests. The
+    // guide must disclose those boundaries, not label them unimplemented.
     let (_, guide_out, _) = run_cmd(&["robot-docs", "guide", "--json"]);
     let guide_doc = doc(&guide_out);
     let guide_text = text(&guide_doc, "text");
-    for unimplemented in [
-        "Replacement",
-        "Reclassification",
-        "Revision",
-        "Restatement",
-        "PriorPeriodAdjustment",
-    ] {
-        if guide_text.contains(unimplemented) {
-            assert!(
-                guide_text.contains("FA-REF-102"),
-                "robot-docs guide mentions unimplemented class `{unimplemented}` without noting FA-REF-102"
-            );
-        }
-    }
+    correction_guide_boundaries(&guide_text).unwrap();
 
     // 4. On a launch-bound surface, a kernel refusal whose catalog fix mentions `--grant`
     // (`FA-REF-011`) rewrites its fix so that it never instructs the caller to pass `--grant`.
