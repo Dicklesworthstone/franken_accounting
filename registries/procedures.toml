@@ -1180,6 +1180,40 @@ default = 7000
 meaning = "Minimum ratio of cycle bottleneck flow to first-hop flow in basis points (7000 = 70.00%)."
 
 [[procedure]]
+id = "graph.party_communities"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L68"
+tie_break = "entry_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + max_levels * max_passes * paid_edges)"
+calibration = "planted"
+summary = "Communities of counterparties found by amount (plan §11.4; fa-b6xs): within each native unit and legal entity, the party-level PAID projection's transfers, summed per party pair whatever their direction, are grouped by an exact amount-weighted Louvain (modularity at resolution 1 compared in 256-bit integers, never floats; strictly improving moves only, ties stay put, ascending party order), the book itself being no member and its exchanges with members counting as external volume. Flags a community of at least min_community_size parties whose internal volume reaches min_internal_share_bps of its incident volume, naming its parties, citing the entries that moved its internal volume, with a CGSE-style witness over the partition."
+
+[[parameter]]
+procedure = "graph.party_communities"
+name = "min_community_size"
+default = 3
+meaning = "Minimum parties in a flagged community (at least 2)."
+
+[[parameter]]
+procedure = "graph.party_communities"
+name = "min_internal_share_bps"
+default = 7000
+meaning = "Minimum internal volume over incident volume in basis points (7000 = 70.00%); volume exchanged with the book counts as incident."
+
+[[parameter]]
+procedure = "graph.party_communities"
+name = "max_passes"
+default = 8
+meaning = "Local-moving passes per Louvain level (1..=16)."
+
+[[parameter]]
+procedure = "graph.party_communities"
+name = "max_levels"
+default = 4
+meaning = "Louvain aggregation levels (1..=8)."
+
+[[procedure]]
 id = "graph.layering"
 version = 1
 claim = "statistical"

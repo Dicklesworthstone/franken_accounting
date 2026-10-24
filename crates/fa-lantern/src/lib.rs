@@ -869,6 +869,14 @@ impl Work {
                     && self.comparisons
                         <= n_log_n.saturating_add(rea_nodes.saturating_mul(rea_nodes).max(16))
             }
+            // graph.party_communities (fa-b6xs): PAID allocation, then at
+            // most 8 levels of at most 16 passes, each examining every node
+            // once plus each of its neighbouring communities.
+            "O(posting_legs log posting_legs + allocation_cells log debit_legs + max_levels * max_passes * paid_edges)" => {
+                self.entries <= entries.saturating_mul(2)
+                    && self.legs <= legs.max(entries).saturating_mul(4)
+                    && self.comparisons <= n_log_n.saturating_add(n.saturating_mul(8 * 16 * 4))
+            }
             "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
             | "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
             | "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)" => {

@@ -5,6 +5,7 @@
 //! and every citation resolves. A motif is a score, never a finding of fact.
 
 mod cycles;
+mod louvain;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -670,6 +671,185 @@ impl Procedure for PartyCircularFlows {
             &scoped,
             Nodes::Parties,
         )
+    }
+}
+
+/// `graph.party_communities` (bead fa-b6xs): communities of counterparties
+/// found by amount, not by topology alone. Within each native unit and legal
+/// entity, the party-level PAID projection's transfers, summed per party pair
+/// whatever their direction, are grouped by an exact amount-weighted Louvain
+/// (`louvain`, modularity in integers: no float near an amount). The book
+/// itself is no member; what a member exchanges with the book counts as
+/// external volume. Flags a community of at least `min_community_size`
+/// parties whose internal volume is at least `min_internal_share_bps` of its
+/// incident volume, naming its parties and citing the entries that moved its
+/// internal volume.
+pub struct PartyCommunities {
+    params: Params,
+}
+crate::jet::procedure_boilerplate!(PartyCommunities, "graph.party_communities");
+
+impl Procedure for PartyCommunities {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        const WHAT: &str = "graph.party_communities volume";
+        /// One scope's undirected party-pair volumes with the entries that
+        /// carried them, and each party's volume exchanged with the book.
+        #[derive(Default)]
+        struct Scope {
+            pairs: BTreeMap<(VId, VId), (i128, BTreeSet<VId>)>,
+            with_book: BTreeMap<VId, i128>,
+        }
+        let min_size = self.params.get_u32("min_community_size")?;
+        let min_share_bps = i128::from(self.params.get_u32("min_internal_share_bps")?);
+        let max_passes = self.params.get_u32("max_passes")?;
+        let max_levels = self.params.get_u32("max_levels")?;
+        for (name, value, range) in [
+            ("min_community_size", min_size, 2..=u32::MAX),
+            ("max_passes", max_passes, 1..=16),
+            ("max_levels", max_levels, 1..=8),
+        ] {
+            if !range.contains(&value) {
+                return Err(LanternError::Parameter {
+                    procedure: Self::ID.into(),
+                    name: name.into(),
+                    message: format!("must be in {}..={}", range.start(), range.end()),
+                });
+            }
+        }
+        let book_node = crate::projection::BOOK_NODE;
+        let mut scopes: BTreeMap<MonetaryScope, Scope> = BTreeMap::new();
+        for scoped in crate::projection::party_flow_legs(snapshot)? {
+            work.leg()?;
+            let e = &scoped.leg;
+            if e.from == e.to || e.mantissa <= 0 {
+                continue;
+            }
+            let scope = scopes.entry((scoped.legal_entity, e.unit_id)).or_default();
+            if e.from == book_node || e.to == book_node {
+                let party = if e.from == book_node { e.to } else { e.from };
+                let slot = scope.with_book.entry(party).or_insert(0);
+                *slot = amount_sum(*slot, e.mantissa, WHAT)?;
+                continue;
+            }
+            let pair = if e.from <= e.to {
+                (e.from, e.to)
+            } else {
+                (e.to, e.from)
+            };
+            let slot = scope.pairs.entry(pair).or_default();
+            slot.0 = amount_sum(slot.0, e.mantissa, WHAT)?;
+            slot.1.insert(e.entry);
+        }
+        let mut out = Vec::new();
+        for (coordinate, scope) in scopes {
+            let nodes: Vec<VId> = scope
+                .pairs
+                .keys()
+                .flat_map(|&(a, b)| [a, b])
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let index: BTreeMap<VId, usize> =
+                nodes.iter().enumerate().map(|(i, v)| (*v, i)).collect();
+            let edges: Vec<(usize, usize, i128)> = scope
+                .pairs
+                .iter()
+                .map(|((a, b), (w, _))| (index[a], index[b], *w))
+                .collect();
+            let membership =
+                louvain::communities(nodes.len(), &edges, max_levels, max_passes, work)?;
+            let mut groups: BTreeMap<usize, Vec<VId>> = BTreeMap::new();
+            for (i, c) in membership.iter().enumerate() {
+                groups.entry(*c).or_default().push(nodes[i]);
+            }
+            let scope_text = monetary_scope_text(book, coordinate)?;
+            for members in groups.into_values() {
+                work.compare(members.len() as u64)?;
+                if members.len() < min_size as usize {
+                    continue;
+                }
+                let set: BTreeSet<VId> = members.iter().copied().collect();
+                let (mut internal, mut incident) = (0i128, 0i128);
+                let mut carried = BTreeSet::new();
+                for ((a, b), (w, entries)) in &scope.pairs {
+                    match (set.contains(a), set.contains(b)) {
+                        (true, true) => {
+                            internal = amount_sum(internal, *w, WHAT)?;
+                            incident = amount_sum(incident, *w, WHAT)?;
+                            carried.extend(entries.iter().copied());
+                        }
+                        (true, false) | (false, true) => {
+                            incident = amount_sum(incident, *w, WHAT)?;
+                        }
+                        (false, false) => {}
+                    }
+                }
+                for party in &members {
+                    if let Some(w) = scope.with_book.get(party) {
+                        incident = amount_sum(incident, *w, WHAT)?;
+                    }
+                }
+                if incident <= 0 {
+                    continue;
+                }
+                let share_bps = amount_share_bps(internal, incident, WHAT)?;
+                if share_bps < min_share_bps {
+                    continue;
+                }
+                let mut codes: Vec<String> = members
+                    .iter()
+                    .map(|party| party_label(snapshot, *party))
+                    .collect();
+                codes.sort();
+                let mut decisions = vec![(scope_text.clone(), "amount_scope".to_string())];
+                decisions.extend(
+                    members
+                        .iter()
+                        .map(|v| (vid_node(*v), "community".to_string())),
+                );
+                let dec_refs: Vec<(&str, &str)> = decisions
+                    .iter()
+                    .map(|(a, b)| (a.as_str(), b.as_str()))
+                    .collect();
+                let cgse = cgse_digest_hex(&dec_refs, nodes.len(), edges.len(), "exact_louvain");
+                let cites: Vec<Cite> = carried
+                    .into_iter()
+                    .take(MAX_CITES)
+                    .map(Cite::Entry)
+                    .collect();
+                out.push(finding(
+                    (Self::ID, self.version()),
+                    Severity::Medium,
+                    Statistic {
+                        name: "internal_share_bps".into(),
+                        value: share_bps,
+                        scale: 0,
+                        population: nodes.len() as u64,
+                    },
+                    cites,
+                    format!(
+                        "{}-party community in {scope_text} retains {share_bps} bps of its incident volume internally ({internal} of {incident}): [{}] (cgse_witness={cgse})",
+                        members.len(),
+                        codes.join(", ")
+                    ),
+                ));
+            }
+        }
+        Ok(out)
     }
 }
 

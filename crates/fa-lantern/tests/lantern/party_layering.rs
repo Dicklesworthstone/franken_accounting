@@ -522,3 +522,121 @@ fn party_paid_projection_matches_reference() {
         "the planted rule change was never observed"
     );
 }
+
+/// fa-b6xs: `graph.party_communities` groups counterparties by amount. A, B
+/// and C move 1,200,000 among themselves through clearing account 1010,
+/// where the account graph sees only self-flows. A also pays D 10,000 and A
+/// sends the book 20,000, so the community keeps 1,200,000 of 1,230,000
+/// incident (9,756 bps). D and E trade 200,000 between themselves: a second
+/// community, below the default size of 3, flagged once the size is 2.
+#[test]
+fn parties_that_move_money_among_themselves_form_a_community() {
+    use fa_lantern::graph::{Communities, PartyCommunities};
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = None;
+    let (_, a) = party(&h, &mut snapshot, "SHELL-A");
+    let (_, b) = party(&h, &mut snapshot, "SHELL-B");
+    let (_, c) = party(&h, &mut snapshot, "SHELL-C");
+    let (_, d) = party(&h, &mut snapshot, "SHELL-D");
+    let (_, e) = party(&h, &mut snapshot, "SHELL-E");
+    let hops = [
+        (1001, 5, a, b, 500_000),
+        (1002, 6, b, c, 400_000),
+        (1003, 7, c, a, 300_000),
+        (1004, 8, a, d, 10_000),
+        (1005, 9, d, e, 200_000),
+    ];
+    let mut internal_entries = Vec::new();
+    for (vid, dd, from, to, cents) in hops {
+        let entry = transfer(
+            &mut h,
+            vid,
+            day(2026, 1, dd),
+            "1010",
+            Some(to),
+            "1010",
+            Some(from),
+            cents,
+        );
+        if vid <= 1003 {
+            internal_entries.push(entry.vid);
+        }
+        snapshot.entries.push(entry);
+    }
+    let receipt = transfer(
+        &mut h,
+        1006,
+        day(2026, 1, 10),
+        "1000",
+        None,
+        "1200",
+        Some(a),
+        20_000,
+    );
+    snapshot.entries.push(receipt);
+
+    // The account graph sees one clearing account trading with itself.
+    let accounts = run_over(&snapshot, &h.book, &Communities::new().unwrap()).unwrap();
+    assert!(
+        accounts
+            .findings
+            .iter()
+            .all(|f| !f.narrative.contains("SHELL")),
+        "{:?}",
+        accounts.findings
+    );
+
+    let procedure = PartyCommunities::new().unwrap();
+    let r = run_over(&snapshot, &h.book, &procedure).unwrap();
+    println!("party communities: {:?}", r.findings);
+    assert_eq!(r.findings.len(), 1, "{:?}", r.findings);
+    let f = &r.findings[0];
+    assert_eq!(f.statistic.name, "internal_share_bps");
+    assert_eq!(f.statistic.value, 9_756);
+    assert!(
+        f.narrative.contains("3-party community")
+            && f.narrative.contains("(1200000 of 1230000)")
+            && f.narrative.contains("[SHELL-A, SHELL-B, SHELL-C]"),
+        "{}",
+        f.narrative
+    );
+    internal_entries.sort();
+    assert_eq!(
+        f.cites,
+        internal_entries
+            .iter()
+            .copied()
+            .map(Cite::Entry)
+            .collect::<Vec<_>>()
+    );
+    let row = fa_lantern::bind(PartyCommunities::ID).unwrap();
+    assert!(
+        r.work.within_registered_bound(&row.complexity, &snapshot),
+        "{:?}",
+        r.work
+    );
+    assert!(
+        determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+
+    // At size 2, D and E (200,000 of 210,000 incident: 9,523 bps) join.
+    let two = PartyCommunities::with(
+        Params::defaults(PartyCommunities::ID)
+            .unwrap()
+            .set("min_community_size", 2)
+            .unwrap(),
+    );
+    let r = run_over(&snapshot, &h.book, &two).unwrap();
+    assert_eq!(r.findings.len(), 2, "{:?}", r.findings);
+    assert!(
+        r.findings
+            .iter()
+            .any(|f| f.statistic.value == 9_523 && f.narrative.contains("[SHELL-D, SHELL-E]")),
+        "{:?}",
+        r.findings
+    );
+}
