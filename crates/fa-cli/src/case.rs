@@ -36,7 +36,23 @@ const DIFF_EXAMPLE: &str = "fa case diff <case> --json  (the as-reported vs as-r
 const STATEMENTS_EXAMPLE: &str = "fa case diff <case> --statements [--certify] --json  (after fa case post: what the Post changed in each affected period's balance sheet and income statement, and in the balance sheet that opens the earliest)";
 
 pub(crate) fn case_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    match args.positional.get(1).map(String::as_str) {
+    let sub = args.positional.get(1).map(String::as_str);
+    // The statement diffs are diff's alone: another subcommand would ignore
+    // either switch, so it is refused rather than silently dropped.
+    if sub != Some("diff")
+        && let Some(switch) = ["--statements", "--certify"]
+            .into_iter()
+            .find(|switch| args.switch(switch))
+    {
+        return Err(usage(
+            format!(
+                "{switch} belongs to fa case diff, not fa case {}",
+                sub.unwrap_or("")
+            ),
+            STATEMENTS_EXAMPLE,
+        ));
+    }
+    match sub {
         Some("open") => open(ctx, args),
         Some("determine") => determine(ctx, args),
         Some("rehearse") => rehearse(ctx, args),

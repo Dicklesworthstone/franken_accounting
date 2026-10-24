@@ -5079,6 +5079,178 @@ fn the_query_cluster_runs_the_clis_profile_statement() {
     assert_eq!(mcp.finish(), 0);
 }
 
+/// fa-75j4: once a Revision case is Posted (on the host: its posting needs
+/// restate), the fa.case cluster's read tool returns what the Post changed
+/// in each affected statement, as `fa case diff <case> --statements`: March's
+/// balance sheet and income statement and the February balance sheet that
+/// opens March, each the CLI's own statement_diff data. A show with
+/// statements is a usage error, not a silently ignored switch.
+#[test]
+fn the_case_cluster_reads_a_posted_cases_statement_diffs_like_the_cli() {
+    let dir = tmp("case-statements");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    let ok = |args: &[&str]| -> String {
+        let mut argv = args.to_vec();
+        argv.extend(["--book", b.as_str(), "--json"]);
+        let (code, out) = cli(&argv);
+        assert_eq!(code, 0, "fa {}:\n{out}", argv.join(" "));
+        out
+    };
+    let last = |out: &str| -> Json {
+        let line = fa_cli::json::parse(out.lines().last().unwrap_or("")).expect("a robot line");
+        line.get("data").cloned().unwrap_or(Json::Null)
+    };
+    let text_of = |data: &Json, key: &str| -> String {
+        data.get(key)
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    ok(&["book", "create", "--name", "Case Co"]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    ok(&["chart", "import", &chart.display().to_string()]);
+    ok(&["period", "create", "--fiscal-year", "2026"]);
+    ok(&["period", "open", "FY2026-P03"]);
+    let oid = source_document(&dir, &b);
+    let expense = dir.join("expense.json");
+    std::fs::write(
+        &expense,
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"1000.00 USD"},{"side":"credit","account":"1000","amount":"1000.00 USD"}]}"#,
+    )
+    .unwrap();
+    let target = text_of(
+        &last(&ok(&[
+            "post",
+            "--intent",
+            &expense.display().to_string(),
+            "--evidence",
+            &oid,
+        ])),
+        "vid",
+    );
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+    ]);
+    ok(&[
+        "case",
+        "open",
+        "--kind",
+        "Revision",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &oid,
+    ]);
+    ok(&["scenario", "fork", "revised", "--as", "analyst"]);
+    let revision = dir.join("revision.json");
+    std::fs::write(
+        &revision,
+        format!(
+            r#"{{"class":"Revision","revises":"{target}","reason":"WrongAmount","idempotency_key":"rev","legs":[{{"side":"debit","account":"6100","amount":"20.00 USD"}},{{"side":"credit","account":"1000","amount":"20.00 USD"}}]}}"#
+        ),
+    )
+    .unwrap();
+    ok(&[
+        "scenario",
+        "run",
+        "revised",
+        "--intent",
+        &revision.display().to_string(),
+        "--as",
+        "analyst",
+        "--grant",
+        "restate",
+    ]);
+    let rehearsal = dir.join("rehearsal.cert").display().to_string();
+    ok(&[
+        "scenario",
+        "diff",
+        "revised",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &rehearsal,
+    ]);
+    ok(&["case", "rehearse", "1", "--certificate", &rehearsal]);
+    let digest = text_of(&last(&ok(&["case", "approve", "1", "--dry-run"])), "digest");
+    let approve = |who: &str| {
+        text_of(
+            &last(&ok(&["approve", "--proposal", &digest, "--as", who])),
+            "approval_vid",
+        )
+    };
+    let (controller, auditor) = (approve("controller"), approve("auditor"));
+    ok(&[
+        "case",
+        "approve",
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &auditor,
+    ]);
+    ok(&["case", "post", "1"]);
+    let expected: Vec<Json> = ok(&["case", "diff", "1", "--statements"])
+        .lines()
+        .map(|line| {
+            let line = fa_cli::json::parse(line).expect("a robot line");
+            assert_eq!(
+                line.get("event").and_then(Json::as_str),
+                Some("statement_diff")
+            );
+            line.get("data").cloned().unwrap_or(Json::Null)
+        })
+        .collect();
+    assert_eq!(expected.len(), 3, "{expected:?}");
+
+    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.case"]);
+    mcp.discover();
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_case_read",
+        json!({"action": "diff", "target": "1", "statements": true}),
+    );
+    assert!(
+        !error,
+        "an Agent session reads the posted case's statements: {text}"
+    );
+    let read: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let wire: Vec<JsonValue> = expected.iter().map(fa_mcp::dispatch::to_wire).collect();
+    assert_eq!(read, JsonValue::Array(wire), "{text}");
+    let names: Vec<&str> = read
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["balance-sheet", "income-statement", "balance-sheet"]
+    );
+    let (error, text, _) = call_tool(
+        &mut mcp,
+        "fa_case_read",
+        json!({"action": "show", "target": "1", "statements": true}),
+    );
+    assert!(error, "statements belong to the diff: {text}");
+    assert_eq!(structured_error(&text)["exit"], json!(2), "{text}");
+    assert_eq!(mcp.finish(), 0);
+    log("fa.case: a posted Revision case's statement diffs over MCP equal the CLI's");
+}
+
 /// fa-6his, plan Appendix D: a tool error carries `data: {fix_hint,
 /// suggested_tool_calls, available_options, refusal_id, refusal}`. For a
 /// kernel refusal the object is the one the CLI emits for the same failing

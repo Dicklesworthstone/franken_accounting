@@ -4069,7 +4069,7 @@ doc = "Corrections beyond an exact reversal (plan §8.2): a Reclassification mov
 [[mcp.cluster]]
 name = "fa.case"
 on_demand = true
-doc = "Restatement cases (plan §8.3): read one journaled case, or every case of the book, with its kind, affected periods, state and transitions. Opening and determining a case need restate, a host-side operation. On demand (fa-mcp --cluster fa.case)."
+doc = "Restatement cases (plan §8.3): read one journaled case, or every case of the book, with its kind, affected periods, state and transitions, and a case's diff: the rehearsed one, or once it is Posted what its Post changed in each affected statement. Opening and determining a case need restate, a host-side operation. On demand (fa-mcp --cluster fa.case)."
 
 [[mcp.cluster]]
 name = "fa.registry"
@@ -5304,10 +5304,10 @@ subcommands = ["show", "list", "diff"]
 selector = "action"
 positionals = ["target?"]
 flags = []
-switches = []
+switches = ["--statements"]
 required = []
-dont = ["Use action list for every restatement case, action show with target set to a case number, and action diff with target set to a rehearsed case's number for the as-reported vs as-restated diff its approvers reviewed. Reads need read.", "Don't expect to open or determine a case here: both need restate, which no launch-bound template holds; a Human operator opens a case on the host with fa case open."]
-mistakes = ["Passing a case's vid as target: action show takes the case number (1, 2, ...).", "Reading an Approved case as posted: its entries reach trunk only when a Human posts the case on the host with fa case post, and its state is then Posted."]
+dont = ["Use action list for every restatement case, action show with target set to a case number, and action diff with target set to a rehearsed case's number for the as-reported vs as-restated diff its approvers reviewed. Once the case is Posted, action diff with statements: true reads what its Post changed: each affected period's balance sheet then income statement, then the balance sheet that opens the earliest (one statement_diff each, as fa case diff <case> --statements). Reads need read.", "Don't expect to open or determine a case here: both need restate, which no launch-bound template holds; a Human operator opens a case on the host with fa case open."]
+mistakes = ["Passing a case's vid as target: action show takes the case number (1, 2, ...).", "Asking for statements before the case is Posted (FA-REF-176: its Post has changed nothing yet), or with action show or list (a usage error).", "Reading an Approved case as posted: its entries reach trunk only when a Human posts the case on the host with fa case post, and its state is then Posted."]
 
 [[mcp.tool]]
 cluster = "fa.registry"
@@ -5799,6 +5799,14 @@ ops = ["read", "restate", "post"]
 verbs = ["case"]
 subcommands = ["disclose", "close"]
 ops = ["read", "restate"]
+
+# Certifying a posted case's statement diffs retains certificates: read
+# and produce, as fa statement diff --certify.
+[[bound]]
+verbs = ["case"]
+subcommands = ["diff"]
+when_any = ["--certify"]
+ops = ["read", "produce"]
 
 [[bound]]
 verbs = ["case"]
