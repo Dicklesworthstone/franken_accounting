@@ -2028,14 +2028,6 @@ fn unverified_plan_and_origin_claims_are_refused_without_consuming_identity() {
     );
     let origins = [
         (
-            "Rule",
-            EntryOrigin::Rule {
-                rule_version_oid: Oid([0x71; 32]),
-                event_ref: VId(0x72),
-                inputs_digest: [0x73; 32],
-            },
-        ),
-        (
             "Sweep",
             EntryOrigin::Sweep {
                 sweep_kind: 1,
@@ -2075,6 +2067,27 @@ fn unverified_plan_and_origin_claims_are_refused_without_consuming_identity() {
         assert!(!refusal.fix.is_empty(), "{refusal}");
         assert_eq!(h.db.frontier().unwrap(), frontier, "{name}: no publication");
     }
+    // A claimed Rule origin is verified rather than refused as minted-only
+    // (fa-c34 slice 4): event closure runs first, so a claim citing an event
+    // this book never recorded is refused under FA-INV-05's event closure,
+    // before the rule version or its re-derivation is consulted.
+    let mut claimed = native.clone();
+    claimed.origin = EntryOrigin::Rule {
+        rule_version_oid: Oid([0x71; 32]),
+        event_ref: VId(0x72),
+        inputs_digest: [0x73; 32],
+    };
+    claimed
+        .validate()
+        .expect("the claim is structurally encodable");
+    let refusal = h.post(h.request(claimed, &["post"])).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-080", exit::REFUSAL));
+    assert!(
+        refusal.message.contains("does not exist in this book"),
+        "{refusal}"
+    );
+    assert!(refusal.cite.contains("FA-INV-05"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), frontier, "Rule: no publication");
     let mut certified = h.request(native.clone(), &["post"]);
     certified.plan_certificate = Some(Oid([0x78; 32]));
     let refusal = h.post(certified).unwrap_err();
