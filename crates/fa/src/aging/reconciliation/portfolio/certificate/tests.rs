@@ -423,6 +423,10 @@ fn workpaper_keeps_control_only_units_exact_amounts_selected_detail_and_uncovere
         Amount::new(h.usd, 2 * exact)
     );
     assert_eq!(prepared.base_relief(), Amount::new(h.usd, 14));
+    let refusal = h.try_post(prepared.proposal().clone()).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+    assert_eq!(h.head(), before);
+    assert_eq!(h.book.db.vertices().unwrap(), rows);
     let mut altered_relief = prepared.proposal().clone();
     for leg in &mut altered_relief.legs[..2] {
         leg.base_amount.as_mut().unwrap().mantissa += 1;
@@ -430,11 +434,18 @@ fn workpaper_keeps_control_only_units_exact_amounts_selected_detail_and_uncovere
     let totals = altered_relief.base_totals.as_mut().unwrap();
     totals.debits += 1;
     totals.credits += 1;
-    let refusal = h.try_post(altered_relief).unwrap_err();
-    assert_eq!((refusal.code, refusal.exit), ("FA-REF-071", 3));
+    let refusal = h
+        .try_post_as(altered_relief, cap(&["read", "post"]))
+        .unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        ("FA-REF-071", 3),
+        "{refusal:?}"
+    );
     assert_eq!(h.head(), before);
     assert_eq!(h.book.db.vertices().unwrap(), rows);
-    h.try_post(prepared.into_proposal()).unwrap();
+    h.try_post_as(prepared.into_proposal(), cap(&["read", "post"]))
+        .unwrap();
 
     let remaining = h
         .prepare_fx(

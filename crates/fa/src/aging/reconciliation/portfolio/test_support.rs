@@ -220,6 +220,13 @@ impl Harness {
         &mut self,
         proposal: EntryPayload,
     ) -> Result<EntryRef, fa_journal::Refusal> {
+        self.try_post_as(proposal, cap(&["post"]))
+    }
+    pub(super) fn try_post_as(
+        &mut self,
+        proposal: EntryPayload,
+        capability: Capability,
+    ) -> Result<EntryRef, fa_journal::Refusal> {
         let cx = self.cx();
         self.runtime
             .block_on(self.book.post(
@@ -228,7 +235,7 @@ impl Harness {
                     proposal,
                     approvals: Vec::new(),
                     plan_certificate: None,
-                    capability: cap(&["post"]),
+                    capability,
                 },
             ))
             .unwrap()
