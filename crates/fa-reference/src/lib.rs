@@ -59,6 +59,7 @@ pub const CONTROL_KINDS: &[(u16, &str, &str)] = &[
     (16, "engagement_transition", "EngagementControl"),
     (17, "case_transition", "CaseControl"),
     (18, "recurring_schedule", "ScheduleControl"),
+    (19, "rule_activation", "PolicyControl"),
 ];
 
 /// The control class a record of kind `id` must carry, per the oracle's copy.

@@ -20541,7 +20541,7 @@ fn a_rule_version_is_journaled_by_its_content_and_evaluates_from_the_journal() -
 }"#;
     let rule = write(&dir, "split.rule", source);
     let head = |out: &str| -> i128 {
-        let envelope = doc(out);
+        let envelope = robot_line(out);
         let coordinate = envelope.get("coordinate").expect("book coordinate");
         int(coordinate, "known_at").expect("coordinate known_at")
     };
@@ -20674,7 +20674,7 @@ fn a_rule_version_is_activated_from_a_date_under_dual_control() -> std::io::Resu
     let (book, _ev, dir) = envelope_book("canon-activate")?;
     let run = |args: &[&str]| fa(Some(&book), args);
     let head = |out: &str| -> i128 {
-        let envelope = doc(out);
+        let envelope = robot_line(out);
         let coordinate = envelope.get("coordinate").expect("book coordinate");
         int(coordinate, "known_at").expect("coordinate known_at")
     };
@@ -21317,12 +21317,12 @@ fn an_adjusting_rule_derives_into_a_soft_closed_period() -> std::io::Result<()> 
         "back=2026-04-01",
         "--json",
     ]);
-    assert_eq!(code, 7, "{out}");
-    assert_ne!(field(&out, "refusal_id"), Some("FA-REF-196"), "{out}");
-    assert!(
-        out.contains("is not admissible") && out.contains("SoftClosed"),
+    assert_eq!(
+        (code, field(&out, "refusal_id")),
+        (7, Some("FA-REF-011")),
         "{out}"
     );
+    assert!(out.contains("SoftClosed"), "{out}");
     // A reversal date on or before the effective date is Canon's refusal.
     let (code, out, _) = run(&[
         "rule",

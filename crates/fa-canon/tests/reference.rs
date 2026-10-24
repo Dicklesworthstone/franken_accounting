@@ -261,32 +261,29 @@ fn hand_written_rules_agree_on_legs_dates_and_failures() {
   credit "2300" tax
   effective as_of
 }"#;
-    let as_of = ("as_of", day(2026, 3, 31));
+    let as_of = [("as_of", day(2026, 3, 31))];
     differential.run(
         tax,
         &[
-            case(sale(&[("net", "USD", 10_005)]), &[as_of.clone()]),
-            case(sale(&[("net", "USD", 7)]), &[as_of.clone()]),
-            case(sale(&[("net", "USD", 0)]), &[as_of.clone()]),
-            case(sale(&[("net", "USD", -100)]), &[as_of.clone()]),
-            case(sale(&[]), &[as_of.clone()]),
-            case(
-                sale(&[("net", "USD", 1), ("net", "USD", 2)]),
-                &[as_of.clone()],
-            ),
-            case(sale(&[("net", "EUR", 100)]), &[as_of.clone()]),
+            case(sale(&[("net", "USD", 10_005)]), &as_of),
+            case(sale(&[("net", "USD", 7)]), &as_of),
+            case(sale(&[("net", "USD", 0)]), &as_of),
+            case(sale(&[("net", "USD", -100)]), &as_of),
+            case(sale(&[]), &as_of),
+            case(sale(&[("net", "USD", 1), ("net", "USD", 2)]), &as_of),
+            case(sale(&[("net", "EUR", 100)]), &as_of),
             case(sale(&[("net", "USD", 100)]), &[]),
             case(sale(&[("net", "USD", 100)]), &[("as_of", usd(1))]),
             case(
                 sale(&[("net", "USD", 100)]),
-                &[as_of.clone(), ("extra", usd(1))],
+                &[as_of[0].clone(), ("extra", usd(1))],
             ),
             case(
                 naive::Event {
                     kind: "Purchase".into(),
                     ..sale(&[("net", "USD", 100)])
                 },
-                &[as_of],
+                &as_of,
             ),
         ],
     );
@@ -452,18 +449,22 @@ fn generated(rng: &mut Lcg, index: usize) -> String {
 fn seeded_generated_rules_agree_with_the_naive_reader() {
     let mut differential = Differential::new();
     let mut rng = Lcg(0x00c0_ffee_0c34);
+    // Six events with drawn amounts. The first three take the shapes a rule
+    // fails on (no resource `c`, `c` in another unit, no `fee` input) by
+    // construction, so those paths are reached whatever the seed draws.
     let mut events = Vec::new();
-    for _ in 0..6 {
+    for index in 0..6 {
         let mut resources = vec![
             ("a", "USD", rng.below(10_000_000) as i128),
             ("b", "USD", rng.below(10_000_000) as i128),
         ];
-        match rng.below(6) {
+        let c = rng.below(10_000_000) as i128;
+        match index {
             0 => {}
             1 => resources.push(("c", "EUR", 100)),
-            _ => resources.push(("c", "USD", rng.below(10_000_000) as i128)),
+            _ => resources.push(("c", "USD", c)),
         }
-        events.push((resources, rng.below(1_000_000) as i128, rng.below(8) == 0));
+        events.push((resources, rng.below(1_000_000) as i128, index == 2));
     }
     for index in 0..400 {
         let source = generated(&mut rng, index);
@@ -489,7 +490,12 @@ fn seeded_generated_rules_agree_with_the_naive_reader() {
         "{:?}",
         differential.outcomes
     );
-    for class in ["NegativeLeg", "MissingResource"] {
+    for class in [
+        "NegativeLeg",
+        "MissingResource",
+        "ResourceUnit",
+        "MissingInput",
+    ] {
         assert!(
             differential.count(class) > 0,
             "{class}: {:?}",
