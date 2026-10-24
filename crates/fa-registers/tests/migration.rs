@@ -94,6 +94,76 @@ fn opening_date() -> DateDay {
 
 /// A book with the chart, FY2026's periods, FY2026-OPEN locked (Migration
 /// is admissible only there) and P01 open, and the trial balance document.
+#[test]
+fn migration_activation_cannot_make_existing_gross_registers_unrepresentable() {
+    let (mut k, mut oracle) = setup();
+    let spec = RunSpec {
+        key: "capacity-run".into(),
+        opening_date: opening_date(),
+        lines: vec![
+            ("1000".into(), usd().0, i128::MAX),
+            ("2000".into(), usd().0, -i128::MAX),
+        ],
+        periods: vec![],
+        full_detail: None,
+    };
+    let ops = vec!["post".to_string(), "migrate".to_string()];
+    let run = kernel_open(&mut k, &spec, "capacity-open", &["post", "migrate"])
+        .unwrap()
+        .run;
+    let oracle_run = oracle.open_run(&spec, b"capacity-open", &ops).unwrap();
+    let chunk = chunk_intent(
+        "capacity-chunk",
+        vec![
+            leg(fa_reference::Side::Debit, "1000", i128::MAX),
+            leg(fa_reference::Side::Credit, "2000", i128::MAX),
+        ],
+    );
+    post_chunk(&mut k, run, "capacity-chunk", chunk.legs.clone());
+    assert!(matches!(
+        oracle.post_migration(oracle_run, &chunk),
+        Verdict::Posted { .. }
+    ));
+    let trunk = trunk_intent(
+        "one-live-unit",
+        vec![
+            leg(fa_reference::Side::Debit, "1000", 1),
+            leg(fa_reference::Side::Credit, "2000", 1),
+        ],
+    );
+    let payload = chunk_payload(&k, run, &trunk, Shape::NoRun, None);
+    kernel_post(&mut k, payload, &["post"], false).unwrap();
+    assert!(matches!(oracle.post(&trunk), Verdict::Posted { .. }));
+    let proposal = kernel_plan(&k, run, kind::FINALIZE, "capacity-finalize").unwrap();
+    let approvals = approve(&mut k, proposal.proposal_digest().unwrap());
+    let request = RunControlRequest {
+        proposal,
+        capability: capability(&["post", "migrate"]),
+        approvals,
+    };
+    let ctx = k.ctx();
+    let head = k.db.frontier().unwrap();
+    let refusal = k
+        .runtime
+        .block_on(transition_run(&mut k.db, &ctx, &k.book, request))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3), "{refusal}");
+    assert_eq!(
+        k.db.frontier().unwrap(),
+        head,
+        "the refused activation published nothing"
+    );
+    assert_eq!(
+        read_run(&k.db, run, None).unwrap().unwrap().state,
+        RunState::Open
+    );
+    assert_eq!(
+        oracle.finalize_run(oracle_run, 1, b"capacity-finalize", &ops, 2),
+        Err("FA-REF-198")
+    );
+}
+
 fn setup() -> (Kernel, Oracle) {
     setup_with(None)
 }

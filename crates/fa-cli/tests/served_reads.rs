@@ -197,3 +197,44 @@ fn head_trial_balances_say_how_they_were_served_and_registers_answer_them() {
     );
     assert_literal_rows(&book, &read, false);
 }
+
+mod register_capacity {
+    use super::*;
+
+    #[test]
+    fn max_then_minor_unit_refuses_without_breaking_reports() {
+        let (dir, book, evidence) = fixture();
+        post(
+            &dir,
+            &book,
+            &evidence,
+            "maximum",
+            "1701411834604692317316873037158841057.27",
+        );
+        let before = ok(&book, &["tb", "--period", "FY2026-P03"]);
+        let head = integer(&before, "known_at");
+        let intent = write(
+            &dir,
+            "over-cap.json",
+            r#"{"effective_date":"2026-03-10","idempotency_key":"over-cap","legs":[{"side":"debit","account":"1000","amount":"0.01 USD"},{"side":"credit","account":"4000","amount":"0.01 USD"}]}"#,
+        );
+        let (exit, refusal) = run(
+            &book,
+            &["post", "--intent", &intent, "--evidence", &evidence],
+        );
+        assert_eq!(exit, 3, "{}", refusal.render());
+        assert_eq!(text(&refusal, "refusal_id"), "FA-REF-198");
+        let after = ok(&book, &["tb", "--period", "FY2026-P03"]);
+        assert_eq!(
+            integer(&after, "known_at"),
+            head,
+            "refused post must not change the raw book frontier"
+        );
+        assert_eq!(get(&after, "rows"), get(&before, "rows"));
+        ok(&book, &["registers", "advance", "--period", "FY2026-P03"]);
+        ok(&book, &["verify", "registers", "--period", "FY2026-P03"]);
+        let maintained = ok(&book, &["tb", "--period", "FY2026-P03"]);
+        assert_eq!(get(&maintained, "rows"), get(&before, "rows"));
+        assert_literal_rows(&book, &maintained, false);
+    }
+}

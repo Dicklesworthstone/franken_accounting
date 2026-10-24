@@ -4879,10 +4879,22 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         }
         Ok(PostPreparation::Ready(prepared)) => (None, ReplacementBasis::Staged(prepared)),
     };
-    Ok(
-        prepare_post_in(db, ctx, book, replacement_req, Some(basis), admission, None)?
-            .map(|prepared| (prior, prepared)),
-    )
+    let prepared = prepare_post_in(db, ctx, book, replacement_req, Some(basis), admission, None)?;
+    if let Ok(PostPreparation::Ready(p)) = &prepared {
+        let accounts = crate::register_capacity::accounts(
+            std::iter::once(&p.entry.proposal)
+                .chain(p.paired_reversal.iter().map(|m| &m.entry.proposal)),
+        );
+        if let Err(refusal) =
+            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts)?
+        {
+            if let Ok(PostPreparation::Ready(p)) = prepared {
+                p.abort();
+            }
+            return Ok(Err(refusal));
+        }
+    }
+    Ok(prepared.map(|prepared| (prior, prepared)))
 }
 
 /// Explain the complete `SUPERSEDES` lineage component containing `vid` and its
