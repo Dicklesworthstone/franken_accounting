@@ -2935,6 +2935,15 @@ Invoice 100
                 "accepted malformed MT940 case {index}: {source}"
             );
         }
+        // The continuity rule itself, not another check, refuses a booked
+        // closing balance the opening balance and activity do not reach
+        // (fa-d22b).
+        let unreached = STANDARD_MT940.replace("C260131USD1385,", "C260131USD1386,");
+        let refused = parse_mt940(&unreached, &units);
+        assert!(
+            matches!(refused, Err(FormatError::BankContinuity { .. })),
+            "{refused:?}"
+        );
 
         // An equal-and-opposite pair must not disappear just because the
         // statement's booked closing balance is unchanged.
