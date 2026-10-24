@@ -2083,33 +2083,33 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
 }
 
 /// fa-2ihd: the same campaign, every assertion included, over more seeds.
-/// Tier 1 runs 8 seeds; `FA_DIFFERENTIAL_SEEDS=<n>` runs n (tier 2). Each
-/// seed builds its own book and history, and a divergence names its seed.
+/// Tier 1 runs 8 seeds; `FA_DIFFERENTIAL_SEEDS=<n>` runs n (tier 2), from
+/// `FA_DIFFERENTIAL_SEED_FROM=<k>` for a shard ([`seed_indices`]). Each seed
+/// builds its own book and history, and a divergence names its seed.
 #[test]
 fn kernel_and_oracle_agree_on_generated_histories_across_seeds() {
-    let seeds = std::env::var("FA_DIFFERENTIAL_SEEDS")
-        .ok()
-        .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or(8);
+    let seeds = seed_indices();
     let mut total = Coverage::default();
-    for i in 1..=seeds {
+    for i in seeds.clone() {
         let seed = splitmix(i);
         match std::panic::catch_unwind(|| generated_history_campaign(seed, true)) {
             Ok(coverage) => total.add(&coverage),
             Err(_) => {
-                panic!("the generated history diverged at seed {seed:#018x} (seed {i} of {seeds})")
+                panic!(
+                    "the generated history diverged at seed {seed:#018x} (index {i} of {seeds:?})"
+                )
             }
         }
     }
     // One seed's luck decides how often each plant fires; across the seeds
     // the campaign must still reach every one of a single seed's minimums.
     eprintln!(
-        "fa-2ihd coverage over {seeds} seeds: {} (class, state, outcome) cells: {:?}",
+        "fa-2ihd coverage over seed indices {seeds:?}: {} (class, state, outcome) cells: {:?}",
         total.cells.len(),
         total.cells
     );
-    total.assert_minimums(&format!("{seeds} seeds"));
-    total.assert_coverage(&format!("{seeds} seeds"));
+    total.assert_minimums(&format!("seed indices {seeds:?}"));
+    total.assert_coverage(&format!("seed indices {seeds:?}"));
 }
 
 /// Delta debugging (Zeller and Hildebrandt's ddmin, complements first) over
@@ -2375,6 +2375,22 @@ impl Coverage {
 }
 
 /// A nonzero xorshift seed derived from `i` (SplitMix64).
+/// The seed indices both multi-seed campaigns run: `FA_DIFFERENTIAL_SEEDS=<n>`
+/// of them (8, tier 1, by default) from `FA_DIFFERENTIAL_SEED_FROM=<k>` (1 by
+/// default). A tier-2 run splits into disjoint shards across workers whose
+/// ranges together cover 1..=N, each shard's seeds the ones a single run
+/// would draw.
+fn seed_indices() -> std::ops::Range<u64> {
+    let var = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(default)
+    };
+    let from = var("FA_DIFFERENTIAL_SEED_FROM", 1).max(1);
+    from..from.saturating_add(var("FA_DIFFERENTIAL_SEEDS", 8))
+}
+
 fn splitmix(i: u64) -> u64 {
     let mut z = i.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -4677,27 +4693,28 @@ fn race_campaign(seed: u64) -> RaceCoverage {
 /// seeds, each race two writers prepared at one committed prefix and
 /// published in a seeded order, checked in commit order against the
 /// reference, then the committed journal replayed serially. Tier 1 runs 8
-/// seeds; `FA_DIFFERENTIAL_SEEDS=<n>` runs n (tier 2). A divergence names its
+/// seeds; `FA_DIFFERENTIAL_SEEDS=<n>` runs n (tier 2), sharded by
+/// `FA_DIFFERENTIAL_SEED_FROM=<k>` ([`seed_indices`]). A divergence names its
 /// seed.
 #[test]
 fn serial_equivalence_oracle() {
-    let seeds = std::env::var("FA_DIFFERENTIAL_SEEDS")
-        .ok()
-        .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or(8);
+    let seeds = seed_indices();
     let mut total = RaceCoverage::default();
-    for i in 1..=seeds {
+    for i in seeds.clone() {
         // Distinct from the generated-history campaign's seeds.
         let seed = splitmix(i.wrapping_add(0x5E71_A1E0));
         match std::panic::catch_unwind(|| race_campaign(seed)) {
             Ok(coverage) => total.add(&coverage),
             Err(_) => {
-                panic!("the race campaign diverged at seed {seed:#018x} (seed {i} of {seeds})")
+                panic!("the race campaign diverged at seed {seed:#018x} (index {i} of {seeds:?})")
             }
         }
     }
-    eprintln!("fa-2ihd races over {seeds} seeds: {:?}", total.races);
-    total.assert_minimums(&format!("{seeds} seeds"));
+    eprintln!(
+        "fa-2ihd races over seed indices {seeds:?}: {:?}",
+        total.races
+    );
+    total.assert_minimums(&format!("seed indices {seeds:?}"));
 }
 
 /// The message a caught panic carried.
