@@ -623,3 +623,24 @@ terminal acknowledgement. The transcript is
 `rch-recover-72123-20261023.json`. The positive standalone census controls do
 not establish launcher health. All three repaired campaigns are UNRUN. Stop
 retries and retain the review train, original acceptance and canonical gate.
+
+## 2026-10-24 — fa-94qd: no-entity genesis skipped calendar validation
+
+At `57f52353`, the native `create_book` API committed a monthly-calendar book
+whose opening date was January 2, outside the registered Normal-period starts.
+The new regression expected refusal but received `CommitSeq(1)`. An early
+`db.write` for books without declared entities bypassed `BookSpec::validate`;
+declared-entity books already ran that validator. Empty calendar identifiers
+and overlong names had the same missing admission path.
+
+`93fa44aa` moves the existing validation before both publication paths. The
+unchanged regression checks three malformed inputs in both entity postures,
+exact head/row preservation, and a valid corrected retry in the same database.
+It passes within the source-bound 273-test journal/register/CLI selection.
+The native-entity capacity test also exposed an invalid older FX fixture date;
+the fixture now uses February 1, preserving its locked January 1 Opening period.
+The earlier 10-pass/1-fail FX run is retained; no calendar rule was weakened.
+
+This is bounded constructor evidence, not a historical-book repair or complete
+calendar qualification. Full canonical proof and the original fa-94qd
+acceptance remain open. Beads retains the counterexample, repair and gate limits.
