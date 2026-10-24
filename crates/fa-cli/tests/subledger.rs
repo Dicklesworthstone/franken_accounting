@@ -1,6 +1,7 @@
 //! End-to-end native AR/AP subledgers through the real persisted CLI.
 #![forbid(unsafe_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -233,12 +234,31 @@ impl Fixture {
     }
 
     fn verify(&self, code: &str, at: Option<&str>) -> Json {
-        let mut args = vec!["subledger", "verify", code, "--as-of", "2026-03-31"];
+        self.verify_as_of(code, "2026-03-31", at)
+    }
+
+    fn verify_as_of(&self, code: &str, as_of: &str, at: Option<&str>) -> Json {
+        let mut args = vec!["subledger", "verify", code, "--as-of", as_of];
         if let Some(at) = at {
             args.extend(["--as-known-at", at]);
         }
         data(&self.ok(&args))
     }
+}
+
+/// A posting command's own recorded sequence.
+fn recorded(output: &str) -> i128 {
+    match data(output).get("recorded_at") {
+        Some(Json::Int(seq)) => *seq,
+        other => panic!("recorded_at: {other:?}\n{output}"),
+    }
+}
+
+/// `cents` as the CLI renders a USD amount.
+fn usd(cents: i128) -> String {
+    let sign = if cents < 0 { "-" } else { "" };
+    let cents = cents.abs();
+    format!("{sign}{}.{:02} USD", cents / 100, cents % 100)
 }
 
 #[test]
@@ -359,6 +379,141 @@ fn party_balances_reconcile_after_partial_receipt_reversal_and_reopen() {
     let ap = f.verify("AP", None);
     assert_eq!(ap.get("reconciled"), Some(&Json::Bool(true)));
     assert_eq!(text(&rows(&ap, "rows")[0], "net"), "-30.00 USD");
+}
+
+/// FA-INV-12 core: from each subledger's registration to the head, at every
+/// committed sequence and every effective date its history touches, the party
+/// detail folds to the control account's register, and every party's net is
+/// what an independent replay of the posted history predicts. The history
+/// interleaves invoices, a receipt and its reversal, a post that touches no
+/// control leaf, and a second subledger registered midway.
+#[test]
+fn party_detail_folds_to_the_control_register_at_every_committed_coordinate() {
+    let f = Fixture::new();
+    f.register("AR", "1200", "receivables");
+    let ar_from: i128 = f.head().parse().unwrap();
+    // (subledger, recorded sequence, effective date, party, signed cents)
+    let mut history = Vec::new();
+    let invoice = f.invoice("C-1", "INV-1", "100.00 USD");
+    history.push(("AR", recorded(&invoice), "2026-03-14", "C-1", 10_000));
+    let second = f.invoice("C-2", "INV-2", "250.00 USD");
+    history.push(("AR", recorded(&second), "2026-03-14", "C-2", 25_000));
+    let invoice_vid = text(&data(&invoice), "vid");
+    let receipt = f.ok(&[
+        "receipt",
+        "--party",
+        "C-1",
+        "--number",
+        "REC-1",
+        "--date",
+        "2026-03-20",
+        "--cash",
+        "1000",
+        "--receivable",
+        "1200",
+        "--amount",
+        "40.00 USD",
+        "--applies",
+        &invoice_vid,
+        "--evidence",
+        &f.evidence,
+    ]);
+    history.push(("AR", recorded(&receipt), "2026-03-20", "C-1", -4_000));
+    let sale = f.file(
+        "sale.json",
+        r#"{"effective_date":"2026-03-21","idempotency_key":"cash-sale","legs":[{"side":"debit","account":"1000","amount":"5.00 USD"},{"side":"credit","account":"4000","amount":"5.00 USD"}]}"#,
+    );
+    f.ok(&["post", "--intent", &sale, "--evidence", &f.evidence]);
+    let receipt_vid = text(&data(&receipt), "vid");
+    let reversal = f.ok(&[
+        "reverse",
+        &receipt_vid,
+        "--effective",
+        "2026-03-22",
+        "--reason",
+        "WrongAccount",
+        "--evidence",
+        &f.evidence,
+    ]);
+    history.push(("AR", recorded(&reversal), "2026-03-22", "C-1", 4_000));
+    f.register("AP", "2000", "payables");
+    let ap_from: i128 = f.head().parse().unwrap();
+    let bill = f.ok(&[
+        "bill",
+        "--party",
+        "V-1",
+        "--number",
+        "B-1",
+        "--date",
+        "2026-03-25",
+        "--payable",
+        "2000",
+        "--expense",
+        "6000",
+        "--line",
+        "amount=\"30.00 USD\"",
+        "--evidence",
+        &f.evidence,
+    ]);
+    history.push(("AP", recorded(&bill), "2026-03-25", "V-1", -3_000));
+    let head: i128 = f.head().parse().unwrap();
+
+    let dates = [
+        "2026-03-13",
+        "2026-03-14",
+        "2026-03-20",
+        "2026-03-21",
+        "2026-03-22",
+        "2026-03-25",
+        "2026-03-31",
+    ];
+    let mut judged = 0;
+    let mut folds = BTreeSet::new();
+    for (code, from) in [("AR", ar_from), ("AP", ap_from)] {
+        for seq in from..=head {
+            let at = seq.to_string();
+            for as_of in dates {
+                let mut nets = BTreeMap::new();
+                for &(subledger, recorded_at, date, party, cents) in &history {
+                    if subledger == code && recorded_at <= seq && date <= as_of {
+                        *nets.entry(party.to_string()).or_insert(0) += cents;
+                    }
+                }
+                let expected: BTreeMap<String, String> = nets
+                    .into_iter()
+                    .map(|(party, cents)| (party, usd(cents)))
+                    .collect();
+                let report = f.verify_as_of(code, as_of, Some(&at));
+                let coordinate = format!("{code} known at {at}, as of {as_of}");
+                assert_eq!(
+                    report.get("reconciled"),
+                    Some(&Json::Bool(true)),
+                    "{coordinate}"
+                );
+                for total in rows(&report, "totals") {
+                    for (detail, control) in [
+                        ("detail_debits", "control_debits"),
+                        ("detail_credits", "control_credits"),
+                    ] {
+                        assert_eq!(total.get(detail), total.get(control), "{coordinate}");
+                    }
+                }
+                let actual: BTreeMap<String, String> = rows(&report, "rows")
+                    .iter()
+                    .map(|row| (text(row, "party"), text(row, "net")))
+                    .collect();
+                assert_eq!(actual, expected, "{coordinate}");
+                judged += 1;
+                folds.insert(format!("{code} {actual:?}"));
+            }
+        }
+    }
+    println!(
+        "judged {judged} coordinates through head {head}: {} distinct party folds",
+        folds.len()
+    );
+    // AR: none, C-1 alone, both invoices, after the receipt; AP: none, the bill.
+    assert_eq!(folds.len(), 6, "{folds:#?}");
 }
 
 #[test]

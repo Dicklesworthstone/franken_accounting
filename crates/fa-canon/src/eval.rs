@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::ir::{CANON_INPUTS_DOMAIN, CompiledRule, DateSource, InputType, Node, write_unit};
 use fa_model::{EventKind, EventSpec, Reader, Writer, domain_digest};
+use fa_money::wide::U256;
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
 
@@ -423,12 +424,16 @@ impl Frame<'_> {
             } => {
                 let value = self.value(operand)?;
                 let negative = value < 0;
-                let product = value
-                    .unsigned_abs()
-                    .checked_mul(*num)
+                // Plan §6.1: the product and quotient stay wide; only the
+                // term's rounded magnitude is narrowed. The remainder is
+                // below the u128 divisor, and a quotient past u128 cannot
+                // narrow to i128 at all.
+                let product = U256::from_product(value.unsigned_abs(), *num);
+                let (quotient, remainder) = product
+                    .checked_div_rem(U256::from_u128(*den))
                     .ok_or(Fault::Overflow)?;
-                let quotient = product.checked_div(*den).ok_or(Fault::Overflow)?;
-                let remainder = product.checked_rem(*den).ok_or(Fault::Overflow)?;
+                let quotient = quotient.to_u128().ok_or(Fault::Overflow)?;
+                let remainder = remainder.to_u128().ok_or(Fault::Overflow)?;
                 let magnitude = match law {
                     Some(law) => law
                         .apply_magnitude(quotient, remainder, *den, negative)
@@ -437,11 +442,12 @@ impl Frame<'_> {
                     None if remainder == 0 => quotient,
                     None => return Err(Fault::Overflow),
                 };
-                let magnitude = i128::try_from(magnitude).map_err(|_| Fault::Overflow)?;
+                // The sign is restored after narrowing, so i128::MIN stays
+                // representable.
                 if negative {
-                    magnitude.checked_neg().ok_or(Fault::Overflow)
+                    0i128.checked_sub_unsigned(magnitude).ok_or(Fault::Overflow)
                 } else {
-                    Ok(magnitude)
+                    i128::try_from(magnitude).map_err(|_| Fault::Overflow)
                 }
             }
         }

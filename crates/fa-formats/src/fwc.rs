@@ -491,6 +491,20 @@ pub fn invoke_fwc_bank_fetch(
     since: DateDay,
     units: &UnitCatalog,
 ) -> Result<FwcBankFeedImportResult, FwcSubprocessError> {
+    let payload = fetch_fwc_payload(fwc_bin, connector, account_id, since)?;
+    Ok(parse_fwc_plaid_transactions_sync(&payload, units)?)
+}
+
+/// The raw `transactions_sync` robot payload `fwc` prints for `connector`'s
+/// `account_id` since `since`: the exact bytes a retained statement keeps
+/// (`fa bank fetch`), unparsed. A missing or failing `fwc` is
+/// [`FwcSubprocessError::Environment`] (`exit 4`), never a fabricated payload.
+pub fn fetch_fwc_payload(
+    fwc_bin: &Path,
+    connector: &str,
+    account_id: &str,
+    since: DateDay,
+) -> Result<String, FwcSubprocessError> {
     let since_str = since.to_string();
     let output = Command::new(fwc_bin)
         .args([
@@ -527,7 +541,7 @@ pub fn invoke_fwc_bank_fetch(
         format: "fwc_plaid_transactions_sync_v1",
         detail: format!("fwc output is not valid UTF-8: {e}"),
     })?;
-    Ok(parse_fwc_plaid_transactions_sync(&stdout, units)?)
+    Ok(stdout)
 }
 
 /// Construct and validate a [`WarehouseExportReceipt`] control record from a certified

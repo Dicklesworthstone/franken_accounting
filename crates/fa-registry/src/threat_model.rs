@@ -441,11 +441,7 @@ impl ThreatModel {
                     .flat_map(|tv| tv.test_refs.iter().map(move |c| (tv.id.as_str(), c))),
             );
         for (owner_id, checker) in all_refs {
-            let found = checker
-                .candidate_files()
-                .iter()
-                .any(|rel| read_file(rel).is_some_and(|text| checker.is_defined_in(&text)));
-            if !found {
+            if !checker.resolves_with(&mut read_file) {
                 unresolved.push((owner_id.to_string(), checker.to_string()));
             }
         }

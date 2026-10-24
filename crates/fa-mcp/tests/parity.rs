@@ -95,6 +95,10 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
                 && matches!(e.subcommand.as_deref(), Some("map" | "year-end")))
             // Releasing a bank claim requires explicit Human host confirmation.
             || (e.verb == "bank" && e.subcommand.as_deref() == Some("unmatch"))
+            // fa-lzrn: a fetch runs the host's `fwc` connector subprocess with
+            // the host's connector credentials; MCP imports a saved payload
+            // inline through fa_bank_import (bank_format plaid-sync).
+            || (e.verb == "bank" && e.subcommand.as_deref() == Some("fetch"))
             // Attesting a statement close needs an independently authorized
             // Human, full-source authority and --yes (8e7ee49); sessions read
             // verified closes through fa_bank_reconciliation.

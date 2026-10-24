@@ -536,6 +536,15 @@ struct Frame<'a> {
     lets: BTreeMap<String, (String, Int)>,
 }
 
+/// A value that must be an i128 mantissa at this point of the evaluation.
+fn in_range(value: Int) -> Result<Int, Failure> {
+    if value.to_i128().is_some() {
+        Ok(value)
+    } else {
+        Err(Failure::OutOfRange)
+    }
+}
+
 impl Frame<'_> {
     /// An expression's unit and exact value.
     fn value(&self, expr: &Expr) -> Result<(String, Int), Failure> {
@@ -569,16 +578,20 @@ impl Frame<'_> {
                     _ => Err(Failure::AmbiguousResource),
                 }
             }
+            // Plan §6.1: a sum or difference is a checked i128 operation, so
+            // one that leaves i128 is refused where it happens.
             Expr::Add(a, b) => {
                 let (unit, a) = self.value(a)?;
                 let (_, b) = self.value(b)?;
-                Ok((unit, a.add(&b)))
+                Ok((unit, in_range(a.add(&b))?))
             }
             Expr::Sub(a, b) => {
                 let (unit, a) = self.value(a)?;
                 let (_, b) = self.value(b)?;
-                Ok((unit, a.sub(&b)))
+                Ok((unit, in_range(a.sub(&b))?))
             }
+            // The product and quotient stay wide; the term's rounded result
+            // is narrowed.
             Expr::Scaled {
                 operand,
                 num,
@@ -586,7 +599,7 @@ impl Frame<'_> {
                 law,
             } => {
                 let (unit, value) = self.value(operand)?;
-                Ok((unit, scale(&value, *num, *den, law.as_deref())?))
+                Ok((unit, in_range(scale(&value, *num, *den, law.as_deref())?)?))
             }
         }
     }
