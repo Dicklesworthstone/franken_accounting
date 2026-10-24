@@ -295,6 +295,17 @@ fn policy_kind(policy: &EvidencePolicy, name: &str) -> Result<u8, BookError> {
         .ok_or_else(|| corrupt(format!("missing registered document kind {name}")))
 }
 
+/// A saved `fwc` Plaid `transactions_sync` payload as a statement. The
+/// payload's own checks (robot schema version, connector, operation,
+/// receipt hash, exact amounts, balance continuity) run here; the retained
+/// statement document is the payload itself.
+fn parse_plaid_sync(
+    text: &str,
+    units: &fa_formats::UnitCatalog,
+) -> Result<BankStatementExtract, fa_formats::FormatError> {
+    fa_formats::fwc::parse_fwc_plaid_transactions_sync(text, units).map(|feed| feed.extract)
+}
+
 fn parsed(
     format: BankFormat,
     bytes: &[u8],
@@ -310,6 +321,7 @@ fn parsed(
         BankFormat::Ofx => fa_formats::bank::parse_ofx_qbo,
         BankFormat::Mt940 => fa_formats::bank::parse_mt940,
         BankFormat::Csv => fa_formats::bank::parse_bank_csv,
+        BankFormat::PlaidSync => parse_plaid_sync,
     };
     let extract = if let Some(layout) = layout {
         if format != BankFormat::Csv {

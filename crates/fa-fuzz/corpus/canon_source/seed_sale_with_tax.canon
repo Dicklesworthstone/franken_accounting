@@ -1,0 +1,9 @@
+rule sale_with_tax v3 for event Sale {
+  inputs { as_of: date }
+  let net = event.resource("net", "USD")
+  let tax = net * 7 / 100 round HalfEven   # sales tax at 7%
+  debit  "1200" net + tax dims { cost_center = "CC1" }
+  credit "4000" net
+  credit "2300" tax
+  effective as_of
+}

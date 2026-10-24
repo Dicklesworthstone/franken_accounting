@@ -1,0 +1,8 @@
+rule fx_split v1 for event Receipt {
+  let yen = event.resource("y", "JPY") * 3 / 4 round Floor
+  let euro = event.resource("e", "EUR")
+  debit "1010" yen
+  credit "1020" yen
+  debit "1030" euro - "0.01 EUR"
+  credit "1040" euro - "0.01 EUR"
+}

@@ -3708,5 +3708,73 @@ fn the_same_statement_under_another_cash_mapping_remains_occupied_until_release(
     }
 }
 
+/// fa-lzrn: a saved `fwc plaid transactions_sync` robot payload imports with
+/// `--bank-format plaid-sync`. It is retained as the BankStatement, its two
+/// lines parse with exact amounts, an exact repeat returns the original
+/// receipt, and its lines propose exact matches against posted cash like any
+/// statement's. A payload whose activity does not reach its closing balance,
+/// or that another connector produced, is refused with nothing written.
+#[test]
+fn a_plaid_transactions_sync_payload_imports_and_matches_like_a_statement() {
+    const PLAID: &str =
+        include_str!("../../fa-formats/corpora/fwc_plaid_transactions_sync_fixture.json");
+    let f = Fixture::new();
+    f.post("plaid-sale", "2026-03-10", "debit", "500.00", "INV-100");
+    f.post("plaid-bill", "2026-03-15", "credit", "250.00", "BILL-200");
+    let before = head(&f.book);
+    for (name, payload) in [
+        (
+            "unbalanced.json",
+            PLAID.replace(
+                "\"closing_balance\": \"1250.00\"",
+                "\"closing_balance\": \"1300.00\"",
+            ),
+        ),
+        (
+            "other-connector.json",
+            PLAID.replace("\"connector\": \"plaid\"", "\"connector\": \"stripe\""),
+        ),
+    ] {
+        assert_ne!(payload, PLAID, "{name}: the planted change applies");
+        let path = f.file(name, &payload);
+        let (exit, refused) = run(
+            &f.book,
+            &[
+                "bank",
+                "import",
+                &path,
+                "--bank-format",
+                "plaid-sync",
+                "--account",
+                "1000",
+            ],
+        );
+        assert_eq!(exit, 2, "{name}: {}", refused.render());
+        assert_eq!(head(&f.book), before, "{name}: nothing is written");
+    }
+    let imported = f.import("plaid.json", "plaid-sync", PLAID);
+    let report = data(&imported);
+    assert_eq!(text(report, "bank_format"), "plaid-sync");
+    assert_eq!(integer(report, "line_count"), 2);
+    assert_eq!(text(report, "opening_balance"), "1000.00 USD");
+    assert_eq!(text(report, "closing_balance"), "1250.00 USD");
+    assert_eq!(text(report, "statement_date"), "2026-03-31");
+    assert_eq!(report.get("already_recorded"), Some(&Json::Bool(false)));
+    let manifest = text(report, "manifest_oid").to_string();
+    let again = f.import("plaid-again.json", "plaid-sync", PLAID);
+    assert_eq!(
+        data(&again).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(text(data(&again), "manifest_oid"), manifest);
+    let matched = ok_privileged(&f.book, &["bank", "match", "--import", &manifest]);
+    assert_eq!(
+        rows(data(&matched), "proposals").len(),
+        2,
+        "{}",
+        matched.render()
+    );
+}
+
 #[path = "bank/csv_layout.rs"]
 mod csv_layout;

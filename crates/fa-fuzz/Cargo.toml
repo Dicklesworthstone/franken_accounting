@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 fa = { path = "../fa", version = "=0.0.1" }
+fa-canon = { path = "../fa-canon", version = "=0.0.1" }
 fa-cli = { path = "../fa-cli", version = "=0.0.1" }
 fa-formats = { path = "../fa-formats", version = "=0.0.1" }
 fa-intents = { path = "../fa-intents", version = "=0.0.1" }

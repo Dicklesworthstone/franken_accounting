@@ -117,6 +117,11 @@ pub const LIVE_TARGETS: &[FuzzTarget] = &[
         description: "The FrankenAccounting GQL profile rewriter (lexer, selectors, amount law, aggregation planner) on arbitrary UTF-8 without panic",
         run: fuzz_gql_profile,
     },
+    FuzzTarget {
+        name: "canon_source",
+        description: "The Canon rule compiler (lexer, parser, unit and rounding-law checker, balance proof, IR encoder) on arbitrary UTF-8 and the IR decoder on arbitrary bytes, without panic; a compiled rule compiles identically again and its IR decodes to itself",
+        run: fuzz_canon_source,
+    },
 ];
 
 /// Dormant fuzz targets registered per `fa-tre` with their activating beads.
@@ -130,11 +135,6 @@ pub const DORMANT_TARGETS: &[DormantTarget] = &[
         name: "certificate",
         activating_bead: "fa-yrhb",
         description: "Dedicated report certificate fuzzer (currently covered inside payload_decoders)",
-    },
-    DormantTarget {
-        name: "canon_source",
-        activating_bead: "fa-yrhb",
-        description: "Canon posting rule DSL parser and compiler fuzzer",
     },
     DormantTarget {
         name: "mcp_args",
@@ -721,6 +721,42 @@ pub fn fuzz_gql_profile(bytes: &[u8]) {
             );
             let _ = fa::profile_refusal(&refusal);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Target 10: canon_source
+// ---------------------------------------------------------------------------
+
+/// Canon (plan §10.3, §16.8): the compiler on the input as rule source, and
+/// the IR decoder on the raw bytes. A rule source either compiles or names a
+/// line and column inside it; a compiled rule compiles to the same IR again,
+/// and its IR decodes back to itself. Bytes the decoder accepts are exactly
+/// canonical IR.
+pub fn fuzz_canon_source(bytes: &[u8]) {
+    let units = UnitRegistry::with_defaults();
+    let text = String::from_utf8_lossy(bytes);
+    match fa_canon::compile(&text, &units) {
+        Ok(rule) => {
+            let again =
+                fa_canon::compile(&text, &units).expect("a rule that compiled compiles again");
+            assert_eq!(again.ir(), rule.ir(), "compilation is deterministic");
+            let decoded = fa_canon::CompiledRule::decode(rule.ir(), &units)
+                .expect("a compiled rule's IR decodes");
+            assert_eq!(decoded.ir(), rule.ir(), "IR decodes to itself");
+            assert_eq!(decoded.ir_digest(), rule.ir_digest());
+        }
+        Err(error) => {
+            // The lexer counts lines from 1 at each '\n'.
+            let last_line = text.matches('\n').count() + 1;
+            assert!(
+                usize::try_from(error.line).is_ok_and(|line| line <= last_line),
+                "a compile error names a line inside the source: {error:?}"
+            );
+        }
+    }
+    if let Ok(rule) = fa_canon::CompiledRule::decode(bytes, &units) {
+        assert_eq!(rule.ir(), bytes, "the decoder accepts only canonical IR");
     }
 }
 
@@ -1583,9 +1619,32 @@ mod tests {
         assert_eq!(feed.extract.lines.len(), 2);
     }
 
+    /// The canon_source seeds are rules that compile, so the target's
+    /// determinism and IR round-trip assertions run on them; each one's IR
+    /// is accepted by the decoder path, and one appended byte is refused.
+    #[test]
+    fn canon_seeds_compile_and_their_ir_round_trips() {
+        let units = UnitRegistry::with_defaults();
+        let seeds = seeds_for_target("canon_source");
+        assert_eq!(seeds.len(), 4);
+        for seed in &seeds {
+            let text = core::str::from_utf8(seed).expect("seed rules are UTF-8");
+            let rule =
+                fa_canon::compile(text, &units).unwrap_or_else(|e| panic!("{e:?} in\n{text}"));
+            fuzz_canon_source(seed);
+            fuzz_canon_source(rule.ir());
+            let mut padded = rule.ir().to_vec();
+            padded.push(0);
+            assert!(
+                fa_canon::CompiledRule::decode(&padded, &units).is_err(),
+                "trailing bytes are not canonical IR"
+            );
+        }
+    }
+
     #[test]
     fn dormant_targets_name_their_activating_beads() {
-        assert_eq!(DORMANT_TARGETS.len(), 4);
+        assert_eq!(DORMANT_TARGETS.len(), 3);
         for d in DORMANT_TARGETS {
             assert!(!d.name.is_empty());
             assert!(d.activating_bead.starts_with("fa-"));
