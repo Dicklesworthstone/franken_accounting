@@ -3776,5 +3776,100 @@ fn a_plaid_transactions_sync_payload_imports_and_matches_like_a_statement() {
     );
 }
 
+/// fa-lzrn: `fa bank fetch --connector plaid` runs the host's `fwc` (here a
+/// stand-in on a private PATH that checks its exact argv) after admission,
+/// and retains its payload as a plaid-sync statement. Importing the same
+/// payload from a file afterwards is the recorded receipt, so the fetched
+/// bytes are what was retained. Planted: with no `fwc` on PATH, or an `fwc`
+/// that fails, the fetch did not run (exit 4) and nothing is written; a
+/// connector without a bank feed parser is a usage error.
+#[cfg(unix)]
+#[test]
+fn bank_fetch_runs_the_hosts_fwc_and_retains_its_payload() {
+    use std::os::unix::fs::PermissionsExt;
+    const PLAID: &str =
+        include_str!("../../fa-formats/corpora/fwc_plaid_transactions_sync_fixture.json");
+    let f = Fixture::new();
+    let payload = f.file("plaid-payload.json", PLAID);
+    let bin = f.dir.join("bin");
+    let empty = f.dir.join("empty");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::create_dir(&empty).unwrap();
+    let fake = |dir: &Path, body: &str| {
+        let path = dir.join("fwc");
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    fake(
+        &bin,
+        &format!(
+            "#!/bin/sh\nPATH=/usr/bin:/bin\n[ \"$*\" = 'robot invoke --connector plaid --operation transactions_sync --account plaid-acct-chk-1010 --since 2026-03-01' ] || exit 9\ncat '{payload}'\n"
+        ),
+    );
+    let failing = f.dir.join("failing");
+    std::fs::create_dir(&failing).unwrap();
+    fake(
+        &failing,
+        "#!/bin/sh\necho 'plaid: item login required' >&2\nexit 3\n",
+    );
+    let fetch = |path: &Path, connector: &str| -> (i32, Json) {
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&f.book)
+            .args([
+                "bank",
+                "fetch",
+                "--connector",
+                connector,
+                "--connector-account",
+                "plaid-acct-chk-1010",
+                "--since",
+                "2026-03-01",
+                "--account",
+                "1000",
+                "--json",
+            ])
+            .env_remove("FA_BOOK")
+            .env_remove("FA_TOKEN")
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let line = stdout.lines().last().unwrap_or_default();
+        fa_cli::verbs::registry()
+            .unwrap()
+            .check_line(line)
+            .unwrap_or_else(|error| panic!("{error}\n{stdout}"));
+        (output.status.code().unwrap(), json::parse(line).unwrap())
+    };
+    let before = head(&f.book);
+    for (path, connector, exit) in [
+        (&empty, "plaid", 4),
+        (&failing, "plaid", 4),
+        (&bin, "stripe", 2),
+    ] {
+        let (code, refused) = fetch(path, connector);
+        assert_eq!(code, exit, "{}: {}", path.display(), refused.render());
+        assert_eq!(head(&f.book), before, "nothing is written");
+    }
+    let (code, fetched) = fetch(&bin, "plaid");
+    assert_eq!(code, 0, "{}", fetched.render());
+    let report = data(&fetched);
+    assert_eq!(text(report, "bank_format"), "plaid-sync");
+    assert_eq!(integer(report, "line_count"), 2);
+    assert_eq!(text(report, "closing_balance"), "1250.00 USD");
+    assert_eq!(report.get("already_recorded"), Some(&Json::Bool(false)));
+    let imported = f.import("plaid-again.json", "plaid-sync", PLAID);
+    assert_eq!(
+        data(&imported).get("already_recorded"),
+        Some(&Json::Bool(true)),
+        "the fetched bytes are the payload"
+    );
+    assert_eq!(
+        text(data(&imported), "manifest_oid"),
+        text(report, "manifest_oid")
+    );
+}
+
 #[path = "bank/csv_layout.rs"]
 mod csv_layout;

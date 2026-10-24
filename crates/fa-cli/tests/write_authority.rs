@@ -77,6 +77,11 @@ fn row(argv: &[&str], ops: &[Op], admitted: Admitted) -> Row {
 /// Commands that write but are never a launch-bound session's: the bound
 /// route has no row for them, so it refuses them before the book.
 const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
+    (
+        "bank",
+        Some("fetch"),
+        "runs the host's fwc connector subprocess with its credentials (fa-lzrn)",
+    ),
     ("book", Some("create"), "creates the book itself"),
     (
         "checkpoint",
