@@ -91,6 +91,9 @@ pub use reconciliation::{
 
 pub const FOLD_DIGEST_DOMAIN: &[u8] = b"fa:register-fold:v2";
 
+/// Shared posting/report law for an unrepresentable registered cell.
+pub const REGISTER_CAPACITY: &str = "FA-REF-198";
+
 /// A retained registered cell cannot be represented. This is a diagnosis of
 /// immutable source, never an instruction to rebalance or edit its history.
 /// Native cells aggregate entities; functional cells name their entity partition
@@ -147,7 +150,7 @@ impl RegisterCapacity {
     #[must_use]
     pub fn refusal(&self) -> fa_journal::Refusal {
         fa_journal::Refusal::new(
-            fa_journal::refusal::code::REGISTER_CAPACITY,
+            REGISTER_CAPACITY,
             fa_journal::exit::REFUSAL,
             self.to_string(),
             "plan §4.4 / §5.2; limits.toml register_capacity (retained-history diagnosis)",

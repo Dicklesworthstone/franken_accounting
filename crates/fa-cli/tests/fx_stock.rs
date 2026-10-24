@@ -1017,7 +1017,7 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
             let (status, refusal) = run(&fixture.book, &args);
             assert_eq!(status, 3, "{args:?}: {}", refusal.render());
             assert_eq!(text(&refusal, "event"), "error");
-            assert_eq!(text(&refusal, "refusal_id"), "FA-REF-198");
+            assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-198");
             assert!(refusal.render().contains(&format!("{:032x}", vid.0)));
             assert!(
                 fa_cli::verbs::registry()

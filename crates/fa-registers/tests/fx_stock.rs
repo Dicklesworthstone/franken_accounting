@@ -709,6 +709,7 @@ fn retained_cell_capacity_diagnoses_native_functional_and_pending_without_mutati
             release.class = EntryClass::RESOLUTION;
             release.legs.clear();
             release.unit_totals.clear();
+            release.control = Some(ControlPayload::ReservationRelease);
             release.pending = Some(Pending {
                 timeout_ns: None,
                 resolution_of: Some(first_posted),
