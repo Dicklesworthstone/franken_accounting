@@ -14545,7 +14545,11 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
         human
             .lines()
             .any(|line| line.starts_with("jet.round_amounts ")
-                && line.contains(&format!("measured over {} seeds", calibration.seeds))),
+                && line.contains(&format!(
+                    "on fa-gen synthetic corpora, {} seeds",
+                    calibration.seeds
+                ))
+                && line.contains("not a field estimate")),
         "{human}"
     );
 

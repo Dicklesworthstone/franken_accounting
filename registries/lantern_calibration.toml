@@ -23,7 +23,219 @@
 # scale. They say how a procedure behaves on the patterns fa-gen plants, not
 # on any real book, and an unlabeled flag counted as a false positive may be a
 # true instance of the procedure's predicate that the generator did not label.
+# fa-gen builds its background to avoid every planted pattern (safe weekday
+# dates inside each period, unique non-round amounts, contiguous numbering),
+# so the 100% precision and zero clean rate measured below hold by the
+# generator's construction and estimate no false-positive rate. What the rows
+# do show: each procedure finds every planted instance across 210 corpora
+# (the recall lower bound), and no procedure fires on that background. Either
+# turning false fails the test. Near-miss background (legitimate weekend,
+# round or period-end activity) would make precision informative.
 
 schema_version = 1
 seeds = 30
 scale = 1
+
+[[procedure]]
+id = "cutoff.period_boundary"
+evidence = "FA-EVID-L11"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9590
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9590
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "duplicates.same_same_different"
+evidence = "FA-EVID-L08"
+true_positives = 180
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9791
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9791
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "duplicates.same_same_same"
+evidence = "FA-EVID-L07"
+true_positives = 120
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9689
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9689
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "graph.round_trips"
+evidence = "FA-EVID-L13"
+true_positives = 120
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9689
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9689
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "graph.structuring"
+evidence = "FA-EVID-L14"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9590
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9590
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "jet.period_end_timing"
+evidence = "FA-EVID-L02"
+true_positives = 210
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9820
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9820
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "jet.post_closing"
+evidence = "FA-EVID-L03"
+true_positives = 60
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9398
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9398
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "jet.round_amounts"
+evidence = "FA-EVID-L01"
+true_positives = 240
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9842
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9842
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "jet.self_approved"
+evidence = "FA-EVID-L05"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9590
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9590
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "jet.thin_descriptions"
+evidence = "FA-EVID-L06"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9590
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9590
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "jet.weekend"
+evidence = "FA-EVID-L04"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9590
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9590
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
+
+[[procedure]]
+id = "numbers.sequence_gaps"
+evidence = "FA-EVID-L09"
+true_positives = 120
+false_positives = 0
+false_negatives = 0
+precision_bps = 10000
+precision_lower_bps = 9689
+precision_upper_bps = 10000
+recall_bps = 10000
+recall_lower_bps = 9689
+recall_upper_bps = 10000
+clean_entries = 1200
+clean_flagged = 0
+clean_rate_bps = 0
+clean_rate_upper_bps = 32
