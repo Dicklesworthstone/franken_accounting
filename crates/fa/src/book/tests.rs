@@ -982,6 +982,45 @@ fn prepared_post_rechecks_its_capability_expiry_without_rejecting_unrelated_comm
     }
 }
 
+#[test]
+fn prepared_post_checks_capacity_against_intervening_financial_publications() {
+    under_lab(65, |root| async move {
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut fixture = prepared_fixture(&root, 65).await;
+        let mut intervening = fixture.request.clone();
+        intervening.proposal.idempotency_key = b"intervening-capacity-consumer".to_vec();
+        for leg in &mut intervening.proposal.legs {
+            leg.amount.mantissa = i128::MAX - 100_000;
+        }
+        intervening.proposal.unit_totals =
+            EntryPayload::fold_unit_totals(&intervening.proposal.legs).unwrap();
+        let prepared = prepare_fixture_post(&mut fixture.book, &cx, fixture.request);
+        fixture.book.post(&cx, intervening).await.unwrap().unwrap();
+        let head = fixture.book.head(&cx).unwrap();
+        let rows = fixture.book.db.vertices().unwrap();
+        let refusal = prepared
+            .commit(&mut fixture.book.db, &cx)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3));
+        assert!(
+            refusal
+                .message
+                .contains(&format!("guarded prefix {}", head.0))
+        );
+        assert_eq!(fixture.book.head(&cx).unwrap(), head);
+        assert_eq!(fixture.book.db.vertices().unwrap(), rows);
+        let fold = fixture.book.fold_period(&cx, &fixture.march).unwrap();
+        assert_eq!(fold.entries, 1);
+        assert!(
+            fold.cells
+                .iter()
+                .all(|cell| { cell.debits.max(cell.credits) == i128::MAX - 100_000 })
+        );
+    });
+}
+
 /// fa-0fl, the crash-point matrix for one post: the prepared rent post's
 /// publication crashes at each of the substrate's seven registered commit
 /// crash points, the fault VFS then loses every unsynced byte, and the book

@@ -421,13 +421,16 @@ impl PreparedPost {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
         }
-        let accounts = crate::register_capacity::accounts(
-            std::iter::once(&entry.proposal)
-                .chain(paired_reversal.iter().map(|m| &m.entry.proposal)),
-        );
-        if let Err(refusal) =
-            crate::register_capacity::admit(&txn, db, ctx, entry.proposal.book_id, &accounts)?
-        {
+        let mut capacity_entries = vec![(entry_ref.vid, &entry)];
+        if let Some(member) = &paired_reversal {
+            capacity_entries.push((member.entry_ref.vid, &member.entry));
+        }
+        if let Err(refusal) = crate::register_capacity::admit_publication(
+            db,
+            ctx,
+            entry.proposal.book_id,
+            &capacity_entries,
+        )? {
             txn.abort();
             return Ok(Err(refusal));
         }

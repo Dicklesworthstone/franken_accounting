@@ -1,8 +1,10 @@
 //! Prepublication representability, independent of derived registers.
 //!
 //! The interim implementation folds the final transaction overlay. Its full
-//! vertex scan retains the substrate's insertion/read witnesses, so a prepared
-//! writer cannot publish against a changed prefix. No balance is persisted.
+//! vertex scan retains the substrate's insertion/read witnesses for staged
+//! batches. A prepared post checks the current prefix under the database's
+//! exclusive publication borrow without adding unrelated old-basis witnesses.
+//! No balance is persisted.
 //! Each account/unit stock gross column bounds its period, entity and dimension
 //! subsets because monetary legs are nonnegative. Cross-account report totals
 //! are not registered cells and are deliberately outside this admission law.
@@ -35,7 +37,26 @@ pub(crate) fn admit<V: asupersync::fs::Vfs + Clone>(
     book_id: Id128,
     accounts: &BTreeSet<VId>,
 ) -> Outcome<()> {
-    admit_including(txn, db, ctx, book_id, accounts, None)
+    admit_including(txn, db, ctx, book_id, accounts, &[])
+}
+
+/// Re-evaluate a prepared post's financial effects at the publication frontier.
+/// The caller retains `&mut Database` through this synchronous check and the
+/// immediately following native commit: the substrate's single writer lease
+/// and Rust borrow exclude another publication between them. The fresh read
+/// transaction is aborted, not substituted for the preparation's original
+/// period, authority, policy, identity and accounting witnesses.
+pub(crate) fn admit_publication<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book_id: Id128,
+    entries: &[(VId, &Entry)],
+) -> Outcome<()> {
+    let accounts = accounts(entries.iter().map(|(_, entry)| &entry.proposal));
+    let txn = db.begin(&ctx.txn())?;
+    let outcome = admit_including(&txn, db, ctx, book_id, &accounts, entries);
+    txn.abort();
+    outcome
 }
 
 /// Automatic effects need a verdict before staging, so a blocked schedule
@@ -54,7 +75,7 @@ pub(crate) fn admit_addition<V: asupersync::fs::Vfs + Clone>(
         ctx,
         entry.proposal.book_id,
         &accounts,
-        Some((vid, entry)),
+        &[(vid, entry)],
     )
 }
 
@@ -64,7 +85,7 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book_id: Id128,
     accounts: &BTreeSet<VId>,
-    extra: Option<(VId, &Entry)>,
+    extra: &[(VId, &Entry)],
 ) -> Outcome<()> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if accounts.is_empty() {
@@ -76,7 +97,6 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
         .ok_or_else(|| KernelError::Corrupt("register capacity requires a book".into()))?
         .base_unit;
     let mut entries = Vec::new();
-    let mut resolved = BTreeSet::new();
     let mut runs = BTreeMap::new();
     for row in txn.vertices(db)? {
         ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -94,6 +114,19 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
         if !crate::migration::visible_in(txn, db, &entry, &mut runs)? {
             continue;
         }
+        entries.push((row.vid, entry));
+    }
+    for &(vid, entry) in extra {
+        // An intervening publication may already have spent this identity.
+        // The original transaction decides that race; never count it twice.
+        if !entries.iter().any(|(existing, _)| *existing == vid)
+            && crate::migration::visible_in(txn, db, entry, &mut runs)?
+        {
+            entries.push((vid, entry.clone()));
+        }
+    }
+    let mut resolved = BTreeSet::new();
+    for (_, entry) in &entries {
         if entry.proposal.class == EntryClass::RESOLUTION {
             let target = entry
                 .proposal
@@ -103,10 +136,6 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
                 .ok_or_else(|| KernelError::Corrupt("resolution has no pending target".into()))?;
             resolved.insert(target.vid);
         }
-        entries.push((row.vid, entry));
-    }
-    if let Some((vid, entry)) = extra {
-        entries.push((vid, entry.clone()));
     }
     // Resolve first: an old hold may have exceeded a prospective sum yet be
     // released in this same atomic publication, including across periods.
