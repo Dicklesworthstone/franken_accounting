@@ -455,6 +455,34 @@ pub struct Settle {
     pub mantissa: i128,
 }
 
+/// A value of a registered dimension kind (plan §4.1, bead fa-ficc): its
+/// code within its kind, the value it rolls up to, and its half-open valid
+/// time `[valid_from, valid_to)`, unbounded where absent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionValue {
+    pub kind: u32,
+    pub code: String,
+    pub parent: Option<String>,
+    pub valid_from: Option<DateDay>,
+    pub valid_to: Option<DateDay>,
+}
+
+impl DimensionValue {
+    fn effective_at(&self, day: DateDay) -> bool {
+        self.valid_from.is_none_or(|from| day >= from) && self.valid_to.is_none_or(|to| day < to)
+    }
+}
+
+/// One registered-kind tag on a leg: the dimension it is named under, and
+/// the value it names by that value's own kind and code. A value of another
+/// kind named under a dimension is a tag the book does not hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionTag {
+    pub dimension: u32,
+    pub value_kind: u32,
+    pub code: String,
+}
+
 /// Provenance asserted by a caller of the public posting path. Migration
 /// provenance is modelled by [`Oracle::post_migration`] and its verified run.
 /// The remaining system origins may only be minted internally.
@@ -540,6 +568,7 @@ pub mod code {
     pub const DEADLINE_OVERFLOW: &str = "FA-REF-096";
     pub const HOLD_DUE: &str = "FA-REF-097";
     pub const DIMENSION_MISSING: &str = "FA-REF-005";
+    pub const DIMENSION_NOT_EFFECTIVE: &str = "FA-REF-195";
     pub const ENTITY_UNDECLARED: &str = "FA-REF-104";
     pub const STRUCTURE: &str = "FA-REF-100";
     pub const CONTROL_VIA_POST: &str = "FA-REF-101";
@@ -992,6 +1021,16 @@ pub struct Oracle {
     account_parents: BTreeMap<String, String>,
     /// Only atomic model batches defer representability until final state.
     capacity_deferred: bool,
+    /// Registered-kind dimension values by (kind, code) (fa-ficc).
+    dimension_values: BTreeMap<(u32, String), DimensionValue>,
+    /// Each registered dimension's requiring accounts, as recorded now: a
+    /// requirement binds every later post, whatever its date.
+    dimension_requirements: BTreeMap<u32, BTreeSet<String>>,
+    /// A committed entry's registered-kind tags, leg by leg.
+    leg_dimensions: BTreeMap<usize, Vec<Vec<DimensionTag>>>,
+    /// The tags of the entry [`Oracle::post_dimensioned`] is posting, leg by
+    /// leg; empty on every other path.
+    posting_dimensions: Vec<Vec<DimensionTag>>,
 }
 
 impl Oracle {
@@ -1045,7 +1084,100 @@ impl Oracle {
             account_effectivity: BTreeMap::new(),
             account_parents: BTreeMap::new(),
             capacity_deferred: false,
+            dimension_values: BTreeMap::new(),
+            dimension_requirements: BTreeMap::new(),
+            leg_dimensions: BTreeMap::new(),
+            posting_dimensions: Vec::new(),
         }
+    }
+
+    /// Declare a registered-kind dimension value (plan §4.1; fa-ficc), as
+    /// `fa dimension add` journals it. The model admits a code new within its
+    /// kind, a parent of the same kind that exists, and a window that is not
+    /// empty; anything else is FA-REF-100.
+    pub fn declare_dimension_value(&mut self, value: DimensionValue) -> Result<(), &'static str> {
+        let empty =
+            matches!((value.valid_from, value.valid_to), (Some(from), Some(to)) if to <= from);
+        let orphan = value.parent.as_ref().is_some_and(|parent| {
+            !self
+                .dimension_values
+                .contains_key(&(value.kind, parent.clone()))
+        });
+        if empty
+            || orphan
+            || self
+                .dimension_values
+                .contains_key(&(value.kind, value.code.clone()))
+        {
+            return Err(code::STRUCTURE);
+        }
+        self.dimension_values
+            .insert((value.kind, value.code.clone()), value);
+        Ok(())
+    }
+
+    /// Record (`required`) or withdraw `account`'s requirement of dimension
+    /// `kind` (plan §4.3 dimension_requirements; fa-ficc `fa dimension
+    /// require`). It binds every later post the preparer chooses.
+    pub fn require_dimension(&mut self, kind: u32, account: &str, required: bool) {
+        let accounts = self.dimension_requirements.entry(kind).or_default();
+        if required {
+            accounts.insert(account.to_string());
+        } else {
+            accounts.remove(account);
+        }
+    }
+
+    /// End a value's window on `closed_on` (fa-ficc `fa dimension close`).
+    /// Closing on its end again changes nothing; a close never extends or
+    /// empties a window (FA-REF-100); and a committed leg tagged with the
+    /// value on or after `closed_on` refuses it (FA-REF-195).
+    pub fn close_dimension_value(
+        &mut self,
+        kind: u32,
+        value_code: &str,
+        closed_on: DateDay,
+    ) -> Result<(), &'static str> {
+        let key = (kind, value_code.to_string());
+        let Some(value) = self.dimension_values.get(&key) else {
+            return Err(code::STRUCTURE);
+        };
+        if value.valid_to == Some(closed_on) {
+            return Ok(());
+        }
+        if value.valid_to.is_some_and(|to| closed_on > to)
+            || value.valid_from.is_some_and(|from| closed_on <= from)
+        {
+            return Err(code::STRUCTURE);
+        }
+        let tagged_on_or_after = self.leg_dimensions.iter().any(|(&index, legs)| {
+            self.journal[index].date >= closed_on
+                && legs
+                    .iter()
+                    .flatten()
+                    .any(|tag| tag.value_kind == kind && tag.code == value_code)
+        });
+        if tagged_on_or_after {
+            return Err(code::DIMENSION_NOT_EFFECTIVE);
+        }
+        if let Some(value) = self.dimension_values.get_mut(&key) {
+            value.valid_to = Some(closed_on);
+        }
+        Ok(())
+    }
+
+    /// [`Oracle::post`] with each leg's registered-kind dimension tags
+    /// (fa-ficc), as the kernel leg's dimension_set carries them. A
+    /// Reversal carries its target's tags; it names none of its own.
+    pub fn post_dimensioned(&mut self, intent: &Intent, tags: &[Vec<DimensionTag>]) -> Verdict {
+        assert!(
+            tags.len() <= intent.legs.len(),
+            "at most one tag list per leg"
+        );
+        self.posting_dimensions = tags.to_vec();
+        let verdict = self.post(intent);
+        self.posting_dimensions = Vec::new();
+        verdict
     }
 
     /// Record the registered account type tag (`1..=8`) for `code` (`fa-a57x`, `fa-xjlb`).
@@ -2676,7 +2808,11 @@ impl Oracle {
             }
         }
         // 6. Accounts, in leg order.
-        for l in &intent.legs {
+        let class_chooses = !matches!(
+            intent.class.as_str(),
+            "Reversal" | "Resolution" | "Closing" | "Revaluation" | "Elimination" | "Migration"
+        );
+        for (i, l) in intent.legs.iter().enumerate() {
             let Some(a) = self.accounts.get(&l.account) else {
                 return Verdict::Refused {
                     code: code::UNKNOWN_ACCOUNT,
@@ -2703,6 +2839,42 @@ impl Oracle {
             if a.unit.is_some_and(|u| u != l.unit) {
                 return Verdict::Refused {
                     code: code::UNIT_POLICY,
+                };
+            }
+            // 6''. Registered-kind dimension values (plan §4.1, §4.3;
+            //      fa-ficc), leg by leg after its unit: each value must be
+            //      one the book holds under the dimension it is named for. A
+            //      leg the preparer chooses (no dictated class, no applying
+            //      leg) also needs each value effective on the date, and a
+            //      value of every dimension its account requires now.
+            let chosen = class_chooses && !intent.settles.iter().any(|s| s.leg == i);
+            let tags = self
+                .posting_dimensions
+                .get(i)
+                .map_or(&[][..], Vec::as_slice);
+            for tag in tags {
+                let Some(value) = self
+                    .dimension_values
+                    .get(&(tag.value_kind, tag.code.clone()))
+                    .filter(|_| tag.value_kind == tag.dimension)
+                else {
+                    return Verdict::Refused {
+                        code: code::STRUCTURE,
+                    };
+                };
+                if chosen && !value.effective_at(intent.date) {
+                    return Verdict::Refused {
+                        code: code::DIMENSION_NOT_EFFECTIVE,
+                    };
+                }
+            }
+            if chosen
+                && self.dimension_requirements.iter().any(|(kind, accounts)| {
+                    accounts.contains(&l.account) && !tags.iter().any(|t| t.dimension == *kind)
+                })
+            {
+                return Verdict::Refused {
+                    code: code::DIMENSION_MISSING,
                 };
             }
         }
@@ -3156,6 +3328,15 @@ impl Oracle {
             };
         }
         self.journal.push(entry);
+        // A Reversal negates its target leg for leg, tags included.
+        let tags = match intent.reverses {
+            Some(target) if intent.class == "Reversal" => self.leg_dimensions.get(&target).cloned(),
+            _ => Some(self.posting_dimensions.clone())
+                .filter(|legs| legs.iter().any(|tags| !tags.is_empty())),
+        };
+        if let Some(tags) = tags {
+            self.leg_dimensions.insert(index, tags);
+        }
         if let Some(r) = run {
             self.runs[r].chunks.push(index);
         }
