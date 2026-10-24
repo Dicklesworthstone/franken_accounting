@@ -7915,7 +7915,7 @@ fn robot_docs_schema_prints_the_envelope_and_every_event_from_the_registry() {
     let (code, human, _) = fa(None, &["robot-docs", "schema"]);
     assert_eq!(code, 0);
     assert!(
-        human.contains("event balance_explained (replay, explain)")
+        human.contains("event balance_explained (replay, explain, query)")
             && human.contains("  contributions: [contribution]")
             && human.contains("shape contribution"),
         "{human}"
