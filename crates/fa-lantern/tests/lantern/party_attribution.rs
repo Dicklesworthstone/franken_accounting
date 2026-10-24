@@ -465,3 +465,91 @@ fn ponzi_and_distribution_preserve_investor_margins() {
             .contains("attribution=incomplete")
     );
 }
+
+/// Units and partial settlements never leak. One payment of A's 100 USD and
+/// B's 5,000 JPY bill pays A 100 in USD and B 5,000 in JPY (version 2 paid
+/// each of them both, in both units). A leg that settles only 60 of its 100
+/// dates the settled 60 by the bill and the other 40 by the payment's own
+/// document date, so with a 5-day contemporaneous window only the 60 stays
+/// exposed.
+#[test]
+fn units_and_partial_settlements_do_not_leak() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = Some(day(2026, 4, 30));
+    let jpy = h.book.units.lookup("JPY").unwrap();
+    let a = party(&h, &mut snapshot, "VEND-A");
+    let b = party(&h, &mut snapshot, "VEND-B");
+    let bill = entry(
+        &mut h,
+        1301,
+        day(2026, 2, 1),
+        Some(day(2026, 2, 1)),
+        &[
+            ("6000", Side::Debit, 10_000, Some(a), None),
+            ("2000", Side::Credit, 10_000, Some(a), None),
+        ],
+    );
+    let bill_vid = bill.vid;
+    let mut bill_b = entry(
+        &mut h,
+        1303,
+        day(2026, 2, 20),
+        Some(day(2026, 2, 20)),
+        &[
+            ("7000", Side::Debit, 5_000, Some(b), None),
+            ("2000", Side::Credit, 5_000, Some(b), None),
+        ],
+    );
+    for leg in &mut bill_b.entry.proposal.legs {
+        leg.amount.unit = jpy;
+    }
+    let bill_b_vid = bill_b.vid;
+    let mut paid = entry(
+        &mut h,
+        1302,
+        day(2026, 4, 15),
+        Some(day(2026, 4, 15)),
+        &[
+            ("2000", Side::Debit, 10_000, Some(a), Some(bill_vid)),
+            ("1000", Side::Credit, 10_000, None, None),
+            ("2000", Side::Debit, 5_000, Some(b), Some(bill_b_vid)),
+            ("1000", Side::Credit, 5_000, None, None),
+        ],
+    );
+    // A's leg settles 60 of its 100; B's legs and settlement are in JPY.
+    paid.entry.proposal.legs[0].settles[0].amount.mantissa = 6_000;
+    for leg in &mut paid.entry.proposal.legs[2..] {
+        leg.amount.unit = jpy;
+        for settlement in &mut leg.settles {
+            settlement.amount.unit = jpy;
+        }
+    }
+    snapshot.entries = vec![bill, bill_b, paid];
+    assign(&h, &mut snapshot, &[("1000", "cash")]);
+
+    let r = run_over(&snapshot, &h.book, &preferences(5)).unwrap();
+    println!("mixed units and a partial settlement: {:?}", r.findings);
+    assert_eq!(r.findings.len(), 2, "{:?}", r.findings);
+    let a = of(&r.findings, "VEND-A");
+    let b = of(&r.findings, "VEND-B");
+    assert_eq!((a.len(), b.len()), (1, 1), "{:?}", r.findings);
+    // A: 100 paid, 40 of it a contemporaneous exchange (0 days), 60 exposed.
+    assert_eq!(a[0].1, 6_000);
+    assert!(
+        a[0].2.contains("gross_preference=10000") && a[0].2.contains("c1_contemporaneous=4000"),
+        "{}",
+        a[0].2
+    );
+    // B: 5,000 JPY (its Feb 20 bill is 54 days old), never 100 USD.
+    assert_eq!(b[0].1, 5_000);
+    assert!(b[0].2.contains("gross_preference=5000"), "{}", b[0].2);
+    let jpy_scale = r
+        .findings
+        .iter()
+        .find(|f| f.narrative.contains("VEND-B"))
+        .unwrap()
+        .statistic
+        .scale;
+    assert_eq!(jpy_scale, 0, "B's exposure is stated in JPY");
+}

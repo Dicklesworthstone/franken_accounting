@@ -48,7 +48,7 @@ tb = ["FA-INV-04.core", "FA-INV-07.core", "FA-INV-07.branch"]
 statement = ["FA-INV-04.core", "FA-INV-07.core", "FA-INV-07.branch"]
 query = ["FA-INV-07.core", "FA-INV-07.branch"]
 open_items = ["FA-INV-04.open-amount"]
-checkpoint = ["FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-14.signed"]
+checkpoint = ["FA-INV-14.leaf-envelope", "FA-INV-14.consistency", "FA-INV-14.signed", "FA-INV-14.witnessed"]
 proof = ["FA-INV-04.outsider-recomputation", "FA-INV-14.inclusion", "FA-INV-14.seq-range-complete", "FA-INV-14.scope-index-complete"]
 bundle = ["FA-INV-14.scope-index-complete", "FA-INV-14.public-commitment"]
 replay = ["FA-INV-11.core"]
@@ -1094,11 +1094,15 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-14"
 id = "witnessed"
-status = "dormant"
+status = "live"
 statement = "Signed, witnessed transparency checkpoints detect rollback."
 evidence_class = "invariant"
+checker_strength = "negative_fixture"
 first_gate = "G3"
-activating = ["fa-qtfd"]
+owner = "fa-qtfd"
+checkers = ["fa-cli::tests/proofs.rs::witnesses_cosign_an_extending_history_and_refuse_a_rewritten_one"]
+negatives = ["fa-cli::tests/proofs.rs::a_witness_refuses_to_cosign_a_rolled_back_or_forked_history"]
+depends = ["FA-INV-14.signed"]
 waiver = "forbidden"
 
 [[clause]]

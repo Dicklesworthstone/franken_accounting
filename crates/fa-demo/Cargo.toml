@@ -18,6 +18,7 @@ fa-money = { path = "../fa-money", version = "=0.0.1" }
 fa-policy = { path = "../fa-policy", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fa-time = { path = "../fa-time", version = "=0.0.1" }
+fa-verbs = { path = "../fa-verbs", version = "=0.0.1" }
 fgdb-crypto = { workspace = true }
 fgdb-types = { workspace = true }
 

@@ -1440,6 +1440,98 @@ fn witnesses_cosign_an_extending_history_and_refuse_a_rewritten_one() {
     assert!(!f.dir.join("x4.cp").exists());
 }
 
+/// FA-INV-14.witnessed, the negative (planted): a witness that signed a
+/// later state refuses to cosign a rolled-back one, and refuses a forked
+/// history under the same book key, with FA-REF-124 each time. Nothing is
+/// signed: no output file appears, and the witness's own last checkpoint is
+/// byte-identical afterwards.
+#[test]
+fn a_witness_refuses_to_cosign_a_rolled_back_or_forked_history() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    f.post("r-1", "2026-03-10", "5.00", &evidence);
+    let earlier = f.checkpoint();
+    let path = |name: &str| f.dir.join(name).display().to_string();
+    ok(
+        &f.book,
+        &["checkpoint", "witness-key", "--out", &path("w.key")],
+    );
+    let witness = |book: &Path, args: &[&str]| {
+        run(
+            book,
+            &[&["checkpoint", "witness", "--grant", "witness"][..], args].concat(),
+        )
+    };
+    let (code, line) = witness(&f.book, &["--key", &path("w.key"), "--out", &path("w1.cp")]);
+    assert_eq!(code, 0, "{}", line.render());
+    f.post("r-2", "2026-03-11", "6.00", &evidence);
+    f.checkpoint();
+    let (code, line) = witness(
+        &f.book,
+        &[
+            "--key",
+            &path("w.key"),
+            "--previous",
+            &path("w1.cp"),
+            "--out",
+            &path("w2.cp"),
+        ],
+    );
+    assert_eq!(code, 0, "{}", line.render());
+    let signed_last = std::fs::read(path("w2.cp")).unwrap();
+
+    // Rollback: asked to cosign the earlier state after signing the later.
+    let (code, refused) = witness(
+        &f.book,
+        &[
+            "--key",
+            &path("w.key"),
+            "--previous",
+            &path("w2.cp"),
+            "--state",
+            text(&earlier, "oid"),
+            "--out",
+            &path("rolled-back.cp"),
+        ],
+    );
+    assert_eq!(code, 8, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-124");
+
+    // Fork: the same identity and book key, a different first posting.
+    let g = Fixture::new();
+    let g_evidence = g.chart_and_evidence();
+    g.post("r-1", "2026-03-10", "50.00", &g_evidence);
+    g.post("r-2", "2026-03-11", "6.00", &g_evidence);
+    let forked = g.checkpoint();
+    assert_eq!(
+        text(&forked, "public_key"),
+        text(&earlier, "public_key"),
+        "the fork is signed by the same book key"
+    );
+    let (code, refused) = witness(
+        &g.book,
+        &[
+            "--key",
+            &path("w.key"),
+            "--previous",
+            &path("w2.cp"),
+            "--out",
+            &path("forked.cp"),
+        ],
+    );
+    assert_eq!(code, 8, "{}", refused.render());
+    assert_eq!(text(&refused, "refusal_id"), "FA-REF-124");
+
+    for name in ["rolled-back.cp", "forked.cp"] {
+        assert!(!f.dir.join(name).exists(), "{name} was signed");
+    }
+    assert_eq!(
+        std::fs::read(path("w2.cp")).unwrap(),
+        signed_last,
+        "the witness's last checkpoint is unchanged"
+    );
+}
+
 /// `fa proof suffix` (plan §13.2): a recipient that kept an old state gets
 /// everything appended since in one export, including a document's import
 /// receipt, which no entry vid names (so `proof inclusion` cannot cut it),

@@ -1449,6 +1449,108 @@ pub fn naive_ks_table_1e9(counts: &[u64], expected_1e9: &[i128]) -> i128 {
     max_d
 }
 
+/// One leg of the literal PAID fold (bead fa-b6xs): its side, every party
+/// dimension value it names, its unit, the legal entity it names (if any),
+/// and its magnitude.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaidLeg {
+    pub debit: bool,
+    pub party_values: Vec<u128>,
+    pub unit: u32,
+    pub entity: Option<u128>,
+    pub mantissa: i128,
+}
+
+/// The book itself as a PAID node: a leg naming no party value, or several.
+pub const PAID_BOOK: u128 = 0;
+
+/// The literal PAID fold, `(from, to, unit, entity) -> total`, over live
+/// posting entries given as their legs, with `parties` mapping a party
+/// dimension value to its party. Per entry and `(unit, entity)`: a leg's node
+/// is the party of its one party value (the value itself when no party
+/// carries it), else the book; each credit, ascending by `(node, magnitude)`,
+/// is spread over the debits' remaining capacity, ascending by `(node,
+/// magnitude)`, by Hamilton largest remainder with ties to the lower index;
+/// a transfer from a node to itself is dropped. A leg naming no legal entity
+/// takes the one entity the population names, or none when none is named;
+/// several named entities and an unnamed leg is refused.
+pub fn paid_fold(
+    entries: &[Vec<PaidLeg>],
+    parties: &BTreeMap<u128, u128>,
+) -> Result<BTreeMap<(u128, u128, u32, Option<u128>), i128>, &'static str> {
+    type Legs = Vec<(u128, i128)>;
+    let named: BTreeSet<u128> = entries.iter().flatten().filter_map(|l| l.entity).collect();
+    let mut totals: BTreeMap<(u128, u128, u32, Option<u128>), crate::Int> = BTreeMap::new();
+    for legs in entries {
+        let mut partitions: BTreeMap<(u32, Option<u128>), (Legs, Legs)> = BTreeMap::new();
+        for leg in legs {
+            if leg.mantissa < 0 {
+                return Err("a negative leg");
+            }
+            let entity = match (leg.entity, named.len()) {
+                (Some(entity), _) => Some(entity),
+                (None, 0) => None,
+                (None, 1) => named.first().copied(),
+                (None, _) => return Err("an unnamed legal entity among several"),
+            };
+            let node = match leg.party_values.as_slice() {
+                [value] => parties.get(value).copied().unwrap_or(*value),
+                _ => PAID_BOOK,
+            };
+            let slot = partitions.entry((leg.unit, entity)).or_default();
+            if leg.debit {
+                slot.1.push((node, leg.mantissa));
+            } else {
+                slot.0.push((node, leg.mantissa));
+            }
+        }
+        for ((unit, entity), (mut credits, mut debits)) in partitions {
+            let margin = |side: &Legs| {
+                side.iter().fold(crate::Int::zero(), |sum, (_, m)| {
+                    sum.add(&crate::Int::from_u128(m.unsigned_abs()))
+                })
+            };
+            if margin(&credits) != margin(&debits) {
+                return Err("an unbalanced partition");
+            }
+            credits.sort_unstable();
+            debits.sort_unstable();
+            let mut remaining: Vec<u128> = debits.iter().map(|(_, m)| m.unsigned_abs()).collect();
+            for (from, amount) in credits {
+                if amount == 0 {
+                    continue;
+                }
+                let shares = crate::reports::largest_remainder(amount, &remaining)?;
+                for (i, share) in shares.into_iter().enumerate() {
+                    let share = share.unsigned_abs();
+                    remaining[i] = remaining[i]
+                        .checked_sub(share)
+                        .ok_or("a debit over its capacity")?;
+                    let to = debits[i].0;
+                    if share != 0 && from != to {
+                        let slot = totals
+                            .entry((from, to, unit, entity))
+                            .or_insert_with(crate::Int::zero);
+                        *slot = slot.add(&crate::Int::from_u128(share));
+                    }
+                }
+            }
+            if remaining.iter().any(|r| *r != 0) {
+                return Err("an unallocated debit");
+            }
+        }
+    }
+    totals
+        .into_iter()
+        .map(|(key, total)| {
+            total
+                .to_i128()
+                .map(|t| (key, t))
+                .ok_or("a PAID total past i128")
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -907,6 +907,7 @@ dependencies = [
  "fa-registers",
  "fa-registry",
  "fa-time",
+ "fa-verbs",
  "fgdb-crypto",
  "fgdb-types",
 ]

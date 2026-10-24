@@ -133,10 +133,9 @@ asset = "Completeness of committed entries and monotonicity of the transparency 
 vector = "Replacing the book directory with an earlier backup or presenting a checkpoint that does not extend the previously witnessed accumulator state"
 mitigation_clauses = ["FA-INV-14.consistency", "FA-INV-14.witnessed"]
 mitigation_refusals = ["FA-REF-094", "FA-REF-124"]
-status = "dormant"
-activating_beads = ["fa-l3c"]
-residual_risk = "Consistency proofs between two states in hand are live (FA-INV-14.consistency), but external witness co-signing and rollback detection against an external witness log (FA-INV-14.witnessed) are dormant until fa-l3c witness co-signing lands."
-test_refs = ["fa-notary::tests/notary.rs::a_later_state_extends_the_earlier_and_consistency_verifies", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence", "fa-cli::tests/tamper.rs::tamper_evidence_red_team_matrix"]
+status = "live"
+residual_risk = "Consistency proofs between two states in hand are live (FA-INV-14.consistency), and an external witness refuses to cosign a rolled-back or forked history against the checkpoint it last signed (FA-REF-124, FA-INV-14.witnessed) while fa-verify checks a quorum of named witnesses. Which witnesses and what quorum a verifier requires is still the verifier's own input: WitnessPolicy, trust anchors and cosignatures are not yet journaled controls (fa-qtfd), and a rollback no witness ever signed past is caught only by consistency against a state in hand."
+test_refs = ["fa-notary::tests/notary.rs::a_later_state_extends_the_earlier_and_consistency_verifies", "fa-notary::tests/notary.rs::checkpoint_refuses_a_predecessor_with_a_falsely_advanced_sequence", "fa-cli::tests/tamper.rs::tamper_evidence_red_team_matrix", "fa-cli::tests/proofs.rs::a_witness_refuses_to_cosign_a_rolled_back_or_forked_history"]
 
 [[threat]]
 id = "FA-THR-06"

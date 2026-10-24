@@ -118,3 +118,97 @@ fn all_scenarios_initialize_verify_and_trigger_planted_lantern_findings() {
         );
     }
 }
+
+/// A demo book journals its chart template's account roles and its planted
+/// schemes' parties (beads fa-kxc4, fa-b6xs, fa-6l8g), so the role-selected
+/// and party-level procedures run on the book itself: every role-selected
+/// procedure whose roles the template carries runs instead of refusing, the
+/// shell network's conduit cycle is found through its parties, and the Ponzi
+/// book's net-equity schedule holds each investor's own money.
+#[test]
+fn role_selected_and_party_procedures_run_on_demo_books() {
+    use fa_lantern::{Params, catalog};
+
+    let through = Some(fa_time::DateDay::from_ymd(2026, 3, 31).expect("date"));
+    let open = |scenario: Scenario| {
+        let dir = temp_dir(&format!("parties-{scenario}")).join("book");
+        let keys_path = dir.join("book.keys");
+        init_dir(&dir, &keys_path, scenario, 7)
+            .unwrap_or_else(|e| panic!("init_dir failed for {scenario}: {e}"));
+        let keys = BookKeys::load(&keys_path).expect("load keys");
+        Book::open_dir(&dir, keys, Entropy::deterministic(7)).expect("open_dir")
+    };
+    let run = |book: &Book, id: &str, params: &[(&str, i128)]| {
+        let mut p = Params::defaults(id).expect("defaults");
+        for (name, value) in params {
+            p = p.set(name, *value).expect("param");
+        }
+        let procedure = catalog::build(id, p, catalog::Inputs::default()).expect("build");
+        book.run_procedure(procedure.as_ref(), None, through, None)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+    };
+
+    // Every role these procedures read is in the us-gaap-smb template; a book
+    // without journaled roles refuses each with RoleUnassigned.
+    let retail = open(Scenario::Retail);
+    for id in [
+        "recon.lapping",
+        "expense.capitalization",
+        "aging.inventory",
+        "payroll.ghost",
+        "confirm.coverage",
+        "solvency.cash_flow_test",
+        "lookback.preferences",
+    ] {
+        let r = run(&retail, id, &[]);
+        println!("retail {id}: {} findings", r.findings.len());
+    }
+
+    let shell = open(Scenario::ShellNetwork);
+    let r = run(&shell, "graph.party_circular_flows", &[]);
+    println!("shell-network party cycles: {:?}", r.findings);
+    assert!(
+        r.findings.iter().any(|f| f
+            .narrative
+            .contains("through parties SHELL-A -> SHELL-B -> SHELL-C -> SHELL-A")),
+        "{:?}",
+        r.findings
+    );
+
+    let ponzi = open(Scenario::Ponzi);
+    let r = run(&ponzi, "ponzi.net_investment", &[]);
+    println!("ponzi net investment: {:?}", r.findings);
+    let mut claims: Vec<(String, i128)> = r
+        .findings
+        .iter()
+        .map(|f| {
+            (
+                f.narrative
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("investor")
+                    .to_string(),
+                f.statistic.value,
+            )
+        })
+        .collect();
+    claims.sort();
+    // INV-A: 100,000.00 in, 50,000.00 back; INV-B: 60,000.00 in.
+    assert_eq!(
+        claims,
+        vec![
+            ("INV-A".to_string(), 5_000_000),
+            ("INV-B".to_string(), 6_000_000)
+        ]
+    );
+    let r = run(&ponzi, "graph.ponzi_motif", &[("window_days", 14)]);
+    println!("ponzi motif: {:?}", r.findings);
+    assert!(
+        r.findings
+            .iter()
+            .any(|f| f.narrative.contains("new investors [INV-B]")
+                && f.narrative.contains("earlier investors [INV-A]")),
+        "{:?}",
+        r.findings
+    );
+}

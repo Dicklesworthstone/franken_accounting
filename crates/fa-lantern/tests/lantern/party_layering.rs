@@ -320,3 +320,205 @@ fn a_counterparty_cycle_through_one_clearing_account_is_found_through_parties() 
     let none = run_over(&leaky, &h.book, &PartyCircularFlows::new().unwrap()).unwrap();
     assert!(none.findings.is_empty(), "{:?}", none.findings);
 }
+
+/// fa-b6xs acceptance 1 (the differential half): the PAID projection equals
+/// fa-reference's literal fold (`paid_fold`, its own limb arithmetic) over
+/// seeded generated histories: one or two units, an implicit, a single named
+/// or two named legal entities, several legs a side, and legs naming a
+/// registered party, an unregistered value, none, the same value twice or two
+/// values. fa-gen's corpora name no party, so they would compare nothing;
+/// these histories exercise every node rule. Planted negative: a reference
+/// that gives a two-value leg its first party instead of the book disagrees,
+/// so the comparison is not vacuous.
+#[test]
+fn party_paid_projection_matches_reference() {
+    use fa_model::LEGAL_ENTITY_DIMENSION;
+    use fa_reference::lantern::{PAID_BOOK, PaidLeg, paid_fold};
+
+    /// xorshift64*, seeded: the test owns its randomness.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+    /// `total` split into `k` positive parts.
+    fn split(rng: &mut Rng, total: i128, k: usize) -> Vec<i128> {
+        let mut parts = Vec::with_capacity(k);
+        let mut left = total;
+        for i in 0..k {
+            let rest = i128::try_from(k - i - 1).unwrap();
+            let part = if rest == 0 {
+                left
+            } else {
+                let room = u64::try_from((left - rest).min(i128::from(u32::MAX))).unwrap();
+                1 + i128::from(rng.below(room))
+            };
+            parts.push(part);
+            left -= part;
+        }
+        parts
+    }
+
+    assert_eq!(BOOK_NODE.0, PAID_BOOK);
+    let accounts = [
+        "1000", "1010", "1020", "1200", "2000", "4000", "6000", "7000",
+    ];
+    let (mut edges, mut via_unregistered, mut cross_unit, mut entity_scoped) = (0, 0, 0, 0);
+    let mut disagreements = 0;
+    for seed in 1..=24u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let mut h = harness();
+        let mut snapshot = h.snapshot();
+        snapshot.coordinate.effective_through = None;
+        let jpy = h.book.units.lookup("JPY").unwrap();
+        let usd = h.usd;
+        let mut values = Vec::new();
+        let mut parties = BTreeMap::new();
+        for code in ["P-A", "P-B", "P-C", "P-D"] {
+            let (party_vid, value) = party(&h, &mut snapshot, code);
+            parties.insert(value.0, party_vid.0);
+            values.push(value);
+        }
+        let unregistered = VId(0xE0E0);
+        let entities = [
+            fa_model::entity_value_vid(h.book.book_id, "E1"),
+            fa_model::entity_value_vid(h.book.book_id, "E2"),
+        ];
+        // 0: no entity named; 1: one entity, named on some legs; 2: two, on every leg.
+        let entity_mode = seed % 3;
+        let mut reference = Vec::new();
+        let mut first_party_reference = Vec::new();
+        for n in 0..20u64 {
+            let date = day(2026, 1, 5 + u8::try_from(n).unwrap());
+            let period = h.period_code(date);
+            let mut legs: Vec<(&str, Side, UnitId, i128)> = Vec::new();
+            let mut tags: Vec<(Vec<VId>, Option<VId>)> = Vec::new();
+            let units = if rng.below(3) == 0 {
+                vec![usd, jpy]
+            } else {
+                vec![usd]
+            };
+            for unit in units {
+                let entity = match entity_mode {
+                    2 => Some(entities[usize::try_from(rng.below(2)).unwrap()]),
+                    _ => None,
+                };
+                // At least 3, so every one of up to 3 legs a side is positive;
+                // seed 24 runs past 2^64 into the wide arithmetic.
+                let total = if seed == 24 {
+                    (1 + i128::from(rng.below(1 << 40))) << 60
+                } else {
+                    3 + i128::from(rng.below(10_000_000))
+                };
+                for (side, k) in [
+                    (Side::Credit, 1 + rng.below(3)),
+                    (Side::Debit, 1 + rng.below(3)),
+                ] {
+                    for part in split(&mut rng, total, usize::try_from(k).unwrap()) {
+                        let account = accounts[usize::try_from(rng.below(8)).unwrap()];
+                        legs.push((account, side, unit, part));
+                        let named = match rng.below(10) {
+                            0..=3 => vec![values[usize::try_from(rng.below(4)).unwrap()]],
+                            4 => vec![unregistered],
+                            5 => {
+                                let v = values[usize::try_from(rng.below(4)).unwrap()];
+                                vec![v, v]
+                            }
+                            6 => vec![values[0], values[1]],
+                            _ => Vec::new(),
+                        };
+                        let leg_entity = match entity_mode {
+                            1 if rng.below(2) == 0 => Some(entities[0]),
+                            _ => entity,
+                        };
+                        tags.push((named, leg_entity));
+                    }
+                }
+            }
+            let mut e = make_snapshot_entry(
+                &mut h,
+                VId((u128::from(seed) << 32) | u128::from(n + 1)),
+                CommitSeq(n + 1),
+                date,
+                &period,
+                EntryClass::ORIGINAL,
+                legs.clone(),
+                Vec::new(),
+                None,
+                Some(date),
+                None,
+                Vec::new(),
+            );
+            let mut paid_legs = Vec::new();
+            let mut first_party_legs = Vec::new();
+            for ((leg, (named, entity)), (_, side, unit, mantissa)) in
+                e.entry.proposal.legs.iter_mut().zip(&tags).zip(&legs)
+            {
+                for value in named {
+                    leg.dimension_set.push((PARTY_DIMENSION, *value));
+                }
+                if let Some(entity) = entity {
+                    leg.dimension_set.push((LEGAL_ENTITY_DIMENSION, *entity));
+                }
+                leg.dimension_set.sort();
+                let paid_leg = PaidLeg {
+                    debit: *side == Side::Debit,
+                    party_values: named.iter().map(|v| v.0).collect(),
+                    unit: unit.0,
+                    entity: entity.map(|e| e.0),
+                    mantissa: *mantissa,
+                };
+                let mut first = paid_leg.clone();
+                first.party_values.truncate(1);
+                first_party_legs.push(first);
+                paid_legs.push(paid_leg);
+            }
+            reference.push(paid_legs);
+            first_party_reference.push(first_party_legs);
+            snapshot.entries.push(e);
+        }
+
+        let mut projected: BTreeMap<(u128, u128, u32, Option<u128>), i128> = BTreeMap::new();
+        for s in party_flow_legs(&snapshot).unwrap() {
+            let key = (
+                s.leg.from.0,
+                s.leg.to.0,
+                s.leg.unit_id,
+                s.legal_entity.map(|e| e.0),
+            );
+            let slot = projected.entry(key).or_insert(0);
+            *slot = slot.checked_add(s.leg.mantissa).unwrap();
+        }
+        let literal = paid_fold(&reference, &parties).unwrap();
+        assert_eq!(projected, literal, "seed {seed}");
+        assert!(!projected.is_empty(), "seed {seed}: no PAID edge at all");
+        edges += projected.len();
+        via_unregistered += projected
+            .keys()
+            .filter(|(from, to, ..)| *from == unregistered.0 || *to == unregistered.0)
+            .count();
+        cross_unit += projected
+            .keys()
+            .filter(|(.., unit, _)| *unit == jpy.0)
+            .count();
+        entity_scoped += projected.keys().filter(|(.., e)| e.is_some()).count();
+        if paid_fold(&first_party_reference, &parties).unwrap() != literal {
+            disagreements += 1;
+        }
+    }
+    println!(
+        "PAID differential: {edges} edges over 24 seeds ({via_unregistered} via an unregistered value, {cross_unit} in JPY, {entity_scoped} entity-scoped); the planted first-party rule disagrees on {disagreements} seeds"
+    );
+    assert!(via_unregistered > 0 && cross_unit > 0 && entity_scoped > 0);
+    assert!(
+        disagreements > 0,
+        "the planted rule change was never observed"
+    );
+}

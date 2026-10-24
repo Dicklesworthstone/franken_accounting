@@ -36,7 +36,8 @@ use fa_journal::{
 };
 use fa_model::{
     AccountType, Disposition, EntryClass, EntryOrigin, EntryPayload, EntryRef, ExternalId, Id128,
-    LegPayload, Oid, Pending, PeriodRef, Settlement, account_vid, domain_digest, principal_vid,
+    LegPayload, Oid, PARTY_DIMENSION, PartyKind, PartySpec, Pending, PeriodRef, Settlement,
+    account_vid, domain_digest, party_value_vid, principal_vid,
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
@@ -274,6 +275,37 @@ fn spec_row(
         parent_code: parent_code.map(str::to_string),
         limit: None,
     }
+}
+
+/// The `(code, role)` pairs a chart template's accounts carry (its
+/// `"roles": [...]`), in document order.
+fn template_roles(text: &str) -> Result<Vec<(String, String)>, DemoError> {
+    let malformed = |what: &str| DemoError::Verification(format!("chart template: {what}"));
+    let doc = fa_verbs::json::parse(text).map_err(|e| malformed(&format!("{e:?}")))?;
+    let accounts = doc
+        .get("accounts")
+        .and_then(fa_verbs::json::Json::as_arr)
+        .ok_or_else(|| malformed("no accounts array"))?;
+    let mut roles = Vec::new();
+    for account in accounts {
+        let Some(held) = account.get("roles") else {
+            continue;
+        };
+        let code = account
+            .get("code")
+            .and_then(fa_verbs::json::Json::as_str)
+            .ok_or_else(|| malformed("an account without a code"))?;
+        for role in held
+            .as_arr()
+            .ok_or_else(|| malformed("roles is not an array"))?
+        {
+            let role = role
+                .as_str()
+                .ok_or_else(|| malformed("a role that is not a string"))?;
+            roles.push((code.to_string(), role.to_string()));
+        }
+    }
+    Ok(roles)
 }
 
 /// The `us-gaap-smb` chart of accounts matching `templates/charts/us-gaap-smb.json`.
@@ -1021,6 +1053,46 @@ fn add_doc(
     Ok(doc)
 }
 
+/// Journal a planted scheme's party (plan §4.5) and return the party
+/// dimension value its legs name, so party-level Lantern procedures (PAID,
+/// preferences, Ponzi schedules) see the scheme through its parties.
+#[allow(clippy::too_many_arguments)]
+fn demo_party(
+    book: &mut Book,
+    code: &str,
+    name: &str,
+    kind: PartyKind,
+    on: DateDay,
+    seed: u64,
+    principal: VId,
+    capability: &Capability,
+) -> Result<VId, DemoError> {
+    let spec = PartySpec {
+        code: code.to_string(),
+        kind,
+        name: book.seal_text(name)?,
+        identifiers: Vec::new(),
+        external_ids: Vec::new(),
+    };
+    book.create_party(
+        &spec,
+        principal,
+        on,
+        format!("demo:party:{code}:s{seed}").as_bytes(),
+        capability,
+    )??;
+    Ok(party_value_vid(book.context().book_id, code))
+}
+
+/// `leg`, naming `party` (a party dimension value) when there is one.
+fn naming(mut leg: LegPayload, party: Option<VId>) -> LegPayload {
+    if let Some(party) = party {
+        leg.dimension_set.push((PARTY_DIMENSION, party));
+        leg.dimension_set.sort();
+    }
+    leg
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_proposal(
     book: &Book,
@@ -1176,6 +1248,22 @@ pub fn init_dir(
         &chart_key(template_text),
         &schema_cap,
     )??;
+    // The template's account roles (bead fa-kxc4), journaled as `fa chart
+    // import` journals them, so a role-selected Lantern procedure runs on a
+    // demo book instead of refusing for a role no account holds.
+    for (code, role) in template_roles(template_text)? {
+        let role_spec = fa::account_role::AccountRoleSpec {
+            account: account_vid(book_id, &code),
+            role: role.clone(),
+            assigned: true,
+        };
+        book.record_account_role(
+            &role_spec,
+            operator,
+            format!("demo:role:{code}:{role}:s{seed}").as_bytes(),
+            &schema_cap,
+        )??;
+    }
 
     // 2. Create FY2026 periods, lock `FY2026-OPEN` for Migration, and open `FY2026-P01`..`FY2026-P12`.
     let (_, period_defs) = book.create_periods(2026, operator, &schema_cap)??;
@@ -2091,16 +2179,145 @@ pub fn init_dir(
                     "Planted investor inflow recycling (30,000.00 USD) and sub-10,000.00 USD structuring splits"
                         .into(),
             });
+
+            // Investors as journaled parties: INV-A subscribes 100,000.00 on
+            // Mar 2, INV-B 60,000.00 on Mar 20, and INV-A is paid a promised
+            // 50,000.00 "return" on Mar 24 with no operating income behind
+            // it, so the net-equity schedule (ponzi.net_investment), the
+            // distributions and graph.ponzi_motif see each investor's own
+            // money (fa-6l8g, fa-m35p).
+            let inv_a = demo_party(
+                &mut book,
+                "INV-A",
+                "Early Tranche Investor A",
+                PartyKind::Counterparty,
+                DateDay::from_ymd(2026, 3, 2).unwrap(),
+                seed,
+                operator,
+                &schema_cap,
+            )?;
+            let inv_b = demo_party(
+                &mut book,
+                "INV-B",
+                "Late Tranche Investor B",
+                PartyKind::Counterparty,
+                DateDay::from_ymd(2026, 3, 2).unwrap(),
+                seed,
+                operator,
+                &schema_cap,
+            )?;
+            let mut investor_vids = Vec::with_capacity(3);
+            for (key, day, debit, credit, cents, investor, description) in [
+                (
+                    "sub-a",
+                    DateDay::from_ymd(2026, 3, 2).unwrap(),
+                    "1010",
+                    "3000",
+                    10_000_000i128,
+                    inv_a,
+                    "Investor A capital subscription",
+                ),
+                (
+                    "sub-b",
+                    DateDay::from_ymd(2026, 3, 20).unwrap(),
+                    "1010",
+                    "3000",
+                    6_000_000,
+                    inv_b,
+                    "Investor B capital subscription",
+                ),
+                (
+                    "return-a",
+                    DateDay::from_ymd(2026, 3, 24).unwrap(),
+                    "3300",
+                    "1010",
+                    5_000_000,
+                    inv_a,
+                    "Promised return paid to investor A",
+                ),
+            ] {
+                // The investor names the capital leg; cash is the book's.
+                let (debit_party, credit_party) = if debit == "1010" {
+                    (None, Some(investor))
+                } else {
+                    (Some(investor), None)
+                };
+                let p = build_proposal(
+                    &book,
+                    EntryClass::ORIGINAL,
+                    day,
+                    Some(day),
+                    &format!("demo:ponzi:{key}:s{seed}"),
+                    description,
+                    operator,
+                    vec![
+                        naming(
+                            LegPayload::simple(
+                                Side::Debit,
+                                account_vid(book_id, debit),
+                                Amount::new(usd, cents),
+                            ),
+                            debit_party,
+                        ),
+                        naming(
+                            LegPayload::simple(
+                                Side::Credit,
+                                account_vid(book_id, credit),
+                                Amount::new(usd, cents),
+                            ),
+                            credit_party,
+                        ),
+                    ],
+                    vec![workpaper_doc.evidence_ref(1)],
+                    None,
+                    &[],
+                    &[("planted", "ponzi-investors")],
+                )?;
+                investor_vids
+                    .push(post_proposal(&mut book, p, operator, &["post"], Vec::new())?.vid);
+                entry_count += 1;
+            }
+            planted_facts.push(PlantedFact {
+                id: "PONZI-INVESTORS-2026-03".into(),
+                kind: "PonziInvestorSchedule".into(),
+                period: "FY2026-P03".into(),
+                entry_vids: investor_vids,
+                summary:
+                    "Planted investor schedule: INV-A subscribes 100,000.00 USD (Mar 2), INV-B 60,000.00 USD (Mar 20), and INV-A is paid a 50,000.00 USD promised return (Mar 24) out of INV-B's money"
+                        .into(),
+            });
         }
         Scenario::ShellNetwork => {
             let d1 = DateDay::from_ymd(2026, 3, 22).unwrap();
             let d2 = DateDay::from_ymd(2026, 3, 23).unwrap();
+            // The conduits are journaled parties, and each transfer names the
+            // party it leaves (credit) and the one it reaches (debit), so the
+            // party-level PAID projection sees A -> B -> C -> A where the
+            // account graph sees only clearing account 1900 (fa-b6xs).
+            let mut conduit = Vec::with_capacity(3);
+            for (code, name) in [
+                ("SHELL-A", "Apex Conduit Holdings LLC"),
+                ("SHELL-B", "Beacon Layering Partners Ltd"),
+                ("SHELL-C", "Cardinal Nominee Services SA"),
+            ] {
+                conduit.push(demo_party(
+                    &mut book,
+                    code,
+                    name,
+                    PartyKind::RelatedEntity,
+                    d1,
+                    seed,
+                    operator,
+                    &schema_cap,
+                )?);
+            }
+            let (a, b, c) = (Some(conduit[0]), Some(conduit[1]), Some(conduit[2]));
             let mut shell_vids = Vec::with_capacity(4);
-            for (step, (from_acct, to_acct, day)) in [
-                ("1010", "1900", d1),
-                ("1900", "1020", d1),
-                ("1020", "1900", d2),
-                ("1900", "1010", d2),
+            for (step, (from_acct, to_acct, day, from, to)) in [
+                ("1010", "1900", d1, a, b),
+                ("1900", "1020", d1, b, c),
+                ("1020", "1900", d2, c, a),
+                ("1900", "1010", d2, a, None),
             ]
             .into_iter()
             .enumerate()
@@ -2117,15 +2334,21 @@ pub fn init_dir(
                     ),
                     operator,
                     vec![
-                        LegPayload::simple(
-                            Side::Debit,
-                            account_vid(book_id, to_acct),
-                            Amount::new(usd, 1_950_000),
+                        naming(
+                            LegPayload::simple(
+                                Side::Debit,
+                                account_vid(book_id, to_acct),
+                                Amount::new(usd, 1_950_000),
+                            ),
+                            to,
                         ),
-                        LegPayload::simple(
-                            Side::Credit,
-                            account_vid(book_id, from_acct),
-                            Amount::new(usd, 1_950_000),
+                        naming(
+                            LegPayload::simple(
+                                Side::Credit,
+                                account_vid(book_id, from_acct),
+                                Amount::new(usd, 1_950_000),
+                            ),
+                            from,
                         ),
                     ],
                     vec![workpaper_doc.evidence_ref(1)],
@@ -2142,7 +2365,7 @@ pub fn init_dir(
                 period: "FY2026-P03".into(),
                 entry_vids: shell_vids,
                 summary:
-                    "Planted circular related-party conduit transfer (1010 -> 1900 -> 1020 -> 1900 -> 1010) for 19,500.00 USD"
+                    "Planted circular related-party conduit transfer (1010 -> 1900 -> 1020 -> 1900 -> 1010) for 19,500.00 USD, through conduit parties SHELL-A -> SHELL-B -> SHELL-C -> SHELL-A"
                         .into(),
             });
         }
@@ -2456,6 +2679,23 @@ pub fn render_readme(info: &DemoInitialized) -> String {
     out.push_str(
         "fa procedure run duplicates.same_same_different --effective-through 2026-03-31 --book . --json\n",
     );
+    // The scenarios whose planted scheme runs through journaled parties.
+    match info.scenario {
+        Scenario::ShellNetwork => {
+            out.push_str("\n# The conduit cycle through its parties (PAID projection)\n");
+            out.push_str("fa procedure run graph.party_circular_flows --book . --json\n");
+            out.push_str("fa procedure run graph.party_layering --book . --json\n");
+        }
+        Scenario::Ponzi => {
+            out.push_str("\n# The investor schedule through each investor's own legs\n");
+            out.push_str("fa procedure run ponzi.net_investment --book . --json\n");
+            out.push_str("fa procedure run distribution.pro_rata --book . --json\n");
+            out.push_str(
+                "fa procedure run graph.ponzi_motif --param window_days=14 --book . --json\n",
+            );
+        }
+        _ => {}
+    }
     out.push_str("```\n");
     out
 }
