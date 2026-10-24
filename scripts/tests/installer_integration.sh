@@ -26,6 +26,7 @@ hash_file() {
 
 new_case() {
   CASE="$WORK/$1"
+  SOURCE_TARGET='' SOURCE_CONFIG_TARGET='' BUILD_MODE='' BUILD_EXIT=0
   # Refuse reused workdirs rather than overwriting an earlier test's evidence.
   mkdir "$CASE" || gate_abort_unrun "case already exists or cannot be created: $CASE"
   SRC="$CASE/release artifacts"
@@ -141,9 +142,30 @@ prepare_source() {
   cat >"$CASE/build-tool/cargo" <<'BUILD'
 #!/usr/bin/env bash
 set -eu
-[ "$*" = 'build --release --locked --bins' ] || exit 2
+[ "$*" = 'build --release --locked --bins --message-format=json-render-diagnostics' ] || exit 2
 printf '%s\n' "$*" >>"$INSTALLER_TEST_BUILD_REQUESTS"
-exit "${INSTALLER_TEST_BUILD_EXIT:-0}"
+[ "${INSTALLER_TEST_BUILD_EXIT:-0}" -eq 0 ] || exit "$INSTALLER_TEST_BUILD_EXIT"
+python3 -B - <<'PY'
+import json, os, pathlib, shutil
+root = pathlib.Path.cwd()
+target = pathlib.Path(os.environ.get('INSTALLER_TEST_CONFIG_TARGET') or os.environ.get('CARGO_TARGET_DIR') or root / 'target') / 'release'
+target = target.resolve()
+target.mkdir(parents=True, exist_ok=True)
+mode = os.environ.get('INSTALLER_TEST_BUILD_MODE', '')
+for name, package in {'fa':'fa-cli', 'fad':'fad', 'fa-mcp':'fa-mcp', 'fa-verify':'fa-verify'}.items():
+    if mode == 'missing-member' and name == 'fa-verify':
+        continue
+    path = target / name
+    shutil.copy2(pathlib.Path(os.environ['INSTALLER_TEST_SOURCE_ARTIFACTS']) / name, path)
+    message = {'reason':'compiler-artifact', 'manifest_path':str(root / 'crates' / package / 'Cargo.toml'),
+               'target':{'name':name, 'kind':['bin']}, 'profile':{'test':False}, 'executable':str(path), 'fresh': mode == 'fresh'}
+    if mode == 'wrong-package' and name == 'fa': message['manifest_path'] = str(root / 'other/Cargo.toml')
+    if mode == 'missing-executable' and name == 'fa': message['executable'] = str(target / 'absent-fa')
+    print(json.dumps(message))
+    if mode == 'duplicate' and name == 'fa': print(json.dumps(message))
+if mode == 'malformed': print('{broken')
+if mode != 'missing-finished': print(json.dumps({'reason':'build-finished', 'success':mode != 'failed-finished'}))
+PY
 BUILD
   chmod 0755 "$CASE/build-tool/cargo"
 }
@@ -151,6 +173,9 @@ BUILD
 run_source() {
   INSTALLER_TEST_PROBES="$CASE/probes" INSTALLER_TEST_BUILD_REQUESTS="$CASE/build-requests" \
     INSTALLER_TEST_BUILD_EXIT="${BUILD_EXIT:-0}" TMPDIR="$CASE/tmp" FA_SKIP_VERIFY=0 \
+    INSTALLER_TEST_BUILD_MODE="${BUILD_MODE:-}" INSTALLER_TEST_SOURCE_ARTIFACTS="$SRC" \
+    INSTALLER_TEST_CONFIG_TARGET="${SOURCE_CONFIG_TARGET:-}" \
+    CARGO_TARGET_DIR="${SOURCE_TARGET:-$SOURCE_ROOT/target}" \
     PATH="$CASE/build-tool:$PATH" bash "$SOURCE_ROOT/install.sh" --from-source \
     --dest "$DEST" --verify >"$CASE/stdout" 2>"$CASE/stderr"
   RC=$?
@@ -399,7 +424,7 @@ new_case source-complete
 prepare_source
 run_source
 expect_success 'source_install_control_flow_fixture_build_only' 2
-if grep -Fxq 'build --release --locked --bins' "$CASE/build-requests" \
+if grep -Fxq 'build --release --locked --bins --message-format=json-render-diagnostics' "$CASE/build-requests" \
   && grep -Fq 'no release checksum claim' "$CASE/stdout" \
   && ! grep -Fq 'self-verification passed' "$CASE/stdout"; then
   gate_pass 'source_build_is_locked_and_never_claims_release_checksums'
@@ -410,8 +435,63 @@ fi
 new_case source-missing-member
 prepare_source
 mv "$SOURCE_ROOT/target/release/fa-verify" "$CASE/retained-built-verifier"
+BUILD_MODE=missing-member
 run_source
-expect_refusal 'source_missing_member_preserves_destination' 'missing regular executable:'
+expect_refusal 'source_missing_member_preserves_destination' 'missing source artifacts: fa-verify'
+
+new_case source-external-target
+prepare_source
+SOURCE_TARGET="$CASE/external target with spaces"
+for bin in "${BINS[@]}"; do
+  printf '\n# stale but runnable %s\n' "$bin" >>"$SOURCE_ROOT/target/release/$bin"
+done
+run_source
+expect_success 'source_external_target_uses_current_outputs_despite_runnable_stale_local_binaries' 2
+source_target_physical="$(cd "$SOURCE_TARGET" && pwd -P)"
+if grep -Fq "<- $source_target_physical/release/" "$CASE/stdout"; then
+  gate_pass 'source_reports_the_actual_external_artifact_paths'
+else
+  gate_fail 'source_reports_the_actual_external_artifact_paths'
+fi
+
+new_case source-no-local-target
+prepare_source
+mv "$SOURCE_ROOT/target" "$CASE/retained-local-target"
+SOURCE_TARGET="$CASE/another external target"
+run_source
+expect_success 'source_external_target_needs_no_repo_local_outputs' 2
+
+new_case source-configured-target
+prepare_source
+SOURCE_CONFIG_TARGET="$CASE/configured target"
+run_source
+expect_success 'source_uses_reported_configuration_target_without_overriding_cargo_environment' 2
+
+new_case source-fresh-cache
+prepare_source
+BUILD_MODE=fresh
+run_source
+expect_success 'source_accepts_cargo_confirmed_up_to_date_artifacts' 2
+
+for mode in duplicate malformed wrong-package missing-executable missing-finished failed-finished; do
+  new_case "source-$mode"
+  prepare_source
+  BUILD_MODE="$mode"
+  run_source
+  case "$mode" in
+    duplicate) diagnostic='duplicate source artifact:' ;;
+    malformed) diagnostic='source artifact selection:' ;;
+    wrong-package) diagnostic='unexpected source package for' ;;
+    missing-executable) diagnostic='missing regular source executable:' ;;
+    missing-finished|failed-finished) diagnostic='Cargo did not report one successful build-finished' ;;
+  esac
+  expect_refusal "source_${mode//-/_}_refuses_before_destination_mutation" "$diagnostic"
+  if [ ! -s "$CASE/probes" ]; then
+    gate_pass "source_${mode//-/_}_runs_no_candidate_probes"
+  else
+    gate_fail "source_${mode//-/_}_runs_no_candidate_probes"
+  fi
+done
 
 new_case source-build-failure
 prepare_source

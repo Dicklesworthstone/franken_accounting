@@ -61,6 +61,13 @@ done
 LOG_DIR="${CHECK_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/fa-check.XXXXXX")}"
 mkdir -p "$LOG_DIR"
 STEP_MANIFEST="${CHECK_STEP_MANIFEST:-$LOG_DIR/step-verdicts.jsonl}"
+if [ -n "${CHECK_RESUME_FROM:-}" ]; then
+  # Do not truncate an input proof when invoked directly with overlapping paths.
+  resume_root="$(cd "$CHECK_RESUME_FROM" && pwd -P)" || exit 2
+  log_root="$(cd "$LOG_DIR" && pwd -P)" || exit 2
+  case "$log_root/" in "$resume_root/"*) printf 'FAIL resume output overlaps input proof\n'; exit 2 ;; esac
+  case "$STEP_MANIFEST" in "$resume_root/"*) printf 'FAIL resume manifest overlaps input proof\n'; exit 2 ;; esac
+fi
 : >"$STEP_MANIFEST"
 
 CHECK_TREE_HASH="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)"
@@ -101,50 +108,56 @@ record_step_verdict() {
 try_reuse_step() {
   local label="$1" log_dest="$2"
   [ -n "${CHECK_RESUME_FROM:-}" ] || return 1
-  local prior_manifest="$CHECK_RESUME_FROM"
-  local prior_dir=""
-  if [ -d "$CHECK_RESUME_FROM" ]; then
-    prior_dir="$CHECK_RESUME_FROM"
-    if [ -f "$prior_dir/tree-before.txt" ] && [ "$(cat "$prior_dir/tree-before.txt")" != "$CHECK_TREE_HASH" ]; then
-      return 1
-    fi
-    if [ -f "$prior_dir/check.stdout.log" ] && grep -Eq '^RED([[:space:]]|$)|: [0-9]+ passed, [1-9][0-9]* failed,' "$prior_dir/check.stdout.log"; then
-      return 1
-    fi
-    prior_manifest="$prior_dir/step-verdicts.jsonl"
-    if [ ! -f "$prior_manifest" ] && [ -f "$prior_dir/tools.txt" ]; then
-      prior_manifest="$prior_dir/tools.txt"
-    fi
+  # Admission verified the entire bundle. Recheck the selected bytes at copy
+  # time, retain the execution record, and name its immediate source proof.
+  python3 -B - "$CHECK_RESUME_FROM" "$label" "$log_dest" "$STEP_MANIFEST" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+prior, label, destination, manifest = sys.argv[1:]
+try:
+    root = pathlib.Path(prior)
+    records = [json.loads(line) for line in (root / "step-verdicts.jsonl").read_text().splitlines()]
+    selected = [record for record in records if record["step"] == label]
+    if not selected or selected[0]["status"] != "PASS":
+        sys.exit(1)
+    if len(selected) != 1 or not destination:
+        raise ValueError("ambiguous record or missing destination")
+    record = selected[0]
+    data = (root / "steps" / (label + ".log")).read_bytes()
+    if hashlib.sha256(data).hexdigest() != record["log_digest"]:
+        raise ValueError("prior step log changed after admission")
+    # Exclusive creation: a failed copy never falls back to executing a job.
+    with open(destination, "xb") as output:
+        output.write(data)
+    record["reused_from"] = {
+        "proof": hashlib.sha256((root / "SHA256SUMS").read_bytes()).hexdigest(),
+        "step": label,
+    }
+    with open(manifest, "a") as output:
+        output.write(json.dumps(record, separators=(",", ":")) + "\n")
+except (OSError, ValueError, KeyError, TypeError) as error:
+    print(f"resume {label}: {error}", file=sys.stderr)
+    sys.exit(2)
+PY
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    gate_pass "$label (reused from verified split-run for tree ${CHECK_TREE_HASH:0:12})"
+    return 0
   fi
-  if [ -f "$prior_manifest" ]; then
-    if grep -Fq '"status":"FAIL"' "$prior_manifest"; then
-      return 1
-    fi
-    local line
-    line="$(grep -F "\"step\":\"$label\"" "$prior_manifest" | grep -F "\"status\":\"PASS\"" | grep -F "\"tree_hash\":\"$CHECK_TREE_HASH\"" | grep -F "\"toolchain\":\"$CHECK_TOOLCHAIN\"" | tail -n 1 || true)"
-    if [ -n "$line" ]; then
-      line="${line#step_verdict=}"
-      if [ -n "$prior_dir" ] && [ -n "$log_dest" ] && [ -f "$prior_dir/$(basename "$log_dest")" ]; then
-        cp "$prior_dir/$(basename "$log_dest")" "$log_dest" 2>/dev/null || true
-      fi
-      printf '%s\n' "$line" >>"$STEP_MANIFEST"
-      gate_pass "$label (reused from split-run for tree ${CHECK_TREE_HASH:0:12})"
-      return 0
-    fi
-  fi
-  if [ -n "$prior_dir" ] && [ -f "$prior_dir/check.stdout.log" ]; then
-    if grep -Eq "^PASS ${label}([[:space:]]|\$)" "$prior_dir/check.stdout.log"; then
-      local now_utc
-      now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      record_step_verdict "$label" "PASS" "$now_utc" "$now_utc" 0 "$log_dest"
-      gate_pass "$label (reused from split-run for tree ${CHECK_TREE_HASH:0:12})"
-      return 0
-    fi
-  fi
+  [ "$rc" -eq 1 ] || gate_abort_unrun "resume $label — evidence copy failed; command was not retried"
   return 1
 }
 
 gate_init "check.sh"
+if [ -n "${CHECK_RESUME_FROM:-}" ]; then
+  if ! bash "$ROOT/scripts/local_proof_verify.sh" --repository "$ROOT" --for-resume "$CHECK_RESUME_FROM" \
+      >"$LOG_DIR/resume-verification.log"; then
+    gate_abort_unrun "resume — prior proof verification failed; no steps executed"
+  fi
+fi
 
 # run_step <label> <command...>
 # PASS when the command exits 0; UNRUN when it did not execute; FAIL
@@ -425,22 +438,27 @@ run_gate "gate-evidence-negative" "$ROOT/scripts/tests/gate_evidence_negative.sh
 # Registries: every TOML under registries/ is consumed by compiled code and
 # validated by the fa-registry / fa-model tests, which `test` above ran. This
 # step asserts the closure: a registry file nothing embeds is a dead artifact.
-if ! try_reuse_step "registries" ""; then
+REG_LOG="$LOG_DIR/registries.log"
+if ! try_reuse_step "registries" "$REG_LOG"; then
   REG_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   REG_FAIL=0
+  : >"$REG_LOG"
   for f in registries/*.toml; do
     base="$(basename "$f")"
     if ! grep -rq "registries/$base" crates/ --include='*.rs'; then
+      printf 'FAIL %s is not embedded\n' "$base" >>"$REG_LOG"
       gate_fail "registry $base is not embedded by any crate (dead artifact)"
       REG_FAIL=1
+    else
+      printf 'PASS %s is embedded\n' "$base" >>"$REG_LOG"
     fi
   done
   REG_FINISHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [ "$REG_FAIL" -eq 0 ]; then
-    record_step_verdict "registries" "PASS" "$REG_STARTED" "$REG_FINISHED" 0 ""
+    record_step_verdict "registries" "PASS" "$REG_STARTED" "$REG_FINISHED" 0 "$REG_LOG"
     gate_pass "registries — every registries/*.toml is embedded by code"
   else
-    record_step_verdict "registries" "FAIL" "$REG_STARTED" "$REG_FINISHED" 0 ""
+    record_step_verdict "registries" "FAIL" "$REG_STARTED" "$REG_FINISHED" 0 "$REG_LOG"
   fi
 fi
 if [ "$QUICK" -eq 0 ]; then

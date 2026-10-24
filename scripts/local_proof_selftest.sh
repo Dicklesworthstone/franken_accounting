@@ -13,10 +13,11 @@ source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 run_id="$$-${RANDOM:-0}"
 base="${TMPDIR:-/tmp}/fa-local-proof-selftest-$run_id"
 fixture="$base/repository"
-mkdir -p "$fixture/scripts"
+mkdir -p "$fixture/scripts/lib"
 cp "$source_root/scripts/local_proof.sh" "$fixture/scripts/local_proof.sh"
 cp "$source_root/scripts/local_proof_verify.sh" "$fixture/scripts/local_proof_verify.sh"
 cp "$source_root/scripts/close_bead.sh" "$fixture/scripts/close_bead.sh"
+cp "$source_root/scripts/lib/gate_verdict.sh" "$fixture/scripts/lib/gate_verdict.sh"
 
 cat > "$fixture/scripts/check.sh" <<'CHECK'
 #!/usr/bin/env bash
@@ -26,22 +27,41 @@ if [ -n "${FAKE_PROOF_CHECK_MARKER:-}" ]; then
 fi
 tree_hash="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)"
 toolchain="$(rustc --version 2>/dev/null || echo unavailable)"
-step_manifest="${CHECK_STEP_MANIFEST:-/dev/null}"
+ROOT="$PWD"
+LOG_DIR="$CHECK_LOG_DIR"
+STEP_MANIFEST="$CHECK_STEP_MANIFEST"
+CHECK_TREE_HASH="$tree_hash"
+CHECK_TOOLCHAIN="$toolchain"
+: >"$STEP_MANIFEST"
+. scripts/lib/gate_verdict.sh
+CHECK
+# Exercise the actual producer helpers, not a stdout-based imitation of reuse.
+sed -n '/^hash_file() {/,/^gate_init /{ /^gate_init /!p; }' \
+  "$source_root/scripts/check.sh" >> "$fixture/scripts/check.sh"
+cat >> "$fixture/scripts/check.sh" <<'CHECK'
 
 emit_step() {
   local step="$1" status="$2"
-  printf '{"step":"%s","status":"%s","tree_hash":"%s","toolchain":"%s","worker":"hz2","started":"2026-10-20T00:00:00Z","finished":"2026-10-20T00:00:01Z","duration_secs":1,"log_digest":"none"}\n' \
-    "$step" "$status" "$tree_hash" "$toolchain" >> "$step_manifest"
-}
-
-step_already_passed() {
-  local step="$1"
-  [ -n "${CHECK_RESUME_FROM:-}" ] || return 1
-  [ -f "$CHECK_RESUME_FROM/check.stdout.log" ] || return 1
-  grep -Eq "^PASS ${step}([[:space:]]|\$)" "$CHECK_RESUME_FROM/check.stdout.log"
+  printf 'fixture gate %s %s\n' "$step" "$status" >"$LOG_DIR/$step.log"
+  if [ "${FAKE_PROOF_MODE:-}" = compile-controls ]; then
+    case "$step" in
+      check) printf '    Finished dev profile\n' >>"$LOG_DIR/$step.log" ;;
+      test-list) printf 'sample::one: test\nsample::two: test\n' >>"$LOG_DIR/$step.log" ;;
+      test) printf 'test sample::one ... ok\ntest sample::two ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored\n' >>"$LOG_DIR/$step.log" ;;
+    esac
+    printf 'Remote command finished: exit=0\n' >>"$LOG_DIR/$step.log"
+  fi
+  record_step_verdict "$step" "$status" "2026-10-20T00:00:00Z" "2026-10-20T00:00:01Z" 1 "$LOG_DIR/$step.log"
 }
 
 case "${FAKE_PROOF_MODE:-pass}" in
+  compile-controls)
+    for step in check test-list test; do
+      emit_step "$step" PASS
+      printf 'PASS %s\n' "$step"
+    done
+    printf 'ALL GATES GREEN\n'
+    ;;
   pass)
     emit_step "fake-step-1" "PASS"
     printf 'PASS fake-step-1\n'
@@ -58,9 +78,11 @@ case "${FAKE_PROOF_MODE:-pass}" in
     exit 2
     ;;
   split-2)
-    if step_already_passed "fake-step-1"; then
-      emit_step "fake-step-1" "PASS"
-      printf 'PASS fake-step-1 (reused from split-run)\n'
+    if [ "${FAKE_PROOF_COPY_FAILURE:-0}" = 1 ]; then
+      mkdir "$LOG_DIR/fake-step-1.log"
+    fi
+    if try_reuse_step "fake-step-1" "$LOG_DIR/fake-step-1.log"; then
+      :
     else
       exit 98
     fi
@@ -77,8 +99,9 @@ case "${FAKE_PROOF_MODE:-pass}" in
     exit "${FAKE_PROOF_RED_EXIT:-7}"
     ;;
   move)
+    emit_step "fake-step-1" "PASS"
     printf 'changed\n' >> tracked.txt
-    printf 'PASS fake gate\n'
+    printf 'PASS fake-step-1\n'
     printf 'ALL GATES GREEN\n'
     ;;
   *) exit 99 ;;
@@ -146,7 +169,7 @@ mv dirty.tmp "$base/dirty-moved.tmp"
 pass_proof="$base/pass"
 FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$pass_proof" --publish-note >/dev/null
 bash scripts/local_proof_verify.sh --repository "$fixture" "$pass_proof" >/dev/null
-grep -Fxq 'format_version=2' "$pass_proof/manifest.txt" || fail "producer did not emit v2"
+grep -Fxq 'format_version=3' "$pass_proof/manifest.txt" || fail "producer did not emit v3"
 git notes --ref=fa-verdict show "$commit_a" | grep -Fxq 'verdict=pass' \
   || fail "--publish-note did not record refs/notes/fa-verdict on commit"
 
@@ -162,13 +185,161 @@ bash scripts/local_proof_verify.sh --repository "$fixture" "$split1_proof" >/dev
 split2_proof="$base/split-2"
 FAKE_PROOF_MODE=split-2 bash scripts/local_proof.sh --output "$split2_proof" --resume-from "$split1_proof" >/dev/null
 bash scripts/local_proof_verify.sh --repository "$fixture" "$split2_proof" >/dev/null
+bash scripts/local_proof_verify.sh "$split2_proof" >/dev/null
 grep -Fxq 'verdict=pass' "$split2_proof/manifest.txt" || fail "split-run union did not produce verdict=pass"
-grep -Fq 'PASS fake-step-1 (reused from split-run)' "$split2_proof/check.stdout.log" \
+grep -Fq 'PASS fake-step-1 (reused from verified split-run' "$split2_proof/check.stdout.log" \
   || fail "split-run union did not reuse fake-step-1"
+python3 -B - "$split1_proof" "$split2_proof" <<'PY'
+import hashlib, json, pathlib, sys
+prior, current = map(pathlib.Path, sys.argv[1:])
+before = json.loads((prior / 'step-verdicts.jsonl').read_text().splitlines()[0])
+after = json.loads((current / 'step-verdicts.jsonl').read_text().splitlines()[0])
+assert {k: v for k, v in after.items() if k != 'reused_from'} == before
+assert after['reused_from']['proof'] == hashlib.sha256((prior / 'SHA256SUMS').read_bytes()).hexdigest()
+assert (current / 'steps/fake-step-1.log').read_bytes() == (prior / 'steps/fake-step-1.log').read_bytes()
+PY
 
 v1_proof="$base/v1-pass"
 make_v1_proof "$pass_proof" "$v1_proof"
 bash scripts/local_proof_verify.sh --repository "$fixture" "$v1_proof" >/dev/null
+if FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/legacy-resume" --resume-from "$v1_proof" \
+    >"$base/legacy-resume.stdout" 2>"$base/legacy-resume.stderr"; then
+  fail "producer reused legacy proof without retained evidence"
+fi
+v2_proof="$base/v2-pass"
+make_v1_proof "$pass_proof" "$v2_proof"
+for file in tree-before.txt tree-after.txt check-script-blob.txt; do
+  cp "$pass_proof/$file" "$v2_proof/$file"
+done
+
+# These are synthetic compiler transcripts testing the evidence validator,
+# never evidence that Rust ran. Rehash outer sums and step digests so the
+# marker/inventory controls, rather than only checksum mismatch, must reject.
+compile_proof="$base/compile-controls"
+FAKE_PROOF_MODE=compile-controls bash scripts/local_proof.sh --output "$compile_proof" >/dev/null
+for mutation in completion inventory duplicate-key uncertain; do
+  altered="$base/compile-$mutation"
+  cp -R "$compile_proof" "$altered"
+  python3 -B - "$altered" "$mutation" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+mutation = sys.argv[2]
+records = [json.loads(line) for line in (root / 'step-verdicts.jsonl').read_text().splitlines()]
+path = root / ('steps/check.log' if mutation == 'completion' else 'steps/test.log')
+text = path.read_text()
+if mutation == 'completion': text = text.replace('Remote command finished: exit=0', 'remote command status unknown')
+if mutation == 'inventory': text = text.replace('test sample::two ... ok\n', '')
+if mutation == 'uncertain': text += 'RCH_SCOPED_COMPLETION_UNCONFIRMED\n'
+path.write_text(text)
+for record in records:
+    record['log_digest'] = hashlib.sha256((root / 'steps' / (record['step'] + '.log')).read_bytes()).hexdigest()
+lines = [json.dumps(record, separators=(',', ':')) for record in records]
+if mutation == 'duplicate-key': lines[0] = lines[0].replace('"status":"PASS"', '"status":"FAIL","status":"PASS"')
+(root / 'step-verdicts.jsonl').write_text('\n'.join(lines) + '\n')
+tools = [line for line in (root / 'tools.txt').read_text().splitlines() if not line.startswith('step_verdict=')]
+(root / 'tools.txt').write_text('\n'.join(tools + ['step_verdict=' + line for line in lines]) + '\n')
+PY
+  rehash "$altered"
+  if [ "$mutation" = uncertain ]; then
+    if bash scripts/local_proof_verify.sh --repository "$fixture" --for-resume "$altered" \
+        >"$base/uncertain.stdout" 2>"$base/uncertain.stderr"; then
+      fail "resume accepted an uncertain completion for automatic retry"
+    fi
+  else
+    expect_red "$altered" "rehashed $mutation compiler evidence"
+  fi
+done
+sed 's/^format_version=3$/format_version=2/' "$pass_proof/manifest.txt" >"$v2_proof/manifest.txt"
+rehash "$v2_proof"
+bash scripts/local_proof_verify.sh --repository "$fixture" "$v2_proof" >/dev/null
+if FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/legacy-v2-resume" --resume-from "$v2_proof" \
+    >"$base/legacy-v2-resume.stdout" 2>"$base/legacy-v2-resume.stderr"; then
+  fail "producer reused v2 proof without retained evidence"
+fi
+
+if FAKE_PROOF_MODE=split-2 FAKE_PROOF_COPY_FAILURE=1 \
+    bash scripts/local_proof.sh --output "$base/copy-failure" --resume-from "$split1_proof" \
+    >"$base/copy-failure.stdout" 2>"$base/copy-failure.stderr"; then
+  fail "producer ignored reused-log copy failure"
+fi
+grep -Fq 'evidence copy failed; command was not retried' "$base/copy-failure/check.stdout.log" \
+  || fail "copy failure was not explicit"
+[ ! -e "$base/copy-failure/steps/fake-step-2.log" ] || fail "producer continued after reused-log copy failure"
+
+# Admission must reject before invoking even a replacement check.sh. Both raw
+# checksum corruption and rehashed semantic lies are tested in real processes.
+for mutation in tools log missing-log sums toolchain duplicate malformed stdout-only wrong-tree wrong-script; do
+  prior="$base/resume-$mutation"
+  cp -R "$split1_proof" "$prior"
+  python3 -B - "$prior" "$mutation" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+mutation = sys.argv[2]
+records = (root / 'step-verdicts.jsonl').read_text().splitlines()
+if mutation == 'tools':
+    with (root / 'tools.txt').open('a') as file: file.write('tampered=true\n')
+elif mutation == 'log':
+    with (root / 'steps/fake-step-1.log').open('a') as file: file.write('tampered\n')
+elif mutation == 'missing-log':
+    (root / 'steps/fake-step-1.log').rename(root / 'steps/retained-missing-log')
+elif mutation == 'sums':
+    with (root / 'SHA256SUMS').open('a') as file: file.write('bad checksum\n')
+elif mutation == 'toolchain':
+    altered = []
+    for line in records:
+        record = json.loads(line)
+        record['toolchain'] = 'rustc wrong-toolchain'
+        altered.append(json.dumps(record, separators=(',', ':')))
+    (root / 'step-verdicts.jsonl').write_text('\n'.join(altered) + '\n')
+    tools = (root / 'tools.txt').read_text().splitlines()
+    tools = ['rustc=rustc wrong-toolchain' if line.startswith('rustc=') else line for line in tools if not line.startswith('step_verdict=')]
+    (root / 'tools.txt').write_text('\n'.join(tools + ['step_verdict=' + line for line in altered]) + '\n')
+elif mutation == 'duplicate':
+    with (root / 'step-verdicts.jsonl').open('a') as file: file.write(records[0] + '\n')
+elif mutation == 'malformed':
+    with (root / 'step-verdicts.jsonl').open('a') as file: file.write('{broken\n')
+elif mutation == 'stdout-only':
+    (root / 'step-verdicts.jsonl').write_text('\n'.join(records[1:]) + '\n')
+    tools = (root / 'tools.txt').read_text().splitlines()
+    (root / 'tools.txt').write_text('\n'.join(line for line in tools if not line.startswith('step_verdict=' + records[0])) + '\n')
+elif mutation in ('wrong-tree', 'wrong-script'):
+    key, file = ('tree', 'tree-before.txt') if mutation == 'wrong-tree' else ('check_script_blob', 'check-script-blob.txt')
+    lines = (root / 'manifest.txt').read_text().splitlines()
+    (root / 'manifest.txt').write_text('\n'.join(key + '=' + '0' * 40 if line.startswith(key + '=') else line for line in lines) + '\n')
+    (root / file).write_text('0' * 40 + '\n')
+PY
+  case "$mutation" in tools|log|sums) ;; *) rehash "$prior" ;; esac
+  marker="$base/resume-ran-$mutation"
+  if FAKE_PROOF_MODE=pass FAKE_PROOF_CHECK_MARKER="$marker" \
+      bash scripts/local_proof.sh --output "$base/resume-output-$mutation" --resume-from "$prior" \
+      >"$base/resume-$mutation.stdout" 2>"$base/resume-$mutation.stderr"; then
+    fail "producer accepted resume mutation $mutation"
+  fi
+  [ ! -e "$marker" ] || fail "producer ran check after rejected $mutation evidence"
+done
+
+# Final independent verification rejects changed reused logs and changed origin
+# identity even when the outer checksum manifest is regenerated by an attacker.
+for mutation in reused-log provenance; do
+  altered="$base/$mutation"
+  cp -R "$split2_proof" "$altered"
+  if [ "$mutation" = reused-log ]; then
+    printf 'changed reused log\n' >>"$altered/steps/fake-step-1.log"
+  else
+    python3 -B - "$altered" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+records = [json.loads(line) for line in (root / 'step-verdicts.jsonl').read_text().splitlines()]
+records[0]['worker'] = 'invented-worker'
+lines = [json.dumps(record, separators=(',', ':')) for record in records]
+(root / 'step-verdicts.jsonl').write_text('\n'.join(lines) + '\n')
+tools = [line for line in (root / 'tools.txt').read_text().splitlines() if not line.startswith('step_verdict=')]
+(root / 'tools.txt').write_text('\n'.join(tools + ['step_verdict=' + line for line in lines]) + '\n')
+PY
+  fi
+  rehash "$altered"
+  expect_red "$altered" "$mutation in a reused proof"
+done
 
 red_proof="$base/red"
 set +e
@@ -397,7 +568,7 @@ for field in commit-after tree-after; do
   done
 done
 
-printf 'PASS local-proof v2 semantic controls (including split-run union, git notes, and bead-close attribution)\n'
+printf 'PASS local-proof v3 semantic controls (verified partial reuse, retained provenance, legacy verification, git notes, and bead-close attribution)\n'
 printf 'fixture=%s\n' "$fixture"
 printf 'pass_proof=%s\n' "$pass_proof"
 printf 'split2_proof=%s\n' "$split2_proof"

@@ -18,9 +18,10 @@ Usage: bash scripts/local_proof.sh [--output DIR] [--resume-from PRIOR_DIR]
                                    [--publish-note] [--push-note]
 
 Run the repository-authoritative `bash scripts/check.sh`, preserve stdout and
-stderr separately, and write a checksum-bound format-v2 manifest naming the
+stderr separately, and write a checksum-bound format-v3 manifest naming the
 exact commit, source tree, and tracked check-script blob. DIR must be outside
-the repository and must not exist.
+the repository and must not exist. V3 retains step logs and source proofs for
+independent verification; legacy v1/v2 proofs remain readable but cannot resume.
 USAGE
 }
 
@@ -96,24 +97,11 @@ before_status="$(git status --porcelain=v1 --untracked-files=all)" \
 if [ -n "$resume_from" ]; then
   [ -d "$resume_from" ] || fail "--resume-from directory does not exist: $resume_from"
   resume_from="$(cd "$resume_from" && pwd -P)"
-  [ -f "$resume_from/tree-before.txt" ] || fail "--resume-from lacks tree-before.txt"
-  [ -f "$resume_from/commit-before.txt" ] || fail "--resume-from lacks commit-before.txt"
-  [ -f "$resume_from/check-script-blob.txt" ] || fail "--resume-from lacks check-script-blob.txt"
-  [ "$(cat "$resume_from/tree-before.txt")" = "$before_tree" ] \
-    || fail "--resume-from tree does not match current tree $before_tree"
-  [ "$(cat "$resume_from/check-script-blob.txt")" = "$check_script_blob" ] \
-    || fail "--resume-from check.sh blob does not match current blob $check_script_blob"
-  if [ -f "$resume_from/manifest.txt" ] && grep -Fxq 'tree_stable=false' "$resume_from/manifest.txt"; then
-    fail "--resume-from proof was not tree-stable"
-  fi
-  if [ -f "$resume_from/tools.txt" ] && grep -Fq '"status":"FAIL"' "$resume_from/tools.txt"; then
-    fail "--resume-from proof contains a FAIL step record for this tree; split-run union is refused"
-  fi
-  if [ -f "$resume_from/check.stdout.log" ] && grep -Eq '^RED([[:space:]]|$)|: [0-9]+ passed, [1-9][0-9]* failed,' "$resume_from/check.stdout.log"; then
-    fail "--resume-from proof contains a FAIL verdict for this tree; split-run union is refused"
-  fi
-  export CHECK_RESUME_FROM="$resume_from"
+  bash scripts/local_proof_verify.sh --repository "$root" --for-resume "$resume_from" \
+    || fail "--resume-from proof is not admissible; no commands executed"
 fi
+# An inherited variable must not bypass the explicit admission above.
+unset CHECK_RESUME_FROM
 
 if [ -z "$output" ]; then
   output="${TMPDIR:-/tmp}/fa-local-proof-${short_sha}-$$"
@@ -128,6 +116,15 @@ case "$output" in "$root"|"$root"/*) fail "output must be outside the repository
 # mkdir is the exclusive claim, not the preceding advisory existence check.
 # Never write into another producer's directory if that claim fails.
 mkdir "$output" || fail "could not claim output directory: $output"
+if [ -n "$resume_from" ]; then
+  source_id="$("${hash_command[@]}" "$resume_from/SHA256SUMS" | awk '{print $1}')"
+  mkdir "$output/sources"
+  cp -R "$resume_from" "$output/sources/$source_id" \
+    || fail "could not retain the source proof; no commands executed"
+  bash scripts/local_proof_verify.sh --repository "$root" --for-resume "$output/sources/$source_id" \
+    || fail "retained source proof changed during copy; no commands executed"
+  export CHECK_RESUME_FROM="$output/sources/$source_id"
+fi
 
 printf '%s\n' "$before_commit" > "$output/commit-before.txt"
 printf '%s\n' "$before_tree" > "$output/tree-before.txt"
@@ -149,10 +146,12 @@ fi
   printf 'worktree=%s\n' "$root"
   printf 'designated_workers=%s\n' "${FA_GATE_WORKERS:-hz2,vmi1152480}"
   printf 'warm=%s\n' "$pool_warm"
+  if [ -n "$resume_from" ]; then printf 'resume_source=%s\n' "$source_id"; fi
 } > "$output/tools.txt"
 
-step_manifest_tmp="${TMPDIR:-/tmp}/fa-step-verdicts-${short_sha}-$$.jsonl"
-export CHECK_STEP_MANIFEST="$step_manifest_tmp"
+export CHECK_LOG_DIR="$output/steps"
+mkdir "$CHECK_LOG_DIR"
+export CHECK_STEP_MANIFEST="$output/step-verdicts.jsonl"
 
 started_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 t0_epoch="$(date +%s)"
@@ -164,10 +163,10 @@ fi
 finished_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 t1_epoch="$(date +%s)"
 printf 'wall_seconds=%s\n' "$((t1_epoch - t0_epoch))" >> "$output/tools.txt"
-if [ -f "$step_manifest_tmp" ]; then
+if [ -f "$CHECK_STEP_MANIFEST" ]; then
   while IFS= read -r step_line; do
     [ -n "$step_line" ] && printf 'step_verdict=%s\n' "$step_line" >> "$output/tools.txt"
-  done < "$step_manifest_tmp"
+  done < "$CHECK_STEP_MANIFEST"
 fi
 
 after_commit="$(git rev-parse --verify HEAD)"
@@ -199,7 +198,7 @@ else
 fi
 
 {
-  printf 'format_version=2\n'
+  printf 'format_version=3\n'
   printf 'repository=%s\n' "$(basename "$root")"
   printf 'commit=%s\n' "$before_commit"
   printf 'tree=%s\n' "$before_tree"
@@ -227,6 +226,11 @@ fi
       || fail "could not checksum proof file: $file"
   done <<< "$inventory"
 )
+
+# A successful check exit cannot publish a proof whose own retained evidence
+# fails verification. Keep the incomplete bundle for diagnosis on failure.
+bash scripts/local_proof_verify.sh --repository "$root" "$output" \
+  || fail "produced proof failed independent verification"
 
 if [ "$publish_note" -eq 1 ]; then
   git notes --ref=fa-verdict add -f -F "$output/manifest.txt" "$before_commit" 2>/dev/null || true

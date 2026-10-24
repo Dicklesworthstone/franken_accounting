@@ -28,6 +28,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     policy = tomllib.loads((ROOT / "franken-stack.lock").read_text())
     locked = tomllib.loads((ROOT / "Cargo.lock").read_text())
+    license_policy = tomllib.loads((ROOT / "deny.toml").read_text())
     metadata = json.loads((receipts / "metadata.json").read_text())
     trees = {p: (receipts / (p + ".tree")).read_text() for p in policy["production_gate"]["postures"]}
     passed = 0
@@ -42,14 +43,14 @@ def main():
             failed += 1
             print(f"FAIL foundation-negative — {name}: {detail}")
 
-    def case(name, meta, variants, needle):
+    def case(name, meta, variants, needle, licenses=None):
         directory = output / name
         directory.mkdir()
         (directory / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
         for p, tree in variants.items():
             (directory / (p + ".tree")).write_text(tree)
         try:
-            errors, _ = CHECK.check(policy, meta, locked, variants)
+            errors, _ = CHECK.check(policy, meta, locked, variants, license_policy if licenses is None else licenses)
         except CHECK.Invalid as error:
             errors = [str(error)]
         (directory / "verdict.txt").write_text("\n".join(errors) + "\n")
@@ -57,6 +58,27 @@ def main():
         verdict(name, good, "real graph passes" if needle is None and good else str(errors))
 
     case("positive", metadata, trees, None)
+    licenses = copy.deepcopy(license_policy)
+    licenses["licenses"]["clarify"] = [row for row in licenses["licenses"]["clarify"] if row["crate"] != "fa-canon@0.0.1"]
+    case("missing-member-license", metadata, trees, "fa-canon@0.0.1: requires exactly one", licenses)
+    licenses = copy.deepcopy(license_policy)
+    licenses["licenses"]["exceptions"] = [row for row in licenses["licenses"]["exceptions"] if row["crate"] != "fa-query@0.0.1"]
+    case("missing-member-license-exception", metadata, trees, "fa-query@0.0.1: requires one exact exception", licenses)
+    licenses = copy.deepcopy(license_policy)
+    row = next(row for row in licenses["licenses"]["clarify"] if row["crate"] == "fa-query@0.0.1")
+    row["expression"] = "MIT"
+    case("license-rider-removed", metadata, trees, "fa-query@0.0.1: clarification must preserve", licenses)
+    licenses = copy.deepcopy(license_policy)
+    licenses["licenses"]["clarify"].append(copy.deepcopy(next(row for row in licenses["licenses"]["clarify"] if row["crate"] == "fa-canon@0.0.1")))
+    case("duplicate-member-license", metadata, trees, "fa-canon@0.0.1: requires exactly one first-party license clarification, found 2", licenses)
+    meta = copy.deepcopy(metadata)
+    newcomer = copy.deepcopy(next(p for p in meta["packages"] if p["id"] in meta["workspace_members"]))
+    newcomer["name"] = "fa-unmapped-license"
+    newcomer["id"] = "path+file:///license-negative#fa-unmapped-license@0.0.1"
+    meta["packages"].append(newcomer)
+    meta["workspace_members"].append(newcomer["id"])
+    meta["resolve"]["nodes"].append({"id": newcomer["id"], "deps": [], "features": []})
+    case("new-unmapped-member", meta, trees, "fa-unmapped-license@0.0.1: requires exactly one")
     for name in ("asupersync", "fgdb-types"):
         meta, variants = copy.deepcopy(metadata), dict(trees)
         original = next(p for p in meta["packages"] if p["name"] == name)

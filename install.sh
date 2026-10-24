@@ -177,12 +177,78 @@ if [ -n "$ARTIFACT_DIR" ]; then
   done
 elif [ "$FROM_SOURCE" -eq 1 ]; then
   ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  command -v python3 >/dev/null 2>&1 || err "--from-source requires python3 to read Cargo artifact messages"
   log "building fa, fad, fa-mcp, and fa-verify from source at $ROOT"
   (
     cd "$ROOT" || exit 1
-    cargo build --release --locked --bins
-  )
-  stage_binaries "$ROOT/target/release"
+    cargo build --release --locked --bins --message-format=json-render-diagnostics
+  ) >"$WORK/cargo-build.jsonl"
+  # Cargo reports the executable selected by THIS invocation, including fresh
+  # cache hits, configured targets and CARGO_TARGET_DIR. Never guess a path or
+  # fall back to possibly stale repo-local binaries. Retain the whole stream.
+  python3 -B - "$ROOT" "$WORK/cargo-build.jsonl" "$STAGE" <<'PY'
+import json
+import pathlib
+import shutil
+import sys
+
+root, messages, stage = map(pathlib.Path, sys.argv[1:])
+packages = {"fa": "fa-cli", "fad": "fad", "fa-mcp": "fa-mcp", "fa-verify": "fa-verify"}
+selected = {}
+finished = []
+
+def strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate Cargo message key: {key}")
+        result[key] = value
+    return result
+
+try:
+    for line in messages.read_text().splitlines():
+        # Other build tools can write diagnostics to Cargo's stdout. JSON-looking
+        # lines must parse; plain diagnostics are retained but never evidence.
+        if not line.lstrip().startswith("{"):
+            continue
+        message = json.loads(line, object_pairs_hook=strict_object)
+        if finished:
+            raise ValueError("Cargo messages follow build-finished")
+        if message.get("reason") == "build-finished":
+            finished.append(message.get("success"))
+        if message.get("reason") != "compiler-artifact":
+            continue
+        target = message.get("target", {})
+        name = target.get("name")
+        if name not in packages or target.get("kind") != ["bin"]:
+            continue
+        if name in selected:
+            raise ValueError(f"duplicate source artifact: {name}")
+        expected_manifest = root / "crates" / packages[name] / "Cargo.toml"
+        if pathlib.Path(message.get("manifest_path", "")).resolve() != expected_manifest.resolve():
+            raise ValueError(f"unexpected source package for {name}")
+        if message.get("profile", {}).get("test") is not False:
+            raise ValueError(f"test artifact cannot be installed: {name}")
+        executable = message.get("executable")
+        if not isinstance(executable, str) or not pathlib.Path(executable).is_absolute():
+            raise ValueError(f"missing absolute source executable: {name}")
+        path = pathlib.Path(executable)
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"missing regular source executable: {name}")
+        selected[name] = path
+    if finished != [True]:
+        raise ValueError("Cargo did not report one successful build-finished")
+    if set(selected) != set(packages):
+        raise ValueError("missing source artifacts: " + ", ".join(sorted(set(packages) - set(selected))))
+    # Validate the complete selection before staging; publication is still
+    # guarded by the existing four executable probes below.
+    for name, path in selected.items():
+        shutil.copy2(path, stage / name)
+        print(f"[fa-install] source artifact: {name} <- {path}")
+except (OSError, ValueError, TypeError, AttributeError) as error:
+    print(f"[fa-install] ERROR: source artifact selection: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
 else
   OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
   case "$OS" in linux|darwin) ;; *) err "unsupported operating system: $OS" ;; esac

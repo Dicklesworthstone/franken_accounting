@@ -70,7 +70,7 @@ def read_tree(text, packages, posture):
     return nodes
 
 
-def check(policy, metadata, cargo_lock, trees):
+def check(policy, metadata, cargo_lock, trees, license_policy):
     failures = []
     successes = []
     packages = {p["id"]: p for p in metadata["packages"]}
@@ -82,6 +82,22 @@ def check(policy, metadata, cargo_lock, trees):
     resolved_ids = [n["id"] for n in metadata["resolve"]["nodes"]]
     if not members <= set(resolved_ids) or len(resolved_ids) != len(set(resolved_ids)):
         raise Invalid("metadata has incomplete/duplicate resolution nodes")
+    # cargo-deny verifies each clarification's actual license bytes. Check the
+    # other direction here: a new first-party member must not silently lack
+    # the exact-name policy for our inherited license and its existing rider.
+    clarifications = license_policy["licenses"].get("clarify", [])
+    exceptions = license_policy["licenses"].get("exceptions", [])
+    for pid in sorted(members):
+        member = packages[pid]
+        identity = member["name"] + "@" + member["version"]
+        matching = [row for row in clarifications if row["crate"] == identity]
+        if len(matching) != 1:
+            failures.append(f"{identity}: requires exactly one first-party license clarification, found {len(matching)}")
+        elif matching[0]["expression"] != "LicenseRef-MIT-OpenAI-Anthropic-Rider":
+            failures.append(f"{identity}: clarification must preserve the existing license and rider")
+        admitted = [row for row in exceptions if row["crate"] == identity]
+        if len(admitted) != 1 or admitted[0]["allow"] != ["LicenseRef-MIT-OpenAI-Anthropic-Rider"]:
+            failures.append(f"{identity}: requires one exact exception for the existing license and rider")
     rules = policy["production_gate"]
     postures = rules["postures"]
     if set(trees) != set(postures) or len(postures) != len(set(postures)):
@@ -181,8 +197,9 @@ def main():
         policy = tomllib.loads((root / "franken-stack.lock").read_text())
         metadata = json.loads((work / "metadata.json").read_text())
         cargo_lock = tomllib.loads((root / "Cargo.lock").read_text())
+        license_policy = tomllib.loads((root / "deny.toml").read_text())
         trees = {p: (work / (p + ".tree")).read_text() for p in policy["production_gate"]["postures"]}
-        failures, successes = check(policy, metadata, cargo_lock, trees)
+        failures, successes = check(policy, metadata, cargo_lock, trees, license_policy)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"FAIL foundations — invalid/incomplete evidence: {error}")
         print("foundations: 0 passed, 1 failed, 0 unrun")
