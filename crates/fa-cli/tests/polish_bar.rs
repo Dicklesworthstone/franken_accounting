@@ -324,29 +324,54 @@ fn verify_stdout_stderr_split() {
     for args in &cases {
         let run = fa(Some(&book), args);
         log("split", args, &run);
-        assert!(!run.stdout.is_empty(), "{args:?} printed nothing");
-        for line in run.stdout.lines() {
-            let parsed = json::parse(line);
-            assert!(
-                parsed.is_ok(),
-                "{args:?}: a stdout line is not JSON: {line}"
-            );
-            let envelope = parsed.unwrap_or(Json::Null);
-            assert!(
-                envelope.get("v").is_some() && envelope.get("event").is_some(),
-                "{args:?}: a stdout line is not an envelope: {line}"
-            );
-        }
-        for line in run.stderr.lines() {
-            assert!(
-                json::parse(line)
-                    .ok()
-                    .and_then(|j| j.get("event").cloned())
-                    .is_none(),
-                "{args:?}: an envelope reached stderr: {line}"
-            );
+        assert_eq!(split_violation(&run), None, "{args:?}");
+    }
+    // Planted (fa-nmk4): the check must catch a stray line on either stream.
+    // A human-mode trial balance's text on stdout is the shape a stray
+    // print would leave there, and an envelope moved onto stderr is the
+    // other way round.
+    let human = fa(Some(&book), &["tb", "--period", "FY2026-P03"]);
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    assert!(
+        split_violation(&human).is_some_and(|why| why.contains("not JSON")),
+        "a human-mode stdout line must be flagged: {}",
+        human.stdout
+    );
+    let robot = fa(Some(&book), READS[0]);
+    let swapped = Run {
+        code: robot.code,
+        stdout: robot.stdout.clone(),
+        stderr: robot.stdout,
+    };
+    assert!(
+        split_violation(&swapped).is_some_and(|why| why.contains("stderr")),
+        "an envelope on stderr must be flagged"
+    );
+}
+
+/// The first way a run breaks the stdout/stderr split: stdout empty, a
+/// stdout line that is not a JSON envelope, or an envelope on stderr.
+fn split_violation(run: &Run) -> Option<String> {
+    if run.stdout.is_empty() {
+        return Some("printed nothing".into());
+    }
+    for line in run.stdout.lines() {
+        let Ok(envelope) = json::parse(line) else {
+            return Some(format!("a stdout line is not JSON: {line}"));
+        };
+        if envelope.get("v").is_none() || envelope.get("event").is_none() {
+            return Some(format!("a stdout line is not an envelope: {line}"));
         }
     }
+    run.stderr
+        .lines()
+        .find(|line| {
+            json::parse(line)
+                .ok()
+                .and_then(|j| j.get("event").cloned())
+                .is_some()
+        })
+        .map(|line| format!("an envelope reached stderr: {line}"))
 }
 
 /// Plan Appendix D `verify-non-tty-discipline`: with NO_COLOR, CI=true or
