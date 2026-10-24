@@ -1241,6 +1241,7 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
         let mut refusing_commands = vec![
             vec!["tb", "--period", "FY2026-P01"],
             vec!["tb", "--functional", "--period", "FY2026-P01"],
+            vec!["verify", "entities", "--period", "FY2026-P01"],
             vec!["registers", "advance", "--period", "FY2026-P01"],
             vec![
                 "registers",
@@ -1259,6 +1260,13 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
             assert_eq!(text(&refusal, "event"), "error");
             assert_eq!(text(data(&refusal), "refusal_id"), "FA-REF-198");
             assert!(refusal.render().contains(&format!("{:032x}", vid.0)));
+            if args.get(1) == Some(&"entities") {
+                assert!(
+                    refusal.render().contains("entity <default>;"),
+                    "{}",
+                    refusal.render()
+                );
+            }
             assert!(
                 fa_cli::verbs::registry()
                     .unwrap()
