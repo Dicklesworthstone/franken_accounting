@@ -888,14 +888,17 @@ fn functional_statement_file_at_cold_head_replays_and_reports_status_without_ret
 
 #[test]
 fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_and_export() {
-    for fitting_net in [false, true] {
+    for (fitting_net, cached) in [(false, false), (false, true), (true, false), (true, true)] {
         let seed = 0xe7;
         let fixture = Fixture::create(Some(seed));
         fixture.post("retained-safe", "2026-01-05", "1.00", 10);
-        ok(
-            &fixture.book,
-            &["registers", "advance", "--period", "FY2026-P01"],
-        );
+        let cached_through = cached.then(|| {
+            let advanced = ok(
+                &fixture.book,
+                &["registers", "advance", "--period", "FY2026-P01"],
+            );
+            integer(data(&advanced), "through")
+        });
         let safe = head(&fixture.book);
         if fitting_net {
             // The current writer lawfully fills the opposite gross columns.
@@ -1008,12 +1011,22 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
         let before_rows = db.vertices().unwrap();
         drop(db);
 
-        for args in [
+        let mut refusing_commands = vec![
             vec!["tb", "--period", "FY2026-P01"],
             vec!["tb", "--functional", "--period", "FY2026-P01"],
             vec!["registers", "advance", "--period", "FY2026-P01"],
-            vec!["verify", "registers", "--period", "FY2026-P01"],
-        ] {
+            vec![
+                "registers",
+                "materialize",
+                "--period",
+                "FY2026-P01",
+                "--yes",
+            ],
+        ];
+        if cached_through.is_none() {
+            refusing_commands.push(vec!["verify", "registers", "--period", "FY2026-P01"]);
+        }
+        for args in refusing_commands {
             let (status, refusal) = run(&fixture.book, &args);
             assert_eq!(status, 3, "{args:?}: {}", refusal.render());
             assert_eq!(text(&refusal, "event"), "error");
@@ -1025,6 +1038,38 @@ fn retained_capacity_refuses_reports_but_preserves_historical_reads_inspection_a
                     .check_line(&refusal.render())
                     .is_ok()
             );
+            assert_eq!(head(&fixture.book), i128::from(invalid_head.0));
+        }
+        if let Some(through) = cached_through {
+            // Verification certifies the stored prefix, not an unread head.
+            // Preserve that useful read without claiming the invalid tail.
+            let verified = ok(
+                &fixture.book,
+                &["verify", "registers", "--period", "FY2026-P01"],
+            );
+            assert_eq!(text(&verified, "event"), "registers_verified");
+            let periods = rows(data(&verified), "periods");
+            assert_eq!(periods.len(), 1);
+            let period = &periods[0];
+            assert_eq!(period.get("green"), Some(&Json::Bool(true)));
+            assert_eq!(period.get("stale"), Some(&Json::Bool(true)));
+            assert_eq!(integer(period, "verified_through"), through);
+            assert!(through < i128::from(invalid_head.0));
+            let unread = before_rows
+                .iter()
+                .filter(|row| {
+                    row.labels.contains(&fa_model::symbols::label::ENTRY)
+                        && i128::from(row.created_at.0) > through
+                })
+                .count();
+            assert!(unread > 0);
+            assert_eq!(
+                integer(period, "lag_entries"),
+                i128::try_from(unread).unwrap()
+            );
+            assert_eq!(text(period, "refold_digest"), text(period, "stored_digest"));
+            assert!(!rows(&verified, "warnings").is_empty());
+            assert!(!rows(&verified, "next_actions").is_empty());
             assert_eq!(head(&fixture.book), i128::from(invalid_head.0));
         }
         let historic = ok(
