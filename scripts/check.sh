@@ -34,6 +34,8 @@
 #   readme-agents-sync, beads-cycles (br dep cycles) and tree-integrity. No
 #   step has ever checked them; a green run says nothing about them.
 #   Exact-tree proof manifests and merge-train scripts are tracked in fa-u7u.
+#   local-proof-selftest executes the existing producer/verifier controls,
+#   including checksum-bound split-run reuse (fa-hlnd.1).
 #
 # Usage: bash scripts/check.sh            # everything
 #        bash scripts/check.sh --quick    # fmt, check, clippy, ubs (no tests, no deny)
@@ -376,6 +378,7 @@ if [ "$QUICK" -eq 0 ]; then
   if cargo deny --version >/dev/null 2>&1; then
     run_step "deny" cargo deny check
   else
+    record_step_verdict "deny" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$LOG_DIR/deny.log"
     gate_unrun "deny — cargo-deny is not installed; the dependency allowlists in deny.toml were not checked"
   fi
 fi
@@ -434,6 +437,7 @@ if [ "${#SHELL_FILES[@]}" -gt 0 ]; then
 fi
 run_gate "gate-evidence-negative" "$ROOT/scripts/tests/gate_evidence_negative.sh" \
   "$ROOT" "$LOG_DIR/gate-evidence-negative"
+run_step "local-proof-selftest" bash "$ROOT/scripts/local_proof_selftest.sh"
 
 # Registries: every TOML under registries/ is consumed by compiled code and
 # validated by the fa-registry / fa-model tests, which `test` above ran. This
@@ -553,6 +557,7 @@ fi
 # then the same gate is shown able to fail on planted defects.
 TOPOLOGY_META="$LOG_DIR/topology-metadata.json"
 if ! command -v jq >/dev/null 2>&1; then
+  record_step_verdict "topology" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$LOG_DIR/topology.log"
   gate_unrun "topology — jq is not installed; the cargo graph was not read"
 elif cargo metadata --no-deps --format-version 1 >"$TOPOLOGY_META" 2>"$TOPOLOGY_META.stderr" \
   && [ -s "$TOPOLOGY_META" ]; then
@@ -561,6 +566,8 @@ elif cargo metadata --no-deps --format-version 1 >"$TOPOLOGY_META" 2>"$TOPOLOGY_
   run_gate "topology-negative" "$ROOT/scripts/tests/topology_negative.sh" \
     "$ROOT/registries/workspace_topology.toml" "$TOPOLOGY_META" "$LOG_DIR/topology-negative"
 else
+  cat "$TOPOLOGY_META" "$TOPOLOGY_META.stderr" >"$LOG_DIR/topology.log"
+  record_step_verdict "topology" "UNRUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 0 "$LOG_DIR/topology.log"
   gate_unrun "topology — cargo metadata did not produce the workspace graph; log: $TOPOLOGY_META.stderr"
 fi
 
