@@ -1187,8 +1187,7 @@ fn prepared_open_conflicts_with_a_new_due_schedule_and_fresh_open_mints_once() {
             &[],
         )
         .unwrap()
-        .err()
-        .expect("a due reversal requires post authority");
+        .expect_err("a due reversal requires post authority");
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
         assert_eq!(fixture.book.head(&cx).unwrap(), before);
         assert_eq!(journal_entries(&fixture.book, &cx), entries);
