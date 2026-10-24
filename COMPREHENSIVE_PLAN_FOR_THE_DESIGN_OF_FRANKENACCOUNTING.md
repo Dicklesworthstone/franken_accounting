@@ -1281,6 +1281,89 @@ is a sample of commands, not a percentage of the complete product delivered.
 
 #### Source, execution, and claim boundaries
 
+**Current-cut refresh (2026-10-23, GrayStork).** The review cut is
+`065475f997c44841c45448a26bd3fe7dfad1f5bd`, tree
+`3428d3ea56c22c1eb494274970f7990ee64e60d2`. All 342 AGENTS lines and
+1,298 README lines were read; independent fresh-context reviews read the
+complete plan, companion designs and verification sources. The shared Beads
+edits and `.ee/` were preserved. Raw evidence is retained at
+`/Users/jemanuel/.codex/artifacts/fa-reality-check-20261023-full.9aFKam`.
+The earlier-cut receipts below remain historical evidence, not current results.
+
+The source has advanced materially: Canon now compiles and evaluates typed rules,
+journals and activates versions under dual control, and re-derives Rule-origin
+entries inside the posting transaction (`fa-journal/src/rule.rs`). Restatement
+posting and session-lineage negatives exist in `fa-cli/tests/cli.rs`. Token-bound
+MCP can be hosted by `fad serve --mcp stdio --token`, forwarding each request to
+the daemon's one leased book; launch-config MCP retains its direct-lease posture.
+Dimensions and same-functional-currency, single-book consolidation have real
+surface callers. These are source-supported slices awaiting current execution;
+the older claims that these implementations are absent must not steer new work.
+
+The initial graph contains 322 issues: 105 open, 26 in progress, 191 closed;
+639 dependency records and no active cycles. Those counts measure work records,
+not product delivery. There are 82 invariant clauses, 69 declared live and
+13 dormant; all 20 SLO rows remain inactive and all 11 formal/model lanes dormant.
+No local release tags or verdict/merge-train/owner-watch note refs are present.
+This is a local-ref observation, not a new assertion about remote releases.
+
+Two fresh shell counterexamples extend the bridge:
+
+- **Resume evidence is not bound before reuse.** Exact unmodified helpers from
+  `scripts/check.sh` reuse a prior stdout `PASS test` despite a mismatched
+  toolchain, producing a current-toolchain PASS record with `log_digest=none`.
+  A mutated prior step log is also reused while its stored SHA names the original
+  bytes. The exact `local_proof.sh` resume-admission block accepts mutated
+  `tools.txt` even though independent `shasum` verification fails. Valid,
+  wrong-tree, no-stdout/toolchain-mismatch and explicit-FAIL controls distinguish
+  the defect. This is an isolated helper/admission reproduction, not a claim
+  that a complete forged proof was landed. Receipt:
+  `/Users/jemanuel/.codex/artifacts/fa-resume-exact-helpers-7ttd2m88/receipt.json`.
+  Focused P0 `fa-hlnd.1` now owns the repair and ordinary regression tests;
+  `fa-j1fc` depends on it, and `fa-8jcr` owns independent final-proof/closure
+  rejection tests. Verified partial-UNRUN reuse remains an explicit positive
+  requirement; repairing this defect must not eliminate legitimate split runs.
+- **Source installation can select stale artifacts.** `install.sh` now refuses
+  empty/incomplete/unverified release sets and probes all four binaries before
+  publication; the earlier empty-directory bug is repaired in source. However,
+  `--from-source` inherits `CARGO_TARGET_DIR` and then selects
+  `$ROOT/target/release`. In isolated real-installer fixtures, a nondefault target
+  with no local outputs fails after a successful fixture build; with old local
+  outputs it installs all four STALE executables and reports successful probes.
+  The default-target control installs CURRENT bytes. These are explicitly shell
+  stand-ins, proving path selection, not Rust compilation or release authenticity.
+  Receipt: `/Users/jemanuel/.codex/artifacts/fa-installer-target-review-dakv0wqq/receipt.json`.
+  Existing `fa-o3zg` owns this remaining repair and shell regressions; `fa-q5kx`
+  additionally requires the real installed bytes to match current builder outputs.
+
+**Invariant coverage join:** `invariants.toml` omits exposed `rule`, `dimension`
+and `subledger` surfaces from `[shipped_capabilities]`. The checker at
+`fa-registry/src/invariants.rs:427–452` validates only existing table keys.
+It therefore cannot prove total exposed-capability coverage, including the
+dormant post-evaluation, dimensions and subledger obligations. Existing
+`fa-vz7e`/`fa-ubl0` now require a total supported verb/subcommand-to-clause mapping,
+an explicit unsupported classification, and planted omission/dormant-dependency
+negatives. Do not activate a clause merely to make the registry green.
+
+The local disk preflight now passes (about 350 GB available). Strict RCH
+`cargo test --workspace --locked` at the frozen commit, without an overlay,
+**executed and failed, exit 101**: three `E0308` errors at
+`fa-policy/src/sod.rs:1628,1631,1643` pass an optional preparer set to
+`evaluate_in`, which requires `Witnessed`. No workspace test denominator was
+reached. The log is `workspace-test-attempt3.log` in the current evidence folder.
+This used an isolated diagnostic source mirror on `trj`, not the canonical warm
+gate worktree, and supplies no landing verdict. A separate README/scoreboard
+diagnostic and the required `scripts/check.sh` results are recorded below when
+complete; neither can erase this full-workspace failure.
+
+Shared HEAD subsequently advanced to `84b7da390ef258cb61e09c0b24b65926e8cc63e2`,
+including calibration and decoder work, and peer working-tree edits were
+preserved. The three script hashes in the two counterexample receipts are
+unchanged at that committed cut. New calibration records and any uncommitted
+policy-test correction cannot be composed into the frozen run's result.
+
+#### Earlier audit evidence and its exact scope
+
 The primary inspected cut was `32bed7d723d9d533eb925a8cb8f03830c10930ed`.
 Shared main advanced during inspection to
 `c7b5eb5853523f2f606f8c8373443def235150d8`; the additional carrying-close CLI,
@@ -1342,7 +1425,7 @@ Evidence retained under
   control at `522f2979`, and later selected repair results at other stated cuts.
   These do not compose into a verdict for current main. The older network-trace
   budget counterexample and still-unrun repair remain separately identified.
-- **Current full gate: UNRUN.** `sbh check --need 20G` exits 1, reporting critical
+- **Earlier-cut full gate: UNRUN.** `sbh check --need 20G` exits 1, reporting critical
   Data-volume pressure (about 3.82% free). Heavy compilation, `cargo test`,
   Clippy and `scripts/check.sh` were not launched past this admission failure.
   No fallback, pressure-threshold change, gate relaxation or cleanup deletion
@@ -1366,40 +1449,40 @@ these labels promotes a sampled command into a passed integration gate.
 |---|---|---|
 | V01 Immutable N-leg posting with lawful refusals | DEMONSTRATED basic book/post/refusal path; cumulative gross register capacity still requires pre-publication admission, including activation paths | fa-apdv, fa-ys52, fa-4aym |
 | V02 One posting universe, derived projections | DEMONSTRATED registers/projections/book verification; source has recovery and phantom-cell negatives; certify every supported measure against the payload fold | fa-jmh, fa-0fl |
-| V03 Fast native and functional register reads | PARTIAL native delta maintainer and launch-selected daemon scheduling; reports still use literal folds; historical RegisterCheckpoints, bounded tail reads and cadence remain | fa-715, fa-9xf9 |
+| V03 Fast native and functional register reads | PARTIAL native delta maintainer, commit wake and checked-cell-plus-tail head TB/activity reads; historical RegisterCheckpoints, functional maintenance, all-family bounded reads and cadence remain; no throughput claim | fa-715, fa-9xf9 |
 | V04 Period/calendar law and prepared races | PARTIAL real state machine, matrix, prepared witnesses and both-order tests; complete lab campaign, custom calendar/time-zone/effectivity closure and typed conflict remain | fa-0fl, fa-94qd, fa-7uhr |
 | V05 Bitemporal reports and issuance selectors | DEMONSTRATED sequence-pinned TB/replay; PARTIAL retained ticks, issuance, audience and certificate views; full GQL/restatement composition remains | fa-wrrw, fa-5c1, fa-vdc |
-| V06 Supersession and complete restatement | PARTIAL reversal/replacement/reclass and case lifecycle; Restatement-class post still waits for principal/session SoD, complete manifest and disclosure/table acceptance | fa-75j4, fa-651f, fa-nl7 |
+| V06 Supersession and complete restatement | PARTIAL reversal/replacement/reclass and case lifecycle, including source-supported Restatement posting and shared-lineage refusal tests; full authenticated principal/approval policy, ordered manifests and disclosure/table acceptance remain unqualified | fa-75j4, fa-651f, fa-nl7 |
 | V07 Mechanical year-end close and CloseRun DAG | UNPROVEN latest native/functional carrying-close sources and CLI review; a correct YearEndClose is not the CloseTask DAG, task approvals, restart/rehearsal and reclose campaign | fa-4o0, fa-r19j |
 | V08 Holds, releases and limited availability | PARTIAL unique resolutions, full hold release, LimitCell and committed-tick expiry; arbitrary per-procedure work bounds and complete race/crash campaign remain | fa-0fl, fa-gpd4, fa-7mhm |
 | V09 Accrual, reversal and recurrence | PARTIAL scheduled reversals; UNPROVEN new approved fixed monthly recurrence at `83efdee3`; broader rule-driven schedules and timing/revocation/crash acceptance remain | fa-0bi, fa-c34, fa-0fl |
 | V10 Atomic batches and durable retries | PARTIAL successful PostBatch and keyed posting outcomes; dedicated control writers, admitted durable refusals and the full ordered effect/approval protocol remain | fa-nl7, fa-we7 |
 | V11 Staged migration at declared scale | PARTIAL opening/detail/period-balance visibility and tie-out; complete activation/capacity/open-item and large-object/loader campaign remain | fa-zddh, fa-nd7g, fa-ys52 |
 | V12 Exact arithmetic, law-bound FX and units | PARTIAL exact wide/rational arithmetic, valuations, carrying relief and revaluation; complete application policies, unit evolution and all amount-path overflow acceptance remain | fa-pvt7, fa-3ock, fa-thp, fa-4aym |
-| V13 Dimensions and native/external control detail | PARTIAL native party-qualified control leaves; UNPROVEN reviewed external batch summaries at `0867169a`; both FA-INV-12 clauses remain dormant, so source landing is not clause activation or gate acceptance; full dimension kinds/hierarchy remain | fa-ficc, fa-03s, fa-vz7e |
-| V14 Full provenance and retained external evidence | DEMONSTRATED original-cited document bundle subset; complete events/rules/approvals/session/supplement/retention closure and rule reproduction remain | fa-ge0y, fa-81lu, fa-c34, fa-v6di |
+| V13 Dimensions and native/external control detail | PARTIAL party-qualified controls, external-summary source and journaled dimension values/hierarchy/required-value admission; dimension-filtered TB exists but certification does not; both FA-INV-12 clauses and FA-INV-01.dimensions remain dormant pending full acceptance | fa-ficc, fa-03s, fa-vz7e |
+| V14 Full provenance and retained external evidence | DEMONSTRATED original-cited document bundle subset; source now checks rule reproduction in the posting transaction; complete approvals/session/supplement/retention closure, independently portable across every report family, remains | fa-ge0y, fa-81lu, fa-c34, fa-v6di |
 | V15 Reconciliation and truthful aging | PARTIAL bank formats, retained layouts, matching/confirmation, assertions and effective-date aging; drift monitoring, continuity findings and due-date obligations remain | fa-d22b, fa-nwgf, fa-5dpd |
 | V16 Independent portable report verification | UNPROVEN new complete-prefix, sequence-selected native TB bundle at `ffd012fb`; independent decoder explicitly refuses instant and statement certificates; full statement and scenario closure remain | fa-70h4, fa-0m9r |
 | V17 Witnessed history with explicit trust | DEMONSTRATED book-key signatures over a limited checkpoint; source has cosigning; quorum/policy/rotation and independent index derivation remain separate predicates | fa-qtfd, fa-u3zf, fa-7uhr |
 | V18 Governed privacy, holds and erasure | PARTIAL privileged separation and holds; subject-key lifecycle/crypto-erasure is explicitly unavailable pending foundation cooperation; do not advertise erasure from an enum arm | fa-v74, fa-v6di |
 | V19 Authenticated agent authority and real SoD | PARTIAL issued tokens and bound MCP launch; owner CLI assertions are not independent human authentication; principal signatures, full caveats, expiry and every-write authorization remain | fa-yok, fa-z46b, fa-651f, fa-0x0, fa-mg2j |
 | V20 Access audit before disclosure | PARTIAL read-only Human bound sessions; Agent/writing sessions, protected findings/documents and stream admission require full policy coverage | fa-7dw, fa-ohe |
-| V21 Typed pure Canon rules | NOT_STARTED as a rule compiler/evaluator crate; explicit typed posting sugar is useful but does not implement journaled total rules, reproduction, activation or backtesting | fa-c34 |
+| V21 Typed pure Canon rules | PARTIAL compiler, typed IR/evaluator, journaled versions, dual-control activation, event derivation with commit-time reproduction, golden test/backtest surfaces; full intent rule families and caller caveats intersected with RuleAuthority remain; FA-INV-10.post-evaluation is dormant and rules need explicit shipped-capability mapping | fa-c34, fa-651f, fa-vz7e |
 | V22 Safe plans, drafts and counterfactuals | PARTIAL real plans, intent-log promotion, scratch replay and certified diff; all manifest/approval bindings, generic lifecycle and offline counterfactual replay remain | fa-we7, fa-s7x, fa-k07b, fa-0m9r |
-| V23 All three surfaces on one authority | PARTIAL broad CLI/library and launch-bound MCP; MCP still takes its own lease rather than being hosted on fad's one book/session; discovery repair lacks repaired runtime pass | fa-z5u, fa-y9ug, fa-b295, fa-ze0y |
+| V23 All three surfaces on one authority | PARTIAL broad CLI/library, launch-bound MCP and token-bound fad-hosted stdio routing through the daemon's one lease; complete clusters/resources/macros, confirmation exchange, scope parity, revocation while serving and repaired-runtime qualification remain | fa-z5u, fa-y9ug, fa-b295, fa-ze0y |
 | V24 Executable agent guidance and ergonomics | DEMONSTRATED walkthrough and teaching refusals; complete refusal-fix, fresh-agent, non-TTY and schema-level parity campaigns remain | fa-wgsj, fa-y6eu, fa-nmk4, fa-6his |
 | V25 Query profile over native certified reads | PARTIAL selectors, exact amount aggregation and native replay; per-row CALL composition, full selectors, scoped tokens and complete runtime graph remain | fa-5c1 |
 | V26 Statements and journaled definitions | PARTIAL native/functional statements, certified GL/aging/roll-forward/cash-flow families and rendering; custom-definition activation/lint, presentation rounding and full family parity remain | fa-qh60, fa-nzix, fa-y1vr, fa-oimc, fa-cet |
-| V27 Multi-book and consolidation | PARTIAL library algorithms; FA-INV-13.core is declared live on library Concordat tests, which do not establish the full commit-time and operator workflow for basis layers, matched intercompany, eliminations/NCI/CTA, translation and certified consolidation | fa-259c, fa-22v5, fa-76hy, fa-bwri |
+| V27 Multi-book and consolidation | PARTIAL real CLI/native certified single-book consolidation from retained shared-functional-unit entities, eliminations and NCI; this read posts nothing. Cross-book basis layers, commit-time intercompany pairing, branch-posted eliminations, foreign-functional-currency translation and CTA remain | fa-259c, fa-22v5, fa-76hy, fa-bwri |
 | V28 Reproducible forensic observations | PARTIAL broad registered procedures, tracing, findings and sampling; signed solvency screen is not documented fair value, posting dates are not maturities, and remaining network work must be charged inside execution | fa-8j3g, fa-5dpd, fa-6l8g, fa-1tvm, fa-v0m2 |
 | V29 Calibrated graph and sampling methods | PARTIAL role-driven populations, algorithms and seeded sampling; kiting and measured labeled-corpus precision/recall, method assumptions and complexity locks remain | fa-m35p, fa-4psc, fa-b6xs, fa-kxc4, fa-k1ts |
 | V30 Audit and litigation work products | PARTIAL engagement/SUD, confirmations, Bates/privilege/load files and receipt bundles; exhibit marks, carry-forward limits and complete closure remain | fa-zgn, fa-6l9, fa-ge0y |
 | V31 Real standards and regulatory delivery | PARTIAL self round trips, own linkbase and ordinary ADS proofs; real Beancount/hledger comparisons, published ADS/SAF-T/XBRL validation, Part 370 data inputs and schedule edits remain | fa-sa4w, fa-ipom, fa-w3n6, fa-p370, fa-doa9 |
-| V32 Independent reference and full simulation | PARTIAL isolated reference arithmetic/state machine, prepared substrate tests and lab smoke; model-generated histories, all registered crashes/interleavings and 1,000-seed Genesis campaign remain | fa-2ihd, fa-0fl, fa-eid6 |
+| V32 Independent reference and full simulation | PARTIAL independent reference arithmetic/state machine, bounded seeded histories with coverage checks and shrinking, 24-seed report-oracle source, real DPOR/prepared post-close tests and seven-point fault-VFS post/batch/soft-close matrices; full cross-subsystem barrier/interleaving campaign, crashpacks and 1,000-seed Genesis qualification remain | fa-2ihd, fa-0fl, fa-eid6 |
 | V33 Formal/model and fuzz evidence | PARTIAL source hygiene and bounded Rust models; actual Lean/TLC execution with theorem/state inventory, trace conformance and coverage-guided decoder campaigns remain | fa-09q8, fa-dj6j, fa-apde, fa-yrhb |
 | V34 Measured performance and bounded costs | UNPROVEN all §17 targets; 20 rows correctly inactive; execute actual workloads, count work, measure barriers/memory/endurance, compare an independent incumbent in the same invocation | fa-ykbp, fa-vtzt, fa-7mhm |
-| V35 Exact-tree gates, truthful closure and scoreboard | PARTIAL drivers exist, current full verdict absent; sample scoreboard reports 32/33 workflows and 17/18 active criteria while omitting substantial §19 obligations | fa-1qk0, fa-j1fc, fa-8jcr, fa-ubl0, fa-ldfy, fa-abhg |
-| V36 Delivered release and matching publications | UNPROVEN release recipe/installer/repro script exist under closed fa-eqk; empty installation currently reports success; final composed five-reader campaign, distributed release acceptance and four scoped papers now have explicit remaining-work owners | fa-nfq2, fa-o3zg, fa-wwip, fa-q5kx, fa-rdid |
+| V35 Exact-tree gates, truthful closure and scoreboard | PARTIAL drivers exist, frozen workspace test is compile RED, no current full verdict; fresh helper controls reproduce unbound resumed PASS evidence and exposed-capability mapping is incomplete. Sample scoreboard's 32/33 workflows and 17/18 active criteria omit substantial §19 obligations | fa-hlnd.1, fa-1qk0, fa-j1fc, fa-8jcr, fa-ubl0, fa-ldfy, fa-abhg, fa-vz7e |
+| V36 Delivered release and matching publications | UNPROVEN DSR/repro recipe and improved installer exist; fresh fixtures reproduce stale source-artifact selection under nondefault CARGO_TARGET_DIR. Final composed six-workflow campaign, distinct-builder/linkage/offline qualification and four scoped papers remain | fa-nfq2, fa-o3zg, fa-wwip, fa-q5kx, fa-rdid |
 | V37 Quantity lots and scheduled asset costs | PARTIAL `fa-registers/src/lots.rs` folds paired quantity/cost open items and `fa gl lots` plans FIFO/LIFO/SpecificId/weighted-average relief with regime checks; lot certification explicitly refuses. Depreciation/amortization rule families remain owned by Canon/close comments, not established by a fixed recurring entry | fa-y1vr, fa-oimc, fa-c34, fa-4o0, fa-4aym |
 
 #### Bridge sequence and success criteria
@@ -1408,7 +1491,9 @@ these labels promotes a sampled command into a passed integration gate.
    canonical worker capacity; fa-ze0y proves repaired MCP discovery and daemon
    fixtures at one committed candidate. Run Tier 0, the complete test inventory,
    Clippy and `scripts/check.sh`, then verify and publish its exact-tree manifest.
-   Keep prior red runs and expected-failure controls. fa-1qk0/fa-j1fc/fa-8jcr must
+   Keep prior red runs and expected-failure controls. First repair the verified
+   resume trust defects through fa-hlnd.1, preserving valid partial reuse and
+   publishing admitted/refused controls. fa-1qk0/fa-j1fc/fa-8jcr must
    make that path govern main and closure; fa-ubl0 transcribes every §19 criterion
    without equating a CLI sample with lab, oracle, proof or measurement evidence.
 2. **Protect admitted accounting (W2–W3/G1–G2).** Finish capacity/overflow,
@@ -1432,8 +1517,9 @@ these labels promotes a sampled command into a passed integration gate.
    independently test the implementation; ordinary unit and e2e tests still ship
    in each implementation bead. Log source/tree, seed, coordinate, capability
    commitment, work counters, artifact hashes and verdict; never log secrets.
-5. **Deliver the inspected artifact (G4).** Repair installer false success and
-   fail-closed checksums; validate reproducibility on distinct builders and
+5. **Deliver the inspected artifact (G4).** Qualify the source-present installer
+   checks and bind source installation to the actual Cargo target outputs;
+   validate reproducibility on distinct builders and
    verify each target's actual linkage rather than calling std-only “static.”
    The current reproducibility script does two same-host `rustc` builds, declares
    but never invokes a perturbation control, and has a deletion trap; it was not
@@ -1483,7 +1569,7 @@ evidence-bound closure. Fifty-six blocking edges were added; the final dependenc
 review explicitly gates the reader campaign on red-main repair, Tier 0,
 published verdicts and admitted worker capacity. No existing
 dependency, feature, test or acceptance condition was removed.
-The final graph has 319 issues: 110 open, 25 in progress and 184 closed;
+The earlier audit's final graph had 319 issues: 110 open, 25 in progress and 184 closed;
 `br ready` reports 40 ready and 72 blocked. Both `br dep cycles` and the
 computed `bv --robot-insights` cycle result are empty; robot triage and plan
 exit 0. A final review found no additional gap within this audited source cut.
