@@ -1624,23 +1624,66 @@ mod tests {
         // With the case's preparers known the exclusion is decided: an
         // approver who prepared a case entry is refused, others count.
         let preparers: BTreeSet<VId> = [VId(3)].into_iter().collect();
-        let d =
-            evaluate_in("x", &case, 0, PREP, &[human(2), human(3)], Some(&preparers)).unwrap_err();
+        let in_case = Witnessed {
+            case_preparers: Some(&preparers),
+            lineages: None,
+        };
+        let d = evaluate_in("x", &case, 0, PREP, &[human(2), human(3)], in_case).unwrap_err();
         assert_eq!((d.code(), d.kind()), ("FA-REF-008", "case_preparer"));
         assert_eq!(
-            evaluate_in("x", &case, 0, PREP, &[human(2), human(4)], Some(&preparers)),
+            evaluate_in("x", &case, 0, PREP, &[human(2), human(4)], in_case),
             Ok(())
         );
         // A rule without the exclusion ignores the case's preparers.
         let plain = req(2, 0, &["duplicate", "preparer"]);
         assert_eq!(
+            evaluate_in("x", &plain, 0, PREP, &[human(2), human(3)], in_case),
+            Ok(())
+        );
+        // session_lineage (fa-651f): decided only with one lineage per
+        // approval; an approver whose authority the other approver issued
+        // is refused, and siblings of a third issuer are not.
+        let lineage = req(2, 0, &["duplicate", "preparer", "session_lineage"]);
+        let pair = [human(2), human(3)];
+        let undecided = evaluate_in("x", &lineage, 0, PREP, &pair, Witnessed::default());
+        assert_eq!(
+            undecided.unwrap_err().kind(),
+            "unsupported_exclusion",
+            "no lineages decide nothing"
+        );
+        let issued_by_other = [BTreeSet::from([VId(9)]), BTreeSet::from([VId(2), VId(9)])];
+        let d = evaluate_in(
+            "x",
+            &lineage,
+            0,
+            PREP,
+            &pair,
+            Witnessed {
+                case_preparers: None,
+                lineages: Some(&issued_by_other),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            d,
+            Denial::SharedSessionLineage {
+                rule: "x".into(),
+                approver: VId(3),
+                issuer: VId(2),
+            }
+        );
+        let siblings = [BTreeSet::from([VId(9)]), BTreeSet::from([VId(9)])];
+        assert_eq!(
             evaluate_in(
                 "x",
-                &plain,
+                &lineage,
                 0,
                 PREP,
-                &[human(2), human(3)],
-                Some(&preparers)
+                &pair,
+                Witnessed {
+                    case_preparers: None,
+                    lineages: Some(&siblings),
+                },
             ),
             Ok(())
         );
