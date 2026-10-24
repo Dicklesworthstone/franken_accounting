@@ -4470,6 +4470,8 @@ fn the_billing_and_adjust_clusters_post_typed_documents_like_the_cli() {
         &b,
         "--name",
         "Billing Co",
+        "--time-zone",
+        "UTC",
         "--json",
     ]);
     let chart = dir.join("chart.json");
