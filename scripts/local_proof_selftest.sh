@@ -127,7 +127,8 @@ rehash() {
 
 expect_red() {
   local proof="$1" reason="$2"
-  if bash scripts/local_proof_verify.sh --repository "$fixture" "$proof" >/dev/null 2>&1; then
+  if bash scripts/local_proof_verify.sh --repository "$fixture" "$proof" \
+      >"$proof.verify.stdout" 2>"$proof.verify.stderr"; then
     fail "verifier accepted $reason"
   fi
 }
@@ -160,10 +161,11 @@ commit_a="$(git rev-parse HEAD)"
 
 # Dirty worktree refusal
 printf 'untracked\n' > dirty.tmp
-if FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/dirty-attempt" >/dev/null 2>&1; then
+if FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/dirty-attempt" \
+    >"$base/dirty-attempt.stdout" 2>"$base/dirty-attempt.stderr"; then
   fail "producer accepted a dirty worktree"
 fi
-git checkout -q -- .
+git diff --quiet || fail "dirty-worktree control unexpectedly changed tracked fixture files"
 # Move dirty.tmp outside repository rather than deleting
 mv dirty.tmp "$base/dirty-moved.tmp"
 
@@ -352,7 +354,8 @@ set -e
 bash scripts/local_proof_verify.sh --repository "$fixture" "$red_proof" >/dev/null
 
 # Split-run negative: a FAIL recorded in red_proof blocks --resume-from
-if FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/split-from-fail" --resume-from "$red_proof" >/dev/null 2>&1; then
+if FAKE_PROOF_MODE=pass bash scripts/local_proof.sh --output "$base/split-from-fail" --resume-from "$red_proof" \
+    >"$base/split-from-fail.stdout" 2>"$base/split-from-fail.stderr"; then
   fail "producer allowed --resume-from a proof containing a FAIL step"
 fi
 
@@ -366,7 +369,8 @@ git add tracked.txt
 git commit -q -m "second change (fa-test-2)"
 commit_b="$(git rev-parse HEAD)"
 if FA_CLOSE_BEAD_DRY_RUN=1 bash scripts/close_bead.sh fa-test-2 \
-    --manifest "$pass_proof" --commit "$commit_b" --repository "$fixture" --reason "wrong tree" >/dev/null 2>&1; then
+    --manifest "$pass_proof" --commit "$commit_b" --repository "$fixture" --reason "wrong tree" \
+    >"$base/close-wrong-tree.stdout" 2>"$base/close-wrong-tree.stderr"; then
   fail "close_bead.sh accepted a manifest from tree A for a bead landed in tree B"
 fi
 
