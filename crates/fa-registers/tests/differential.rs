@@ -11542,6 +11542,7 @@ fn kernel_and_oracle_agree_on_the_dimension_law_across_seeds() {
         "close refused behind a tagged leg",
         "close refused extending or emptying",
         "requirement",
+        "tagged fold",
     ] {
         assert!(
             total.get(label).copied().unwrap_or(0) > 0,
@@ -11767,6 +11768,51 @@ fn dimension_campaign(seed: u64) -> BTreeMap<&'static str, usize> {
                     other => panic!("{what}: {chosen} post on {date:?} diverged: {other:?}"),
                 }
             }
+        }
+    }
+    // fa-ficc: `fa tb --dimension`'s literal tagged fold agrees with the
+    // reference's own, for a value with its child, the child alone, the
+    // windowed value and the department value.
+    let through = day(6, 30);
+    for (dimension, codes) in [
+        (COST_CENTER, &["CC10", "CC11"][..]),
+        (COST_CENTER, &["CC11"][..]),
+        (COST_CENTER, &["CC20"][..]),
+        (DEPARTMENT, &["D1"][..]),
+    ] {
+        let kind = fa_model::dimension_kind_of(dimension).expect("registered kind");
+        let filter = fa_registers::DimensionFilter {
+            dimension,
+            values: codes
+                .iter()
+                .map(|code| fa_model::dimension_value_vid(k.book.book_id, kind.code, code))
+                .collect(),
+        };
+        let kernel: BTreeMap<(String, u32), (i128, i128)> =
+            fa_registers::balance_as_of_tagged(&k.db, &k.book, through, None, &filter)
+                .expect("the kernel's tagged fold")
+                .rows
+                .iter()
+                .filter(|row| row.debits != 0 || row.credits != 0)
+                .map(|row| ((row.code.clone(), row.unit_id), (row.debits, row.credits)))
+                .collect();
+        let values: BTreeSet<String> = codes.iter().map(|code| (*code).to_string()).collect();
+        let reference: BTreeMap<(String, u32), (i128, i128)> = oracle
+            .stock_tagged(through, dimension, &values)
+            .into_iter()
+            .map(|(cell, folded)| {
+                let debits = folded.debits.to_i128().expect("i128 debits");
+                let credits = folded.credits.to_i128().expect("i128 credits");
+                (cell, (debits, credits))
+            })
+            .filter(|(_, (debits, credits))| *debits != 0 || *credits != 0)
+            .collect();
+        assert_eq!(
+            kernel, reference,
+            "seed {seed:#018x}: the tagged fold of {codes:?}"
+        );
+        if !reference.is_empty() {
+            *seen.entry("tagged fold").or_default() += 1;
         }
     }
     assert_registers_agree(&k, &oracle, &periods, &refs, &format!("seed {seed:#018x}"));

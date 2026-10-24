@@ -3751,6 +3751,60 @@ impl Oracle {
         )
     }
 
+    /// Stock through an inclusive effective day over only the legs that tag
+    /// `dimension` with one of `values` (fa-ficc, `fa tb --dimension`), as
+    /// known now. The other legs of a tagged entry are left out, so the fold
+    /// need not balance; a Pending reserves and is not folded here.
+    #[must_use]
+    pub fn stock_tagged(
+        &self,
+        day: DateDay,
+        dimension: u32,
+        values: &BTreeSet<String>,
+    ) -> BTreeMap<(String, u32), Cell> {
+        let known = self.known();
+        let mut cells: BTreeMap<(String, u32), Cell> = BTreeMap::new();
+        for (index, entry) in self.journal[..known.entries].iter().enumerate() {
+            if entry.class == "Pending" || entry.date > day || !self.visible(entry, known) {
+                continue;
+            }
+            let Some(tags) = self.leg_dimensions.get(&index) else {
+                continue;
+            };
+            let mut touched: Vec<(String, u32)> = Vec::new();
+            for (leg, tags) in entry.legs.iter().zip(tags) {
+                let tagged = tags.iter().any(|tag| {
+                    tag.dimension == dimension
+                        && tag.value_kind == dimension
+                        && values.contains(&tag.code)
+                });
+                if !tagged {
+                    continue;
+                }
+                let key = (leg.account.clone(), leg.unit);
+                let cell = cells.entry(key.clone()).or_insert(Cell {
+                    debits: Int::zero(),
+                    credits: Int::zero(),
+                    entry_count: 0,
+                });
+                let m = Int::from_i128(leg.mantissa);
+                match leg.side {
+                    Side::Debit => cell.debits = cell.debits.add(&m),
+                    Side::Credit => cell.credits = cell.credits.add(&m),
+                }
+                if !touched.contains(&key) {
+                    touched.push(key);
+                }
+            }
+            for key in touched {
+                if let Some(cell) = cells.get_mut(&key) {
+                    cell.entry_count += 1;
+                }
+            }
+        }
+        cells
+    }
+
     /// Flow through the same independent journal prefix, restricted to the
     /// named period identities. A repeated period selects no additional rows;
     /// periods sharing one civil date remain separate activity buckets.
