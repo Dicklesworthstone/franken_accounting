@@ -186,6 +186,55 @@ impl Checker {
                 .contains("#[test]")
         })
     }
+
+    /// Whether this checker's function is a `#[test]` fn in a file it can be
+    /// defined in, reading workspace-relative paths with `read_file`. For an
+    /// integration test, the path's first module also follows the root file's
+    /// declaration of it, so `fa-journal::tests/genesis.rs::subledger_tests::x`
+    /// resolves in `tests/genesis/subledger.rs` when genesis.rs declares
+    /// `#[path = "genesis/subledger.rs"] mod subledger_tests;`. Deeper
+    /// file modules are not followed; inline ones are in their file's text.
+    #[must_use]
+    pub fn resolves_with(&self, mut read_file: impl FnMut(&str) -> Option<String>) -> bool {
+        let mut files = self.candidate_files();
+        if let (Target::Test(_), Some((module, _))) = (&self.target, self.path.split_once("::")) {
+            if let Some(root) = read_file(&files[0]) {
+                files.extend(test_module_files(&self.krate, &root, module));
+            }
+        }
+        files
+            .iter()
+            .filter_map(|file| read_file(file))
+            .any(|text| self.is_defined_in(&text))
+    }
+}
+
+/// The files integration test root `root` of `krate` loads `module` from: the
+/// `#[path]` on its `mod` declaration, else `<module>.rs` or `<module>/mod.rs`
+/// beside the root (an integration test is a crate root). None if the root
+/// does not declare it.
+fn test_module_files(krate: &str, root: &str, module: &str) -> Vec<String> {
+    let base = format!("crates/{krate}/tests");
+    let lines: Vec<&str> = root.lines().map(str::trim).collect();
+    let declaration = format!("mod {module};");
+    let Some(at) = lines
+        .iter()
+        .position(|line| line.strip_prefix("pub ").unwrap_or(line) == declaration)
+    else {
+        return Vec::new();
+    };
+    let path = lines[..at]
+        .iter()
+        .rev()
+        .take_while(|line| line.starts_with("#["))
+        .find_map(|line| line.strip_prefix("#[path = \"")?.strip_suffix("\"]"));
+    match path {
+        Some(path) => vec![format!("{base}/{path}")],
+        None => vec![
+            format!("{base}/{module}.rs"),
+            format!("{base}/{module}/mod.rs"),
+        ],
+    }
 }
 
 impl core::fmt::Display for Checker {
@@ -654,29 +703,14 @@ mod tests {
                 continue;
             };
             for checker in checkers.iter().chain(negatives) {
-                let needle = format!("fn {}(", checker.fn_name());
-                let found = checker.candidate_files().iter().any(|f| {
-                    std::fs::read_to_string(workspace_root.join(f))
-                        .is_ok_and(|text| has_test_fn(&text, &needle))
-                });
+                let found =
+                    checker.resolves_with(|f| std::fs::read_to_string(workspace_root.join(f)).ok());
                 if !found {
                     out.push((c.full_id(), checker.to_string()));
                 }
             }
         }
         out
-    }
-
-    /// Whether `text` defines `needle` (`fn name(`) as a `#[test]` function.
-    fn has_test_fn(text: &str, needle: &str) -> bool {
-        text.match_indices(needle).any(|(at, _)| {
-            let before = &text[..at];
-            // The attribute block directly above the fn must contain #[test].
-            before
-                .rsplit_once("\n\n")
-                .map_or(before, |(_, tail)| tail)
-                .contains("#[test]")
-        })
     }
 
     fn root() -> std::path::PathBuf {
@@ -884,6 +918,43 @@ mod tests {
             "no-separators",
         ] {
             assert!(Checker::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// An integration test's module resolves through the root's `mod`
+    /// declaration, `#[path]` included. A module the root never declares is
+    /// not in its binary, and a fn in another module's file is not resolved.
+    #[test]
+    fn an_integration_test_module_resolves_through_its_declaration() {
+        let files = BTreeMap::from([
+            (
+                "crates/fa-journal/tests/genesis.rs",
+                "use x;\n\n#[path = \"genesis/feed.rs\"]\nmod feed_tests;\nmod plain;\n",
+            ),
+            (
+                "crates/fa-journal/tests/genesis/feed.rs",
+                "#[test]\nfn refused() {}\n",
+            ),
+            (
+                "crates/fa-journal/tests/plain.rs",
+                "#[test]\nfn plain_case() {}\n",
+            ),
+            (
+                "crates/fa-journal/tests/genesis/stray.rs",
+                "#[test]\nfn stray() {}\n",
+            ),
+        ]);
+        let read = |path: &str| files.get(path).map(|text| (*text).to_string());
+        for (checker, resolves) in [
+            ("fa-journal::tests/genesis.rs::feed_tests::refused", true),
+            ("fa-journal::tests/genesis.rs::plain::plain_case", true),
+            ("fa-journal::tests/genesis.rs::plain::refused", false),
+            ("fa-journal::tests/genesis.rs::stray::stray", false),
+            ("fa-journal::tests/genesis.rs::refused", false),
+        ] {
+            let parsed = Checker::parse(checker).unwrap();
+            println!("judged {checker}: resolves={resolves}");
+            assert_eq!(parsed.resolves_with(&read), resolves, "{checker}");
         }
     }
 

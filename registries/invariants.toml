@@ -57,6 +57,7 @@ finding = ["FA-INV-11.finding-replay", "FA-INV-02.payload-immutable", "FA-INV-10
 event = ["FA-INV-05.event-closure", "FA-INV-09.core"]
 engagement = ["FA-INV-02.control-record", "FA-INV-02.lifecycle-by-transition", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-10.sod"]
 adjustment = ["FA-INV-02.control-record", "FA-INV-02.lifecycle-by-transition", "FA-INV-09.core", "FA-INV-10.core", "FA-INV-10.sod"]
+subledger = ["FA-INV-12.core", "FA-INV-12.external-feed"]
 
 [[invariant]]
 id = "FA-INV-01"
@@ -958,21 +959,27 @@ waiver = "forbidden"
 [[clause]]
 invariant = "FA-INV-12"
 id = "core"
-status = "dormant"
+status = "live"
 statement = "At every committed coordinate the fold of a subledger's detail legs equals its control account's register."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G2"
-activating = ["fa-03s"]
+owner = "fa-03s"
+checkers = ["fa-cli::tests/subledger.rs::party_detail_folds_to_the_control_register_at_every_committed_coordinate", "fa-cli::tests/subledger.rs::party_balances_reconcile_after_partial_receipt_reversal_and_reopen"]
+negatives = ["fa-journal::tests/genesis.rs::subledger_tests::control_leaf_requires_real_party_detail_without_partial_publication", "fa-cli::tests/subledger.rs::partyless_posts_and_legacy_anonymous_registration_refuse_without_publication"]
 waiver = "forbidden"
 
 [[clause]]
 invariant = "FA-INV-12"
 id = "external-feed"
-status = "dormant"
+status = "live"
 statement = "External summary feeds name the detail batch digest they summarize and are refused if the detail does not fold to the summary."
 evidence_class = "invariant"
+checker_strength = "differential"
 first_gate = "G3"
-activating = ["fa-03s"]
+owner = "fa-03s"
+checkers = ["fa-journal::tests/genesis.rs::external_subledger_tests::external_feed_posts_one_summary_and_replays_its_reviewed_source", "fa-journal::lib::external_subledger::tests::detail_fold_agrees_with_independent_limb_oracle_over_grouped_histories"]
+negatives = ["fa-journal::tests/genesis.rs::external_subledger_tests::external_feed_rejects_balanced_forgery_and_wrong_date_without_mutating_book"]
 waiver = "forbidden"
 
 [[clause]]
