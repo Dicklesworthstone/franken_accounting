@@ -74,6 +74,24 @@ record() {
   fi
 }
 
+# One `cargo test` run into the log $1. An offloader refusal (the command
+# never executed) is retried up to 5 times, a minute apart; any run that
+# executed is its own verdict.
+run_test() {
+  local log="$1" try rc=0
+  shift
+  for try in 1 2 3 4 5; do
+    cargo test --locked "$@" > "$log" 2>&1
+    rc=$?
+    if [ "$rc" -eq 0 ] || ! gate_env_failure_class "$log" > /dev/null; then
+      return "$rc"
+    fi
+    gate_diag "mutants-execute: the offloader refused try $try of: $*"
+    sleep 60
+  done
+  return "$rc"
+}
+
 # The unmutated verdict of each killed_by test, run once and cached: green,
 # red or unrun (did not execute). Sets BASE_STATE; call it directly, not in a
 # command substitution, so the cache survives.
@@ -86,7 +104,7 @@ baseline() {
     IFS=$'\t' read -r -a args <<< "$line"
     BASE_RUNS=$((BASE_RUNS + 1))
     log="$LOG_DIR/baseline-$BASE_RUNS.log"
-    cargo test --locked "${args[@]}" > "$log" 2>&1
+    run_test "$log" "${args[@]}"
     rc=$?
     plain="$(sed 's/\x1b\[[0-9;]*m//g' "$log")"
     if [ "$rc" -eq 0 ] && grep -qE '^test result: ok\. [1-9][0-9]* passed' <<< "$plain"; then
@@ -138,7 +156,7 @@ for id in "${IDS[@]}"; do
     n=$((n + 1))
     IFS=$'\t' read -r -a args <<< "$line"
     log="$LOG_DIR/$id-$n.log"
-    cargo test --locked "${args[@]}" > "$log" 2>&1
+    run_test "$log" "${args[@]}"
     rc=$?
     plain="$(sed 's/\x1b\[[0-9;]*m//g' "$log")"
     if grep -q '^test result: FAILED' <<< "$plain"; then
