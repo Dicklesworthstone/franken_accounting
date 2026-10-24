@@ -90,7 +90,7 @@ impl Fixture {
             },
             // The 2025 Opening period is genuinely born Locked for the
             // migration test, while the selected later normal periods open.
-            opening_date: Some(day(2025, 1, 2)),
+            opening_date: Some(day(2025, 2, 1)),
         };
         let symbols = SymbolTable::compiled();
         runtime

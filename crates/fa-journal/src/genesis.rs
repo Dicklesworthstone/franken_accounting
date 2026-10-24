@@ -1327,6 +1327,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn genesis_validates_every_spec_before_publication_and_allows_a_corrected_retry() {
+        use asupersync::runtime::RuntimeBuilder;
+        use fgdb::DatabaseKeys;
+        use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+        for declared in [false, true] {
+            for invalid in 0..3 {
+                let runtime = RuntimeBuilder::new().build().unwrap();
+                let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
+                let ctx = PurposeContexts::narrow_runtime_root(&root);
+                let mut db = runtime
+                    .block_on(Database::open_memory(
+                        &ctx.commit(),
+                        DatabaseKeys::new(
+                            [0x81; 32],
+                            DatabaseSecurityNamespaceId([0x82; 32]),
+                            [0x83; 32],
+                        ),
+                    ))
+                    .unwrap();
+                let units = UnitRegistry::with_defaults();
+                let usd = units.lookup("USD").unwrap();
+                let mut spec = BookSpec {
+                    book_id: Id128([0x84; 16]),
+                    name: "Validated genesis".into(),
+                    base_unit: usd,
+                    calendar: FiscalCalendar::monthly("validated", 1, 1).unwrap(),
+                    time_zone_policy: None,
+                    entities: if declared {
+                        vec![LegalEntitySpec {
+                            code: "Estate".into(),
+                            name: "Estate".into(),
+                            functional_unit: usd,
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    opening_date: Some(DateDay::from_ymd(2025, 2, 1).unwrap()),
+                };
+                let valid = spec.clone();
+                let reason = match invalid {
+                    0 => {
+                        spec.opening_date = Some(DateDay::from_ymd(2025, 1, 2).unwrap());
+                        "not the first day of a Normal period"
+                    }
+                    1 => {
+                        spec.calendar.id.clear();
+                        "calendar id"
+                    }
+                    _ => {
+                        spec.name = "x".repeat(MAX_BOOK_NAME_BYTES + 1);
+                        "book name exceeds"
+                    }
+                };
+                let before = db.frontier().unwrap();
+                let rows = db.vertices().unwrap();
+                let error = runtime
+                    .block_on(create_book(
+                        &mut db,
+                        &ctx,
+                        &spec,
+                        &units,
+                        &SymbolTable::compiled(),
+                    ))
+                    .unwrap_err();
+                assert!(
+                    matches!(&error, KernelError::Corrupt(message) if message.contains("invalid book spec") && message.contains(reason)),
+                    "{error:?}"
+                );
+                assert_eq!(db.frontier().unwrap(), before);
+                assert_eq!(db.vertices().unwrap(), rows);
+                assert!(read_book_spec(&db).unwrap().is_none());
+
+                let committed = runtime
+                    .block_on(create_book(
+                        &mut db,
+                        &ctx,
+                        &valid,
+                        &units,
+                        &SymbolTable::compiled(),
+                    ))
+                    .unwrap();
+                assert!(committed > before);
+                assert_eq!(read_book_spec(&db).unwrap(), Some(valid));
+            }
+        }
+    }
+
+    #[test]
     fn book_spec_round_trips_every_calendar_kind() {
         let rule = YearEndRule::WeekdayNearestEnd {
             weekday: Weekday::Saturday,
