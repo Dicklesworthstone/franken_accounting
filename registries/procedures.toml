@@ -39,7 +39,7 @@ claim = "statistical"
 evidence = "FA-EVID-L01"
 tie_break = "entry_vid"
 complexity = "O(legs)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Entries with a leg whose magnitude is a multiple of 10^round_power whole units: round-number postings."
 
 [[parameter]]
@@ -55,7 +55,7 @@ claim = "statistical"
 evidence = "FA-EVID-L02"
 tie_break = "entry_vid"
 complexity = "O(entries)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Entries effective in the last window_days days of their period."
 
 [[parameter]]
@@ -71,7 +71,7 @@ claim = "statistical"
 evidence = "FA-EVID-L03"
 tie_break = "entry_vid"
 complexity = "O(entries + transitions)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Entries recorded after their period's first SoftClose, Close or Lock transition: the post-closing population (bitemporal)."
 
 [[procedure]]
@@ -81,7 +81,7 @@ claim = "statistical"
 evidence = "FA-EVID-L04"
 tie_break = "entry_vid"
 complexity = "O(entries)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Entries whose effective date (or document date when present) falls on a Saturday or Sunday. Holiday tables are data and land with the business-day calendar."
 
 [[procedure]]
@@ -91,7 +91,7 @@ claim = "statistical"
 evidence = "FA-EVID-L05"
 tie_break = "entry_vid"
 complexity = "O(entries + approvals)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Entries one of whose recorded approvals was made by the preparing principal, or migrated entries whose legacy source_approved_by matches source_entered_by. For a class sod_policy.toml covers a native hit proves a capability misconfiguration; for imported history or an uncovered class it is a control finding."
 
 [[procedure]]
@@ -111,7 +111,7 @@ claim = "statistical"
 evidence = "FA-EVID-L06"
 tie_break = "entry_vid"
 complexity = "O(entries)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Entries whose description opens to fewer than min_chars characters. A description that cannot be opened under the book's seal key is counted as unreadable, never as thin."
 
 [[parameter]]
@@ -129,7 +129,7 @@ claim = "statistical"
 evidence = "FA-EVID-L07"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Groups of two or more live entries with the same leg multiset (account, side, unit, magnitude) and the same effective date, supersession pairs excluded."
 
 [[procedure]]
@@ -139,7 +139,7 @@ claim = "statistical"
 evidence = "FA-EVID-L08"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Pairs of live entries with the same leg multiset on different effective dates at most window_days apart, supersession pairs excluded."
 
 [[parameter]]
@@ -183,7 +183,7 @@ claim = "statistical"
 evidence = "FA-EVID-L09"
 tie_break = "entry_vid"
 complexity = "O(ids log ids)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Gaps in the numeric tail of external ids per (system, prefix): the completeness assertion's mechanical half."
 
 [[procedure]]
@@ -247,7 +247,7 @@ claim = "statistical"
 evidence = "FA-EVID-L11"
 tie_break = "entry_vid"
 complexity = "O(entries)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Entries whose document date resolves to a different period than their effective date (honoring the entry's period discriminator when the document date lies inside that special period): candidates for the cutoff assertion."
 
 [[procedure]]
@@ -292,7 +292,7 @@ claim = "statistical"
 evidence = "FA-EVID-L13"
 tie_break = "entry_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Same-amount asset-account round trips within window_days, one native unit and one legal entity. max_hops=2 retains earliest chronological pair matching; 3..8 enables canonical depth-first, edge-disjoint simple temporal cycles, not an exhaustive list or maximum-value packing. Distinct entries are required for each hop; reversals and superseded entries are excluded. An outbound or return near its period end scores High, otherwise Medium. Search exhaustion refuses the whole run without partial findings."
 
 [[parameter]]
@@ -326,7 +326,7 @@ claim = "statistical"
 evidence = "FA-EVID-L14"
 tie_break = "entry_vid"
 complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
-calibration = "planted"
+calibration = "corpus"
 summary = "Sub-threshold clustering between one payer account and one receiving account in one registered currency and legal entity: a chain of allocated transfers each at least floor and below threshold, consecutive ones at most window_days apart, numbering at least min_count and summing to at least threshold; reversals excluded."
 
 [[parameter]]

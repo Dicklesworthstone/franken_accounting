@@ -20559,14 +20559,14 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             for row in rows.iter().filter(|_| !out.json) {
                 let measured = calibration.row(&row.id).map_or(String::new(), |m| {
                     format!(
-                        " [measured over {} seeds: precision {} ({}-{}), recall {} ({}-{}), 95% Wilson]",
+                        " [on fa-gen synthetic corpora, {} seeds: recall {} ({}-{}), precision {} ({}-{}), 95% Wilson; not a field estimate]",
                         calibration.seeds,
-                        bps_percent(m.precision_bps),
-                        bps_percent(m.precision_lower_bps),
-                        bps_percent(m.precision_upper_bps),
                         bps_percent(m.recall_bps),
                         bps_percent(m.recall_lower_bps),
                         bps_percent(m.recall_upper_bps),
+                        bps_percent(m.precision_bps),
+                        bps_percent(m.precision_lower_bps),
+                        bps_percent(m.precision_upper_bps),
                     )
                 });
                 out.line(format!(

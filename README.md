@@ -923,6 +923,7 @@ fa close dry-run --period FY2026-P03 --draft close-2026-03 --json
 fa diff --from draft:close-2026-03 --to trunk --json
 
 # Forensics, in the database, certified (available today; `fa procedure list` names every registered procedure and its parameters).
+# The 12 procedures fa-gen's labeled scenarios exercise list their measured recall and precision (95% Wilson, 30 seeds x 7 scenarios) in `fa procedure list`. It is a regression pin on synthetic corpora whose background avoids every planted pattern, not a field estimate of false positives.
 fa procedure run jet.weekend --book acme.fabook --json
 fa procedure run trace.libr --effective-through 2025-12-31 --account 1010 --source <deposit entry vid> --book acme.fabook --json
 fa procedure run graph.related_party_exposure --param max_depth=4 --book acme.fabook --json
