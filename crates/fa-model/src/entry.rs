@@ -3028,6 +3028,32 @@ mod tests {
                 ..
             }
         ));
+        // A tick past max_tick_utc_ns, or from an unregistered source, is
+        // refused by its structural rule (fa-psz), not only by the kernel.
+        for tick in [
+            ControlPayload::TimeTick {
+                observed_utc_ns: MAX_TICK_UTC_NS + 1,
+                source: 0,
+                monotonic_ok: true,
+            },
+            ControlPayload::TimeTick {
+                observed_utc_ns: 1_700_000_000_000_000_000,
+                source: 3,
+                monotonic_ok: true,
+            },
+        ] {
+            let mut p = proposal(vec![]);
+            p.class = EntryClass::PERIOD_CONTROL;
+            p.control = Some(tick);
+            p.unit_totals = vec![];
+            assert_eq!(
+                p.validate().unwrap_err(),
+                EntryError::Invalid {
+                    what: "control.time_tick",
+                    why: "source must be 0..=2 and observed_utc_ns within max_tick_utc_ns",
+                }
+            );
+        }
     }
 
     #[test]
