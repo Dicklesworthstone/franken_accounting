@@ -1731,6 +1731,370 @@ fn functional_consolidation_replays_exact_valuations_and_refuses_unvalued_or_rew
     }
 }
 
+/// A correction is explained in the functional amounts originally retained
+/// on each entry, even after a different quote and a cold process reopen.
+#[test]
+fn functional_statement_diff_replays_saved_sources_and_exact_base_currency_changes() {
+    const SEED: u8 = 0x6a;
+    let f = Fixture::build(Some(SEED));
+    let certify_source = |name: &str, functional: bool, at: Option<&str>| {
+        let path = f.dir.join(format!("{name}.cert"));
+        let mut args = vec![
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+            "--certificate-out",
+            path.to_str().unwrap(),
+        ];
+        if functional {
+            args.push("--functional");
+        }
+        if let Some(at) = at {
+            args.extend(["--as-known-at", at]);
+        }
+        let (status, events) = run_many(&f.book, &args, None);
+        assert_eq!(status, 0, "{events:?}");
+        assert_eq!(events.len(), 2);
+        let source = fa::ReportCertificate::decode(&std::fs::read(&path).unwrap()).unwrap();
+        let reference = format!("C:{}", text(data(&events[1]), "oid"));
+        (events[0].clone(), source, reference, path)
+    };
+
+    // Zero monetary totals do not make native and functional questions the
+    // same. Native statements additionally contain zero rows for other units.
+    let empty_prefix = head(&f.book).to_string();
+    let (native_zero, _, native_ref, _) = certify_source("native-zero", false, Some(&empty_prefix));
+    let (functional_zero, _, functional_ref, _) =
+        certify_source("functional-zero", true, Some(&empty_prefix));
+    assert_eq!(
+        rows(data(&native_zero), "lines")
+            .iter()
+            .filter(|line| text(line, "unit") == "USD")
+            .collect::<Vec<_>>(),
+        rows(data(&functional_zero), "lines")
+            .iter()
+            .collect::<Vec<_>>()
+    );
+    assert!(rows(data(&native_zero), "lines").iter().all(|line| {
+        rows(line, "amounts").iter().all(|amount| {
+            amount
+                .as_str()
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .chars()
+                .all(|c| c == '0' || c == '.')
+        })
+    }));
+    let before_refusal = head(&f.book);
+    let (status, mixed) = run(
+        &f.book,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            &native_ref,
+            "--after-certificate",
+            &functional_ref,
+            "--certify",
+        ],
+        None,
+    );
+    assert_eq!(status, 8, "{}", mixed.render());
+    assert_eq!(head(&f.book), before_refusal);
+
+    let first_rate = f.rate(
+        "diff-recognition",
+        "spot_close",
+        "2026-03-05",
+        "11",
+        "10",
+        "HalfEven",
+    );
+    let first = f.post(&f.intent("diff-sale", text(data(&first_rate), "oid"), "SpotClose"));
+    let (_, before, before_ref, before_file) = certify_source("functional-before", true, None);
+    let second_rate = f.rate(
+        "diff-adjustment",
+        "spot_close",
+        "2026-03-05",
+        "6",
+        "5",
+        "HalfEven",
+    );
+    let adjustment = f.file(
+        "diff-backdated.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-05","idempotency_key":"diff-backdated","legs":[{{"side":"debit","account":"1000","amount":"10.00 EUR"}},{{"side":"credit","account":"4000","amount":"10.00 EUR"}}],"fx":{{"law":"SpotClose","rates":["D:{}"]}}}}"#,
+            text(data(&second_rate), "oid")
+        ),
+    );
+    f.post(&adjustment);
+    let (_, after, after_ref, after_file) = certify_source("functional-after", true, None);
+
+    // A newly available quote is neither endpoint's valuation basis.
+    f.rate(
+        "diff-unused-quote",
+        "spot_close",
+        "2026-03-05",
+        "9",
+        "1",
+        "HalfEven",
+    );
+    let before_seq = before.known_at.0.to_string();
+    let after_seq = after.known_at.0.to_string();
+    let sequence = [
+        "statement",
+        "diff",
+        "--functional",
+        "--definition",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--before",
+        &before_seq,
+        "--after",
+        &after_seq,
+    ];
+    let check_amounts = |report: &Json| {
+        assert_eq!(text(report, "event"), "statement_diff");
+        assert_eq!(data(report).get("functional"), Some(&Json::Bool(true)));
+        assert_eq!(text(data(report), "base_unit"), "USD");
+        assert_eq!(
+            text(data(report), "valuation_basis"),
+            "retained-base-amounts"
+        );
+        assert_eq!(data(report).get("amounts_changed"), Some(&Json::Bool(true)));
+        assert!(rows(data(report), "mapping_changes").is_empty());
+        assert!(
+            rows(data(report), "lines")
+                .iter()
+                .all(|line| text(line, "unit") == "USD")
+        );
+        for (code, old, new, delta) in [
+            ("revenue", "110.00 USD", "122.00 USD", "12.00 USD"),
+            ("expense", "0.00 USD", "0.00 USD", "0.00 USD"),
+            ("net_income", "110.00 USD", "122.00 USD", "12.00 USD"),
+        ] {
+            let line = rows(data(report), "lines")
+                .iter()
+                .find(|line| text(line, "code") == code)
+                .unwrap();
+            for (field, expected) in [("before", old), ("after", new), ("delta", delta)] {
+                let actual = rows(line, field);
+                assert_eq!(actual.len(), 1);
+                assert_eq!(actual[0].as_str(), Some(expected), "{code}/{field}");
+            }
+        }
+    };
+    let before_read = head(&f.book);
+    let plain = ok(&f.book, &sequence);
+    check_amounts(&plain);
+    assert_eq!(
+        integer(data(&plain), "before_known_at"),
+        i128::from(before.known_at.0)
+    );
+    assert_eq!(
+        integer(data(&plain), "after_known_at"),
+        i128::from(after.known_at.0)
+    );
+    let pair = [
+        "statement",
+        "diff",
+        "--before-certificate",
+        before_ref.as_str(),
+        "--after-certificate",
+        after_ref.as_str(),
+    ];
+    assert_eq!(
+        ok(&f.book, &pair),
+        plain,
+        "saved functional sources select their own basis"
+    );
+    let mut through_head = sequence.to_vec();
+    *through_head.last_mut().unwrap() = "HEAD";
+    check_amounts(&ok(&f.book, &through_head));
+    assert_eq!(
+        head(&f.book),
+        before_read,
+        "comparison publishes no valuation or correction"
+    );
+
+    let sequence_file = f.dir.join("functional-sequence-diff.cert");
+    let mut certified_sequence = sequence.to_vec();
+    certified_sequence.extend([
+        "--certify",
+        "--certificate-out",
+        sequence_file.to_str().unwrap(),
+    ]);
+    let (status, by_sequence) = run_many(&f.book, &certified_sequence, None);
+    assert_eq!(status, 0, "{by_sequence:?}");
+    assert_eq!(by_sequence.len(), 2);
+    assert_eq!(data(&by_sequence[0]), data(&plain));
+    assert_eq!(
+        text(data(&by_sequence[1]), "output_format"),
+        "fa:functional-statement-diff:v1"
+    );
+
+    let file = f.dir.join("functional-saved-diff.cert");
+    let mut certify_pair = pair.to_vec();
+    certify_pair.extend(["--certify", "--certificate-out", file.to_str().unwrap()]);
+    let (status, certified) = run_many(&f.book, &certify_pair, None);
+    assert_eq!(status, 0, "{certified:?}");
+    assert_eq!(certified.len(), 2);
+    assert_eq!(data(&certified[0]), data(&plain));
+    assert_eq!(
+        text(data(&certified[1]), "output_format"),
+        "fa:functional-statement-diff:v1"
+    );
+    let bytes = std::fs::read(&file).unwrap();
+    let comparison = fa::StatementDiffCertificate::decode(&bytes).unwrap();
+    assert!(comparison.uses_functional_valuations());
+    assert_eq!(
+        comparison.output_format(),
+        "fa:functional-statement-diff:v1"
+    );
+    assert_eq!(comparison.canonical_bytes().unwrap(), bytes);
+    let (old, new) = comparison.sources();
+    assert_eq!(
+        old.canonical_bytes().unwrap(),
+        std::fs::read(&before_file).unwrap()
+    );
+    assert_eq!(
+        new.canonical_bytes().unwrap(),
+        std::fs::read(&after_file).unwrap()
+    );
+    let sequence_comparison =
+        fa::StatementDiffCertificate::decode(&std::fs::read(&sequence_file).unwrap()).unwrap();
+    assert_eq!(sequence_comparison.sources(), comparison.sources());
+    let reference = format!("C:{}", text(data(&certified[1]), "oid"));
+
+    // Every invocation opens a new process, with no warmed native-history
+    // cache. Replay must prepare the original entries and Rate documents too.
+    let before_replay = head(&f.book);
+    for source in [reference.as_str(), file.to_str().unwrap()] {
+        assert_eq!(ok(&f.book, &["replay", source]), certified[0]);
+    }
+    let workpaper = f.dir.join("functional-diff.jsonl");
+    let (status, exported) = run_many(
+        &f.book,
+        &[
+            "replay",
+            &reference,
+            "--workpaper-out",
+            workpaper.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(status, 0, "{exported:?}");
+    assert_eq!(exported.len(), 2);
+    assert_eq!(exported[0], certified[0]);
+    assert_eq!(text(&exported[1], "event"), "workpaper_exported");
+    assert_eq!(text(data(&exported[1]), "family"), "statement-diff");
+    let written = std::fs::read_to_string(&workpaper).unwrap();
+    let (status, inline) = run_many(&f.book, &["replay", &reference, "--workpaper"], None);
+    assert_eq!(status, 0, "{inline:?}");
+    assert_eq!(inline.len(), 2);
+    assert_eq!(inline[0], certified[0]);
+    assert_eq!(text(data(&inline[1]), "text"), written);
+    let workpaper_rows: Vec<_> = written
+        .lines()
+        .map(|line| json::parse(line).unwrap())
+        .collect();
+    let usd = fa_money::UnitRegistry::embedded()
+        .unwrap()
+        .lookup("USD")
+        .unwrap();
+    let manifest = &workpaper_rows[0];
+    assert_eq!(text(manifest, "event"), "manifest");
+    assert_eq!(manifest.get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(integer(manifest, "base_unit"), i128::from(usd.0));
+    assert_eq!(text(manifest, "valuation_basis"), "retained-base-amounts");
+    let revenue = workpaper_rows
+        .iter()
+        .find(|row| text(row, "event") == "line" && text(row, "code") == "revenue")
+        .unwrap();
+    for (field, expected) in [
+        ("before_mantissas", "11000"),
+        ("after_mantissas", "12200"),
+        ("delta_mantissas", "1200"),
+    ] {
+        assert_eq!(rows(revenue, field)[0].as_str(), Some(expected));
+    }
+    assert_eq!(integer(revenue, "unit"), i128::from(usd.0));
+    assert_eq!(
+        head(&f.book),
+        before_replay,
+        "replay and workpaper export write no journal entries"
+    );
+
+    let reader = LaunchAuthority::new(
+        f.book.clone(),
+        None,
+        "functional-diff-reader",
+        LaunchProfile::Agent,
+        &["read"],
+    )
+    .unwrap();
+    let (status, read) = bound(&reader, &pair, None);
+    assert_eq!(status, 0, "{}", read.render());
+    assert_eq!(data(&read), data(&plain));
+    let (status, denied) = bound(
+        &reader,
+        &[
+            "statement",
+            "diff",
+            "--before-certificate",
+            "-",
+            "--after-certificate",
+            &after_ref,
+            "--certify",
+        ],
+        Some("malformed certificate bytes"),
+    );
+    assert_eq!(status, 7, "{}", denied.render());
+    assert!(text(data(&denied), "message").contains("produce"));
+    assert_eq!(
+        head(&f.book),
+        before_replay,
+        "a reader cannot certify or write through a malformed source"
+    );
+
+    // Rehashing a balanced valuation rewrite cannot authenticate either
+    // endpoint or a workpaper derived from them.
+    let target = VId(u128::from_str_radix(text(data(&first), "vid"), 16).unwrap());
+    rewrite_entry(&f.book, SEED, target, |proposal| {
+        for leg in &mut proposal.legs {
+            leg.base_amount.as_mut().unwrap().mantissa += 1;
+        }
+        let totals = proposal.base_totals.as_mut().unwrap();
+        totals.debits += 1;
+        totals.credits += 1;
+    });
+    let refused_workpaper = f.dir.join("rewritten-source-must-not-export.jsonl");
+    for args in [
+        vec!["replay", reference.as_str()],
+        vec![
+            "replay",
+            file.to_str().unwrap(),
+            "--workpaper-out",
+            refused_workpaper.to_str().unwrap(),
+        ],
+    ] {
+        let (status, refused) = run_many(&f.book, &args, None);
+        assert_ne!(status, 0, "{refused:?}");
+        assert_eq!(
+            refused.len(),
+            1,
+            "neither report nor workpaper precedes failed source verification"
+        );
+        assert_eq!(text(&refused[0], "event"), "error");
+        assert!(!refused_workpaper.exists());
+    }
+}
+
 /// fa-3ock (plan §6.4, §15.3; FA-INV-01 `base`): `fa verify fx-conversion`
 /// recomputes every FX-valued entry from the Rate documents it cites under
 /// the law it names, at the head or at an earlier prefix, and a valued

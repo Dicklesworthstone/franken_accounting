@@ -232,7 +232,9 @@ impl ReportArtifact {
             Artifact::IndirectCashFlow(Box::new(IndirectCashFlowCertificate::decode(bytes)?))
         } else if format == crate::aging::AGING_RECONCILIATION_CERTIFICATE_FORMAT {
             Artifact::AgingReconciliation(Box::new(AgingReconciliationCertificate::decode(bytes)?))
-        } else if format == crate::statement_diff::CERTIFICATE_FORMAT {
+        } else if format == crate::statement_diff::CERTIFICATE_FORMAT
+            || format == crate::statement_diff::FUNCTIONAL_CERTIFICATE_FORMAT
+        {
             Artifact::StatementDiff(Box::new(StatementDiffCertificate::decode(bytes)?))
         } else if format == crate::statement_trace::CERTIFICATE_FORMAT {
             Artifact::StatementTrace(Box::new(StatementTraceCertificate::decode(bytes)?))
@@ -321,6 +323,24 @@ impl ReportArtifact {
             Artifact::DraftDiff(c) => c.trunk(),
             // The whole-book stock trial balance at the query's sequence.
             Artifact::Query(c) => c.source_certificate(),
+        }
+    }
+
+    /// Whether replay requires the full retained valuation history, including
+    /// entry births preceding a cold checkpoint at the displayed frontier.
+    /// Composed comparisons/traces inspect every source, not only the last one.
+    #[must_use]
+    pub fn uses_functional_valuations(&self) -> bool {
+        match &self.inner {
+            Artifact::StatementDiff(certificate) => certificate.uses_functional_valuations(),
+            Artifact::StatementTrace(certificate) => certificate
+                .sources()
+                .iter()
+                .any(|source| source.selection.uses_functional_valuations()),
+            _ => self
+                .source_certificate()
+                .selection
+                .uses_functional_valuations(),
         }
     }
 
@@ -614,8 +634,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        if matches!(&artifact.inner, Artifact::Native(certificate)
-            if certificate.selection.uses_functional_valuations())
+        if artifact.uses_functional_valuations()
             && let Err(refusal) = fa_journal::scratch::ensure_history(&mut self.db, cx).await?
         {
             // Functional replay checks every native Entry birth and original

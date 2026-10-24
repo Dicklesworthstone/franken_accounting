@@ -4781,6 +4781,34 @@ impl Book {
         ))
     }
 
+    /// Compare two recorded frontiers in the book's functional currency under
+    /// current whole-book Read authority, hydrating complete retained history.
+    pub fn functional_statement_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementDiffRequest,
+    ) -> Outcome<crate::StatementDiff> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_statement_diff(
+            &purposes, principal, capability, request,
+        )))
+    }
+
+    /// Certify the functional comparison and both original statement closures
+    /// under current whole-book Read and Produce authority.
+    pub fn certify_functional_statement_diff(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        request: &crate::StatementDiffRequest,
+    ) -> Outcome<crate::CertifiedStatementDiff> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_statement_diff(
+            &purposes, principal, capability, request,
+        )))
+    }
+
     /// Replay a certified statement comparison under current read authority.
     pub fn replay_statement_diff(
         &self,

@@ -271,3 +271,44 @@ fn evaluation_order_of_source_accounts_does_not_change_the_bridge() {
         expected
     );
 }
+
+#[test]
+fn functional_bridge_commits_one_base_unit_and_a_distinct_valuation_basis() {
+    let before = signed_stock(10, 11_000);
+    let after = signed_stock(20, 12_200);
+    let native = StatementDiff::between(before.clone(), after.clone()).unwrap();
+    let functional = StatementDiff::between_functional(before, after).unwrap();
+    assert_eq!(functional.functional_unit(), Some(UnitId(1)));
+    assert_eq!(row(&functional, "assets", 1).delta, vec![1_200]);
+    assert_eq!(functional.lines(), native.lines());
+    assert_ne!(functional.before_digest, native.before_digest);
+    assert_ne!(functional.after_digest, native.after_digest);
+    assert_ne!(
+        functional.canonical_bytes().unwrap(),
+        native.canonical_bytes().unwrap()
+    );
+    let bytes = functional.canonical_bytes().unwrap();
+    let mut reader = fa_model::Reader::new(&bytes);
+    assert_eq!(
+        reader.bytes(64, "output format").unwrap(),
+        FUNCTIONAL_OUTPUT_FORMAT
+    );
+    assert_eq!(reader.u32("base unit").unwrap(), 1);
+    assert_eq!(
+        reader.str(64, "valuation basis").unwrap(),
+        "retained-base-amounts"
+    );
+    assert!(native.functional_unit().is_none());
+    assert_eq!(native.output_format(), OUTPUT_FORMAT);
+
+    assert!(
+        StatementDiff::between_functional(report(&input(10, 1, 0)), report(&input(20, 2, 0)))
+            .is_err(),
+        "a native multi-unit report cannot masquerade as a functional statement"
+    );
+    let mut other_unit = signed_stock(20, 12_200);
+    for line in &mut other_unit.lines {
+        line.unit_id = 2;
+    }
+    assert!(StatementDiff::between_functional(signed_stock(10, 11_000), other_unit).is_err());
+}

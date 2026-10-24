@@ -56,12 +56,7 @@ fn prepare_artifact_history(
             "report artifact belongs to another book",
         ));
     }
-    if artifact.family() == ReportArtifactFamily::Native
-        && artifact
-            .source_certificate()
-            .selection
-            .uses_functional_valuations()
-    {
+    if artifact.uses_functional_valuations() {
         // Functional verification checks immutable Entry births and carrying
         // sources even when the supplied file selects HEAD. A compacted book
         // needs the complete retained history in that case too.

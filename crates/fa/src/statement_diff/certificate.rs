@@ -19,7 +19,9 @@ use crate::{
 };
 
 pub const CERTIFICATE_FORMAT: &[u8] = b"fa:statement-diff-certificate:v1";
+pub const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8] = b"fa:functional-statement-diff-certificate:v1";
 const DIGEST_DOMAIN: &[u8] = b"fa:statement-diff-certificate-digest:v1";
+const FUNCTIONAL_DIGEST_DOMAIN: &[u8] = b"fa:functional-statement-diff-certificate-digest:v1";
 pub const MAX_STATEMENT_DIFF_CERTIFICATE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,10 +58,13 @@ fn sources(before: &ReportCertificate, after: &ReportCertificate) -> Result<(), 
         || before.time_selection.is_some()
         || after.time_selection.is_some()
         || before.selection != after.selection
-        || !matches!(&before.selection, ReportSelection::Statement(_))
+        || !matches!(
+            &before.selection,
+            ReportSelection::Statement(_) | ReportSelection::FunctionalStatement(_)
+        )
     {
         return Err(invalid(
-            "comparison sources must be the same sequence-selected trunk statement at ordered frontiers",
+            "comparison sources must be the same sequence-selected trunk statement and valuation basis at ordered frontiers",
         ));
     }
     Ok(())
@@ -67,7 +72,9 @@ fn sources(before: &ReportCertificate, after: &ReportCertificate) -> Result<(), 
 
 fn statement(output: ReportOutput) -> Result<Statement, Refusal> {
     match output {
-        ReportOutput::Statement(statement) => Ok(*statement),
+        ReportOutput::Statement(statement) | ReportOutput::FunctionalStatement(statement) => {
+            Ok(*statement)
+        }
         _ => Err(invalid(
             "comparison source replay did not produce a financial statement",
         )),
@@ -92,7 +99,7 @@ fn output_bytes(report: &StatementDiff) -> Result<Vec<u8>, Refusal> {
     // vectors per line; limiting either source alone would not bound the bridge.
     let mut size = total([
         4,
-        super::OUTPUT_FORMAT.len(),
+        report.output_format().len(),
         16,
         16,
         8,
@@ -104,6 +111,9 @@ fn output_bytes(report: &StatementDiff) -> Result<Vec<u8>, Refusal> {
         4,
         4,
     ])?;
+    if report.is_functional() {
+        size = total([size, 4, 4, super::FUNCTIONAL_VALUATION_BASIS.len()])?;
+    }
     for c in &report.before().columns {
         size = total([
             size,
@@ -169,11 +179,46 @@ impl StatementDiffCertificate {
     pub fn book_id(&self) -> Id128 {
         self.before.book_id
     }
+    /// Functional comparisons retain two complete functional source closures.
+    #[must_use]
+    pub fn uses_functional_valuations(&self) -> bool {
+        self.before.selection.uses_functional_valuations()
+            || self.after.selection.uses_functional_valuations()
+    }
+    #[must_use]
+    pub fn output_format(&self) -> &'static str {
+        if self.uses_functional_valuations() {
+            "fa:functional-statement-diff:v1"
+        } else {
+            "fa:statement-diff:v1"
+        }
+    }
 
+    fn certificate_format(&self) -> &'static [u8] {
+        if self.uses_functional_valuations() {
+            FUNCTIONAL_CERTIFICATE_FORMAT
+        } else {
+            CERTIFICATE_FORMAT
+        }
+    }
+
+    fn digest_domain(&self) -> &'static [u8] {
+        if self.uses_functional_valuations() {
+            FUNCTIONAL_DIGEST_DOMAIN
+        } else {
+            DIGEST_DOMAIN
+        }
+    }
+
+    /// Recover the statement and two frontiers. The request itself contains no
+    /// valuation mode; callers must preserve `uses_functional_valuations()`
+    /// when selecting a typed evaluation API.
     pub fn request(&self) -> Result<StatementDiffRequest, Refusal> {
         sources(&self.before, &self.after)?;
-        let ReportSelection::Statement(selection) = &self.before.selection else {
-            return Err(invalid("comparison sources are not financial statements"));
+        let selection = match &self.before.selection {
+            ReportSelection::Statement(selection)
+            | ReportSelection::FunctionalStatement(selection) => selection,
+            _ => return Err(invalid("comparison sources are not financial statements")),
         };
         Ok(StatementDiffRequest {
             selection: (**selection).clone(),
@@ -190,7 +235,7 @@ impl StatementDiffCertificate {
         let mut r = Reader::new(&self.output);
         if r.bytes(64, "statement comparison output format")
             .map_err(|e| invalid(e.to_string()))?
-            != super::OUTPUT_FORMAT
+            != self.output_format().as_bytes()
         {
             return Err(invalid("unsupported comparison output format"));
         }
@@ -204,7 +249,7 @@ impl StatementDiffCertificate {
             .map_err(|e| invalid(e.to_string()))?;
         let size = total([
             4,
-            CERTIFICATE_FORMAT.len(),
+            self.certificate_format().len(),
             16,
             32,
             4,
@@ -220,7 +265,7 @@ impl StatementDiffCertificate {
         ReportCertificate::decode(&before)?;
         ReportCertificate::decode(&after)?;
         let mut w = Writer::with_capacity(size);
-        w.bytes(CERTIFICATE_FORMAT)
+        w.bytes(self.certificate_format())
             .u128(self.producer.0)
             .fixed(&self.capability_commitment)
             .bytes(&before)
@@ -244,7 +289,7 @@ impl StatementDiffCertificate {
             output,
             digest: [0; 32],
         };
-        value.digest = domain_digest(DIGEST_DOMAIN, &[&value.body_bytes()?]);
+        value.digest = domain_digest(value.digest_domain(), &[&value.body_bytes()?]);
         Ok(value)
     }
 
@@ -252,7 +297,7 @@ impl StatementDiffCertificate {
     /// are established by replay, never by this unsigned content digest alone.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut bytes = self.body_bytes()?;
-        if domain_digest(DIGEST_DOMAIN, &[&bytes]) != self.digest {
+        if domain_digest(self.digest_domain(), &[&bytes]) != self.digest {
             return Err(invalid("statement comparison certificate digest mismatch"));
         }
         bytes.extend_from_slice(&self.digest);
@@ -264,10 +309,10 @@ impl StatementDiffCertificate {
         let malformed =
             |e: DecodeError| invalid(format!("malformed statement comparison certificate: {e}"));
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "comparison certificate format")
-            .map_err(malformed)?
-            != CERTIFICATE_FORMAT
-        {
+        let format = r
+            .bytes(64, "comparison certificate format")
+            .map_err(malformed)?;
+        if format != CERTIFICATE_FORMAT && format != FUNCTIONAL_CERTIFICATE_FORMAT {
             return Err(invalid(
                 "unsupported statement comparison certificate format",
             ));
@@ -337,6 +382,30 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
         }
         Ok(Ok(head))
     })
+}
+
+fn authorize_sources<V: Vfs + Clone, B: Vfs + Clone>(
+    book: &AsyncBook<V, B>,
+    cx: &PurposeContexts,
+    principal: VId,
+    capability: &Capability,
+    before: &ReportCertificate,
+    after: &ReportCertificate,
+    produce: bool,
+) -> Outcome<CommitSeq> {
+    if before.selection.uses_functional_valuations() || after.selection.uses_functional_valuations()
+    {
+        // Complete valuation verification observes the whole book's retained
+        // history. A source certificate cannot widen the current reader's scope.
+        if let Err(refusal) =
+            book.admit_functional_report(cx, principal, capability, Some(before.known_at), produce)?
+        {
+            return Ok(Err(refusal));
+        }
+        book.admit_functional_report(cx, principal, capability, Some(after.known_at), produce)
+    } else {
+        authorize(book, cx, principal, capability, produce)
+    }
 }
 
 fn resolved(
@@ -432,6 +501,115 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         ))
     }
 
+    /// Compare functional statements at two fixed frontiers using only each
+    /// entry's verified retained base amounts. The current whole-book reader
+    /// is admitted before full history is loaded; no rate is selected anew.
+    pub async fn functional_statement_diff(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &StatementDiffRequest,
+    ) -> Outcome<StatementDiff> {
+        let head =
+            match self.admit_functional_report(cx, principal, capability, request.after, false)? {
+                Ok(head) => head,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let request = match resolved(request, head) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let before = match self
+            .functional_statement(
+                cx,
+                principal,
+                capability,
+                request.selection.clone(),
+                Some(request.before),
+            )
+            .await?
+        {
+            Ok(statement) => statement,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let after = match self
+            .functional_statement(cx, principal, capability, request.selection, request.after)
+            .await?
+        {
+            Ok(statement) => statement,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, request.after, false)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(StatementDiff::between_functional(before, after))
+    }
+
+    /// Certify the exact functional bridge and both original v5 statement
+    /// closures. `after: None` is pinned once before evaluating either source.
+    pub async fn certify_functional_statement_diff(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        request: &StatementDiffRequest,
+    ) -> Outcome<CertifiedStatementDiff> {
+        let head =
+            match self.admit_functional_report(cx, principal, capability, request.after, true)? {
+                Ok(head) => head,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let request = match resolved(request, head) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let before = match self
+            .certify_functional_statement(
+                cx,
+                principal,
+                capability,
+                request.selection.clone(),
+                Some(request.before),
+            )
+            .await?
+        {
+            Ok(statement) => statement,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let after = match self
+            .certify_functional_statement(
+                cx,
+                principal,
+                capability,
+                request.selection,
+                request.after,
+            )
+            .await?
+        {
+            Ok(statement) => statement,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let report = match StatementDiff::between_functional(before.statement, after.statement) {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) =
+            self.admit_functional_report(cx, principal, capability, request.after, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(package(
+            report,
+            before.certificate,
+            after.certificate,
+            principal,
+            capability,
+        ))
+    }
+
     /// Replay both retained sources in full and bridge them. Neither frontier
     /// nor definition is replaced with HEAD. The caller has admitted authority.
     fn retained_statement_diff(
@@ -451,7 +629,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(s) => s,
             Err(r) => return Ok(Err(r)),
         };
-        let report = match StatementDiff::between(old, new) {
+        let bridge = if before.selection.uses_functional_valuations() {
+            StatementDiff::between_functional(old, new)
+        } else {
+            StatementDiff::between(old, new)
+        };
+        let report = match bridge {
             Ok(d) => d,
             Err(r) => return Ok(Err(r)),
         };
@@ -461,7 +644,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
     /// Read the bridge between previously retained statements under current
     /// read authority. Both source claims are replayed in full first; nothing
-    /// is certified or written.
+    /// is certified or written. Functional sources require prepared complete
+    /// history; cold callers can replay either source through the generic
+    /// artifact API with history first.
     pub fn diff_statement_certificates(
         &self,
         cx: &PurposeContexts,
@@ -470,7 +655,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         before: &ReportCertificate,
         after: &ReportCertificate,
     ) -> Outcome<StatementDiff> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+        if let Err(r) = authorize_sources(self, cx, principal, capability, before, after, false)? {
             return Ok(Err(r));
         }
         self.retained_statement_diff(cx, before, after)
@@ -486,7 +671,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         before: &ReportCertificate,
         after: &ReportCertificate,
     ) -> Outcome<CertifiedStatementDiff> {
-        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+        if let Err(r) = authorize_sources(self, cx, principal, capability, before, after, true)? {
             return Ok(Err(r));
         }
         let report = match self.retained_statement_diff(cx, before, after)? {
@@ -511,7 +696,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate: &StatementDiffCertificate,
     ) -> Outcome<StatementDiff> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+        if let Err(r) = authorize_sources(
+            self,
+            cx,
+            principal,
+            capability,
+            &certificate.before,
+            &certificate.after,
+            false,
+        )? {
             return Ok(Err(r));
         }
         if certificate.book_id() != self.context().book_id {
@@ -520,24 +713,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let Err(r) = certificate.canonical_bytes() {
             return Ok(Err(r));
         }
-        let before = match self
-            .replay_report(cx, &certificate.before)?
-            .and_then(statement)
-        {
-            Ok(s) => s,
-            Err(r) => return Ok(Err(r)),
-        };
-        let after = match self
-            .replay_report(cx, &certificate.after)?
-            .and_then(statement)
-        {
-            Ok(s) => s,
-            Err(r) => return Ok(Err(r)),
-        };
-        let report = match StatementDiff::between(before, after) {
-            Ok(d) => d,
-            Err(r) => return Ok(Err(invalid(r.message))),
-        };
+        let report =
+            match self.retained_statement_diff(cx, &certificate.before, &certificate.after)? {
+                Ok(d) => d,
+                Err(r) => return Ok(Err(invalid(r.message))),
+            };
         let output = match output_bytes(&report) {
             Ok(bytes) => bytes,
             Err(r) => return Ok(Err(r)),

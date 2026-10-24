@@ -11709,16 +11709,14 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if functional
         && (matches!(
             args.positional[1].as_str(),
-            "diff" | "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
+            "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
         ) || args.flag("--branch").is_some()
-            || ["--before-certificate", "--after-certificate", "--from-diff"]
-                .iter()
-                .any(|flag| args.flag(flag).is_some())
+            || args.flag("--from-diff").is_some()
             || crate::issuance::view_flag(args).is_some())
     {
         return Err(usage(
-            "--functional selects a balance sheet or income statement on the trunk at one known-at; statement comparisons, issuance views and other statement workflows do not select a functional basis",
-            "fa statement balance-sheet|income-statement --functional --for <period> [--compare <period>] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify]",
+            "--functional selects a trunk balance sheet, income statement, or two-frontier statement diff; traces, issuance views and branch workflows do not support this basis",
+            "fa statement diff --functional --definition income-statement --for <period> --before <seq> --after <seq> [--certify]",
         ));
     }
     // Statement issuance (plan §12.5, bead fa-wrrw).
@@ -11870,7 +11868,11 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         };
         if mode == "diff" {
             if certify {
-                let certified = book.certify_statement_diff(who, &capability, &comparison)??;
+                let certified = if functional {
+                    book.certify_functional_statement_diff(who, &capability, &comparison)??
+                } else {
+                    book.certify_statement_diff(who, &capability, &comparison)??
+                };
                 return emit_certified_statement_diff(
                     &ctx.out,
                     &ctx.files,
@@ -11880,7 +11882,11 @@ fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &certified,
                 );
             }
-            let diff = book.statement_diff(who, &capability, &comparison)??;
+            let diff = if functional {
+                book.functional_statement_diff(who, &capability, &comparison)??
+            } else {
+                book.statement_diff(who, &capability, &comparison)??
+            };
             return render_statement_diff(&ctx.out, &book, &diff, None);
         }
         let request = StatementTraceRequest {
@@ -12094,7 +12100,7 @@ fn emit_certified_statement_diff(
         out,
         args,
         &artifact,
-        "fa:statement-diff:v1",
+        certified.certificate.output_format(),
         &bytes,
         &retained,
     );
@@ -12266,8 +12272,40 @@ fn statement_from_certificates(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fai
             )?;
             // Mismatched sources are the library's refusal; this checks only
             // the question the caller stated against the first source.
-            if let fa::ReportSelection::Statement(selection) = &before.selection {
+            if let fa::ReportSelection::Statement(selection)
+            | fa::ReportSelection::FunctionalStatement(selection) = &before.selection
+            {
                 statement_question_matches(args, selection)?;
+            }
+            if args.switch("--functional")
+                && !matches!(
+                    before.selection,
+                    fa::ReportSelection::FunctionalStatement(_)
+                )
+            {
+                return Err(fa_journal::Refusal::new(
+                    fa::certificate::code::CERTIFICATE_INVALID,
+                    exit::VERIFICATION,
+                    "--functional requires two functional statement source certificates",
+                    "plan §8.3 / §12.5 (a comparison preserves its sources' accounting basis)",
+                    "pass two retained functional statement certificates, or omit --functional to compare two native statement certificates",
+                ).into());
+            }
+            // Functional sources also need immutable Entry creation history
+            // when their prefix is HEAD after reopening a checkpointed book.
+            for source in [&before, &after] {
+                if source.selection.uses_functional_valuations() {
+                    let bytes = source.canonical_bytes().map_err(|error| {
+                        Fail::Internal(format!("functional comparison source: {error}"))
+                    })?;
+                    book.replay_report_artifact_for_with_history(
+                        who,
+                        &capability,
+                        &bytes,
+                        Some(&source.digest),
+                        fa::ReportArtifactExpectation::AsSupplied,
+                    )??;
+                }
             }
             // Both sources replay: load the earlier retained prefix.
             book.prepare_report_history(
@@ -12473,32 +12511,38 @@ pub(crate) fn render_statement_diff(
     let columns = statement_columns_json(after);
     let lines = statement_line_changes_json(diff.lines(), units)?;
     let mapping_changes = statement_mapping_changes_json(diff.mapping_changes())?;
-    out.event_with_certificate(
-        "statement_diff",
-        vec![
-            ("name", s(&after.definition_name)),
-            (
-                "definition_version",
-                Json::Int(i128::from(after.definition_version)),
-            ),
-            ("definition_digest", s(hex(&after.definition_digest))),
-            ("before_known_at", Json::Int(i128::from(before.known_at))),
-            ("after_known_at", Json::Int(i128::from(after.known_at))),
-            ("amounts_changed", Json::Bool(diff.amounts_changed())),
-            ("unchanged", Json::Bool(diff.is_unchanged())),
-            ("columns", Json::Arr(columns)),
-            ("lines", Json::Arr(lines)),
-            ("mapping_changes", Json::Arr(mapping_changes)),
-        ],
-        &format!(
-            "{} diff · {} -> {} · unchanged={}",
-            after.definition_name,
-            before.known_at,
-            after.known_at,
-            diff.is_unchanged()
+    let mut fields = vec![
+        ("name", s(&after.definition_name)),
+        (
+            "definition_version",
+            Json::Int(i128::from(after.definition_version)),
         ),
-        certificate,
+        ("definition_digest", s(hex(&after.definition_digest))),
+        ("before_known_at", Json::Int(i128::from(before.known_at))),
+        ("after_known_at", Json::Int(i128::from(after.known_at))),
+        ("amounts_changed", Json::Bool(diff.amounts_changed())),
+        ("unchanged", Json::Bool(diff.is_unchanged())),
+        ("columns", Json::Arr(columns)),
+        ("lines", Json::Arr(lines)),
+        ("mapping_changes", Json::Arr(mapping_changes)),
+    ];
+    let mut human = format!(
+        "{} diff · {} -> {} · unchanged={}",
+        after.definition_name,
+        before.known_at,
+        after.known_at,
+        diff.is_unchanged()
     );
+    if let Some(base_unit) = diff.functional_unit() {
+        let code = registered_unit_code(base_unit, units)?;
+        fields.extend([
+            ("functional", Json::Bool(true)),
+            ("base_unit", s(&code)),
+            ("valuation_basis", s("retained-base-amounts")),
+        ]);
+        human.push_str(&format!(" · functional {code} · retained base amounts"));
+    }
+    out.event_with_certificate("statement_diff", fields, &human, certificate);
     Ok(())
 }
 

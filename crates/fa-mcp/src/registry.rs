@@ -2438,6 +2438,11 @@ mod tests {
             ),
             (
                 "fa_read_statement",
+                json!({"name": "diff", "definition": "income-statement", "for": "P", "before": "5", "after": "9", "functional": true, "certify": true}),
+                "statement",
+            ),
+            (
+                "fa_read_statement",
                 json!({"name": "trace", "definition": "income-statement", "for": "P", "before": "5", "after": "9", "certify": true}),
                 "statement",
             ),
@@ -2474,6 +2479,10 @@ mod tests {
                 .expect("inline report certification");
             assert_eq!(invocation.argv[0], verb);
             assert!(invocation.argv.iter().any(|arg| arg == "--certify"));
+            if arguments.get("functional") == Some(&json!(true)) {
+                assert_eq!(schema["properties"]["functional"]["type"], json!("boolean"));
+                assert!(invocation.argv.iter().any(|arg| arg == "--functional"));
+            }
             assert!(invocation.stdin.is_none());
             let mut disallowed = arguments;
             disallowed["certificate_out"] = json!("/tmp/report.cert");
