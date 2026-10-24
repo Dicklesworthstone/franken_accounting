@@ -4377,6 +4377,229 @@ fn a_revision_case_corrects_a_closed_period_from_the_cli() -> std::io::Result<()
     Ok(())
 }
 
+/// fa-651f slice 1: a Restatement case restates a Closed period from the CLI.
+/// - The analyst plans the Restatement in the case's scenario: `restates`
+///   names the posting and the legs are the delta.
+/// - Two approvals sharing a session lineage are refused at `fa case
+///   approve` (FA-REF-008, exit 7), and the case stays Rehearsed. One
+///   pairing is a token the controller issued itself; the other is a token
+///   the analyst, the case's planner, issued.
+/// - Two independent Humans approve; `fa case post` posts the Restatement
+///   into the closed March, whose trial balance moves by the delta, and
+///   lineage names Restates. Outside its case the intent is FA-REF-178.
+#[test]
+fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result<()> {
+    let dir = tmp("restatement")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Restatement Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"1000.00 USD"},{"side":"credit","account":"1000","amount":"1000.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "open",
+        "--kind",
+        "Restatement",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+        "--json",
+    ]);
+    ok(&["scenario", "fork", "restated", "--as", "analyst", "--json"]);
+    let restatement = write(
+        &dir,
+        "restatement.json",
+        &format!(
+            r#"{{"class":"Restatement","restates":"{target}","reason":"WrongAmount","idempotency_key":"rst","legs":[{{"side":"debit","account":"6100","amount":"200.00 USD"}},{{"side":"credit","account":"1000","amount":"200.00 USD"}}]}}"#
+        ),
+    );
+    // `revises` belongs to a Revision only.
+    let misnamed = write(
+        &dir,
+        "misnamed.json",
+        &format!(
+            r#"{{"class":"Restatement","revises":"{target}","reason":"WrongAmount","idempotency_key":"rst-x","legs":[{{"side":"debit","account":"6100","amount":"200.00 USD"}},{{"side":"credit","account":"1000","amount":"200.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out) = run(&[
+        "scenario", "run", "restated", "--intent", &misnamed, "--as", "analyst", "--grant",
+        "restate", "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("`revises` names the target of a Revision only"),
+        "{out}"
+    );
+    ok(&[
+        "scenario",
+        "run",
+        "restated",
+        "--intent",
+        &restatement,
+        "--as",
+        "analyst",
+        "--grant",
+        "restate",
+        "--json",
+    ]);
+    let rehearsal = dir.join("rehearsal.cert").display().to_string();
+    ok(&[
+        "scenario",
+        "diff",
+        "restated",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &rehearsal,
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "rehearse",
+        "1",
+        "--certificate",
+        &rehearsal,
+        "--json",
+    ]);
+    let digest = text(
+        &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
+        "digest",
+    )
+    .to_string();
+    let approval = |argv: &[&str]| {
+        let mut args = argv.to_vec();
+        args.extend(["approve", "--proposal", digest.as_str(), "--json"]);
+        text(&doc(&ok(&args)), "approval_vid").to_string()
+    };
+    // Tokens issued by a party to the work: the controller's own, and one
+    // the analyst (the case's planner) issued.
+    let issue = |holder: &str, issuer: &str| {
+        let token = dir.join(format!("{holder}.token")).display().to_string();
+        ok(&[
+            "capability",
+            "issue",
+            "--holder",
+            holder,
+            "--profile",
+            "human",
+            "--op",
+            "approve",
+            "--out",
+            &token,
+            "--as",
+            issuer,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "approve",
+            "--json",
+        ]);
+        token
+    };
+    let delegate = issue("delegate", "controller");
+    let proxy = issue("proxy", "analyst");
+    let controller = approval(&["--as", "controller"]);
+    let auditor = approval(&["--as", "auditor"]);
+    let delegated = approval(&["--token", &delegate]);
+    let proxied = approval(&["--token", &proxy]);
+    for (second, issuer) in [(&delegated, "controller"), (&proxied, "analyst")] {
+        let (code, out) = run(&[
+            "case",
+            "approve",
+            "1",
+            "--approval",
+            &controller,
+            "--approval",
+            second.as_str(),
+            "--json",
+        ]);
+        assert_eq!(code, 7, "{issuer}: {out}");
+        assert!(out.contains("FA-REF-008"), "{out}");
+        assert!(out.contains("session lineage"), "{out}");
+        let case = doc(&ok(&["case", "show", "1", "--json"]));
+        let state = case.get("case").map(|c| text(c, "state").to_string());
+        assert_eq!(state.as_deref(), Some("Rehearsed"), "{issuer}");
+    }
+    ok(&[
+        "case",
+        "approve",
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &auditor,
+        "--json",
+    ]);
+    let out = ok(&["case", "post", "1", "--json"]);
+    let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Posted", "{out}");
+    let entry = text(&arr(&case, "posted")[0], "entry").to_string();
+    let explained = ok(&["explain", "entry", &entry, "--json"]);
+    assert!(explained.contains("Restatement"), "{explained}");
+    let lineage = ok(&["explain", "lineage", &target, "--json"]);
+    assert!(lineage.contains(&entry), "{lineage}");
+    assert!(lineage.contains("Restates"), "{lineage}");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(
+        tb.contains("1200.00 USD"),
+        "the closed March moves by the delta: {tb}"
+    );
+    // Outside its case a Restatement is refused, even confirmed and with restate.
+    let (code, out) = run(&[
+        "post",
+        "--intent",
+        &restatement,
+        "--grant",
+        "restate",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-178"), "{out}");
+    Ok(())
+}
+
 /// fa-xvba: `fa reclass` moves part of an entry's leg to another account
 /// with the leg's side; the trial balance moves exactly, lineage names the
 /// reclassification, a move beyond what remains is FA-REF-185, and a Closed
@@ -11121,6 +11344,11 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
             rule: rule(),
             approver: VId(1),
         },
+        Denial::SharedSessionLineage {
+            rule: rule(),
+            approver: VId(1),
+            issuer: VId(2),
+        },
         Denial::ApproverProfile {
             rule: rule(),
             approver: VId(1),
@@ -11181,6 +11409,7 @@ fn policy_refusal_fixes_name_only_registered_verbs_and_flags() {
             | Denial::SelfApproval { .. }
             | Denial::DuplicateApprover { .. }
             | Denial::CasePreparer { .. }
+            | Denial::SharedSessionLineage { .. }
             | Denial::ApproverProfile { .. }
             | Denial::ApproverOp { .. }
             | Denial::HumanApproversRequired { .. }

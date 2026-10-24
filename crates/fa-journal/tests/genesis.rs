@@ -1449,20 +1449,18 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
     assert!(r.message.contains("paired Reversal"), "{r}");
     assert!(r.fix.contains("fa reverse <target vid>"), "{r}");
     // A registered class this slice does not enforce is refused, naming its bead.
-    for class in [EntryClass::CLOSING, EntryClass::RESTATEMENT] {
-        let r = h
-            .post(h.request(
-                h.proposal(h.rent_legs(1), b"cls", class),
-                &["post", "post_closed", "restate", "migrate"],
-            ))
-            .unwrap_err();
-        assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{class:?}");
-        assert!(
-            r.fix.contains("fa-") || r.fix.contains("plan §"),
-            "{}",
-            r.fix
-        );
-    }
+    let r = h
+        .post(h.request(
+            h.proposal(h.rent_legs(1), b"cls", EntryClass::CLOSING),
+            &["post", "post_closed", "restate", "migrate"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{r}");
+    assert!(
+        r.fix.contains("fa-") || r.fix.contains("plan §"),
+        "{}",
+        r.fix
+    );
     // A PriorPeriodAdjustment is a restatement case's entry (fa-75j4): alone,
     // or claiming a case on any path but the case's own Post, it is refused,
     // and no other class may claim a case.
@@ -1483,11 +1481,14 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
     stray.schema_minor = fa_model::entry::SCHEMA_MINOR;
     stray.extensions = vec![(fa_model::entry::CASE_MEMBER_EXTENSION, claim)];
     let alone = h.proposal(h.rent_legs(1), b"ppa", EntryClass::PRIOR_PERIOD_ADJUSTMENT);
-    // A Revision, too, posts only as its Revision case's entry (slice 4b).
+    // A Revision, too, posts only as its Revision case's entry (slice 4b),
+    // and a Restatement only as its Restatement case's (fa-651f).
     let revision = h.proposal(h.rent_legs(1), b"revision", EntryClass::REVISION);
+    let restatement = h.proposal(h.rent_legs(1), b"restatement", EntryClass::RESTATEMENT);
     for (proposal, says) in [
         (alone, "posted only in its case's batch"),
         (revision, "posted only in its case's batch"),
+        (restatement, "posted only in its case's batch"),
         (claimed, "posted only in its case's batch"),
         (stray, "only a case-bound entry names a case"),
     ] {

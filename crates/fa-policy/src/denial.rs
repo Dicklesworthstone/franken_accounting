@@ -96,6 +96,15 @@ pub enum Denial {
         rule: String,
         approver: VId,
     },
+    /// The approver's authority lineage holds `issuer`, a preparer of the
+    /// work or another of its approvers (the `session_lineage` exclusion):
+    /// its capability was issued, directly or through earlier issuances,
+    /// by a party to the work it approves.
+    SharedSessionLineage {
+        rule: String,
+        approver: VId,
+        issuer: VId,
+    },
     ApproverProfile {
         rule: String,
         approver: VId,
@@ -165,6 +174,7 @@ impl Denial {
             Self::SelfApproval { .. }
             | Self::DuplicateApprover { .. }
             | Self::CasePreparer { .. }
+            | Self::SharedSessionLineage { .. }
             | Self::ApproverProfile { .. }
             | Self::ApproverOp { .. }
             | Self::HumanApproversRequired { .. }
@@ -192,6 +202,7 @@ impl Denial {
             Self::SelfApproval { .. } => "self_approval",
             Self::DuplicateApprover { .. } => "duplicate_approver",
             Self::CasePreparer { .. } => "case_preparer",
+            Self::SharedSessionLineage { .. } => "session_lineage",
             Self::ApproverProfile { .. } => "approver_profile",
             Self::ApproverOp { .. } => "approver_op",
             Self::HumanApproversRequired { .. } => "human_approvers",
@@ -253,6 +264,12 @@ impl Denial {
             Self::CasePreparer { approver, .. } => format!(
                 "principal {:032x} prepared an entry in this case and cannot approve its work",
                 approver.0
+            ),
+            Self::SharedSessionLineage {
+                approver, issuer, ..
+            } => format!(
+                "approver {:032x} acts under authority issued by principal {:032x}, a preparer or another approver of this work, so the two share a session lineage",
+                approver.0, issuer.0
             ),
             Self::ApproverProfile {
                 approver, profile, ..
@@ -326,6 +343,7 @@ impl Denial {
             Self::SelfApproval { rule, .. }
             | Self::DuplicateApprover { rule, .. }
             | Self::CasePreparer { rule, .. }
+            | Self::SharedSessionLineage { rule, .. }
             | Self::ApproverProfile { rule, .. }
             | Self::ApproverOp { rule, .. }
             | Self::HumanApproversRequired { rule, .. }
@@ -375,6 +393,9 @@ impl Denial {
             Self::CasePreparer { .. } => {
                 "collect the approval from a principal who planned none of the case's entries (`fa case approve <case> --dry-run` lists them as preparers)".into()
             }
+            Self::SharedSessionLineage { .. } => {
+                "collect the approval from a principal whose capability none of the work's preparers or approvers issued, directly or through earlier issuances (one issued by the book's steward, not by a party to the work); nothing was written".into()
+            }
             Self::ApproverProfile { allowed, .. } => format!(
                 "collect the approval from a principal acting under one of: {}",
                 allowed.join(", ")
@@ -387,6 +408,9 @@ impl Denial {
             }
             Self::UnsupportedExclusion { exclusion, .. } if exclusion == "case_preparer" => {
                 "only a restatement case's own records decide this exclusion, and only fa case approve and fa case post carry them; outside a case this is refused; nothing was written".into()
+            }
+            Self::UnsupportedExclusion { exclusion, .. } if exclusion == "session_lineage" => {
+                "the posting kernel decides this exclusion from each approval's journaled capability issuance chain; a chain it cannot read to its end (deeper than the registered bound) is refused: collect the approval under a capability issued closer to the book's steward; nothing was written".into()
             }
             Self::UnsupportedExclusion { .. } => {
                 "this class lands with the case slice that can decide the exclusion; nothing was written".into()

@@ -1536,6 +1536,22 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    // The entries' own rule (a Restatement's names `session_lineage`, plan
+    // §14.3) binds these approvals at the case's Post; a pairing that rule
+    // refuses is refused here, before the case is Approved and its
+    // approvals fixed.
+    let lineage_rule = match posting_class(view.body.kind).and_then(EntryClass::name) {
+        Some(class) => steward()?.posting_rule_excluding(class, "session_lineage"),
+        None => None,
+    };
+    if let Some(rule) = lineage_rule
+        && let Err(r) = crate::policy::authorize_lineage(
+            &txn, db, book, &approvals, &digest, epoch, rule, principal, &preparers,
+        )?
+    {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if proposal.validate().is_err() {
         txn.abort();
         return Ok(Err(usage(
@@ -1643,15 +1659,28 @@ fn decode_posted(bytes: &[u8]) -> Result<Vec<PostedEntry>, KernelError> {
     Ok(entries)
 }
 
-/// The class a case of `kind` posts its entries as in this build.
-/// Restatement entries wait for their SoD rule's session lineage
-/// (fa-651f); PolicyChangeRetrospective posts Restatement entries.
+/// The class a case of `kind` posts its entries as (plan §8.3): a
+/// PolicyChangeRetrospective case is the Restatement machinery applied to a
+/// policy change, so it posts Restatement entries. Every kind posts; the
+/// `Option` is the refusal a future kind without a posting law gets.
 #[must_use]
 pub fn posting_class(kind: CaseKind) -> Option<EntryClass> {
     match kind {
         CaseKind::PriorPeriodAdjustment => Some(EntryClass::PRIOR_PERIOD_ADJUSTMENT),
         CaseKind::Revision => Some(EntryClass::REVISION),
-        CaseKind::Restatement | CaseKind::PolicyChangeRetrospective => None,
+        CaseKind::Restatement | CaseKind::PolicyChangeRetrospective => {
+            Some(EntryClass::RESTATEMENT)
+        }
+    }
+}
+
+/// The supersession kind a case's delta-law entries carry: a Revision
+/// revises, a Restatement restates, each exactly one standing target.
+fn delta_kind(class: EntryClass) -> Option<fa_model::SupersessionKind> {
+    match class {
+        EntryClass::REVISION => Some(fa_model::SupersessionKind::Revises),
+        EntryClass::RESTATEMENT => Some(fa_model::SupersessionKind::Restates),
+        _ => None,
     }
 }
 
@@ -1661,7 +1690,7 @@ pub fn posting_class(kind: CaseKind) -> Option<EntryClass> {
 pub(crate) fn case_bound(class: EntryClass) -> bool {
     matches!(
         class,
-        EntryClass::PRIOR_PERIOD_ADJUSTMENT | EntryClass::REVISION
+        EntryClass::PRIOR_PERIOD_ADJUSTMENT | EntryClass::REVISION | EntryClass::RESTATEMENT
     )
 }
 
@@ -1684,16 +1713,20 @@ pub fn derive_member(
             kind.name()
         ))));
     };
-    // A Revision case's Plan record is a Revision that revises one target;
-    // any other case plans plain postings that post as its class.
-    if class == EntryClass::REVISION {
-        let revises = matches!(
+    // A Revision case's Plan record is a Revision that revises one target,
+    // and a Restatement or PolicyChangeRetrospective case's a Restatement
+    // that restates one; a PriorPeriodAdjustment case plans plain postings
+    // that post as its class.
+    if let Some(supersedes) = delta_kind(class) {
+        let one_target = matches!(
             planned.supersession.as_slice(),
-            [s] if s.kind == fa_model::SupersessionKind::Revises
+            [s] if s.kind == supersedes
         );
-        if planned.class != EntryClass::REVISION || !revises || planned.pending.is_some() {
+        if planned.class != class || !one_target || planned.pending.is_some() {
+            let name = class.name().unwrap_or("?");
             return Ok(Err(membership(format!(
-                "a Revision case posts Revision entries that each revise one target (supersession Revises), and this Plan record is a {}",
+                "a {} case posts {name} entries that each supersede one target (supersession {supersedes:?}), and this Plan record is a {}",
+                kind.name(),
                 planned.class.name().unwrap_or("?")
             ))));
         }
@@ -1818,9 +1851,13 @@ pub(crate) fn admit_member<V: asupersync::fs::Vfs + Clone>(
     let Some(view) = read_case(db, book, member.ordinal)? else {
         return Ok(Err(unknown(member.ordinal)));
     };
-    if view.body.kind == CaseKind::Revision && !view.body.periods.iter().any(|p| p == period) {
+    // A delta-law entry corrects the period it is dated in, so that period
+    // is one the case affects.
+    let delta = posting_class(view.body.kind).and_then(delta_kind).is_some();
+    if delta && !view.body.periods.iter().any(|p| p == period) {
         return Ok(Err(membership(format!(
-            "a Revision posts in a period its case affects, and case {} affects {}, not {period}",
+            "a {} case's entry posts in a period its case affects, and case {} affects {}, not {period}",
+            view.body.kind.name(),
             member.ordinal,
             view.body.periods.join(", ")
         ))

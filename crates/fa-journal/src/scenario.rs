@@ -844,15 +844,19 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
     {
         return Ok(Err(r));
     }
-    // A Revision is rehearsed in a scenario for its Revision case (plan
-    // §8.3); it reaches trunk only in that case's own Post.
-    if !crate::batch::batchable(p.class) && p.class != fa_model::EntryClass::REVISION {
+    // A Revision or Restatement is rehearsed in a scenario for its case
+    // (plan §8.3); it reaches trunk only in that case's own Post.
+    let delta = matches!(
+        p.class,
+        fa_model::EntryClass::REVISION | fa_model::EntryClass::RESTATEMENT
+    );
+    if !crate::batch::batchable(p.class) && !delta {
         return Ok(Err(usage(
             format!(
                 "a {} entry cannot join a scenario",
                 p.class.name().unwrap_or("?")
             ),
-            "plan Original, Adjusting, Reversal, Pending or Resolution entries, or a Revision case's Revision entries",
+            "plan Original, Adjusting, Reversal, Pending or Resolution entries, or a Revision or Restatement case's Revision or Restatement entries",
         )));
     }
     let Some(view) = read_scenario(db, book, name)? else {

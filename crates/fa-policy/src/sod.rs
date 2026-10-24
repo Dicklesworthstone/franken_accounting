@@ -7,8 +7,10 @@
 //! 1. every exclusion and vocabulary item of the rule must be decidable
 //!    (fail closed);
 //! 2. each approval in transcript order: not the preparer, a permitted
-//!    profile, the rule's op, a principal not already counted, and (under
-//!    `case_preparer`) no preparer of an entry in the case;
+//!    profile, the rule's op, a principal not already counted, (under
+//!    `case_preparer`) no preparer of an entry in the case, and (under
+//!    `session_lineage`) an authority lineage holding neither a preparer
+//!    nor another approver;
 //! 3. at least `max(matrix approvals, rule approvers)` approvals;
 //! 4. agent-prepared work: at least `agent_prepared_human_approvers` Human
 //!    approvers.
@@ -27,9 +29,26 @@ use crate::capability::{Capability, CapabilityError, Profile};
 use crate::denial::Denial;
 use crate::op::Op;
 
-/// Exclusions this evaluator decides. Any other registered exclusion makes
-/// its rule refuse until the slice that can decide it lands.
+/// Exclusions this evaluator decides from the entry alone. `case_preparer`
+/// and `session_lineage` are decided only with their [`Witnessed`] input;
+/// any other registered exclusion makes its rule refuse.
 pub const DECIDED_EXCLUSIONS: &[&str] = &["duplicate", "preparer"];
+
+/// What the kernel point-read about the work beyond the entry itself. Each
+/// field decides one exclusion; `None` leaves it undecidable, so a rule
+/// naming it refuses (fail closed).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Witnessed<'a> {
+    /// `case_preparer`: the principals who prepared any entry in the case
+    /// the work belongs to.
+    pub case_preparers: Option<&'a BTreeSet<VId>>,
+    /// `session_lineage` (plan §14.3, §14.5): per approval, in transcript
+    /// order, its authority lineage, the principals whose capabilities
+    /// issued the capability it was recorded under, directly or through
+    /// earlier issuances (the journaled issuance chain). Decides only when
+    /// it holds one lineage per approval.
+    pub lineages: Option<&'a [BTreeSet<VId>]>,
+}
 
 /// The preparer: the principal the entry names and the profile of the
 /// capability it acted under.
@@ -94,8 +113,9 @@ pub fn control_key(class: &str, state: Option<PeriodState>, transition: &str) ->
 
 /// Evaluate rule `rule` (`req`) over the preparer and the witnessed
 /// approvals. `matrix_approvals` is the admissibility cell's count (0 for
-/// `admit` cells and for controls). No case is in scope, so a rule with the
-/// `case_preparer` exclusion refuses ([`evaluate_in`] decides it).
+/// `admit` cells and for controls). Nothing beyond the entry is witnessed,
+/// so a rule with the `case_preparer` or `session_lineage` exclusion
+/// refuses ([`evaluate_in`] decides them).
 pub fn evaluate(
     rule: &str,
     req: &SodRequirement,
@@ -103,25 +123,39 @@ pub fn evaluate(
     preparer: Party,
     approvers: &[Approver],
 ) -> Result<(), Denial> {
-    evaluate_in(rule, req, matrix_approvals, preparer, approvers, None)
+    evaluate_in(
+        rule,
+        req,
+        matrix_approvals,
+        preparer,
+        approvers,
+        Witnessed::default(),
+    )
 }
 
-/// [`evaluate`] for work that belongs to a case: `case_preparers` are the
-/// principals who prepared any entry in it, which decides the
-/// `case_preparer` exclusion (an approver is none of them). `None` leaves
-/// that exclusion undecidable, so a rule naming it refuses (fail closed).
+/// [`evaluate`] with what the kernel witnessed beyond the entry:
+/// `case_preparers` decides `case_preparer` (an approver is none of them);
+/// `lineages` decides `session_lineage` (no approver's authority was issued,
+/// directly or through earlier issuances, by the preparer, by a case
+/// preparer, or by another approver of the same work).
 pub fn evaluate_in(
     rule: &str,
     req: &SodRequirement,
     matrix_approvals: u8,
     preparer: Party,
     approvers: &[Approver],
-    case_preparers: Option<&BTreeSet<VId>>,
+    witnessed: Witnessed<'_>,
 ) -> Result<(), Denial> {
+    let case_preparers = witnessed.case_preparers;
+    let lineages = witnessed
+        .lineages
+        .filter(|lineages| lineages.len() == approvers.len());
     let in_case = req.exclusions.iter().any(|e| e == "case_preparer");
+    let in_lineage = req.exclusions.iter().any(|e| e == "session_lineage");
     for exclusion in &req.exclusions {
         let decided = DECIDED_EXCLUSIONS.contains(&exclusion.as_str())
-            || (exclusion == "case_preparer" && case_preparers.is_some());
+            || (exclusion == "case_preparer" && case_preparers.is_some())
+            || (exclusion == "session_lineage" && lineages.is_some());
         if !decided {
             return Err(Denial::UnsupportedExclusion {
                 rule: rule.to_string(),
@@ -146,7 +180,7 @@ pub fn evaluate_in(
         allowed.insert(p);
     }
     let mut counted: BTreeSet<VId> = BTreeSet::new();
-    for a in approvers {
+    for (index, a) in approvers.iter().enumerate() {
         if a.principal == preparer.principal {
             return Err(Denial::SelfApproval {
                 rule: rule.to_string(),
@@ -181,6 +215,22 @@ pub fn evaluate_in(
                 approver: a.principal,
             });
         }
+        if in_lineage
+            && let Some(lineages) = lineages
+            && let Some(issuer) = lineage_party(
+                index,
+                preparer.principal,
+                approvers,
+                case_preparers,
+                lineages,
+            )
+        {
+            return Err(Denial::SharedSessionLineage {
+                rule: rule.to_string(),
+                approver: a.principal,
+                issuer,
+            });
+        }
     }
     let required = matrix_approvals.max(req.approvers);
     if counted.len() < usize::from(required) {
@@ -200,6 +250,55 @@ pub fn evaluate_in(
                 rule: rule.to_string(),
                 required: req.agent_prepared_human_approvers,
                 supplied: humans,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The `session_lineage` fault of approval `index`: the first principal in
+/// its authority lineage who is a party to the work, meaning the preparer,
+/// a case preparer, or another approver. The approval's own principal is
+/// never one: a holder attenuating its own token stays one principal.
+fn lineage_party(
+    index: usize,
+    preparer: VId,
+    approvers: &[Approver],
+    case_preparers: Option<&BTreeSet<VId>>,
+    lineages: &[BTreeSet<VId>],
+) -> Option<VId> {
+    let own = approvers[index].principal;
+    lineages[index].iter().copied().find(|p| {
+        *p != own
+            && (*p == preparer
+                || case_preparers.is_some_and(|c| c.contains(p))
+                || approvers.iter().any(|a| a.principal == *p))
+    })
+}
+
+/// `session_lineage` alone over every approval (plan §14.3), under rule
+/// `rule`: what a case's Approve checks when its entries' rule names the
+/// exclusion, so a pairing their Post would refuse is refused before the
+/// case is Approved. Lineages of the wrong length decide nothing.
+pub fn shared_lineage(
+    rule: &str,
+    preparer: VId,
+    approvers: &[Approver],
+    case_preparers: Option<&BTreeSet<VId>>,
+    lineages: &[BTreeSet<VId>],
+) -> Result<(), Denial> {
+    if lineages.len() != approvers.len() {
+        return Err(Denial::UnsupportedExclusion {
+            rule: rule.to_string(),
+            exclusion: "session_lineage".to_string(),
+        });
+    }
+    for (index, a) in approvers.iter().enumerate() {
+        if let Some(issuer) = lineage_party(index, preparer, approvers, case_preparers, lineages) {
+            return Err(Denial::SharedSessionLineage {
+                rule: rule.to_string(),
+                approver: a.principal,
+                issuer,
             });
         }
     }
