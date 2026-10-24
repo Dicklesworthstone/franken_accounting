@@ -1326,16 +1326,18 @@ fn public_post_provenance_and_envelope_claims_match_the_independent_oracle() {
                 assert!(matches!(expected, Verdict::Posted { .. }), "{expected:?}");
             } else {
                 let refusal = actual.expect_err("unverified public claim");
+                // A claimed rule origin is verified rather than refused outright:
+                // its event's closure comes first (fa-c34), and no event exists.
+                let (kernel_code, model_code) = if matches!(case, Claim::Rule) {
+                    ("FA-REF-080", fa_reference::evidence::EVIDENCE_MINIMUM)
+                } else {
+                    ("FA-REF-102", fa_reference::code::CLASS_NOT_IMPLEMENTED)
+                };
                 assert_eq!(
-                    refusal.code, "FA-REF-102",
+                    refusal.code, kernel_code,
                     "seed={seed} kind={kind}: {refusal}"
                 );
-                assert_eq!(
-                    expected,
-                    Verdict::Refused {
-                        code: fa_reference::code::CLASS_NOT_IMPLEMENTED
-                    }
-                );
+                assert_eq!(expected, Verdict::Refused { code: model_code });
                 assert_eq!(k.db.frontier().unwrap(), before, "refusal changes no state");
                 assert_eq!(oracle.known(), known, "oracle refusal changes no state");
             }

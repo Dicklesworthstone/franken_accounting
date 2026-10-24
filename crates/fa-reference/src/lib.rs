@@ -2320,6 +2320,15 @@ impl Oracle {
                 code: code::MIGRATION_OUTSIDE_RUN,
             };
         }
+        // A claimed rule origin is verified, not refused outright: the kernel
+        // checks the cited event's closure first (FA-INV-05 event-closure,
+        // fa-c34). This model journals no events, so the event a public
+        // claim cites never exists here, and the closure refuses it.
+        if claims.origin == ClaimedOrigin::Rule {
+            return Verdict::Refused {
+                code: evidence::EVIDENCE_MINIMUM,
+            };
+        }
         // Unverified caller claims never become journal authority. System
         // minting and checked migration use their separate model entry points.
         if claims.plan_certificate.is_some()
