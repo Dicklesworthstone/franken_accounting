@@ -1214,6 +1214,40 @@ default = 4
 meaning = "Louvain aggregation levels (1..=8)."
 
 [[procedure]]
+id = "graph.ultimate_beneficiary"
+version = 1
+claim = "statistical"
+evidence = "FA-EVID-L69"
+tie_break = "entry_vid"
+complexity = "O(posting_legs log posting_legs + allocation_cells log debit_legs + max_sources * max_augmentations * paid_edges)"
+calibration = "planted"
+summary = "Where money finally rests (plan §11.4: max-flow decomposition; fa-b6xs): within each native unit and legal entity of the party-level PAID projection, a party rests money when its inflow exceeds its outflow (the book may rest money and is never a source). For up to max_sources parties with the largest net outflow, an exact Edmonds-Karp max flow (shortest augmenting paths, ascending neighbours, checked integers) runs from the party to every resting party, each capped at what it rests; a resting party at least min_hops transfers away that receives at least min_share_bps of the traced flow is flagged, naming source and beneficiary and citing the entries whose transfers carry the flow. A max-flow decomposition is not unique: this one is the shortest-augmenting-path decomposition, and a search stopped by max_augmentations is reported as a lower bound."
+
+[[parameter]]
+procedure = "graph.ultimate_beneficiary"
+name = "min_hops"
+default = 2
+meaning = "Minimum transfers between the source and the resting party (2..=8); a direct counterparty is never an ultimate beneficiary finding."
+
+[[parameter]]
+procedure = "graph.ultimate_beneficiary"
+name = "min_share_bps"
+default = 5000
+meaning = "Minimum share of the source's traced flow resting with the party, in basis points (5000 = 50.00%)."
+
+[[parameter]]
+procedure = "graph.ultimate_beneficiary"
+name = "max_sources"
+default = 32
+meaning = "Net-outflow parties traced per unit and entity, largest net outflow first (1..=64)."
+
+[[parameter]]
+procedure = "graph.ultimate_beneficiary"
+name = "max_augmentations"
+default = 64
+meaning = "Augmenting paths per source (1..=64); a search that reaches it reports a lower bound."
+
+[[procedure]]
 id = "graph.layering"
 version = 1
 claim = "statistical"

@@ -6,6 +6,7 @@
 
 mod cycles;
 mod louvain;
+mod maxflow;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,7 +16,7 @@ use fa_money::wide::U256;
 use fa_money::{UnitId, UnitKind};
 use fgdb_types::VId;
 
-use crate::amount::{amount_share_bps, amount_sum};
+use crate::amount::{amount_difference, amount_share_bps, amount_sum};
 use crate::projection::{FlowLeg, ScopedFlowLeg, scoped_flow_legs};
 use crate::{
     Cite, Finding, LanternError, MAX_CITES, Meter, Params, Procedure, Severity, Snapshot, Statistic,
@@ -851,6 +852,208 @@ impl Procedure for PartyCommunities {
         }
         Ok(out)
     }
+}
+
+/// `graph.ultimate_beneficiary` (plan §11.4, bead fa-b6xs): "max-flow
+/// decomposition of where money finally rests", over the party-level PAID
+/// projection within each native unit and legal entity. A party rests money
+/// when its PAID inflow exceeds its outflow (the book itself may rest money;
+/// it is never a source). For each of up to `max_sources` parties whose
+/// outflow exceeds its inflow (largest net outflow first), an exact
+/// Edmonds-Karp max flow (`maxflow`) runs from it to every resting party,
+/// each capped at what it rests; a resting party at least `min_hops`
+/// transfers away receiving at least `min_share_bps` of the traced flow is
+/// flagged: where the source's money ends up past its direct
+/// counterparties. A max-flow decomposition is not unique: this is the
+/// shortest-augmenting-path one, and a search stopped by
+/// `max_augmentations` reports a lower bound.
+pub struct UltimateBeneficiary {
+    params: Params,
+}
+crate::jet::procedure_boilerplate!(UltimateBeneficiary, "graph.ultimate_beneficiary");
+
+impl Procedure for UltimateBeneficiary {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn params(&self) -> &Params {
+        &self.params
+    }
+    fn run(
+        &self,
+        snapshot: &Snapshot,
+        book: &BookContext,
+        work: &mut Meter<'_>,
+    ) -> Result<Vec<Finding>, LanternError> {
+        const WHAT: &str = "graph.ultimate_beneficiary volume";
+        let min_hops = self.params.get_u32("min_hops")?;
+        let min_share_bps = i128::from(self.params.get_u32("min_share_bps")?);
+        let max_sources = self.params.get_u32("max_sources")?;
+        let max_augmentations = self.params.get_u32("max_augmentations")?;
+        for (name, value, range) in [
+            ("min_hops", min_hops, 2..=8),
+            ("max_sources", max_sources, 1..=64),
+            ("max_augmentations", max_augmentations, 1..=64),
+        ] {
+            if !range.contains(&value) {
+                return Err(LanternError::Parameter {
+                    procedure: Self::ID.into(),
+                    name: name.into(),
+                    message: format!("must be in {}..={}", range.start(), range.end()),
+                });
+            }
+        }
+        let book_node = crate::projection::BOOK_NODE;
+        // Per scope: directed capacities between nodes, with the entries
+        // that carried them.
+        type Arcs = BTreeMap<(VId, VId), (i128, BTreeSet<VId>)>;
+        let mut scopes: BTreeMap<MonetaryScope, Arcs> = BTreeMap::new();
+        for scoped in crate::projection::party_flow_legs(snapshot)? {
+            work.leg()?;
+            let e = &scoped.leg;
+            if e.from == e.to || e.mantissa <= 0 {
+                continue;
+            }
+            let slot = scopes
+                .entry((scoped.legal_entity, e.unit_id))
+                .or_default()
+                .entry((e.from, e.to))
+                .or_default();
+            slot.0 = amount_sum(slot.0, e.mantissa, WHAT)?;
+            slot.1.insert(e.entry);
+        }
+        let mut out = Vec::new();
+        for (coordinate, arcs) in scopes {
+            let nodes: Vec<VId> = arcs
+                .keys()
+                .flat_map(|&(a, b)| [a, b])
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let index: BTreeMap<VId, usize> =
+                nodes.iter().enumerate().map(|(i, v)| (*v, i)).collect();
+            // Net position: inflow minus outflow.
+            let mut net = vec![0i128; nodes.len()];
+            for (&(a, b), (w, _)) in &arcs {
+                net[index[&a]] = amount_difference(net[index[&a]], *w, WHAT)?;
+                net[index[&b]] = amount_sum(net[index[&b]], *w, WHAT)?;
+            }
+            let mut sources: Vec<usize> = (0..nodes.len())
+                .filter(|&i| nodes[i] != book_node && net[i] < 0)
+                .collect();
+            // Largest net outflow first, then ascending party.
+            sources.sort_by_key(|&i| (net[i], i));
+            sources.truncate(max_sources as usize);
+            let scope_text = monetary_scope_text(book, coordinate)?;
+            for source in sources {
+                // The super-sink takes what each resting party rests.
+                let sink = nodes.len();
+                let mut capacity: BTreeMap<(usize, usize), i128> = arcs
+                    .iter()
+                    .map(|((a, b), (w, _))| ((index[a], index[b]), *w))
+                    .collect();
+                for (i, &rest) in net.iter().enumerate() {
+                    if rest > 0 && i != source {
+                        capacity.insert((i, sink), rest);
+                    }
+                }
+                let flow = maxflow::max_flow(
+                    nodes.len() + 1,
+                    &capacity,
+                    source,
+                    sink,
+                    max_augmentations,
+                    work,
+                )?;
+                if flow.value <= 0 {
+                    continue;
+                }
+                let hops = hop_distances(&arcs, &index, nodes.len(), source, work)?;
+                for (&(rester, to), &rested) in &flow.arcs {
+                    if to != sink {
+                        continue;
+                    }
+                    let distance = hops[rester];
+                    if distance.is_none_or(|d| d < min_hops) {
+                        continue;
+                    }
+                    let share_bps = amount_share_bps(rested, flow.value, WHAT)?;
+                    if share_bps < min_share_bps {
+                        continue;
+                    }
+                    let mut carried = BTreeSet::new();
+                    for (&(a, b), &used) in &flow.arcs {
+                        if b != sink && used > 0 {
+                            carried.extend(arcs[&(nodes[a], nodes[b])].1.iter().copied());
+                        }
+                    }
+                    let cites: Vec<Cite> = carried
+                        .into_iter()
+                        .take(MAX_CITES)
+                        .map(Cite::Entry)
+                        .collect();
+                    let from = party_label(snapshot, nodes[source]);
+                    let rests = party_label(snapshot, nodes[rester]);
+                    let decisions = [
+                        (scope_text.as_str(), "amount_scope"),
+                        (from.as_str(), "source"),
+                        (rests.as_str(), "ultimate_beneficiary"),
+                    ];
+                    let cgse = cgse_digest_hex(&decisions, nodes.len(), arcs.len(), "edmonds_karp");
+                    out.push(finding(
+                        (Self::ID, self.version()),
+                        Severity::Medium,
+                        Statistic {
+                            name: "resting_share_bps".into(),
+                            value: share_bps,
+                            scale: 0,
+                            population: nodes.len() as u64,
+                        },
+                        cites,
+                        format!(
+                            "money leaving {from} in {scope_text} finally rests with {rests}, {} transfers away: {rested} of {} traced ({share_bps} bps; shortest-augmenting-path decomposition{}; cgse_witness={cgse})",
+                            distance.unwrap_or(0),
+                            flow.value,
+                            if flow.complete { "" } else { ", a lower bound: max_augmentations reached" }
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Unweighted shortest-path distance (in transfers) from `source` to every
+/// node over the PAID arcs, `None` where unreachable.
+fn hop_distances(
+    arcs: &BTreeMap<(VId, VId), (i128, BTreeSet<VId>)>,
+    index: &BTreeMap<VId, usize>,
+    n: usize,
+    source: usize,
+    work: &mut Meter<'_>,
+) -> Result<Vec<Option<u32>>, LanternError> {
+    let mut out: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
+    for &(a, b) in arcs.keys() {
+        out[index[&a]].insert(index[&b]);
+    }
+    let mut distance = vec![None; n];
+    distance[source] = Some(0u32);
+    let mut queue = std::collections::VecDeque::from([source]);
+    while let Some(u) = queue.pop_front() {
+        work.compare(out[u].len() as u64)?;
+        let next = distance[u].unwrap_or(0).saturating_add(1);
+        for &v in &out[u] {
+            if distance[v].is_none() {
+                distance[v] = Some(next);
+                queue.push_back(v);
+            }
+        }
+    }
+    Ok(distance)
 }
 
 /// The directed-cycle search shared by `graph.circular_flows` and

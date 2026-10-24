@@ -872,6 +872,14 @@ impl Work {
             // graph.party_communities (fa-b6xs): PAID allocation, then at
             // most 8 levels of at most 16 passes, each examining every node
             // once plus each of its neighbouring communities.
+            // graph.ultimate_beneficiary (fa-b6xs): PAID allocation, then for
+            // at most 64 sources at most 64 augmenting searches, each
+            // scanning every residual arc once, plus one hop search each.
+            "O(posting_legs log posting_legs + allocation_cells log debit_legs + max_sources * max_augmentations * paid_edges)" => {
+                self.entries <= entries.saturating_mul(2)
+                    && self.legs <= legs.max(entries).saturating_mul(4)
+                    && self.comparisons <= n_log_n.saturating_add(n.saturating_mul(64 * 66 * 8))
+            }
             "O(posting_legs log posting_legs + allocation_cells log debit_legs + max_levels * max_passes * paid_edges)" => {
                 self.entries <= entries.saturating_mul(2)
                     && self.legs <= legs.max(entries).saturating_mul(4)

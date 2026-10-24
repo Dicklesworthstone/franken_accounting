@@ -48,7 +48,7 @@ fn all_additional_procedures_round_trip_with_complete_native_populations() {
     f.post(3, "1010", "1020", 60, false);
     f.post(4, "1020", "6000", 10, false);
     let before = f.head();
-    assert_eq!(EXTENDED_CERTIFIABLE_PROCEDURES.len(), 41);
+    assert_eq!(EXTENDED_CERTIFIABLE_PROCEDURES.len(), 42);
     let mut saved = Vec::new();
     for &(id, version) in EXTENDED_CERTIFIABLE_PROCEDURES {
         assert!(!supported(id, version), "the legacy closure is unchanged");

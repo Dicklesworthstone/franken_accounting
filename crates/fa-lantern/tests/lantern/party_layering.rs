@@ -640,3 +640,94 @@ fn parties_that_move_money_among_themselves_form_a_community() {
         r.findings
     );
 }
+
+/// fa-b6xs: `graph.ultimate_beneficiary` (plan §11.4, max-flow decomposition
+/// of where money finally rests). A's 100,000 passes B (keeps 5,000) and C
+/// (keeps 5,000) and rests with D (90,000), three transfers away: 9,000 bps
+/// of the traced flow. B and C rest too little; a direct counterparty (E pays
+/// F 50,000) is never an ultimate-beneficiary finding.
+#[test]
+fn money_leaving_a_party_is_traced_to_where_it_finally_rests() {
+    use fa_lantern::graph::UltimateBeneficiary;
+
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = None;
+    let (_, a) = party(&h, &mut snapshot, "SHELL-A");
+    let (_, b) = party(&h, &mut snapshot, "SHELL-B");
+    let (_, c) = party(&h, &mut snapshot, "SHELL-C");
+    let (_, d) = party(&h, &mut snapshot, "SHELL-D");
+    let (_, e) = party(&h, &mut snapshot, "SHELL-E");
+    let (_, f) = party(&h, &mut snapshot, "SHELL-F");
+    let mut carried = Vec::new();
+    for (vid, dd, from, to, cents) in [
+        (1101, 5, a, b, 100_000),
+        (1102, 6, b, c, 95_000),
+        (1103, 7, c, d, 90_000),
+        (1104, 8, e, f, 50_000),
+    ] {
+        let entry = transfer(
+            &mut h,
+            vid,
+            day(2026, 1, dd),
+            "1010",
+            Some(to),
+            "1010",
+            Some(from),
+            cents,
+        );
+        if vid <= 1103 {
+            carried.push(entry.vid);
+        }
+        snapshot.entries.push(entry);
+    }
+
+    let procedure = UltimateBeneficiary::new().unwrap();
+    let r = run_over(&snapshot, &h.book, &procedure).unwrap();
+    println!("ultimate beneficiaries: {:?}", r.findings);
+    assert_eq!(r.findings.len(), 1, "{:?}", r.findings);
+    let found = &r.findings[0];
+    assert_eq!(found.statistic.name, "resting_share_bps");
+    assert_eq!(found.statistic.value, 9_000);
+    assert!(
+        found.narrative.contains("money leaving SHELL-A")
+            && found
+                .narrative
+                .contains("finally rests with SHELL-D, 3 transfers away")
+            && found.narrative.contains("90000 of 100000 traced"),
+        "{}",
+        found.narrative
+    );
+    carried.sort();
+    assert_eq!(
+        found.cites,
+        carried.iter().copied().map(Cite::Entry).collect::<Vec<_>>()
+    );
+    let row = fa_lantern::bind(UltimateBeneficiary::ID).unwrap();
+    assert!(
+        r.work.within_registered_bound(&row.complexity, &snapshot),
+        "{:?}",
+        r.work
+    );
+    assert!(
+        determinism(&snapshot, &h.book, &procedure)
+            .unwrap()
+            .deterministic()
+    );
+
+    // At 2 hops and 400 bps, C's 5,000 (500 bps, 2 transfers) joins D.
+    let wide = UltimateBeneficiary::with(
+        Params::defaults(UltimateBeneficiary::ID)
+            .unwrap()
+            .set("min_share_bps", 400)
+            .unwrap(),
+    );
+    let r = run_over(&snapshot, &h.book, &wide).unwrap();
+    assert_eq!(r.findings.len(), 2, "{:?}", r.findings);
+    assert!(
+        r.findings.iter().any(|f| f.statistic.value == 500
+            && f.narrative.contains("rests with SHELL-C, 2 transfers away")),
+        "{:?}",
+        r.findings
+    );
+}
