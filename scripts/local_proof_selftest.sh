@@ -50,6 +50,7 @@ emit_step() {
       test) printf 'test sample::one ... ok\ntest sample::two ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored\n' >>"$LOG_DIR/$step.log" ;;
     esac
     printf 'Remote command finished: exit=0\n' >>"$LOG_DIR/$step.log"
+    printf '[RCH] remote fixture-worker (1s)\n' >>"$LOG_DIR/$step.log"
   fi
   record_step_verdict "$step" "$status" "2026-10-20T00:00:00Z" "2026-10-20T00:00:01Z" 1 "$LOG_DIR/$step.log"
 }
@@ -224,7 +225,7 @@ fi
 # marker/inventory controls, rather than only checksum mismatch, must reject.
 compile_proof="$base/compile-controls"
 FAKE_PROOF_MODE=compile-controls bash scripts/local_proof.sh --output "$compile_proof" >/dev/null
-for mutation in completion inventory duplicate-key uncertain; do
+for mutation in completion inventory duplicate-key contradictory worker uncertain; do
   altered="$base/compile-$mutation"
   cp -R "$compile_proof" "$altered"
   python3 -B - "$altered" "$mutation" <<'PY'
@@ -237,6 +238,8 @@ text = path.read_text()
 if mutation == 'completion': text = text.replace('Remote command finished: exit=0', 'remote command status unknown')
 if mutation == 'inventory': text = text.replace('test sample::two ... ok\n', '')
 if mutation == 'uncertain': text += 'RCH_SCOPED_COMPLETION_UNCONFIRMED\n'
+if mutation == 'contradictory': text += 'test sample::three ... FAILED\n'
+if mutation == 'worker': text = text.replace('remote fixture-worker (', 'remote different-worker (')
 path.write_text(text)
 for record in records:
     record['log_digest'] = hashlib.sha256((root / 'steps' / (record['step'] + '.log')).read_bytes()).hexdigest()

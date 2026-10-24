@@ -325,6 +325,9 @@ try:
         if record["status"] == "PASS" and name in {"check", "clippy", "test-list", "test", "robot-schema", "registry-check", "fuzz-smoke", "bench-smoke", "reachability"}:
             text = log.read_text()
             require("Remote command finished: exit=0" in text, f"{name}: missing remote completion")
+            require(not re.search(r"Remote command finished: exit=[1-9]\d*|^test result: FAILED|^test .+ \.\.\. FAILED$", text, re.M), f"{name}: contradictory failed execution")
+            workers = re.findall(r"Selected worker: (\S+) at |^\[RCH\] remote (\S+) \(", text, re.M)
+            require(any(record["worker"] in pair for pair in workers), f"{name}: execution worker is not witnessed by the log")
             if name in {"check", "clippy"}:
                 require(re.search(r"^\s*Finished ", text, re.M), f"{name}: missing compile completion")
             if name == "test-list":
