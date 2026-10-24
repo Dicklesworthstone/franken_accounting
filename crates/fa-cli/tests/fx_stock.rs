@@ -740,17 +740,6 @@ fn functional_statement_cli_refuses_unsupported_workflows_and_unvalued_foreign_r
     for args in [
         vec![
             "statement",
-            "diff",
-            "--functional",
-            "--for",
-            "FY2026-P01",
-            "--definition",
-            "balance-sheet",
-            "--before",
-            "1",
-        ],
-        vec![
-            "statement",
             "lint",
             "--functional",
             "--definition",
@@ -776,6 +765,47 @@ fn functional_statement_cli_refuses_unsupported_workflows_and_unvalued_foreign_r
     ] {
         assert_eq!(run(&fixture.book, &args).0, 2, "{args:?}");
     }
+    // Functional two-frontier diffs are supported. Sequence 1 predates
+    // this period, so that query is a law refusal, not an unsupported verb.
+    let before = head(&fixture.book);
+    let (status, refused) = run(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--functional",
+            "--for",
+            "FY2026-P01",
+            "--definition",
+            "balance-sheet",
+            "--before",
+            "1",
+        ],
+    );
+    assert_eq!(status, 3, "{}", refused.render());
+    assert_eq!(text(data(&refused), "class"), "refusal");
+    let frontier = before.to_string();
+    let compared = ok(
+        &fixture.book,
+        &[
+            "statement",
+            "diff",
+            "--functional",
+            "--for",
+            "FY2026-P01",
+            "--definition",
+            "balance-sheet",
+            "--before",
+            &frontier,
+        ],
+    );
+    assert_eq!(text(&compared, "event"), "statement_diff");
+    assert_eq!(data(&compared).get("functional"), Some(&Json::Bool(true)));
+    assert_eq!(
+        head(&fixture.book),
+        before,
+        "both report paths are read-only"
+    );
     let unvalued = fixture.file("unvalued-statement.json", r#"{"effective_date":"2026-02-05","idempotency_key":"unvalued-statement","legs":[{"side":"debit","account":"1200","amount":"10.00 EUR"},{"side":"credit","account":"4000","amount":"10.00 EUR"}]}"#);
     ok(
         &fixture.book,

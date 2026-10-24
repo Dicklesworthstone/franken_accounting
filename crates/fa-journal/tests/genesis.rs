@@ -11388,9 +11388,12 @@ fn year_end_close_refuses_nonzero_retired_accounts_with_or_without_a_route() {
         .unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-102", exit::REFUSAL));
         assert!(
-            refusal
-                .message
-                .contains("nonzero fiscal-year carrying balance")
+            refusal.message.contains("nonzero fiscal-year")
+                && refusal.message.contains("carrying value")
+                && refusal
+                    .message
+                    .contains("not a posting leaf effective at fiscal-year end"),
+            "{refusal}"
         );
         assert!(refusal.message.contains("6000"));
         assert!(

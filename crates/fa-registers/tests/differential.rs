@@ -694,7 +694,10 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
         // At the target frontier only the one-unit hold contributes. Both a cold rebuild
         // and advancement from a cached large hold must reach that result.
         let recovered = maintain(&mut k, period);
-        assert!(recovered.rebuilt);
+        assert_eq!(
+            recovered.rebuilt, !cached_hold,
+            "a cached cursor consumes release-before-new-hold incrementally; a cold cursor rebuilds"
+        );
         maintained_matches_oracle(&recovered, &oracle, k.book.book_id);
         assert_eq!(recovered.fold.pending.len(), 2);
         assert!(

@@ -153,7 +153,7 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
                         code::REGISTER_CAPACITY,
                         exit::REFUSAL,
                         format!(
-                            "account {:032x}, unit {}, {} stock {} exceeds max_register_mantissa {} at transaction prefix {}; nothing was published",
+                            "account {:032x}, unit {}, {} stock {}: fold addition {} + {} at entry {:032x} exceeds max_register_mantissa {} at guarded prefix {}",
                             leg.account_ref.0,
                             unit.0,
                             if functional { "functional" } else { "native" },
@@ -163,6 +163,9 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
                                 "pending debit",
                                 "pending credit"
                             ][column],
+                            cell[column],
+                            mantissa,
+                            vid.0,
                             maximum,
                             txn.basis().0
                         ),
