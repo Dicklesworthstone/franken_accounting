@@ -6,7 +6,8 @@ fn native(text: &str) -> (Profiled, Native) {
         Selection::Native(native) => Some(native.clone()),
         Selection::TrialBalance
         | Selection::ExplainBalance { .. }
-        | Selection::OpenItems { .. } => None,
+        | Selection::OpenItems { .. }
+        | Selection::AccessLog { .. } => None,
     }
     .expect("a native read");
     (profiled, native)
@@ -611,4 +612,37 @@ fn an_amount_aggregate_returns_its_keys_and_arguments_for_exact_aggregation() {
         refused("MATCH (l:Leg) RETURN l.unit_id AS unit, SUM(l.amount) AS total ORDER BY total");
     assert_eq!(r.law, Law::Amount, "{r:?}");
     assert!(r.message.contains("across units"), "{r:?}");
+}
+
+/// fa-5c1, the runtime graph: `CALL fa.access_log` is the AccessEvent read
+/// itself, at trunk's head, optionally one reader's; every coordinate it
+/// cannot honour is refused with the admissible form, never ignored.
+#[test]
+fn the_access_log_procedure_reads_the_runtime_graph_at_the_head() {
+    assert!(PROCEDURES.contains(&"fa.access_log"));
+    let all = rewrite("CALL fa.access_log").expect("the whole log");
+    assert_eq!(all.selection, Selection::AccessLog { reader: None });
+    assert_eq!(all.known_at, KnownAt::Head);
+    let one = rewrite("CALL fa.access_log('auditor-7') AS KNOWN AT HEAD").expect("one reader");
+    assert_eq!(
+        one.selection,
+        Selection::AccessLog {
+            reader: Some("auditor-7".into())
+        }
+    );
+    for text in [
+        "CALL fa.access_log FOR PERIOD 'FY2026-P03'",
+        "CALL fa.access_log AS KNOWN AT 7",
+        "CALL fa.access_log AT BRANCH 'scenario:x'",
+        "EXPLAIN (CERTIFICATE) CALL fa.access_log",
+    ] {
+        let r = refused(text);
+        assert!(r.message.contains("fa.access_log"), "{text}: {r:?}");
+        assert!(r.fix.contains("fa access log --since"), "{text}: {r:?}");
+    }
+    assert!(
+        refused("CALL fa.access_log('a') YIELD x")
+            .message
+            .contains("stands alone")
+    );
 }

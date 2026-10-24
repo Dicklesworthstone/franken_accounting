@@ -131,6 +131,9 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
         | Selection::OpenItems { .. } => Err(invalid(
             "a CALL is certified as the report it runs (fa tb, fa explain balance or fa open-items --certify), not as a query",
         )),
+        Selection::AccessLog { .. } => Err(invalid(
+            "CALL fa.access_log reads the access events at the head; it has no certificate",
+        )),
     }
 }
 

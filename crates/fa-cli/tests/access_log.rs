@@ -214,3 +214,51 @@ fn a_read_only_token_read_is_recorded_before_it_observes_the_book() {
     assert_eq!(code, 2);
     assert_eq!(number(&f.log(&[]), "count"), 4);
 }
+
+/// fa-5c1, the runtime graph queried: `fa query "CALL fa.access_log"` is the
+/// access log itself, so a read-only token session's query lists that
+/// session's own read, which was recorded (command `query`) before the query
+/// observed the book. One reader's events, and the coordinates the log
+/// cannot honour, are refused rather than ignored.
+#[test]
+fn a_query_over_the_runtime_graph_lists_the_callers_own_session() {
+    let f = Fixture::new();
+    let (auditor, commitment) = f.issue("auditor-7", &["read"]);
+    let (other, _) = f.issue("auditor-8", &["read"]);
+    f.ok(&["--token", &other, "tb", "--period", "FY2026-P03"]);
+
+    let queried = f.ok(&["--token", &auditor, "query", "CALL fa.access_log"]);
+    assert_eq!(text(&queried, "event"), "access_log", "{queried:?}");
+    let events = data(&queried).get("events").and_then(Json::as_arr).unwrap();
+    assert_eq!(events.len(), 2, "{queried:?}");
+    let own = events.last().unwrap();
+    assert_eq!(text(own, "principal_name"), "auditor-7");
+    assert_eq!(text(own, "capability"), commitment);
+    assert_eq!(text(own, "command"), "query");
+    // The same read through the CLI verb answers the same events, its own
+    // read added.
+    let direct = f.log(&[]);
+    assert_eq!(number(&direct, "count"), 2, "{direct:?}");
+
+    // One reader's: the other auditor's trial balance alone.
+    let theirs = f.ok(&["query", "CALL fa.access_log('auditor-8')"]);
+    let theirs = data(&theirs).get("events").and_then(Json::as_arr).unwrap();
+    assert_eq!(theirs.len(), 1, "{theirs:?}");
+    assert_eq!(text(&theirs[0], "command"), "tb");
+
+    // Planted: certification, a known-at and a branch are refused by the
+    // profile before the book opens, so nothing more is recorded.
+    for statement in [
+        "EXPLAIN (CERTIFICATE) CALL fa.access_log",
+        "CALL fa.access_log AS KNOWN AT 3",
+        "CALL fa.access_log AT BRANCH 'scenario:x'",
+    ] {
+        let (code, refused) = f.run(&["--token", &auditor, "query", statement]);
+        assert_ne!(code, 0, "{statement}: {refused:?}");
+        assert!(
+            refused.render().contains("fa.access_log"),
+            "{statement}: {refused:?}"
+        );
+    }
+    assert_eq!(number(&f.log(&["--reader", "auditor-7"]), "count"), 1);
+}

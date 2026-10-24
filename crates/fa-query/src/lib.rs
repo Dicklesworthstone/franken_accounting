@@ -23,6 +23,9 @@
 //!   `CALL fa.open_items(['<account>'])`, which are the registered reads
 //!   themselves (`fa tb`, `fa explain balance`, `fa open-items`) at the
 //!   statement's period and known-at;
+//! - `CALL fa.access_log` and `CALL fa.access_log('<reader>')`, the runtime
+//!   graph's AccessEvents (`fa access log`) at the head: a read-only bound
+//!   session's own query is among them, recorded before it observed;
 //! - `EXPLAIN (CERTIFICATE)` leading the statement: the caller certifies the
 //!   result, as `fa query --certify` does.
 //!
@@ -134,6 +137,9 @@ pub enum Selection {
     /// `CALL fa.open_items(['<account>'])`: the open items at the
     /// statement's known-at, as `fa open-items` reads them.
     OpenItems { account: Option<String> },
+    /// `CALL fa.access_log('<reader>')`: the AccessEvents recorded so far, or
+    /// one reader's, as `fa access log` reads them.
+    AccessLog { reader: Option<String> },
 }
 
 /// A native read with its selectors compiled in, waiting only for the
@@ -166,9 +172,14 @@ impl Native {
 }
 
 /// The profile procedures this build runs.
-pub const PROCEDURES: &[&str] = &["fa.trial_balance", "fa.explain_balance", "fa.open_items"];
+pub const PROCEDURES: &[&str] = &[
+    "fa.trial_balance",
+    "fa.explain_balance",
+    "fa.open_items",
+    "fa.access_log",
+];
 
-const CALL_FIX: &str = "CALL fa.trial_balance FOR PERIOD '<code>' | CALL fa.explain_balance('<account>') FOR PERIOD '<code>' | CALL fa.open_items(['<account>']), each [AS KNOWN AT <seq>]; Lantern procedures: fa procedure run <id>";
+const CALL_FIX: &str = "CALL fa.trial_balance FOR PERIOD '<code>' | CALL fa.explain_balance('<account>') FOR PERIOD '<code>' | CALL fa.open_items(['<account>']), each [AS KNOWN AT <seq>] | CALL fa.access_log('<reader>'); Lantern procedures: fa procedure run <id>";
 
 /// The longest statement the profile reads (bytes).
 pub const MAX_STATEMENT_BYTES: usize = 16 * 1024;
@@ -695,6 +706,21 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
             ),
             (Some(account), Some(_)) => Ok(Selection::ExplainBalance { account }),
         },
+        "fa.access_log" => {
+            if selectors.period.is_some()
+                || !matches!(selectors.known_at, None | Some(KnownAt::Head))
+                || selectors.branch.is_some()
+                || selectors.certify
+            {
+                return Err(Refusal::new(
+                    Law::Profile,
+                    0,
+                    "fa.access_log reads the access events recorded at trunk's head: no period, known-at, branch or certificate",
+                    "CALL fa.access_log | CALL fa.access_log('<reader>'); a later window: fa access log --since <seq>",
+                ));
+            }
+            Ok(Selection::AccessLog { reader: account })
+        }
         _ => {
             if selectors.period.is_some()
                 || matches!(selectors.known_at, Some(KnownAt::Reported(_)))

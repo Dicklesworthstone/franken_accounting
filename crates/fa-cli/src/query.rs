@@ -91,6 +91,28 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             return crate::cli::open_items_cmd(ctx, &read);
         }
+        // The runtime graph's AccessEvents at trunk's head: the command's own
+        // flags it cannot honour are refused, never passed on and ignored.
+        QuerySelection::AccessLog { reader } => {
+            if args.switch("--certify")
+                || args.flag("--certificate-out").is_some()
+                || args
+                    .flag("--branch")
+                    .is_some_and(|branch| branch != "trunk")
+            {
+                return Err(usage(
+                    "CALL fa.access_log reads the access events at trunk's head; it has no certificate or branch",
+                    "fa query \"CALL fa.access_log('<reader>')\" --json",
+                ));
+            }
+            let mut read = args.clone();
+            read.positional = vec!["access".to_string(), "log".to_string()];
+            if let Some(name) = reader {
+                read.flags
+                    .insert("--reader".to_string(), vec![name.clone()]);
+            }
+            return crate::access::access_cmd(ctx, &read);
+        }
     };
     let certify =
         profiled.certify || args.switch("--certify") || args.flag("--certificate-out").is_some();
