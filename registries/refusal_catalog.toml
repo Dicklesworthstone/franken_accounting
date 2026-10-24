@@ -1208,6 +1208,14 @@ exit = "refusal"
 cite = "plan §10.3 (Canon: a total, statically typed rule language whose units, laws and balance are checked before it runs; a rule that cannot be evaluated fails closed with a typed error instead of posting a guess)"
 fix = "revise the rule at the line and column the refusal names and run fa rule check <file> again; for an evaluation, choose an event of the rule's kind that carries each resource the rule reads exactly once, in the unit it reads it"
 
+[[refusal]]
+code = "FA-REF-197"
+name = "RESTATEMENT_SHAPE"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.2, §8.3 (Restates: a material correction of a Closed or Locked period inside an Approved Restatement or PolicyChangeRetrospective case; net effect is the target plus the restatement's delta legs; bead fa-651f)"
+fix = "plan the restatement in the case's scenario with class Restatement, restates <vid> naming one standing committed posting, a registered reason and the delta legs; rehearse, approve and post the case with fa case post <case>"
+
 # ---- Proof export (145–146; renumbered from main's 126/127, which staging's Notary codes hold) ---
 [[refusal]]
 code = "FA-REF-192"

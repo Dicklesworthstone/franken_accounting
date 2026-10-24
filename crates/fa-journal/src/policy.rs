@@ -177,7 +177,9 @@ pub fn authorize_approvals<V: asupersync::fs::Vfs + Clone>(
 
 /// [`authorize_approvals`] for work in a case: `case_preparers` are the
 /// principals who prepared any entry in it, so a rule's `case_preparer`
-/// exclusion is decided (`None` keeps it undecidable: fail closed).
+/// exclusion is decided (`None` keeps it undecidable: fail closed). A rule
+/// naming `session_lineage` is decided over each approval's
+/// [`authority_lineage`], read in `txn`.
 #[allow(clippy::too_many_arguments)]
 pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
@@ -192,7 +194,86 @@ pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
     case_preparers: Option<&std::collections::BTreeSet<VId>>,
 ) -> Outcome<()> {
     let steward = steward()?;
+    let (witnessed, commitments) =
+        match witness_approvals(txn, db, book, approvals, proposal_digest, epoch)? {
+            Ok(read) => read,
+            Err(r) => return Ok(Err(r)),
+        };
+    let mut lineages = None;
+    if steward.excludes(key, "session_lineage") {
+        lineages = approval_lineages(txn, db, book, &commitments)?;
+    }
+    let witnesses = fa_policy::Witnessed {
+        case_preparers,
+        lineages: lineages.as_deref(),
+    };
+    Ok(steward
+        .segregate_in(key, matrix_approvals, preparer, &witnessed, witnesses)
+        .map_err(|d| refusal(&d)))
+}
+
+/// `session_lineage` alone over `approvals` under the posting rule `rule`
+/// (plan §14.3): a case's Approve holds its approvers to the exclusion its
+/// entries' rule names, so a pairing the case's Post would refuse is
+/// refused before the case is Approved. `preparer` is the principal
+/// recording the transition and `case_preparers` the case's planners; the
+/// Post checks the poster again.
+#[allow(clippy::too_many_arguments)]
+pub fn authorize_lineage<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    approvals: &[ApprovalRef],
+    proposal_digest: &[u8; 32],
+    epoch: u64,
+    rule: &str,
+    preparer: VId,
+    case_preparers: &BTreeSet<VId>,
+) -> Outcome<()> {
+    let (witnessed, commitments) =
+        match witness_approvals(txn, db, book, approvals, proposal_digest, epoch)? {
+            Ok(read) => read,
+            Err(r) => return Ok(Err(r)),
+        };
+    let lineages = approval_lineages(txn, db, book, &commitments)?.unwrap_or_default();
+    Ok(
+        fa_policy::sod::shared_lineage(rule, preparer, &witnessed, Some(case_preparers), &lineages)
+            .map_err(|d| refusal(&d)),
+    )
+}
+
+/// Each approval's [`authority_lineage`], in order, read in `txn`; `None`
+/// when any chain is not read to its end.
+fn approval_lineages<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    commitments: &[[u8; 32]],
+) -> Result<Option<Vec<BTreeSet<VId>>>, KernelError> {
+    let mut read = Vec::with_capacity(commitments.len());
+    for commitment in commitments {
+        match authority_lineage(txn, db, book, commitment)? {
+            Some(lineage) => read.push(lineage),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(read))
+}
+
+/// Witness every cited approval inside `txn`: each binds `proposal_digest`,
+/// names a recorded approval of this book whose identity matches its
+/// content, and was recorded under `epoch`. Returns the approvers and the
+/// capability commitment each approval was recorded under.
+fn witness_approvals<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    approvals: &[ApprovalRef],
+    proposal_digest: &[u8; 32],
+    epoch: u64,
+) -> Outcome<(Vec<Approver>, Vec<[u8; 32]>)> {
     let mut witnessed: Vec<Approver> = Vec::with_capacity(approvals.len());
+    let mut commitments: Vec<[u8; 32]> = Vec::with_capacity(approvals.len());
     for (index, cited) in approvals.iter().enumerate() {
         if &cited.approved_digest != proposal_digest {
             return Ok(Err(refusal(&Denial::ApprovalBinding { index })));
@@ -239,10 +320,9 @@ pub fn authorize_approvals_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal(&d)));
         }
         witnessed.push(Approver::from(&approval));
+        commitments.push(approval.capability_commitment);
     }
-    Ok(steward
-        .segregate_in(key, matrix_approvals, preparer, &witnessed, case_preparers)
-        .map_err(|d| refusal(&d)))
+    Ok(Ok((witnessed, commitments)))
 }
 
 /// Record one approval over a proposal digest.
@@ -765,6 +845,48 @@ pub fn revocation_vid(book: Id128, commitment: &[u8; 32]) -> VId {
 }
 
 const MAX_ISSUANCE_LINEAGE: usize = 16;
+
+/// The authority lineage of the capability `commitment` names (plan §14.3
+/// `session_lineage`, §14.5): every principal who issued it, directly or
+/// through earlier issuances, read from its journaled issuance rows as
+/// point witnesses of `txn`. An issuance entry's principal is its issuer
+/// (the kernel admits an issuance only when the issued body names the
+/// issuing principal), and its control origin names the issuer's own
+/// commitment, the next row up. A capability with no issuance row (an
+/// embedded or launch capability) ends the walk. `None` when the chain
+/// does not end within `MAX_ISSUANCE_LINEAGE` rows or returns to a
+/// commitment it passed, so the exclusion stays undecided (fail closed).
+pub fn authority_lineage<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    commitment: &[u8; 32],
+) -> Result<Option<BTreeSet<VId>>, KernelError> {
+    let mut lineage = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut at = *commitment;
+    for _ in 0..=MAX_ISSUANCE_LINEAGE {
+        if !seen.insert(at) {
+            return Ok(None);
+        }
+        let Some(row) = txn.vertex(db, issuance_vid(book.book_id, &at))? else {
+            return Ok(Some(lineage));
+        };
+        let Ok(parent) = issued_here(Some(&row), &at) else {
+            return Err(KernelError::Corrupt(format!(
+                "the issuance identity of capability {} holds no issuance of it",
+                crate::evidence::hex(&at)
+            )));
+        };
+        let (entry, _) = crate::post::entry_of(&row)?;
+        lineage.insert(entry.proposal.principal_ref);
+        match parent {
+            Some(parent) => at = parent,
+            None => return Ok(Some(lineage)),
+        }
+    }
+    Ok(None)
+}
 
 /// The capability is not revoked, as a point witness of `txn` (plan §14.2:
 /// authority is evaluated against current policy at commit). A revocation

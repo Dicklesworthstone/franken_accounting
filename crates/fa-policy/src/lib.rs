@@ -50,7 +50,7 @@ pub use sod::{
     Approver, AuthorityGraph, AuthorityVertex, CachedJudgment, ConservedRightsPool,
     DECISION_CLOSURE_DOMAIN, DecisionClosure, EMPTINESS_WITNESS_DOMAIN, EmptinessWitness,
     JudgmentCache, PERMIT_DOMAIN, Party, PermitDenial, PermitGate, PermitTarget, RightViolation,
-    SOD_GRAPH_PROOF_DOMAIN, SingleUsePermit, SodBypassViolation, SodGraphProof,
+    SOD_GRAPH_PROOF_DOMAIN, SingleUsePermit, SodBypassViolation, SodGraphProof, Witnessed,
 };
 
 use fa_model::domain_digest;
@@ -86,28 +86,50 @@ impl Steward {
         preparer: Party,
         approvers: &[Approver],
     ) -> Result<(), Denial> {
-        self.segregate_in(key, matrix_approvals, preparer, approvers, None)
+        self.segregate_in(
+            key,
+            matrix_approvals,
+            preparer,
+            approvers,
+            sod::Witnessed::default(),
+        )
     }
 
-    /// [`Self::segregate`] for work in a case whose entries `case_preparers`
-    /// prepared ([`sod::evaluate_in`]).
+    /// [`Self::segregate`] with what the kernel witnessed beyond the entry:
+    /// a case's preparers and the approvals' authority lineages
+    /// ([`sod::evaluate_in`]).
     pub fn segregate_in(
         &self,
         key: &SodKey,
         matrix_approvals: u8,
         preparer: Party,
         approvers: &[Approver],
-        case_preparers: Option<&std::collections::BTreeSet<fgdb_types::VId>>,
+        witnessed: sod::Witnessed<'_>,
     ) -> Result<(), Denial> {
         let (rule, req) = self.sod.requirement(key);
-        sod::evaluate_in(
-            rule,
-            req,
-            matrix_approvals,
-            preparer,
-            approvers,
-            case_preparers,
-        )
+        sod::evaluate_in(rule, req, matrix_approvals, preparer, approvers, witnessed)
+    }
+
+    /// Whether the rule governing `key` names `exclusion`, so the kernel
+    /// reads its witnesses only where a rule needs them.
+    pub fn excludes(&self, key: &SodKey, exclusion: &str) -> bool {
+        let (_, req) = self.sod.requirement(key);
+        req.exclusions.iter().any(|e| e == exclusion)
+    }
+
+    /// The name of the first posting rule of `class` that names
+    /// `exclusion`, so work that will post as `class` can be held to it
+    /// before it posts (a case's Approve, for `session_lineage`).
+    pub fn posting_rule_excluding(&self, class: &str, exclusion: &str) -> Option<&str> {
+        self.sod
+            .rules
+            .iter()
+            .find(|r| {
+                r.key.class == class
+                    && r.key.transition.is_none()
+                    && r.requirement.exclusions.iter().any(|e| e == exclusion)
+            })
+            .map(|r| r.name.as_str())
     }
 
     /// The op a control rule requires of its preparer (`None` when no rule

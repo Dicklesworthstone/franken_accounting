@@ -908,7 +908,8 @@ fa accrue --date 2026-03-31 --debit 6100 --credit 2100 --amount "1500.00 USD" --
 fa reverse <vid> --reason WrongAmount --replace-with corrected.json --book acme.fabook --json
 # Restatement cases: open one over the periods a correction affects, journal its determination, then
 # rehearse, approve (dual control), post and disclose it with fa case rehearse|approve|post|disclose (available
-# today; a Restatement-class case's posting waits on fa-651f).
+# today; a Restatement case's two approvers may share no session lineage: neither's capability was issued,
+# directly or further up the chain, by the other or by a preparer of the case).
 fa case open --kind Restatement --periods FY2024-P12 --narrative <memo-oid> --book acme.fabook --json
 fa case determine 1 --on 2025-03-03 --authority <minutes-oid> --book acme.fabook --json
 

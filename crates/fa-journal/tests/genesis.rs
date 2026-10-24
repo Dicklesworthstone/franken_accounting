@@ -1449,20 +1449,18 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
     assert!(r.message.contains("paired Reversal"), "{r}");
     assert!(r.fix.contains("fa reverse <target vid>"), "{r}");
     // A registered class this slice does not enforce is refused, naming its bead.
-    for class in [EntryClass::CLOSING, EntryClass::RESTATEMENT] {
-        let r = h
-            .post(h.request(
-                h.proposal(h.rent_legs(1), b"cls", class),
-                &["post", "post_closed", "restate", "migrate"],
-            ))
-            .unwrap_err();
-        assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{class:?}");
-        assert!(
-            r.fix.contains("fa-") || r.fix.contains("plan §"),
-            "{}",
-            r.fix
-        );
-    }
+    let r = h
+        .post(h.request(
+            h.proposal(h.rent_legs(1), b"cls", EntryClass::CLOSING),
+            &["post", "post_closed", "restate", "migrate"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL), "{r}");
+    assert!(
+        r.fix.contains("fa-") || r.fix.contains("plan §"),
+        "{}",
+        r.fix
+    );
     // A PriorPeriodAdjustment is a restatement case's entry (fa-75j4): alone,
     // or claiming a case on any path but the case's own Post, it is refused,
     // and no other class may claim a case.
@@ -1483,11 +1481,14 @@ fn control_classes_unsupported_classes_and_structure_errors_are_refused_by_kind(
     stray.schema_minor = fa_model::entry::SCHEMA_MINOR;
     stray.extensions = vec![(fa_model::entry::CASE_MEMBER_EXTENSION, claim)];
     let alone = h.proposal(h.rent_legs(1), b"ppa", EntryClass::PRIOR_PERIOD_ADJUSTMENT);
-    // A Revision, too, posts only as its Revision case's entry (slice 4b).
+    // A Revision, too, posts only as its Revision case's entry (slice 4b),
+    // and a Restatement only as its Restatement case's (fa-651f).
     let revision = h.proposal(h.rent_legs(1), b"revision", EntryClass::REVISION);
+    let restatement = h.proposal(h.rent_legs(1), b"restatement", EntryClass::RESTATEMENT);
     for (proposal, says) in [
         (alone, "posted only in its case's batch"),
         (revision, "posted only in its case's batch"),
+        (restatement, "posted only in its case's batch"),
         (claimed, "posted only in its case's batch"),
         (stray, "only a case-bound entry names a case"),
     ] {
@@ -2027,14 +2028,6 @@ fn unverified_plan_and_origin_claims_are_refused_without_consuming_identity() {
     );
     let origins = [
         (
-            "Rule",
-            EntryOrigin::Rule {
-                rule_version_oid: Oid([0x71; 32]),
-                event_ref: VId(0x72),
-                inputs_digest: [0x73; 32],
-            },
-        ),
-        (
             "Sweep",
             EntryOrigin::Sweep {
                 sweep_kind: 1,
@@ -2074,6 +2067,27 @@ fn unverified_plan_and_origin_claims_are_refused_without_consuming_identity() {
         assert!(!refusal.fix.is_empty(), "{refusal}");
         assert_eq!(h.db.frontier().unwrap(), frontier, "{name}: no publication");
     }
+    // A claimed Rule origin is verified rather than refused as minted-only
+    // (fa-c34 slice 4): event closure runs first, so a claim citing an event
+    // this book never recorded is refused under FA-INV-05's event closure,
+    // before the rule version or its re-derivation is consulted.
+    let mut claimed = native.clone();
+    claimed.origin = EntryOrigin::Rule {
+        rule_version_oid: Oid([0x71; 32]),
+        event_ref: VId(0x72),
+        inputs_digest: [0x73; 32],
+    };
+    claimed
+        .validate()
+        .expect("the claim is structurally encodable");
+    let refusal = h.post(h.request(claimed, &["post"])).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-080", exit::REFUSAL));
+    assert!(
+        refusal.message.contains("does not exist in this book"),
+        "{refusal}"
+    );
+    assert!(refusal.cite.contains("FA-INV-05"), "{refusal}");
+    assert_eq!(h.db.frontier().unwrap(), frontier, "Rule: no publication");
     let mut certified = h.request(native.clone(), &["post"]);
     certified.plan_certificate = Some(Oid([0x78; 32]));
     let refusal = h.post(certified).unwrap_err();

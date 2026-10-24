@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use fa_policy::sod::{Approver, Party, evaluate, evaluate_in};
+use fa_policy::sod::{Approver, Party, Witnessed, evaluate, evaluate_in};
 use fa_policy::{Op, Profile, Steward};
 use fa_reference::sod as oracle;
 use fa_registry::sod_policy::SodRequirement;
@@ -154,8 +154,9 @@ fn engine_and_oracle_agree_on_case_bound_rules_with_known_preparers() {
         .into_iter()
         .filter(|(_, r)| r.exclusions.iter().any(|e| e == "case_preparer"))
         .map(|(name, mut r)| {
-            // session_lineage stays undecidable; drop it so the case
-            // exclusion itself is exercised.
+            // No lineages are supplied here, so session_lineage would refuse
+            // every transcript; drop it so the case exclusion itself is
+            // exercised (the next test decides session_lineage).
             r.exclusions.retain(|e| e != "session_lineage");
             (name, r)
         })
@@ -180,11 +181,22 @@ fn engine_and_oracle_agree_on_case_bound_rules_with_known_preparers() {
                             op: a.op.name().to_string(),
                         })
                         .collect();
-                    let got = evaluate_in(name, req, 0, preparer, t, Some(&preparers))
+                    let witnessed = Witnessed {
+                        case_preparers: Some(&preparers),
+                        lineages: None,
+                    };
+                    let got = evaluate_in(name, req, 0, preparer, t, witnessed)
                         .err()
                         .map(|d| (d.code(), d.kind()));
-                    let expected =
-                        oracle::verdict_in(req, 0, 1, preparer_profile.name(), &lit, Some(scope));
+                    let expected = oracle::verdict_in(
+                        req,
+                        0,
+                        1,
+                        preparer_profile.name(),
+                        &lit,
+                        Some(scope),
+                        None,
+                    );
                     assert_eq!(
                         got, expected,
                         "rule {name}, preparers {scope:?}, preparer {preparer_profile}, transcript {t:?}"
@@ -197,6 +209,148 @@ fn engine_and_oracle_agree_on_case_bound_rules_with_known_preparers() {
         }
     }
     assert!(reached > 0, "no transcript reached case_preparer");
+}
+
+/// `session_lineage` decided over authority lineages (fa-651f): every
+/// Human `approve` transcript of length ≤ 3 over principals 1 (the
+/// preparer) to 4, each approval with every lineage from a small set (none,
+/// the preparer, each other principal, two of them, the approver itself),
+/// under every lineage-bearing rule, with and without known case preparers.
+/// Engine and oracle agree on code and kind, both verdicts are reached, and
+/// lineages of the wrong length decide nothing.
+#[test]
+fn engine_and_oracle_agree_on_session_lineage() {
+    let steward = Steward::embedded().expect("policy");
+    let mut reqs: Vec<(String, SodRequirement)> = steward
+        .sod
+        .rules
+        .iter()
+        .filter(|r| {
+            r.requirement
+                .exclusions
+                .iter()
+                .any(|e| e == "session_lineage")
+        })
+        .map(|r| (r.name.clone(), r.requirement.clone()))
+        .collect();
+    assert!(!reqs.is_empty(), "the registry has lineage-bound rules");
+    for approvers in 0..=2u8 {
+        for case in [false, true] {
+            let mut exclusions = vec![
+                "preparer".to_string(),
+                "duplicate".to_string(),
+                "session_lineage".to_string(),
+            ];
+            if case {
+                exclusions.push("case_preparer".into());
+            }
+            reqs.push((
+                format!("synthetic-lineage-{approvers}-{case}"),
+                SodRequirement {
+                    approvers,
+                    approver_op: "approve".into(),
+                    approver_profiles: vec!["Human".into()],
+                    agent_prepared_human_approvers: 0,
+                    exclusions,
+                    cite: "synthetic".into(),
+                },
+            ));
+        }
+    }
+    let lineage_options: [&[u128]; 6] = [&[], &[1], &[2], &[3], &[4], &[3, 4]];
+    let mut cases: Vec<(Vec<Approver>, Vec<BTreeSet<VId>>)> = vec![(Vec::new(), Vec::new())];
+    let mut frontier = cases.clone();
+    for _ in 0..3 {
+        let mut next = Vec::new();
+        for (t, l) in &frontier {
+            for p in [1u128, 2, 3, 4] {
+                for option in lineage_options {
+                    let mut t2 = t.clone();
+                    t2.push(Approver {
+                        principal: VId(p),
+                        profile: Profile::Human,
+                        op: Op::Approve,
+                    });
+                    let mut l2 = l.clone();
+                    l2.push(option.iter().map(|q| VId(*q)).collect());
+                    next.push((t2, l2));
+                }
+            }
+        }
+        cases.extend(next.iter().cloned());
+        frontier = next;
+    }
+    let scopes: [Option<&[u128]>; 3] = [None, Some(&[]), Some(&[3])];
+    let mut admitted = 0usize;
+    let mut lineage_refusals = 0usize;
+    for (name, req) in &reqs {
+        for scope in scopes {
+            let preparers: Option<BTreeSet<VId>> =
+                scope.map(|s| s.iter().map(|p| VId(*p)).collect());
+            let preparer = Party {
+                principal: VId(1),
+                profile: Profile::Human,
+            };
+            for (t, lineages) in &cases {
+                let lit: Vec<oracle::Approval> = t
+                    .iter()
+                    .map(|a| oracle::Approval {
+                        principal: a.principal.0,
+                        profile: a.profile.name().to_string(),
+                        op: a.op.name().to_string(),
+                    })
+                    .collect();
+                let lit_lineages: Vec<Vec<u128>> = lineages
+                    .iter()
+                    .map(|l| l.iter().map(|p| p.0).collect())
+                    .collect();
+                let witnessed = Witnessed {
+                    case_preparers: preparers.as_ref(),
+                    lineages: Some(lineages),
+                };
+                let got = evaluate_in(name, req, 0, preparer, t, witnessed)
+                    .err()
+                    .map(|d| (d.code(), d.kind()));
+                let expected =
+                    oracle::verdict_in(req, 0, 1, "Human", &lit, scope, Some(&lit_lineages));
+                assert_eq!(
+                    got, expected,
+                    "rule {name}, preparers {scope:?}, transcript {t:?}, lineages {lineages:?}"
+                );
+                match got {
+                    None => admitted += 1,
+                    Some((_, "session_lineage")) => lineage_refusals += 1,
+                    Some(_) => {}
+                }
+                // One lineage short decides nothing, on both sides.
+                if let Some((_, shorter)) = lineages.split_last() {
+                    let short = Witnessed {
+                        case_preparers: preparers.as_ref(),
+                        lineages: Some(shorter),
+                    };
+                    let got = evaluate_in(name, req, 0, preparer, t, short)
+                        .err()
+                        .map(|d| (d.code(), d.kind()));
+                    let expected = oracle::verdict_in(
+                        req,
+                        0,
+                        1,
+                        "Human",
+                        &lit,
+                        scope,
+                        Some(&lit_lineages[..lit_lineages.len() - 1]),
+                    );
+                    assert_eq!(got, expected);
+                    assert_eq!(got, Some(("FA-REF-008", "unsupported_exclusion")));
+                }
+            }
+        }
+    }
+    assert!(admitted > 0, "no transcript was admitted");
+    assert!(
+        lineage_refusals > 0,
+        "no transcript reached session_lineage"
+    );
 }
 
 /// A planted mutation in the oracle's input (an approver count one lower)

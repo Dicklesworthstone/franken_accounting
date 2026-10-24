@@ -3443,7 +3443,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 2. Read the exit code before the output: 0 success (empty results are 0), 2 usage, 3 accounting-law refusal, 4 environment, 5 foundation/I-O, 6 conflict (retry with a fresh read), 7 safety block (period law, capability, an unconfirmed dangerous operation), 8 verification failure. 1 is never emitted.\n\
 3. Every non-zero exit is exactly one `error` line: data {class, exit, refusal_id, message, cite, fix, detail, refusal}. `refusal_id` (FA-REF-nnn) is the refusal catalog code when one applies, and `refusal` is then its Appendix D object: `where` (leg, account, period …), `why` (law, policy or matrix cell), `fix.argv` (a command that parses against the registry, when the fix names one), `fix.or_field_change` (the field and the values it admits). Do the `fix`; do not invent a leg, a date, or an approval. FA-REF-007 means the operation cannot be undone in practice: its fix names the safe alternative; add --yes only when the operation is intended (`fa capabilities --json` lists them under `dangerous`).\n\
 4. Amounts are strings with the unit: \"1500.00 USD\". Never floats. Dates are civil YYYY-MM-DD; recorded time is assigned by the journal, never supplied.\n\
-5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. A Reclassification moves part of an entry to another account (`fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>`; FA-REF-185 when it moves more than the target's legs have left). Restatement remains refused with FA-REF-102. A PriorPeriodAdjustment or a Revision posts only as an approved restatement case's entry (`fa case post <case>`), FA-REF-178 otherwise; a Revision case plans each Revision in its scenario with `revises` naming the posting it corrects and the delta legs.\n\
+5. Corrections are new entries that cite the original; nothing is edited in place. Reversal is live. A corrected Replacement posts only as a pair with its Reversal (`fa reverse <vid> --reason <name> --replace-with <file>`); a standalone Replacement is FA-REF-160. A Reclassification moves part of an entry to another account (`fa reclass <vid> --from <account> --to <account> --amount \"<amount>\" --reason <name>`; FA-REF-185 when it moves more than the target's legs have left). A PriorPeriodAdjustment, a Revision or a Restatement posts only as an approved restatement case's entry (`fa case post <case>`), FA-REF-178 otherwise; a Revision or Restatement case plans each entry in its scenario with `revises` or `restates` naming the posting it corrects and the delta legs. A Restatement's two approvers share no session lineage: neither's capability was issued, directly or further up the chain, by the other or by a preparer of the case.\n\
 6. Idempotency: every intent carries idempotency_key; resubmitting returns the recorded outcome (event \"recorded\"), never a duplicate.\n\
 7. Posting into a non-Open period is decided by the admissibility matrix; the refusal cites the (class, state) cell and names the admissible class or capability.\n\
 8. Two-phase: `fa reserve` posts a Pending (amounts in the pending columns, never posted); `fa resolve` names it with `resolves` and either posts a sub-vector (`legs`, each drawn from one hold leg — same account and side, at most the reserved amount; add `source_ordinal` when the hold has several such legs) or voids it (`disposition: \"voids\"`). The rest of the hold is released either way. One resolution per hold: a second is exit 6 (FA-REF-062); resolving a non-hold is FA-REF-060.\n\
@@ -7345,6 +7345,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "reverses",
         "reclassifies",
         "revises",
+        "restates",
         "moves",
         "reason",
         "resolves",
@@ -7565,8 +7566,16 @@ fn build_post_request_with_prior(
             "set class: \"Revision\" and plan it in its Revision case's scenario, or remove `revises`",
         ));
     }
-    let dated_by_target =
-        typed_reversal || class == EntryClass::RECLASSIFICATION || class == EntryClass::REVISION;
+    if doc.get("restates").is_some() && class != EntryClass::RESTATEMENT {
+        return Err(usage(
+            "`restates` names the target of a Restatement only",
+            "set class: \"Restatement\" and plan it in its Restatement case's scenario, or remove `restates`",
+        ));
+    }
+    let dated_by_target = typed_reversal
+        || class == EntryClass::RECLASSIFICATION
+        || class == EntryClass::REVISION
+        || class == EntryClass::RESTATEMENT;
     let supplied_date = if dated_by_target && doc.get("effective_date").is_none() {
         None
     } else {
@@ -7728,25 +7737,35 @@ fn build_post_request_with_prior(
                 ));
             }
         }
-    } else if class == EntryClass::REVISION {
-        // A Revision names the posting it revises and carries delta legs
-        // (plan §8.2 Revises, §8.3; bead fa-75j4). It is planned in its
-        // Revision case's scenario and reaches trunk only in the case's own
-        // Post. The date, period and evidence default to the target's.
-        const FIX: &str = "an intent with class \"Revision\", \"revises\": \"<vid>\", \"reason\": \"<name>\" and the delta \"legs\", run in the case's scenario: fa scenario run <name> --intent <file>";
+    } else if let Some((field, kind)) = match class {
+        EntryClass::REVISION => Some(("revises", fa_model::SupersessionKind::Revises)),
+        EntryClass::RESTATEMENT => Some(("restates", fa_model::SupersessionKind::Restates)),
+        _ => None,
+    } {
+        // A Revision names the posting it revises, and a Restatement the
+        // posting it restates, with delta legs (plan §8.2 Revises/Restates,
+        // §8.3; beads fa-75j4, fa-651f). Each is planned in its case's
+        // scenario and reaches trunk only in the case's own Post. The
+        // date, period and evidence default to the target's.
+        let name = class.name().unwrap_or("?");
+        let fix = format!(
+            "an intent with class \"{name}\", \"{field}\": \"<vid>\", \"reason\": \"<name>\" and the delta \"legs\", run in the case's scenario: fa scenario run <name> --intent <file>"
+        );
         if doc.get("reverses").is_some()
             || doc.get("resolves").is_some()
             || doc.get("moves").is_some()
         {
             return Err(usage(
-                "a Revision names its target with `revises` and carries explicit delta `legs`",
-                FIX,
+                format!(
+                    "a {name} names its target with `{field}` and carries explicit delta `legs`"
+                ),
+                fix,
             ));
         }
-        let target_s = doc.get("revises").and_then(Json::as_str).ok_or_else(|| {
+        let target_s = doc.get(field).and_then(Json::as_str).ok_or_else(|| {
             usage(
-                "a Revision names the posting it revises: `revises` (vid)",
-                FIX,
+                format!("a {name} names the posting it corrects: `{field}` (vid)"),
+                fix.clone(),
             )
         })?;
         let reason = reversal_reason(doc.get("reason"))?;
@@ -7754,22 +7773,25 @@ fn build_post_request_with_prior(
             return Err(Refusal::new(
                 fa_journal::refusal::code::SUPERSESSION_REASON,
                 exit::REFUSAL,
-                "the revision reason Other requires a description",
+                format!(
+                    "the {} reason Other requires a description",
+                    name.to_lowercase()
+                ),
                 "plan §8.2 (Other(text)); registries/reason_codes.toml",
                 "state the reason in the intent's description",
             )
             .into());
         }
-        let vid = parse_vid(target_s, "revises")?;
+        let vid = parse_vid(target_s, field)?;
         let Some(target) = batch_plan::target_entry(book, earlier, vid)? else {
             return Err(usage(
-                format!("revises: no entry {target_s} in this book"),
+                format!("{field}: no entry {target_s} in this book"),
                 "fa entry show <vid> to check the identity",
             ));
         };
         supersession.push(fa_model::Supersession {
             target: target.entry_ref(vid),
-            kind: fa_model::SupersessionKind::Revises,
+            kind,
             reason_code: reason.code,
         });
         target_date = Some(target.proposal.effective_date);
@@ -20222,7 +20244,46 @@ pub(crate) fn refuse_untaken_date(
     }
 }
 
-fn procedure_row_json(row: &fa_registry::procedures::Procedure) -> Json {
+/// Basis points as a percentage with two decimals: 9210 -> "92.10%".
+fn bps_percent(bps: u32) -> String {
+    format!("{}.{:02}%", bps / 100, bps % 100)
+}
+
+/// A corpus-calibrated procedure's measurement (lantern_calibration.toml,
+/// fa-4psc): the seeds and scale it rests on, its counts, and the 95% Wilson
+/// intervals of precision, recall and the clean-corpus flag rate.
+fn procedure_calibration_json(
+    calibration: &fa_registry::lantern_calibration::LanternCalibration,
+    m: &fa_registry::lantern_calibration::CalibrationRow,
+) -> Json {
+    let n = |v: u64| Json::Int(i128::from(v));
+    let bps = |v: u32| Json::Int(i128::from(v));
+    obj(vec![
+        ("seeds", n(calibration.seeds)),
+        ("scale", n(calibration.scale)),
+        ("true_positives", n(m.true_positives)),
+        ("false_positives", n(m.false_positives)),
+        ("false_negatives", n(m.false_negatives)),
+        ("precision_bps", bps(m.precision_bps)),
+        ("precision_lower_bps", bps(m.precision_lower_bps)),
+        ("precision_upper_bps", bps(m.precision_upper_bps)),
+        ("recall_bps", bps(m.recall_bps)),
+        ("recall_lower_bps", bps(m.recall_lower_bps)),
+        ("recall_upper_bps", bps(m.recall_upper_bps)),
+        ("clean_entries", n(m.clean_entries)),
+        ("clean_flagged", n(m.clean_flagged)),
+        ("clean_rate_bps", bps(m.clean_rate_bps)),
+        ("clean_rate_upper_bps", bps(m.clean_rate_upper_bps)),
+    ])
+}
+
+fn procedure_row_json(
+    row: &fa_registry::procedures::Procedure,
+    calibration: &fa_registry::lantern_calibration::LanternCalibration,
+) -> Json {
+    let measured = calibration
+        .row(&row.id)
+        .map_or(Json::Null, |m| procedure_calibration_json(calibration, m));
     obj(vec![
         ("id", s(&row.id)),
         ("version", Json::Int(i128::from(row.version))),
@@ -20231,6 +20292,7 @@ fn procedure_row_json(row: &fa_registry::procedures::Procedure) -> Json {
         ("tie_break", s(tie_break_name(&row.tie_break))),
         ("complexity", s(&row.complexity)),
         ("calibration", s(calibration_name(&row.calibration))),
+        ("measured", measured),
         ("summary", s(&row.summary)),
         ("effective_through", s(row.effective_through.name())),
         (
@@ -20491,11 +20553,24 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
             let rows = fa_lantern::catalog::registered().map_err(lantern_usage)?;
+            let calibration = fa_lantern::catalog::calibration().map_err(lantern_usage)?;
             // Human mode lists one procedure per line; robot mode carries the
             // same rows in the event alone (stdout is one JSON object a line).
             for row in rows.iter().filter(|_| !out.json) {
+                let measured = calibration.row(&row.id).map_or(String::new(), |m| {
+                    format!(
+                        " [measured over {} seeds: precision {} ({}-{}), recall {} ({}-{}), 95% Wilson]",
+                        calibration.seeds,
+                        bps_percent(m.precision_bps),
+                        bps_percent(m.precision_lower_bps),
+                        bps_percent(m.precision_upper_bps),
+                        bps_percent(m.recall_bps),
+                        bps_percent(m.recall_lower_bps),
+                        bps_percent(m.recall_upper_bps),
+                    )
+                });
                 out.line(format!(
-                    "{} v{} {} {}",
+                    "{} v{} {} {}{measured}",
                     row.id,
                     row.version,
                     row.claim.name(),
@@ -20507,7 +20582,11 @@ fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 vec![
                     (
                         "procedures",
-                        Json::Arr(rows.iter().map(procedure_row_json).collect()),
+                        Json::Arr(
+                            rows.iter()
+                                .map(|row| procedure_row_json(row, &calibration))
+                                .collect(),
+                        ),
                     ),
                     ("count", Json::Int(rows.len() as i128)),
                 ],

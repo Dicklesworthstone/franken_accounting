@@ -780,9 +780,6 @@ fn not_implemented(class_name: &str) -> Refusal {
         "leg.base_amount" | "base_totals" => "the FX law slice (fa-p7r)",
         "leg.dimension_set" => "the dimension registry slice (plan §4.3)",
         "Replacement" => "fa-omi (supersession beyond exact reversal)",
-        "Revision" | "Restatement" => {
-            "the restatement-case posting of superseding delta entries (fa-75j4)"
-        }
         "Closing" => "the incremental closing slice (plan §7.5)",
         "Revaluation" | "Elimination" => "Canon rules (plan §10)",
         "Migration into a limited account" => {
@@ -1040,13 +1037,14 @@ pub(crate) async fn post_admitted<V: asupersync::fs::Vfs + Clone>(
 
 /// The classes the posting pipeline admits (step 1b). Replacement is
 /// admitted only by its private, atomic pair context, and the case-bound
-/// PriorPeriodAdjustment and Revision only as a restatement case's
-/// entries in their case's own Post batch, or rehearsed in a scenario's
-/// scratch replay (fa-75j4).
-const POSTED_CLASSES: [EntryClass; 12] = [
+/// PriorPeriodAdjustment, Revision and Restatement only as a restatement
+/// case's entries in their case's own Post batch, or rehearsed in a
+/// scenario's scratch replay (fa-75j4, fa-651f).
+const POSTED_CLASSES: [EntryClass; 13] = [
     EntryClass::RECLASSIFICATION,
     EntryClass::PRIOR_PERIOD_ADJUSTMENT,
     EntryClass::REVISION,
+    EntryClass::RESTATEMENT,
     EntryClass::ORIGINAL,
     EntryClass::ADJUSTING,
     EntryClass::REVERSAL,
@@ -1613,7 +1611,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     let is_reversal = proposal.class == EntryClass::REVERSAL;
     let is_replacement = proposal.class == EntryClass::REPLACEMENT;
     let is_reclass = proposal.class == EntryClass::RECLASSIFICATION;
-    let is_revision = proposal.class == EntryClass::REVISION;
+    // Revision (`Revises`) and Restatement (`Restates`) share the delta
+    // netting law (plan §8.2): one standing target stays in force, and the
+    // net effect is the target plus the entry's delta legs.
+    let delta_kind = match proposal.class {
+        EntryClass::REVISION => Some(SupersessionKind::Revises),
+        EntryClass::RESTATEMENT => Some(SupersessionKind::Restates),
+        _ => None,
+    };
+    let is_delta = delta_kind.is_some();
     if !POSTED_CLASSES.contains(&proposal.class) && !is_replacement {
         return Ok(Err(not_implemented(class_name)));
     }
@@ -1952,7 +1958,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             }
         }
     } else {
-        if !is_replacement && !is_reclass && !is_revision && !proposal.supersession.is_empty() {
+        if !is_replacement && !is_reclass && !is_delta && !proposal.supersession.is_empty() {
             return Ok(Err(not_implemented("supersession on a non-Reversal class")));
         }
         None
@@ -1969,12 +1975,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     } else {
         None
     };
-    let revision_target = if is_revision {
+    let revision_target = if let Some(kind) = delta_kind {
         match proposal.supersession.as_slice() {
-            [s] if s.kind == SupersessionKind::Revises => Some(s.target),
+            [s] if s.kind == kind => Some(s.target),
             _ => {
-                return Ok(Err(revision_shape(
-                    "a Revision names exactly one target with kind Revises in `supersession`",
+                return Ok(Err(delta_shape(
+                    proposal.class,
+                    format!(
+                        "a {class_name} names exactly one target with kind {kind:?} in `supersession`"
+                    ),
                 )));
             }
         }
@@ -2354,17 +2363,21 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
     }
+    // A foreign-currency application records its functional relief under
+    // the carrying law (plan §5.7). A quantity unit (shares, a commodity,
+    // time) relieves its lots by their lot law while the value moves on the
+    // base-currency cost leg, so its application is not a foreign one.
+    let foreign_currency = |unit: fa_money::UnitId| {
+        unit != spec.base_unit
+            && book.units.get(unit).is_none_or(|u| {
+                matches!(u.kind, fa_money::UnitKind::Currency { .. })
+            })
+    };
     if proposal.class != EntryClass::REVERSAL
-        && proposal.legs.iter().any(|leg| {
-            leg.amount.unit != spec.base_unit
-                    && !leg.settles.is_empty()
-                    // SHARE/commodity quantity relief follows its registered
-                    // lot law, not a foreign-currency rate law. An unknown
-                    // unit remains refused rather than gaining this exemption.
-                    && book.units.get(leg.amount.unit).is_none_or(|unit| {
-                        matches!(unit.kind, fa_money::UnitKind::Currency { .. })
-                    })
-        })
+        && proposal
+            .legs
+            .iter()
+            .any(|leg| foreign_currency(leg.amount.unit) && !leg.settles.is_empty())
         && !crate::carrying::is_source_bound(proposal)
     {
         txn.abort();
@@ -2384,7 +2397,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // A fresh correction names a registered reason. Outcome recognition
     // stays first: an identical retry never rewrites or reinterprets an old
     // immutable entry, including a reversal recorded before this law.
-    if is_reversal || is_replacement || is_reclass || is_revision {
+    if is_reversal || is_replacement || is_reclass || is_delta {
         let reasons = fa_registry::reason_codes::ReasonCodes::embedded()
             .map_err(|e| KernelError::Corrupt(e.to_string()))?;
         let reason = proposal.supersession[0].reason_code;
@@ -2461,11 +2474,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(refusal));
     }
 
-    // 3''''. A Revision (plan §8.2, `Revises`; fa-75j4): its target is a
-    //        standing committed posting of this book read with its
-    //        digest. The net effect is the target plus the revision's
-    //        delta legs, so no amount bounds them; its case decides the
-    //        period it posts in.
+    // 3''''. A Revision or Restatement (plan §8.2, `Revises` / `Restates`;
+    //        fa-75j4, fa-651f): its target is a standing committed posting
+    //        of this book read with its digest. The net effect is the
+    //        target plus the entry's delta legs, so no amount bounds them;
+    //        its case decides the period it posts in.
     if let Some(target) = revision_target
         && let Err(refusal) = revision_admissible(&txn, db, book, target, proposal)?
     {
@@ -4680,9 +4693,29 @@ fn revision_shape(message: impl Into<String>) -> Refusal {
     )
 }
 
-/// A Revision's target (plan §8.2, `Revises`): a committed entry of this
-/// book and branch with the cited digest, a posting (legs, no control
-/// payload), and standing (no standing Reversal supersedes it).
+fn restatement_shape(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::RESTATEMENT_SHAPE,
+        exit::REFUSAL,
+        message.into(),
+        "plan §8.2, §8.3 (Restates: a material correction of a Closed or Locked period inside an Approved Restatement or PolicyChangeRetrospective case; net effect is the target plus the restatement's delta legs)",
+        "plan the restatement in the case's scenario with class Restatement and supersession = [{ target: <EntryRef of a standing posting>, kind: Restates, reason_code }], then rehearse, approve and post the case: `fa case post <case>`",
+    )
+}
+
+/// The shape refusal of a delta-law class: Revision or Restatement.
+fn delta_shape(class: EntryClass, message: impl Into<String>) -> Refusal {
+    if class == EntryClass::RESTATEMENT {
+        restatement_shape(message)
+    } else {
+        revision_shape(message)
+    }
+}
+
+/// A Revision's or Restatement's target (plan §8.2, `Revises` /
+/// `Restates`): a committed entry of this book and branch with the cited
+/// digest, a posting (legs, no control payload), and standing (no standing
+/// Reversal supersedes it).
 fn revision_admissible<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
@@ -4690,10 +4723,12 @@ fn revision_admissible<V: asupersync::fs::Vfs + Clone>(
     target: EntryRef,
     proposal: &EntryPayload,
 ) -> Outcome<()> {
+    let class = proposal.class.name().unwrap_or("?");
+    let shape = |message: String| delta_shape(proposal.class, message);
     let at = format!("{:032x}", target.vid.0);
     let Some(row) = txn.vertex(db, target.vid)? else {
-        return Ok(Err(revision_shape(format!(
-            "the Revision's target {at} is not a committed entry of this book"
+        return Ok(Err(shape(format!(
+            "the {class}'s target {at} is not a committed entry of this book"
         ))
         .at("target", at)));
     };
@@ -4702,20 +4737,21 @@ fn revision_admissible<V: asupersync::fs::Vfs + Clone>(
         || original.proposal.book_id != book.book_id
         || original.proposal.branch_id != proposal.branch_id
     {
-        return Ok(Err(revision_shape(format!(
-            "the Revision's target {at} does not carry the cited digest on this book and branch; cite the committed entry's EntryRef"
+        return Ok(Err(shape(format!(
+            "the {class}'s target {at} does not carry the cited digest on this book and branch; cite the committed entry's EntryRef"
         ))
         .at("target", at)));
     }
     if original.proposal.legs.is_empty() || original.proposal.control.is_some() {
-        return Ok(Err(revision_shape(format!(
-            "the Revision's target {at} is a control record, not a posting: a revision corrects posted amounts"
+        return Ok(Err(shape(format!(
+            "the {class}'s target {at} is a control record, not a posting: a {} corrects posted amounts",
+            class.to_lowercase()
         ))
         .at("target", at)));
     }
     if !entry_stands(txn, db, target.vid, &mut BTreeSet::new())? {
-        return Ok(Err(revision_shape(format!(
-            "the Revision's target {at} is reversed: a reversed entry has nothing left to revise"
+        return Ok(Err(shape(format!(
+            "the {class}'s target {at} is reversed: a reversed entry has nothing left to correct"
         ))
         .at("target", at)));
     }

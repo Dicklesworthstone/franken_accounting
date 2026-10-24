@@ -34,7 +34,13 @@
 #                                    approver prepared any entry in the case),
 #                                    session_lineage (approvers share no session
 #                                    lineage). Every rule lists preparer and
-#                                    duplicate. An exclusion the evaluator
+#                                    duplicate. session_lineage is decided
+#                                    over each approval's authority lineage,
+#                                    the principals whose journaled issuances
+#                                    lead to the capability it was recorded
+#                                    under: none may be a preparer of the
+#                                    work or another approver (fa-651f).
+#                                    An exclusion the evaluator
 #                                    cannot decide refuses (fail closed).
 #
 # `[default]` governs every (class, state) no rule names, including any

@@ -39,12 +39,18 @@ pub fn verdict(
         preparer_profile,
         approvals,
         None,
+        None,
     )
 }
 
-/// The verdict for work in a case whose entries `case_preparers` prepared:
-/// with them, the `case_preparer` exclusion is decidable, and an approver
-/// among them is refused.
+/// The verdict with what was read beyond the entry. `case_preparers`, the
+/// principals who prepared the case's entries, makes `case_preparer`
+/// decidable: an approver among them is refused. `lineages`, one list per
+/// approval in order of the principals who issued (directly or further up
+/// the chain) the capability it approved under, makes `session_lineage`
+/// decidable: an approval is refused when its list names the preparer, a
+/// case preparer, or another approver of the work. A list of the wrong
+/// length decides nothing.
 pub fn verdict_in(
     req: &SodRequirement,
     matrix_approvals: u8,
@@ -52,12 +58,21 @@ pub fn verdict_in(
     preparer_profile: &str,
     approvals: &[Approval],
     case_preparers: Option<&[u128]>,
+    lineages: Option<&[Vec<u128>]>,
 ) -> Option<(&'static str, &'static str)> {
     // 1. The rule must be decidable as written.
+    let lineages_known = match lineages {
+        Some(l) => l.len() == approvals.len(),
+        None => false,
+    };
     let decidable = |e: &String| {
-        e == "preparer" || e == "duplicate" || (e == "case_preparer" && case_preparers.is_some())
+        e == "preparer"
+            || e == "duplicate"
+            || (e == "case_preparer" && case_preparers.is_some())
+            || (e == "session_lineage" && lineages_known)
     };
     let case_bound = req.exclusions.iter().any(|e| e == "case_preparer");
+    let lineage_bound = req.exclusions.iter().any(|e| e == "session_lineage");
     if !req.exclusions.iter().all(decidable) {
         return Some((SOD, "unsupported_exclusion"));
     }
@@ -98,7 +113,25 @@ pub fn verdict_in(
     //    approval decides. A principal seen earlier in the transcript is a
     //    duplicate.
     let mut times_seen: BTreeMap<u128, usize> = BTreeMap::new();
-    for a in approvals {
+    for (i, a) in approvals.iter().enumerate() {
+        // Under session_lineage: does approval i's issuer list name someone
+        // else who is a party to the work?
+        let mut issued_by_a_party = false;
+        if lineage_bound && let Some(lists) = lineages {
+            for issuer in &lists[i] {
+                if *issuer == a.principal {
+                    continue;
+                }
+                let mut party = *issuer == preparer;
+                if let Some(case) = case_preparers {
+                    party = party || case.contains(issuer);
+                }
+                for other in approvals {
+                    party = party || other.principal == *issuer;
+                }
+                issued_by_a_party = issued_by_a_party || party;
+            }
+        }
         let fault = if a.principal == preparer {
             Some("self_approval")
         } else if !req.approver_profiles.contains(&a.profile) {
@@ -109,6 +142,8 @@ pub fn verdict_in(
             Some("duplicate_approver")
         } else if case_bound && case_preparers.is_some_and(|p| p.contains(&a.principal)) {
             Some("case_preparer")
+        } else if issued_by_a_party {
+            Some("session_lineage")
         } else {
             None
         };
