@@ -8,6 +8,10 @@
 //! - `AS KNOWN AT <seq>|HEAD|'<RFC3339>'` and `AS CURRENTLY STATED` into
 //!   the statement's one `FOR SYSTEM_TIME AS OF SEQ` clause, with the
 //!   resolved sequence written as a literal;
+//! - the restatement views (plan §7.4) `AS ORIGINALLY REPORTED`, `AS ISSUED
+//!   TO '<audience>'` and `AS REPORTED IN 'C:<certificate>'`, which need
+//!   `FOR PERIOD`: the caller resolves the sequence that period was reported
+//!   at, as `fa tb --as-originally-reported` does, and reads there;
 //! - `FOR PERIOD <code>` into the entry's `IN_PERIOD` edge: the period the
 //!   posting resolved, so an entry of a special period is never claimed by
 //!   the normal period that shares its day;
@@ -78,6 +82,24 @@ pub enum KnownAt {
     /// An RFC3339 instant, resolved through retained TimeEvidence (plan
     /// §7.1a), never a wall clock.
     Instant(String),
+    /// A restatement view of the statement's `FOR PERIOD`: the caller
+    /// resolves the sequence that period was reported at before any read.
+    Reported(Reported),
+}
+
+/// A restatement view (plan §7.4): which report of a period fixes the
+/// statement's known-at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reported {
+    /// `AS ORIGINALLY REPORTED`: the period's first statement issuance,
+    /// else its first Lock.
+    Originally,
+    /// `AS ISSUED TO '<audience>'`: the period's first issuance to that
+    /// registered audience, as written.
+    IssuedTo(String),
+    /// `AS REPORTED IN 'C:<certificate>'`: the known-at of that retained
+    /// statement certificate, as written.
+    In(String),
 }
 
 /// A statement the profile compiled.
@@ -145,6 +167,8 @@ const BRANCH_FIX: &str = "AT BRANCH trunk, AT BRANCH 'scenario:<name>' for a sce
 const KNOWN_AT_FIX: &str =
     "select one coordinate: AS KNOWN AT <commit sequence> | HEAD | '<RFC3339 instant>'";
 
+const REPORTED_FIX: &str = "FOR PERIOD 'FY2026-P03' AS ORIGINALLY REPORTED | AS ISSUED TO 'board' | AS REPORTED IN 'C:<64-hex>'";
+
 /// Compile a profile statement.
 ///
 /// # Errors
@@ -160,6 +184,14 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
     }
     let lexed = lex::lex(text)?;
     let selectors = selectors(&lexed)?;
+    if matches!(selectors.known_at, Some(KnownAt::Reported(_))) && selectors.period.is_none() {
+        return Err(Refusal::new(
+            Law::Profile,
+            0,
+            "a restatement view reads one period as it was reported; the statement names no FOR PERIOD",
+            REPORTED_FIX,
+        ));
+    }
     if selectors.branch.is_some() {
         // A scenario or a draft is read as its replay: with its own
         // sequences, at its head, and not certified.
@@ -283,16 +315,30 @@ fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
         {
             (i + 3, Some(KnownAt::Head))
         } else if lexed.word(i, "AS")
-            && (lexed.word(i + 1, "ORIGINALLY") && lexed.word(i + 2, "REPORTED")
-                || lexed.word(i + 1, "REPORTED") && lexed.word(i + 2, "IN")
-                || lexed.word(i + 1, "ISSUED") && lexed.word(i + 2, "TO"))
+            && lexed.word(i + 1, "ORIGINALLY")
+            && lexed.word(i + 2, "REPORTED")
         {
-            return Err(Refusal::new(
-                Law::Profile,
-                start,
-                "the restatement views are not compiled for a query in this build",
-                "read the period as it was reported with fa tb --period <code> --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>",
-            ));
+            (i + 3, Some(KnownAt::Reported(Reported::Originally)))
+        } else if lexed.word(i, "AS")
+            && (lexed.word(i + 1, "ISSUED") && lexed.word(i + 2, "TO")
+                || lexed.word(i + 1, "REPORTED") && lexed.word(i + 2, "IN"))
+        {
+            let j = i + 3;
+            if lexed.kind(j) != Some(Kind::Quoted) {
+                return Err(Refusal::new(
+                    Law::Profile,
+                    at(j),
+                    "AS ISSUED TO takes a quoted audience and AS REPORTED IN a quoted statement certificate",
+                    REPORTED_FIX,
+                ));
+            }
+            let named = lexed.unquoted(j);
+            let view = if lexed.word(i + 1, "ISSUED") {
+                Reported::IssuedTo(named)
+            } else {
+                Reported::In(named)
+            };
+            (j + 1, Some(KnownAt::Reported(view)))
         } else {
             (i, None)
         };

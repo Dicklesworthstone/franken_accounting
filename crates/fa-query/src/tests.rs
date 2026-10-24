@@ -311,14 +311,78 @@ fn branches_procedures_and_certificates() {
         ),
         (
             "MATCH (a:Account) RETURN a AS ORIGINALLY REPORTED",
-            "restatement views",
+            "names no FOR PERIOD",
         ),
         (
             "MATCH (a:Account) RETURN a AS REPORTED IN 'C:00'",
-            "restatement views",
+            "names no FOR PERIOD",
         ),
     ] {
         let r = refused(text);
+        assert!(r.message.contains(says), "{text}: {r:?}");
+    }
+}
+
+/// Plan §7.4: a restatement view is a known-at selector of one period's
+/// report. It compiles to the one system-time clause, the sequence the
+/// caller resolves, and refuses without a period, beside another known-at
+/// or on a branch.
+#[test]
+fn restatement_views_select_the_period_as_it_was_reported() {
+    for (text, view) in [
+        (
+            "MATCH (e:Entry) FOR PERIOD 'FY2026-P03' RETURN COUNT(*) AS entries AS ORIGINALLY REPORTED",
+            Reported::Originally,
+        ),
+        (
+            "MATCH (e:Entry) FOR PERIOD 'FY2026-P03' AS ISSUED TO 'board' RETURN COUNT(*) AS entries",
+            Reported::IssuedTo("board".into()),
+        ),
+        (
+            "AS REPORTED IN 'C:ab' MATCH (e:Entry) FOR PERIOD 'FY2026-P03' RETURN COUNT(*) AS entries",
+            Reported::In("C:ab".into()),
+        ),
+    ] {
+        let (p, n) = native(text);
+        assert_eq!(p.known_at, KnownAt::Reported(view), "{text}");
+        assert_eq!(p.period.as_deref(), Some("FY2026-P03"), "{text}");
+        assert_eq!(
+            n.statement(9),
+            "MATCH (e:Entry), (e)-[:IN_PERIOD]->(__fa_period:Period) FOR SYSTEM_TIME AS OF SEQ 9 WHERE __fa_period.code = 'FY2026-P03' RETURN COUNT(*) AS entries",
+            "{text}"
+        );
+    }
+    let tb = rewrite("CALL fa.trial_balance FOR PERIOD 'FY2026-P03' AS ORIGINALLY REPORTED")
+        .expect("the trial balance as originally reported");
+    assert_eq!(tb.selection, Selection::TrialBalance);
+    assert_eq!(tb.known_at, KnownAt::Reported(Reported::Originally));
+    // An alias that spells a view word stays a name.
+    let (p, _) = native("MATCH (e:Entry) FOR PERIOD 'FY2026-P03' RETURN e AS originally");
+    assert_eq!(p.known_at, KnownAt::Head);
+    for (text, says) in [
+        (
+            "CALL fa.trial_balance AS ORIGINALLY REPORTED",
+            "names no FOR PERIOD",
+        ),
+        (
+            "MATCH (e:Entry) FOR PERIOD 'FY2026-P03' RETURN e AS ORIGINALLY REPORTED AS KNOWN AT 3",
+            "one known-at",
+        ),
+        (
+            "MATCH (e:Entry) FOR PERIOD 'FY2026-P03' RETURN e AS ISSUED TO board",
+            "quoted audience",
+        ),
+        (
+            "MATCH (e:Entry) FOR PERIOD 'FY2026-P03' RETURN e AS REPORTED IN C",
+            "quoted statement certificate",
+        ),
+        (
+            "MATCH (e:Entry) FOR PERIOD 'FY2026-P03' AT BRANCH 'scenario:x' RETURN e AS ORIGINALLY REPORTED",
+            "replay's head",
+        ),
+    ] {
+        let r = refused(text);
+        assert_eq!(r.law, Law::Profile, "{text}");
         assert!(r.message.contains(says), "{text}: {r:?}");
     }
 }
