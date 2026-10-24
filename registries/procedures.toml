@@ -1379,7 +1379,7 @@ claim = "statistical"
 evidence = "FA-EVID-L47"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
-calibration = "corpus"
+calibration = "planted"
 summary = "Ghost-employee and anomalous payroll detector: payroll postings (an entry with a leg on an account holding the `payroll` account role (registries/account_roles.toml, assigned with fa chart role)) citing parties with shared bank/tax identifiers, missing employee master records, or duplicate payroll disbursements to the same party in one period. Refused when no account holds the role. Version 1 guessed payroll from account codes and names and from `payroll` in an external id's system name."
 
 [[procedure]]
@@ -1389,7 +1389,7 @@ claim = "statistical"
 evidence = "FA-EVID-L48"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
-calibration = "corpus"
+calibration = "planted"
 summary = "Improper expense capitalization detector (WorldCom motif): entries that debit an account holding the `fixed_asset` account role and credit an Expense account or a liability holding the `accrued_expense` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the fixed_asset role. Version 1 guessed the accounts from code and name tokens."
 
 [[procedure]]

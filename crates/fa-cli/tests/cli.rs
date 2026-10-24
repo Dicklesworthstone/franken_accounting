@@ -14497,6 +14497,57 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
             "{id}: {listed}"
         );
     }
+    // A corpus-calibrated procedure carries its measurement exactly as
+    // lantern_calibration.toml pins it (fa-4psc); every other row says null.
+    let calibration = fa_registry::lantern_calibration::LanternCalibration::embedded()
+        .expect("lantern_calibration.toml");
+    let row_of = |id: &str| -> &Json {
+        let row = rows
+            .iter()
+            .find(|r| r.get("id").and_then(Json::as_str) == Some(id));
+        assert!(row.is_some(), "{id}: {listed}");
+        row.unwrap_or(&Json::Null)
+    };
+    let round = row_of("jet.round_amounts");
+    assert_eq!(text(round, "calibration"), "corpus", "{listed}");
+    let measured = round.get("measured").cloned().unwrap_or(Json::Null);
+    let p = calibration
+        .row("jet.round_amounts")
+        .expect("jet.round_amounts is measured");
+    assert_eq!(
+        int(&measured, "seeds"),
+        Some(i128::from(calibration.seeds)),
+        "{listed}"
+    );
+    for (key, value) in [
+        ("true_positives", i128::from(p.true_positives)),
+        ("false_positives", i128::from(p.false_positives)),
+        ("false_negatives", i128::from(p.false_negatives)),
+        ("precision_bps", i128::from(p.precision_bps)),
+        ("precision_lower_bps", i128::from(p.precision_lower_bps)),
+        ("precision_upper_bps", i128::from(p.precision_upper_bps)),
+        ("recall_bps", i128::from(p.recall_bps)),
+        ("recall_lower_bps", i128::from(p.recall_lower_bps)),
+        ("recall_upper_bps", i128::from(p.recall_upper_bps)),
+        ("clean_entries", i128::from(p.clean_entries)),
+        ("clean_flagged", i128::from(p.clean_flagged)),
+        ("clean_rate_upper_bps", i128::from(p.clean_rate_upper_bps)),
+    ] {
+        assert_eq!(int(&measured, key), Some(value), "{key}: {listed}");
+    }
+    let unmeasured = row_of("solvency.balance_sheet_test");
+    assert_ne!(text(unmeasured, "calibration"), "corpus", "{listed}");
+    assert_eq!(unmeasured.get("measured"), Some(&Json::Null), "{listed}");
+    // Human mode states the measurement on the procedure's line.
+    let (code, human, err) = fa(Some(&book), &["procedure", "list"]);
+    assert_eq!(code, 0, "{human}{err}");
+    assert!(
+        human
+            .lines()
+            .any(|line| line.starts_with("jet.round_amounts ")
+                && line.contains(&format!("measured over {} seeds", calibration.seeds))),
+        "{human}"
+    );
 
     // The planted round amount is found, cited by the posted entry's vid.
     let out = ok(&["procedure", "run", "jet.round_amounts"]);

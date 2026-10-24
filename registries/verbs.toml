@@ -2729,7 +2729,7 @@ fields = ["entries:int", "attestations:int", "import_receipts:int", "custody_tra
 [[event]]
 name = "procedure_list"
 book = false
-doc = "Every registered Lantern procedure (procedures.toml): id, version, claim class, evidence row, tie-break policy, complexity bound, calibration status, how it uses the run's effective date (effective_through: required, optional, or not_taken, which refuses --effective-through), declared inputs and parameters with their pinned defaults."
+doc = "Every registered Lantern procedure (procedures.toml): id, version, claim class, evidence row, tie-break policy, complexity bound, calibration status (with the measured precision, recall and clean-corpus flag rate of a `corpus` procedure, else null), how it uses the run's effective date (effective_through: required, optional, or not_taken, which refuses --effective-through), declared inputs and parameters with their pinned defaults."
 fields = ["procedures:[procedure_row]", "count:int"]
 
 [[event]]
@@ -2919,7 +2919,12 @@ fields = ["item_id:string", "entry:hex", "ordinal:int", "side:string", "open:amo
 [[shape]]
 name = "procedure_row"
 doc = "One procedures.toml row."
-fields = ["id:string", "version:int", "claim:string", "evidence:string", "tie_break:string", "complexity:string", "calibration:string", "summary:string", "effective_through:string", "inputs:[procedure_input_decl]", "parameters:[procedure_parameter_decl]"]
+fields = ["id:string", "version:int", "claim:string", "evidence:string", "tie_break:string", "complexity:string", "calibration:string", "measured:procedure_calibration?", "summary:string", "effective_through:string", "inputs:[procedure_input_decl]", "parameters:[procedure_parameter_decl]"]
+
+[[shape]]
+name = "procedure_calibration"
+doc = "A `calibration = \"corpus\"` procedure's measurement (registries/lantern_calibration.toml, fa-4psc): over seeds 1..=seeds of every fa-gen scenario at scale, the entries it flagged against the entries the corpus labels for it (true/false positives, false negatives), and its flags over the clean retailer. Each rate is a 95% Wilson interval in basis points. fa-lantern re-runs the measurement in its tests and fails on any drift. A statistical claim about generated corpora, never about a particular book."
+fields = ["seeds:int", "scale:int", "true_positives:int", "false_positives:int", "false_negatives:int", "precision_bps:int", "precision_lower_bps:int", "precision_upper_bps:int", "recall_bps:int", "recall_lower_bps:int", "recall_upper_bps:int", "clean_entries:int", "clean_flagged:int", "clean_rate_bps:int", "clean_rate_upper_bps:int"]
 
 [[shape]]
 name = "procedure_claim"
