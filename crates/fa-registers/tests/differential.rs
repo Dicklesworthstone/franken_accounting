@@ -18,7 +18,8 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_reference::{
-    Account, Cell, DraftVerdict, Int, Intent, Leg, Limit, Oracle, Resolve, Settle, Verdict,
+    Account, Cell, DimensionTag, DimensionValue, DraftVerdict, Int, Intent, Leg, Limit, Oracle,
+    Resolve, Settle, Verdict,
 };
 use fa_registers::{
     EntityCellKey, RegisterEquals, TrialBalance, balance_as_of, check_register_equals,
@@ -11348,4 +11349,426 @@ fn drafts_agree_with_the_independent_oracle_across_seeds() {
             }
         }
     }
+}
+
+const COST_CENTER: u32 = 2;
+const DEPARTMENT: u32 = 3;
+
+/// The schema_change capability the fixture's chart was installed with: a
+/// dimension control is a book-scoped schema change (fa-ficc).
+fn schema_change_capability() -> Capability {
+    Capability::embedded(PRINCIPAL, &["schema_change"]).expect("schema_change")
+}
+
+fn dimension_note(k: &Kernel) -> Erasable<String> {
+    Erasable::seal(
+        &"dimension control".to_string(),
+        None,
+        &k.book.seal_key,
+        [3; 32],
+        [4; 24],
+    )
+}
+
+/// `fa dimension add` on the kernel for the oracle's `value`.
+fn kernel_declare(k: &mut Kernel, value: &DimensionValue, key: &str) -> Result<(), Refusal> {
+    let kind = fa_model::dimension_kind_of(value.kind).expect("registered kind");
+    let spec = fa_journal::dimension::DimensionValueSpec {
+        dimension: kind.code.into(),
+        code: value.code.clone(),
+        name: value.code.clone(),
+        parent: value.parent.clone(),
+        valid_from: value.valid_from,
+        valid_to: value.valid_to,
+    };
+    let (ctx, note, capability) = (k.ctx(), dimension_note(k), schema_change_capability());
+    let (db, book) = (&mut k.db, &k.book);
+    k.runtime
+        .block_on(async move {
+            fa_journal::dimension::create_dimension_value(
+                db,
+                &ctx,
+                book,
+                &spec,
+                PRINCIPAL,
+                key.as_bytes(),
+                note,
+                &capability,
+            )
+            .await
+        })
+        .expect("kernel")
+        .map(|_| ())
+}
+
+/// `fa dimension require` (or `--remove`) on the kernel.
+fn kernel_require(
+    k: &mut Kernel,
+    dimension: &str,
+    account: &str,
+    required: bool,
+    key: &str,
+) -> Result<(), Refusal> {
+    let spec = fa_journal::dimension::DimensionRequirementSpec {
+        dimension: dimension.into(),
+        account: account_vid(k.book.book_id, account),
+        required,
+    };
+    let (ctx, note, capability) = (k.ctx(), dimension_note(k), schema_change_capability());
+    let (db, book) = (&mut k.db, &k.book);
+    k.runtime
+        .block_on(async move {
+            fa_journal::dimension::record_dimension_requirement(
+                db,
+                &ctx,
+                book,
+                &spec,
+                PRINCIPAL,
+                key.as_bytes(),
+                note,
+                &capability,
+            )
+            .await
+        })
+        .expect("kernel")
+        .map(|_| ())
+}
+
+/// `fa dimension close` on the kernel.
+fn kernel_close(
+    k: &mut Kernel,
+    dimension: &str,
+    code: &str,
+    closed_on: DateDay,
+    key: &str,
+) -> Result<(), Refusal> {
+    let spec = fa_journal::dimension::DimensionCloseSpec {
+        dimension: dimension.into(),
+        code: code.into(),
+        closed_on,
+    };
+    let (ctx, note, capability) = (k.ctx(), dimension_note(k), schema_change_capability());
+    let (db, book) = (&mut k.db, &k.book);
+    k.runtime
+        .block_on(async move {
+            fa_journal::dimension::close_dimension_value(
+                db,
+                &ctx,
+                book,
+                &spec,
+                PRINCIPAL,
+                key.as_bytes(),
+                note,
+                &capability,
+            )
+            .await
+        })
+        .expect("kernel")
+        .map(|_| ())
+}
+
+/// The kernel post of `intent` with each leg's registered-kind tags in its
+/// dimension_set, sorted by dimension id as the leg format requires.
+fn kernel_post_tagged(
+    k: &mut Kernel,
+    intent: &Intent,
+    usd: UnitId,
+    refs: &[EntryRef],
+    tags: &[Vec<DimensionTag>],
+) -> Result<Posted, Refusal> {
+    let mut req = kernel_request(k, intent, usd, refs);
+    for (leg, tags) in req.proposal.legs.iter_mut().zip(tags) {
+        for tag in tags {
+            let kind = fa_model::dimension_kind_of(tag.value_kind).expect("registered kind");
+            leg.dimension_set.push((
+                tag.dimension,
+                fa_model::dimension_value_vid(k.book.book_id, kind.code, &tag.code),
+            ));
+        }
+        leg.dimension_set.sort_unstable_by_key(|(id, _)| *id);
+    }
+    let ctx = k.ctx();
+    let (db, book) = (&mut k.db, &k.book);
+    k.runtime
+        .block_on(async move { post(db, &ctx, book, req).await })
+        .expect("kernel")
+}
+
+fn tag(dimension: u32, value_kind: u32, code: &str) -> Vec<DimensionTag> {
+    vec![DimensionTag {
+        dimension,
+        value_kind,
+        code: code.into(),
+    }]
+}
+
+/// fa-ficc, FA-INV-01.dimensions: the kernel and the reference agree on the
+/// dimension law over seeded histories, step by step, and on the registers
+/// at the end. Each history declares cost_center values (one always
+/// effective, its child, one with a February–March window) and a department
+/// value, then interleaves:
+/// - Originals whose 6000 leg names no cost_center, a held value, an
+///   unknown one, or a department value under cost_center, and whose 1000
+///   leg sometimes names the department;
+/// - turning 6000's cost_center requirement on and off;
+/// - Reversals of earlier posts dated anywhere in the open months, which
+///   carry their target's tags and are dictated, so neither a requirement
+///   nor a closed window binds them;
+/// - closes of values on dates that are lawful, already the end, extending,
+///   emptying, or behind a tagged leg.
+///
+/// Every outcome the law can give is reached across the seeds.
+#[test]
+fn kernel_and_oracle_agree_on_the_dimension_law_across_seeds() {
+    let mut total: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for i in 1..=8u64 {
+        for (label, n) in dimension_campaign(splitmix(i.wrapping_add(0x00D1_A5E7))) {
+            *total.entry(label).or_default() += n;
+        }
+    }
+    eprintln!("fa-ficc dimension law over 8 seeds: {total:?}");
+    for label in [
+        "posted untagged",
+        "posted tagged",
+        "refused missing",
+        "refused unknown",
+        "refused wrong kind",
+        "refused outside window",
+        "reversal of a tagged entry",
+        "reversal outside its tag's window",
+        "reversal of an untagged entry under a requirement",
+        "close",
+        "close at its end",
+        "close refused behind a tagged leg",
+        "close refused extending or emptying",
+        "requirement",
+    ] {
+        assert!(
+            total.get(label).copied().unwrap_or(0) > 0,
+            "the campaign never reached `{label}`: {total:?}"
+        );
+    }
+}
+
+/// One seeded dimension history (see
+/// [`kernel_and_oracle_agree_on_the_dimension_law_across_seeds`]); the
+/// counts of each outcome it reached.
+fn dimension_campaign(seed: u64) -> BTreeMap<&'static str, usize> {
+    let (mut k, mut oracle, periods) = setup();
+    let usd = k.book.units.lookup("USD").unwrap();
+    for month in 1..=6u64 {
+        open_period(
+            &mut k,
+            &mut oracle,
+            &format!("FY2026-P{month:02}"),
+            7_000 + month,
+        );
+    }
+    let day = |m: u8, d: u8| DateDay::from_ymd(2026, m, d).unwrap();
+    let values = [
+        DimensionValue {
+            kind: COST_CENTER,
+            code: "CC10".into(),
+            parent: None,
+            valid_from: None,
+            valid_to: None,
+        },
+        DimensionValue {
+            kind: COST_CENTER,
+            code: "CC11".into(),
+            parent: Some("CC10".into()),
+            valid_from: None,
+            valid_to: None,
+        },
+        DimensionValue {
+            kind: COST_CENTER,
+            code: "CC20".into(),
+            parent: None,
+            valid_from: Some(day(2, 1)),
+            valid_to: Some(day(4, 1)),
+        },
+        DimensionValue {
+            kind: DEPARTMENT,
+            code: "D1".into(),
+            parent: None,
+            valid_from: None,
+            valid_to: None,
+        },
+    ];
+    // The test's own copy of each cost_center window, to label outcomes.
+    let mut windows: BTreeMap<String, (Option<DateDay>, Option<DateDay>)> = BTreeMap::new();
+    for (n, value) in values.iter().enumerate() {
+        kernel_declare(&mut k, value, &format!("dimension-{n}")).expect("the kernel declares");
+        oracle
+            .declare_dimension_value(value.clone())
+            .expect("the oracle declares");
+        if value.kind == COST_CENTER {
+            windows.insert(value.code.clone(), (value.valid_from, value.valid_to));
+        }
+    }
+    let effective = |windows: &BTreeMap<String, (Option<DateDay>, Option<DateDay>)>,
+                     code: &str,
+                     date: DateDay| {
+        windows
+            .get(code)
+            .is_some_and(|(from, to)| from.is_none_or(|f| date >= f) && to.is_none_or(|t| date < t))
+    };
+    let mut rng = Rng(seed);
+    let mut seen: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut refs: Vec<EntryRef> = Vec::new();
+    let mut tags_of: BTreeMap<usize, Vec<Vec<DimensionTag>>> = BTreeMap::new();
+    let mut originals: Vec<usize> = Vec::new();
+    let mut required = false;
+    for step in 0..60u64 {
+        let what = format!("seed {seed:#018x} step {step}");
+        let head = k.db.frontier().unwrap();
+        match rng.below(10) {
+            0 => {
+                required = !required;
+                kernel_require(
+                    &mut k,
+                    "cost_center",
+                    "6000",
+                    required,
+                    &format!("req-{step}"),
+                )
+                .unwrap_or_else(|r| panic!("{what}: the kernel refused a requirement: {r}"));
+                oracle.require_dimension(COST_CENTER, "6000", required);
+                *seen.entry("requirement").or_default() += 1;
+            }
+            1 => {
+                let (code, closed_on) = [
+                    ("CC20", day(3, 1)),
+                    ("CC20", day(4, 1)),
+                    ("CC20", day(5, 1)),
+                    ("CC20", day(2, 1)),
+                    ("CC10", day(5, 15)),
+                    ("CC11", day(1, 10)),
+                ][rng.below(6) as usize];
+                let at_end = windows
+                    .get(code)
+                    .is_some_and(|(_, to)| *to == Some(closed_on));
+                let kernel = kernel_close(
+                    &mut k,
+                    "cost_center",
+                    code,
+                    closed_on,
+                    &format!("close-{step}"),
+                );
+                let reference = oracle.close_dimension_value(COST_CENTER, code, closed_on);
+                assert_eq!(
+                    kernel.as_ref().map(|_| ()).map_err(|r| r.code),
+                    reference,
+                    "{what}: close {code} on {closed_on:?}"
+                );
+                let label = match reference {
+                    Ok(()) if at_end => "close at its end",
+                    Ok(()) => {
+                        if let Some(window) = windows.get_mut(code) {
+                            window.1 = Some(closed_on);
+                        }
+                        "close"
+                    }
+                    Err("FA-REF-195") => "close refused behind a tagged leg",
+                    Err(_) => "close refused extending or emptying",
+                };
+                *seen.entry(label).or_default() += 1;
+            }
+            2 if !originals.is_empty() => {
+                let target = originals[rng.below(originals.len() as u64) as usize];
+                let date = day(1 + rng.below(6) as u8, 1 + rng.below(28) as u8);
+                let intent = reversal_of(&oracle, target, date, format!("rev-{step}").into_bytes());
+                let tags = tags_of.get(&target).cloned().unwrap_or_default();
+                let kernel = kernel_post_tagged(&mut k, &intent, usd, &refs, &tags);
+                let reference = oracle.post(&intent);
+                let index = refs.len();
+                match (&kernel, &reference) {
+                    (Ok(posted), Verdict::Posted { index: at, .. }) => {
+                        assert_eq!(*at, index, "{what}");
+                        refs.push(posted.entry_ref());
+                        let cost: Vec<&DimensionTag> = tags
+                            .iter()
+                            .flatten()
+                            .filter(|t| t.dimension == COST_CENTER)
+                            .collect();
+                        if !cost.is_empty() {
+                            tags_of.insert(index, tags.clone());
+                            *seen.entry("reversal of a tagged entry").or_default() += 1;
+                            if cost.iter().any(|t| !effective(&windows, &t.code, date)) {
+                                *seen.entry("reversal outside its tag's window").or_default() += 1;
+                            }
+                        } else if required {
+                            *seen
+                                .entry("reversal of an untagged entry under a requirement")
+                                .or_default() += 1;
+                        }
+                    }
+                    (Err(r), Verdict::Refused { code }) => {
+                        assert_eq!(r.code, *code, "{what}: reversal of {target}");
+                        assert_eq!(k.db.frontier().unwrap(), head, "{what}: a refusal wrote");
+                    }
+                    other => panic!("{what}: reversal of {target} diverged: {other:?}"),
+                }
+            }
+            _ => {
+                let date = day(1 + rng.below(6) as u8, 1 + rng.below(28) as u8);
+                let legs = two_legs(usd, "6000", "1000", 1 + rng.below(5_000) as i128);
+                let intent = race_intent(
+                    "Original",
+                    date,
+                    legs,
+                    format!("post-{step}").into_bytes(),
+                    &["post"],
+                );
+                let (cost, chosen) = match rng.below(7) {
+                    0 | 1 => (Vec::new(), "untagged"),
+                    2 => (tag(COST_CENTER, COST_CENTER, "CC10"), "held"),
+                    3 => (tag(COST_CENTER, COST_CENTER, "CC11"), "held"),
+                    4 => (tag(COST_CENTER, COST_CENTER, "CC20"), "held"),
+                    5 => (tag(COST_CENTER, COST_CENTER, "CC99"), "unknown"),
+                    _ => (tag(COST_CENTER, DEPARTMENT, "D1"), "wrong kind"),
+                };
+                let department = if rng.chance(30) {
+                    tag(DEPARTMENT, DEPARTMENT, "D1")
+                } else {
+                    Vec::new()
+                };
+                let tags = vec![cost, department];
+                let kernel = kernel_post_tagged(&mut k, &intent, usd, &refs, &tags);
+                let reference = oracle.post_dimensioned(&intent, &tags);
+                let index = refs.len();
+                match (&kernel, &reference) {
+                    (Ok(posted), Verdict::Posted { index: at, .. }) => {
+                        assert_eq!(*at, index, "{what}");
+                        refs.push(posted.entry_ref());
+                        originals.push(index);
+                        if tags.iter().any(|t| !t.is_empty()) {
+                            tags_of.insert(index, tags.clone());
+                        }
+                        let label = if chosen == "untagged" {
+                            "posted untagged"
+                        } else {
+                            "posted tagged"
+                        };
+                        *seen.entry(label).or_default() += 1;
+                    }
+                    (Err(r), Verdict::Refused { code }) => {
+                        assert_eq!(r.code, *code, "{what}: {chosen} on {date:?}");
+                        assert_eq!(k.db.frontier().unwrap(), head, "{what}: a refusal wrote");
+                        let label = match (*code, chosen) {
+                            ("FA-REF-005", _) => "refused missing",
+                            ("FA-REF-195", _) => "refused outside window",
+                            ("FA-REF-100", "unknown") => "refused unknown",
+                            ("FA-REF-100", "wrong kind") => "refused wrong kind",
+                            _ => "refused otherwise",
+                        };
+                        *seen.entry(label).or_default() += 1;
+                    }
+                    other => panic!("{what}: {chosen} post on {date:?} diverged: {other:?}"),
+                }
+            }
+        }
+    }
+    assert_registers_agree(&k, &oracle, &periods, &refs, &format!("seed {seed:#018x}"));
+    seen
 }
