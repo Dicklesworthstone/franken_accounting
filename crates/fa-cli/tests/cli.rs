@@ -7510,9 +7510,10 @@ fn a_leg_tags_dimension_values_the_book_holds_inside_their_valid_time() -> std::
         .filter_map(Json::as_str)
         .collect();
     assert_eq!(accounts, ["6100"]);
-    // A leg on 6100 naming no cost center is refused (FA-REF-005) with the
-    // values effective that day, CC only (CC10's window has closed), and
-    // nothing is written; the untagged cash leg needs none.
+    // A leg on 6100 naming no cost center is refused (FA-REF-005), naming
+    // the command that lists each value's window rather than reading the
+    // values inside the posting transaction (92d46bf6), and nothing is
+    // written; the untagged cash leg needs none.
     let (code, out) = post("untagged", "2026-03-25", "{}");
     assert_eq!(code, 3, "{out}");
     assert_eq!(field(&out, "refusal_id"), Some("FA-REF-005"), "{out}");
