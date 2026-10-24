@@ -691,13 +691,16 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
         refs.push(kernel_post(&mut k, &small, usd, &refs).unwrap().entry_ref());
         assert!(matches!(oracle.post(&small), Verdict::Posted { .. }));
 
-        // At the target frontier only the one-unit hold contributes. Both a cold rebuild
-        // and advancement from a cached large hold must reach that result.
+        // A cold cursor replays retained deltas from origin; a cached cursor
+        // consumes only the release and new hold. Neither needs the old
+        // overflow-triggered full-fold fallback now that admission refuses it.
         let recovered = maintain(&mut k, period);
-        assert_eq!(
-            recovered.rebuilt, !cached_hold,
-            "a cached cursor consumes release-before-new-hold incrementally; a cold cursor rebuilds"
-        );
+        assert!(!recovered.rebuilt, "cached_hold={cached_hold}");
+        if cached_hold {
+            assert_eq!(recovered.entries_decoded, 2);
+        } else {
+            assert!(recovered.entries_decoded >= 3);
+        }
         maintained_matches_oracle(&recovered, &oracle, k.book.book_id);
         assert_eq!(recovered.fold.pending.len(), 2);
         assert!(
