@@ -149,6 +149,11 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         Some("outcomes"),
         "rebuilds the idempotency namespace: schema_change on trunk and --yes after a dry-run preview, outside every launch ceiling",
     ),
+    (
+        "rule",
+        Some("test"),
+        "reads a rule's golden corpus, a host directory of case files, and writes nothing; MCP evaluates a rule over a recorded event inline (fa-c34)",
+    ),
     ("demo", Some("init"), "creates a sandbox book"),
 ];
 
