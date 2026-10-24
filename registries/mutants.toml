@@ -356,3 +356,14 @@ replace = "            if false && !req.capability.holds(needed) {"
 law = "FA-INV-03.core"
 killed_by = ["fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_generated_histories_across_seeds"]
 description = "Skip the capability op an admissibility cell requires (post_closed in a Closed period), so the period law admits a class without its op. The generated-history differential catches it within 2 seeds: the reference refuses FA-REF-011 where the mutated kernel goes on to another check (fa-2ihd planted negative)."
+
+# ---- 12. Byte-deterministic robot output (fa-nmk4 Polish Bar) ---------------
+
+[[mutant]]
+id = "MUT-036"
+file = "crates/fa-cli/src/cli.rs"
+find = "(\"mode\", s(if tb.activity { \"activity\" } else { \"stock\" })),"
+replace = "(\"mode\", s(&format!(\"{}{}\", if tb.activity { \"activity\" } else { \"stock\" }, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())))),"
+law = "FA-INV-11.core"
+killed_by = ["fa-cli::tests/polish_bar.rs::verify_determinism"]
+description = "Inject a wall-clock read into fa tb's robot output, so the same closure no longer prints byte-identical bytes. This is the planted negative fa-nmk4 names for verify-determinism: a timestamp read in a read verb must fail the Polish Bar."
