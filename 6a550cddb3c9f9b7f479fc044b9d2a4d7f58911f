@@ -1,0 +1,10 @@
+owner-watch v1
+verdict=RED
+commit=6a550cddb3c9f9b7f479fc044b9d2a4d7f58911f
+tree=70edb6798910ecc787b7e45d20062444defc251b
+recorded_utc=2026-10-25T21:20:43Z
+worker=vmi1149989
+steps=clippy:FAIL,test:UNRUN
+test_totals=passed:0,failed:0
+first_error=error[E0004]: non-exhaustive patterns: `&fa_journal::AttestationClaim::ExhibitMarked { .. }` not covered
+tracker_drift_no_bead=3a5f2e1a Keep local bead notes with the newer accounting closures;
