@@ -141,6 +141,61 @@ fn for_period_joins_the_entrys_resolved_period() {
 }
 
 #[test]
+fn effective_at_selects_every_leg_effective_on_or_before_its_day() {
+    let day = DateDay::parse("2026-03-31").unwrap();
+    let (p, n) = native(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs EFFECTIVE AT '2026-03-31'",
+    );
+    assert_eq!(p.effective, Some(fa_time::EffectiveSelector::AsOf(day)));
+    assert_eq!(
+        n.statement(4),
+        format!(
+            "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) FOR SYSTEM_TIME AS OF SEQ 4 WHERE l._fa_effective_day <= {} RETURN a.code, COUNT(*) AS legs",
+            day.0
+        )
+    );
+    // BETWEEN is the half-open range through the day after its last day; its
+    // native text is what it always compiled to (certificates bind it).
+    let (p, _) = native(
+        "MATCH (l:Leg) RETURN COUNT(*) AS legs EFFECTIVE BETWEEN '2026-01-01' AND '2026-03-31'",
+    );
+    assert_eq!(
+        p.effective,
+        Some(fa_time::EffectiveSelector::Range {
+            start: DateDay::parse("2026-01-01").unwrap(),
+            end: DateDay::parse("2026-04-01").unwrap(),
+        })
+    );
+    let (p, _) = native("MATCH (a:Account) RETURN a.code");
+    assert_eq!(p.effective, None);
+    for (text, says) in [
+        (
+            "MATCH (l:Leg) RETURN l EFFECTIVE AT '2026-02-30'",
+            "one civil date",
+        ),
+        (
+            "MATCH (l:Leg) RETURN l EFFECTIVE AT '2026-03-31' EFFECTIVE BETWEEN '2026-01-01' AND '2026-01-31'",
+            "one EFFECTIVE selector",
+        ),
+        (
+            "MATCH (l:Leg) RETURN l EFFECTIVE SOON",
+            "EFFECTIVE AT <date> or EFFECTIVE BETWEEN",
+        ),
+        (
+            "MATCH (e:Entry) RETURN e EFFECTIVE AT '2026-03-31'",
+            "exactly one leg",
+        ),
+        (
+            "CALL fa.trial_balance EFFECTIVE AT '2026-03-31'",
+            "not by an EFFECTIVE selector",
+        ),
+    ] {
+        let r = refused(text);
+        assert!(r.message.contains(says), "{text}: {r:?}");
+    }
+}
+
+#[test]
 fn effective_between_bounds_the_legs_effective_day() {
     let (_, n) = native(
         "MATCH (l:Leg) EFFECTIVE BETWEEN '2026-01-01' AND 2026-01-31 RETURN COUNT(*) AS legs",
@@ -154,9 +209,11 @@ fn effective_between_bounds_the_legs_effective_day() {
         )
     );
     for (text, says) in [
+        // EFFECTIVE AT a date compiles (below); a relationship's valid time
+        // does not.
         (
-            "MATCH (l:Leg) EFFECTIVE AT '2026-01-01' RETURN l",
-            "EFFECTIVE BETWEEN",
+            "MATCH (l:Leg) EFFECTIVE AT l.effective_day RETURN l",
+            "valid time",
         ),
         (
             "MATCH (l:Leg) EFFECTIVE BETWEEN '2026-02-01' AND '2026-01-01' RETURN l",

@@ -1188,10 +1188,16 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         true
     } else if let Some((certificate, rows)) = query {
         let period = certificate.period()?;
+        // A retained statement always compiles; its EFFECTIVE selector names
+        // the coordinate as the original query did.
+        let effective = fa::compile_query(certificate.statement())
+            .ok()
+            .and_then(|profiled| profiled.effective);
         crate::query::render(
             &ctx.out,
             certificate.statement(),
             period.as_deref(),
+            effective.as_ref(),
             &rows,
             Some(&digest),
         );

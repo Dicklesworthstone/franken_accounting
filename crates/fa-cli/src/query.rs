@@ -207,6 +207,7 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             &ctx.out,
             text,
             profiled.period.as_deref(),
+            profiled.effective.as_ref(),
             &certified.rows,
             Some(&digest),
         );
@@ -221,8 +222,41 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         return Ok(());
     }
     let rows = book.query_native(&native, known_at, profiled.period.as_deref())??;
-    render(&ctx.out, text, profiled.period.as_deref(), &rows, None);
+    render(
+        &ctx.out,
+        text,
+        profiled.period.as_deref(),
+        profiled.effective.as_ref(),
+        &rows,
+        None,
+    );
     Ok(())
+}
+
+/// The coordinate's effective selector for a statement, named as the other
+/// reads name theirs: `period:<code>` for FOR PERIOD, `as-of:<day>` for
+/// EFFECTIVE AT, `between:<from>..<through>` for EFFECTIVE BETWEEN, joined by
+/// `;` when a statement has both. None when it selects every effective day.
+fn effective_label(
+    period: Option<&str>,
+    effective: Option<&fa_time::EffectiveSelector>,
+) -> Option<String> {
+    use fa_time::{DateDay, EffectiveSelector};
+    let effective = effective.and_then(|selector| match selector {
+        EffectiveSelector::AsOf(day) => Some(format!("as-of:{}", day.render())),
+        EffectiveSelector::Range { start, end } => Some(format!(
+            "between:{}..{}",
+            start.render(),
+            DateDay(end.0 - 1).render()
+        )),
+        _ => None,
+    });
+    match (period, effective) {
+        (None, None) => None,
+        (Some(code), None) => Some(format!("period:{code}")),
+        (None, Some(effective)) => Some(effective),
+        (Some(code), Some(effective)) => Some(format!("period:{code};{effective}")),
+    }
 }
 
 /// The command a `CALL fa.<read>` runs: `positional`, with the statement's
@@ -270,10 +304,14 @@ pub(crate) fn render(
     out: &Out,
     statement: &str,
     period: Option<&str>,
+    effective: Option<&fa_time::EffectiveSelector>,
     rows: &QueryRows,
     certificate: Option<&str>,
 ) {
     out.known_at(rows.known_at);
+    if let Some(label) = effective_label(period, effective) {
+        out.effective(label);
+    }
     let rendered: Vec<Json> = rows
         .rows
         .iter()

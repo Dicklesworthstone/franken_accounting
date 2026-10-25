@@ -17,7 +17,9 @@
 //!   the normal period that shares its day;
 //! - `FOR PERIOD <from>..<through>` into every period lying within the
 //!   first's start and the last's end, the days the caller binds;
-//! - `EFFECTIVE BETWEEN <date> AND <date>` into the leg's effective day;
+//! - `EFFECTIVE AT <date>` (every leg effective on or before it, the stock
+//!   `fa tb --as-of` reads) and `EFFECTIVE BETWEEN <date> AND <date>` into the
+//!   leg's effective day, as a [`fa_time::EffectiveSelector`];
 //! - `AT BRANCH trunk`, or `AT BRANCH 'scenario:<name>'` / `'draft:<name>'`: the scenario's
 //!   materialization (its trunk prefix replayed at the fork plus its
 //!   intents), read at its own head and uncertified;
@@ -43,7 +45,7 @@ mod lex;
 
 pub use aggregate::{Aggregation, Column, Function, Value};
 
-use fa_time::DateDay;
+use fa_time::{DateDay, EffectiveSelector};
 
 use lex::{Kind, Lexed};
 
@@ -125,6 +127,10 @@ pub struct Profiled {
     /// `AT BRANCH 'scenario:<name>'` or `'draft:<name>'`: the branch selector
     /// of trunk.
     pub branch: Option<String>,
+    /// `EFFECTIVE AT` ([`EffectiveSelector::AsOf`]) or `EFFECTIVE BETWEEN`
+    /// ([`EffectiveSelector::Range`], half-open): compiled into the native
+    /// read's leg filter, and the coordinate a caller reports.
+    pub effective: Option<EffectiveSelector>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -344,6 +350,7 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
         selection,
         certify: selectors.certify,
         branch: selectors.branch,
+        effective: selectors.effective,
     })
 }
 
@@ -353,7 +360,7 @@ struct Selectors {
     spans: Vec<(usize, usize)>,
     known_at: Option<KnownAt>,
     period: Option<String>,
-    effective: Option<(DateDay, DateDay)>,
+    effective: Option<EffectiveSelector>,
     certify: bool,
     branched: bool,
     branch: Option<String>,
@@ -521,20 +528,46 @@ fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
             continue;
         }
         if lexed.word(i, "EFFECTIVE") {
-            const FIX: &str =
-                "EFFECTIVE BETWEEN '2026-01-01' AND '2026-03-31' (both days included)";
-            if !lexed.word(i + 1, "BETWEEN") {
-                return Err(Refusal::new(
-                    Law::Profile,
-                    start,
-                    "only EFFECTIVE BETWEEN is compiled in this build: a relationship's valid time (EFFECTIVE AT) is not",
-                    FIX,
-                ));
-            }
+            const FIX: &str = "EFFECTIVE AT '2026-03-31' (every leg effective on or before it) or EFFECTIVE BETWEEN '2026-01-01' AND '2026-03-31' (both days included)";
             let day = |j: usize| {
                 literal_run(lexed, j)
                     .and_then(|(text, end)| DateDay::parse(&text).ok().map(|day| (day, end)))
             };
+            let one = |selector: EffectiveSelector| {
+                if found.effective.is_some() {
+                    return Err(Refusal::new(
+                        Law::Profile,
+                        start,
+                        "a statement has one EFFECTIVE selector",
+                        FIX,
+                    ));
+                }
+                Ok(Some(selector))
+            };
+            if lexed.word(i + 1, "AT") {
+                // A statement's coordinate is a civil date; a relationship's
+                // valid time inside a pattern is not compiled in this build.
+                let (through, end) = day(i + 2).ok_or_else(|| {
+                    Refusal::new(
+                        Law::Profile,
+                        at(i + 2),
+                        "EFFECTIVE AT takes one civil date: a relationship's valid time is not compiled in this build",
+                        FIX,
+                    )
+                })?;
+                found.effective = one(EffectiveSelector::AsOf(through))?;
+                found.spans.push((start, lexed.tokens[end - 1].end));
+                i = end;
+                continue;
+            }
+            if !lexed.word(i + 1, "BETWEEN") {
+                return Err(Refusal::new(
+                    Law::Profile,
+                    start,
+                    "EFFECTIVE selects legs by effective date: EFFECTIVE AT <date> or EFFECTIVE BETWEEN <date> AND <date>",
+                    FIX,
+                ));
+            }
             let bad = |j: usize| {
                 Refusal::new(
                     Law::Profile,
@@ -556,14 +589,11 @@ fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
                     FIX,
                 ));
             }
-            if found.effective.replace((from, through)).is_some() {
-                return Err(Refusal::new(
-                    Law::Profile,
-                    start,
-                    "a statement has one EFFECTIVE selector",
-                    FIX,
-                ));
-            }
+            let end_exclusive = through.succ().map_err(|_| bad(and + 1))?;
+            found.effective = one(EffectiveSelector::Range {
+                start: from,
+                end: end_exclusive,
+            })?;
             found.spans.push((start, lexed.tokens[end - 1].end));
             i = end;
             continue;
@@ -788,7 +818,9 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
         return Err(Refusal::new(
             Law::Profile,
             0,
-            &format!("{procedure} is selected by period and known-at, not by EFFECTIVE BETWEEN"),
+            &format!(
+                "{procedure} is selected by period and known-at, not by an EFFECTIVE selector"
+            ),
             "CALL fa.trial_balance FOR PERIOD '<code>'; a civil-date cutoff: fa tb --as-of YYYY-MM-DD or fa open-items --as-of YYYY-MM-DD",
         ));
     }
@@ -912,7 +944,7 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
             return Err(Refusal::new(
                 Law::Profile,
                 0,
-                "FOR PERIOD and EFFECTIVE BETWEEN select one statement, not a UNION",
+                "FOR PERIOD and EFFECTIVE select one statement, not a UNION",
                 "run each part of the union as its own query",
             ));
         }
@@ -956,19 +988,34 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
                 filters.push(format!("__fa_period.code = '{code}'"));
             }
         }
-        if let Some((from, through)) = selectors.effective {
+        if let Some(effective) = &selectors.effective {
             let [leg] = legs.as_slice() else {
                 return Err(Refusal::new(
                     Law::Profile,
                     0,
-                    "EFFECTIVE BETWEEN selects legs by effective date: bind exactly one leg (l:Leg) in the first MATCH",
-                    "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs EFFECTIVE BETWEEN '2026-01-01' AND '2026-03-31'",
+                    "EFFECTIVE selects legs by effective date: bind exactly one leg (l:Leg) in the first MATCH",
+                    "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs EFFECTIVE AT '2026-03-31'",
                 ));
             };
-            filters.push(format!(
-                "{leg}._fa_effective_day >= {} AND {leg}._fa_effective_day <= {}",
-                from.0, through.0
-            ));
+            // Both bounds inclusive, as BETWEEN has always compiled.
+            filters.push(match effective {
+                EffectiveSelector::AsOf(through) => {
+                    format!("{leg}._fa_effective_day <= {}", through.0)
+                }
+                EffectiveSelector::Range { start, end } => format!(
+                    "{leg}._fa_effective_day >= {} AND {leg}._fa_effective_day <= {}",
+                    start.0,
+                    end.0 - 1
+                ),
+                other => {
+                    return Err(Refusal::new(
+                        Law::Profile,
+                        0,
+                        &format!("{other:?} is not a statement selector in this build"),
+                        "EFFECTIVE AT '2026-03-31' or EFFECTIVE BETWEEN '2026-01-01' AND '2026-03-31'",
+                    ));
+                }
+            });
         }
     }
     if !filters.is_empty() {

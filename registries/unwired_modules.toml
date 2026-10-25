@@ -56,12 +56,6 @@ owner_bead = "fa-94qd"
 reason = "Business-day calendars and day-roll conventions are not creatable or applied from any surface."
 expires = "2026-11-21"
 
-[[unwired]]
-path = "fa_time::selector"
-owner_bead = "fa-5c1"
-reason = "No surface selects through EffectiveSelector; fa-query's EFFECTIVE AT|BETWEEN parses its own window."
-expires = "2026-11-21"
-
 [[verification]]
 path = "fa_formats::conformance"
 consumer = "crates/fa-formats/tests/formats_conformance.rs"

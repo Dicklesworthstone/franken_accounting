@@ -23697,6 +23697,52 @@ fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
         "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, COUNT(*) AS legs ORDER BY account EFFECTIVE BETWEEN '2026-04-01' AND '2026-04-30'",
     );
     assert_eq!(rows(&april), r#"[["1000",1],["6000",1]]"#, "{april:?}");
+    // fa-5c1, plan §7.4: EFFECTIVE AT a day keeps every leg effective on or
+    // before it, the stock `fa tb --as-of` reads: March's rent and the EUR
+    // invoice, not April's rent. The coordinate names each selection.
+    let coordinate = |out: &str| -> Json {
+        let line = out.lines().last().unwrap_or_default();
+        json::parse(line)
+            .unwrap_or(Json::Null)
+            .get("coordinate")
+            .and_then(|c| c.get("effective"))
+            .cloned()
+            .unwrap_or(Json::Null)
+    };
+    let stock = ok(&[
+        "query",
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, COUNT(*) AS legs ORDER BY account EFFECTIVE AT '2026-03-31'",
+        "--json",
+    ]);
+    assert_eq!(
+        rows(&doc(&stock)),
+        r#"[["1000",1],["1200",1],["4000",1],["6000",1]]"#,
+        "{stock}"
+    );
+    assert_eq!(coordinate(&stock), Json::Str("as-of:2026-03-31".into()));
+    let april_line = ok(&[
+        "query",
+        "MATCH (l:Leg) RETURN COUNT(*) AS legs EFFECTIVE BETWEEN '2026-04-01' AND '2026-04-30'",
+        "--json",
+    ]);
+    assert_eq!(
+        coordinate(&april_line),
+        Json::Str("between:2026-04-01..2026-04-30".into())
+    );
+    let march_line = ok(&[
+        "query",
+        "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P03' EFFECTIVE AT '2026-03-05'",
+        "--json",
+    ]);
+    assert_eq!(rows(&doc(&march_line)), "[[2]]", "{march_line}");
+    assert_eq!(
+        coordinate(&march_line),
+        Json::Str("period:FY2026-P03;as-of:2026-03-05".into())
+    );
+    assert_eq!(
+        coordinate(&ok(&["query", "MATCH (a:Account) RETURN a.code", "--json"])),
+        Json::Str("all".into())
+    );
     // fa-5c1, plan §7.4: FOR PERIOD '<from>'..'<through>' selects every
     // period between its ends, here March's and April's legs together; the
     // native read is bound to their days.
