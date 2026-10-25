@@ -44,7 +44,7 @@ The request contains three goals. They need different evidence, so the plan keep
 1. **A demonstration** to forensic accountants, examiners and expert witnesses (the product's users,
    AGENTS.md "Project Mission"). It shows what franken_accounting detects, what it refuses, and what
    it does *not* catch on documented real events.
-2. **A public-record tie-out target**: published restated and as-reported numbers that franken_accounting's
+2. **An external oracle**: published restated and as-reported numbers that franken_accounting's
    certified folds must reproduce exactly. Every target carries its own assurance status. Several of
    the best targets were never audited: Enron's November-2001 figures are marked "UNAUDITED", and its
    Q3-2001 10-Q was "not been reviewed". So the honest phrase is "reproduces the published bridge",
@@ -65,7 +65,7 @@ is a *reconstruction*, and a reconstruction can silently become a test of what w
 
 The project has been burned by exactly that:
 - fa-4psc measured 100% precision for the Lantern calibration "by construction"
-  (`registries/lantern_calibration.toml:22-32`, `FA-ART-CAL-01`, because fa-gen labels what it plants);
+  (`registries/lantern_calibration.toml:22-32`, because fa-gen labels what it plants);
 - fa-kkxl and fa-e75k retracted oracle claims that overstated what a green test proved.
 
 The research answer is that the public record supports **narrow, exact, checkable predicates** per
@@ -154,7 +154,8 @@ defaults:
 - P: none (N: no derecognition law).
 - T: statement footing at the quarter ends whose full statement of financial condition the 10-Q prints
   (2008-05-31, 2007-11-30). Per-account values shared with Valukas are R rows. Ratios and (b)/(d) are
-  computed by the harness. The scenario recharacterization is checked via a certified scenario diff.
+  computed by the harness. The scenario recharacterization is a certified scenario diff (a read-back)
+  plus the adjusted ratio within its 0.1x display unit (C, never T).
 
 **Madoff / BLMIS (trustee Exhibit B).** Facts are ledger_row granularity.
 - D: `ponzi.net_investment` equals the trustee's closing principal on 1ZR176 only.
@@ -383,9 +384,11 @@ example, the account-role mapping is a judgment, so a D on WorldCom tests the pr
 | `date_literal` | no | "July 17, 2001" → `"2001-07-17"` |
 | `number_word` | no | "three" → 3 |
 | `period_literal` | no | "the second quarter of 2001" → `2001Q2` |
+| `date_range_literal` | no | "on or about and between July 17 and 19, 2000" → the closed day range 2000-07-17 … 2000-07-19 (a branch over its days) |
+| `month_literal` | no | "In September 2001" → the month 2001-09 (a branch over its days) |
 | `sum`, `difference` | no | exact integer arithmetic |
 | `negate` | no | the exact additive inverse of a sourced entry's legs, same accounts and units (a correction Δ) |
-| `round_residue{power}`, `weekday_of`, `same_leg_multiset_same_day`, `same_leg_multiset_within{days}`, `rsf_ratio`, `first_digit_counts` | no | predicate models of the §9.4 procedures; integer only; each named with its registry parameter names |
+| `round_residue{power}`, `weekday_of`, `same_leg_multiset_same_day`, `same_leg_multiset_within{days}`, `rsf_ratio`, `first_digit_counts`, `round_density_z2`, `benford_mad` | no | predicate models of the §9.4 procedures; integer only; each named with its registry parameter names |
 | `date_offset{days}` | no | "three days later" → date + 3. The weekday is recomputed and rendered. |
 | `remainder{line, of_total}` | no | one remainder account per account type, so that a statement partitions (§3.8) |
 | `last_balance_on_or_before{date}` | no | selects a printed running balance; used for declared trial balances (M-T-03) |
@@ -591,7 +594,8 @@ Rules:
   by `case-second-reader`). It never cites a provenance stub, or a placeholder of a documented entry.
 - **Statement-level books cite the publishing filing.** On a `statement` variant (§3.2), each posted
   figure cites the citation stub of the filing that publishes it:
-  - an A posting cites the as-filed filing;
+  - an A posting cites the filing whose figure it posts: the as-filed filing, or the restating
+    filing's "as previously reported" column when the bridge uses the restater's A (K-VINTAGE; W-T-02);
   - a Restatement/Revision/PPA Δ cites the restating filing;
   - a migration chunk cites the exhibit it reproduces.
 
@@ -602,7 +606,8 @@ Rules:
   the exhibit it reproduces, as a migration chunk does. No expectation whose procedure reads evidence may
   be declared there (the tier row's `reads_evidence`, §2.5).
 - **Self-disclosure.** Every book variant runs `jet.self_sourced_evidence` (`registries/procedures.toml:97-105`;
-  `crates/fa-lantern/src/jet.rs:418-516`).
+  `crates/fa-lantern/src/jet.rs:418-516`). The runner generates this row for every variant, with id
+  `<case>-SELF-<variant>` (item A7a); case authors never write it.
   - An expectation with `about = "reconstruction"` asserts that it cites every posting that cites a
     reviewed citation stub, at severity Medium. Such a row is a D about our encoding, not about history,
     so it is exempt from K-EVID's bar on `statement` and `ledger` variants.
@@ -709,7 +714,7 @@ for role labels rests on the branch-table ground and on minimizing names, not on
   **`crates/fa-oracles`** (module `cases`).
   - **Why this crate.**
     - `fa-oracles` is already a planned row in the verification layer
-      (`registries/workspace_topology.toml:201-205`, `planned = true`), and COMPREHENSIVE_PLAN §18.1
+      (`registries/workspace_topology.toml:202-206`, `planned = true`), and COMPREHENSIVE_PLAN §18.1
       names it.
     - Public-record tie-outs are exactly the external oracles of COMPREHENSIVE_PLAN §16.
     - The topology pin test (`crates/fa-registry/src/topology.rs:160-235`) pins names and layers to
@@ -721,7 +726,8 @@ for role labels rests on the branch-table ground and on minimizing names, not on
     - flips `planned = false`;
     - adds the crate to the root `Cargo.toml` members;
     - sets `publish = false`;
-    - adds `allowlist = ["fa-registry", "fa-reference"]` to its topology row, which the existing
+    - adds `allowlist = ["fa-registry", "fa-reference", "fa-time"]` to its topology row (fa-reference's
+      API takes fa-time types, e.g. `Oracle::new(FiscalCalendar)`, `Intent.date`), which the existing
       `topology` step enforces.
   - **Engine independence.** fa-oracles does its own exact integer arithmetic (checked i128 at each
     unit's declared scale) and has its own minimal JSON reader, SHA-256 and canonical renderers. It
@@ -759,7 +765,7 @@ for role labels rests on the branch-table ground and on minimizing names, not on
 
 ```text
 crates/fa-oracles/cases/<case-id>/
-  case.toml          # id, title, version, kind (`case` | `harness_selftest`), scope, claim list, declared capabilities, pinned commit, book variants
+  case.toml          # id, letter (W/X/E/L/M/C; prefixes every expectation and generated row id), title, version, kind (`case` | `harness_selftest`), scope, claim list, declared capabilities, pinned commit, book variants
   sources.toml       # sources ledger rows (§4.1)
   receipts.toml      # GENERATED by case_fetch.py verify; never hand-edited (§4.4)
   facts.toml         # [[fact]] (sourced / interpretation / derived / synthetic) + [[value]] rows (§2.1)
@@ -798,21 +804,44 @@ source supports.
 | table | fields (all scalars or one-line arrays) |
 |---|---|
 | `[book]` | `variant`, `opening_date`, `calendar` (`custom`), `base_unit`, `posture` |
-| `[[period]]` | `code`, `start`, `end`, `fiscal_year`, `kind`. Every period the history uses is created (`fa period create --fiscal-year N`) and then opened (`fa period open`). Periods are born `Future`, which admits nothing (`registries/admissibility.toml:55`). |
+| `[[period]]` | `code` (the case's label, e.g. `2001Q1`; `fa period create` assigns its own codes, so the runner maps each label to the code the command reports and logs the map), `start`, `end`, `fiscal_year`, `kind`. Every period the history uses is created (`fa period create --fiscal-year N`) and then opened (`fa period open`). Periods are born `Future`, which admits nothing (`registries/admissibility.toml:55`). |
 | `[[principal]]` | `label` (from roles.toml), `profile`, `grants` (one-line array of ops) |
 | `[[account]]` | `code`, `name_fact` (the sourced name), `type`, `role` (may be empty), `opened`, `closed`, `role_map_rule` |
 | `[[document]]` | `id`, `stub_of` (source id, or fact id for a fact stub), `grade` (`AgentUpload`), `reviewed_by` (principal label or empty) |
 | `[[intent]]` | `id`, `fact` (the documented entry it encodes, `derived:<rule>` for a Δ, or `synthetic`), `class`, `principal`, `effective_date`, `document_date`, `memo`, `evidence` (document id, `manual_assertion:<code>`, or empty), `idempotency_key`, `target` (the intent id it reverses, restates, revises or reclassifies; required for those classes), `target_kind` (`reverses` / `restates` / `revises` / `reclassifies`), `reason` (a `registries/reason_codes.toml` name in scope `supersession`; a declared default with its rationale), `scenario` (the case scenario it is planned into, or empty), `allocation` (law, total, targets; §5.3) |
 | `[[case]]` | `id`, `kind`, `periods`, `determined_on` (fact id or declared default, §2.6), `authority` (document id), `disclosure` (document id), `approvers` (two role labels with no shared session lineage, `crates/fa-cli/src/cli.rs:3450`), `poster` |
-| `[[leg]]` | `intent`, `ordinal`, `account`, `side` (`Dr` or `Cr`), `amount_literal`, `amount_rule`, `unit` |
-| `[[step]]` | `seq`, `kind` (`intent` / `batch` / `allocate` / `period_open` / `period_soft_close` / `period_close` / `period_lock` / `issue` / `assert_balance` / `scenario_fork` / `scenario_run` / `scenario_diff` / `case_open` / `case_determine` / `case_rehearse` / `case_approve` / `case_post` / `case_disclose` / `case_close` / `checkpoint` / `checkpoint_witness` / `finding_record` / `finding_review` / `engagement_file` / `filler_batch`), `ref` (an intent, period, case or procedure id, etc.), `known_at` (`head` / `pre_case`, for `finding_record`), `branch_class` (empty = all) |
+| `[[party]]` | `id`, `label` (a role label from roles.toml, or an entity name fact), `kind`, `relations` (one-line array of `kind:party`, posted with `fa party relate`) |
+| `[[leg]]` | `intent`, `ordinal`, `account`, `side` (`Dr` or `Cr`), `amount_literal`, `amount_rule`, `unit`, `party` (a `[[party]]` id or empty) |
+| `[[step]]` | `seq`, `kind` (`intent` / `batch` / `allocate` / `period_open` / `period_soft_close` / `period_close` / `period_lock` / `issue` / `assert_balance` / `scenario_fork` / `scenario_run` / `scenario_diff` / `case_open` / `case_determine` / `case_rehearse` / `case_approve` / `case_post` / `case_disclose` / `case_close` / `checkpoint` / `checkpoint_witness` / `finding_record` / `finding_review` / `engagement_file` / `filler_batch` / `migrate_open` / `migrate_stage` / `migrate_finalize` / `migrate_import`), `ref` (an intent, period, case or procedure id, etc.), `known_at` (`head` / `pre_case`, for `finding_record`), `branch_class` (empty = all) |
 | `[[branch_class]]` | `id`, `attribute` (§2.6 enum), `rule` (from `case_branch_rules.toml`), `values` |
 | `[[default]]` | `attribute`, `rule`, `rationale`: the declared default encodings (§2.6 rule 2) |
 
-A complete worked example for the A8 pilot (WorldCom F2, F4, F9, F12) follows. Items A1a–A1c share it
-as their acceptance fixture.
-It writes all four files (sources, facts, books/native, expectations) in this subset, and every foreign
+A complete worked example for the A8 pilot (WorldCom F2, F4, F9, F12) is authored as the shared
+acceptance fixture of items A1a–A1c; it is not reproduced in this plan. It writes all four files (sources, facts, books/native, expectations) in this subset, and every foreign
 key resolves.
+
+#### 3.2b Naming conventions
+
+- **Case directories** under `crates/fa-oracles/cases/`: `worldcom` (W), `xbrl` (X: SunPower, Microsoft
+  and RH as one case), `enron` (E), `lehman` (L), `blmis` (M), `mergers` (C), and `_selftest`.
+- **Book-variant files** `books/<stem>.toml`. A stem is `<kind>` or `<kind>-<suffix>`, where the kind
+  (`native`, `migration`, `statement`, `ledger`) is the prefix: e.g. `statement-bridge`,
+  `statement-sunpower`.
+- **Case numbers.** `fa case` takes the book's case number, not a label (`crates/fa-cli/src/case.rs:88-101`).
+  The runner maps each `[[case]] id` to the number `fa case open` reports, and logs the map.
+- **Ids.** Expectation ids and runner-generated row ids carry the case letter from `case.toml`:
+  `W-D-01`, `W-NOTE-01`, `W-SELF-native`, `W-CASE-<case id>`, and `W-N-90` for the guidance N. A
+  documented entry's intent id is its fact id (`F4`, `F6a`). A case Δ intent is `delta-<target intent
+  id>`. Branch-cell copies of an intent are generated by the runner (A7c), never authored.
+- **Runner tests** (`crates/fa-cli/tests/cases.rs`): one `#[test]` per case, named after its directory
+  (`cargo test -p fa-cli --test cases -- --exact worldcom`). Each run-time planted negative is a
+  permanent `#[test] fn <dir>_neg_<slug>()`. It copies the case into the test's temp dir, applies one
+  named edit, and asserts the exact observable. Committed case files are never edited to plant a
+  negative. Load-time negatives live in `crates/fa-oracles/tests/case_<dir>.rs`.
+- **Run-time dependence on OD 2b.** Tests never read the fetch cache. Until OD 2b allows committing whole
+  tables, every expectation built on the BLMIS Exhibit B rows or the Valukas dated series (case M,
+  L-D-01, L-N-02, L-R-03) prints UNRUN. The extractor and the harness are built and tested on fixtures
+  in the meantime.
 
 ### 3.3 The run pipeline
 
@@ -820,6 +849,10 @@ key resolves.
 admission pipeline. Planning skips only the Agent-on-trunk check, which never applies to a Human
 principal (`crates/fa-policy/src/admit.rs:153`; `crates/fa-journal/src/post.rs:873-889`). So for the
 case's Human principals, the dry run and the commit admit identically.
+- A ManualAssertion is bound to one sealed proposal, and a second `fa post --intent` reseals with fresh
+  entropy. So a cell whose evidence is `manual_assertion` is planned with `fa document attest manual
+  --intent … --plan-out <file>` and committed with `fa commit --plan <file>`. Every branch cell carries
+  its own idempotency key, so a committed cell never turns a later cell's dry run into a replay.
 - All cells of one entry are swept on one book. The book's period is advanced Open → SoftClosed →
   Closed → Locked between sweeps.
 - For each distinct outcome (a refusal id, or admit), one representative is committed, and the commit
@@ -827,7 +860,9 @@ case's Human principals, the dry run and the commit admit identically.
 - D branch cells for tier L and C procedures are co-resident target entries in one book. Each is the
   other's filler, so the filler-invariance witness also checks that co-residents do not interact. Each D
   cell of tier S-rel, S-acct, G or O gets its own book.
-- A filler variant is posted as one `PostBatch` (`registries/verbs.toml:263`).
+- A filler variant is posted as `PostBatch` chunks of at most 8,190 entries each
+  (`registries/verbs.toml:263`; `registries/limits.toml:99-101`), so an extremal variant may take
+  several.
 - **Combination rule.** Filler variants (K seeded, empty and extremal) run on the default branch cell
   only. Branch cells run on the empty-filler variant only. This is sound because a tier's filler
   discipline does not depend on target attributes; class equivalence is property-tested separately
@@ -893,7 +928,7 @@ Steps, with verb names as registered at 8196f5e40. The harness's verb table is c
    - `fa case post` by a non-approver.
 
    Each Restatement delta names the posting it `restates` (`post.rs:2503-2512`). Restatement is admitted
-   only in Closed or Locked periods, as `with:restate,2` (`admissibility.toml:381-397`).
+   only in Closed or Locked periods, as `with:restate,2` (`admissibility.toml:380-401`).
    PolicyChangeRetrospective cases post through the same RESTATEMENT class (`crates/fa-journal/src/case.rs:1661-1675`),
    but no test posts one yet (H13).
 
@@ -904,7 +939,8 @@ Steps, with verb names as registered at 8196f5e40. The harness's verb table is c
    - `fa case disclose <case> --document <D>`, where D is a `Disclosure`-kind stub of the restating
      filing, reviewed by `case-second-reader`. Its harness-only twin (unreviewed) is refused
      `FA-REF-179`.
-   - Then `fa case close <case>`. R row: `fa case show` reports the state Closed and the sourced
+   - Then `fa case close <case>`. R row, generated by the runner for every restatement case (id
+     `<letter>-CASE-<case id>`, item A7b): `fa case show` reports the state Closed and the sourced
      determination day.
 6. **Run the audit program**: `fa procedure run <id>`, `fa jet …`, and `fa finding record <id>` for each
    claimed procedure. D components are read with `fa finding list --certificate C:<run>`.
@@ -971,7 +1007,7 @@ stdout is data and stderr is diagnostics. The log goes to the test's temp dir an
 | K-NAMES | no principal, party, memo or assertion text matches the hashed name deny list (§2.8) | A3c |
 | K-EVID | on entry-level variants, evidence cited by replayed intents is disjoint from provenance documents; no P, N, CF or evidence-reading D on a `statement` variant; no P, CF, `no_refusal` N or evidence-reading D/N on a `ledger` variant; `about = "reconstruction"` rows are exempt (§2.7) | A3c |
 | K-REASON | no intent carries a reason that is a legal conclusion (`Fraud`, `registries/reason_codes.toml:99-102`); every correction reason is a declared default with a rationale, rendered with the expectation | A3c |
-| K-TIER | every claimed procedure has a two-reader tier row whose (id, version, `procedures.toml` row digest) matches the tree; tiers P and A cannot carry D | A4 |
+| K-TIER | every claimed procedure has a two-reader tier row whose (id, version, `procedures.toml` row digest) matches the tree; tiers P and A cannot carry D unless the comparison population is itself sourced and complete (§2.5; the §9.4 `ledger` rows) | A4 |
 | K-BRANCH | every unanchored attribute that a claimed component or the kernel reads is sourced, declared, interpreted, an observed covariate, or a branch class (closed enum, §2.6); branch values may not contradict sourced constraints (CF rows exempt) | A5b |
 | K-PRED | no branch constraint collapses the claimed predicate's feasible partition (§2.6 rule 4) | A5b |
 | K-JOINT | P(refused) and D(reported) expectations on one entry have disjoint branch scopes; every D target names its admitted cell | A5b |
@@ -1051,8 +1087,9 @@ Consequences for T:
   read back a posted value, they are R rows. The harness derives (b), (d) and the ratios and labels them
   harness-derived. The T is the type-level footing (L-T-01).
 - Where the source publishes only some lines (Enron Note 3's total assets, debt and equity), the book
-  carries one `remainder` account per account type. K-TAUT forbids a T on any line whose published
-  value fed a remainder.
+  carries one `remainder` account per account type. A remainder's A side is derived from A values and
+  its Δ from published Δ values, never from a B value. K-TAUT forbids a T on any line whose published
+  comparison value (B) fed a remainder.
 - Ratio lines and user-loaded definitions are product questions (§13), not case dependencies.
 
 ---
@@ -1069,13 +1106,14 @@ Consequences for T:
 | `retrieval_route` | `original`, `archive_capture`, `third_party_copy`, or `re_render` |
 | `original_hash_compared` | true/false: whether the retrieved bytes were compared with the publisher's original |
 | `retrieved_utc` | |
+| `filed_on`, `restates` | the filing date, and the source ids of the filings it restates (K-VINTAGE orders vintages by these) |
 | `sha256` | of the bytes as retrieved |
 | `format` | pdf / htm / txt / xml / json |
 | `extraction` | tool + version + SHA-256 of the extracted text, when the anchor scheme needs text |
 | `redistribution_basis` | public-record/sec-filing, public-record/court, government-work (§105), company-commissioned/edgar-exhibit, or third-party-hosted |
 | `assertion_status` | §2.2 |
 | `assurance` | for filer statements: audited / reviewed / unaudited / not-from-audited, with the sentence that establishes it |
-| `anchor_scheme` | |
+| `anchor_scheme` | the anchor kinds its facts use: `page{printed page, line range}`, `line{range}` (in the extraction), `table_cell{table, row label, column label}`, `xbrl{concept, context id}`, `paragraph{¶ number}` (complaints and indictments); K-ANCHOR checks each kind. Sentence alignment applies to prose anchors (`page`, `line`, `paragraph`); a `table_cell` or `xbrl` fact binds by exact cell or fact value instead |
 | `status` | `OK` or `BLOCKED{reason}` |
 | `notes` | |
 
@@ -1121,15 +1159,25 @@ The tool uses the Python 3 standard library only and runs with `python3 -B`, fol
 - **`exhibit-b <case>`**: extracts BLMIS Exhibit B rows per complaint column layout into the generated
   `exhibit_b_rows.toml` (never hand-edited). Its layouts, structural checks and diagnostics are item
   M2t's (§15).
-- **`verify <case>`** checks, for every sourced fact:
+- **`verify <case>`** checks, for every sourced fact. Until OD 2a allows committed quote text, a fact
+  carries only `quote_sha256` and its anchor; `verify` then enumerates the sentence-aligned spans at the
+  anchor in the normalized extraction and selects the one span whose SHA-256 matches (zero or several
+  matches is a FAIL):
   - the quote occurs **sentence-aligned** and **exactly once** in the extraction at the anchor, after
     normalization;
   - its literal values occur in it after the literal rule;
   - `about_scope` passes the K-SCOPE word check.
 
-  It then writes `receipts.toml`, one `[[receipt]]` row per sourced fact: `source`, `fact`,
-  `verified_utc`, `tool_version`, `extraction_sha256`, `quote_sha256`, and the five binding booleans. The
-  file is regenerated whole and never edited by hand. Python's stdlib has no TOML writer, and a rewrite
+  It then writes `receipts.toml`, one `[[receipt]]` row per sourced fact: `source`, `fact`, `anchor`
+  (the page or line range the quote was found at, which K-ANCHOR checks), `verified_utc`, `tool_version`,
+  `extraction_sha256`, `quote_sha256`, `values_sha256` (SHA-256 of the fact's canonical literal values
+  and `about_scope`, so K-BIND detects offline a value edited after `verify`), `alignment` (`sentence`
+  for prose anchors, `value` for `table_cell` and `xbrl` facts), four binding booleans
+  (`quote_found_once`, `aligned`, `values_in_quote`, `scope_ok`), and the source's
+  `original_hash_compared`, copied from its `sources.toml` row (false for an archive capture until OD 1
+  allows an original fetch). `verified_utc` is the
+  cache entry's fetch time, not the run's clock, so re-running on an unchanged cache is byte-identical.
+  The file is regenerated whole and never edited by hand. Python's stdlib has no TOML writer, and a rewrite
   of `sources.toml` would lose its comments, which is why receipts get their own file.
 - **Normalization.** It is identical in Python and Rust, and fixture-tested in both:
   - decode UTF-8;
@@ -1212,7 +1260,12 @@ admitted cell for D, the component statuses, and the expected values.
 
 Branch tables live in `[[branch_cell]]` rows: `expectation`, `target`, `cell` (one value per branched
 attribute), the expected verdict, `record_consistent` (true when a sourced or derived fact supports
-the cell; §12.3), and `default` (true on the one cell a declared default selects, §2.6 rule 2).
+the cell; §12.3), `default` (true on the one cell a declared default selects, §2.6 rule 2), and
+`pending` (empty, or the reason a cell awaits a named probe or product item, e.g. W5's ManualAssertion
+probe). A pending cell is still run and logged, and prints `UNRUN … reason=<pending>` with the observed
+outcome. An expectation with a pending cell cannot be in the case's claims: the loader refuses it
+(`PendingClaimed`). Removing the field, once its probe settles the cell, is the only way to claim the
+expectation. A claim never excludes a cell.
 
 **Notes.** A published observation that franken_accounting does not compute (a two-point comparison of
 printed values, for example) is a `[[note]]` row: `id` (`<case>-NOTE-NN`), `case`, `basis` (fact ids),
@@ -1230,7 +1283,8 @@ an expectation (W-NOTE-01).
     - every B component matches its `[[branch_cell]]` rows;
     - no X component is asserted.
 - **P**
-  - Fields: `intent` (fact id), `refusal`, `law_row`, `attribute` (the documented attribute the refusal
+  - Fields: `intent` (fact id), `refusal`, `law_row` (a registry row, or a plan section where the refusal
+    names only one, as the allocation review's `FA-REF-012` names only COMPREHENSIVE_PLAN §14.3), `attribute` (the documented attribute the refusal
     rests on), and `reference_verdict` (the fa-reference oracle's verdict, or `not_modelled`).
   - The expected exit is not a field: the harness reads it from `registries/refusal_catalog.toml`.
   - Passes when the documented intent's first refusal is that id, the exit matches the catalog, the
@@ -1247,10 +1301,13 @@ an expectation (W-NOTE-01).
     (`registries/refusal_catalog.toml:103-108`).
   - The observed premises are logged. Nothing observed in a run is written back into an authored file.
 - **N**
-  - Fields: `kind` (`no_refusal` | `no_finding`), the target, `mechanism` (file:line at the pinned
-    commit), and its mutation twin (§3.7).
+  - Fields: `kind` (`no_refusal` | `no_finding` | `exact_gap`), the target, `mechanism` (file:line at
+    the pinned commit), and its mutation twin (§3.7).
   - Passes when the documented intent is admitted, or the procedure reports no finding on it, **and**
     the twin reports.
+  - `exact_gap` (M-N-01): the procedure's value on the target differs from a sourced value by exactly
+    an amount the mechanism explains, a gap of a named capability, not a finding. Its twin is a target
+    without the mechanism's input, where the gap must be 0.
   - An N is a regression lock in both directions.
 - **CF**: the parent expectation, the one changed attribute, and the expected verdict.
 
@@ -1288,8 +1345,10 @@ an expectation (W-NOTE-01).
 - **Two read-backs on the same book** are typed R:
   - **As filed.** Before the case, A is asserted, citing the as-filed stub.
   - **Drift.** After the case, `recon.assertion_drift` must report exactly the A assertion, citing the
-    case's Restatement entries, with drift = ΣΔ. That procedure is registered `claim = "invariant"`
-    (`registries/procedures.toml:1402-1411`).
+    case's Restatement entries, with a drift statistic equal to |ΣΔ| (the procedure reports the
+    magnitude of fold − asserted, `crates/fa-lantern/src/assertion_drift.rs:118-122`, `:160-163`; the
+    sign is read from the fold). That procedure is registered `claim = "invariant"`
+    (`registries/procedures.toml:1401-1409`).
 - **Restatement artifacts.** For line-level bridges, `fa case diff --statements --certify` gives the
   certified `after` column (the T) and `before` column (an R) in one replayable artifact.
 - **C** (DEBATE-001 ruling). A comparison that holds only within a band derived from a display unit or
@@ -1327,9 +1386,10 @@ Always excluded:
   branch-attribute enum, declared default encodings, the tier-C context rule, and R-QUAL (§2.6). The
   WorldCom single-verdict table is §6.4.
 - **H-013 falsifier (d) check (not fired; narrowed).** The record does not say that the 1Q02 preparer
-  had no document. It describes the absence of *support* (substantiation), and puts a Post-it bearing
-  the combined $818M in her hands (Beresford p.116). For the 1Q02 entries, crediting an instruction
-  document is a derived reading, so `evidence_attached` is a branch.
+  had no document. It describes the absence of *support* (substantiation), and records that the preparer
+  handed a Post-it bearing the combined $818M on to Capital Reporting (Beresford p.116). For the 1Q02
+  entries, crediting the preparer with an instruction document is an `interpretation`, so
+  `evidence_attached` is a branch.
 
 ### 5.6 Claim class and calibration status in every D sentence (K-ERRRATE)
 
@@ -1339,7 +1399,7 @@ its calibration status (`crates/fa-registry/src/procedures.rs:61-79`). Each stat
 | `procedures.toml` calibration | rendered clause |
 |---|---|
 | `planted` (e.g. `expense.capitalization`, `procedures.toml:1482`) | "exercised only on planted anomalies in tests; its false-positive rate on real books has not been estimated" |
-| `corpus` (a `lantern_calibration.toml` row exists, e.g. the `jet.*` rows) | "measured on fa-gen's labelled synthetic corpora (`FA-ART-CAL-01`), where precision is 100% by the generator's construction (`lantern_calibration.toml:22-33`); its false-positive rate on real books has not been estimated" |
+| `corpus` (a `lantern_calibration.toml` row exists, e.g. the `jet.*` rows) | "measured on fa-gen's labelled synthetic corpora, where precision is 100% by the generator's construction (`lantern_calibration.toml:22-33`); its false-positive rate on real books has not been estimated" |
 | `uncalibrated` (e.g. `trace.network_fifo`) | "its thresholds are pinned, not measured; its false-positive rate on real books has not been estimated" |
 
 The clause follows the 2023 Federal Rule of Evidence 702 committee note, which asks forensic experts to
@@ -1388,7 +1448,7 @@ Conventions:
 | F9 | 2001-10-19 | line costs → PP&E, "in the amount of $742,725,000"; proposed split Transmission Equipment $300M + Communications Equipment $442M (= $742M, not the booked amount); credit accounts changed, amounts not stated | $742,725,000 | 113 | Abide e-mailed Vinson and Normand the account numbers and amounts; "Vinson sent it to Renfroe to have the entry booked" (p.113). The e-mail is undated |
 | F10 | 2002-01-23 | line cost expense → PP&E 941M, into "furniture and fixture accounts" (plural; split unsourced) | $941M | 114 | "On January 23, 2002, Howard in Abide's group prepared a draft journal entry" (p.114): the only instruction document the record dates |
 | F11 | 2002-01-25 (`derived{date_offset: 2}`) | 100M out of an asset account, offset by a release from a corporate accrual account | $100M | 114–115 | accrual offset |
-| F12 | 2002-04-12 | line cost expense → capital 718M | $718M | 116 | Vinson booked the entry and then "handed him [Capital Reporting] a Post-it Note that had the $818 million adjustment on it" (p.116): the preparer *handed on* an undated note bearing the combined amount, a `derived` reading; the record gives F12 no instruction document |
+| F12 | 2002-04-12 | line cost expense → capital 718M | $718M | 116 | Vinson booked the entry and then "handed him [Capital Reporting] a Post-it Note that had the $818 million adjustment on it" (p.116): the preparer *handed on* an undated note bearing the combined amount; reading it as F12's document is an `interpretation`; the record gives F12 no instruction document |
 | F13 | 2002-04-17 | line cost expense → capital 100M | $100M | 116 | as F12 |
 
 Context facts:
@@ -1465,8 +1525,8 @@ Context facts:
       is refused with `FA-REF-185` (RECLASSIFICATION_SHAPE, `post.rs:2491`, after identity and before
       period law and SoD), so on this encoding the self-approval is never reached. `record_consistent =
       false`; it renders beside W-P-01;
-  - `period_state_at_commit`: Open / SoftClosed / Closed. Locked is excluded by the sourced filing
-    dates;
+  - `period_state_at_commit`: Open / SoftClosed / Closed, plus Locked as a record-inconsistent cell
+    (`record_consistent = false`: the sourced filing dates put every booking before its quarter's lock);
   - `evidence_attached`: none / placeholder_unreviewed / placeholder_reviewed / manual_assertion(code);
   - `entry_decomposition`: F6b (`one_allocation_entry` / `ten_two_leg_entries`) and F8 (`one_entry` /
     `twelve_entries`);
@@ -1497,14 +1557,16 @@ other single verdict below rests on Beresford alone.
 | W-D-03 | " | F6a and F6b (the ten sub-ledger assets) | Sd on the fact; B(entry_decomposition) on the cited (fact, leg ordinal) set, under `subledger_to_gl_legs` ("exactly $54.4 million each", p.111; "10 different entries", pp.260–261) | Sd: Medium, because every leg is a multiple of 10^3 units under either decomposition (`jet.rs:134-138`) | B(entry_decomposition): `round_legs` = 11 on one compound entry (10 × 54.4M Dr + 544M Cr) versus 2 on each of ten two-leg entries |
 | W-D-03 | " | F1, F9, F10, F12, F13 | B(amount_precision, leg_split); F1 has a documented exception to R-QUAL | B | B |
 | W-D-04 | `jet.period_end_timing` (C) | all capitalization entries | B(effective_date): no effective day is sourced | S (constant Low) | B |
-| W-D-05 | `jet.post_closing` | all | X | X | X |
-| W-D-06 | `cutoff.period_boundary` (C) | F10 (draft JE dated 2002-01-23, p.114); F1, F9 and F12 only as B(document_date) | Sd for F10: the document's period (1Q02) ≠ the sourced reporting period (4Q01). The effective day is not read for the cite (`cutoff.rs:52-67`). F9's e-mail is undated; F12's Post-it was *handed on* by the preparer (p.116), a derived reading; F1's document is undated: all three are B(document_date) | S (constant Medium, `cutoff.rs:83`) | B(effective_date), default cell marked: `days_between_dates` reads the effective day (`cutoff.rs:68`) |
+| W-NOTE-02 | `jet.post_closing` | all | X | X | X |
+| W-D-06 | `cutoff.period_boundary` (C) | F10 (draft JE dated 2002-01-23, p.114); F1, F9 and F12 only as B(document_date) | Sd for F10: the document's period (1Q02) ≠ the sourced reporting period (4Q01). The effective day is not read for the cite (`cutoff.rs:52-67`). F9's e-mail is undated; F12's Post-it was *handed on* by the preparer (p.116), an interpretation; F1's document is undated: all three are B(document_date) | S (constant Medium, `cutoff.rs:83`) | B(effective_date), default cell marked: `days_between_dates` reads the effective day (`cutoff.rs:68`) |
 | — | population tiers (`jet.unusual_*`, `numbers.round_amount_density`, `benford.*`) | — | X | X | X |
 
-**W-D-05 is inadmissible.** The corrected code-tier table classes `jet.post_closing` as tier P, because
-its commit gap depends on the population of commits. Its verdict would also only mirror where the
-harness places the period close. Its X components render in Limits (§12.3) as a limit of what a
-reconstruction can show. It has no N row: N is barred on tier P (§3.7).
+**`jet.post_closing` is inadmissible (W-NOTE-02).** The corrected code-tier table classes it as tier P,
+because its commit gap depends on the population of commits. Its verdict would also only mirror where
+the harness places the period close. A row whose components are all X is not an expectation (it can
+neither PASS nor FAIL), so it is the Limits note W-NOTE-02 (§5.1), rendered as a limit of what a
+reconstruction can show. It has no N row: N is barred on tier P (§3.7). The population-tier row below it
+is part of the same note.
 
 **W-D-06's caveat.** A legitimately documented post-closing adjustment satisfies the same predicate. The
 claim class is statistical and the calibration is `corpus`, so the sentence says so.
@@ -1528,9 +1590,14 @@ claim class is statistical and the calibration is `corpus`, so the sentence says
     (`crates/fa-journal/src/draft.rs:996-1000`, `crates/fa-policy/src/denial.rs:167-181`). Promotion
     attaches no Approval to the promoted entries, so W-D-02 still needs the migration book.
   - **(b) `entry_approval`.** A native Approval by the preparing principal, cited at commit. On F6a it
-    needs A0 (`fa post`/`fa commit` take no `--approval`). On F6b it may be reachable now: `fa allocate`
-    takes `--approval <vid>` (`registries/verbs.toml:459`), so item W5 probes `fa allocate --approval
-    <self vid>`; if it reaches `FA-REF-008`, that cell needs no A0.
+    needs A0 (`fa post`/`fa commit` take no `--approval`). On F6b two routes exist now:
+    - the allocation review's own approval (`fa allocate approve`) refuses the preparer before the
+      kernel sees the entry: `FA-REF-012` (exit 7), "the allocation preparer cannot approve their own
+      proposal" (`crates/fa/src/allocation_review/approval.rs:46-53`). That is a P cell in its own
+      right;
+    - an approval recorded with `fa approve --proposal <digest> --as <director>` and passed with
+      `fa allocate --approval <vid>` (`registries/verbs.toml:459`) reaches kernel SoD. Item W5 probes
+      whether that yields `FA-REF-008`; if it does, the cell needs no A0.
   - **Reading.** The claim is conditional on the `interpretation` that the director approved these
     transfers (p.111's "so" clause, the natural reading). On the weaker reading, "entered only",
     `approvals_recorded` is a branch, and the no-approval cell is CF-01.
@@ -1543,11 +1610,16 @@ claim class is statistical and the calibration is `corpus`, so the sentence says
       - Step 1 then rehearses the intent, with no approvals, through the whole posting pipeline
         (`draft.rs:863-870`). So period law and the evidence minimum decide it first:
         - in Closed or Locked, an Original is refused with `FA-REF-010`;
-        - with no admitting evidence, the refusal is `FA-REF-080` or `FA-REF-086`, and the empty draft's
-          promotion is then a usage refusal (`draft.rs:1022-1024`).
-      - Only on an admitted cell (Original or Adjusting in an admitting state, with `placeholder_reviewed` or
-        `manual_assertion` evidence) does step 2 reach the owner check. There the refusal is `FA-REF-008`
-        (exit 7, `draft.rs:996-1001`).
+        - with no admitting evidence, the refusal is `FA-REF-080` or `FA-REF-086`.
+      - Step 2 (`fa draft promote`) first admits the capability (`draft.rs:990`). On the embedded `--as`
+        route the CLI implies the `approve` op (`crates/fa-cli/src/cli.rs:6090`, `:1173-1185`), so
+        `FA-REF-011` arises only under an issued token that lacks `approve`. It then checks the owner (`draft.rs:996-1001`) before it looks
+        at the draft's contents (`:1016-1024`). So the owner's promotion is refused `FA-REF-008` (exit 7)
+        even for a draft that step 1 left empty.
+      - The case therefore counts `FA-REF-008` as the transfer's first refusal only on an admitted cell
+        (Original or Adjusting in an admitting state, with `placeholder_reviewed` or `manual_assertion`
+        evidence). There the draft holds the planned transfer. On every other cell the transfer's first
+        refusal is step 1's, and the promotion's `FA-REF-008` is logged as concerning an empty draft.
     - **(b) `entry_approval`** (A0) is one `fa post`/`fa commit` carrying the self-approval. SoD (step 5'')
       runs before the evidence minimum (step 5b), so `FA-REF-008` is the first refusal in every cell that
       period law admits, whatever evidence is attached. In a cell period law refuses, `FA-REF-010` comes
@@ -1561,7 +1633,7 @@ claim class is statistical and the calibration is `corpus`, so the sentence says
   - With no document and no ManualAssertion, the result is `FA-REF-080` (exit 3).
   - With an unreviewed placeholder (`placeholder_unreviewed`), the result is `FA-REF-086` (exit 3).
   - The record-consistent branch differs by entry. The record describes a document for F1, F9 and F10
-    (sourced existence) and F12/F13 (derived: the Post-it the preparer handed on), but none is public. For those entries the
+    (sourced existence) and F12/F13 (an interpretation: the Post-it the preparer handed on), but none is public. For those entries the
     record-consistent cell is `manual_assertion(InternalTransfer, reconstruction placeholder)`; it is
     never a stand-in file. For F4 the record-consistent cell is "none named".
   - No admitting branch is sourced. Every admission is a scenario result. Its rendering states that the
@@ -1574,11 +1646,13 @@ claim class is statistical and the calibration is `corpus`, so the sentence says
 | Adjusting | admit | admit | needs `post_closed` (else `FA-REF-011`, exit 7) and 1 approver other than the preparer (none recorded → `FA-REF-012`) | `FA-REF-010` (exit 7) |
 | Original | admit | needs `post_softclosed` (else `FA-REF-011`) | `FA-REF-010` | `FA-REF-010` |
 
-  Locked is excluded by the sourced booking-before-filing facts, which only constrains the branch set.
+  The Locked column is record-inconsistent (`record_consistent = false`): the sourced booking-before-filing
+  facts exclude it. It is evaluated and rendered as such, which only constrains the branch set.
   No row is fixed by the record. So there is no unconditional period-law P.
 - **W-P-03-CF-01.** Suppose F4 is refused as Original in a Closed 2Q01 and then re-posted effective on
   its 2001-07-17 booking date. The kernel would admit it, because 3Q01 is Open. Over fa-mcp, in the same
-  session, `redated_intent` refuses it before dispatch (§12.5). This renders in Limits: the period law
+  session, `redated_intent` refuses it before dispatch (§12.5). W5 delivers the CLI half; the fa-mcp half
+  is item A15's `redated_intent` negative. This renders in Limits: the period law
   protects closed periods, but it cannot know an entry's true effective date.
 
 **T**
@@ -1604,7 +1678,7 @@ claim class is statistical and the calibration is `corpus`, so the sentence says
   sources a separate quarterly total.
 - **W-R-03**: `--as-originally-reported` on the 2002Q1 income statement returns the pre-case frontier.
   The selector is exercised, because Δ ≠ 0.
-- **W-R-04**: `recon.assertion_drift` reports drift = ΣΔ on each line-cost account asserted at
+- **W-R-04**: `recon.assertion_drift` reports drift = |ΣΔ| (a magnitude) on each line-cost account asserted at
   issuance, and `damages.attested_baseline` (`registries/procedures.toml:1702-1713`) reports the same
   per-account, per-period delta. That is the "but-for" view an expert witness uses. Only the drift is
   asserted, because it does not depend on filler.
@@ -1620,7 +1694,8 @@ claim class is statistical and the calibration is `corpus`, so the sentence says
     entries). `jet.post_closing` does the same (`jet.rs:249`), but it is tier P, so it renders only as an
     X row in Limits: "a correction looks like the entry it corrects to these predicates" (H17).
 - **W-T-04** `allocation`. `fa allocate` under `EqualSplitResidualFirst`
-  (`registries/allocation_laws.toml:36-38`), applied to the posted 544,000,000.00 and ten declared
+  (`registries/allocation_laws.toml:36-38`), named explicitly in the intent's `method` (with no method
+  the CLI defaults to largest remainder, `crates/fa-cli/src/cli.rs:9778`), applied to the posted 544,000,000.00 and ten declared
   targets, yields ten legs of exactly 54,400,000.00 and residual 0. That equals "exactly $54.4 million
   each" (p.111). The legs are computed by the law and posted (F6b); the sourced "$54.4 million" is
   never posted.
@@ -1706,7 +1781,8 @@ entry class, the period state and the documents are not stated.
   `evidence_attached` and `approvals_recorded`. Its cells are those of W-P-03's table. `FA-REF-080` is
   claimed only in cells that pass period law and SoD. The indictment is silent on documents: it neither
   names one nor says none existed, so `evidence_attached` is a branch. The amount is synthetic, so no
-  amount-reading procedure carries a claim on these entries.
+  amount-reading procedure carries a claim on these entries. The booking date is a branch over
+  2000-07-17 … 2000-07-19 ("on or about and between July 17 and 19, 2000"), each after the quarter's end.
 
 **Raptor restructuring (Q1 2001).** "Each of the transaction documents is dated April 13, 2001--after
 the close of the first quarter--but say they are "effective as of March 26, 2001." A letter agreement
@@ -1726,14 +1802,19 @@ notes totaling $828 million" followed. "a reduction of $1 billion ($172 million 
 recorded in Q3 2001 (Powers pp.125–126).
 - **E-N-01**: no registered law or procedure refuses or reports an asset debit paired with an equity
   credit for own-stock issuance against a note. franken_accounting registers no contra-equity pairing
-  rule. This is a capability gap visible on the entries' own legs, not concealment. The mutation twin is
-  a planted rule in a test-only Canon policy (§13). The case cites no accounting standard number,
+  rule. This is a capability gap visible on the entries' own legs, not concealment. No law-level twin
+  exists at 8196f5e40: Canon rules turn recorded events into legs, and "Rule families bound to intents
+  are not in this build" (`registries/verbs.toml:664`), so no planted rule can refuse a posted intent.
+  The twin is therefore a **harness-observability twin**: the same intent posted into a Closed period is
+  refused `FA-REF-010`, which shows the harness observes refusals of this exact intent shape on this
+  book. The rendering says so, and the N flips when H7 lands a law (§13). The case cites no accounting standard number,
   because none is in the corpus. It quotes Powers's own "proper accounting" sentence instead.
 
 **SPE strand.** The defects there are concealed side deals and backdated documents attached to booked,
 documented transactions, for example Cuiaba, $11.3M, 1999-09-30. No refusal or named D procedure
 applies.
-- **E-N-02** is the N result.
+- **E-N-02** is the N result. Its target is a sourced SPE posting such as the Cuiaba sale, which needs
+  E5's sourcing and the calendar extension to 1999Q3, so it is delivered with E6.
 - The graph procedures need posted party flows, not bare ownership edges:
   - `graph.related_party_exposure` reads OWNS/CONTROLS/RELATED_TO reach intersected with live postings
     carrying a party dimension;
@@ -1761,24 +1842,33 @@ applies.
 |---|---|---|---|---|---|
 | E-T-01 | bridge | net income 1998, 1999, 2000; total assets, debt, equity 1997–2000 | FY2000 10-K (SRC-ENR-008); for FY1999, also the EX-27 (SRC-ENR-402: NET-INCOME 893, TOTAL-ASSETS 33,381, equity derived 1,130 + 6,637 + 1,803 = 9,570) | Q3-2001 10-Q Note 3 (24/24 bridges close: 4 lines × 6 periods), e.g. FY1999 restated net income 635, total assets 33,272, equity 8,724 | T, filer_unaudited |
 | E-T-04 | bridge (earlier vintage; statements issued to `sec` citing the 8-K stub, read with `--as-reported-in`) | the same FY1999 lines | as above | 8-K Table 1: Δ (−153, −95, 0, −2 for net income; +187, −222, 0, −147 for total assets; −540, −166, 0, −128 for equity); B 643 / 33,199 / 8,736 | T on its own vintage, rendered as "AS REPORTED IN the 8-K of 2001-11-08", explicitly superseded 11 days later |
-| E-T-02 | footing (both vintages) | 2000-12-31: every printed line of the FY2000 10-K balance sheet, and separately of the restated 10-Q pp.5–6 balance sheet, each posted on its own `statement` book; the type-level totals are certified folds compared with the printed totals | FY2000 10-K | Q3-2001 10-Q pp.5–6 | T on the totals only, filer_unaudited. A per-line A→B bridge is T only where the 10-Q prints Δ separately; a Δ derived as B − A is a derivation tautology and renders R. Verify at E1 that both captures print every line |
+| E-T-02 | footing (both vintages) | 2000-12-31: every printed line of the FY2000 10-K balance sheet, and separately of the restated 10-Q pp.5–6 balance sheet, each posted on its own `statement` book; the type-level totals are certified folds compared with the printed totals | FY2000 10-K | Q3-2001 10-Q pp.5–6 | T on the totals only; assurance per vintage: the FY2000 10-K balance sheet is filer_audited (SRC-ENR-008), the restated 10-Q pp.5–6 balance sheet filer_unaudited. A per-line A→B bridge is T only where the 10-Q prints Δ separately; a Δ derived as B − A is a derivation tautology and renders R. Verify at E1 that both captures print every line |
 | **E-T-03** | **`delta`** (Δ derived from sourced entries; `native` variant, §7.2a; the program's one entry-derived T) | the "Raptor equity adjustment" line on total assets and equity: −172 at FY2000 and −1,000 at 1Q01 and 2Q01, in both 8-K Table 1 and 10-Q Note 3 | the Enron `native` book posts the Powers-documented notes-for-stock entries as Enron booked them: Dr notes receivable / Cr shareholders' equity, $172M (Talon, April 2000) and $828M (Raptors II/IV, March 2001), Powers pp.125–126 | the Restatement case's Δ entries are **derived** from those sourced entries (Dr equity / Cr notes receivable, same amounts; Powers p.126: "a reduction of $1 billion ($172 million plus $828 million)"). The published Δ line is compared, never posted | T, filer_unaudited; the only T in the program whose Δ is computed from documented entries rather than replayed from a published bridge. The equity/contra-equity role mapping is an interpretive `role_map` rule, named in the claim. Verify at E2d that both vintages carry the line with these values |
 | — | not T | 1997 net income; all 1Q01 and 2Q01 cells | the FY2000 10-K gives only "income before cumulative effect" for 1997; 1Q/2Q-2001 A needs the Q1/Q2-2001 10-Qs | — | research; until then internal footing of Note 3 only |
 
 The 8-K and the 10-Q differ in 20 of 30 cells (5 restated lines × 6 periods). EX-27 BONDS 7,151 is a
 different concept from the 8-K's "Debt as reported" and is excluded: tag semantics decide coverage.
 Debt, total assets and equity on the Note 3 periods need remainder accounts (§3.8). The remainder is a
-**derived** residual (restated TA − debt − equity = 10,650 / 14,924 / 15,711 / 43,780 / 42,751 / 39,230
-$M), not synthetic, and no T is asserted on it. **E-R-01** (10-Q vintage) and **E-R-02** (8-K vintage):
+**derived** residual, not synthetic, and no T is asserted on it. Its A is derived from A values (A_TA −
+A_debt − A_equity) and its Δ from Note 3's published Δs (ΔTA − Δdebt − Δequity), never from a B value,
+so K-TAUT holds for the TA, debt and equity bridges. The restated remainder (B_TA − B_debt − B_equity =
+10,650 / 14,924 / 15,711 / 43,780 / 42,751 / 39,230 $M) is a logged consistency check of the certified
+remainder, not a T. **E-R-01** (10-Q vintage) and **E-R-02** (8-K vintage):
 `AS ORIGINALLY REPORTED` returns the posted A after each case.
 
 ### 7.2a Book variants
 
-- `native`: quarters 2000Q1–2001Q3; the reserve-release entries (synthetic amount), the notes-for-stock
+- `native`: quarters 2000Q1–2001Q3, extended back to 1999Q3 if E5 sources the Cuiaba postings
+  (1999-09-30); the reserve-release entries (synthetic amount), the notes-for-stock
   entries, the Raptor documents, and (if E5 succeeds) the Cuiaba postings with party legs. It carries
-  E-P-01, E-D-01, E-N-01, E-N-02, E-T-03 and, if E5 succeeds, E-D-02 and E-N-03.
-- `statement`: one per vintage, so the vintages never share a chart: the FY2000 10-K, the Q3-2001 10-Q
-  pp.5–6 and Note 3, and the 8-K Table 1 issuance. It carries E-T-01, E-T-04, E-T-02, E-R-01 and E-R-02.
+  E-P-01, E-D-01, E-N-01, E-T-03 and, if E5 succeeds, E-N-02, E-D-02 and E-N-03.
+- `statement`, three books:
+  - the **bridge book**: A from the FY2000 10-K (and the EX-27 for FY1999), then two successive
+    restatement cases, first the 8-K Table 1 Δ, issued to `sec` citing the 8-K stub, then the Q3-2001
+    10-Q Note 3 Δ (or a case plus a revision: E4 decides). `--as-reported-in <8-K issuance certificate>`
+    reads the earlier vintage on the same book. It carries E-T-01, E-T-04, E-R-01 and E-R-02;
+  - two **footing books**: the FY2000 10-K balance sheet, and the restated 10-Q pp.5–6 balance sheet,
+    each posted line by line on its own chart (E-T-02).
 
 ### 7.3 Capabilities exercised
 
@@ -1852,21 +1942,26 @@ The FY2007 10-Q captures returned 404, so those rows are `BLOCKED`.
   collateralized lending, intangibles, equity, junior notes) are posted from the 10-Q and read back. They
   are R rows. Valukas's agreement with them is a published two-source observation with no FA
   computation.
-- **L-T-02** (scenario). On a scenario branch, `fa scenario run` recharacterizes (e) as secured
-  borrowing (+e assets, +e liabilities). The certified artifact is the `fa scenario diff` certificate,
-  because scenario statement reads are uncertified. The harness reproduces Valukas's adjusted 13.9x from
-  the scenario's balances plus the diff.
+- **Scenario: L-R-02 and L-C-01.** On a scenario branch, `fa scenario run` recharacterizes (e) as
+  secured borrowing (+e assets, +e liabilities). The certified artifact is the `fa scenario diff`
+  certificate, because scenario statement reads are uncertified.
+  - **L-R-02**: the certified diff shows exactly +e on assets and +e on liabilities. Since (e) is
+    posted by the scenario's own intents, that is a read-back, not a T (K-TAUT).
+  - **L-C-01**: the harness recomputes adjusted net leverage ((b) + e) / (d) from the certified
+    balances and the diff. It must equal Valukas's adjusted 13.9x within its printed 0.1x display unit,
+    so it is C, never T. All its inputs come from the same p.889 table that prints the ratio, so it
+    reproduces the examiner's own arithmetic.
 - **L-N-01**: no registered law refuses a repo recharacterized as a sale. There is no derecognition or
   repurchase law. This is an N result with a product question (§13). It runs on the `native` variant
   (§8.3a), because a `no_refusal` N is barred on `ledger` (K-EVID).
-- **L-T-02-CF-01** (optional, low priority; a Canon rule-version CF).
+- **L-R-03** (optional, low priority; a Canon rule-version comparison on the `ledger` book).
   - Two rule versions over `sale` events derived from the combined series: one books the documented
     recharacterization (Appendix 17 p.8, without the haircut leg the series lacks), the other a secured
     borrowing.
   - `fa rule backtest --compare` (`registries/verbs.toml:664`) must report exactly those events as
     differing, by ±(e).
-  - It is a CF row with L-T-02's content and adds no claim. It is the only honest Canon exercise the
-    record allows. Feasibility is checked at L3.
+  - It is a read-back of the posted ±(e) through a rule-version comparison and adds no claim. It is
+    the only honest Canon exercise the record allows. Feasibility is checked at L3.
 - **L-N-02**: `events.subsequent` reports nothing on the natural encoding. Repurchases are new Original
   entries, path (b)'s class gate admits only Reversal / Replacement / Restatement / PriorPeriodAdjustment
   / Adjusting, and path (a) needs a supersession (`cutoff.rs:681-713`, window 30). On an unsourced
@@ -1882,14 +1977,14 @@ The FY2007 10-Q captures returned 404, so those rows are `BLOCKED`.
 ### 8.3a Book variants
 
 - `statement`: the quarter-end statements of financial condition (L-T-01, L-R-01) and the scenario
-  branch of L-T-02.
+  branch (L-R-02, L-C-01).
 - `ledger`: the net-change entries derived from the 56-observation combined series (L-D-01, L-N-02,
-  L-T-02-CF-01). No filler: the derived rows are the population.
+  L-R-03). No filler: the derived rows are the population.
 - `native`: one entry of Appendix 17 p.8's documented form at its illustrative per-$100 amounts
   (Dr Repo 100 / Dr Long inventory-derivative 5 / Cr Inventory 105), evidence
   `manual_assertion(InternalTransfer, reconstruction placeholder)`, in an Open period. It carries only
-  L-N-01 and its mutation twin (a planted test-only Canon rule, H6). No D runs on it, so it needs no
-  filler.
+  L-N-01 and its harness-observability twin (the same entry in a Closed period is refused
+  `FA-REF-010`; no law-level twin exists, as for E-N-01). No D runs on it, so it needs no filler.
 
 ---
 
@@ -1947,7 +2042,10 @@ Inter-account transfers (Glantz):
   --chunk <n> --approval <vid> --approval <vid>` → `fa migrate finalize`
   (`crates/fa-cli/src/migration_import.rs:41`, `:94-103`), against declared period-end trial balances, selected from the printed balances by
   `last_balance_on_or_before`. The kernel's tie-out admits the run. Its twin, one row moved by $1, is
-  refused `FA-REF-131`.
+  refused at `--action prepare`, before any package or chunk exists: a usage refusal (exit 2, "the
+  complete mapped source does not tie exactly to the independently declared trial balance",
+  `crates/fa-cli/src/migration_import.rs:916-935`). The kernel's `FA-REF-131` at finalize is not reached
+  by this twin.
 - **M-T-02** (independent part). The 2 intra-complaint transfer pairs recomputed by
   `trustee_transfer_credit` from the originating ledgers. This is a T over the interpretive rule, and is
   rendered with the rule's name.
@@ -1962,7 +2060,8 @@ Inter-account transfers (Glantz):
     and the per-account equality survives only as the account-level T/C footing (M-T-01 / M-C-01).
 - **M-N-01**: on every account with a TRANS row, `ponzi.net_investment` v3 diverges by exactly the net
   principal transferred (1T0026 +2,384,266; 1ZA192 −3,462,634; 1ZB010 −200,000; 1ZB143 +3,955,000). v3
-  attributes cash-role legs only (`cutoff.rs:2475`, `:2662`). This is an N result plus product bead H1.
+  attributes cash-role legs only (`cutoff.rs:2475`, `:2662`). This is an `exact_gap` N result (§5.2) plus
+  product bead H1. Its twin is an account with no TRANS row (1ZR176), where the gap is 0.
   - AN-401: v3 retains every party with attributed cash in as an investor, so the case book contains only
     customer cash movements, one party per account.
 - **Lookback columns**: `lookback.fraudulent_transfer` scans badges of fraud with 730-day and UVTA
@@ -1990,7 +2089,7 @@ Exhibit B is the only real, row-level transaction data in the program: 3,793 row
   `same_leg_multiset_within{days}`, `rsf_ratio`, `first_digit_counts`.
   - Benford's digit counts are S. Its MAD statistic and band are Sd, under fa-oracles' own copy of the
     published 10^9-scaled first-digit table. FA computes them with `BENFORD_1E9` in integer arithmetic
-    (`crates/fa-lantern/src/digits.rs:60-115`), so a disagreement is a FAIL naming the digit.
+    (`crates/fa-lantern/src/digits.rs:21-31` for the expected table, which FA lowers by one unit in its last entry so it sums to exactly 10^9; `:48-69` for the MAD; the harness copy must match both), so a disagreement is a FAIL naming the digit.
 - **Typing.** These are D (or N) rows with `record_label = "silent"`, one per procedure (**M-D-10…**).
   - They render as counts under "What the analytics report on real customer cash flows that the record
     does not characterize".
@@ -2056,7 +2155,7 @@ Exhibit B is the only real, row-level transaction data in the program: 3,793 row
   qualifications:
   - This is a change in accounting principle, not an error correction, and the case says so.
   - PolicyChangeRetrospective posting has never been tested anywhere, so this would be its first
-    exercise. Item X5 lands a library-level test first.
+    exercise. Item H13 lands a library-level test first, and X5 depends on it.
 
 ### 10.3 RH 10-Q/A
 
@@ -2108,8 +2207,12 @@ combined balance sheet, from an 8-K/A Exhibit 99 or an S-4. Its columns are acqu
 historical + footnoted pro forma adjustments = pro forma combined. Two entities, an OWNS edge,
 eliminations and PPA adjustments would have to reproduce the combined column exactly.
 
+`fa consolidate` refuses an investment that is not the controlling share of capital, which includes one
+carrying goodwill (`FA-REF-194`, exit 3, `registries/verbs.toml:640`). A combination with PPA goodwill
+therefore needs that capability before C3 can run; C2 records whether its filing has one.
+
 **No such filing was examined.** A bounded research bead must find and anchor one before any
-consolidation T is claimed. If none supports exact closure, consolidation is demonstrated only as a
+consolidation T (C-T-02) is claimed. If none supports exact closure, consolidation is demonstrated only as a
 labelled scenario.
 
 ---
@@ -2125,7 +2228,7 @@ case runs:
   `registries/verbs.toml:784`);
 - `fa-verify bundle <bundle> --key K --receipt R --json` and `fa-verify report <bundle> --key K
   --checkpoint C --receipt R --json`. Both run as the literal argv through `fa_verify::cli::run`
-  (`crates/fa-verify/src/cli.rs:100-145`), and must exit 0. The `report` recomputation of the T's line
+  (`crates/fa-verify/src/cli.rs:1700`), and must exit 0. The `report` recomputation of the T's line
   or row must equal B; fa-oracles makes that comparison on fa-verify's report;
 - `fa replay <certificate>`, which must reproduce byte for byte within the run (FA-INV-11).
 
@@ -2296,7 +2399,7 @@ capitalization). Whether their hedged labels are enough is owner decision 6.
 - **How it builds the book.** In-process, through `fa_cli::entry::fa`, as
   `crates/fa-mcp/tests/e2e_stdio.rs:48-60` does. It then spawns fa-mcp with an Agent template
   (`--cluster fa.forensics --cluster fa.findings --cluster fa.case --cluster fa.query --cluster fa.notary
-  --grant read --grant produce`).
+  --cluster fa.draft --grant read --grant produce`; `fa.draft` is needed to plan into a draft).
 - **Parity.** It replays the case's audit program as tool calls. Every D/T/R projection (§5.4) must
   equal the CLI runner's.
 - **Case-shaped mistakes:**
@@ -2304,7 +2407,7 @@ capitalization). Whether their hedged labels are enough is owner decision 6.
   - F4 as Original into the Closed 2Q01 is refused `FA-REF-010`. The same legs re-dated to the
     2001-07-17 booking date are then refused *before dispatch* by fa-mcp's `redated_intent` detector
     (`crates/fa-mcp/src/detect.rs:677-712`). The CLI and the kernel admit that re-dated intent, because
-    3Q01 is Open. This is CF row W-P-03-CF-02, rendered in Limits: the period law protects closed
+    3Q01 is Open. This is CF row W-P-03-CF-01, rendered in Limits: the period law protects closed
     periods, but it cannot know an entry's true effective date;
   - `self_approval` on the session's own lock or issuance proposal (`detect.rs:715-739`);
   - the `investigate_account` and `certify_period_reports` macros (`crates/fa-mcp/src/registry.rs:154-184`).
@@ -2314,13 +2417,18 @@ capitalization). Whether their hedged labels are enough is owner decision 6.
 
 **Guidance reachability runs on every case.**
 - From each built book, the runner follows only read-only `next_actions` of `fa triage` / `fa next`,
-  and of MCP `fa_orient_next`, to depth 6.
+  and of MCP `fa_orient_next`, to depth 6. An entry is read-only when its command's verb row has
+  `writes = false` in `registries/verbs.toml`, or a `[[bound]]` rule matching its verb, subcommand and
+  flags has `ops = ["read"]` (e.g. `fa period list`, `verbs.toml:5738-5741`). The envelope carries only
+  command and why.
 - It records whether a Lantern procedure or `fa jet` is ever offered, and whether an offered command
-  contains a placeholder (`crates/fa-mcp/src/detect.rs:251`).
+  contains a placeholder: any `<…>` token. fa-mcp's detector (`crates/fa-mcp/src/detect.rs:251`) flags
+  only some forms; triage also emits `<N>`, `<chart.json>` and `<resolution.json>`.
 - At 8196f5e40, no procedure is offered before a finding run exists (`crates/fa-cli/src/triage.rs:798-890`).
   On an all-Closed book, the first step offered is `fa period open <code> --json` (`:809-815`): a write
   step with a placeholder, which fa-mcp's own detector refuses.
-- That is an ergonomics N row per case, rendered in Limits and locked in both directions. It is the
+- That is an ergonomics N row per case, with the reserved id `<case>-N-90`, rendered in Limits and
+  locked in both directions. It is the
   reason for H16. When H16 lands, the N flips and is retired with a trailer.
 
 **The fresh-agent campaign (fa-y6eu).** Once two cases are green, a fresh-context agent is given only
@@ -2343,9 +2451,9 @@ is optional.
 - **Book integrity.** After step 8 of §3.3, `fa verify book --json` must exit 0 on every book variant
   (`registries/verbs.toml:929`). Exit 8 fails the case, whatever its expectations say.
 - **Append-only witness**, for every restatement case (W-T-02, W-T-03, E-T-01/03/04, X-T-01, X-T-03):
-  - the role `examiner-witness` makes a key (`fa checkpoint witness-key`) and cosigns the checkpoint
-    before the case (`fa checkpoint witness --out w1`);
-  - after the case, `fa checkpoint witness --previous w1 --out w2` must succeed, and `fa-verify
+  - the role `examiner-witness` makes a key (`fa checkpoint witness-key --out k`) and cosigns the
+    checkpoint before the case (`fa checkpoint witness --key k --out w1 --grant witness`);
+  - after the case, `fa checkpoint witness --key k --previous w1 --out w2 --grant witness` must succeed, and `fa-verify
     checkpoint w2 --key <book key> --witness <key> --quorum 1` must exit 0 (`registries/verbs.toml:760`:
     "a rollback or rewritten history is refused (FA-REF-124, exit 8)");
   - `fa proof consistency` (before → after) and `fa proof inclusion --entry <A>` (at the after state)
@@ -2391,14 +2499,15 @@ is optional.
 | H3 | `fa demo` usage lists scenarios that `Scenario::parse` rejects (saas, manufacturing, nonprofit, holding, crypto) and omits ghost-payroll. fa-v6j's close reason claims 11 scenarios; the code has 7. | `cli.rs:3990`, `verbs.toml:1050`, `crates/fa-demo/src/lib.rs:52-120` | bug |
 | H4 | The evidence minimum checks presence and kind, not content. | `evidence_policy.toml:166-212` | docs: README and refusal-catalog text state the limit |
 | H5 | `lookback.fraudulent_transfer` has 730-day and UVTA 1,460-day windows only. The trustee's New York 6-year window would mislabel the law if forced through `uvta_days`. | `procedures.toml:1617-1626` | research |
-| H6 | No law refuses a repo recharacterized as a sale. | L-N-01 | research: a Canon rule or a Lantern detector? |
-| H7 | No contra-equity pairing law. | E-N-01 | research: Canon rule candidate. Its test twin is reused by E-N-01. |
-| H8 | `fa-statements` has no ratio lines, and user-loaded definitions are unwired. | `custom.rs:214-223`; `definition.rs:129` | research, only if users need them; no case depends on it |
+| H6 | No law refuses a repo recharacterized as a sale. | L-N-01; `registries/verbs.toml:664` ("Rule families bound to intents are not in this build") | research: a kernel law, an intent-bound Canon rule family, or a Lantern detector? Whichever lands flips L-N-01 and gives it a law-level twin. |
+| H7 | No contra-equity pairing law. | E-N-01; `registries/verbs.toml:664` | research: a kernel law or an intent-bound Canon rule family. Whichever lands flips E-N-01 and gives it a law-level twin. |
+| H8 | `fa-statements` has no ratio lines, and user-loaded definitions are unwired. | `custom.rs:214-223`; `definition.rs:129` | research into ratio lines only, if users need them; no case depends on it. User-loaded definitions are existing bead fa-qh60's |
 | H12 | verbs.toml:251 (`case post` usage) says Restatement entries are "refused with FA-REF-178", and the `fa-journal` case module doc says "This build posts PriorPeriodAdjustment and Revision cases". But the CLI test posts one. | `verbs.toml:251`; `crates/fa-journal/src/case.rs:41-45`; `crates/fa-cli/tests/cli.rs:4512-4730`; `crates/fa-cli/src/cli.rs:3450` | doc bug (robot-docs and module docs mislead agents) |
 | H13 | PolicyChangeRetrospective posting has no test anywhere. | `case.rs:1661-1675` | test bead; blocks X5 |
 | H14 | ManualAssertion reason codes cannot express "described in the public record, bytes not public". | `reason_codes.toml:29-53` | registry: additive code `NotInPublicRecord` (owner decision) |
-| H16 | `fa triage`/`fa next` never offer the audit program when no finding run exists. On an all-closed book they offer a write step with a placeholder (`fa period open <code>`), which fa-mcp's own detector refuses. | `crates/fa-cli/src/triage.rs:798-890`, `:809-815`; `crates/fa-mcp/src/detect.rs:251` | feature: an open audit, examination or investigation engagement makes triage offer `fa jet` / `fa procedure list`; triage never emits a placeholder command. Flips the §12.5 guidance N |
+| H16 | `fa triage`/`fa next` never offer the audit program when no finding run exists. On an all-closed book they offer a write step with a placeholder (`fa period open <code>`), which fa-mcp's own detector refuses. | `crates/fa-cli/src/triage.rs:798-890`, `:809-815`; `crates/fa-mcp/src/detect.rs:251` | feature: an open audit, examination or investigation engagement makes triage offer `fa jet` / `fa procedure list`; triage never emits a `<…>` placeholder token (it also emits `<N>`, `<chart.json>`, `<resolution.json>`, which fa-mcp's detector does not all flag); on an all-Closed book with no Future period it offers the read-only `fa period list` and names `fa period create --fiscal-year N+1`, with N+1 computed from the latest fiscal year. Flips the §12.5 guidance N (`<case>-N-90`) |
 | H17 | Lantern populations keep a restated target and include its Restatement entries; findings do not mention the correction lineage (W-D-07/W-D-08). | `crates/fa-lantern/src/snapshot.rs:505-512`; `jet.rs:102`, `:249` | research: should findings carry supersession lineage, as `shares_supersession_lineage` does for duplicates? |
+| H18 | `events.subsequent` treats every period with a recorded transition as closed, including a period that was only opened (Future → Open). | `crates/fa-lantern/src/cutoff.rs:646-655` (`if !trs.is_empty()`) | bug: select only periods whose latest transition is SoftClose, Close or Lock (Locked periods stay selected, as today); a version bump in procedures.toml; L-N-02 is its regression oracle |
 | H15 | `fa export xbrl` emits only type-level instant facts and binds a non-US-GAAP element (`us-gaap:CurrentPeriodNetIncome`). | `xbrl.rs:66-135`, `:94`, `:785`; fa-ipom | optional: duration contexts and real element bindings (links fa-ipom) |
 
 ---
@@ -2456,7 +2565,9 @@ Rules for every item:
 
 ### Phase A: foundation (walking skeleton first)
 
-- **[A0] CLI approval surface for `fa post` and `fa commit`** ← none. Product feature, P1 (§13).
+- **[A0] CLI approval surface for `fa post` and `fa commit`** ← none. Product feature, P1 (§13). Tracked
+  in the repo as bead fa-6f3g (filed 2026-10-25 from this plan); the `attest manual` extension below is
+  added to it.
   - Adds `--approval <vid>` on `fa commit` and `fa post --dry-run`, with verbs.toml and MCP parity and
     write-authority matrix rows. `fa allocate` and `fa settle` already take `--approval <vid>`
     (`registries/verbs.toml:459`), so A0 follows their flag shape.
@@ -2475,13 +2586,18 @@ Rules for every item:
     - seal the proposal once and emit its portable sealed bytes and `proposal_digest`;
     - record `fa approve --proposal <digest> --as <approver>`;
     - pass the retained sealed proposal plus `--approval <vid>` into `fa post [--dry-run --plan-out]`,
-      then `fa commit --plan`.
+      then `fa commit --plan`;
+    - let `fa document attest manual` take the same retained sealed proposal (today it takes only
+      `--intent`, and a ManualAssertion is bound to the digest it was recorded over). Then one proposal
+      can carry both an approval and a ManualAssertion, which the approval cells of W5b and E3b need.
   - Positive: a native Adjusting post in a Closed period, with an approval by a second principal, is
     admitted.
-  - Negative: a self-approval is refused `FA-REF-008`, and a missing approver is refused `FA-REF-012`.
+  - Negative: a self-approval is refused `FA-REF-008`, and a missing approver is refused `FA-REF-012`; a
+    ManualAssertion recorded over a different proposal does not cover the committed entry.
   - No-claim: A0 proves the CLI can carry approvals, nothing about any case.
-- **[A1a] `fa-oracles` crate, topology flip, allowlist, Source / Fact / Value / Receipt types and loader**
-  ← none.
+- **[A1a] `fa-oracles` crate, topology flip, allowlist, std-only SHA-256 (with the FIPS 180-4 vectors),
+  Source / Fact / Value / Receipt types and loaders (including `case.toml` and `roles.toml`)** ← none.
+  The SHA-256 lands here because A3a, A3c, A4 and A6 all hash.
   - Positive: a minimal source+facts pair loads, and re-serializing with the parser's canonical bytes
     equals the parsed files.
   - Negatives: one fixture per malformed shape, each refused with a named error and line:
@@ -2506,7 +2622,7 @@ Rules for every item:
     example.
   - Negative: a planted wrong value per rule.
   - No-claim: arithmetic correctness, not the truth of inputs.
-- **[A3a] K-PROV, K-BIND, K-SCOPE, K-ANCHOR, K-DERIVE**, plus the std-only SHA-256 and normalization ←
+- **[A3a] K-PROV, K-BIND, K-SCOPE, K-ANCHOR, K-DERIVE**, plus quote normalization and `quote_sha256` ←
   A1a, A2.
   - Positive: the pilot facts pass. A check report lists the rows each check examined; a check that
     examined zero rows is UNRUN.
@@ -2522,7 +2638,8 @@ Rules for every item:
   - Negatives: a planted read-back T is re-typed R; an oracle-output-fed T becomes C unless the input is in
     `inputs_named`; a T on a superseded vintage is refused; a `delta` T that names no Δ accession is
     refused.
-- **[A3c] K-ASSERT, K-ERRRATE, K-NAMES, K-EVID** ← A1b, A1c.
+- **[A3c] K-ASSERT, K-ERRRATE, K-NAMES, K-EVID, K-REASON** ← A1b, A1c, A4 (K-EVID's evidence-reading rule
+  reads the tier rows' `reads_evidence`).
   - Negatives: a book citing a provenance stub on a `native` variant fails K-EVID; a `no_refusal` N on a
     `ledger` variant fails K-EVID; a principal named with a deny-listed token fails K-NAMES.
 - **[A4] Procedure tier table and K-TIER** ← A1a. Two-reader rows keyed by (id, version, row digest),
@@ -2544,17 +2661,23 @@ Rules for every item:
     `class` → `class`; `effective_date` → `date`; `[[leg]]` rows → `legs`; `idempotency_key` → `key`;
     the acting principal's grants → `ops`; the count of approvals the intent cites → `approvals`; a
     `target_kind = reverses` target → `reverses` (its journal index); `reason` → `supersession_reason`
-    (the registered tag). `Intent` has no reclassification, restates or revises target, no allocation
-    and no evidence field.
+    (the registered tag). `Intent` itself has no reclassification, restates or revises target, no
+    allocation and no evidence field. The oracle models some of these through its own entry points:
+    - a Reclassification: `Oracle::reclassify(intent, target)` (`lib.rs:2303`);
+    - a PostBatch: `post_batch` (`:1723`);
+    - drafts: `open_draft`, `plan_into_draft` and `promote_draft` (`:1783`, `:1845`);
+    - migration runs: `open_run` (`:3386`), `post_migration` and `finalize_run` (`:3510-3515`).
   - **Composition, in kernel order.** On a clone of the oracle: `Oracle::post` (`lib.rs:1713`) decides
     the steps it models (balance, period, identity, period law with its approval count). If it admits,
     `fa_reference::sod::verdict` (`crates/fa-reference/src/sod.rs:28`) runs over the intent's approvals,
     then `fa_reference::evidence::verdict` (`crates/fa-reference/src/evidence.rs:236`) over its
     citations and attestations. The first refusal is the reference verdict. The clone replaces the
     oracle only if all three admit.
-  - **`not_modelled`.** A P cell is `not_modelled` when its intent is a Reclassification, a case Δ
-    (`restates`/`revises`), an allocation, or a migration chunk, or when the kernel's order puts an
-    unmodelled step (reclassification shape, event) before the first modelled refusal. A D target is
+  - **`not_modelled`.** A P cell is `not_modelled` when its intent is a case Δ (`restates`/`revises`:
+    the oracle has no case functions) or an allocation (the oracle posts given legs and does not compute
+    an allocation law), or when the kernel's order puts an unmodelled step (event) before the first
+    modelled refusal. Reclassification, batch, draft and migration cells are compared through the entry
+    points above. A D target is
     `not_modelled` when its procedure has no `fa_reference::lantern` function (`expense.capitalization`,
     `ponzi.net_investment` and the graph procedures, for example). Otherwise D cite sets are compared
     with `fa_reference::lantern::{round_amounts, period_end_timing, post_closing, weekend, self_approved,
@@ -2591,7 +2714,7 @@ Rules for every item:
     predicate is refused (§2.6 rule 2); a D target with no admitted cell is refused; a D and P with
     overlapping scopes are refused.
 - **[A6] Filler generator** ← A4, A1b. Seeded and discipline-obeying, emitted as book-variant intents and
-  one `PostBatch` per variant.
+  `PostBatch` chunks of at most 8,190 entries per variant (`registries/limits.toml:99-101`).
   - **Account universe per tier** (§2.5): L and C filler posts only to filler accounts the case declares
     (`code` prefix `9`), never to an account a target names; S-rel filler uses idempotency keys and
     references disjoint from every target's; S-acct, S-party and G filler use accounts, parties and
@@ -2606,10 +2729,14 @@ Rules for every item:
   - **Timing.** Filler for a period posts while that period is Open, before the history's first
     soft-close step for it; filler never posts into a SoftClosed, Closed or Locked period.
   - **Evidence.** Each variant cites one `fa:case-filler:v1` document (§2.7).
+  - **Migration variants.** Historical periods admit only Migration, so on a `migration` book a filler
+    variant is a set of migration chunks staged in the same run, before `fa migrate finalize`.
   - **Co-residence.** Co-resident D cells (§3.3) are targets, not filler: the generator excludes their
     accounts and keys as it excludes any target's.
   - Property test: filler never touches the target's keys, accounts or components, per tier.
-- **[A7a] Runner core** ← A1b, A1c, A3a. It builds and replays a book, runs procedures and reads `tb`,
+- **[A7a] Runner core** ← A1b, A1c, A3a. It builds and replays a book (including the citation-stub
+  documents of §2.7 and the generated `<case>-SELF-<variant>` self-disclosure rows), runs procedures and
+  reads `tb`,
   using the registered verb table, catalog exit codes and the JSONL log with its fact↔vid map, and prints
   PASS/FAIL/UNRUN.
   - Positive: the `_selftest` case runs every implemented stage, emits one JSONL record per step whose
@@ -2621,7 +2748,8 @@ Rules for every item:
     - a cite of the wrong fact reports FAIL.
   - No-claim: the runner proves what the binary printed for this book, nothing about the sourced history
     beyond the encodings named.
-- **[A7b] Restatement lifecycle, issuance, bitemporal reads, case diff, assert-balance** ← A7a.
+- **[A7b] Restatement lifecycle, issuance, bitemporal reads, case diff, assert-balance (the kernel twin of
+  §3.7 item 4)** ← A7a.
 - **[A7c] Cell evaluation and the combination rule** (dry-run sweeps, co-residence, PostBatch, budget
   logging) ← A7a, A5a.
 - **[A7m] Migration fixture** ← A7a. `migrate open|stage|finalize` with a derived legacy trial balance
@@ -2647,7 +2775,9 @@ Rules for every item:
   - Negatives, each of which must FAIL, then be restored before landing:
     - moving F4's debit by one minor unit fails W-D-01's statistic;
     - retyping F2's credit account as Expense fails W-N-01;
-    - removing the `period_close` step makes W-P-03 fail with an admitted post.
+    - removing both the `period_soft_close` and `period_close` steps (so the period stays Open) makes
+      W-P-03 fail with an admitted post. Removing only `period_close` leaves the period SoftClosed, where
+      the cell's grants decide.
   - No-claim: the pilot shows that registered predicates hold, and named refusals occur, on our encoding
     of four documented entries over N variants. It shows nothing about WorldCom's actual ledger,
     false-positive rates on real books, or what any control would have prevented.
@@ -2657,19 +2787,25 @@ Rules for every item:
     `approvals_recorded = {approved_by = entered_by = property-accounting-director-1}`.
 - **[A9] `tools/case-fetch/case_fetch.py`** (fetch, extract, xbrl-facts, verify, `receipts.toml`) ← A1a
   (schema).
-  - Positive: on the fixture document, `verify` writes receipts with every binding true, and re-running
+  - Positive: on the fixture document, `verify` writes receipts with all four binding booleans true, and
+    re-running
     on an unchanged cache is byte-identical.
   - Negatives: the five planted failures of §4.4; an `FA_SEC_CONTACT` leak test.
+  - Gate: a fa-oracles `#[test]` runs `python3 -B -m unittest discover tools/case-fetch` and fails if
+    python3 is absent or any test fails, so the existing `test` step runs the tool's tests.
   - No-claim: a receipt proves the quote occurs in bytes with that SHA-256 at that anchor. It does not
     prove the bytes are the publisher's unless `original_hash_compared = true`.
 - **[A10a] Offline ledger test** (`ledgers_validate_offline`, §4.6) ← A3a, A3b, A3c, A4, A5b, A9. A
   `#[test]` in fa-oracles, plus a second fa-oracles test that every `FA-REF-*`/`FA-INV-*` marker the
-  renderer can emit resolves against the registries, independent of whether any rendered file exists.
+  renderer can emit resolves against the registries, independent of whether any rendered file exists,
+  and that every marker in every committed case `README.md` resolves. That covers the READMEs without a
+  `claims_lint.toml` edit per case, since each registry edit invalidates every crate verdict.
   - Negative: a planted unresolved marker fails the marker test.
-- **[A10b] Claims-lint scan entries** ← A14. Adds `docs/FORENSIC_CASE_STUDIES.md` and every generated
-  case `README.md` to `registries/claims_lint.toml` `scanned_docs`. registry-check skips a missing file
+- **[A10b] Claims-lint scan entry** ← A14. Adds `docs/FORENSIC_CASE_STUDIES.md` to
+  `registries/claims_lint.toml` `scanned_docs` (one registry edit; the case READMEs are covered by
+  A10a's marker test). registry-check skips a missing file
   (`tools/registry-check/src/main.rs:830-837`), so this lands only once A14 renders the files.
-  - Negative: a planted unresolved marker in a rendered README fails `scripts/check.sh`.
+  - Negative: a planted unresolved marker in the rendered document fails `scripts/check.sh`.
 - **[A11a] Filler and identifier invariance** ← A6, A7c.
   - Positive: W-D-01/F4's single components agree across 5 seeded + empty + extremal variants and 2
     runs.
@@ -2677,9 +2813,10 @@ Rules for every item:
 - **[A11b] Contributing-entry witness** ← A7b, A8a.
   - Positive: the `_selftest` bridge's contributions are exactly A and Δ.
   - Negative: a planted read-back T (B posted directly) is re-typed R.
-- **[A11c] Mutation twins** ← A7a.
+- **[A11c] Mutation twins** ← A7a, A4 (its load-time check that no N sits on a tier-P procedure reads A4's
+  table).
   - Negative: Benford below its minimum, used as an N, fails its twin.
-- **[A12] Outsider verification** (§12.1, §12.7) ← A7b, A8a.
+- **[A12] Outsider verification** (§12.1, §12.7) ← A7b, A8a, A11b.
   - Scope:
     - TB/BS/IS certificates through checkpoint, bundle, the literal `fa-verify` argv including `report`
       recomputation, and replay;
@@ -2715,16 +2852,18 @@ Rules for every item:
   - No-claim: fa-mcp's behaviour on a reconstruction; nothing about any agent's ability to find fraud.
 - **[A16] Guidance-reachability probe** (§12.5) ← A7a, A11c, A15. One ergonomics N per case, locked in
   both directions. It flips when H16 lands.
-  - **Read-only entry.** A `next_actions` entry whose `writes` is false (`crates/fa-cli/src/triage.rs:671-686`);
-    `write_step` entries are never counted.
+  - **Read-only entry.** `next_actions` entries are (command, why) pairs (`crates/fa-cli/src/triage.rs:1003-1007`;
+    the internal `writes` flag, `:671-686`, is not emitted). An entry is read-only when its command's
+    verb row in `registries/verbs.toml` has `writes = false`, or a `[[bound]]` rule matching its verb,
+    subcommand and flags has `ops = ["read"]`.
   - **When.** The probe runs twice per case book: before the case's first `finding_record` step, and
     after its last. The N is asserted on the first run: no read-only entry offers `fa jet`, `fa procedure
     list` or an MCP `fa.audit` tool. The second run is logged, not asserted.
   - **Per-case expected value.** Computed from the book's state at the probe: a book with a `Future`
     period and none Open expects the concrete `fa period open <code>` with that period's code
     (`triage.rs:810-816`), never a placeholder.
-  - **Twin.** A test-only book with an open engagement and the H16 behaviour planted in a copy of the
-    triage table must make the N fail.
+  - **Twin.** The probe's matcher is fed a recorded triage envelope with one planted read-only `fa jet …`
+    entry and must report it. This twin covers the matcher; the binary-level flip comes when H16 lands.
   - No-claim: the probe shows what triage offers on these books, not what an agent would do.
 
 ### Phase W: WorldCom
@@ -2732,17 +2871,24 @@ Rules for every item:
 - **[W1]** Sources ledger and receipts: SRC-WC-001, -002, -003, -004, -401, -406, -EX27-1999, and the
   SEC v. Abide (LR-19776) candidate row ← A9. Hash-first; quote text only after (OD 2a).
 - **[W2]** Facts F1–F13, one per sentence, with interpretations joining sentences, reporting periods,
-  derived dates, AN-100 quarantine and roles ← W1, A3a. F6 is encoded as F6a and F6b (§6.2), F8 carries
+  derived dates, AN-100 quarantine and roles, plus the statement-level facts W-T-02 and W-NOTE-01 read
+  (SRC-WC-401, SRC-WC-406, SRC-WC-EX27-1999) ← W1, A3a. F6 is encoded as F6a and F6b (§6.2), F8 carries
   its `entry_decomposition` (p.261), and the instruction documents are as §6.2 records them (F10's draft
   JE is the only dated one).
 - **[W3]** Book variants `native`, `migration` and `statement`, branch classes and defaults ← W2, A1b,
   A5a, A7m.
-- **[W4]** W-D-01, -03 and -04, and W-N-01 on native; W-D-02 on migration. W-D-05's X components render
+- **[W4]** W-D-01, -03 and -04, and W-N-01 on native; W-D-02 on migration. W-NOTE-02 (`jet.post_closing`, all X) renders
   in Limits ← W3, A4, A5b, A8, A11a, A11c.
 - **[W5]** W-P-01(a) + W-P-01-CF-01, W-P-01(b) on F6b, W-P-02, W-P-03 + W-P-03-CF-01, W-P-04 ← W3, A4r,
   A5b, A7c, A8b.
-  - Probe first: `fa allocate --review … --approval <self vid>` on F6b. If it reaches `FA-REF-008`,
-    W-P-01(b) on F6b needs no A0; otherwise the cell reports UNRUN with the observed refusal logged.
+  - On F6b: the `fa allocate approve` self-approval cell is refused `FA-REF-012` (exit 7) by the review
+    layer. Probe the second route: an approval recorded with `fa approve --proposal` and passed with
+    `fa allocate --approval <vid>`. If it reaches `FA-REF-008`, W-P-01(b) on F6b needs no A0; otherwise
+    the cell reports UNRUN with the observed refusal logged.
+  - A ManualAssertion is bound to the proposal digest it was recorded over, and `fa document attest
+    manual` takes only `--intent`. Whether one covers an intent planned into a draft is probed here.
+    Until the probe passes, W-P-01(a)'s admitted evidence cell is `placeholder_reviewed` only, and the
+    `manual_assertion` cell reports UNRUN with the observed refusal.
 - **[W5b]** W-P-01(b) on F6a (`fa post` with a self-approval) ← W5, A0.
 - **[W6]** W-T-02 + W-R-01 on the `statement` variant; note W-NOTE-01 ← W3, A3b, A7b, A11b, A12.
 - **[W7]** Native restatement: W-T-03, W-R-02..04, W-D-07/W-D-08, D pinning on `native` ← W3, W4, A7b,
@@ -2757,7 +2903,9 @@ Rules for every item:
 ### Phase X: XBRL restatements (the flagship T)
 
 - **[X1]** SunPower sources, `xbrl-facts` rows and receipts; assurance from the audit report; whether
-  durations overlap ← A9.
+  durations overlap; the originally filed FY2022 10-K, which K-VINTAGE needs wherever the restated A
+  differs from the filed A. The values of the facts the case cites are committed like every case's
+  literal values (§1.3); OD 2b governs only committing whole tables beyond them ← A9.
 - **[X1m]** Microsoft FY2018 sources and `xbrl-facts` rows ← A9.
 - **[X2]** us-gaap → FA `role_map` for the modelled concepts ← A2.
 - **[X3]** SunPower `statement` book: A and Δ for the finest non-overlapping durations only, each Δ
@@ -2786,8 +2934,8 @@ Rules for every item:
 - **[E2b]** Facts: the Raptor restructuring and notes-for-stock (Powers) ← E1.
 - **[E2c]** Facts: the SPE relationships and deal amounts (Powers) ← E1.
 - **[E2d]** Facts: the statement tables (EX-27, 8-K Table 1, 10-Q Note 3 and pp.5–6) ← E1.
-- **[E3]** E-P-01, E-D-01, E-N-01 (twin from H7), E-N-02 on the Enron `native` variant (§7.2a) ← E2a,
-  E2b, E2c, A4, A4r, A5b, A7c, A11a, A11c, H7.
+- **[E3]** E-P-01, E-D-01 and E-N-01 (harness-observability twin, §7.2) on the Enron `native` variant
+  (§7.2a) ← E2a, E2b, E2c, A4, A4r, A5b, A7c, A11a, A11c.
 - **[E3b]** E-P-01's Adjusting-in-Closed admitted cell (needs an approval by a second principal) ← E3,
   A0.
 - **[E4]** E-T-01 (10-Q vintage), E-T-04 (8-K vintage via issuance and `--as-reported-in`), E-T-02
@@ -2796,7 +2944,7 @@ Rules for every item:
   A3b, A7b, A11b, A12.
 - **[E5]** Research: sourced deal-level party postings (Talon $172M, Cuiaba $11.3M, …), and the
   Q1/Q2-2001 10-Qs for the 1Q01/2Q01 A side ← E2c. Closes with a decision record if insufficient.
-- **[E6]** E-D-02 and E-N-03 on E5's postings ← E5, A11a, A11c. Only if E5 succeeds.
+- **[E6]** E-N-02, E-D-02 and E-N-03 on E5's postings ← E5, A11a, A11c. Only if E5 succeeds.
   `graph.party_circular_flows` and `graph.related_party_exposure` are registered and implemented at
   8196f5e40 (`registries/procedures.toml:1155`; `crates/fa-lantern/src/graph.rs:646`). E6 depends on
   fa-b6xs only if, at conversion, fa-b6xs's open scope still includes the party-level PAID projection
@@ -2810,15 +2958,17 @@ Rules for every item:
   dated series.
 - **[L2]** L-T-01 (statement footing at the quarter ends the retrieved 10-Qs print in full), L-R-01, and
   the harness-derived (b), (d) and ratios ← L1, A3b, A7b, A11b, A12.
-- **[L3]** L-T-02 (scenario + certified diff), and optionally L-T-02-CF-01 ← L2.
+- **[L3]** L-R-02 and L-C-01 (scenario + certified diff), and optionally L-R-03 on the `ledger` book ← L2,
+  M0.
 - **[L4]** L-N-01 on the Lehman `native` variant (§8.3a), L-N-02 (branch over class) and L-D-01
-  (derived entries; lowest rank) on `ledger` ← L2, M0, A4, A11a, A11c, H6.
+  (derived entries; lowest rank) on `ledger` ← L2, M0, A4, A11a, A11c.
 
 ### Phase M: BLMIS
 
 - **[M0]** The `ledger` variant ← A1b, A4, A7a. Its schema, the `reads_evidence` tier field, batch
   posting, and the K-EVID rule.
-  - Positive: 3,793 rows post within budget, at most one batch per account.
+  - Positive: a same-shape fixture of 3,793 rows over 13 accounts posts within budget, at most one batch
+    per account. The real Exhibit B rows post in M2a–M2c, which depend on M0.
   - Negative: an evidence-reading D declared on `ledger` fails K-EVID.
 - **[M1]** Sources and receipts (Glantz, Square One, Magnify) ← A9, (OD 2b).
 - **[M2t]** `case_fetch.py exhibit-b` ← A9, A1a.
@@ -2845,10 +2995,10 @@ Rules for every item:
     disagreement is logged and does not fail.
 - **[M2a]** Glantz rows as facts (`ledger_row`, `oracle_output` flags on credited transfers) ← M1, M2t,
   A3a, M0.
-- **[M2b]** Square One rows as facts ← M1, M2t, A3a.
-- **[M2c]** Magnify rows as facts ← M1, M2t, A3a.
+- **[M2b]** Square One rows as facts ← M1, M2t, A3a, M0.
+- **[M2c]** Magnify rows as facts ← M1, M2t, A3a, M0.
 - **[M3]** M-T-01 footing on the 7 T accounts (`gl detail --certify` + account bundles), and M-T-02 on
-  the 2 recomputable pairs ← M2a, M2c, A7b, A11b, A12.
+  the 2 recomputable pairs ← M2a, M2c, A3b, A7b, A11b, A12 (K-ORACLE decides M-T-01's type).
 - **[M4]** M-C-01 on the 6 C accounts ← M2a, M2b, M2c, A7a.
 - **[M5]** M-D-01 (conditional on the tier row) + M-N-01 ← M3, A4, A11a, A11c.
 - **[M6]** (optional) M-T-03, the migration-import tie-out ← M3, A7m.
@@ -2865,14 +3015,15 @@ Rules for every item:
   A3b, A7b, A11b, A12.
 - **[C2]** Research: an Article 11 pro forma combination that closes exactly ← none. Closes with a
   decision record.
-- **[C3]** Consolidation T on C2's filing ← C2, A7b, A11b, A12. Only if C2 finds one.
+- **[C3]** Consolidation T C-T-02 on C2's filing ← C2, A7b, A11b, A12. Only if C2 finds one, and only if
+  `fa consolidate` admits its investment (no goodwill refusal, `FA-REF-194`).
 
 ### Phase H: product findings (§13)
 
 - **H1** ← M5. It needs the BLMIS oracle.
 - **H2, H3, H4, H5, H8, H12, H14, H15** ← none.
-- **H6** ← none. L4 reuses its test twin for L-N-01.
-- **H7** ← none. E3 reuses its twin for E-N-01.
+- **H6** ← none. When it lands a law, L-N-01 flips and gains a law-level twin.
+- **H7** ← none. When it lands a law, E-N-01 flips and gains a law-level twin.
 - **H13** ← none. It blocks X5.
 - **[H9] Case-derived calibration rows** ← W4, M5. Adds `crates/fa-oracles/data/case_calibration.toml`
   (a harness table, §2.4; it becomes a registry only if a product consumer appears) with its loader and
@@ -2889,6 +3040,7 @@ Rules for every item:
 - **[H10] Agent campaign on case books** ← fa-y6eu, W4, X3, A15.
 - **H16** (triage offers the audit program) ← none. It flips §12.5's guidance N (A16).
 - **H17** (findings and correction lineage) ← W7.
+- **H18** (`events.subsequent` period selection) ← none. L4 re-checks L-N-02 when it lands.
 - **External edges**: §12.7's differential ← fa-sa4w; §12.1's ADS wording ← fa-ipom; E6 ← fa-b6xs only
   under the condition stated in E6.
 
@@ -2942,8 +3094,9 @@ Rules for every item:
 ## 18. Order of work and why
 
 1. **A0, A1–A7, then the A8 pilot.** The harness is the product, and the pilot proves it on a slice the
-   binary can reach today. A0 runs in parallel: it unblocks the F6 pilot (A8b) and every
-   approval-dependent cell.
+   binary can reach today. A0 runs in parallel: it unblocks W5b (the self-approved CIP →
+   clearing transfer), E3b and every other `fa post` approval cell. The F6 pilot (A8b) does not wait
+   for it: it uses draft self-promotion.
 2. **WorldCom next.** It has the densest entry-level record, D and P together, and it is the case users
    will ask about.
 3. **SunPower in parallel with WorldCom.** Its data is independent, and it is the cleanest exact T: the
@@ -3190,7 +3343,7 @@ found in the fa-lantern and fa-gen tests. The closure test checks that the named
 | solvency (2) | — | — | balance_sheet_test on a statement book only reads back posted equity (`adds_no_claim`); cash_flow_test has no sourced obligations → fa-gen |
 | lookback (2) | fraudulent_transfer: no claim (H5) | preferences (insider window) only if E5 sources the facts (§7.2 E5/E6) | fraudulent_transfer's insolvency badge reads book-wide running balances (`cutoff.rs:2299-2387`): tier A |
 | ponzi / distribution / damages (4) | ponzi.net_investment | damages.attested_baseline as R on restatement books (§6.4 W-T-03/W-D-07) | distribution.rising_tide and pro_rata need every claimant and the pool: population-relative → fa-gen `Ponzi` |
-| other singletons (6) | events.subsequent (L-N-02), expense.capitalization | — | completeness.unrecorded_liabilities, party.master_changes, payroll.ghost, reversal.patterns, confirm.coverage: no sourced population → fa-gen `GhostPayroll` and motifs |
+| other singletons (7) | events.subsequent (L-N-02), expense.capitalization | — | completeness.unrecorded_liabilities, party.master_changes, payroll.ghost, reversal.patterns, confirm.coverage: no sourced population → fa-gen `GhostPayroll` and motifs |
 
 ### Z.6 Round 3b: a review by a second model family (2026-10-25)
 
@@ -3223,7 +3376,7 @@ All were applied:
   `fa:case-filler:v1`; §3.2's variant lists match the chapters; the kernel twin covers single-cell
   bridges; the outsider check is per read kind; a declared default makes a component Sd only if it
   cannot decide the predicate.
-- **Expectations renumbered.** W-N-05 → the P cell W-P-04; W-N-06 removed (W-D-05's X components render
+- **Expectations renumbered.** W-N-05 → the P cell W-P-04; W-N-06 removed (W-NOTE-02 (`jet.post_closing`, all X) renders
   in Limits); W-D-07/W-N-07 → W-D-07/W-D-08; W-N-04 → the note W-NOTE-01 (new `[[note]]` row type);
   W-P-03-CF-02 → W-P-03-CF-01; L-T-02-CF-Canon → L-T-02-CF-01; E-T-01b → E-T-04; unnamed read-backs
   → C-R-01, E-R-01/02, X-R-01/02.
@@ -3243,3 +3396,72 @@ All were applied:
   edges. The first green T run moves from A8a to A12.
 - **Self-containment.** A4r, A5a, A6, M2t, A16 and H9 now state their field maps, algorithms, values and
   gates.
+
+### Z.8 Corrections found while converting §15 to beads (2026-10-25)
+
+Four fresh drafting agents each read the whole plan and the code at 8196f5e40 while writing one bead
+per §15 item. Their reports found these defects, all fixed in place:
+- **Claim types.** Lehman's scenario row was not a T: the diff reads back the posted (e), and the 13.9x
+  ratio agrees only at its display unit. It is now L-R-02 plus L-C-01, and the optional Canon backtest is
+  the read-back L-R-03. M-N-01 needed an N kind for an exact, mechanism-explained gap: `exact_gap`, whose
+  twin is an account with gap 0.
+- **Tautology guard.** Enron's remainder accounts now take A from A values and Δ from published Δs,
+  never from B (§3.8, §7.2). E-T-02's assurance is per vintage.
+- **Twins with no mechanism.** "Rule families bound to intents are not in this build"
+  (`registries/verbs.toml:664`), so E-N-01 and L-N-01 use harness-observability twins until H7/H6 land a
+  law; their H edges are removed.
+- **Product facts.** triage's `next_actions` are (command, why) pairs, so read-only means the verb row's
+  `writes = false`; a placeholder is any `<…>` token. `fa checkpoint witness` takes `--key … --grant
+  witness`. `fa_verify::cli::run` is at `cli.rs:1700`. The fa-oracles topology row is at
+  `workspace_topology.toml:202-206`.
+- **Schema and harness.** Period-code mapping and migration step kinds were added to §3.2a. Filler posts
+  in PostBatch chunks of at most 8,190 entries. K-TIER's P/A rule names the §9.4 exception. Receipts
+  gain `anchor`, named binding booleans and a deterministic `verified_utc`. `anchor_scheme` names the
+  anchor kinds. The self-disclosure row is runner-generated. The A10b scan is a single registry edit,
+  and A10a covers the READMEs.
+- **Ownership and edges.** SHA-256 and the `case.toml`/`roles.toml` loaders move to A1a, K-REASON to
+  A3c, and the citation-stub documents to A7a. Edges were added: A3c ← A4, A12 ← A11b, L3 ← M0,
+  M3 ← A3b.
+- **Text.** The F12 Post-it reading is an interpretation (the preparer handed the note on). An A posting
+  cites the filing whose figure it posts. The pilot example is authored as the A1a–A1c fixture. §18's
+  A0 note, the §12.5 CF id and the singleton count were fixed.
+
+The mechanical lint was extended to flag any expectation id cited outside the case chapters but defined
+in none. It passes.
+- **From polish round 1.** Receipts carry four binding booleans plus the source's
+  `original_hash_compared`, so an archive capture can pass its quote checks before OD 1. A `paragraph`
+  anchor kind was added, and table cells and XBRL facts bind by value. Cited values are committed
+  under §1.3, while OD 2b covers only whole tables. E-N-02 moves to E6 (its target needs E5). Edges
+  added: M2b, M2c ← M0. `verify` finds a quote by hash before OD 2a. The guidance N's id is
+  `<case>-N-90`. H16 names its all-Closed fallback.
+- **From polish round 2.** Naming conventions became §3.2b, and `case.toml` gains `letter`. Receipts
+  bind values and scope (`values_sha256`) and record their `alignment`. New literal rules cover date
+  ranges and months. W-D-05 becomes the note W-NOTE-02. The Locked cells are record-inconsistent. The
+  M-T-03 twin is refused at prepare. `fa consolidate` refuses goodwill (C-T-02's precondition). H18
+  (`events.subsequent` period selection) is added. fa-oracles' allowlist adds `fa-time`. Draft
+  promotion checks the owner before contents, which scopes W-P-01(a). The MCP walkthrough adds
+  `fa.draft`. Read-only now includes `[[bound]]` read rules. ManualAssertion cells use `--plan-out`,
+  with one idempotency key per cell. `[[party]]` rows and `filed_on`/`restates` were added. Edge added:
+  A11c ← A4.
+- **From polish round 3.** Draft promotion implies `approve` on the embedded route, so FA-REF-011 needs
+  an issued token. The allocation review refuses its preparer's own approval with FA-REF-012 (a P cell
+  on F6b), and kernel SoD is reached only through `fa approve --proposal` plus `fa allocate --approval`.
+  W-T-04 names its method explicitly (the default is largest remainder). ManualAssertion cells under
+  draft planning are probed in W5. A0 lets `attest manual` take the sealed proposal. Anchors corrected:
+  `admissibility.toml:380-401`, `procedures.toml:1401-1409`.
+- **From polish round 3 (foundation half).** H18 keeps Locked periods selected. The Benford anchors are
+  `digits.rs:21-31` (table) and `:48-69` (MAD). The case-bead conventions (case id = directory, `letter`
+  for ids, `<dir>_neg_<slug>` negatives on a temp copy, one runner line format) are consistent with
+  §3.2b.
+- **From polish round 4.** fa-reference models Reclassification, batches, drafts and migration runs
+  (A4r's `not_modelled` list shrank to case Δs, allocations and unmodelled first steps). Branch cells gain
+  `pending`. `law_row` may cite a plan section. H8 is narrowed to ratio lines (fa-qh60 carries
+  user-loaded definitions). A0 is the repo's bead fa-6f3g.
+- **From polish round 5.** `open_run` is at `lib.rs:3386`. `fa case` takes a case number, which the
+  runner maps (§3.2b). The pilot's W-P-03 negative removes both close steps. Drift is reported as a
+  magnitude.
+- **Polish completeness.** Five polish rounds ran on the beads (two agents per round, the halves
+  swapped between rounds). Round 5 completed for the foundation and product beads and for M0–M3. For
+  the other case beads, a weekly usage limit cut round 5 short: the patches its readers had written
+  were applied only where each edit matched the bead's current text exactly (all did). The rest of
+  those beads carry four rounds.
