@@ -17,8 +17,8 @@ use fa_time::{DateDay, Weekday};
 use fgdb_types::VId;
 
 use crate::amount::{
-    amount_difference, amount_magnitude, amount_negated, amount_scaled_bps, amount_share_bps,
-    amount_sum, largest_remainder, ratio_cmp, signed_leg, wide_product,
+    amount_difference, amount_magnitude, amount_scaled_bps, amount_share_bps, amount_sum,
+    largest_remainder, ratio_cmp, signed_leg, wide_product,
 };
 use crate::jet::{finding, procedure_boilerplate};
 use crate::{
@@ -1496,16 +1496,48 @@ impl Procedure for SolvencyBalanceSheetTest {
     }
 }
 
-/// `solvency.cash_flow_test` (plan §11.6, `FA-EVID-L53`):
+/// `solvency.cash_flow_test` (plan §11.6, `FA-EVID-L53`, `fa-5dpd`):
 /// Equitable cash-flow solvency test (ability to pay debts as they come due).
 /// Compares the balances of the accounts holding the `cash` role against
-/// unpaid liabilities and pending commitments maturing within `horizon_days`
-/// of the coordinate's effective date. Version 2 selects cash by role;
-/// version 1 guessed it from code and name tokens (fa-kxc4).
+/// unpaid obligations and commitments maturing within `horizon_days` of the
+/// coordinate's effective date (`as_of`), using an authenticated obligation
+/// maturity schedule (`SolvencyCashFlowTest::with_schedule` or inline
+/// `fa:obligation-maturity:v1` entry extensions) and checked civil-day
+/// horizon arithmetic (`crate::solvency::checked_horizon_end`).
 pub struct SolvencyCashFlowTest {
     params: Params,
+    schedule: Option<crate::solvency::AuthenticatedObligationSchedule>,
 }
-procedure_boilerplate!(SolvencyCashFlowTest, "solvency.cash_flow_test");
+
+impl SolvencyCashFlowTest {
+    pub const ID: &'static str = "solvency.cash_flow_test";
+
+    pub fn new() -> Result<Self, LanternError> {
+        Ok(Self {
+            params: Params::defaults(Self::ID)?,
+            schedule: None,
+        })
+    }
+
+    #[must_use]
+    pub fn with(params: Params) -> Self {
+        Self {
+            params,
+            schedule: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_schedule(
+        params: Params,
+        schedule: crate::solvency::AuthenticatedObligationSchedule,
+    ) -> Self {
+        Self {
+            params,
+            schedule: Some(schedule),
+        }
+    }
+}
 
 impl Procedure for SolvencyCashFlowTest {
     fn id(&self) -> &'static str {
@@ -1524,15 +1556,6 @@ impl Procedure for SolvencyCashFlowTest {
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
         let horizon_days = self.params.get_u32("horizon_days")?;
-        if horizon_days == 0 {
-            return Err(LanternError::Parameter {
-                procedure: Self::ID.into(),
-                name: "horizon_days".into(),
-                message: "must be >= 1".into(),
-            });
-        }
-
-        let cash = snapshot.role_population(Self::ID)?;
         let mut all_live = snapshot.live_postings()?;
         all_live.sort_by_key(|e| e.vid);
         let ref_date = snapshot.coordinate.effective_through.unwrap_or_else(|| {
@@ -1542,122 +1565,34 @@ impl Procedure for SolvencyCashFlowTest {
                 .max()
                 .unwrap_or(DateDay(0))
         });
-        let horizon_end = DateDay(ref_date.0.saturating_add(horizon_days as i32));
+        let _ = crate::solvency::checked_horizon_end(Self::ID, ref_date, horizon_days)?;
 
-        let mut cash_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
-        let mut liab_net: BTreeMap<(VId, u32), i128> = BTreeMap::new();
-        let mut unit_accts: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
-        let mut unit_entries: BTreeMap<u32, BTreeSet<VId>> = BTreeMap::new();
-        let mut population = 0u64;
-
-        for e in &all_live {
-            work.entry()?;
-            let eff = e.entry.proposal.effective_date;
-            if eff > horizon_end {
-                continue;
-            }
-            for leg in &e.entry.proposal.legs {
-                work.leg()?;
-                let Some(acct) = snapshot.accounts.get(&leg.account_ref) else {
-                    continue;
-                };
-                let at = AccountType(acct.account_type);
-                let signed = signed_leg(leg.side, leg.amount.mantissa)?;
-                if eff <= ref_date && cash.contains(&leg.account_ref) {
-                    population += 1;
-                    let c = cash_net
-                        .entry((leg.account_ref, leg.amount.unit.0))
-                        .or_default();
-                    *c = c
-                        .checked_add(signed)
-                        .ok_or(LanternError::Overflow("cash_flow_test cash fold"))?;
-                    unit_accts
-                        .entry(leg.amount.unit.0)
-                        .or_default()
-                        .insert(leg.account_ref);
-                    unit_entries
-                        .entry(leg.amount.unit.0)
-                        .or_default()
-                        .insert(e.vid);
-                } else if at == AccountType::LIABILITY {
-                    population += 1;
-                    let l = liab_net
-                        .entry((leg.account_ref, leg.amount.unit.0))
-                        .or_default();
-                    *l = l
-                        .checked_add(signed)
-                        .ok_or(LanternError::Overflow("cash_flow_test liability fold"))?;
-                    unit_accts
-                        .entry(leg.amount.unit.0)
-                        .or_default()
-                        .insert(leg.account_ref);
-                    unit_entries
-                        .entry(leg.amount.unit.0)
-                        .or_default()
-                        .insert(e.vid);
-                }
-            }
+        if let Some(schedule) = &self.schedule {
+            let report = crate::solvency::evaluate_cash_flow_solvency(
+                Self::ID,
+                snapshot,
+                book,
+                horizon_days,
+                schedule,
+                work,
+            )?;
+            return Ok(report.findings);
+        }
+        if let Some(inline_schedule) =
+            crate::solvency::schedule_from_inline_extensions(Self::ID, snapshot, ref_date)?
+        {
+            let report = crate::solvency::evaluate_cash_flow_solvency(
+                Self::ID,
+                snapshot,
+                book,
+                horizon_days,
+                &inline_schedule,
+                work,
+            )?;
+            return Ok(report.findings);
         }
 
-        let mut units: BTreeSet<u32> = BTreeSet::new();
-        for &(_, u) in cash_net.keys().chain(liab_net.keys()) {
-            units.insert(u);
-        }
-
-        let mut out = Vec::new();
-        for unit_id in units {
-            work.compare(1)?;
-            let mut liquid_cash = 0i128;
-            for (&(_, u), &net) in &cash_net {
-                if u == unit_id && net > 0 {
-                    liquid_cash = liquid_cash
-                        .checked_add(net)
-                        .ok_or(LanternError::Overflow("cash_flow_test liquid_cash sum"))?;
-                }
-            }
-            let mut maturing_obligations = 0i128;
-            for (&(_, u), &net) in &liab_net {
-                if u == unit_id && net < 0 {
-                    maturing_obligations = maturing_obligations
-                        .checked_add(amount_negated(net, "cash_flow_test obligation")?)
-                        .ok_or(LanternError::Overflow("cash_flow_test obligations sum"))?;
-                }
-            }
-            if maturing_obligations > liquid_cash {
-                let shortfall = maturing_obligations
-                    .checked_sub(liquid_cash)
-                    .ok_or(LanternError::Overflow("cash_flow_test shortfall"))?;
-                let mut cites: Vec<Cite> = unit_accts
-                    .remove(&unit_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(Cite::Account)
-                    .collect();
-                if let Some(entries) = unit_entries.remove(&unit_id) {
-                    for evid in entries {
-                        if cites.len() < MAX_CITES {
-                            cites.push(Cite::Entry(evid));
-                        }
-                    }
-                }
-                let scale = crate::unit_scale(book, unit_id)?;
-                out.push(finding(
-                    Self::ID,
-                    Severity::High,
-                    Statistic {
-                        name: "cash_flow_shortfall".into(),
-                        value: shortfall,
-                        scale,
-                        population: population.max(1),
-                    },
-                    cites,
-                    format!(
-                        "unit {unit_id} cash-flow insolvent over {horizon_days}-day horizon: liquid_cash={liquid_cash}, maturing_obligations={maturing_obligations}, shortfall={shortfall}"
-                    ),
-                ));
-            }
-        }
-        Ok(out)
+        crate::solvency::run_unscheduled_book_screen(Self::ID, snapshot, book, horizon_days, work)
     }
 }
 

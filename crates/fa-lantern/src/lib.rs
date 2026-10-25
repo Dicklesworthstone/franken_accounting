@@ -45,6 +45,7 @@ pub mod numbers;
 pub mod projection;
 pub mod sample;
 pub mod snapshot;
+pub mod solvency;
 pub mod trace;
 pub mod witness;
 
@@ -1275,6 +1276,7 @@ mod tests {
             include_str!("catalog/network/engine.rs"),
             include_str!("conformal.rs"),
             include_str!("sample.rs"),
+            include_str!("solvency.rs"),
         ];
         let forbidden = [
             "std::time",
