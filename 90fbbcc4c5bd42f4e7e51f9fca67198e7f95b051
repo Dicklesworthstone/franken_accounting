@@ -1,0 +1,8 @@
+tier0 v1
+verdict=pass
+commit=90fbbcc4c5bd42f4e7e51f9fca67198e7f95b051
+tree=5a054da016b8c10f8b8e5aad82bccb332e50437c
+lane=remote
+host=vmi1149989:Linux-x86_64
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+recorded_utc=2026-10-25T06:24:09Z
