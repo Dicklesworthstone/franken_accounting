@@ -1598,7 +1598,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
             .map(|(account, _)| *account)
             .collect();
         if let Err(refusal) =
-            crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts)?
+            crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts, [evid])?
         {
             txn.abort();
             return Ok(Err(refusal));

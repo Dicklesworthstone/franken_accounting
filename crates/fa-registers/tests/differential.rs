@@ -681,16 +681,28 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
             target: 0,
             posts: None,
         });
-        refs.push(
-            kernel_post(&mut k, &release, usd, &refs)
-                .unwrap()
-                .entry_ref(),
-        );
-        assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
-        // The rejected key was not consumed; freeing the old reservation
-        // makes this exact proposal legal, without changing either amount.
-        refs.push(kernel_post(&mut k, &small, usd, &refs).unwrap().entry_ref());
-        assert!(matches!(oracle.post(&small), Verdict::Posted { .. }));
+        let resolution_vid = fa_journal::rows::resolution_vid(refs[0].vid);
+        let mut small = small;
+        for step in 0u64.. {
+            let candidate = format!("small-hold-{step}").into_bytes();
+            if fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &candidate).0
+                < resolution_vid.0
+            {
+                small.key = candidate;
+                break;
+            }
+        }
+        // The rejected key was not consumed; freeing the old reservation in the
+        // same atomic batch makes the one-unit hold legal without changing
+        // either amount, while ordering the hold's VId before its resolution in
+        // that commit exercises the incremental tail's overflow-rebuild path.
+        let batch = [small.clone(), release.clone()];
+        let posted = kernel_batch(&mut k, "release-and-rebook", &batch, usd, &refs).unwrap();
+        refs.extend(posted.entries);
+        assert!(matches!(
+            oracle.post_batch(b"release-and-rebook", &batch),
+            fa_reference::BatchVerdict::Posted { .. }
+        ));
 
         // At the target frontier only the one-unit hold contributes. Both a cold rebuild
         // and advancement from a cached large hold must reach that result.
@@ -708,7 +720,7 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
         assert!(!maintain(&mut k, period).wrote);
 
         release.key = b"release-small-hold".to_vec();
-        release.resolves.as_mut().unwrap().target = 2;
+        release.resolves.as_mut().unwrap().target = 1;
         kernel_post(&mut k, &release, usd, &refs).unwrap();
         assert!(matches!(oracle.post(&release), Verdict::Posted { .. }));
         let empty = maintain(&mut k, period);

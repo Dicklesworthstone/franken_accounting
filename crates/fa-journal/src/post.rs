@@ -425,9 +425,18 @@ impl PreparedPost {
             std::iter::once(&entry.proposal)
                 .chain(paired_reversal.iter().map(|m| &m.entry.proposal)),
         );
-        if let Err(refusal) =
-            crate::register_capacity::admit(&txn, db, ctx, entry.proposal.book_id, &accounts)?
-        {
+        let staged = paired_reversal
+            .iter()
+            .map(|m| m.entry_ref.vid)
+            .chain(std::iter::once(entry_ref.vid));
+        if let Err(refusal) = crate::register_capacity::admit(
+            &txn,
+            db,
+            ctx,
+            entry.proposal.book_id,
+            &accounts,
+            staged,
+        )? {
             txn.abort();
             return Ok(Err(refusal));
         }
@@ -1097,8 +1106,13 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
             std::iter::once(&p.entry.proposal)
                 .chain(p.paired_reversal.iter().map(|m| &m.entry.proposal)),
         );
+        let staged = p
+            .paired_reversal
+            .iter()
+            .map(|m| m.entry_ref.vid)
+            .chain(std::iter::once(p.entry_ref.vid));
         if let Err(refusal) =
-            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts)?
+            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts, staged)?
         {
             if let Ok(PostPreparation::Ready(p)) = prepared {
                 p.abort();
@@ -4885,8 +4899,13 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
             std::iter::once(&p.entry.proposal)
                 .chain(p.paired_reversal.iter().map(|m| &m.entry.proposal)),
         );
+        let staged = p
+            .paired_reversal
+            .iter()
+            .map(|m| m.entry_ref.vid)
+            .chain(std::iter::once(p.entry_ref.vid));
         if let Err(refusal) =
-            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts)?
+            crate::register_capacity::admit(&p.txn, db, ctx, book.book_id, &accounts, staged)?
         {
             if let Ok(PostPreparation::Ready(p)) = prepared {
                 p.abort();

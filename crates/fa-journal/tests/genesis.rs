@@ -3514,7 +3514,8 @@ fn a_preparers_manual_assertion_stands_in_for_a_document_only_where_registered()
         | AttestationClaim::RegisterEquals(_)
         | AttestationClaim::Reconciled(_)
         | AttestationClaim::Confirmed { .. }
-        | AttestationClaim::Represented { .. } => None,
+        | AttestationClaim::Represented { .. }
+        | AttestationClaim::ExhibitMarked { .. } => None,
     };
     let (reason_code, statement) = manual.expect("a ManualAssertion");
     assert_eq!(reason_code, 1);

@@ -637,7 +637,10 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
     }
     txn.write_ordered(db, vec![stage])?;
     let accounts = crate::register_capacity::accounts(resolved.iter().map(|e| &e.proposal));
-    if let Err(refusal) = crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts)? {
+    let staged = members.iter().map(|m| m.entry_ref.vid);
+    if let Err(refusal) =
+        crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts, staged)?
+    {
         txn.abort();
         return Ok(Err(refusal));
     }

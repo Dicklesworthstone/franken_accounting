@@ -999,7 +999,14 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         Ok(usage) => usage,
         Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
     };
-    if let Err(refusal) = crate::register_capacity::admit_addition(txn, db, ctx, rvid, &entry)? {
+    if let Err(refusal) = crate::register_capacity::admit_addition(
+        txn,
+        db,
+        ctx,
+        mints.minted.iter().map(|(_, r)| r.vid),
+        rvid,
+        &entry,
+    )? {
         return execution_refusal(mints, schedule, trigger, refusal);
     }
     if let Some(why) = judge_limits(
