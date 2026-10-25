@@ -910,6 +910,38 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     }
 
     let _g0 = check_g0_report(root)?;
+    let _derived_checked =
+        check_operation_costs_derived_objects(root, &read("operation_costs.toml")?)?;
+    let fuzz_lib_path = root.join("crates/fa-fuzz/src/lib.rs");
+    if fuzz_lib_path.is_file() {
+        let fuzz_text = fs::read_to_string(&fuzz_lib_path)
+            .map_err(|e| format!("{}: {e}", fuzz_lib_path.display()))?;
+        let _fuzz_checked = check_fuzz_targets_cite_existing_beads(root, &fuzz_text)?;
+    }
+    let readme_path = root.join("README.md");
+    let agents_path = root.join("AGENTS.md");
+    let check_sh_path = root.join("scripts/check.sh");
+    if readme_path.is_file() && agents_path.is_file() && check_sh_path.is_file() {
+        let readme_text =
+            fs::read_to_string(&readme_path).map_err(|e| format!("{}: {e}", readme_path.display()))?;
+        let agents_text =
+            fs::read_to_string(&agents_path).map_err(|e| format!("{}: {e}", agents_path.display()))?;
+        let check_sh_text = fs::read_to_string(&check_sh_path)
+            .map_err(|e| format!("{}: {e}", check_sh_path.display()))?;
+        let prefixes: Vec<String> = claims_config
+            .marker_families
+            .iter()
+            .map(|f| f.prefix.clone())
+            .collect();
+        let _sync_checked = check_readme_agents_sync(
+            &readme_text,
+            &agents_text,
+            &check_sh_text,
+            &read("verbs.toml")?,
+            &known_markers,
+            &prefixes,
+        )?;
+    }
 
     let invariants_live = invariants.clauses.iter().filter(|c| c.is_live()).count();
     Ok(CheckSummary {
@@ -923,6 +955,439 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         markers_checked,
         evidence_logs,
     })
+}
+
+/// Extract PascalCase and SCREAMING_SNAKE_CASE object/relation tokens from a
+/// `derived_objects` description string.
+fn extract_derived_object_tokens(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+        if raw.len() < 3 || matches!(raw, "CAS" | "MIN" | "MAX") {
+            continue;
+        }
+        let is_screaming = raw
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            && raw.bytes().any(|b| b.is_ascii_uppercase())
+            && raw.contains('_');
+        let upper_count = raw.bytes().filter(|b| b.is_ascii_uppercase()).count();
+        let has_lower = raw.bytes().any(|b| b.is_ascii_lowercase());
+        let is_pascal_compound =
+            raw.as_bytes()[0].is_ascii_uppercase() && upper_count >= 2 && has_lower;
+        let is_core_vertex = matches!(
+            raw,
+            "Book"
+                | "Entry"
+                | "Leg"
+                | "Period"
+                | "Account"
+                | "Document"
+                | "Approval"
+                | "Attestation"
+                | "Certificate"
+                | "Resolution"
+                | "Register"
+                | "Bundle"
+                | "Migration"
+                | "Finalize"
+                | "Rehearse"
+                | "Post"
+                | "Expires"
+        );
+        if is_screaming || is_pascal_compound || is_core_vertex {
+            out.push(raw.to_string());
+        }
+    }
+    out
+}
+
+fn collect_write_path_identifiers(root: &Path) -> BTreeSet<String> {
+    let mut known = BTreeSet::new();
+    let sym_path = root.join("registries/symbols.toml");
+    if let Ok(sym_text) = fs::read_to_string(&sym_path) {
+        for line in sym_text.lines() {
+            if let Some(rest) = line.trim().strip_prefix("name = \"")
+                && let Some(name) = rest.strip_suffix('"')
+            {
+                known.insert(name.to_string());
+            }
+        }
+    }
+    let obj_dir = root.join("registries/object_schemas");
+    if let Ok(entries) = fs::read_dir(&obj_dir) {
+        for entry in entries.flatten() {
+            if let Ok(text) = fs::read_to_string(entry.path()) {
+                for tok in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+                    if tok.len() >= 3 && tok.as_bytes()[0].is_ascii_uppercase() {
+                        known.insert(tok.to_string());
+                    }
+                }
+            }
+        }
+    }
+    fn walk_rs(dir: &Path, out: &mut BTreeSet<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk_rs(&path, out);
+            } else if path.extension().and_then(|s| s.to_str()) == Some("rs")
+                && let Ok(text) = fs::read_to_string(&path)
+            {
+                for tok in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+                    if tok.len() >= 3 && tok.as_bytes()[0].is_ascii_uppercase() {
+                        out.insert(tok.to_string());
+                    }
+                }
+            }
+        }
+    }
+    for crate_dir in [
+        "crates/fa-model/src",
+        "crates/fa-journal/src",
+        "crates/fa-docket/src",
+        "crates/fa-notary/src",
+        "crates/fa-registers/src",
+        "crates/fa-escrow/src",
+        "crates/fa-palimpsest/src",
+    ] {
+        walk_rs(&root.join(crate_dir), &mut known);
+    }
+    known
+}
+
+/// Verify that every object/relation kind named in `derived_objects` of
+/// `registries/operation_costs.toml` exists in `symbols.toml`, `object_schemas`,
+/// or the write-path crates (`fa-vz7e`).
+pub fn check_operation_costs_derived_objects(
+    root: &Path,
+    op_costs_text: &str,
+) -> Result<usize, String> {
+    let known = collect_write_path_identifiers(root);
+    let mut current_id = String::new();
+    let mut checked = 0usize;
+    for (idx, line) in op_costs_text.lines().enumerate() {
+        let lineno = idx + 1;
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("id = \"")
+            && let Some(id) = rest.strip_suffix('"')
+        {
+            current_id = id.to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("derived_objects = \"")
+            && let Some(derived) = rest.strip_suffix('"')
+        {
+            for tok in extract_derived_object_tokens(derived) {
+                let singular = tok.strip_suffix('s').unwrap_or(&tok);
+                if !known.contains(&tok) && !known.contains(singular) {
+                    return Err(format!(
+                        "registries/operation_costs.toml:{lineno}: operation_class `{current_id}` derived_objects names unknown object kind `{tok}` (not in symbols.toml, object_schemas, or write-path crates)"
+                    ));
+                }
+                checked += 1;
+            }
+        }
+    }
+    Ok(checked)
+}
+
+fn collect_known_bead_ids(root: &Path) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    let jsonl = root.join(".beads/issues.jsonl");
+    if let Ok(text) = fs::read_to_string(&jsonl) {
+        for line in text.lines() {
+            if let Some(pos) = line.find("\"id\":\"") {
+                let rest = &line[pos + 6..];
+                if let Some(end) = rest.find('"') {
+                    ids.insert(rest[..end].to_string());
+                }
+            }
+        }
+    }
+    let reg_dir = root.join("registries");
+    if let Ok(entries) = fs::read_dir(&reg_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml")
+                && let Ok(text) = fs::read_to_string(&path)
+            {
+                let bytes = text.as_bytes();
+                let mut i = 0;
+                while i + 4 <= bytes.len() {
+                    if &bytes[i..i + 3] == b"fa-"
+                        && (i == 0
+                            || !(bytes[i - 1].is_ascii_alphanumeric()
+                                || bytes[i - 1] == b'_'
+                                || bytes[i - 1] == b'-'))
+                    {
+                        let len = text[i + 3..]
+                            .bytes()
+                            .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'.')
+                            .count();
+                        if (3..=6).contains(&len) {
+                            let next = text[i + 3 + len..].as_bytes().first().copied();
+                            if !next.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                            {
+                                ids.insert(text[i..i + 3 + len].to_string());
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Verify that every dormant fuzz target in `crates/fa-fuzz/src/lib.rs` cites an
+/// existing bead ID (`fa-vz7e`).
+pub fn check_fuzz_targets_cite_existing_beads(
+    root: &Path,
+    fuzz_lib_text: &str,
+) -> Result<usize, String> {
+    let known_beads = collect_known_bead_ids(root);
+    let mut current_target = String::new();
+    let mut checked = 0usize;
+    for (idx, line) in fuzz_lib_text.lines().enumerate() {
+        let lineno = idx + 1;
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("name: \"")
+            && let Some(name) = rest.strip_suffix("\",")
+        {
+            current_target = name.to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("activating_bead: \"")
+            && let Some(bead) = rest.strip_suffix("\",")
+        {
+            if !known_beads.contains(bead) {
+                return Err(format!(
+                    "crates/fa-fuzz/src/lib.rs:{lineno}: dormant fuzz target `{current_target}` cites unknown bead `{bead}`"
+                ));
+            }
+            checked += 1;
+        }
+    }
+    Ok(checked)
+}
+
+fn parse_iso_date_days(ymd: &str) -> Result<i64, String> {
+    let parts: Vec<&str> = ymd.split('-').collect();
+    if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
+        return Err(format!("invalid ISO date `{ymd}`"));
+    }
+    let y: i64 = parts[0].parse().map_err(|_| format!("invalid year in `{ymd}`"))?;
+    let m: i64 = parts[1].parse().map_err(|_| format!("invalid month in `{ymd}`"))?;
+    let d: i64 = parts[2].parse().map_err(|_| format!("invalid day in `{ymd}`"))?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return Err(format!("out-of-range month/day in `{ymd}`"));
+    }
+    // Howard Hinnant civil-from-days formula (exact day difference for ISO dates).
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    let yoe = y_adj - era * 400;
+    let m_adj = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * m_adj + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Ok(era * 146097 + doe - 719468)
+}
+
+/// G0 `README.md` / `AGENTS.md` / `scripts/check.sh` / `verbs.toml` synchronization
+/// check (`fa-vz7e`).
+pub fn check_readme_agents_sync(
+    readme_text: &str,
+    agents_text: &str,
+    check_sh_text: &str,
+    verbs_text: &str,
+    known_markers: &BTreeSet<String>,
+    prefixes: &[String],
+) -> Result<usize, String> {
+    // (a) Every FA-* marker in README.md and AGENTS.md resolves, with file:line reporting.
+    for (doc_name, doc_text) in [("README.md", readme_text), ("AGENTS.md", agents_text)] {
+        for (idx, line) in doc_text.lines().enumerate() {
+            let lineno = idx + 1;
+            for marker in extract_markers(line, prefixes) {
+                if !known_markers.contains(&marker) {
+                    return Err(format!(
+                        "{doc_name}:{lineno}: unresolved marker `{marker}` (not registered in registries/*.toml)"
+                    ));
+                }
+            }
+        }
+    }
+
+    // (b) Every `fa ` command above `## TL;DR` in README.md exists in verbs.toml.
+    let verbs_doc = toml::parse(verbs_text).map_err(|e| format!("verbs.toml: {e}"))?;
+    let mut verb_subs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    if let Some(verbs) = verbs_doc.arrays.get("verb") {
+        for v in verbs {
+            let name = req_str("verbs.toml", v, "name")?.to_string();
+            let subs: BTreeSet<String> = req_str_array("verbs.toml", v, "subcommands")?
+                .into_iter()
+                .collect();
+            verb_subs.insert(name, subs);
+        }
+    }
+    let mut aliases: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    if let Some(alias_rows) = verbs_doc.arrays.get("alias") {
+        for a in alias_rows {
+            let from = req_str_array("verbs.toml", a, "from")?;
+            let to = req_str_array("verbs.toml", a, "to")?;
+            aliases.push((from, to));
+        }
+    }
+    aliases.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+    let (above_tldr, _) = readme_text
+        .split_once("\n## TL;DR\n")
+        .ok_or_else(|| "README.md:1: missing `## TL;DR` section delimiter".to_string())?;
+    let mut in_fence: Option<bool> = None;
+    let mut pending = String::new();
+    let mut pending_line = 0usize;
+    let mut commands_checked = 0usize;
+    for (idx, raw) in above_tldr.lines().enumerate() {
+        let lineno = idx + 1;
+        if let Some(lang) = raw.strip_prefix("```") {
+            in_fence = match in_fence {
+                None => Some(matches!(
+                    lang.trim(),
+                    "" | "bash" | "sh" | "shell" | "console"
+                )),
+                Some(_) => None,
+            };
+            pending.clear();
+            continue;
+        }
+        if in_fence != Some(true) {
+            continue;
+        }
+        let part = raw.trim();
+        if part.is_empty() || part.starts_with('#') {
+            continue;
+        }
+        let joined = if pending.is_empty() {
+            pending_line = lineno;
+            part.to_string()
+        } else {
+            format!("{pending} {part}")
+        };
+        if let Some(head) = joined.strip_suffix('\\') {
+            pending = head.trim_end().to_string();
+            continue;
+        }
+        pending.clear();
+        if !joined.starts_with("fa ") {
+            continue;
+        }
+        commands_checked += 1;
+        let mut words: Vec<String> = joined
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect();
+        for (from, to) in &aliases {
+            if words.len() >= from.len() && words[..from.len()] == from[..] {
+                let mut expanded = to.clone();
+                expanded.extend_from_slice(&words[from.len()..]);
+                words = expanded;
+                break;
+            }
+        }
+        let Some(vname) = words.first() else {
+            continue;
+        };
+        let Some(subs) = verb_subs.get(vname) else {
+            return Err(format!(
+                "README.md:{pending_line}: command `{joined}` uses unregistered verb `{vname}` (not in registries/verbs.toml:1)"
+            ));
+        };
+        if !subs.is_empty() && !words.get(1).is_some_and(|sc| subs.contains(sc)) {
+            return Err(format!(
+                "README.md:{pending_line}: command `{joined}` missing valid subcommand for `{vname}` (registries/verbs.toml:1)"
+            ));
+        }
+    }
+
+    // (c) README status line carries a date within 7 days of the Verified-at verdict line.
+    let mut status_date: Option<(usize, String)> = None;
+    let mut verified_date: Option<(usize, String)> = None;
+    for (idx, line) in readme_text.lines().enumerate() {
+        let lineno = idx + 1;
+        if status_date.is_none()
+            && let Some(pos) = line.find("**Status (")
+        {
+            let rest = &line[pos + 10..];
+            if let Some(end) = rest.find("):") {
+                status_date = Some((lineno, rest[..end].to_string()));
+            }
+        }
+        if verified_date.is_none()
+            && let Some(pos) = line.find("Verified at ")
+            && let Some(lparen) = line[pos..].find('(')
+            && let Some(rparen) = line[pos + lparen + 1..].find(')')
+        {
+            let ymd = &line[pos + lparen + 1..pos + lparen + 1 + rparen];
+            verified_date = Some((lineno, ymd.to_string()));
+        }
+    }
+    let (status_line, status_ymd) = status_date
+        .ok_or_else(|| "README.md:1: missing `> **Status (YYYY-MM-DD):` status line".to_string())?;
+    let status_days = parse_iso_date_days(&status_ymd)
+        .map_err(|e| format!("README.md:{status_line}: {e}"))?;
+    if let Some((ver_line, ver_ymd)) = verified_date {
+        let ver_days = parse_iso_date_days(&ver_ymd)
+            .map_err(|e| format!("README.md:{ver_line}: {e}"))?;
+        let diff = (ver_days - status_days).abs();
+        if diff > 7 {
+            return Err(format!(
+                "README.md:{status_line}: status date `{status_ymd}` is {diff} days from verdict date `{ver_ymd}` at README.md:{ver_line} (max 7 days)"
+            ));
+        }
+    }
+
+    // (d) AGENTS.md list of check.sh steps equals check.sh's CANONICAL_STEPS header.
+    let mut agents_steps: Option<(usize, Vec<String>)> = None;
+    for (idx, line) in agents_text.lines().enumerate() {
+        if let Some(start) = line.find("<!-- check-sh-steps:")
+            && let Some(end) = line[start..].find("-->")
+        {
+            let inner = &line[start + "<!-- check-sh-steps:".len()..start + end];
+            let list: Vec<String> = inner
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            agents_steps = Some((idx + 1, list));
+            break;
+        }
+    }
+    let mut check_steps: Option<(usize, Vec<String>)> = None;
+    for (idx, line) in check_sh_text.lines().enumerate() {
+        if let Some(rest) = line.trim().strip_prefix("# CANONICAL_STEPS:") {
+            let list: Vec<String> = rest
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            check_steps = Some((idx + 1, list));
+            break;
+        }
+    }
+    let (agents_line, a_list) = agents_steps.ok_or_else(|| {
+        "AGENTS.md:1: missing `<!-- check-sh-steps: ... -->` step list".to_string()
+    })?;
+    let (check_line, c_list) = check_steps.ok_or_else(|| {
+        "scripts/check.sh:1: missing `# CANONICAL_STEPS: ...` header".to_string()
+    })?;
+    if a_list != c_list {
+        return Err(format!(
+            "AGENTS.md:{agents_line}: check.sh step list {a_list:?} disagrees with scripts/check.sh:{check_line} CANONICAL_STEPS {c_list:?}"
+        ));
+    }
+
+    Ok(commands_checked)
 }
 
 fn default_workspace_root() -> PathBuf {

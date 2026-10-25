@@ -12,12 +12,16 @@
 # not installed) is `UNRUN` + `FAIL`, never a silent green. The contract is
 # scripts/lib/gate_verdict.sh, adopted verbatim from FrankenGraphDB.
 #
-# STEPS (27 in full mode):
+# STEPS (36 in full mode):
+# CANONICAL_STEPS: bench-smoke, fmt, check, clippy, test-list, test, gate-evidence, invariants, invariants-negative, robot-schema, fuzz-smoke, conformance-mutation, deny, installer-integration, ubs, shellcheck, gate-evidence-negative, local-proof-selftest, tier0-selftest, check-classify, merge-train-selftest, owner-watch-selftest, close-bead-selftest, gate-health-selftest, docs-sync, registries, registry-check, reachability, forbidden-deps, foundations, foundations-negative, doctrine, doctrine-negative, reference-boundary, topology, topology-negative
 #   fmt, check, clippy (-D warnings), test-list + test, gate-evidence
 #   (completion markers, test-inventory witness, per-crate ratchet, fa-czx)
 #   and its planted negative, invariants (fa-37f) and its planted negative,
 #   robot-schema (fa-12x), fuzz-smoke (fa-tre), bench-smoke (fa-tu58),
-#   conformance-mutation (fa-zy1), deny, ubs, shellcheck, registries-embedded,
+#   conformance-mutation (fa-zy1), deny, ubs, shellcheck, gate-evidence-negative,
+#   local-proof-selftest, tier0-selftest, check-classify, merge-train-selftest,
+#   owner-watch-selftest, close-bead-selftest, gate-health-selftest, docs-sync
+#   (G0 README/AGENTS synchronization check, fa-vz7e), registries,
 #   registry-check (tools/registry-check: schema validation, claims lint,
 #   foundation API consumption, negative-checker disjointness, fa-szi / fa-r3d),
 #   installer-integration (fa-o3zg), reachability (xtask reachability: every
@@ -31,8 +35,8 @@
 #   deny_rows.rs, fa-xex) run under `test`.
 #   NOT IMPLEMENTED: earlier versions of this header also listed file-coverage
 #   (every tracked file claimed by a gate or exempted with a reason),
-#   readme-agents-sync, beads-cycles (br dep cycles) and tree-integrity. No
-#   step has ever checked them; a green run says nothing about them.
+#   beads-cycles (br dep cycles) and tree-integrity. No step has ever checked
+#   those three; a green run says nothing about them.
 #   Exact-tree proof manifests and merge-train scripts are tracked in fa-u7u.
 #   local-proof-selftest executes the existing producer/verifier controls,
 #   including checksum-bound split-run reuse (fa-hlnd.1).
@@ -462,6 +466,7 @@ run_gate "merge-train-selftest" "$ROOT/scripts/tests/merge_train_selftest.sh"
 run_gate "owner-watch-selftest" "$ROOT/scripts/tests/owner_watch_selftest.sh"
 run_gate "close-bead-selftest" "$ROOT/scripts/tests/close_bead_selftest.sh"
 run_gate "gate-health-selftest" "$ROOT/scripts/tests/gate_health_selftest.sh"
+run_gate "docs-sync" "$ROOT/scripts/docs_sync_check.sh" "$ROOT"
 
 # Registries: every TOML under registries/ is consumed by compiled code and
 # validated by the fa-registry / fa-model tests, which `test` above ran. This
