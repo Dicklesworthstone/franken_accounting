@@ -751,11 +751,10 @@ impl Work {
             .saturating_add(self.comparisons)
     }
 
-    /// Whether the recorded operation counts satisfy the procedure's
-    /// registered complexity class from `registries/procedures.toml` over
-    /// `snapshot` (never a quadratic `n²` fallback).
+    /// Deterministic work-counter bounds derived from a procedure's registered
+    /// complexity class in `registries/procedures.toml` over `snapshot`.
     #[must_use]
-    pub fn within_registered_bound(&self, complexity: &str, snapshot: &Snapshot) -> bool {
+    pub fn registered_bounds(complexity: &str, snapshot: &Snapshot) -> Option<Self> {
         let entries = snapshot.entries.len() as u64;
         let legs: u64 = snapshot
             .entries
@@ -787,9 +786,7 @@ impl Work {
             .saturating_mul(4);
         match complexity {
             "O((reconciliations + references) log (reconciliations + references))" => {
-                let Some(states) = &snapshot.bank_reconciliations else {
-                    return false;
-                };
+                let states = snapshot.bank_reconciliations.as_ref()?;
                 let closes = states.len() as u64;
                 let references = states.iter().fold(0_u64, |count, state| {
                     count
@@ -803,19 +800,23 @@ impl Work {
                     .saturating_add(references)
                     .saturating_add(snapshot.attestations.len() as u64)
                     .max(1);
-                self.entries <= closes
-                    && self.legs == 0
-                    && self.comparisons
-                        <= n.saturating_mul(u64::from(n.saturating_add(1).ilog2().max(1)))
-                            .saturating_mul(8)
+                Some(Self {
+                    entries: closes,
+                    legs: 0,
+                    comparisons: n
+                        .saturating_mul(u64::from(n.saturating_add(1).ilog2().max(1)))
+                        .saturating_mul(8),
+                })
             }
             // recon.assertion_drift: one comparison per attestation, plus
             // one per leg it refolds for that attestation's cell.
             "O(attestations × legs)" => {
                 let attestations = snapshot.attestations.len() as u64;
-                self.entries == 0
-                    && self.legs == 0
-                    && self.comparisons <= attestations.saturating_mul(legs.saturating_add(1))
+                Some(Self {
+                    entries: 0,
+                    legs: 0,
+                    comparisons: attestations.saturating_mul(legs.saturating_add(1)),
+                })
             }
             // jet.self_sourced_evidence: one comparison per attestation it
             // indexes, then at most one per document an entry cites or is
@@ -833,42 +834,54 @@ impl Work {
                             .map(|s| s.documents.len() as u64),
                     )
                     .fold(0_u64, u64::saturating_add);
-                self.entries <= entries
-                    && self.legs == 0
-                    && self.comparisons
-                        <= documents.saturating_add(snapshot.attestations.len() as u64)
+                Some(Self {
+                    entries,
+                    legs: 0,
+                    comparisons: documents.saturating_add(snapshot.attestations.len() as u64),
+                })
             }
             // duplicates.near: the sort, then at most MAX_NEAR_CANDIDATES
             // comparisons per entry inside its window.
-            "O(legs log legs + entries × candidates)" => {
-                self.entries <= entries
-                    && self.legs <= legs
-                    && self.comparisons
-                        <= n_log_n.saturating_add(
-                            entries.saturating_mul(crate::duplicates::MAX_NEAR_CANDIDATES),
-                        )
-            }
-            "O(entries)" => self.entries <= entries && self.legs == 0 && self.comparisons == 0,
-            "O(legs)" => self.entries <= entries && self.legs <= legs && self.comparisons == 0,
-            "O(entries + transitions)" => {
-                self.entries <= entries && self.legs == 0 && self.comparisons <= transitions
-            }
-            "O(entries + approvals)" => {
-                self.entries <= entries && self.legs == 0 && self.comparisons <= approvals
-            }
-            "O(open items)" => {
-                self.entries == 0 && self.legs <= open_items && self.comparisons == 0
-            }
+            "O(legs log legs + entries × candidates)" => Some(Self {
+                entries,
+                legs,
+                comparisons: n_log_n
+                    .saturating_add(entries.saturating_mul(crate::duplicates::MAX_NEAR_CANDIDATES)),
+            }),
+            "O(entries)" => Some(Self {
+                entries,
+                legs: 0,
+                comparisons: 0,
+            }),
+            "O(legs)" => Some(Self {
+                entries,
+                legs,
+                comparisons: 0,
+            }),
+            "O(entries + transitions)" => Some(Self {
+                entries,
+                legs: 0,
+                comparisons: transitions,
+            }),
+            "O(entries + approvals)" => Some(Self {
+                entries,
+                legs: 0,
+                comparisons: approvals,
+            }),
+            "O(open items)" => Some(Self {
+                entries: 0,
+                legs: open_items,
+                comparisons: 0,
+            }),
             "O(legs log legs)"
             | "O(ids log ids)"
             | "O(flow legs log flow legs)"
             | "O(movements log movements)"
-            | "O(posting_legs log entities + movements log movements)" => {
-                self.entries <= entries.max(rea_nodes)
-                    && self.legs <= legs.max(entries).max(rea_nodes).saturating_mul(2)
-                    && self.comparisons
-                        <= n_log_n.saturating_add(rea_nodes.saturating_mul(rea_nodes).max(16))
-            }
+            | "O(posting_legs log entities + movements log movements)" => Some(Self {
+                entries: entries.max(rea_nodes),
+                legs: legs.max(entries).max(rea_nodes).saturating_mul(2),
+                comparisons: n_log_n.saturating_add(rea_nodes.saturating_mul(rea_nodes).max(16)),
+            }),
             // graph.party_communities (fa-b6xs): PAID allocation, then at
             // most 8 levels of at most 16 passes, each examining every node
             // once plus each of its neighbouring communities.
@@ -876,24 +889,50 @@ impl Work {
             // at most 64 sources at most 64 augmenting searches, each
             // scanning every residual arc once, plus one hop search each.
             "O(posting_legs log posting_legs + allocation_cells log debit_legs + max_sources * max_augmentations * paid_edges)" => {
-                self.entries <= entries.saturating_mul(2)
-                    && self.legs <= legs.max(entries).saturating_mul(4)
-                    && self.comparisons <= n_log_n.saturating_add(n.saturating_mul(64 * 66 * 8))
+                Some(Self {
+                    entries: entries.saturating_mul(2),
+                    legs: legs.max(entries).saturating_mul(4),
+                    comparisons: n_log_n.saturating_add(n.saturating_mul(64 * 66 * 8)),
+                })
             }
             "O(posting_legs log posting_legs + allocation_cells log debit_legs + max_levels * max_passes * paid_edges)" => {
-                self.entries <= entries.saturating_mul(2)
-                    && self.legs <= legs.max(entries).saturating_mul(4)
-                    && self.comparisons <= n_log_n.saturating_add(n.saturating_mul(8 * 16 * 4))
+                Some(Self {
+                    entries: entries.saturating_mul(2),
+                    legs: legs.max(entries).saturating_mul(4),
+                    comparisons: n_log_n.saturating_add(n.saturating_mul(8 * 16 * 4)),
+                })
             }
             "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
             | "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
             | "O(input_legs log input_legs + max_steps log max_transfers + max_fragments * max_hops)" => {
-                self.entries <= entries.saturating_mul(2)
-                    && self.legs <= legs.max(entries).saturating_mul(4)
-                    && self.comparisons <= n_log_n.saturating_add(n.saturating_mul(300))
+                Some(Self {
+                    entries: entries.saturating_mul(2),
+                    legs: legs.max(entries).saturating_mul(4),
+                    comparisons: n_log_n.saturating_add(n.saturating_mul(300)),
+                })
             }
-            _ => false,
+            _ => None,
         }
+    }
+
+    /// Total work budget derived from a procedure's registered complexity class
+    /// in `registries/procedures.toml` over `snapshot`.
+    #[must_use]
+    pub fn registered_budget(complexity: &str, snapshot: &Snapshot) -> Option<u64> {
+        Self::registered_bounds(complexity, snapshot).map(|bounds| bounds.total())
+    }
+
+    /// Whether the recorded operation counts satisfy the procedure's
+    /// registered complexity class from `registries/procedures.toml` over
+    /// `snapshot` (never a quadratic `n²` fallback).
+    #[must_use]
+    pub fn within_registered_bound(&self, complexity: &str, snapshot: &Snapshot) -> bool {
+        let Some(bounds) = Self::registered_bounds(complexity, snapshot) else {
+            return false;
+        };
+        self.entries <= bounds.entries
+            && self.legs <= bounds.legs
+            && self.comparisons <= bounds.comparisons
     }
 }
 
@@ -971,6 +1010,20 @@ pub fn bind(id: &str) -> Result<Row, LanternError> {
         .ok_or_else(|| LanternError::Unregistered {
             procedure: id.to_string(),
         })
+}
+
+/// Deterministic work budget for `procedure` over `snapshot`, derived from the
+/// procedure's registered `complexity` bound in `registries/procedures.toml`.
+pub fn default_budget(procedure: &str, snapshot: &Snapshot) -> Result<u64, LanternError> {
+    let row = bind(procedure)?;
+    Work::registered_budget(&row.complexity, snapshot).ok_or_else(|| LanternError::Parameter {
+        procedure: row.id,
+        name: "complexity".into(),
+        message: format!(
+            "cannot derive registered work budget for complexity `{}` over current snapshot",
+            row.complexity
+        ),
+    })
 }
 
 fn digest(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
@@ -1197,17 +1250,29 @@ mod tests {
             include_str!("lib.rs"),
             include_str!("snapshot.rs"),
             include_str!("projection.rs"),
+            include_str!("projection/entity.rs"),
             include_str!("projection/transport.rs"),
             include_str!("jet.rs"),
             include_str!("duplicates.rs"),
             include_str!("numbers.rs"),
             include_str!("digits.rs"),
             include_str!("cutoff.rs"),
+            include_str!("cutoff/attribution.rs"),
+            include_str!("cutoff/reconciliation_arithmetic.rs"),
             include_str!("aging.rs"),
+            include_str!("amount.rs"),
+            include_str!("assertion_drift.rs"),
+            include_str!("bank_reconciliation.rs"),
             include_str!("witness.rs"),
             include_str!("graph.rs"),
+            include_str!("graph/cycles.rs"),
+            include_str!("graph/louvain.rs"),
+            include_str!("graph/maxflow.rs"),
             include_str!("trace.rs"),
+            include_str!("trace/tests.rs"),
             include_str!("catalog.rs"),
+            include_str!("catalog/network.rs"),
+            include_str!("catalog/network/engine.rs"),
             include_str!("conformal.rs"),
             include_str!("sample.rs"),
         ];
@@ -1236,5 +1301,231 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn empty_snapshot_and_book() -> (Snapshot, BookContext) {
+        let units = fa_money::UnitRegistry::with_defaults();
+        let calendar = fa_time::FiscalCalendar::monthly("cal", 1, 1).unwrap();
+        let book_id = Id128([0x4c; 16]);
+        let book = BookContext {
+            book_id,
+            calendar,
+            units,
+            seal_key: fa_model::SealKey([0x33; 32]),
+            symbols: fa_model::SymbolTable::compiled(),
+        };
+        let snapshot = Snapshot {
+            coordinate: Coordinate {
+                book_id,
+                known_at: CommitSeq(1),
+                effective_through: Some(DateDay::from_ymd(2026, 4, 30).unwrap()),
+            },
+            entries: Vec::new(),
+            accounts: std::collections::BTreeMap::new(),
+            roles: fa_journal::AccountRoles::default(),
+            periods: std::collections::BTreeMap::new(),
+            transitions: std::collections::BTreeMap::new(),
+            open_items_as_of: None,
+            rea: fa_journal::rea::ReaSnapshot {
+                known_at: CommitSeq(1),
+                parties: std::collections::BTreeMap::new(),
+                instruments: std::collections::BTreeMap::new(),
+                legal_entities: std::collections::BTreeMap::new(),
+                external_ids: std::collections::BTreeMap::new(),
+                relationships: Vec::new(),
+                events: std::collections::BTreeMap::new(),
+            },
+            attestations: std::collections::BTreeMap::new(),
+            documents: std::collections::BTreeMap::new(),
+            supplements: std::collections::BTreeMap::new(),
+            bank_reconciliations: Some(Vec::new()),
+            inputs_digest: [0x11; 32],
+        };
+        (snapshot, book)
+    }
+
+    struct StepLoop<'a> {
+        params: Params,
+        steps: u64,
+        taken: &'a std::cell::Cell<u64>,
+        cancel_after: Option<(u64, &'a std::cell::Cell<bool>)>,
+        discard: bool,
+    }
+
+    impl<'a> StepLoop<'a> {
+        fn new(steps: u64, taken: &'a std::cell::Cell<u64>) -> Self {
+            Self {
+                params: Params::defaults("jet.weekend").unwrap(),
+                steps,
+                taken,
+                cancel_after: None,
+                discard: false,
+            }
+        }
+    }
+
+    impl Procedure for StepLoop<'_> {
+        fn id(&self) -> &'static str {
+            "jet.weekend"
+        }
+        fn version(&self) -> u16 {
+            1
+        }
+        fn params(&self) -> &Params {
+            &self.params
+        }
+        fn run(
+            &self,
+            _snapshot: &Snapshot,
+            _book: &BookContext,
+            work: &mut Meter<'_>,
+        ) -> Result<Vec<Finding>, LanternError> {
+            for step in 0..self.steps {
+                if let Some((after, cancel)) = self.cancel_after
+                    && step == after
+                {
+                    cancel.set(true);
+                }
+                self.taken.set(self.taken.get() + 1);
+                if self.discard {
+                    let _ = work.compare(1);
+                } else {
+                    work.compare(1)?;
+                }
+            }
+            Ok(vec![Finding {
+                procedure: "jet.weekend".into(),
+                version: 1,
+                severity: Severity::Low,
+                statistic: Statistic::count("steps", self.steps, self.steps.max(1)),
+                cites: vec![Cite::Entry(VId(1))],
+                narrative: "ran every step".into(),
+            }])
+        }
+    }
+
+    struct CancelFlag<'a>(&'a std::cell::Cell<bool>);
+
+    impl Cancellation for CancelFlag<'_> {
+        fn cancelled(&self) -> bool {
+            self.0.get()
+        }
+    }
+
+    #[test]
+    fn procedures_run_under_stripped_cx() {
+        the_crate_names_no_clock_entropy_network_or_filesystem();
+        let clippy_cfg = include_str!("../clippy.toml");
+        for banned in [
+            "std::time::SystemTime",
+            "std::time::Instant",
+            "std::fs::File",
+            "std::net::TcpStream",
+        ] {
+            assert!(clippy_cfg.contains(banned), "missing clippy ban: {banned}");
+        }
+
+        let (snapshot, book) = empty_snapshot_and_book();
+        let registry = Procedures::embedded().unwrap();
+        assert!(!registry.rows.is_empty());
+        for row in &registry.rows {
+            let budget = default_budget(&row.id, &snapshot).expect("registered complexity budget");
+            let bounds =
+                Work::registered_bounds(&row.complexity, &snapshot).expect("registered bounds");
+            assert_eq!(budget, bounds.total(), "{}", row.id);
+        }
+
+        let weekend = crate::jet::Weekend::new().unwrap();
+        let budget = default_budget(crate::jet::Weekend::ID, &snapshot).unwrap();
+        let run = run_over_metered(&snapshot, &book, &weekend, Some(budget), None).unwrap();
+        assert!(run.findings.is_empty());
+        assert_eq!(run.work, Work::default());
+    }
+
+    #[test]
+    fn budget_exhaustion_refuses_mid_run() {
+        let (snapshot, book) = empty_snapshot_and_book();
+        let taken = std::cell::Cell::new(0);
+        let err = run_over_metered(
+            &snapshot,
+            &book,
+            &StepLoop::new(1_000_000, &taken),
+            Some(100),
+            None,
+        )
+        .expect_err("a run past its budget is refused mid-run");
+        assert!(
+            matches!(
+                &err,
+                LanternError::BudgetExhausted {
+                    procedure,
+                    used: 101,
+                    budget: 100,
+                    ..
+                } if procedure == "jet.weekend"
+            ),
+            "{err:?}"
+        );
+        assert_eq!(taken.get(), 101);
+        assert!(err.fix_hint().is_some_and(|f| f.contains("work budget")));
+
+        let taken = std::cell::Cell::new(0);
+        let mut discard_proc = StepLoop::new(1_000, &taken);
+        discard_proc.discard = true;
+        let err = run_over_metered(&snapshot, &book, &discard_proc, Some(10), None)
+            .expect_err("discarded refusal still refuses the run");
+        assert!(matches!(
+            err,
+            LanternError::BudgetExhausted {
+                used: 11,
+                budget: 10,
+                ..
+            }
+        ));
+
+        let taken = std::cell::Cell::new(0);
+        let run = run_over_metered(&snapshot, &book, &StepLoop::new(100, &taken), Some(100), None)
+            .expect("a run within its budget completes");
+        assert_eq!(run.findings.len(), 1);
+        assert_eq!(run.work.comparisons, 100);
+    }
+
+    #[test]
+    fn cancellation_is_observed_inside_run() {
+        let (snapshot, book) = empty_snapshot_and_book();
+
+        let cancel = std::cell::Cell::new(true);
+        let taken = std::cell::Cell::new(0);
+        let err = run_over_metered(
+            &snapshot,
+            &book,
+            &StepLoop::new(1_000_000, &taken),
+            None,
+            Some(&CancelFlag(&cancel)),
+        )
+        .expect_err("a cancelled caller stops the run before entering");
+        assert!(
+            matches!(
+                &err,
+                LanternError::Cancelled { procedure, used: 0 } if procedure == "jet.weekend"
+            ),
+            "{err:?}"
+        );
+        assert_eq!(taken.get(), 0);
+
+        let cancel = std::cell::Cell::new(false);
+        let taken = std::cell::Cell::new(0);
+        let mut procedure = StepLoop::new(1_000_000, &taken);
+        procedure.cancel_after = Some((5_000, &cancel));
+        let err = run_over_metered(&snapshot, &book, &procedure, None, Some(&CancelFlag(&cancel)))
+            .expect_err("cancellation arriving mid-run stops it within one interval");
+        let LanternError::Cancelled { used, .. } = err else {
+            panic!("{err:?}");
+        };
+        assert!(
+            used > 5_000 && used <= 5_000 + CANCELLATION_INTERVAL,
+            "observed at {used}"
+        );
+        assert_eq!(taken.get(), used);
     }
 }
