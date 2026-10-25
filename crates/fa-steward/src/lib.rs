@@ -9,9 +9,14 @@ pub use fa_docket::{
     place_legal_hold, plan_release, read_legal_hold, redacted_view_vid, release_legal_hold,
 };
 pub use fa_journal::{
-    ActivationRequest, ApprovalRequest, Approved, PolicyActivated, RevocationRequest, Revoked,
-    activate_policy, activation_proposal, record_approval, revoke_capability,
-    security_policy_epoch,
+    ActivationRequest, ActiveRetentionPolicy, ApprovalRequest, Approved, PolicyActivated,
+    RETENTION_CADENCE_EXCEEDS_FLOOR, RETENTION_FLOOR_ACTIVE, RETENTION_POLICY_DOMAIN,
+    RETENTION_POLICY_VERSION, RetentionActivationRequest, RetentionFloor, RetentionPolicy,
+    RetentionPolicyActivated, RetentionScope, RetentionVerification, RevocationRequest, Revoked,
+    activate_policy, activate_retention_policy, activation_proposal, active_retention_policies,
+    check_checkpoint_cadence, record_approval, retention_activation_proposal, retention_cell_vid,
+    retention_cut, retention_policy_vid, revoke_capability, security_policy_epoch,
+    verify_retention_policies,
 };
 use fa_model::Id128;
 pub use fa_policy::{

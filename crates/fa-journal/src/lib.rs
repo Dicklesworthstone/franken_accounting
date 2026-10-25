@@ -58,6 +58,7 @@ pub mod recurring;
 pub mod redaction;
 pub mod refusal;
 mod register_capacity;
+pub mod retention;
 pub mod revaluation;
 pub mod rows;
 pub mod rule;
@@ -202,6 +203,14 @@ pub use redaction::{
     read_document_for_with, redacted_view_vid,
 };
 pub use refusal::{FieldChange, KernelError, Locus, Refusal, RefusalDetail, Why, exit};
+pub use retention::{
+    ActiveRetentionPolicy, RETENTION_CADENCE_EXCEEDS_FLOOR, RETENTION_FLOOR_ACTIVE,
+    RETENTION_POLICY_DOMAIN, RETENTION_POLICY_VERSION, RetentionActivationRequest, RetentionFloor,
+    RetentionPolicy, RetentionPolicyActivated, RetentionScope, RetentionVerification,
+    activate_retention_policy, active_retention_policies, check_checkpoint_cadence,
+    retention_activation_proposal, retention_cell_vid, retention_cut, retention_policy_vid,
+    verify_retention_policies,
+};
 pub use revaluation::{FxRevaluationRequest, PreparedFxRevaluation, prepare_fx_revaluation};
 pub use rows::{AccountRow, PeriodRow};
 pub use scenario::{
