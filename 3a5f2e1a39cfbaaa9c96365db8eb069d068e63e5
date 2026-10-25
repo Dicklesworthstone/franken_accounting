@@ -2,8 +2,8 @@ owner-watch v1
 verdict=UNRUN
 commit=3a5f2e1a39cfbaaa9c96365db8eb069d068e63e5
 tree=4925e668969bdc44ff2255e0e79009d576225f7b
-recorded_utc=2026-10-25T19:35:13Z
-worker=unknown
+recorded_utc=2026-10-25T20:08:03Z
+worker=vmi1149989
 steps=clippy:UNRUN,test:UNRUN
 test_totals=passed:0,failed:0
 tracker_drift_no_bead=3a5f2e1a Keep local bead notes with the newer accounting closures;
