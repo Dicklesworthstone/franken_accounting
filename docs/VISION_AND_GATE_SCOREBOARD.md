@@ -1,6 +1,6 @@
 # FrankenAccounting Vision & Convergence Gate Scoreboard
 
-> Generated deterministically from [`registries/scoreboard.toml`](../registries/scoreboard.toml) and verified against the live `fa` binary by `crates/fa-cli/tests/scoreboard.rs` (beads `fa-e9z`, `fa-7s6d`).
+> Generated deterministically from [`registries/scoreboard.toml`](../registries/scoreboard.toml) and verified against the live `fa` binary and registries by `crates/fa-cli/tests/scoreboard.rs` (beads `fa-e9z`, `fa-7s6d`, `fa-ubl0`).
 
 ## 1. Vision Workflow Summary (README Quick Example + Plan §15.6)
 
@@ -42,7 +42,7 @@
 | `WF-CPA-04` | `VC-20` | `cpa-audits-fy2025` | `works` | `0` | `proof_exported` | `—` | Export signed transparency checkpoint (`fa proof signed-checkpoint`) |
 | `WF-FDIC-01` | `VC-21` | `fdic-examiner-positions` | `works` | `0` | `trial_balance` | `—` | Trial balance as of an effective date and known-at sequence (`fa tb --as-of --as-known-at`) |
 | `WF-FDIC-02` | `VC-22` | `fdic-examiner-positions` | `works` | `0` | `trial_balance` | `—` | Replay a certified trial balance byte-for-byte (`fa replay`) |
-| `WF-FDIC-03` | `VC-23` | `fdic-examiner-positions` | `absent` | `2` | `error` | `fa-pbm` | Export FDIC Part 370 deposit insurance determination files (`fa export part370`) |
+| `WF-FDIC-03` | `VC-23` | `fdic-examiner-positions` | `absent` | `2` | `error` | `fa-p370` | Export FDIC Part 370 deposit insurance determination files (`fa export part370`) |
 | `WF-TRT-01` | `VC-24` | `trustee-receiver-takeover` | `works` | `0` | `legal_hold_placed` | `—` | Place a legal hold on a document (`fa document hold place`) |
 | `WF-TRT-02` | `VC-25` | `trustee-receiver-takeover` | `works` | `0` | `receivership_forked` | `—` | Fork a receivership branch on the appointing order: a book-scope legal hold over the pre-appointment trunk and the `receivership` scenario at the appointment (`fa book fork receivership`) |
 | `WF-LCD-01` | `VC-26` | `litigation-consultant-damages` | `works` | `0` | `scenario_forked` | `—` | Fork a counterfactual scenario (`fa scenario fork`; materialized as a scratch replay until substrate branches ship) |
@@ -56,36 +56,83 @@
 
 ## 2. Convergence Gate Scoreboard (Plan §19: G0, Genesis, G1–G4)
 
-- **Total gate criteria:** 18 (`works`: **15**, `refused` [lawful refusal]: **2**, `absent`: **1**; verified active: **17/18** [94%])
+> **Gate rule:** Gate met only when every row is `works`.
 
-| Gate | Works | Lawful Refusal | Absent | Total | Verified Active % |
-|---|---:|---:|---:|---:|---:|
-| `G0` | 4 | 0 | 0 | 4 | 100% |
-| `Genesis` | 4 | 2 | 0 | 6 | 100% |
-| `G1` | 3 | 0 | 0 | 3 | 100% |
-| `G2` | 2 | 0 | 0 | 2 | 100% |
-| `G3` | 2 | 0 | 0 | 2 | 100% |
-| `G4` | 0 | 0 | 1 | 1 | 0% |
+- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **30**, `refused`: **2**, `absent`: **23**)
+
+| Gate | Works | Lawful Refusal | Absent | Total | Gate Status |
+|---|---:|---:|---:|---:|---|
+| `G0` | 13 | 0 | 0 | 13 | **MET** |
+| `Genesis` | 8 | 2 | 1 | 11 | **UNMET** |
+| `G1` | 3 | 0 | 4 | 7 | **UNMET** |
+| `G2` | 4 | 0 | 6 | 10 | **UNMET** |
+| `G3` | 2 | 0 | 6 | 8 | **UNMET** |
+| `G4` | 0 | 0 | 6 | 6 | **UNMET** |
 
 ### Gate Criteria Detail
 
-| ID | Gate | Probe | Status | Exit | Event / Refusal | Bead | Criterion |
-|---|---|---|---|---:|---|---|---|
-| `G0-01` | `G0` | `registry` | `works` | `0` | `registry_ok` | `—` | FA-INV spine with 16 invariants, checker strengths, disjoint negative checkers, and waiver=forbidden |
-| `G0-02` | `G0` | `registry` | `works` | `0` | `registry_ok` | `—` | Threat and trust model (`registries/threat_model.toml`) with 8 threats, 5 boundaries, and 10 tamper vectors |
-| `G0-03` | `G0` | `registry` | `works` | `0` | `registry_ok` | `—` | Admissibility matrix (`registries/admissibility.toml`) four-way equality with Appendix C, oracle, and kernel |
-| `G0-04` | `G0` | `cli` | `works` | `0` | `robot_schema` | `—` | Robot-mode envelope and pinned schema (`fa robot-docs schema --json`) |
-| `GEN-01` | `Genesis` | `cli` | `works` | `0` | `entry` | `—` | Post balanced entry through admit/resolve/laws/plan/commit and explain committed entry (`fa entry show`) |
-| `GEN-02` | `Genesis` | `cli` | `works` | `0` | `trial_balance` | `—` | Certified trial balance (`fa tb --period FY2026-P03 --json`) |
-| `GEN-03` | `Genesis` | `cli` | `works` | `0` | `registers_verified` | `—` | Registers verified by journal refold (`fa verify registers`) |
-| `GEN-04` | `Genesis` | `cli` | `refused` | `3` | `error` (`FA-REF-001`) | `fa-lm7` | Unbalanced proposal refused with exit 3 and per-unit imbalance (`FA-REF-001`) |
-| `GEN-05` | `Genesis` | `cli` | `refused` | `7` | `error` (`FA-REF-010`) | `fa-lm7` | Posting into a Closed period refused with exit 7 and admissibility cell (`FA-REF-010`) |
-| `GEN-06` | `Genesis` | `cli` | `works` | `0` | `trial_balance` | `—` | Replay reproduces certified trial balance bytes (`fa replay`) |
-| `G1-01` | `G1` | `registry` | `works` | `0` | `registry_ok` | `—` | All 13 Genesis invariant clauses live with positive and disjoint negative checkers |
-| `G1-02` | `G1` | `cli` | `works` | `0` | `doctor` | `—` | Polish Bar diagnostics and orientation (`fa doctor --json`) |
-| `G1-03` | `G1` | `cli` | `works` | `0` | `accumulator_verified` | `—` | Projection and accumulator verification (`fa verify projections` & `fa verify accumulator`) |
-| `G2-01` | `G2` | `cli` | `works` | `0` | `period_explained` | `—` | Period explanation with admissibility row and lineage (`fa explain period`) |
-| `G2-02` | `G2` | `cli` | `works` | `0` | `trial_balance` | `—` | Selector `AS ORIGINALLY REPORTED` on CLI trial balance (`fa tb --as-originally-reported`) |
-| `G3-01` | `G3` | `cli` | `works` | `0` | `statement` | `—` | Certified balance sheet and income statement (`fa statement balance-sheet --certify`) |
-| `G3-02` | `G3` | `cli` | `works` | `0` | `demo_initialized` | `—` | Interactive sandbox generator (`fa demo init --scenario retail`) |
-| `G4-01` | `G4` | `registry` | `absent` | `2` | `error` | `fa-kby` | Every FA-INV clause in `registries/invariants.toml` is live (zero dormant clauses remaining for 1.0) |
+| ID | Gate | Evidence Class | Probe | Artifact | Status | Exit | Event / Refusal | Bead | Criterion |
+|---|---|---|---|---|---|---:|---|---|---|
+| `G0-01` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | every registry in §18.2 materialized with its schema and first rows |
+| `G0-02` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the FA-INV spine of Appendix F with clause activation predicates, checker entrypoints, and `waiver = "forbidden"` |
+| `G0-03` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the threat model |
+| `G0-04` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the admissibility matrix with its exhaustive generated test |
+| `G0-05` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the unit, law, class, intent, procedure, caveat, verb, exit-code, and refusal catalogs frozen at major 1 |
+| `G0-06` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the canonical object schemas of Appendix A with `BodyDigest` recipes and golden vectors |
+| `G0-07` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the bundle and certificate schemas marked `externally_verifiable` |
+| `G0-08` | `G0` | `cli` | `cli` | `—` | `works` | `0` | `robot_schema` | `—` | the robot-mode envelope and schema fixtures |
+| `G0-09` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the operation-cost registry (Appendix G) with the derivability law |
+| `G0-10` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | `foundation_dependencies.toml` with every row's status checked against the substrate on the G0 date |
+| `G0-11` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | `tools/registry-check` green |
+| `G0-12` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | `scripts/check.sh` with the verdict contract |
+| `G0-13` | `G0` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | README/AGENTS synchronization checks |
+| `GEN-01` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `book_triage` | `—` | create a book |
+| `GEN-02` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `period_explained` | `—` | install the chart and calendar as journaled schema effects |
+| `GEN-03` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `entry` | `—` | post a balanced two-leg entry via `PostEntry` through admit/resolve/laws/plan/commit |
+| `GEN-04` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `projections_verified` | `—` | the derived legs exist and equal the payload |
+| `GEN-05` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `balance_explained` | `—` | the register maintainer advances and `balance = fold` |
+| `GEN-06` | `Genesis` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-0fl` | crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover |
+| `GEN-07` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | `fa tb --json` returns the certified trial balance |
+| `GEN-08` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `registers_verified` | `—` | `fa verify registers` is green |
+| `GEN-09` | `Genesis` | `cli` | `cli` | `—` | `refused` | `3` | `error` (`FA-REF-001`) | `fa-lm7` | an unbalanced proposal is refused with exit `3` and the per-unit imbalance |
+| `GEN-10` | `Genesis` | `cli` | `cli` | `—` | `refused` | `7` | `error` (`FA-REF-010`) | `fa-lm7` | a post into a `Closed` period is refused with exit `7` and the matrix cell |
+| `GEN-11` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | `fa replay` reproduces the trial balance bytes |
+| `G1-01` | `G1` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-0fl` | Genesis slice green under lab and live |
+| `G1-02` | `G1` | `registry` | `registry` | `—` | `works` | `0` | `registry_ok` | `—` | the Genesis clause set (FA-INV-01, 02, 03.core, 04, 05.minimum, 06, 07.core, 09, 10.core, 11.core, 14.leaf-and-consistency, 15.core, 16) live with checkers and the remaining clauses registered dormant with their activating workstream named |
+| `G1-03` | `G1` | `differential` | `differential` | `—` | `works` | `0` | `differential_ok` | `—` | registers verified by fold on every fixture |
+| `G1-04` | `G1` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-nl7` | idempotency and batches under crash |
+| `G1-05` | `G1` | `differential` | `differential` | `—` | `absent` | `2` | `error` | `fa-2ihd` | the reference differential over model-generated histories |
+| `G1-06` | `G1` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-nmk4` | the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar |
+| `G1-07` | `G1` | `cli` | `cli` | `—` | `works` | `0` | `bundle_produced` | `—` | `fa-verify` verifies a produced bundle of the Genesis book |
+| `G2-01` | `G2` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-01` | `works` | `0` | `lab_campaign_ok` | `—` | period state machine, admissibility matrix, and witness-resolved post-vs-close races proven in both orders |
+| `G2-02` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | selectors including `AS ORIGINALLY REPORTED` and `AS REPORTED IN` |
+| `G2-03` | `G2` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-75j4` | supersession netting and restatement cases with diff certificates |
+| `G2-04` | `G2` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-0fl` | two-phase entries with expiry sweeps under lab |
+| `G2-05` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `evidence_explained` | `—` | documents, custody, attestations, balance assertions |
+| `G2-06` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `accumulator_verified` | `—` | accumulator continuity and witnessed checkpoints |
+| `G2-07` | `G2` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-0x0` | FA-INV-03/07/08/10/14 live |
+| `G2-08` | `G2` | `external-oracle` | `external-oracle` | `—` | `absent` | `2` | `error` | `fa-3ock` | the Beancount/hledger differential green on all fixtures |
+| `G2-09` | `G2` | `differential` | `differential` | `—` | `absent` | `2` | `error` | `fa-c34` | Canon rules with golden corpora and backtests |
+| `G2-10` | `G2` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-we7` | dry-run plans with `confirm_plan` |
+| `G3-01` | `G3` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-z5u` | the full verb registry across CLI/daemon/MCP with the parity gate green |
+| `G3-02` | `G3` | `agent-campaign` | `agent-campaign` | `—` | `absent` | `2` | `error` | `fa-y6eu` | fresh-context simulated agents complete every §15.6 workflow with zero `useless_error` outcomes in the intent corpus |
+| `G3-03` | `G3` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-651f` | SoD and caveats enforced at commit (FA-INV-10 full) |
+| `G3-04` | `G3` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-bwri` | statements and consolidation certified |
+| `G3-05` | `G3` | `measurement` | `measurement` | `FA-ART-CAL-01` | `works` | `0` | `measurement_ok` | `—` | Lantern's procedures with evidence rows and measured precision/recall |
+| `G3-06` | `G3` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-2q91` | ADS/SAF-T exports with proofs |
+| `G3-07` | `G3` | `cli` | `cli` | `—` | `works` | `0` | `demo_initialized` | `—` | `fa demo init` scenarios |
+| `G3-08` | `G3` | `agent-campaign` | `agent-campaign` | `—` | `absent` | `2` | `error` | `fa-nmk4` | the gauntlet's surface-parity and ergonomics scorecards published |
+| `G4-01` | `G4` | `measurement` | `measurement` | `—` | `absent` | `2` | `error` | `fa-ykbp` | all activated §17 manifests green and public |
+| `G4-02` | `G4` | `external-oracle` | `external-oracle` | `—` | `absent` | `2` | `error` | `fa-3ock` | conformance matrices (ADS, SAF-T, XBRL, Beancount/hledger, TigerBeetle corpus) published with documented divergences |
+| `G4-03` | `G4` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-09q8` | every FA-INV clause live or its capability absent from the manifest |
+| `G4-04` | `G4` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-rdid` | the papers match the proven scope |
+| `G4-05` | `G4` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-q5kx` | `fa-verify` released as a static binary with golden proofs |
+| `G4-06` | `G4` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-nfq2` | 1.0 |
+
+## 3. Governance & Verdict Integrity Rows (`fa-8jcr`, `fa-j1fc`, `fa-1qk0`)
+
+| ID | Metric | Evidence Class | Probe | Status | Exit | Bead | Description |
+|---|---|---|---|---|---:|---|---|
+| `GOV-01` | `closure_debt` | `registry` | `registry` | `absent` | `2` | `fa-8jcr` | Zero unbacked closed beads without a machine-verified acceptance-tests block and verdict note (pre-fa-8jcr closures remain in debt until backfilled) |
+| `GOV-02` | `verdict_freshness` | `registry` | `registry` | `works` | `0` | `—` | Published PASS verdict note in refs/notes/fa-verdict is present and within the 7-day freshness window |
+| `GOV-03` | `tier0_coverage` | `registry` | `registry` | `works` | `0` | `—` | Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pre-push) and scripts/tier0.sh are installed and active |

@@ -1,17 +1,20 @@
 # =============================================================================
-# registries/scoreboard.toml — Vision Workflows (§15.6 + README Quick Example)
-# and Convergence Gate Criteria (§19 G0, Genesis, G1–G4) (beads fa-e9z, fa-7s6d)
+# registries/scoreboard.toml — Vision Workflows (§15.6 + README Quick Example),
+# Convergence Gate Criteria (§19 G0, Genesis, G1–G4 verbatim transcription),
+# and Governance Integrity Rows (beads fa-e9z, fa-7s6d, fa-ubl0)
 #
 # Consumed by:
-#   - crates/fa-registry/src/scoreboard.rs (schema & foreign-key validation)
+#   - crates/fa-registry/src/scoreboard.rs (schema, §19 transcription hash &
+#     verbatim clause check, evidence_class vs probe_kind law, artifact checks)
 #   - tools/registry-check/src/main.rs
 #   - crates/fa-cli/tests/scoreboard.rs (executable E2E measurement against
-#     the real `fa` binary; fails if any step's actual status/exit/event drifts
-#     from its declared expectation in EITHER direction)
+#     the real `fa` binary and registries; fails if any step's actual status
+#     drifts from its declared expectation in EITHER direction)
 #   - tools/xtask (`cargo run -p xtask -- scoreboard`)
 # =============================================================================
 
-schema_version = 1
+schema_version = 2
+section_19_digest = "1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a"
 
 # -----------------------------------------------------------------------------
 # Part 1 — Vision Workflows (README Quick Example + plan §15.6 five readers)
@@ -319,7 +322,7 @@ argv = ["export", "part370", "--as-of", "2026-03-31", "--book", "{book}", "--jso
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-pbm"
+bead = "fa-p370"
 
 # ---- Workflow 5: trustee-receiver-takeover (§15.6.4) ------------------------
 
@@ -439,14 +442,19 @@ expected_event = "procedure_run"
 
 # -----------------------------------------------------------------------------
 # Part 2 — Convergence Gate Criteria (plan §19: G0, Genesis, G1, G2, G3, G4)
+# Every clause of plan §19 is transcribed verbatim. Gate met only when every
+# row is `works`.
 # -----------------------------------------------------------------------------
+
+# ---- Gate G0 (13 clauses) ---------------------------------------------------
 
 [[gate_criterion]]
 id = "G0-01"
 gate = "G0"
-criterion = "FA-INV spine with 16 invariants, checker strengths, disjoint negative checkers, and waiver=forbidden"
+criterion = "every registry in §18.2 materialized with its schema and first rows"
+evidence_class = "registry"
 probe_kind = "registry"
-argv = ["invariants_spine"]
+argv = ["g0_registries_materialized"]
 expected = "works"
 expected_exit = 0
 expected_event = "registry_ok"
@@ -454,9 +462,10 @@ expected_event = "registry_ok"
 [[gate_criterion]]
 id = "G0-02"
 gate = "G0"
-criterion = "Threat and trust model (`registries/threat_model.toml`) with 8 threats, 5 boundaries, and 10 tamper vectors"
+criterion = "the FA-INV spine of Appendix F with clause activation predicates, checker entrypoints, and `waiver = \"forbidden\"`"
+evidence_class = "registry"
 probe_kind = "registry"
-argv = ["threat_model"]
+argv = ["invariants_spine"]
 expected = "works"
 expected_exit = 0
 expected_event = "registry_ok"
@@ -464,9 +473,10 @@ expected_event = "registry_ok"
 [[gate_criterion]]
 id = "G0-03"
 gate = "G0"
-criterion = "Admissibility matrix (`registries/admissibility.toml`) four-way equality with Appendix C, oracle, and kernel"
+criterion = "the threat model"
+evidence_class = "registry"
 probe_kind = "registry"
-argv = ["admissibility_four_way"]
+argv = ["threat_model"]
 expected = "works"
 expected_exit = 0
 expected_event = "registry_ok"
@@ -474,7 +484,52 @@ expected_event = "registry_ok"
 [[gate_criterion]]
 id = "G0-04"
 gate = "G0"
-criterion = "Robot-mode envelope and pinned schema (`fa robot-docs schema --json`)"
+criterion = "the admissibility matrix with its exhaustive generated test"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["admissibility_four_way"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-05"
+gate = "G0"
+criterion = "the unit, law, class, intent, procedure, caveat, verb, exit-code, and refusal catalogs frozen at major 1"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["catalogs_frozen_major_1"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-06"
+gate = "G0"
+criterion = "the canonical object schemas of Appendix A with `BodyDigest` recipes and golden vectors"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["object_schemas_golden_vectors"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-07"
+gate = "G0"
+criterion = "the bundle and certificate schemas marked `externally_verifiable`"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["bundle_and_certificate_externally_verifiable"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-08"
+gate = "G0"
+criterion = "the robot-mode envelope and schema fixtures"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["robot-docs", "schema", "--json"]
 expected = "works"
@@ -482,9 +537,89 @@ expected_exit = 0
 expected_event = "robot_schema"
 
 [[gate_criterion]]
+id = "G0-09"
+gate = "G0"
+criterion = "the operation-cost registry (Appendix G) with the derivability law"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["operation_costs_derivability"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-10"
+gate = "G0"
+criterion = "`foundation_dependencies.toml` with every row's status checked against the substrate on the G0 date"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["foundation_dependencies_checked"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-11"
+gate = "G0"
+criterion = "`tools/registry-check` green"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["registry_check_green"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-12"
+gate = "G0"
+criterion = "`scripts/check.sh` with the verdict contract"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["check_sh_verdict_contract"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[gate_criterion]]
+id = "G0-13"
+gate = "G0"
+criterion = "README/AGENTS synchronization checks"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["readme_agents_sync_check"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+# ---- Gate Genesis (11 clauses) ----------------------------------------------
+
+[[gate_criterion]]
 id = "GEN-01"
 gate = "Genesis"
-criterion = "Post balanced entry through admit/resolve/laws/plan/commit and explain committed entry (`fa entry show`)"
+criterion = "create a book"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["triage", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "book_triage"
+
+[[gate_criterion]]
+id = "GEN-02"
+gate = "Genesis"
+criterion = "install the chart and calendar as journaled schema effects"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["explain", "period", "FY2026-P03", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "period_explained"
+
+[[gate_criterion]]
+id = "GEN-03"
+gate = "Genesis"
+criterion = "post a balanced two-leg entry via `PostEntry` through admit/resolve/laws/plan/commit"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["entry", "show", "{entry_vid}", "--book", "{book}", "--json"]
 expected = "works"
@@ -492,9 +627,44 @@ expected_exit = 0
 expected_event = "entry"
 
 [[gate_criterion]]
-id = "GEN-02"
+id = "GEN-04"
 gate = "Genesis"
-criterion = "Certified trial balance (`fa tb --period FY2026-P03 --json`)"
+criterion = "the derived legs exist and equal the payload"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["verify", "projections", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "projections_verified"
+
+[[gate_criterion]]
+id = "GEN-05"
+gate = "Genesis"
+criterion = "the register maintainer advances and `balance = fold`"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["explain", "balance", "1200", "--period", "FY2026-P03", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "balance_explained"
+
+[[gate_criterion]]
+id = "GEN-06"
+gate = "Genesis"
+criterion = "crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover"
+evidence_class = "lab-campaign"
+probe_kind = "lab-campaign"
+argv = ["genesis_all_barriers_crash_recover"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-0fl"
+
+[[gate_criterion]]
+id = "GEN-07"
+gate = "Genesis"
+criterion = "`fa tb --json` returns the certified trial balance"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["tb", "--period", "FY2026-P03", "--book", "{book}", "--json"]
 expected = "works"
@@ -502,9 +672,10 @@ expected_exit = 0
 expected_event = "trial_balance"
 
 [[gate_criterion]]
-id = "GEN-03"
+id = "GEN-08"
 gate = "Genesis"
-criterion = "Registers verified by journal refold (`fa verify registers`)"
+criterion = "`fa verify registers` is green"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["verify", "registers", "--period", "FY2026-P03", "--book", "{book}", "--json"]
 expected = "works"
@@ -512,9 +683,10 @@ expected_exit = 0
 expected_event = "registers_verified"
 
 [[gate_criterion]]
-id = "GEN-04"
+id = "GEN-09"
 gate = "Genesis"
-criterion = "Unbalanced proposal refused with exit 3 and per-unit imbalance (`FA-REF-001`)"
+criterion = "an unbalanced proposal is refused with exit `3` and the per-unit imbalance"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["post", "--intent", "{unbalanced_intent}", "--evidence", "{doc_oid}", "--book", "{book}", "--json"]
 expected = "refused"
@@ -524,9 +696,10 @@ refusal_id = "FA-REF-001"
 bead = "fa-lm7"
 
 [[gate_criterion]]
-id = "GEN-05"
+id = "GEN-10"
 gate = "Genesis"
-criterion = "Posting into a Closed period refused with exit 7 and admissibility cell (`FA-REF-010`)"
+criterion = "a post into a `Closed` period is refused with exit `7` and the matrix cell"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["post", "--intent", "{closed_period_intent}", "--evidence", "{doc_oid}", "--book", "{book}", "--json"]
 expected = "refused"
@@ -536,19 +709,35 @@ refusal_id = "FA-REF-010"
 bead = "fa-lm7"
 
 [[gate_criterion]]
-id = "GEN-06"
+id = "GEN-11"
 gate = "Genesis"
-criterion = "Replay reproduces certified trial balance bytes (`fa replay`)"
+criterion = "`fa replay` reproduces the trial balance bytes"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["replay", "{cert_file}", "--book", "{book}", "--json"]
 expected = "works"
 expected_exit = 0
 expected_event = "trial_balance"
 
+# ---- Gate G1 (7 clauses) ----------------------------------------------------
+
 [[gate_criterion]]
 id = "G1-01"
 gate = "G1"
-criterion = "All 13 Genesis invariant clauses live with positive and disjoint negative checkers"
+criterion = "Genesis slice green under lab and live"
+evidence_class = "lab-campaign"
+probe_kind = "lab-campaign"
+argv = ["g1_genesis_lab_and_live"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-0fl"
+
+[[gate_criterion]]
+id = "G1-02"
+gate = "G1"
+criterion = "the Genesis clause set (FA-INV-01, 02, 03.core, 04, 05.minimum, 06, 07.core, 09, 10.core, 11.core, 14.leaf-and-consistency, 15.core, 16) live with checkers and the remaining clauses registered dormant with their activating workstream named"
+evidence_class = "registry"
 probe_kind = "registry"
 argv = ["g1_genesis_clauses_live"]
 expected = "works"
@@ -556,39 +745,82 @@ expected_exit = 0
 expected_event = "registry_ok"
 
 [[gate_criterion]]
-id = "G1-02"
-gate = "G1"
-criterion = "Polish Bar diagnostics and orientation (`fa doctor --json`)"
-probe_kind = "cli"
-argv = ["doctor", "--book", "{book}", "--json"]
-expected = "works"
-expected_exit = 0
-expected_event = "doctor"
-
-[[gate_criterion]]
 id = "G1-03"
 gate = "G1"
-criterion = "Projection and accumulator verification (`fa verify projections` & `fa verify accumulator`)"
-probe_kind = "cli"
-argv = ["verify", "accumulator", "--book", "{book}", "--json"]
+criterion = "registers verified by fold on every fixture"
+evidence_class = "differential"
+probe_kind = "differential"
+argv = ["g1_registers_verified_every_fixture"]
 expected = "works"
 expected_exit = 0
-expected_event = "accumulator_verified"
+expected_event = "differential_ok"
+
+[[gate_criterion]]
+id = "G1-04"
+gate = "G1"
+criterion = "idempotency and batches under crash"
+evidence_class = "lab-campaign"
+probe_kind = "lab-campaign"
+argv = ["g1_idempotency_and_batches_under_crash"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-nl7"
+
+[[gate_criterion]]
+id = "G1-05"
+gate = "G1"
+criterion = "the reference differential over model-generated histories"
+evidence_class = "differential"
+probe_kind = "differential"
+argv = ["g1_reference_differential_model_histories"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-2ihd"
+
+[[gate_criterion]]
+id = "G1-06"
+gate = "G1"
+criterion = "the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["g1_polish_bar_suite"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-nmk4"
+
+[[gate_criterion]]
+id = "G1-07"
+gate = "G1"
+criterion = "`fa-verify` verifies a produced bundle of the Genesis book"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["bundle", "produce", "--account", "1200", "--from", "2026-03-01", "--to", "2026-03-31", "--grant", "produce", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "bundle_produced"
+
+# ---- Gate G2 (10 clauses) ---------------------------------------------------
 
 [[gate_criterion]]
 id = "G2-01"
 gate = "G2"
-criterion = "Period explanation with admissibility row and lineage (`fa explain period`)"
-probe_kind = "cli"
-argv = ["explain", "period", "FY2026-P03", "--book", "{book}", "--json"]
+criterion = "period state machine, admissibility matrix, and witness-resolved post-vs-close races proven in both orders"
+evidence_class = "lab-campaign"
+probe_kind = "lab-campaign"
+artifact = "FA-ART-LAB-01"
+argv = ["g2_post_vs_close_races_both_orders"]
 expected = "works"
 expected_exit = 0
-expected_event = "period_explained"
+expected_event = "lab_campaign_ok"
 
 [[gate_criterion]]
 id = "G2-02"
 gate = "G2"
-criterion = "Selector `AS ORIGINALLY REPORTED` on CLI trial balance (`fa tb --as-originally-reported`)"
+criterion = "selectors including `AS ORIGINALLY REPORTED` and `AS REPORTED IN`"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["tb", "--period", "FY2025-P12", "--as-originally-reported", "--book", "{book}", "--json"]
 expected = "works"
@@ -596,19 +828,178 @@ expected_exit = 0
 expected_event = "trial_balance"
 
 [[gate_criterion]]
-id = "G3-01"
-gate = "G3"
-criterion = "Certified balance sheet and income statement (`fa statement balance-sheet --certify`)"
+id = "G2-03"
+gate = "G2"
+criterion = "supersession netting and restatement cases with diff certificates"
+evidence_class = "cli"
 probe_kind = "cli"
-argv = ["statement", "balance-sheet", "--for", "FY2026-P03", "--certify", "--book", "{book}", "--json"]
+argv = ["g2_restatement_cases_with_diff_certificates"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-75j4"
+
+[[gate_criterion]]
+id = "G2-04"
+gate = "G2"
+criterion = "two-phase entries with expiry sweeps under lab"
+evidence_class = "lab-campaign"
+probe_kind = "lab-campaign"
+argv = ["g2_two_phase_expiry_sweeps_lab"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-0fl"
+
+[[gate_criterion]]
+id = "G2-05"
+gate = "G2"
+criterion = "documents, custody, attestations, balance assertions"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["explain", "evidence", "{entry_vid}", "--book", "{book}", "--json"]
 expected = "works"
 expected_exit = 0
-expected_event = "statement"
+expected_event = "evidence_explained"
+
+[[gate_criterion]]
+id = "G2-06"
+gate = "G2"
+criterion = "accumulator continuity and witnessed checkpoints"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["verify", "accumulator", "--book", "{book}", "--json"]
+expected = "works"
+expected_exit = 0
+expected_event = "accumulator_verified"
+
+[[gate_criterion]]
+id = "G2-07"
+gate = "G2"
+criterion = "FA-INV-03/07/08/10/14 live"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["g2_invariants_03_07_08_10_14_live"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-0x0"
+
+[[gate_criterion]]
+id = "G2-08"
+gate = "G2"
+criterion = "the Beancount/hledger differential green on all fixtures"
+evidence_class = "external-oracle"
+probe_kind = "external-oracle"
+argv = ["g2_beancount_hledger_external_oracle"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-3ock"
+
+[[gate_criterion]]
+id = "G2-09"
+gate = "G2"
+criterion = "Canon rules with golden corpora and backtests"
+evidence_class = "differential"
+probe_kind = "differential"
+argv = ["g2_canon_rules_golden_and_backtests"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-c34"
+
+[[gate_criterion]]
+id = "G2-10"
+gate = "G2"
+criterion = "dry-run plans with `confirm_plan`"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["g2_dry_run_confirm_plan"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-we7"
+
+# ---- Gate G3 (8 clauses) ----------------------------------------------------
+
+[[gate_criterion]]
+id = "G3-01"
+gate = "G3"
+criterion = "the full verb registry across CLI/daemon/MCP with the parity gate green"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["g3_full_verb_surface_parity"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-z5u"
 
 [[gate_criterion]]
 id = "G3-02"
 gate = "G3"
-criterion = "Interactive sandbox generator (`fa demo init --scenario retail`)"
+criterion = "fresh-context simulated agents complete every §15.6 workflow with zero `useless_error` outcomes in the intent corpus"
+evidence_class = "agent-campaign"
+probe_kind = "agent-campaign"
+argv = ["g3_fresh_agent_workflows"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-y6eu"
+
+[[gate_criterion]]
+id = "G3-03"
+gate = "G3"
+criterion = "SoD and caveats enforced at commit (FA-INV-10 full)"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["g3_fa_inv_10_full_live"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-651f"
+
+[[gate_criterion]]
+id = "G3-04"
+gate = "G3"
+criterion = "statements and consolidation certified"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["g3_statements_and_consolidation_certified"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-bwri"
+
+[[gate_criterion]]
+id = "G3-05"
+gate = "G3"
+criterion = "Lantern's procedures with evidence rows and measured precision/recall"
+evidence_class = "measurement"
+probe_kind = "measurement"
+artifact = "FA-ART-CAL-01"
+argv = ["g3_lantern_precision_recall"]
+expected = "works"
+expected_exit = 0
+expected_event = "measurement_ok"
+
+[[gate_criterion]]
+id = "G3-06"
+gate = "G3"
+criterion = "ADS/SAF-T exports with proofs"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["g3_ads_saft_exports_with_proofs"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-2q91"
+
+[[gate_criterion]]
+id = "G3-07"
+gate = "G3"
+criterion = "`fa demo init` scenarios"
+evidence_class = "cli"
 probe_kind = "cli"
 argv = ["demo", "init", "--scenario", "retail", "--seed", "7", "--book", "{demo_book}", "--json"]
 expected = "works"
@@ -616,12 +1007,125 @@ expected_exit = 0
 expected_event = "demo_initialized"
 
 [[gate_criterion]]
+id = "G3-08"
+gate = "G3"
+criterion = "the gauntlet's surface-parity and ergonomics scorecards published"
+evidence_class = "agent-campaign"
+probe_kind = "agent-campaign"
+argv = ["g3_gauntlet_ergonomics_scorecards"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-nmk4"
+
+# ---- Gate G4 (6 clauses) ----------------------------------------------------
+
+[[gate_criterion]]
 id = "G4-01"
 gate = "G4"
-criterion = "Every FA-INV clause in `registries/invariants.toml` is live (zero dormant clauses remaining for 1.0)"
+criterion = "all activated §17 manifests green and public"
+evidence_class = "measurement"
+probe_kind = "measurement"
+argv = ["g4_all_slo_manifests_activated_and_green"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-ykbp"
+
+[[gate_criterion]]
+id = "G4-02"
+gate = "G4"
+criterion = "conformance matrices (ADS, SAF-T, XBRL, Beancount/hledger, TigerBeetle corpus) published with documented divergences"
+evidence_class = "external-oracle"
+probe_kind = "external-oracle"
+argv = ["g4_conformance_matrices_published"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-3ock"
+
+[[gate_criterion]]
+id = "G4-03"
+gate = "G4"
+criterion = "every FA-INV clause live or its capability absent from the manifest"
+evidence_class = "registry"
 probe_kind = "registry"
 argv = ["g4_all_clauses_live"]
 expected = "absent"
 expected_exit = 2
 expected_event = "error"
-bead = "fa-kby"
+bead = "fa-09q8"
+
+[[gate_criterion]]
+id = "G4-04"
+gate = "G4"
+criterion = "the papers match the proven scope"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["g4_papers_match_proven_scope"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-rdid"
+
+[[gate_criterion]]
+id = "G4-05"
+gate = "G4"
+criterion = "`fa-verify` released as a static binary with golden proofs"
+evidence_class = "cli"
+probe_kind = "cli"
+argv = ["g4_fa_verify_static_release"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-q5kx"
+
+[[gate_criterion]]
+id = "G4-06"
+gate = "G4"
+criterion = "1.0"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["g4_release_1_0"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-nfq2"
+
+# -----------------------------------------------------------------------------
+# Part 3 — Governance & Verdict Integrity Rows (fa-8jcr, fa-j1fc, fa-1qk0)
+# -----------------------------------------------------------------------------
+
+[[governance_row]]
+id = "GOV-01"
+metric = "closure_debt"
+description = "Zero unbacked closed beads without a machine-verified acceptance-tests block and verdict note (pre-fa-8jcr closures remain in debt until backfilled)"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["closure_debt_zero"]
+expected = "absent"
+expected_exit = 2
+expected_event = "error"
+bead = "fa-8jcr"
+
+[[governance_row]]
+id = "GOV-02"
+metric = "verdict_freshness"
+description = "Published PASS verdict note in refs/notes/fa-verdict is present and within the 7-day freshness window"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["verdict_freshness"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
+
+[[governance_row]]
+id = "GOV-03"
+metric = "tier0_coverage"
+description = "Unskippable Tier-0 gate hooks (.githooks/pre-commit, .githooks/pre-push) and scripts/tier0.sh are installed and active"
+evidence_class = "registry"
+probe_kind = "registry"
+argv = ["tier0_coverage"]
+expected = "works"
+expected_exit = 0
+expected_event = "registry_ok"
