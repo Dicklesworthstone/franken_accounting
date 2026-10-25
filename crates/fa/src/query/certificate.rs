@@ -128,8 +128,9 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
         Selection::Native(native) => Ok((native, profiled.period)),
         Selection::TrialBalance
         | Selection::ExplainBalance { .. }
+        | Selection::Statement { .. }
         | Selection::OpenItems { .. } => Err(invalid(
-            "a CALL is certified as the report it runs (fa tb, fa explain balance or fa open-items --certify), not as a query",
+            "a CALL is certified as the report it runs (fa tb, fa explain balance, fa statement or fa open-items --certify), not as a query",
         )),
         Selection::AccessLog { .. } => Err(invalid(
             "CALL fa.access_log reads the access events at the head; it has no certificate",
@@ -413,7 +414,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 exit::REFUSAL,
                 "a CALL is certified as the report it runs",
                 super::CITE,
-                "fa query \"CALL fa.trial_balance FOR PERIOD '<code>'\" --certify, which is fa tb --certify (likewise fa explain balance and fa open-items)",
+                "fa query \"CALL fa.trial_balance FOR PERIOD '<code>'\" --certify, which is fa tb --certify (likewise fa explain balance, fa statement and fa open-items)",
             )));
         };
         let requested = match profiled.known_at {

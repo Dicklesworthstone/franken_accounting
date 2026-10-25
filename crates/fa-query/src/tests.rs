@@ -7,6 +7,7 @@ fn native(text: &str) -> (Profiled, Native) {
         Selection::TrialBalance
         | Selection::ExplainBalance { .. }
         | Selection::OpenItems { .. }
+        | Selection::Statement { .. }
         | Selection::AccessLog { .. } => None,
     }
     .expect("a native read");
@@ -369,6 +370,19 @@ fn branches_procedures_and_certificates() {
             .known_at,
         KnownAt::Reported(Reported::Originally)
     );
+    // CALL fa.statement is `fa statement <definition> --for`, with the
+    // statement's known-at or view.
+    let stated =
+        rewrite("CALL fa.statement('income-statement') FOR PERIOD 'FY2026-P03' AS KNOWN AT 9")
+            .unwrap();
+    assert_eq!(
+        stated.selection,
+        Selection::Statement {
+            definition: "income-statement".into()
+        }
+    );
+    assert_eq!(stated.period.as_deref(), Some("FY2026-P03"));
+    assert_eq!(stated.known_at, KnownAt::Seq(9));
     for (text, account) in [
         ("CALL fa.open_items", None),
         ("CALL fa.open_items() AS KNOWN AT 4", None),
@@ -398,6 +412,19 @@ fn branches_procedures_and_certificates() {
         (
             "CALL fa.open_items EFFECTIVE BETWEEN '2026-01-01' AND '2026-01-31'",
             "by period and known-at",
+        ),
+        (
+            "CALL fa.statement FOR PERIOD 'FY2026-P03'",
+            "takes the statement it reads",
+        ),
+        ("CALL fa.statement('balance-sheet')", "names no FOR PERIOD"),
+        (
+            "CALL fa.statement('diff') FOR PERIOD 'FY2026-P03'",
+            "is the `fa statement diff` workflow",
+        ),
+        (
+            "CALL fa.statement('balance-sheet') FOR PERIOD 'FY2026-P03'..'FY2026-P04'",
+            "not a period range",
         ),
     ] {
         let r = refused(text);

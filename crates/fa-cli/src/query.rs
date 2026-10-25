@@ -73,7 +73,7 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     // A CALL is the registered read itself: the same command, so the same
     // admission, rows and certificate options as `fa tb`, `fa explain
-    // balance` or `fa open-items`.
+    // balance`, `fa statement` or `fa open-items`.
     let native = match &profiled.selection {
         QuerySelection::Native(native) => native.clone(),
         QuerySelection::TrialBalance => {
@@ -82,6 +82,14 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         QuerySelection::ExplainBalance { account } => {
             let read = procedure_args(args, &profiled, &["explain", "balance", account]);
             return crate::cli::explain_cmd(ctx, &read);
+        }
+        QuerySelection::Statement { definition } => {
+            let mut read = procedure_args(args, &profiled, &["statement", definition]);
+            // `fa statement` names its period --for.
+            if let Some(code) = read.flags.remove("--period") {
+                read.flags.insert("--for".to_string(), code);
+            }
+            return crate::cli::statement_cmd(ctx, &read);
         }
         QuerySelection::OpenItems { account } => {
             let mut read = procedure_args(args, &profiled, &["open-items"]);

@@ -23821,6 +23821,43 @@ fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
         "CALL fa.explain_balance('6000') FOR PERIOD 'FY2026-P03' AS KNOWN AT {march}"
     ));
     assert_eq!(called.render(), explained.render());
+    // CALL fa.statement('<definition>') is fa statement <definition> --for.
+    let stated = doc(&ok(&[
+        "statement",
+        "income-statement",
+        "--for",
+        "FY2026-P03",
+        "--as-known-at",
+        &march.to_string(),
+        "--json",
+    ]));
+    let called = query(&format!(
+        "CALL fa.statement('income-statement') FOR PERIOD 'FY2026-P03' AS KNOWN AT {march}"
+    ));
+    assert_eq!(called.render(), stated.render());
+    // Planted: a definition the book does not register is fa statement's own
+    // refusal, and a statement workflow is the profile's.
+    let (exit, out) = run(&[
+        "query",
+        "CALL fa.statement('no-such-statement') FOR PERIOD 'FY2026-P03'",
+        "--json",
+    ]);
+    let (direct, direct_out) = run(&[
+        "statement",
+        "no-such-statement",
+        "--for",
+        "FY2026-P03",
+        "--json",
+    ]);
+    assert_eq!(exit, direct, "{out}\n{direct_out}");
+    assert_ne!(exit, 0, "{out}");
+    let (exit, out) = run(&[
+        "query",
+        "CALL fa.statement('diff') FOR PERIOD 'FY2026-P03'",
+        "--json",
+    ]);
+    assert_eq!(exit, 3, "{out}");
+    assert!(out.contains("FA-REF-188"), "{out}");
     let open = doc(&ok(&[
         "open-items",
         "--as-known-at",

@@ -23,10 +23,11 @@
 //! - `AT BRANCH trunk`, or `AT BRANCH 'scenario:<name>'` / `'draft:<name>'`: the scenario's
 //!   materialization (its trunk prefix replayed at the fork plus its
 //!   intents), read at its own head and uncertified;
-//! - `CALL fa.trial_balance`, `CALL fa.explain_balance('<account>')` and
-//!   `CALL fa.open_items(['<account>'])`, which are the registered reads
-//!   themselves (`fa tb`, `fa explain balance`, `fa open-items`) at the
-//!   statement's period and known-at;
+//! - `CALL fa.trial_balance`, `CALL fa.explain_balance('<account>')`,
+//!   `CALL fa.statement('<definition>')` and `CALL fa.open_items(['<account>'])`,
+//!   which are the registered reads themselves (`fa tb`, `fa explain
+//!   balance`, `fa statement`, `fa open-items`) at the statement's period
+//!   and known-at;
 //! - `CALL fa.access_log` and `CALL fa.access_log('<reader>')`, the runtime
 //!   graph's AccessEvents (`fa access log`) at the head: a read-only bound
 //!   session's own query is among them, recorded before it observed;
@@ -146,6 +147,9 @@ pub enum Selection {
     /// `CALL fa.open_items(['<account>'])`: the open items at the
     /// statement's known-at, as `fa open-items` reads them.
     OpenItems { account: Option<String> },
+    /// `CALL fa.statement('<definition>')`: the statement for the
+    /// statement's period, as `fa statement <definition> --for` reads it.
+    Statement { definition: String },
     /// `CALL fa.access_log('<reader>')`: the AccessEvents recorded so far, or
     /// one reader's, as `fa access log` reads them.
     AccessLog { reader: Option<String> },
@@ -245,10 +249,11 @@ pub const PROCEDURES: &[&str] = &[
     "fa.trial_balance",
     "fa.explain_balance",
     "fa.open_items",
+    "fa.statement",
     "fa.access_log",
 ];
 
-const CALL_FIX: &str = "CALL fa.trial_balance FOR PERIOD '<code>' | CALL fa.explain_balance('<account>') FOR PERIOD '<code>' | CALL fa.open_items(['<account>']), each [AS KNOWN AT <seq>] | CALL fa.access_log('<reader>'); Lantern procedures: fa procedure run <id>";
+const CALL_FIX: &str = "CALL fa.trial_balance FOR PERIOD '<code>' | CALL fa.explain_balance('<account>') FOR PERIOD '<code>' | CALL fa.statement('balance-sheet'|'income-statement') FOR PERIOD '<code>' | CALL fa.open_items(['<account>']), each [AS KNOWN AT <seq>] | CALL fa.access_log('<reader>'); Lantern procedures: fa procedure run <id>";
 
 /// The longest statement the profile reads (bytes).
 pub const MAX_STATEMENT_BYTES: usize = 16 * 1024;
@@ -851,6 +856,30 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
                 "fa.explain_balance explains one period's balance; the statement names no FOR PERIOD",
             ),
             (Some(account), Some(_)) => Ok(Selection::ExplainBalance { account }),
+        },
+        "fa.statement" => match (account, &selectors.period) {
+            (None, _) => refuse(
+                at(4),
+                "fa.statement takes the statement it reads: CALL fa.statement('balance-sheet') FOR PERIOD '<code>'",
+            ),
+            (Some(_), None) => refuse(
+                0,
+                "fa.statement reads one period's statement; the statement names no FOR PERIOD",
+            ),
+            (Some(definition), Some(_))
+                if matches!(
+                    definition.as_str(),
+                    "diff" | "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
+                ) =>
+            {
+                refuse(
+                    at(5),
+                    &format!(
+                        "fa.statement reads a statement definition; `{definition}` is the `fa statement {definition}` workflow"
+                    ),
+                )
+            }
+            (Some(definition), Some(_)) => Ok(Selection::Statement { definition }),
         },
         "fa.access_log" => {
             if selectors.period.is_some()
