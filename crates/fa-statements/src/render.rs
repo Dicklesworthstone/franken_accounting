@@ -1472,6 +1472,60 @@ mod tests {
         assert!(receipt.double_footing_count >= 1);
     }
 
+    /// fa-cet: one statement and one date render to these exact bytes on every
+    /// machine. The pins are the `fa:rendering-file:v1` digests a CLI
+    /// `rendered` event reports; a renderer or IR change that moves them must
+    /// re-pin them deliberately.
+    #[test]
+    fn rendered_documents_are_pinned_byte_for_byte_on_every_machine() {
+        let (def, orig) = sample_bs(10, 50_025, 12_005);
+        let units = sample_units();
+        let ir = render_statement_ir(&orig, &def, &units).unwrap();
+        let epoch: u64 = 1_792_454_400; // 2026-10-20T00:00:00Z
+        let digest = |bytes: &[u8]| hex_bytes(&domain_digest(b"fa:rendering-file:v1", &[bytes]));
+        let rendered: Vec<(&str, String, usize)> = [
+            ("pdf", render_pdf(&ir, epoch).unwrap()),
+            ("pdfa", render_pdfa(&ir, epoch).unwrap()),
+            ("html", render_html(&ir, epoch).unwrap()),
+            ("svg", render_svg(&ir, epoch).unwrap()),
+            ("md", ir.markdown.as_bytes().to_vec()),
+        ]
+        .into_iter()
+        .map(|(format, bytes)| (format, digest(&bytes), bytes.len()))
+        .collect();
+        let pinned: Vec<(&str, String, usize)> = [
+            (
+                "pdf",
+                "2124c05b8c3972d01004c12ad99d9b7786af854b0effd4643fb4d18cf58d11ed",
+                4351,
+            ),
+            (
+                "pdfa",
+                "1610132d06d4e1fc5781285f1f618f1c852ac2ae595c3e3c541dfa07e8bd0838",
+                4388,
+            ),
+            (
+                "html",
+                "7165d2682d4fe4478a5c6e4ae70f2e2cbc100c172a710a2e31cfb2d96bd5570e",
+                3320,
+            ),
+            (
+                "svg",
+                "58f5eda2aaf83305fba9d54da26ca5b83b6b3a3250448f9d46922b4664a75144",
+                5377,
+            ),
+            (
+                "md",
+                "775d5d09460a4571e657284b2894e87ebc992e41527654b95c1025f94509afd0",
+                1323,
+            ),
+        ]
+        .into_iter()
+        .map(|(format, digest, len)| (format, digest.to_string(), len))
+        .collect();
+        assert_eq!(rendered, pinned, "rendered bytes moved");
+    }
+
     #[test]
     fn restatement_semantic_diff_and_tb_register_open_items_markdown_ir_work() {
         let (def, orig) = sample_bs(10, 50_025, 12_005);
