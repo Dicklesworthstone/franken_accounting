@@ -2280,6 +2280,26 @@ fn governed_sources_need_explicit_privilege_and_redacted_views_never_enable_matc
         assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-011");
         assert!(!captured.stdout.contains("SALE-1"));
         assert_eq!(head(&f.book), after_view);
+
+        // The same session reads the governed source through its derived
+        // view (fa-0x0): a document read is read admission, never the
+        // trunk-write rule an Agent's posts meet.
+        let args = ["document", "read", source, "--json"].map(str::to_string);
+        let (status, captured) = fa_with_authority(
+            &args,
+            Files {
+                cwd: Some(f.dir.clone()),
+                stdin: Stdin::Missing,
+            },
+            &authority,
+            true,
+        );
+        assert_eq!(status, 0, "{profile:?}: {captured:?}");
+        let read = json::parse(captured.stdout.lines().last().unwrap()).unwrap();
+        assert_eq!(text(data(&read), "view"), "redacted", "{profile:?}");
+        assert_eq!(data(&read).get("text"), Some(&Json::Null));
+        assert!(!captured.stdout.contains("BANK-123"));
+        assert_eq!(head(&f.book), after_view);
     }
 
     let full = ok_privileged(&f.book, &["document", "read", source]);
