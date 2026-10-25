@@ -1,0 +1,9 @@
+owner-watch v1
+verdict=RED
+commit=7819affcde690e7466cf25d5a926c0f6c4dea20c
+tree=7a94cd9f4375420caa7420ee1be023259da60693
+recorded_utc=2026-10-25T07:44:12Z
+worker=vmi1149989
+steps=clippy:FAIL,test:UNRUN
+test_totals=passed:0,failed:0
+first_error=error: this function has too many arguments (8/7)
