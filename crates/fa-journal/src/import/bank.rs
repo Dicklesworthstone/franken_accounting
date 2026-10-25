@@ -1114,6 +1114,193 @@ pub(super) fn bind_statement<V: Vfs + Clone>(
     Ok(Ok(None))
 }
 
+/// Verify bank import manifest, bank-line document, and `BankStatementLink`
+/// `DERIVED_FROM` projections at `at` (`fa-d22b`).
+pub(crate) fn verify_all_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &crate::genesis::BookContext,
+    at: CommitSeq,
+) -> Result<Vec<String>, KernelError> {
+    let rows = db.vertices_at(at)?;
+    let stored_edges = db.edges_at(at)?;
+    let vertices: std::collections::BTreeMap<_, _> =
+        rows.iter().map(|row| (row.vid, row)).collect();
+    let derived_edges: BTreeSet<(VId, VId)> = stored_edges
+        .iter()
+        .filter(|edge| {
+            edge.entry.relation == relation::DERIVED_FROM
+                && edge.entry.eid == edge_id(relation::DERIVED_FROM, edge.entry.src, edge.entry.dst)
+                && edge.props.is_empty()
+        })
+        .map(|edge| (edge.entry.src, edge.entry.dst))
+        .collect();
+    let policy = policy()?;
+    let workpaper_kind = kind(&policy, "Workpaper")?;
+    let statement_kind = kind(&policy, "BankStatement")?;
+    let line_kind = kind(&policy, "Other")?;
+    let mut receipts = Vec::new();
+    for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
+        if let Ok(entry) = stored_entry(row)
+            && entry.proposal.book_id == book.book_id
+            && entry.proposal.branch_id == Id128::TRUNK
+            && let Some(receipt) = receipt_of(&entry, row.vid, row.created_at)
+        {
+            receipts.push(receipt);
+        }
+    }
+    let mut drift = Vec::new();
+    let mut expected_links = BTreeSet::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.labels.contains(&label::DOCUMENT))
+    {
+        let Ok(record) = verify_row(row, &policy) else {
+            continue;
+        };
+        if record.book_id != book.book_id
+            || record.kind != workpaper_kind
+            || record.mime != BANK_MANIFEST_MIME
+        {
+            continue;
+        }
+        let Storage::Inline(bytes) = &record.storage else {
+            continue;
+        };
+        let manifest_oid = record.oid();
+        let manifest = match BankImportManifest::decode(bytes) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                drift.push(format!(
+                    "bank manifest {:032x}: invalid payload: {error}",
+                    row.vid.0
+                ));
+                continue;
+            }
+        };
+        if manifest.book_id != book.book_id || manifest.document_oid()? != manifest_oid {
+            drift.push(format!(
+                "bank manifest {:032x}: book or document identity mismatch",
+                row.vid.0
+            ));
+            continue;
+        }
+        let closure = manifest.closure(manifest_oid);
+        let Some(receipt) = receipts
+            .iter()
+            .find(|receipt| super::verify_receipt(receipt, book.book_id, &closure).is_ok())
+        else {
+            continue;
+        };
+        let statement_vid = document_vid(&manifest.statement_oid);
+        match vertices.get(&statement_vid) {
+            Some(stmt_row)
+                if verify_row(stmt_row, &policy).is_ok_and(|stmt| {
+                    stmt.book_id == book.book_id
+                        && stmt.oid() == manifest.statement_oid
+                        && stmt.kind == statement_kind
+                        && stmt.doc_commit == manifest.statement_commit
+                }) => {}
+            _ => drift.push(format!(
+                "bank manifest {:032x}: missing or mismatched BankStatement vertex {:032x}",
+                row.vid.0, statement_vid.0
+            )),
+        }
+        if !derived_edges.contains(&(row.vid, statement_vid)) {
+            drift.push(format!(
+                "bank manifest {:032x}: missing DERIVED_FROM edge to statement {:032x}",
+                row.vid.0, statement_vid.0
+            ));
+        }
+        for line_oid in &manifest.line_oids {
+            let line_vid = document_vid(line_oid);
+            match vertices.get(&line_vid) {
+                Some(line_row)
+                    if verify_row(line_row, &policy).is_ok_and(|line_rec| {
+                        line_rec.book_id == book.book_id
+                            && line_rec.oid() == *line_oid
+                            && line_rec.kind == line_kind
+                            && line_rec.mime == BANK_LINE_MIME
+                    }) => {}
+                _ => drift.push(format!(
+                    "bank manifest {:032x}: missing or mismatched BankLine document {:032x}",
+                    row.vid.0, line_vid.0
+                )),
+            }
+            if !derived_edges.contains(&(line_vid, statement_vid)) {
+                drift.push(format!(
+                    "bank line {:032x}: missing DERIVED_FROM edge to statement {:032x}",
+                    line_vid.0, statement_vid.0
+                ));
+            }
+            if !derived_edges.contains(&(row.vid, line_vid)) {
+                drift.push(format!(
+                    "bank manifest {:032x}: missing DERIVED_FROM edge to bank line {:032x}",
+                    row.vid.0, line_vid.0
+                ));
+            }
+        }
+        if manifest.predecessor.is_some() || manifest.csv_layout.is_some() {
+            let link_vid =
+                bank_statement_link_vid(book.book_id, manifest.account, manifest.statement_oid);
+            expected_links.insert(link_vid);
+            let expected_link = BankStatementLink {
+                manifest_oid,
+                manifest: manifest.clone(),
+                receipt: receipt.clone(),
+            };
+            match vertices.get(&link_vid) {
+                Some(link_row) if expected_link.matches_row(link_row)? => {}
+                _ => drift.push(format!(
+                    "bank manifest {:032x}: missing or mismatched BankStatementLink {:032x}",
+                    row.vid.0, link_vid.0
+                )),
+            }
+            for target in [receipt.run, row.vid] {
+                if !derived_edges.contains(&(link_vid, target)) {
+                    drift.push(format!(
+                        "bank link {:032x}: missing DERIVED_FROM edge to {:032x}",
+                        link_vid.0, target.0
+                    ));
+                }
+            }
+            if let Some(previous) = &manifest.predecessor {
+                for target in [previous.import_run, document_vid(&previous.manifest_oid)] {
+                    if !derived_edges.contains(&(link_vid, target)) {
+                        drift.push(format!(
+                            "bank link {:032x}: missing predecessor DERIVED_FROM edge to {:032x}",
+                            link_vid.0, target.0
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    for row in rows
+        .iter()
+        .filter(|row| row.labels.contains(&label::BANK_STATEMENT_LINK))
+    {
+        if !expected_links.contains(&row.vid) {
+            if let Ok(bytes) = payload(row)
+                && let Ok((_, LinkManifest::Retained { manifest_oid, .. }, run, _)) =
+                    decode_link(bytes)
+                && vertices
+                    .get(&document_vid(&manifest_oid))
+                    .and_then(|doc_row| verify_row(doc_row, &policy).ok())
+                    .is_some_and(|rec| matches!(rec.storage, Storage::External { .. }))
+                && derived_edges.contains(&(row.vid, run))
+                && derived_edges.contains(&(row.vid, document_vid(&manifest_oid)))
+            {
+                continue;
+            }
+            drift.push(format!(
+                "orphan or invalid BankStatementLink {:032x}",
+                row.vid.0
+            ));
+        }
+    }
+    Ok(drift)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

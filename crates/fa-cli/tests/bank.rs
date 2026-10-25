@@ -2435,6 +2435,29 @@ fn every_format_imports_via_cli() {
         assert_eq!(text(row, "value_date"), "2026-03-05", "{name}");
         assert_eq!(head(&f.book), before, "{name}: matching writes nothing");
     }
+    let declared_csv = "Date;Description;Amount\r\n05/03/2026;WIRE-125;125,00\r\n";
+    let declared_layout = r#"{"version":1,"name":"wire-125-v1","headers":["Date","Description","Amount"],"delimiter":";","decimal_separator":",","date_format":"DD/MM/YYYY","booking_date":"Date","reference":"Description","amount":{"column":"Amount","positive":"credit"},"statement":{"instrument_id":"GB29NWBK60161331926819","sequence_number":1,"currency":"USD","statement_date":"2026-03-31","opening_balance":"0,00","closing_balance":"125,00"}}"#;
+    let declared_source = f.file("declared.csv", declared_csv);
+    let declared_imported = ok(
+        &f.book,
+        &[
+            "bank",
+            "import",
+            &declared_source,
+            "--bank-format",
+            "csv",
+            "--account",
+            "1000",
+            "--layout",
+            declared_layout,
+        ],
+    );
+    assert_eq!(text(data(&declared_imported), "layout_name"), "wire-125-v1");
+    let projections = ok(&f.book, &["verify", "projections"]);
+    assert!(
+        rows(data(&projections), "drift").is_empty(),
+        "{projections:?}"
+    );
 }
 
 #[test]

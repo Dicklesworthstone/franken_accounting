@@ -2788,6 +2788,21 @@ Invoice 100
 ";
 
     #[test]
+    fn swift_mt940_parses_sample() {
+        let units = UnitCatalog::embedded().unwrap();
+        let statement = parse_mt940(STANDARD_MT940, &units).unwrap();
+        assert_eq!(statement.format_name, "swift_mt940");
+        assert_eq!(statement.instrument_account_id, "ACCT-001");
+        assert_eq!(statement.sequence_number, 1);
+        assert_eq!(statement.currency, "USD");
+        assert_eq!(statement.statement_date.render(), "2026-01-31");
+        assert_eq!(statement.opening_balance, 100_000);
+        assert_eq!(statement.closing_balance, 138_500);
+        assert_eq!(statement.lines.len(), 4);
+        statement.verify_internal_balance().unwrap();
+    }
+
+    #[test]
     fn mt940_standard_records_round_trip_through_bank_csv() {
         let units = UnitCatalog::embedded().unwrap();
         let statement = parse_mt940(STANDARD_MT940, &units).unwrap();

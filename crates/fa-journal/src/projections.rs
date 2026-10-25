@@ -378,6 +378,9 @@ pub fn verify_projections<V: asupersync::fs::Vfs + Clone>(
         .extend(crate::external_subledger::verify_all_at(
             db, book, known_at,
         )?);
+    report
+        .drift
+        .extend(crate::import::bank::verify_all_at(db, book, known_at)?);
     report.drift.sort();
     Ok(report)
 }
