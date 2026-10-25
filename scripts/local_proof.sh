@@ -289,6 +289,22 @@ if step_file.is_file():
             ev_ids = re.findall(r"^\s*evidence artifact_id=(\S+) .* verdict=PASS$", text, re.M)
             if ev_ids:
                 witness["evidence_artifacts"] = ev_ids
+            passed_names = []
+            failed_names = []
+            for m in re.finditer(r"^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)$", text, re.M):
+                if m.group(2) == "ok":
+                    passed_names.append(m.group(1))
+                else:
+                    failed_names.append(m.group(1))
+            for m in re.finditer(r"^(PASS|FAIL|ok)\s+([A-Za-z0-9_.:/-]+)", text, re.M):
+                if m.group(1) == "FAIL":
+                    failed_names.append(m.group(2))
+                else:
+                    passed_names.append(m.group(2))
+            if passed_names:
+                witness["passed_test_names"] = passed_names
+            if failed_names:
+                witness["failed_test_names"] = failed_names
         rec["witness"] = witness
         out.append("step_verdict=" + json.dumps(rec, separators=(",", ":")))
 
