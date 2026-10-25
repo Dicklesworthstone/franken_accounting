@@ -1,9 +1,10 @@
 owner-watch v1
-verdict=UNRUN
+verdict=RED
 commit=ec705ee00fc0fe0cf60aa7022ce20004ab2719c8
 tree=82c362387af1e81089afe3f3af7f22102e1946a8
-recorded_utc=2026-10-25T16:41:54Z
-worker=unknown
-steps=clippy:UNRUN,test:UNRUN
+recorded_utc=2026-10-25T16:52:30Z
+worker=vmi1149989
+steps=clippy:FAIL,test:UNRUN
 test_totals=passed:0,failed:0
+first_error=error: calling `as_bytes` after slicing a string
 tracker_drift_no_bead=7089a599 merge: keep the docs-sync gate and origin's TigerBeetle and document-read work;
