@@ -1806,6 +1806,12 @@ impl Book {
         with_store!(&self.store, core => core.cases(&self.purposes()))
     }
 
+    /// Total unmatched bank statement lines across all retained bank imports at
+    /// the head, and the first manifest with unmatched lines (in import order).
+    pub fn unmatched_bank_lines(&self) -> Result<(usize, Option<fa_model::Oid>), BookError> {
+        with_store!(&self.store, core => core.unmatched_bank_lines(&self.purposes()))
+    }
+
     /// Open the production profile of `profile.matter` (plan §13.2, bead
     /// fa-6l9): its Bates prefix and first number, journaled once per matter.
     pub fn open_production(

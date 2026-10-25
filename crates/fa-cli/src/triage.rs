@@ -646,6 +646,8 @@ struct Survey {
     drafts_awaiting_promotion: usize,
     /// Restatement cases rehearsed and awaiting their approval.
     cases_awaiting_approval: usize,
+    /// Bank statement lines across retained imports without an active confirmation.
+    unmatched_bank_lines: usize,
     finding_runs: u32,
     /// Open findings across every recorded run, by severity name, most
     /// severe first; every severity is listed, zero included.
@@ -759,6 +761,7 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         .iter()
         .filter(|c| c.state == fa_journal::CaseState::Rehearsed)
         .collect();
+    let (unmatched_bank_lines, first_unmatched_bank_import) = book.unmatched_bank_lines()?;
     // Findings: every recorded run, and each finding's current review
     // status at the head (Open until acknowledged or dismissed).
     let mut open_findings: Vec<(&'static str, usize)> =
@@ -865,6 +868,18 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
             ),
         ));
     }
+    if let Some(manifest_oid) = first_unmatched_bank_import {
+        steps.push(step(
+            format!(
+                "fa bank match --import {} --grant privileged --json",
+                crate::cli::hex(&manifest_oid.0)
+            ),
+            format!(
+                "{unmatched_bank_lines} bank statement line(s) have no active confirmation; inspect proposals for manifest {}",
+                crate::cli::hex(&manifest_oid.0)
+            ),
+        ));
+    }
     if pending_cells > 0 {
         steps.push(NextStep {
             // Resolutions are batchable intents: an Agent plans them into a
@@ -903,6 +918,7 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         open_drafts: open_drafts.len(),
         drafts_awaiting_promotion: awaiting.len(),
         cases_awaiting_approval: rehearsed.len(),
+        unmatched_bank_lines,
         finding_runs,
         open_findings,
         steps: rank_for(ctx, &capability, steps),
@@ -1030,10 +1046,11 @@ pub(crate) fn triage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     );
     let open_findings: usize = sv.open_findings.iter().map(|(_, n)| n).sum();
     text.push_str(&format!(
-        "\ndrafts: {} open, {} awaiting promotion · cases awaiting approval: {} · findings: {} open across {} run(s) ({}) · register lag: {}",
+        "\ndrafts: {} open, {} awaiting promotion · cases awaiting approval: {} · unmatched bank lines: {} · findings: {} open across {} run(s) ({}) · register lag: {}",
         sv.open_drafts,
         sv.drafts_awaiting_promotion,
         sv.cases_awaiting_approval,
+        sv.unmatched_bank_lines,
         open_findings,
         sv.finding_runs,
         sv.open_findings
@@ -1095,6 +1112,10 @@ pub(crate) fn triage_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             (
                 "pending_approvals",
                 Json::Int((sv.drafts_awaiting_promotion + sv.cases_awaiting_approval) as i128),
+            ),
+            (
+                "unmatched_bank_lines",
+                Json::Int(sv.unmatched_bank_lines as i128),
             ),
             ("finding_runs", Json::Int(i128::from(sv.finding_runs))),
             (

@@ -1540,6 +1540,22 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, context| Ok(fa_journal::list_cases(db, context)?))
     }
 
+    /// Total unmatched bank statement lines across all retained bank imports at
+    /// the head, and the first manifest with unmatched lines (in import order).
+    pub fn unmatched_bank_lines(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<(usize, Option<fa_model::Oid>), BookError> {
+        self.query(cx, |db, context| {
+            let head = db.frontier().map_err(fa_journal::KernelError::Read)?;
+            Ok(fa_journal::import::bank::unmatched_bank_lines_at(
+                db,
+                context.book_id,
+                head,
+            )?)
+        })
+    }
+
     fn production_request(
         &self,
         cx: &PurposeContexts,

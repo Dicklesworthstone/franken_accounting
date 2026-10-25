@@ -1301,6 +1301,96 @@ pub(crate) fn verify_all_at<V: Vfs + Clone>(
     Ok(drift)
 }
 
+/// Count bank statement lines across all retained `BankImportManifest`s at `at`
+/// that have no active confirmation, returning `(unmatched_lines, first_unmatched_manifest)`
+/// (`fa-g8em`).
+pub fn unmatched_bank_lines_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: Id128,
+    at: CommitSeq,
+) -> Result<(usize, Option<Oid>), KernelError> {
+    let policy = policy()?;
+    let workpaper_kind = kind(&policy, "Workpaper")?;
+    let rows = db.vertices_at(at)?;
+    let mut receipts = Vec::new();
+    for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
+        if let Ok(entry) = stored_entry(row)
+            && entry.proposal.book_id == book
+            && entry.proposal.branch_id == Id128::TRUNK
+            && let Some(receipt) = receipt_of(&entry, row.vid, row.created_at)
+        {
+            receipts.push(receipt);
+        }
+    }
+    let mut manifests = Vec::new();
+    let mut confirmations = Vec::new();
+    let mut unmatched_vids = BTreeSet::new();
+    for row in &rows {
+        if row.labels.as_slice() == [label::DOCUMENT] {
+            let Ok(record) = verify_row(row, &policy) else {
+                continue;
+            };
+            if record.book_id != book
+                || record.kind != workpaper_kind
+                || record.mime != BANK_MANIFEST_MIME
+            {
+                continue;
+            }
+            let Storage::Inline(bytes) = &record.storage else {
+                continue;
+            };
+            let Ok(manifest) = BankImportManifest::decode(bytes) else {
+                continue;
+            };
+            let manifest_oid = record.oid();
+            if manifest.book_id != book || manifest.document_oid().ok() != Some(manifest_oid) {
+                continue;
+            }
+            let closure = manifest.closure(manifest_oid);
+            if receipts
+                .iter()
+                .any(|receipt| super::verify_receipt(receipt, book, &closure).is_ok())
+            {
+                manifests.push((row.created_at, manifest_oid, manifest));
+            }
+        } else if row.labels.as_slice() == [label::BANK_MATCH] {
+            if let Ok(bytes) = payload(row)
+                && let Ok(confirmation) = crate::bank::BankMatchConfirmation::decode(bytes)
+                && confirmation.book_id == book
+            {
+                confirmations.push((row.vid, confirmation));
+            }
+        } else if row.labels.as_slice() == [label::BANK_UNMATCH]
+            && let Ok(bytes) = payload(row)
+            && let Ok(unmatch) = crate::bank::BankUnmatch::decode(bytes)
+            && unmatch.book_id == book
+        {
+            unmatched_vids.insert(unmatch.target.vid);
+        }
+    }
+    manifests.sort_by_key(|(created_at, oid, _)| (*created_at, *oid));
+    let mut total_unmatched = 0_usize;
+    let mut first_unmatched_manifest = None;
+    for (_, manifest_oid, manifest) in manifests {
+        let confirmed: BTreeSet<u32> = confirmations
+            .iter()
+            .filter(|(vid, c)| {
+                !unmatched_vids.contains(vid)
+                    && c.manifest_oid == manifest_oid
+                    && c.statement_oid == manifest.statement_oid
+                    && c.account == manifest.account
+            })
+            .map(|(_, c)| c.line_ordinal)
+            .collect();
+        let unmatched = manifest.line_oids.len().saturating_sub(confirmed.len());
+        total_unmatched += unmatched;
+        if unmatched > 0 && first_unmatched_manifest.is_none() {
+            first_unmatched_manifest = Some(manifest_oid);
+        }
+    }
+    Ok((total_unmatched, first_unmatched_manifest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

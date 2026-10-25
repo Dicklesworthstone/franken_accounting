@@ -202,6 +202,21 @@ impl Fixture {
 #[test]
 fn fields_match_dedicated_commands() {
     let f = Fixture::populated("fields");
+    std::fs::write(
+        f.root.join("statement.csv"),
+        "sequence_number,instrument_id,currency,statement_date,opening_balance,closing_balance,booking_date,value_date,side,amount,counterparty,reference\n1,BANK-1000,USD,2026-01-31,0.00,132.00,2026-01-10,2026-01-10,CRDT,100.00,Customer,SATURDAY\n1,BANK-1000,USD,2026-01-31,0.00,132.00,2026-01-25,2026-01-25,CRDT,32.00,Customer,LATE\n",
+    )
+    .unwrap();
+    let imported = f.ok(&[
+        "bank",
+        "import",
+        "statement.csv",
+        "--bank-format",
+        "csv",
+        "--account",
+        "1000",
+    ]);
+    let manifest_oid = text(data(&imported), "manifest_oid").to_string();
     let triage = f.ok(&["triage"]);
     let survey = data(&triage);
 
@@ -268,12 +283,27 @@ fn fields_match_dedicated_commands() {
     assert_eq!(lag.len(), 1, "one materialized period");
     assert_eq!(text(&lag[0], "period"), "FY2026-P01");
     assert_eq!(number(&lag[0], "lag_entries"), number(check, "lag_entries"));
-    assert_eq!(number(&lag[0], "lag_entries"), 1);
+    assert_eq!(number(&lag[0], "lag_entries"), 2);
     assert_eq!(text(&lag[0], "cache_status"), text(check, "cache_status"));
     assert_eq!(
         lag[0].get("verified_through"),
         check.get("verified_through")
     );
+
+    // Bank statement lines: what `fa bank status` reports remaining.
+    let bank_status = f.ok(&[
+        "bank",
+        "status",
+        "--import",
+        &manifest_oid,
+        "--grant",
+        "privileged",
+    ]);
+    assert_eq!(
+        number(survey, "unmatched_bank_lines"),
+        number(data(&bank_status), "remaining_lines")
+    );
+    assert_eq!(number(survey, "unmatched_bank_lines"), 2);
 
     // The steps the state calls for name what to look at.
     let actions: Vec<&str> = rows(&triage, "next_actions")
@@ -290,17 +320,25 @@ fn fields_match_dedicated_commands() {
         actions.contains(&"fa draft show accruals --json"),
         "{actions:?}"
     );
+    assert!(
+        actions.contains(
+            &format!("fa bank match --import {manifest_oid} --grant privileged --json").as_str()
+        ),
+        "{actions:?}"
+    );
     // Planted negative: a book with nothing to review asks for nothing.
     let quiet = Fixture::new("quiet");
     let survey = quiet.ok(&["triage"]);
     assert_eq!(number(data(&survey), "finding_runs"), 0);
     assert_eq!(number(data(&survey), "drafts_awaiting_promotion"), 0);
+    assert_eq!(number(data(&survey), "unmatched_bank_lines"), 0);
     assert!(rows(data(&survey), "register_watermark_lag").is_empty());
     assert!(
         !rows(&survey, "next_actions")
             .iter()
             .any(|a| text(a, "command").starts_with("fa finding")
-                || text(a, "command").starts_with("fa draft")),
+                || text(a, "command").starts_with("fa draft")
+                || text(a, "command").starts_with("fa bank")),
         "{survey:?}"
     );
 }
