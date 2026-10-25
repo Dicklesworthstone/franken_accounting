@@ -15,6 +15,8 @@
 //! - `FOR PERIOD <code>` into the entry's `IN_PERIOD` edge: the period the
 //!   posting resolved, so an entry of a special period is never claimed by
 //!   the normal period that shares its day;
+//! - `FOR PERIOD <from>..<through>` into every period lying within the
+//!   first's start and the last's end, the days the caller binds;
 //! - `EFFECTIVE BETWEEN <date> AND <date>` into the leg's effective day;
 //! - `AT BRANCH trunk`, or `AT BRANCH 'scenario:<name>'` / `'draft:<name>'`: the scenario's
 //!   materialization (its trunk prefix replayed at the fork plus its
@@ -113,7 +115,8 @@ pub enum Reported {
 pub struct Profiled {
     pub known_at: KnownAt,
     /// `FOR PERIOD`: a period code the caller confirms exists at the
-    /// selected sequence.
+    /// selected sequence, or `<from>..<through>` for a range, whose two
+    /// periods the caller resolves and binds ([`Native::bind_period_range`]).
     pub period: Option<String>,
     pub selection: Selection,
     /// `EXPLAIN (CERTIFICATE)`: the caller certifies the result and retains
@@ -149,6 +152,9 @@ pub struct Native {
     head: String,
     tail: String,
     aggregation: Option<Aggregation>,
+    /// `FOR PERIOD '<from>'..'<through>'`: the filter waits for the range's
+    /// day bounds ([`Native::bind_period_range`]).
+    period_range: bool,
 }
 
 impl Native {
@@ -160,6 +166,63 @@ impl Native {
             self.head.trim(),
             self.tail.trim()
         )
+    }
+
+    /// Whether the statement selects a period range, whose day bounds the
+    /// caller must bind before it runs.
+    #[must_use]
+    pub const fn period_range(&self) -> bool {
+        self.period_range
+    }
+
+    /// The statement with its period range bound: the first period's start
+    /// (`start`, its `period_start`) and the last one's end (`end`, its
+    /// exclusive `period_end`), as the caller resolved them at the
+    /// statement's sequence. Every entry posted to a period lying within
+    /// those days is selected, special periods included.
+    #[must_use]
+    pub fn bind_period_range(&self, start: i32, end: i32) -> Self {
+        if !self.period_range {
+            return self.clone();
+        }
+        // The profile's filter leads the tail; a quoted text that spells a
+        // placeholder, there or in the head, is the statement's own.
+        Self {
+            head: self.head.clone(),
+            tail: self
+                .tail
+                .replacen(RANGE_START, &start.to_string(), 1)
+                .replacen(RANGE_END, &end.to_string(), 1),
+            aggregation: self.aggregation.clone(),
+            period_range: false,
+        }
+    }
+
+    /// The day bounds `statement` binds this period range with, when it is
+    /// exactly this statement at `known_at` bound
+    /// ([`Native::bind_period_range`]): a certificate's native read carries
+    /// its bounds, which the caller checks against the book's periods at that
+    /// sequence.
+    #[must_use]
+    pub fn bound_period_range(&self, statement: &str, known_at: u64) -> Option<(i32, i32)> {
+        fn integer(text: &str) -> Option<(i32, &str)> {
+            let len = text
+                .bytes()
+                .enumerate()
+                .take_while(|&(i, b)| b.is_ascii_digit() || (i == 0 && b == b'-'))
+                .count();
+            Some((text.get(..len)?.parse().ok()?, text.get(len..)?))
+        }
+        if !self.period_range {
+            return None;
+        }
+        let head = format!("{} FOR SYSTEM_TIME AS OF SEQ {known_at} ", self.head.trim());
+        let (before, rest) = self.tail.trim().split_once(RANGE_START)?;
+        let (between, _) = rest.split_once(RANGE_END)?;
+        let (start, rest) = integer(statement.strip_prefix(&head)?.strip_prefix(before)?)?;
+        let (end, _) = integer(rest.strip_prefix(between)?)?;
+        (self.bind_period_range(start, end).statement(known_at) == statement)
+            .then_some((start, end))
     }
 
     /// The statement aggregates an amount: its native read returns the group
@@ -191,6 +254,15 @@ const KNOWN_AT_FIX: &str =
 
 const REPORTED_FIX: &str = "FOR PERIOD 'FY2026-P03' AS ORIGINALLY REPORTED | AS ISSUED TO 'board' | AS REPORTED IN 'C:<64-hex>'";
 
+const PERIOD_RANGE_FIX: &str =
+    "FOR PERIOD 'FY2026-P01'..'FY2026-P03' (fa period list --json names every code)";
+
+/// The bounds a period range's native filter waits for: the first period's
+/// start and the last period's end, which the caller resolves at the
+/// statement's sequence ([`Native::bind_period_range`]).
+const RANGE_START: &str = "__fa_period_range_start__";
+const RANGE_END: &str = "__fa_period_range_end__";
+
 /// Compile a profile statement.
 ///
 /// # Errors
@@ -211,6 +283,19 @@ pub fn rewrite(text: &str) -> Result<Profiled, Refusal> {
             Law::Profile,
             0,
             "a restatement view reads one period as it was reported; the statement names no FOR PERIOD",
+            REPORTED_FIX,
+        ));
+    }
+    if matches!(selectors.known_at, Some(KnownAt::Reported(_)))
+        && selectors
+            .period
+            .as_deref()
+            .is_some_and(|code| code.contains(".."))
+    {
+        return Err(Refusal::new(
+            Law::Profile,
+            0,
+            "a restatement view reads one period as it was reported, not a period range",
             REPORTED_FIX,
         ));
     }
@@ -398,14 +483,31 @@ fn selectors(lexed: &Lexed<'_>) -> Result<Selectors, Refusal> {
                     "FOR PERIOD 'FY2026-P03' (fa period list --json names every code)",
                 ));
             }
-            if lexed.punct(end, '.') && lexed.punct(end + 1, '.') {
-                return Err(Refusal::new(
-                    Law::Profile,
-                    at(end),
-                    "a period range is not compiled in this build",
-                    "select one period: FOR PERIOD 'FY2026-P03'",
-                ));
-            }
+            // `FOR PERIOD '<from>'..'<through>'` (plan §7.4): every period
+            // from the first's start through the last's end. A period code
+            // holds no `.`, so the range travels as one `<from>..<through>`.
+            let (code, end) = if lexed.punct(end, '.') && lexed.punct(end + 1, '.') {
+                let bad = |j: usize, message: &str| {
+                    Refusal::new(Law::Profile, at(j), message, PERIOD_RANGE_FIX)
+                };
+                let (through, after) = literal_run(lexed, end + 2)
+                    .ok_or_else(|| bad(end + 2, "a period range names its last period"))?;
+                if !through
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                {
+                    return Err(bad(end + 2, &format!("`{through}` is not a period code")));
+                }
+                if through == code {
+                    return Err(bad(
+                        end + 2,
+                        "a range of one period is that period: FOR PERIOD '<code>'",
+                    ));
+                }
+                (format!("{code}..{through}"), after)
+            } else {
+                (code, end)
+            };
             if found.period.replace(code).is_some() {
                 return Err(Refusal::new(
                     Law::Profile,
@@ -690,6 +792,18 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
             "CALL fa.trial_balance FOR PERIOD '<code>'; a civil-date cutoff: fa tb --as-of YYYY-MM-DD or fa open-items --as-of YYYY-MM-DD",
         ));
     }
+    if selectors
+        .period
+        .as_deref()
+        .is_some_and(|code| code.contains(".."))
+    {
+        return Err(Refusal::new(
+            Law::Profile,
+            0,
+            &format!("{procedure} reads one period, not a period range"),
+            "CALL fa.trial_balance FOR PERIOD '<last code>' (a stock balance runs through it); activity across periods: fa tb --activity --period <code> --period <code>",
+        ));
+    }
     match procedure.as_str() {
         "fa.trial_balance" => match account {
             Some(_) => refuse(at(4), "fa.trial_balance takes no argument"),
@@ -834,7 +948,13 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
                     ));
                 }
             }
-            filters.push(format!("__fa_period.code = '{code}'"));
+            if code.contains("..") {
+                filters.push(format!(
+                    "__fa_period.period_start >= {RANGE_START} AND __fa_period.period_end <= {RANGE_END}"
+                ));
+            } else {
+                filters.push(format!("__fa_period.code = '{code}'"));
+            }
         }
         if let Some((from, through)) = selectors.effective {
             let [leg] = legs.as_slice() else {
@@ -878,6 +998,10 @@ fn native(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Native, Refusal> {
         head,
         tail: rest,
         aggregation,
+        period_range: selectors
+            .period
+            .as_deref()
+            .is_some_and(|code| code.contains("..")),
     })
 }
 

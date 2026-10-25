@@ -36,7 +36,7 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use super::{
-    QUERY_OUTPUT_FORMAT, QueryRows, budget, code, execute, period_refusal, profile_refusal,
+    QUERY_OUTPUT_FORMAT, QueryRows, budget, code, execute, period_bounds, profile_refusal,
     result_of,
 };
 use crate::{
@@ -229,9 +229,16 @@ impl QueryCertificate {
             ));
         }
         let (native, _) = compiled(&self.statement, self.known_at())?;
-        if self.native.plan.snapshot_seq != self.known_at()
-            || self.native.statement != native.statement(self.known_at().0)
-        {
+        // A period range's native read binds its days, which a replay checks
+        // against the book's periods at the certified sequence.
+        let compiles = if native.period_range() {
+            native
+                .bound_period_range(&self.native.statement, self.known_at().0)
+                .is_some()
+        } else {
+            self.native.statement == native.statement(self.known_at().0)
+        };
+        if self.native.plan.snapshot_seq != self.known_at() || !compiles {
             return Err(invalid(
                 "the native read is not the one the statement compiles to at the certified sequence",
             ));
@@ -506,13 +513,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         let seq = certificate.known_at();
         let replayed = self.query(cx, |db, book| {
-            if let Some(code) = period.as_deref()
-                && let Some(refusal) = period_refusal(db, book, code, seq)?
-            {
-                return Ok(Err(invalid(format!(
-                    "the certified period does not replay: {}",
-                    refusal.message
-                ))));
+            // A period range replays bound with the days it spans at the
+            // certified sequence, which its native read must carry.
+            let mut native = native.clone();
+            if let Some(code) = period.as_deref() {
+                match period_bounds(db, book, code, seq)? {
+                    Err(refusal) => {
+                        return Ok(Err(invalid(format!(
+                            "the certified period does not replay: {}",
+                            refusal.message
+                        ))));
+                    }
+                    Ok((start, end)) if native.period_range() => {
+                        if native.bound_period_range(&certificate.native.statement, seq.0)
+                            != Some((start.0, end.0))
+                        {
+                            return Ok(Err(invalid(format!(
+                                "the native read binds other days than the period range `{code}` spans at {}",
+                                seq.0
+                            ))));
+                        }
+                        native = native.bind_period_range(start.0, end.0);
+                    }
+                    Ok(_) => {}
+                }
             }
             let result = match db.replay(
                 &cx.query(),

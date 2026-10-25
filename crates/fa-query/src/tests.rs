@@ -120,7 +120,8 @@ fn for_period_joins_the_entrys_resolved_period() {
             "MATCH (:Leg)-[:POSTS_TO]->(a:Account) FOR PERIOD 'P' RETURN a",
             "exactly one leg",
         ),
-        ("MATCH (l:Leg) RETURN l FOR PERIOD 'A'..'B'", "range"),
+        // A range compiles (fa-5c1); a range of one period is that period.
+        ("MATCH (l:Leg) RETURN l FOR PERIOD 'A'..'A'", "range"),
         (
             "MATCH (l:Leg) RETURN l FOR PERIOD 'P' FOR PERIOD 'Q'",
             "one FOR PERIOD",
@@ -645,4 +646,89 @@ fn the_access_log_procedure_reads_the_runtime_graph_at_the_head() {
             .message
             .contains("stands alone")
     );
+}
+
+/// fa-5c1, plan §7.4: `FOR PERIOD '<from>'..'<through>'` selects every
+/// period lying between its ends. The native filter waits for the days the
+/// caller resolves at the statement's sequence; a single period stays a code
+/// filter with nothing to bind. A CALL and a restatement view read one
+/// period, so a range is refused there, with the admissible form.
+#[test]
+fn a_period_range_selects_every_period_between_its_ends() {
+    let (profiled, n) = native(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code, COUNT(*) AS legs FOR PERIOD 'FY2026-P01'..'FY2026-P03'",
+    );
+    assert_eq!(profiled.period.as_deref(), Some("FY2026-P01..FY2026-P03"));
+    assert!(n.period_range());
+    let bound = n.bind_period_range(20454, 20544);
+    assert!(!bound.period_range());
+    let text = bound.statement(9);
+    assert!(
+        text.contains("__fa_period.period_start >= 20454 AND __fa_period.period_end <= 20544"),
+        "{text}"
+    );
+    assert!(text.contains("FOR SYSTEM_TIME AS OF SEQ 9"), "{text}");
+    // A certificate's native read names its bounds; only the exact bound
+    // statement at its sequence gives them back.
+    assert_eq!(n.bound_period_range(&text, 9), Some((20454, 20544)));
+    assert_eq!(n.bound_period_range(&text, 8), None);
+    assert_eq!(n.bound_period_range(&n.statement(9), 9), None);
+    assert_eq!(
+        n.bound_period_range(&text.replace(">= 20454", ">= 020454"), 9),
+        None
+    );
+    assert_eq!(
+        n.bound_period_range(&text.replace("COUNT(*)", "COUNT(l)"), 9),
+        None
+    );
+    // A quoted text spelling a placeholder is the statement's own.
+    let (_, quoted) = native(
+        "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) WHERE a.name = '__fa_period_range_start__' RETURN a.code FOR PERIOD 'FY2026-P01'..'FY2026-P03'",
+    );
+    let text = quoted.bind_period_range(-3, 7).statement(4);
+    assert!(
+        text.contains(
+            ">= -3 AND __fa_period.period_end <= 7 AND (a.name = '__fa_period_range_start__')"
+        ),
+        "{text}"
+    );
+    assert_eq!(quoted.bound_period_range(&text, 4), Some((-3, 7)));
+    let (_, single) = native("MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P03'");
+    assert!(!single.period_range());
+    assert!(
+        single
+            .statement(1)
+            .contains("__fa_period.code = 'FY2026-P03'")
+    );
+    assert_eq!(single.bound_period_range(&single.statement(1), 1), None);
+    assert_eq!(single.bind_period_range(1, 2), single);
+    for (text, says) in [
+        (
+            "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P01'..",
+            "names its last period",
+        ),
+        (
+            "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P01'..'FY2026-P01'",
+            "range of one period",
+        ),
+        (
+            "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P01'..'not a code'",
+            "is not a period code",
+        ),
+        (
+            "CALL fa.trial_balance FOR PERIOD 'FY2026-P01'..'FY2026-P03'",
+            "not a period range",
+        ),
+        (
+            "CALL fa.explain_balance('1000') FOR PERIOD 'FY2026-P01'..'FY2026-P03'",
+            "not a period range",
+        ),
+        (
+            "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P01'..'FY2026-P03' AS ORIGINALLY REPORTED",
+            "not a period range",
+        ),
+    ] {
+        let r = refused(text);
+        assert!(r.message.contains(says), "{text}: {r:?}");
+    }
 }

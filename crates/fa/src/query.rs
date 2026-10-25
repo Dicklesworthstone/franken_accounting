@@ -15,6 +15,7 @@ use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, exit};
 use fa_model::{EncodeError, Writer};
 use fa_query::{Law, Native};
+use fa_time::DateDay;
 use fgdb::{Database, NativeResultCertificate, QueryError, QueryResult, QueryValue};
 use fgdb_gql::algebra::GraphValue;
 use fgdb_gql::{GqlParameters, GqlQueryPolicy, GraphAggregateValue};
@@ -272,30 +273,69 @@ fn native_refusal(statement: &str, error: &QueryError) -> Refusal {
     )
 }
 
-/// Refuse a `FOR PERIOD` code the book does not hold at `seq`.
-fn period_refusal<V: Vfs + Clone>(
+/// The period `code` names at `seq`, or the refusal for one the book does
+/// not hold.
+fn period_at<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     code: &str,
     seq: CommitSeq,
-) -> Result<Option<Refusal>, BookError> {
+) -> Result<Result<fa_journal::PeriodRow, Refusal>, BookError> {
     let row = db
         .vertex_at(fa_model::period_vid(&book.calendar.id, code), seq)
-        .map_err(fa_journal::KernelError::from)?;
-    Ok(
-        (!row.is_some_and(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))).then(
-            || {
-                Refusal::new(
-                    code::QUERY_PROFILE,
-                    exit::REFUSAL,
-                    format!("period `{code}` does not exist at {}", seq.0),
-                    CITE,
-                    "name a period the book holds: fa period list --json",
-                )
-                .at("period", code.to_string())
-            },
-        ),
-    )
+        .map_err(fa_journal::KernelError::from)?
+        .filter(|row| row.labels.contains(&fa_model::symbols::label::PERIOD));
+    Ok(match row {
+        Some(row) => Ok(fa_journal::PeriodRow::decode(&row)?),
+        None => Err(Refusal::new(
+            code::QUERY_PROFILE,
+            exit::REFUSAL,
+            format!("period `{code}` does not exist at {}", seq.0),
+            CITE,
+            "name a period the book holds: fa period list --json",
+        )
+        .at("period", code.to_string())),
+    })
+}
+
+/// The days a `FOR PERIOD` selects at `seq`: its period's (or a range's
+/// first period's) start and its (or the last period's) exclusive end. A
+/// code the book does not hold, at either end, and a range that ends before
+/// it starts are refused.
+fn period_bounds<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    code: &str,
+    seq: CommitSeq,
+) -> Result<Result<(DateDay, DateDay), Refusal>, BookError> {
+    let (from, through) = code.split_once("..").unwrap_or((code, code));
+    let first = match period_at(db, book, from, seq)? {
+        Ok(period) => period,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let last = if through == from {
+        first.clone()
+    } else {
+        match period_at(db, book, through, seq)? {
+            Ok(period) => period,
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    };
+    if last.start < first.start {
+        return Ok(Err(Refusal::new(
+            code::QUERY_PROFILE,
+            exit::REFUSAL,
+            format!(
+                "the period range `{code}` ends before it starts: {through} starts {}, before {from}'s {}",
+                last.start.render(),
+                first.start.render()
+            ),
+            CITE,
+            format!("name the earlier period first: FOR PERIOD '{through}'..'{from}'"),
+        )
+        .at("period", code.to_string())));
+    }
+    Ok(Ok((first.start, last.end)))
 }
 
 /// The native rows a statement may read: an amount aggregate folds more
@@ -355,11 +395,19 @@ fn execute<V: Vfs + Clone>(
     seq: CommitSeq,
     period: Option<&str>,
 ) -> Result<Result<(QueryRows, NativeResultCertificate), Refusal>, BookError> {
-    if let Some(code) = period
-        && let Some(refusal) = period_refusal(db, book, code, seq)?
-    {
-        return Ok(Err(refusal));
-    }
+    // A period range's filter waits for its days, resolved at `seq`.
+    let bound;
+    let native = match period {
+        Some(code) => match period_bounds(db, book, code, seq)? {
+            Err(refusal) => return Ok(Err(refusal)),
+            Ok((start, end)) if native.period_range() => {
+                bound = native.bind_period_range(start.0, end.0);
+                &bound
+            }
+            Ok(_) => native,
+        },
+        None => native,
+    };
     let statement = native.statement(seq.0);
     let (result, certificate) = match db.execute_certified(
         cx,

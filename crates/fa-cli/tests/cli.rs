@@ -23697,6 +23697,40 @@ fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
         "MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, COUNT(*) AS legs ORDER BY account EFFECTIVE BETWEEN '2026-04-01' AND '2026-04-30'",
     );
     assert_eq!(rows(&april), r#"[["1000",1],["6000",1]]"#, "{april:?}");
+    // fa-5c1, plan §7.4: FOR PERIOD '<from>'..'<through>' selects every
+    // period between its ends, here March's and April's legs together; the
+    // native read is bound to their days.
+    let range = "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side FOR PERIOD 'FY2026-P03'..'FY2026-P04'";
+    let spring = query(range);
+    assert_eq!(
+        rows(&spring),
+        r#"[["EUR",0,"100"],["EUR",1,"100"],["USD",0,"1250"],["USD",1,"1250"]]"#,
+        "{spring:?}"
+    );
+    assert_eq!(text(&spring, "period"), "FY2026-P03..FY2026-P04");
+    assert!(
+        text(&spring, "native").contains("__fa_period.period_start >="),
+        "{spring:?}"
+    );
+    // Certified, the range replays the same rows.
+    let certified = ok(&["query", range, "--certify", "--json"]);
+    let oid = certified
+        .lines()
+        .filter(|line| field(line, "event") == Some("report_certificate"))
+        .map(|line| text(&doc(line), "oid").to_string())
+        .next()
+        .expect("a retained query certificate");
+    let replayed = doc(&ok(&["replay", &format!("C:{oid}"), "--json"]));
+    assert_eq!(rows(&replayed), rows(&spring), "{replayed:?}");
+    // Planted: a range that ends before it starts, and one whose end the
+    // book does not hold, are refused (exit 3).
+    for statement in [
+        "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P04'..'FY2026-P03'",
+        "MATCH (l:Leg) RETURN COUNT(*) AS legs FOR PERIOD 'FY2026-P03'..'FY2099-P01'",
+    ] {
+        let (code, out) = run(&["query", statement, "--json"]);
+        assert_eq!(code, 3, "{statement}: {out}");
+    }
 
     // At the invoice's sequence the April rent is not yet recorded.
     let counted = format!("MATCH (l:Leg) RETURN COUNT(*) AS legs AS KNOWN AT {march}");
