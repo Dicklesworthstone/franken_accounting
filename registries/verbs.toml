@@ -4059,7 +4059,7 @@ doc = "Full-text search over entry descriptions and leg memos, document text and
 [[mcp.cluster]]
 name = "fa.query"
 on_demand = true
-doc = "GQL over the book's graph in the FrankenAccounting profile (plan §15.5): native reads plus AS KNOWN AT, FOR PERIOD, EFFECTIVE AT|BETWEEN and CALL fa.trial_balance, with the amount law checked before anything runs. A pure read. On demand (fa-mcp --cluster fa.query): the default surface is at its 40-tool limit."
+doc = "GQL over the book's graph in the FrankenAccounting profile (plan §15.5): native reads plus AS KNOWN AT, FOR PERIOD (one period or '<from>'..'<through>'), EFFECTIVE AT|BETWEEN, AT BRANCH and the restatement views; CALL fa.trial_balance, fa.explain_balance('<account>'), fa.statement('<definition>'), fa.open_items and fa.access_log run those reads, and CALL fa.<family>('<name>', {argument: value}) runs a registered Lantern procedure; the amount law is checked before anything runs. A pure read. On demand (fa-mcp --cluster fa.query): the default surface is at its 40-tool limit."
 
 [[mcp.cluster]]
 name = "fa.correct"
