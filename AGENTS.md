@@ -181,11 +181,16 @@ We are in early development with **no users**. Do things the **RIGHT** way with 
 
 ## Mandatory Checks After Substantive Changes
 
-```bash
-bash scripts/check.sh                   # the whole chain, including the non-Rust gates (G0 deliverable)
-```
+Gates are organized into three tiers (`fa-1qk0`):
 
-**Tier 0, before anything lands on main (fa-1qk0):** `bash scripts/tier0.sh` (`cargo fmt --all --check` plus `cargo check --workspace --all-targets`; exits 0 only on `tier0 PASS`). It proves the tree compiles and is formatted, nothing about tests. An agent without a Rust toolchain dispatches `.github/workflows/tier0.yml` (manual dispatch) on its train branch and lands only on success; "UNRUN" means do not land yet, never land anyway.
+- **Tier 0 — Unskippable compile & format gate (`bash scripts/tier0.sh`, `refs/notes/fa-tier0`):** Runs `cargo fmt --all --check` and `rch exec -- cargo check --workspace --all-targets` under `scripts/lib/gate_verdict.sh` with the same completion-marker rules as `check.sh` (falling back to the local lane on the gate host if the `rch` fleet refuses due to capacity/disk pressure, recording `lane=` and `host=` in the transcript and `refs/notes/fa-tier0` note). Every fold (`merge_train.sh fold` / `run` / `run-batch`), merge, and direct push to `main` (`scripts/hooks/pre-push`) requires a recorded Tier-0 `PASS` for that exact tree hash (`UNRUN` means "do not fold yet", never "fold anyway"). **Even RULE 0 owner overrides still require Tier 0 (`refs/notes/fa-tier0` `PASS` on the exact tree).** Tier 0 proves only that the tree is formatted and every target compiles — nothing about test results. An agent without a Rust toolchain dispatches `.github/workflows/tier0.yml` (manual dispatch) on its train branch and lands only on success.
+- **Tier 1 — Full repository gate (`bash scripts/check.sh`, `refs/notes/fa-verdict`):** Runs the entire workspace verification chain (`fmt`, `check`, `clippy --all-targets -- -D warnings`, `test-list` + `test --workspace`, `gate-evidence`, `invariants`, `robot-schema`, `fuzz-smoke`, `bench-smoke`, `conformance-mutation`, `cargo deny check`, `ubs`, `shellcheck`, registry/topology/doctrine/foundation checks, and selftests). Captured as a checksum-bound format-v3 proof bundle via `bash scripts/local_proof.sh --publish-note`.
+- **Tier 2 — Extended campaigns, external oracles, formal models, and benchmarks:** Multi-seed simulation (`fa-sim`) and mutation (`cargo-mutants` / `scripts/mutants_execute.sh`) campaigns, external CLI differential oracles (`beancount`/`hledger`/`ledger`), Lean 4 (`formal/lean`) and TLA+/Apalache (`formal/tla`) model checks, and full §17 criterion/latency benchmark baselines (`fa-bench`).
+
+```bash
+bash scripts/tier0.sh                   # Tier 0: unskippable fmt + cargo check --workspace --all-targets
+bash scripts/check.sh                   # Tier 1: the whole chain, including the non-Rust gates (G0 deliverable)
+```
 
 or, run piecemeal:
 

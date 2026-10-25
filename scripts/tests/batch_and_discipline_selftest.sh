@@ -100,7 +100,8 @@ grep -Fq "has no green verdict note for its exact tree" "$base/push.err" \
   || fail "2: pre-push hook did not print actionable refusal message"
 # Pushing to refs/heads/train/* is always allowed without a note
 git push -q origin HEAD:refs/heads/train/fa-c1-AgentA
-# Adding a green verdict note for the exact tree allows pushing to main
+# Adding a tier0 PASS note and green verdict note for the exact tree allows pushing to main
+git notes --ref=fa-tier0 add -f -m "$(printf 'tier0 v1\nverdict=pass\ntree=%s\n' "$unv_tree")" "$unv_sha"
 git notes --ref=verdicts add -f -m "$(printf 'verdict=pass\ntree=%s\n' "$unv_tree")" "$unv_sha"
 git push -q origin main
 # Remove the train ref we just used so queue is clean for batch tests

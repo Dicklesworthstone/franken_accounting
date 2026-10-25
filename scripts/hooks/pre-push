@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # =============================================================================
-# scripts/hooks/pre-push — Pre-push verdict guard (bead fa-7dx)
+# scripts/hooks/pre-push — Pre-push Tier-0 and verdict guard (beads fa-7dx, fa-1qk0)
 # =============================================================================
-# Refuses a push to `refs/heads/main` or `refs/heads/staging` unless the pushed
-# tip has a green verdict note (`refs/notes/verdicts`, `refs/notes/fa-verdict`,
-# or `refs/notes/merge-train`) bound to its exact tree hash.
+# 1. Unskippable Tier-0 guard (fa-1qk0):
+#    Refuses any push to `refs/heads/main` (or `refs/heads/master`) unless a
+#    `tier0` PASS note is recorded under `refs/notes/fa-tier0` for that exact
+#    tree hash (`verdict=pass` and `tree=<tree_sha>`).
+# 2. Full Tier-1 verdict guard (fa-7dx):
+#    When `FA_PRE_PUSH_STRICT=1` or `git config --bool fa.prePushStrict` is
+#    `true` (set by `scripts/install-hooks.sh --strict`), also requires a green
+#    verdict note (`refs/notes/verdicts`, `refs/notes/fa-verdict`,
+#    `refs/notes/merge-train`, or `refs/notes/owner-watch`) bound to the exact
+#    tree hash on `main` or `staging`.
 # Pushes to `refs/heads/train/*` and `refs/notes/*` are always allowed.
-#
-# Enforcement is active when `FA_PRE_PUSH_STRICT=1` or `git config --bool fa.prePushStrict`
-# is `true` (set by `scripts/install-hooks.sh --strict`). Otherwise emits an
-# advisory warning so concurrent swarm agents are not disrupted.
 # =============================================================================
 
 set -uo pipefail
@@ -22,6 +25,26 @@ if [ -z "$strict" ]; then
     strict=0
   fi
 fi
+
+has_tier0_pass_for_tree() {
+  local sha="$1" expected_tree="$2" note note_blob _obj
+  note="$(git notes --ref=fa-tier0 show "$sha" 2>/dev/null || true)"
+  if [ -n "$note" ] \
+    && grep -Eqx 'verdict=(pass|PASS|GREEN)' <<< "$note" \
+    && grep -Fxq "tree=$expected_tree" <<< "$note"; then
+    return 0
+  fi
+  while read -r note_blob _obj; do
+    [ -n "${note_blob:-}" ] || continue
+    note="$(git cat-file -p "$note_blob" 2>/dev/null || true)"
+    [ -n "$note" ] || continue
+    if grep -Eqx 'verdict=(pass|PASS|GREEN)' <<< "$note" \
+      && grep -Fxq "tree=$expected_tree" <<< "$note"; then
+      return 0
+    fi
+  done < <(git notes --ref=fa-tier0 list 2>/dev/null || true)
+  return 1
+}
 
 has_green_verdict_for_tree() {
   local sha="$1" expected_tree="$2" ref note
@@ -46,7 +69,31 @@ while read -r local_ref local_sha remote_ref _remote_sha; do
     refs/heads/train/*|refs/notes/*)
       continue
       ;;
-    refs/heads/main|refs/heads/staging|refs/heads/master)
+    refs/heads/main|refs/heads/master)
+      tree_sha="$(git rev-parse "${local_sha}^{tree}" 2>/dev/null || echo unknown)"
+      if ! has_tier0_pass_for_tree "$local_sha" "$tree_sha"; then
+        msg="pre-push: tip ${local_sha:0:12} (tree ${tree_sha:0:12}) pushed to $remote_ref has no tier0 PASS note under refs/notes/fa-tier0 and has no green verdict note for its exact tree.
+  Fix options:
+    1. Run Tier 0 on the tree:  bash scripts/tier0.sh --publish-note
+    2. Prove the tree locally:  bash scripts/local_proof.sh --publish-note
+    3. Queue for merge train:   git push origin HEAD:refs/heads/train/<bead>-<agent>"
+        printf 'REFUSED %s\n' "$msg" >&2
+        exit 1
+      fi
+      if ! has_green_verdict_for_tree "$local_sha" "$tree_sha"; then
+        msg="pre-push: tip ${local_sha:0:12} (tree ${tree_sha:0:12}) pushed to $remote_ref has no green verdict note for its exact tree.
+  Fix options:
+    1. Prove the tree locally:  bash scripts/local_proof.sh --publish-note
+    2. Queue for merge train:   git push origin HEAD:refs/heads/train/<bead>-<agent>"
+        if [ "$strict" = "1" ]; then
+          printf 'REFUSED %s\n' "$msg" >&2
+          exit 1
+        else
+          printf 'WARNING %s\n' "$msg" >&2
+        fi
+      fi
+      ;;
+    refs/heads/staging)
       tree_sha="$(git rev-parse "${local_sha}^{tree}" 2>/dev/null || echo unknown)"
       if ! has_green_verdict_for_tree "$local_sha" "$tree_sha"; then
         msg="pre-push: tip ${local_sha:0:12} (tree ${tree_sha:0:12}) pushed to $remote_ref has no green verdict note for its exact tree.

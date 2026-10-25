@@ -322,7 +322,7 @@ run_gate() {
   t1="$(date +%s)"
   dur=$((t1 - t0))
   local tally
-  tally="$(grep -E '^[a-z-]+: [0-9]+ passed, [0-9]+ failed, [0-9]+ unrun$' "$log" | tail -n 1)"
+  tally="$(grep -E '^[a-z0-9-]+: [0-9]+ passed, [0-9]+ failed, [0-9]+ unrun$' "$log" | tail -n 1)"
   if [ "$rc" -eq 0 ]; then
     record_step_verdict "$label" "PASS" "$started" "$finished" "$dur" "$log"
     gate_pass "$label ($tally)"
@@ -442,6 +442,7 @@ fi
 run_gate "gate-evidence-negative" "$ROOT/scripts/tests/gate_evidence_negative.sh" \
   "$ROOT" "$LOG_DIR/gate-evidence-negative"
 run_step "local-proof-selftest" bash "$ROOT/scripts/local_proof_selftest.sh"
+run_gate "tier0-selftest" "$ROOT/scripts/tests/tier0_selftest.sh"
 
 # Registries: every TOML under registries/ is consumed by compiled code and
 # validated by the fa-registry / fa-model tests, which `test` above ran. This
