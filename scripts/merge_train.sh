@@ -166,13 +166,13 @@ refresh_mirror() {
     git clone --quiet --bare --reference-if-able "$root" --dissociate "$remote_url" "$mirror" \
       || die "cannot create mirror of $remote_url"
   fi
-  git -C "$mirror" fetch --quiet "$remote_url" \
+  git -C "$mirror" fetch --quiet --prune "$remote_url" \
     "+refs/heads/*:refs/heads/*" \
     "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" \
     "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" 2>/dev/null \
-    || git -C "$mirror" fetch --quiet "$remote_url" \
+    || git -C "$mirror" fetch --quiet --prune "$remote_url" \
       "+refs/heads/*:refs/heads/*" "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null \
-    || git -C "$mirror" fetch --quiet "$remote_url" "+refs/heads/*:refs/heads/*" \
+    || git -C "$mirror" fetch --quiet --prune "$remote_url" "+refs/heads/*:refs/heads/*" \
     || die "cannot fetch $remote_url"
 }
 
