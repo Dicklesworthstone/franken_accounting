@@ -1,0 +1,10 @@
+owner-watch v1
+verdict=RED
+commit=69e236afe04e4163ff7a5b66592faa92d1e6d97a
+tree=430dd8fb61f8038d4f6e01345c22f6bec01935b9
+recorded_utc=2026-10-25T17:04:42Z
+worker=vmi1149989
+steps=clippy:FAIL,test:UNRUN
+test_totals=passed:0,failed:0
+first_error=error: calling `as_bytes` after slicing a string
+tracker_drift_no_bead=7089a599 merge: keep the docs-sync gate and origin's TigerBeetle and document-read work;
