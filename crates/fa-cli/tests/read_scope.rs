@@ -1017,6 +1017,57 @@ fn every_command_that_does_not_judge_its_reach_refuses_a_scoped_token() {
     ]);
 }
 
+/// fa-5c1 (planted negative): a query reads the whole graph, so a token
+/// scoped to one account is refused every statement before the book is
+/// opened. A statement naming an account inside the scope and one naming an
+/// account outside it get the same envelope: the refusal tells the holder
+/// nothing about the chart, and no answer is filtered down to the scope.
+#[test]
+fn an_account_scoped_token_is_refused_every_query_before_the_book_is_opened() {
+    let f = Fixture::new();
+    let (cashier, _) = f.issue("query-account", &["--account", "1000"]);
+    let refused = |statement: &str| {
+        let (exit, event) = f.run(&["--token", &cashier, "query", statement]);
+        assert_eq!(exit, 7, "{statement}: {event:?}");
+        assert_eq!(text(data(&event), "refusal_id"), "FA-REF-011", "{event:?}");
+        let message = text(data(&event), "message");
+        assert!(
+            message.contains("reaches the whole book") && message.contains("`accounts`"),
+            "{statement}: {message}"
+        );
+        assert_eq!(event.get("book"), Some(&Json::Null), "{event:?}");
+        assert_eq!(event.get("coordinate"), Some(&Json::Null), "{event:?}");
+        event
+    };
+    let inside = refused("MATCH (a:Account) WHERE a.code = '1000' RETURN a.code");
+    let outside = refused("MATCH (a:Account) WHERE a.code = '4000' RETURN a.code");
+    // The probes differ only by the statement each refusal echoes back.
+    for field in ["event", "authority", "book", "certificate", "coordinate"] {
+        assert_eq!(inside.get(field), outside.get(field), "{field}");
+    }
+    for field in ["refusal_id", "class", "exit", "cite"] {
+        assert_eq!(
+            data(&inside).get(field),
+            data(&outside).get(field),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        text(data(&inside), "message").replace("'1000'", "'4000'"),
+        text(data(&outside), "message"),
+        "the probes are indistinguishable"
+    );
+    // The same statement answers for an unscoped reader.
+    let (reader, _) = f.issue("query-reader", &[]);
+    let rows = f.rows(&[
+        "--token",
+        &reader,
+        "query",
+        "MATCH (a:Account) WHERE a.code = '4000' RETURN a.code",
+    ]);
+    assert_eq!(rows, json::parse(r#"[["4000"]]"#).unwrap());
+}
+
 /// A pinned auditor reads a complete historical ledger prefix under current
 /// authority. Output selectors cannot widen account or date caveats, and
 /// certificate retention remains a separately admitted operation.
