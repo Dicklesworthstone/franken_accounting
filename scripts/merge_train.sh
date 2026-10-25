@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # merge_train.sh — the verified landing queue from `staging` / `refs/heads/train/*`
-# to `main` (beads fa-u7u, fa-aj8, fa-7dx, fa-cat)
+# to `main` (beads fa-u7u, fa-aj8, fa-7dx, fa-cat, fa-1qk0)
 # =============================================================================
 # Supports:
 #   - `run`: single staging branch promotion (substrate-compatible) or `--batch`
@@ -9,6 +9,10 @@
 #   - `run-batch`: batched queue gating with binary-search bisection on RED,
 #                  UNRUN non-ejection, claim-before-code enforcement (fa-7dx),
 #                  and a replayable batch-size decision card with pinned fallback N=1 (fa-cat).
+#   - `fold`: folds queued `refs/heads/train/*` (or explicit train refs) onto `main`
+#             gated by `scripts/tier0.sh` (fmt + `cargo check --workspace --all-targets`),
+#             refusing to update `main` on anything but PASS; UNRUN means "do not fold yet"
+#             and never ejects a candidate (fa-1qk0).
 #   - `dry-run`: prints canonical warm gate path, designated workers, and warmth (fa-aj8).
 #   - `audit`: audits first-parent commits on `main` since `--since REV`.
 # =============================================================================
@@ -25,16 +29,20 @@ EX_CLAIM=6
 EX_UNRUN=7
 EX_VOID=125
 NOTES_REF=merge-train
+TIER0_NOTES_REF=fa-tier0
 
 usage() {
   cat <<'USAGE'
 Usage:
   bash scripts/merge_train.sh run       [--remote NAME|URL] [--main BRANCH] [--staging BRANCH]
                                         [--work DIR] [--canonical-worktree DIR] [--no-push]
-                                        [--dry-run] [--check-claims] [--batch]
+                                        [--dry-run] [--check-claims] [--batch] [--tier0-only]
   bash scripts/merge_train.sh run-batch [--remote NAME|URL] [--main BRANCH] [--work DIR]
                                         [--canonical-worktree DIR] [--max-batch N]
-                                        [--check-claims] [--no-push]
+                                        [--check-claims] [--no-push] [--tier0-only]
+  bash scripts/merge_train.sh fold      [--remote NAME|URL] [--main BRANCH] [--work DIR]
+                                        [--canonical-worktree DIR] [--max-batch N]
+                                        [--check-claims] [--no-push] [REF...]
   bash scripts/merge_train.sh dry-run   [--canonical-worktree DIR]
   bash scripts/merge_train.sh audit     --since REV [--remote NAME|URL] [--main BRANCH]
                                         [--work DIR] [--author-pattern ERE] [--strict]
@@ -54,7 +62,7 @@ say() {
 command="$1"
 shift
 case "$command" in
-  run|run-batch|audit|dry-run) ;;
+  run|run-batch|fold|audit|dry-run) ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit "$EX_USAGE" ;;
 esac
@@ -74,11 +82,16 @@ push=1
 dry_run=0
 check_claims="${FA_MERGE_TRAIN_CHECK_CLAIMS:-0}"
 batch_mode=0
+tier0_only=0
 max_batch=8
+declare -a explicit_refs=()
 if [ "$command" = "dry-run" ]; then
   dry_run=1
 elif [ "$command" = "run-batch" ]; then
   batch_mode=1
+elif [ "$command" = "fold" ]; then
+  batch_mode=1
+  tier0_only=1
 fi
 since=""
 author_pattern='users\.noreply\.github\.com'
@@ -95,11 +108,22 @@ while [ "$#" -gt 0 ]; do
     --dry-run) dry_run=1; shift ;;
     --check-claims) check_claims=1; shift ;;
     --batch) batch_mode=1; shift ;;
+    --tier0-only) tier0_only=1; shift ;;
     --since) [ "$#" -ge 2 ] || die "--since needs a value"; since="$2"; shift 2 ;;
     --author-pattern) [ "$#" -ge 2 ] || die "--author-pattern needs a value"; author_pattern="$2"; shift 2 ;;
     --strict) strict=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) die "unknown argument: $1" ;;
+    -*)
+      die "unknown argument: $1"
+      ;;
+    *)
+      if [ "$command" = "fold" ]; then
+        explicit_refs+=("$1")
+        shift
+      else
+        die "unknown argument: $1"
+      fi
+      ;;
   esac
 done
 
@@ -143,7 +167,11 @@ refresh_mirror() {
       || die "cannot create mirror of $remote_url"
   fi
   git -C "$mirror" fetch --quiet "$remote_url" \
-    "+refs/heads/*:refs/heads/*" "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null \
+    "+refs/heads/*:refs/heads/*" \
+    "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" \
+    "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" 2>/dev/null \
+    || git -C "$mirror" fetch --quiet "$remote_url" \
+      "+refs/heads/*:refs/heads/*" "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null \
     || git -C "$mirror" fetch --quiet "$remote_url" "+refs/heads/*:refs/heads/*" \
     || die "cannot fetch $remote_url"
 }
@@ -170,6 +198,27 @@ publish_note() {
   done
   say "WARNING: could not publish the note after 3 attempts"
   return 1
+}
+
+publish_tier0_note() {
+  local clone="$1" object="$2" tree_sha="$3" attempt existing
+  existing="$(git -C "$clone" notes --ref="$TIER0_NOTES_REF" show "$object" 2>/dev/null || true)"
+  if [ -z "$existing" ]; then
+    gitc -C "$clone" notes --ref="$TIER0_NOTES_REF" add -f -m "$(printf 'tier0 v1\nverdict=pass\ncommit=%s\ntree=%s\nhost=%s\nrecorded_utc=%s\n' \
+      "$object" "$tree_sha" "$(hostname 2>/dev/null || echo unknown)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" "$object" >/dev/null 2>&1 || true
+  fi
+  [ "$push" -eq 1 ] || return 0
+  for attempt in 1 2 3; do
+    if git -C "$clone" push --quiet "$remote_url" \
+        "refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" 2>/dev/null; then
+      return 0
+    fi
+    git -C "$clone" fetch --quiet "$remote_url" \
+      "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF-remote" 2>/dev/null || true
+    gitc -C "$clone" notes --ref="$TIER0_NOTES_REF" merge -q -s cat_sort_uniq \
+      "$TIER0_NOTES_REF-remote" 2>/dev/null || true
+  done
+  return 0
 }
 
 note_body() {
@@ -297,6 +346,53 @@ print(chosen)
 PY
 }
 
+# tier0_in_cand <cand_dir> <label_tag> -> sets TIER0_LAST_VERDICT (PASS|RED|UNRUN), TIER0_LAST_FAIL_LINE, TIER0_LAST_LOG
+TIER0_LAST_VERDICT=""
+TIER0_LAST_FAIL_LINE=""
+TIER0_LAST_LOG=""
+TIER0_COUNT=0
+
+tier0_in_cand() {
+  local cand="$1" tag="$2"
+  TIER0_COUNT=$((TIER0_COUNT + 1))
+  local cand_sha
+  cand_sha="$(git -C "$cand" rev-parse HEAD)"
+  local t0_dir="$work/proofs/$stamp-tier0-${tag}-${TIER0_COUNT}-${cand_sha:0:12}"
+  local t0_log="$t0_dir.stdout.log"
+  local t0_err="$t0_dir.stderr.log"
+  mkdir -p "$t0_dir"
+  : "${CARGO_TARGET_DIR:=$work/target}"
+  : "${RCH_WORKER:=${FA_GATE_PRIMARY_WORKER:-hz2}}"
+  export CARGO_TARGET_DIR RCH_WORKER
+
+  local t0_rc=0
+  (cd "$cand" && bash scripts/tier0.sh --publish-note --log-dir "$t0_dir") >"$t0_log" 2>"$t0_err" || t0_rc=$?
+  TIER0_LAST_LOG="$t0_log"
+  TIER0_LAST_FAIL_LINE=""
+
+  if [ "$t0_rc" -eq 0 ] \
+    && grep -Eq '^PASS fmt([[:space:]]|$)' "$t0_log" \
+    && grep -Eq '^PASS check([[:space:]]|$)' "$t0_log" \
+    && ! grep -Eq '^(FAIL|UNRUN|RED)([[:space:]]|$)' "$t0_log"; then
+    TIER0_LAST_VERDICT="PASS"
+    say "TIER0 PASS on ${cand_sha:0:12} ($tag); transcript: $t0_log"
+    return 0
+  fi
+
+  if [ "$t0_rc" -eq 2 ] \
+    && grep -Eq '^UNRUN([[:space:]]|$)' "$t0_log" \
+    && ! grep -Eq '^RED([[:space:]]|$)|: [0-9]+ passed, [1-9][0-9]* failed,' "$t0_log"; then
+    TIER0_LAST_VERDICT="UNRUN"
+    say "TIER0 UNRUN on ${cand_sha:0:12} ($tag): do not fold yet; transcript: $t0_log"
+    return 2
+  fi
+
+  TIER0_LAST_VERDICT="RED"
+  TIER0_LAST_FAIL_LINE="$(grep -a '^FAIL ' "$t0_log" 2>/dev/null | head -n 1 || true)"
+  say "TIER0 RED on ${cand_sha:0:12} ($tag): ${TIER0_LAST_FAIL_LINE:-tier0 failed}; transcript: $t0_log"
+  return 1
+}
+
 # gate_tree_in_cand <cand_dir> <label_tag> -> sets GATE_LAST_VERDICT (PASS|RED|UNRUN|VOID), GATE_LAST_FAIL_LINE
 GATE_LAST_VERDICT=""
 GATE_LAST_FAIL_LINE=""
@@ -305,6 +401,29 @@ GATE_COUNT=0
 gate_tree_in_cand() {
   local cand="$1" tag="$2"
   GATE_COUNT=$((GATE_COUNT + 1))
+  GATE_LAST_FAIL_LINE=""
+
+  if [ -f "$cand/scripts/tier0.sh" ]; then
+    tier0_in_cand "$cand" "$tag"
+    if [ "$TIER0_LAST_VERDICT" = "UNRUN" ]; then
+      GATE_LAST_VERDICT="UNRUN"
+      return 2
+    fi
+    if [ "$TIER0_LAST_VERDICT" != "PASS" ]; then
+      GATE_LAST_VERDICT="RED"
+      GATE_LAST_FAIL_LINE="$TIER0_LAST_FAIL_LINE"
+      return 1
+    fi
+    if [ "$tier0_only" -eq 1 ] || [ ! -f "$cand/scripts/local_proof.sh" ]; then
+      GATE_LAST_VERDICT="PASS"
+      return 0
+    fi
+  elif [ "$tier0_only" -eq 1 ]; then
+    GATE_LAST_VERDICT="RED"
+    GATE_LAST_FAIL_LINE="FAIL tier0: scripts/tier0.sh missing in candidate tree"
+    return 1
+  fi
+
   local cand_sha
   cand_sha="$(git -C "$cand" rev-parse HEAD)"
   local proof="$work/proofs/$stamp-${tag}-${GATE_COUNT}-${cand_sha:0:12}"
@@ -350,9 +469,23 @@ run_batch_train() {
     || die "remote has no $main_branch branch"
 
   local -a raw_refs=()
-  while IFS= read -r ref; do
-    [ -n "$ref" ] && raw_refs+=("$ref")
-  done < <(git -C "$mirror" for-each-ref --format='%(refname)' 'refs/heads/train/' | LC_ALL=C sort)
+  if [ "${#explicit_refs[@]}" -gt 0 ]; then
+    local raw_arg norm_ref
+    for raw_arg in "${explicit_refs[@]}"; do
+      case "$raw_arg" in
+        refs/heads/*) norm_ref="$raw_arg" ;;
+        origin/*) norm_ref="refs/heads/${raw_arg#origin/}" ;;
+        *) norm_ref="refs/heads/$raw_arg" ;;
+      esac
+      git -C "$mirror" rev-parse --verify --quiet "${norm_ref}^{commit}" >/dev/null \
+        || die "remote has no branch $norm_ref"
+      raw_refs+=("$norm_ref")
+    done
+  else
+    while IFS= read -r ref; do
+      [ -n "$ref" ] && raw_refs+=("$ref")
+    done < <(git -C "$mirror" for-each-ref --format='%(refname)' 'refs/heads/train/' | LC_ALL=C sort)
+  fi
 
   if [ "${#raw_refs[@]}" -eq 0 ]; then
     say "NOTHING: no queued refs under refs/heads/train/*"
@@ -371,7 +504,10 @@ run_batch_train() {
     cand="$work/candidates/$stamp-batch-$$"
     git clone --quiet --local "$mirror" "$cand" || die "cannot clone candidate"
   fi
-  git -C "$cand" fetch --quiet "$remote_url" "+refs/heads/*:refs/remotes/origin/*" "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null || true
+  git -C "$cand" fetch --quiet "$remote_url" \
+    "+refs/heads/*:refs/remotes/origin/*" \
+    "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" \
+    "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" 2>/dev/null || true
 
   # Filter eligible candidates (not already ancestor of main, and passing claim-before-code)
   local -a active_refs=()
@@ -440,7 +576,7 @@ run_batch_train() {
       say "UNRUN: infrastructure offloader did not run stack; retrying once without ejecting any candidate"
       gate_tree_in_cand "$cand" "stack-retry"
       if [ "$GATE_LAST_VERDICT" = "UNRUN" ]; then
-        say "UNRUN: stack remained UNRUN; no candidate ejected"
+        say "UNRUN: stack remained UNRUN; do not fold yet; no candidate ejected"
         return "$EX_UNRUN"
       fi
     fi
@@ -449,6 +585,7 @@ run_batch_train() {
       local tip_sha="${stacked_merges[$((count - 1))]}"
       local tip_tree
       tip_tree="$(git -C "$cand" rev-parse "${tip_sha}^{tree}")"
+      publish_tier0_note "$cand" "$tip_sha" "$tip_tree"
       if [ "$push" -eq 1 ]; then
         git -C "$cand" push --quiet "$remote_url" "$tip_sha:refs/heads/$main_branch" \
           || { say "STALE: $main_branch moved during batch proof"; return "$EX_STALE"; }
@@ -476,6 +613,10 @@ run_batch_train() {
       git -C "$cand" checkout --quiet --detach "$mid_merge"
       say "BISECT testing prefix 0..$mid (${stacked_refs[$mid]})"
       gate_tree_in_cand "$cand" "bisect-$mid"
+      if [ "$GATE_LAST_VERDICT" = "UNRUN" ]; then
+        say "UNRUN during bisection; do not fold yet; no candidate ejected"
+        return "$EX_UNRUN"
+      fi
       if [ "$GATE_LAST_VERDICT" = "PASS" ]; then
         lo=$((mid + 1))
       else
@@ -554,7 +695,9 @@ run_train() {
     cand="$work/candidates/$stamp-$$"
     git clone --quiet --local "$mirror" "$cand" || die "cannot clone candidate"
   fi
-  git -C "$cand" fetch --quiet "$remote_url" "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null || true
+  git -C "$cand" fetch --quiet "$remote_url" \
+    "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" \
+    "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" 2>/dev/null || true
   git -C "$cand" checkout --quiet --detach "$main_sha" || die "cannot check out $main_sha"
   say "candidate: $cand (warm=$warm_flag)"
   say "merging $staging_branch ${staging_sha:0:12} into $main_branch ${main_sha:0:12} (--no-ff)"
@@ -575,6 +718,39 @@ run_train() {
   local cand_sha cand_tree
   cand_sha="$(git -C "$cand" rev-parse HEAD)"
   cand_tree="$(git -C "$cand" rev-parse 'HEAD^{tree}')"
+
+  # Unskippable Tier-0 gate before any promotion (bead fa-1qk0)
+  if [ -f "$cand/scripts/tier0.sh" ]; then
+    tier0_in_cand "$cand" "staging"
+    if [ "$TIER0_LAST_VERDICT" = "UNRUN" ]; then
+      say "UNRUN: tier0 did not run on ${cand_sha:0:12}; do not fold yet; nothing promoted"
+      return "$EX_UNRUN"
+    fi
+    if [ "$TIER0_LAST_VERDICT" != "PASS" ]; then
+      say "RED: tier0 failed on ${cand_sha:0:12}; $staging_branch bounced"
+      printf '    %s\n' "${TIER0_LAST_FAIL_LINE:-FAIL tier0}"
+      publish_note "$cand" "$staging_sha" "$(note_body red "main=$main_sha" "staging=$staging_sha" "candidate=$cand_sha" "tree=$cand_tree" "warm=$warm_flag" "fail: ${TIER0_LAST_FAIL_LINE:-FAIL tier0}")"
+      return "$EX_RED"
+    fi
+    if [ "$tier0_only" -eq 1 ] || [ ! -f "$cand/scripts/local_proof.sh" ]; then
+      publish_tier0_note "$cand" "$cand_sha" "$cand_tree"
+      if [ "$push" -eq 0 ]; then
+        say "PASS (--no-push): ${cand_sha:0:12} would be promoted to $main_branch"
+        publish_note "$cand" "$cand_sha" "$(note_body pass "main=$main_sha" "staging=$staging_sha" "candidate=$cand_sha" "tree=$cand_tree" "warm=$warm_flag" "check_exit=0")"
+        return "$EX_NOTHING"
+      fi
+      if ! git -C "$cand" push --quiet "$remote_url" "$cand_sha:refs/heads/$main_branch" 2>/dev/null; then
+        say "STALE: $main_branch moved during tier0; nothing promoted (rerun the train)"
+        return "$EX_STALE"
+      fi
+      say "PROMOTED: $main_branch ${main_sha:0:12} -> ${cand_sha:0:12}"
+      publish_note "$cand" "$cand_sha" "$(note_body pass "main=$main_sha" "staging=$staging_sha" "candidate=$cand_sha" "tree=$cand_tree" "warm=$warm_flag" "check_exit=0")"
+      return "$EX_NOTHING"
+    fi
+  elif [ "$tier0_only" -eq 1 ]; then
+    say "RED: scripts/tier0.sh missing on ${cand_sha:0:12}"
+    return "$EX_RED"
+  fi
 
   local proof="$work/proofs/$stamp-${cand_sha:0:12}"
   local log="$work/proofs/$stamp-${cand_sha:0:12}.train.log"
@@ -606,6 +782,7 @@ run_train() {
 
   if [ "$verdict" = pass ] && [ "$check_exit" = 0 ] && [ "$stable" = true ] \
       && [ "$proved_commit" = "$cand_sha" ]; then
+    publish_tier0_note "$cand" "$cand_sha" "$cand_tree"
     if [ "$push" -eq 0 ]; then
       say "PASS (--no-push): ${cand_sha:0:12} would be promoted to $main_branch"
       publish_note "$cand" "$cand_sha" "$(note_body pass "${base_kv[@]}")"
@@ -678,6 +855,6 @@ audit_train() {
 }
 
 case "$command" in
-  run|run-batch) run_train; exit $? ;;
+  run|run-batch|fold) run_train; exit $? ;;
   audit) audit_train; exit $? ;;
 esac
