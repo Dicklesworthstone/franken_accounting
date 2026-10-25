@@ -8,7 +8,8 @@ fn native(text: &str) -> (Profiled, Native) {
         | Selection::ExplainBalance { .. }
         | Selection::OpenItems { .. }
         | Selection::Statement { .. }
-        | Selection::AccessLog { .. } => None,
+        | Selection::AccessLog { .. }
+        | Selection::Procedure { .. } => None,
     }
     .expect("a native read");
     (profiled, native)
@@ -702,6 +703,75 @@ fn an_amount_aggregate_returns_its_keys_and_arguments_for_exact_aggregation() {
 /// fa-5c1, the runtime graph: `CALL fa.access_log` is the AccessEvent read
 /// itself, at trunk's head, optionally one reader's; every coordinate it
 /// cannot honour is refused with the admissible form, never ignored.
+#[test]
+fn a_lantern_procedure_call_runs_the_registered_procedure() {
+    let call = rewrite(
+        "CALL fa.trace('libr', {account: '1000', source: 'E:ab12', round_power: 2}) EFFECTIVE AT '2026-03-31' AS KNOWN AT 7",
+    )
+    .unwrap();
+    assert_eq!(
+        call.selection,
+        Selection::Procedure {
+            id: "trace.libr".into(),
+            arguments: vec![
+                ("account".into(), ProcedureArgument::Text("1000".into())),
+                ("source".into(), ProcedureArgument::Text("E:ab12".into())),
+                ("round_power".into(), ProcedureArgument::Integer("2".into())),
+            ],
+        }
+    );
+    assert_eq!(call.known_at, KnownAt::Seq(7));
+    assert_eq!(
+        call.effective,
+        Some(fa_time::EffectiveSelector::AsOf(
+            DateDay::parse("2026-03-31").unwrap()
+        ))
+    );
+    assert_eq!(
+        rewrite("CALL fa.jet('round_amounts')").unwrap().selection,
+        Selection::Procedure {
+            id: "jet.round_amounts".into(),
+            arguments: Vec::new(),
+        }
+    );
+    for (text, says) in [
+        (
+            "CALL fa.jet('round_amounts') FOR PERIOD 'FY2026-P03'",
+            "not for a period",
+        ),
+        (
+            "CALL fa.jet('round_amounts') EFFECTIVE BETWEEN '2026-01-01' AND '2026-01-31'",
+            "not BETWEEN",
+        ),
+        (
+            "EXPLAIN (CERTIFICATE) CALL fa.jet('round_amounts')",
+            "fa finding record",
+        ),
+        ("CALL fa.jet('Round-Amounts')", "lowercase letters"),
+        (
+            "CALL fa.trace('libr', {round_power: high})",
+            "quoted text or an integer",
+        ),
+        (
+            "CALL fa.trace('libr', {round_power: 1, round_power: 2})",
+            "named twice",
+        ),
+        ("CALL fa.trace('libr', 'x')", "one map"),
+        (
+            "CALL fa.jet('round_amounts') YIELD findings",
+            "stands alone",
+        ),
+        (
+            "CALL fa.jet('round_amounts') AS KNOWN AT '2026-03-15T00:00:00Z'",
+            "recorded sequence",
+        ),
+    ] {
+        let r = refused(text);
+        assert_eq!(r.law, Law::Profile, "{text}");
+        assert!(r.message.contains(says), "{text}: {r:?}");
+    }
+}
+
 #[test]
 fn the_access_log_procedure_reads_the_runtime_graph_at_the_head() {
     assert!(PROCEDURES.contains(&"fa.access_log"));

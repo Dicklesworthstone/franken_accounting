@@ -23858,6 +23858,49 @@ fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
     ]);
     assert_eq!(exit, 3, "{out}");
     assert!(out.contains("FA-REF-188"), "{out}");
+    // CALL fa.<family>('<name>') is fa procedure run <family>.<name>, with
+    // EFFECTIVE AT as its --effective-through and AS KNOWN AT as --known-at.
+    let direct = doc(&ok(&["procedure", "run", "jet.round_amounts", "--json"]));
+    assert_eq!(
+        query("CALL fa.jet('round_amounts')").render(),
+        direct.render()
+    );
+    let aged = doc(&ok(&[
+        "procedure",
+        "run",
+        "aging.open_items",
+        "--effective-through",
+        "2026-03-31",
+        "--known-at",
+        &march.to_string(),
+        "--json",
+    ]));
+    let called = query(&format!(
+        "CALL fa.aging('open_items') EFFECTIVE AT '2026-03-31' AS KNOWN AT {march}"
+    ));
+    assert_eq!(called.render(), aged.render());
+    // Planted: an unregistered procedure exits as fa procedure run does; a
+    // run is never certified as a query, and a parameter is an integer.
+    let (exit, out) = run(&["query", "CALL fa.jet('no_such_test')", "--json"]);
+    let (direct, direct_out) = run(&["procedure", "run", "jet.no_such_test", "--json"]);
+    assert_eq!(exit, direct, "{out}\n{direct_out}");
+    assert_ne!(exit, 0, "{out}");
+    for argv in [
+        &[
+            "query",
+            "CALL fa.jet('round_amounts')",
+            "--certify",
+            "--json",
+        ][..],
+        &[
+            "query",
+            "CALL fa.jet('round_amounts', {round_power: 'two'})",
+            "--json",
+        ][..],
+    ] {
+        let (exit, out) = run(argv);
+        assert_eq!(exit, 2, "{argv:?}: {out}");
+    }
     let open = doc(&ok(&[
         "open-items",
         "--as-known-at",

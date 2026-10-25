@@ -135,6 +135,9 @@ fn compiled(statement: &str, known_at: CommitSeq) -> Result<(Native, Option<Stri
         Selection::AccessLog { .. } => Err(invalid(
             "CALL fa.access_log reads the access events at the head; it has no certificate",
         )),
+        Selection::Procedure { .. } => Err(invalid(
+            "a procedure CALL is recorded with fa finding record, not certified as a query",
+        )),
     }
 }
 

@@ -91,6 +91,9 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             return crate::cli::statement_cmd(ctx, &read);
         }
+        QuerySelection::Procedure { id, arguments } => {
+            return crate::cli::procedure_cmd(ctx, &lantern_args(args, &profiled, id, arguments)?);
+        }
         QuerySelection::OpenItems { account } => {
             let mut read = procedure_args(args, &profiled, &["open-items"]);
             if let Some(code) = account {
@@ -265,6 +268,64 @@ fn effective_label(
         (None, Some(effective)) => Some(effective),
         (Some(code), Some(effective)) => Some(format!("period:{code};{effective}")),
     }
+}
+
+/// The `fa procedure run <id>` a Lantern procedure CALL runs: the statement's
+/// known-at as `--known-at`, its `EFFECTIVE AT` day as `--effective-through`,
+/// `account`, `source` and `budget` as those flags, and every other argument
+/// as an integer `--param`. A run is recorded by `fa finding record`, not
+/// certified, and reads trunk.
+fn lantern_args(
+    args: &Args,
+    profiled: &fa::ProfiledQuery,
+    id: &str,
+    arguments: &[(String, fa::QueryArgument)],
+) -> Result<Args, Fail> {
+    const FIX: &str = "fa query \"CALL fa.trace('libr', {account: '1000', source: 'E:<entry vid>', round_power: 2}) EFFECTIVE AT '2026-03-31'\" --json; record a run: fa finding record <id>";
+    if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+        return Err(usage(
+            "a procedure CALL is not certified as a query; record its run with fa finding record <id>",
+            FIX,
+        ));
+    }
+    if args
+        .flag("--branch")
+        .is_some_and(|branch| branch != "trunk")
+    {
+        return Err(usage("a procedure CALL reads trunk", FIX));
+    }
+    let mut read = args.clone();
+    read.positional = vec!["procedure".to_string(), "run".to_string(), id.to_string()];
+    if let QueryKnownAt::Seq(seq) = &profiled.known_at {
+        read.flags
+            .insert("--known-at".to_string(), vec![seq.to_string()]);
+    }
+    if let Some(fa_time::EffectiveSelector::AsOf(day)) = &profiled.effective {
+        read.flags
+            .insert("--effective-through".to_string(), vec![day.render()]);
+    }
+    for (name, value) in arguments {
+        match (name.as_str(), value) {
+            (
+                "account" | "source" | "budget",
+                fa::QueryArgument::Text(text) | fa::QueryArgument::Integer(text),
+            ) => {
+                read.flags.insert(format!("--{name}"), vec![text.clone()]);
+            }
+            (_, fa::QueryArgument::Integer(digits)) => read
+                .flags
+                .entry("--param".to_string())
+                .or_default()
+                .push(format!("{name}={digits}")),
+            (_, fa::QueryArgument::Text(_)) => {
+                return Err(usage(
+                    format!("`{name}` is a procedure parameter, and parameters are integers"),
+                    FIX,
+                ));
+            }
+        }
+    }
+    Ok(read)
 }
 
 /// The command a `CALL fa.<read>` runs: `positional`, with the statement's

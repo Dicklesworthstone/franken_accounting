@@ -153,6 +153,21 @@ pub enum Selection {
     /// `CALL fa.access_log('<reader>')`: the AccessEvents recorded so far, or
     /// one reader's, as `fa access log` reads them.
     AccessLog { reader: Option<String> },
+    /// `CALL fa.<family>('<name>'[, {<argument>: <value>, ...}])`: the
+    /// registered Lantern procedure `<family>.<name>`, as `fa procedure run`
+    /// runs it, with the statement's known-at and its `EFFECTIVE AT` day as
+    /// the run's effective-through. Arguments are in the order written.
+    Procedure {
+        id: String,
+        arguments: Vec<(String, ProcedureArgument)>,
+    },
+}
+
+/// A procedure CALL's argument value, as written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcedureArgument {
+    Text(String),
+    Integer(String),
 }
 
 /// A native read with its selectors compiled in, waiting only for the
@@ -784,6 +799,13 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
         String::new()
     };
     let at = |i: usize| lexed.tokens.get(i).map_or(lexed.text.len(), |t| t.start);
+    if named
+        && !PROCEDURES.contains(&procedure.as_str())
+        && lexed.punct(4, '(')
+        && lexed.kind(5) == Some(Kind::Quoted)
+    {
+        return lantern_call(lexed, selectors);
+    }
     if !named || !PROCEDURES.contains(&procedure.as_str()) {
         return Err(Refusal::new(
             Law::Profile,
@@ -910,6 +932,104 @@ fn call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> 
             Ok(Selection::OpenItems { account })
         }
     }
+}
+
+/// `CALL fa.<family>('<name>'[, {<argument>: <value>, ...}])`: a registered
+/// Lantern procedure, run as `fa procedure run <family>.<name>` (which judges
+/// the id and its arguments). It reads at the statement's known-at, through
+/// its `EFFECTIVE AT` day; a procedure takes no period, range, view, branch or
+/// certificate (record a run with `fa finding record`).
+fn lantern_call(lexed: &Lexed<'_>, selectors: &Selectors) -> Result<Selection, Refusal> {
+    const FIX: &str = "CALL fa.jet('round_amounts') | CALL fa.trace('libr', {account: '1000', source: 'E:<entry vid>'}) EFFECTIVE AT '2026-03-31' [AS KNOWN AT <seq>]; arguments are integer parameters, account, source and budget";
+    let at = |i: usize| lexed.tokens.get(i).map_or(lexed.text.len(), |t| t.start);
+    let refuse = |i: usize, message: &str| Err(Refusal::new(Law::Profile, at(i), message, FIX));
+    let name = lexed.unquoted(5);
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return refuse(
+            5,
+            "a procedure name is lowercase letters, digits and underscores",
+        );
+    }
+    let id = format!("{}.{name}", lexed.str(3));
+    let mut arguments = Vec::new();
+    let mut end = 6;
+    if lexed.punct(end, ',') {
+        if !lexed.punct(end + 1, '{') {
+            return refuse(
+                end + 1,
+                "a procedure's arguments are one map: {name: value, ...}",
+            );
+        }
+        end += 2;
+        loop {
+            if lexed.punct(end, '}') && arguments.is_empty() {
+                end += 1;
+                break;
+            }
+            let key = match lexed.kind(end) {
+                Some(Kind::Word) => lexed.str(end).to_string(),
+                _ => return refuse(end, "a procedure argument is named: {name: value}"),
+            };
+            if !lexed.punct(end + 1, ':') {
+                return refuse(end + 1, "a procedure argument is name: value");
+            }
+            let value = match lexed.kind(end + 2) {
+                Some(Kind::Quoted) => ProcedureArgument::Text(lexed.unquoted(end + 2)),
+                Some(Kind::Digits) => ProcedureArgument::Integer(lexed.str(end + 2).to_string()),
+                _ => {
+                    return refuse(
+                        end + 2,
+                        "a procedure argument is a quoted text or an integer (no float, no parameter)",
+                    );
+                }
+            };
+            if arguments.iter().any(|(named, _)| *named == key) {
+                return refuse(end, &format!("the argument `{key}` is named twice"));
+            }
+            arguments.push((key, value));
+            end += 3;
+            if lexed.punct(end, ',') {
+                end += 1;
+            } else if lexed.punct(end, '}') {
+                end += 1;
+                break;
+            } else {
+                return refuse(end, "a procedure's argument map is {name: value, ...}");
+            }
+        }
+    }
+    if !lexed.punct(end, ')') || end + 1 != lexed.tokens.len() {
+        return refuse(
+            end,
+            &format!(
+                "CALL fa.{id} stands alone in this build (its name and one argument map; no YIELD or further clauses)"
+            ),
+        );
+    }
+    let reason = if selectors.period.is_some() {
+        Some("a procedure reads through a day, not for a period: EFFECTIVE AT '<date>'")
+    } else if matches!(selectors.effective, Some(EffectiveSelector::Range { .. })) {
+        Some("a procedure reads through one day: EFFECTIVE AT '<date>', not BETWEEN")
+    } else if matches!(
+        selectors.known_at,
+        Some(KnownAt::Instant(_) | KnownAt::Reported(_))
+    ) {
+        Some("a procedure reads at a recorded sequence: AS KNOWN AT <seq> or HEAD")
+    } else if selectors.branch.is_some() {
+        Some("a procedure reads trunk")
+    } else if selectors.certify {
+        Some("a procedure run is not certified as a query; record it: fa finding record <id>")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        return Err(Refusal::new(Law::Profile, 0, reason, FIX));
+    }
+    Ok(Selection::Procedure { id, arguments })
 }
 
 /// The root clause keywords: a native statement's clauses begin with one.

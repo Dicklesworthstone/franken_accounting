@@ -20553,7 +20553,7 @@ fn procedure_family(ctx: &mut Ctx<'_>, args: &Args, family: &str, fix: &str) -> 
     Ok(())
 }
 
-fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let sub = args.positional.get(1).map(String::as_str);
     let example = "fa procedure run jet.round_amounts --book <dir> --json";
