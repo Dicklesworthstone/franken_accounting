@@ -2,7 +2,7 @@
 
 - **Oracle:** `tigerbeetle_corpus_v1 (in-house simulator in fa-formats)`
 - **Proof Class:** `self-consistency (simulator vs. author-written expectations)`
-- **No-Claim Boundary:** The scenarios run through a TigerBeetle-semantics simulator inside fa-formats and are compared with expectations written by this project. The FrankenAccounting posting kernel is not exercised and TigerBeetle itself is not run, so no agreement with either is claimed; running the corpus through the kernel is fa-w3n6.
+- **No-Claim Boundary:** The scenarios run through a TigerBeetle-semantics simulator inside fa-formats and are compared with expectations written by this project. This matrix does not exercise the FrankenAccounting posting kernel: tests/tigerbeetle.rs runs the same corpus through it (fa-w3n6). TigerBeetle itself is not run, so no agreement with TigerBeetle is claimed.
 
 | Fixture | Expected | Observed | Divergence | Reason |
 |---|---|---|---|---|
@@ -14,3 +14,4 @@
 | `tb_06_double_resolution_refused` | `["P1:committed", "V1:committed", "R2:refused_already_resolved"]; ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]` | `["P1:committed", "V1:committed", "R2:refused_already_resolved"]; ["1000:dp=0:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=0"]` | `none` | Exact agreement: a pending reservation has at most one resolution. |
 | `tb_07_reserved_availability_limit` | `["P1:committed", "T2:refused_exceeds_limit"]; ["1000:dp=7000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=7000:cpost=0"]` | `["P1:committed", "T2:refused_exceeds_limit"]; ["1000:dp=7000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=7000:cpost=0"]` | `none` | Exact agreement on worst-case pending reservation against account limit (FA-INV-09). |
 | `tb_08_capture_exceeds_pending_refused` | `["P1:committed", "R1:refused_exceeds_pending"]; ["1000:dp=5000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=5000:cpost=0"]` | `["P1:committed", "R1:refused_exceeds_pending"]; ["1000:dp=5000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=5000:cpost=0"]` | `none` | Exact agreement: capture amount cannot exceed reserved pending amount. |
+| `tb_09_partial_capture_releases_the_whole_hold_on_a_limited_account` | `["P1:committed", "R1:committed", "T2:committed"]; ["1000:dp=0:dpost=10000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=10000"]` | `["P1:committed", "R1:committed", "T2:committed"]; ["1000:dp=0:dpost=10000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=10000"]` | `none` | Exact agreement: post_pending posts the captured amount and releases the full pending amount (debits_pending falls by 8000, not by 2000), so the limit is judged against debits_posted alone. |

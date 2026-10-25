@@ -566,10 +566,10 @@ fn ads_reader_refuses_conflicting_headers_line_numbers_and_metadata() {
 #[test]
 fn tigerbeetle_semantic_corpus_agrees_on_all_scenarios_and_catches_planted_mutation() {
     let corpus = TbCorpus::embedded().expect("tigerbeetle_semantics.toml");
-    assert_eq!(corpus.scenarios.len(), 8);
+    assert_eq!(corpus.scenarios.len(), 9);
     let results = corpus
         .evaluate_all()
-        .expect("all 8 TigerBeetle semantic scenarios must agree");
+        .expect("all 9 TigerBeetle semantic scenarios must agree");
     for r in &results {
         println!(
             "judged TigerBeetle scenario {}: outcomes={:?} balances={:?} divergence={}",
@@ -845,7 +845,7 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
         schema_version: 1,
         oracle: "tigerbeetle_corpus_v1 (in-house simulator in fa-formats)".to_owned(),
         proof_class: "self-consistency (simulator vs. author-written expectations)".to_owned(),
-        no_claim_boundary: "The scenarios run through a TigerBeetle-semantics simulator inside fa-formats and are compared with expectations written by this project. The FrankenAccounting posting kernel is not exercised and TigerBeetle itself is not run, so no agreement with either is claimed; running the corpus through the kernel is fa-w3n6.".to_owned(),
+        no_claim_boundary: "The scenarios run through a TigerBeetle-semantics simulator inside fa-formats and are compared with expectations written by this project. This matrix does not exercise the FrankenAccounting posting kernel: tests/tigerbeetle.rs runs the same corpus through it (fa-w3n6). TigerBeetle itself is not run, so no agreement with TigerBeetle is claimed.".to_owned(),
         notes: String::new(),
         rows: tb_corpus
             .scenarios

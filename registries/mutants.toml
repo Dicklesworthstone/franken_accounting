@@ -367,3 +367,14 @@ replace = "(\"mode\", s(&format!(\"{}{}\", if tb.activity { \"activity\" } else 
 law = "FA-INV-11.core"
 killed_by = ["fa-cli::tests/polish_bar.rs::verify_determinism"]
 description = "Inject a wall-clock read into fa tb's robot output, so the same closure no longer prints byte-identical bytes. This is the planted negative fa-nmk4 names for verify-determinism: a timestamp read in a read verb must fail the Polish Bar."
+
+# ---- 13. Two-phase release on a limited account (fa-w3n6 TigerBeetle corpus)
+
+[[mutant]]
+id = "MUT-037"
+file = "crates/fa-journal/src/limit.rs"
+find = "            m.release(leg.side, leg.amount.mantissa)?;"
+replace = "            m.release(leg.side, leg.amount.mantissa - legs.iter().filter(|p| p.account_ref == leg.account_ref && p.side == leg.side).map(|p| p.amount.mantissa).sum::<i128>())?;"
+law = "FA-INV-15.availability"
+killed_by = ["fa-formats::tests/tigerbeetle.rs::corpus_runs_through_kernel"]
+description = "A partial post of a hold releases only the unposted remainder from the limited account's LimitCell (20 of an 80 hold after posting 60) instead of the hold's full original legs (plan §5.4). The planted negative fa-w3n6 names: in the TigerBeetle corpus run through the kernel, tb_09's partial capture of an 8000 hold on a 10000-limit account posts 6000 while the cell still reserves 6000, so the capture itself is refused FA-REF-091, the hold stays pending, and the follow-up transfer is refused too."
