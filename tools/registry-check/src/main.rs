@@ -1107,7 +1107,7 @@ fn scan_text_for_bead_ids(text: &str, ids: &mut BTreeSet<String>) {
                 .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'.')
                 .count();
             if (3..=6).contains(&len) {
-                let next = text[i + 3 + len..].as_bytes().first().copied();
+                let next = bytes.get(i + 3 + len).copied();
                 if !next.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
                     ids.insert(text[i..i + 3 + len].to_string());
                 }
@@ -1253,7 +1253,7 @@ pub fn check_readme_agents_sync(
             aliases.push((vec![name], expands));
         }
     }
-    aliases.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    aliases.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
     let (above_tldr, _) = readme_text
         .split_once("\n## TL;DR\n")
