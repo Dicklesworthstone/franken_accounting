@@ -30,6 +30,7 @@ EX_UNRUN=7
 EX_VOID=125
 NOTES_REF=merge-train
 TIER0_NOTES_REF=fa-tier0
+VERDICT_NOTES_REF=fa-verdict
 
 usage() {
   cat <<'USAGE'
@@ -42,7 +43,8 @@ Usage:
                                         [--check-claims] [--no-push] [--tier0-only]
   bash scripts/merge_train.sh fold      [--remote NAME|URL] [--main BRANCH] [--work DIR]
                                         [--canonical-worktree DIR] [--max-batch N]
-                                        [--check-claims] [--no-push] [REF...]
+                                        [--check-claims] [--no-push] [--tier0-only] [REF...]
+  bash scripts/merge_train.sh update-readme --commit SHA --status PASS|RED|UNRUN [--date YYYY-MM-DD] [--file PATH]
   bash scripts/merge_train.sh dry-run   [--canonical-worktree DIR]
   bash scripts/merge_train.sh audit     --since REV [--remote NAME|URL] [--main BRANCH]
                                         [--work DIR] [--author-pattern ERE] [--strict]
@@ -62,7 +64,7 @@ say() {
 command="$1"
 shift
 case "$command" in
-  run|run-batch|fold|audit|dry-run) ;;
+  run|run-batch|fold|audit|dry-run|update-readme) ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit "$EX_USAGE" ;;
 esac
@@ -84,6 +86,10 @@ check_claims="${FA_MERGE_TRAIN_CHECK_CLAIMS:-0}"
 batch_mode=0
 tier0_only=0
 max_batch=8
+readme_commit=""
+readme_status=""
+readme_date=""
+readme_file="$root/README.md"
 declare -a explicit_refs=()
 if [ "$command" = "dry-run" ]; then
   dry_run=1
@@ -91,7 +97,6 @@ elif [ "$command" = "run-batch" ]; then
   batch_mode=1
 elif [ "$command" = "fold" ]; then
   batch_mode=1
-  tier0_only=1
 fi
 since=""
 author_pattern='users\.noreply\.github\.com'
@@ -109,6 +114,10 @@ while [ "$#" -gt 0 ]; do
     --check-claims) check_claims=1; shift ;;
     --batch) batch_mode=1; shift ;;
     --tier0-only) tier0_only=1; shift ;;
+    --commit) [ "$#" -ge 2 ] || die "--commit needs a value"; readme_commit="$2"; shift 2 ;;
+    --status) [ "$#" -ge 2 ] || die "--status needs a value"; readme_status="$2"; shift 2 ;;
+    --date) [ "$#" -ge 2 ] || die "--date needs a value"; readme_date="$2"; shift 2 ;;
+    --file) [ "$#" -ge 2 ] || die "--file needs a value"; readme_file="$2"; shift 2 ;;
     --since) [ "$#" -ge 2 ] || die "--since needs a value"; since="$2"; shift 2 ;;
     --author-pattern) [ "$#" -ge 2 ] || die "--author-pattern needs a value"; author_pattern="$2"; shift 2 ;;
     --strict) strict=1; shift ;;
@@ -131,6 +140,36 @@ effective_gate_worktree="${canonical_worktree:-${FA_GATE_WORKTREE:-/data/project
 expected_warmth="false"
 if [ -d "$effective_gate_worktree/.git" ] || [ -f "$effective_gate_worktree/.git" ]; then
   expected_warmth="true"
+fi
+
+maintain_readme_verified_line() {
+  local target_file="$1" sha="$2" status="$3" dt="${4:-$(date -u +%Y-%m-%d)}"
+  [ -f "$target_file" ] || return 0
+  local short_sha="${sha:0:12}"
+  python3 - "$target_file" "$short_sha" "$dt" "$status" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+short_sha, dt, status = sys.argv[2:5]
+text = path.read_text(encoding="utf-8")
+replacement = f"Verified at {short_sha} ({dt}): {status}"
+pattern = re.compile(r"Verified at [0-9a-fA-F]{7,40} \([0-9]{4}-[0-9]{2}-[0-9]{2}\): (?:PASS|RED|UNRUN)")
+if pattern.search(text):
+    new_text = pattern.sub(replacement, text, count=1)
+else:
+    new_text = text.rstrip("\n") + f"\n\n> {replacement}\n"
+path.write_text(new_text, encoding="utf-8")
+PY
+}
+
+if [ "$command" = "update-readme" ]; then
+  [ -n "$readme_commit" ] || die "update-readme requires --commit SHA"
+  case "$readme_status" in PASS|RED|UNRUN) ;; *) die "update-readme requires --status PASS|RED|UNRUN" ;; esac
+  maintain_readme_verified_line "$readme_file" "$readme_commit" "$readme_status" "${readme_date:-$(date -u +%Y-%m-%d)}"
+  say "updated $readme_file: Verified at ${readme_commit:0:12} (${readme_date:-$(date -u +%Y-%m-%d)}): $readme_status"
+  exit 0
 fi
 
 if [ "$dry_run" -eq 1 ]; then
@@ -169,7 +208,12 @@ refresh_mirror() {
   git -C "$mirror" fetch --quiet --prune "$remote_url" \
     "+refs/heads/*:refs/heads/*" \
     "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" \
-    "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" 2>/dev/null \
+    "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" \
+    "+refs/notes/$VERDICT_NOTES_REF:refs/notes/$VERDICT_NOTES_REF" 2>/dev/null \
+    || git -C "$mirror" fetch --quiet --prune "$remote_url" \
+      "+refs/heads/*:refs/heads/*" \
+      "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" \
+      "+refs/notes/$TIER0_NOTES_REF:refs/notes/$TIER0_NOTES_REF" 2>/dev/null \
     || git -C "$mirror" fetch --quiet --prune "$remote_url" \
       "+refs/heads/*:refs/heads/*" "+refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null \
     || git -C "$mirror" fetch --quiet --prune "$remote_url" "+refs/heads/*:refs/heads/*" \
@@ -198,6 +242,103 @@ publish_note() {
   done
   say "WARNING: could not publish the note after 3 attempts"
   return 1
+}
+
+push_fa_verdict_notes() {
+  local clone="$1" attempt
+  [ "$push" -eq 1 ] || return 0
+  git -C "$clone" rev-parse --verify --quiet "refs/notes/$VERDICT_NOTES_REF" >/dev/null 2>&1 || return 0
+  for attempt in 1 2 3; do
+    if git -C "$clone" push --quiet "$remote_url" \
+        "refs/notes/$VERDICT_NOTES_REF:refs/notes/$VERDICT_NOTES_REF" 2>/dev/null; then
+      return 0
+    fi
+    git -C "$clone" fetch --quiet "$remote_url" \
+      "+refs/notes/$VERDICT_NOTES_REF:refs/notes/$VERDICT_NOTES_REF-remote" 2>/dev/null || true
+    gitc -C "$clone" notes --ref="$VERDICT_NOTES_REF" merge -q -s cat_sort_uniq \
+      "$VERDICT_NOTES_REF-remote" 2>/dev/null || true
+  done
+  return 0
+}
+
+attach_fa_verdict_note_to_commit() {
+  local clone="$1" from_commit="$2" target_commit="$3"
+  local src_note target_tree rewritten
+  src_note="$(git -C "$clone" notes --ref="$VERDICT_NOTES_REF" show "$from_commit" 2>/dev/null || true)"
+  [ -n "$src_note" ] || return 0
+  if [ "$from_commit" = "$target_commit" ]; then
+    push_fa_verdict_notes "$clone"
+    return 0
+  fi
+  target_tree="$(git -C "$clone" rev-parse "${target_commit}^{tree}" 2>/dev/null || echo "")"
+  rewritten="$(python3 -B - "$src_note" "$target_commit" "$target_tree" <<'PY'
+import json
+import sys
+
+note, commit, tree = sys.argv[1:4]
+out = []
+for line in note.splitlines():
+    if line.startswith("commit="):
+        out.append(f"commit={commit}")
+    elif line.startswith("tree=") and tree:
+        out.append(f"tree={tree}")
+    elif line.startswith("step_verdict=") and tree:
+        rec = json.loads(line.removeprefix("step_verdict="))
+        rec["tree_hash"] = tree
+        out.append("step_verdict=" + json.dumps(rec, separators=(",", ":")))
+    else:
+        out.append(line)
+print("\n".join(out))
+PY
+)"
+  printf '%s\n' "$rewritten" | gitc -C "$clone" notes --ref="$VERDICT_NOTES_REF" add -f -F - "$target_commit" 2>/dev/null || true
+  push_fa_verdict_notes "$clone"
+}
+
+emit_verdict_json_transcript() {
+  local clone="$1" cand_sha="$2" json_out="$3"
+  local note_text note_id
+  note_text="$(git -C "$clone" notes --ref="$VERDICT_NOTES_REF" show "$cand_sha" 2>/dev/null || true)"
+  note_id="$(git -C "$clone" notes --ref="$VERDICT_NOTES_REF" list "$cand_sha" 2>/dev/null | awk '{print $1}' || true)"
+  [ -n "$note_text" ] || return 0
+  python3 -B - "$cand_sha" "${note_id:-none}" "$note_text" "$json_out" "$work/last-verdict.json" <<'PY'
+import json
+import pathlib
+import sys
+
+cand_sha, note_id, note_text, json_out, last_out = sys.argv[1:6]
+kv = {}
+steps = []
+for raw in note_text.splitlines():
+    if not raw.strip() or "=" not in raw:
+        continue
+    k, v = raw.split("=", 1)
+    if k == "step_verdict":
+        rec = json.loads(v)
+        steps.append({
+            "name": rec.get("step"),
+            "verdict": rec.get("status"),
+            "duration_ms": int(rec.get("duration_ms", int(rec.get("duration_secs", 0)) * 1000)),
+            "witness": rec.get("witness", {"log_digest": rec.get("log_digest", "none")}),
+        })
+    else:
+        kv[k] = v
+
+doc = {
+    "candidate": cand_sha,
+    "tree_hash": kv.get("tree", ""),
+    "toolchain": kv.get("toolchain", "unavailable"),
+    "steps": steps,
+    "note_id": note_id,
+}
+payload = json.dumps(doc, indent=2, sort_keys=True) + "\n"
+pathlib.Path(json_out).write_text(payload, encoding="utf-8")
+pathlib.Path(last_out).write_text(payload, encoding="utf-8")
+print(f"merge-train: VERDICT-NOTE note_id={note_id} candidate={cand_sha[:12]} tree_hash={doc['tree_hash'][:12]} verdict={kv.get('verdict','unknown')} json={json_out}")
+for s in steps:
+    w_digest = s["witness"].get("log_digest", "none")[:12]
+    print(f"merge-train:   STEP {s['name']} verdict={s['verdict']} duration_ms={s['duration_ms']} witness_log={w_digest}")
+PY
 }
 
 publish_tier0_note() {
@@ -432,8 +573,10 @@ gate_tree_in_cand() {
   export RCH_CARGO_WRAPPER_BYPASS CARGO_TARGET_DIR RCH_WORKER
 
   local proof_rc=0
-  (cd "$cand" && bash scripts/local_proof.sh --output "$proof") > "$log" 2>&1 || proof_rc=$?
+  (cd "$cand" && bash scripts/local_proof.sh --output "$proof" --publish-note) > "$log" 2>&1 || proof_rc=$?
   GATE_LAST_FAIL_LINE=""
+  GATE_LAST_PROOF_SHA="$cand_sha"
+  emit_verdict_json_transcript "$cand" "$cand_sha" "${log%.log}.json"
 
   if [ ! -f "$proof/manifest.txt" ]; then
     GATE_LAST_VERDICT="VOID"
@@ -584,6 +727,7 @@ run_batch_train() {
       local tip_tree
       tip_tree="$(git -C "$cand" rev-parse "${tip_sha}^{tree}")"
       publish_tier0_note "$cand" "$tip_sha" "$tip_tree"
+      push_fa_verdict_notes "$cand"
       if [ "$push" -eq 1 ]; then
         git -C "$cand" push --quiet "$remote_url" "$tip_sha:refs/heads/$main_branch" \
           || { say "STALE: $main_branch moved during batch proof"; return "$EX_STALE"; }
@@ -597,6 +741,7 @@ run_batch_train() {
         publish_note "$cand" "$sha" "$(note_body pass "main=$main_sha" "ref=$ref" "batch_tip=$tip_sha" "tree=$tip_tree")"
       done
       publish_note "$cand" "$tip_sha" "$(note_body pass "main=$main_sha" "batch_size=$count" "tree=$tip_tree")"
+      maintain_readme_verified_line "$root/README.md" "$tip_sha" "PASS"
       say "PROMOTED-BATCH: $count candidate(s) (${stacked_refs[*]}) -> $main_branch ${tip_sha:0:12} (gates=$GATE_COUNT)"
       return "$EX_NOTHING"
     fi
@@ -625,7 +770,9 @@ run_batch_train() {
 
     local bad_ref="${stacked_refs[$lo]}"
     local bad_sha="${stacked_shas[$lo]}"
+    local bad_merge="${stacked_merges[$lo]}"
     say "EJECTED $bad_ref (${bad_sha:0:12}) after bisection: ${bad_fail_line:-gate failed}"
+    attach_fa_verdict_note_to_commit "$cand" "${GATE_LAST_PROOF_SHA:-$bad_merge}" "$bad_sha"
     publish_note "$cand" "$bad_sha" "$(note_body red "main=$main_sha" "ref=$bad_ref" "fail: ${bad_fail_line:-gate failed}")"
 
     # Rebuild batch_refs and batch_shas without bad_ref and loop to gate the healthy remainder
@@ -758,8 +905,9 @@ run_train() {
   : "${RCH_WORKER:=${FA_GATE_PRIMARY_WORKER:-hz2}}"
   export RCH_CARGO_WRAPPER_BYPASS CARGO_TARGET_DIR RCH_WORKER
   local proof_rc=0
-  (cd "$cand" && bash scripts/local_proof.sh --output "$proof") > "$log" 2>&1 || proof_rc=$?
+  (cd "$cand" && bash scripts/local_proof.sh --output "$proof" --publish-note) > "$log" 2>&1 || proof_rc=$?
   say "local_proof.sh exited $proof_rc"
+  emit_verdict_json_transcript "$cand" "$cand_sha" "${log%.log}.json"
 
   local base_kv=("main=$main_sha" "staging=$staging_sha" "candidate=$cand_sha" "tree=$cand_tree" "proof=$proof" "warm=$warm_flag" "worker=${RCH_WORKER}")
   if [ ! -f "$proof/manifest.txt" ] \
@@ -781,6 +929,7 @@ run_train() {
   if [ "$verdict" = pass ] && [ "$check_exit" = 0 ] && [ "$stable" = true ] \
       && [ "$proved_commit" = "$cand_sha" ]; then
     publish_tier0_note "$cand" "$cand_sha" "$cand_tree"
+    push_fa_verdict_notes "$cand"
     if [ "$push" -eq 0 ]; then
       say "PASS (--no-push): ${cand_sha:0:12} would be promoted to $main_branch"
       publish_note "$cand" "$cand_sha" "$(note_body pass "${base_kv[@]}")"
@@ -792,6 +941,7 @@ run_train() {
     fi
     say "PROMOTED: $main_branch ${main_sha:0:12} -> ${cand_sha:0:12}"
     publish_note "$cand" "$cand_sha" "$(note_body pass "${base_kv[@]}")"
+    maintain_readme_verified_line "$root/README.md" "$cand_sha" "PASS"
     return "$EX_NOTHING"
   fi
 
@@ -807,7 +957,9 @@ run_train() {
   fi
   say "RED: check.sh exited $check_exit on ${cand_sha:0:12}; $staging_branch bounced"
   printf '%s\n' "$fails" | sed 's/^/    /'
+  attach_fa_verdict_note_to_commit "$cand" "$cand_sha" "$staging_sha"
   publish_note "$cand" "$staging_sha" "$(note_body red "${base_kv[@]}" "${fail_kv[@]}")"
+  maintain_readme_verified_line "$root/README.md" "$staging_sha" "RED"
   return "$EX_RED"
 }
 

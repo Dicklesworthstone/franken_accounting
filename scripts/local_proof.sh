@@ -210,7 +210,7 @@ fi
   printf 'check_exit=%s\n' "$check_exit"
   printf 'tree_stable=%s\n' "$stable"
   printf 'verdict=%s\n' "$verdict"
-  printf 'authority=check.sh exit code on the exact stable tree; void when HEAD, committed tree, or worktree state moves\n'
+  printf 'authority=check.sh exit code on the exact stable tree; void when HEAD, committed tree, or worktree state moves; a PASS note proves the named steps passed on that tree, not product correctness beyond them\n'
 } > "$output/manifest.txt"
 
 (
@@ -232,8 +232,71 @@ fi
 bash scripts/local_proof_verify.sh --repository "$root" "$output" \
   || fail "produced proof failed independent verification"
 
+note_id=""
 if [ "$publish_note" -eq 1 ]; then
-  git notes --ref=fa-verdict add -f -F "$output/manifest.txt" "$before_commit" 2>/dev/null || true
+  note_body="$(python3 -B - "$output" <<'PY'
+import hashlib
+import json
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest_text = (root / "manifest.txt").read_text()
+tools_lines = (root / "tools.txt").read_text().splitlines()
+toolchain = next((l.removeprefix("rustc=") for l in tools_lines if l.startswith("rustc=")), "unavailable")
+sums_sha256 = hashlib.sha256((root / "SHA256SUMS").read_bytes()).hexdigest()
+
+test_list_log = root / "steps" / "test-list.log"
+if test_list_log.is_file():
+    listed = sorted(re.findall(r"^\s*(.+): test$", test_list_log.read_text(errors="replace"), re.M))
+    if listed:
+        test_inv_digest = hashlib.sha256(("\n".join(listed) + "\n").encode("utf-8")).hexdigest()
+    else:
+        test_inv_digest = hashlib.sha256(test_list_log.read_bytes()).hexdigest()
+else:
+    test_inv_digest = "none"
+
+out = [manifest_text.rstrip("\n")]
+out.append("no_claim_boundary=a PASS note proves the named steps passed on that tree, not product correctness beyond them")
+out.append(f"toolchain={toolchain}")
+out.append(f"proof_sums_sha256={sums_sha256}")
+out.append(f"test_inventory_digest={test_inv_digest}")
+
+step_file = root / "step-verdicts.jsonl"
+if step_file.is_file():
+    for line in step_file.read_text().splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        step_name = rec["step"]
+        dur_secs = int(rec.get("duration_secs", 0))
+        rec["duration_ms"] = dur_secs * 1000
+        log_path = root / "steps" / f"{step_name}.log"
+        witness = {
+            "log_digest": rec.get("log_digest", "none"),
+            "worker": rec.get("worker", "local"),
+        }
+        if log_path.is_file():
+            text = log_path.read_text(errors="replace")
+            if step_name == "test-list":
+                witness["listed_tests"] = len(re.findall(r"^\s*(.+): test$", text, re.M))
+                witness["test_inventory_digest"] = test_inv_digest
+            elif step_name in ("test", "robot-schema", "registry-check"):
+                witness["passed_tests"] = sum(map(int, re.findall(r"^test result: ok\. (\d+) passed;", text, re.M)))
+            elif step_name in ("check", "clippy"):
+                witness["finished_targets"] = len(re.findall(r"^\s*Finished ", text, re.M))
+            ev_ids = re.findall(r"^\s*evidence artifact_id=(\S+) .* verdict=PASS$", text, re.M)
+            if ev_ids:
+                witness["evidence_artifacts"] = ev_ids
+        rec["witness"] = witness
+        out.append("step_verdict=" + json.dumps(rec, separators=(",", ":")))
+
+print("\n".join(out))
+PY
+)"
+  printf '%s\n' "$note_body" | git notes --ref=fa-verdict add -f -F - "$before_commit" 2>/dev/null || true
+  note_id="$(git notes --ref=fa-verdict list "$before_commit" 2>/dev/null | awk '{print $1}' || true)"
   if [ "$push_note" -eq 1 ]; then
     git push origin refs/notes/fa-verdict:refs/notes/fa-verdict 2>/dev/null || true
   fi
@@ -251,4 +314,7 @@ printf 'check_script_blob=%s\n' "$check_script_blob"
 printf 'check_exit=%s\n' "$check_exit"
 printf 'tree_stable=%s\n' "$stable"
 printf 'verdict=%s\n' "$verdict"
+if [ -n "$note_id" ]; then
+  printf 'note_id=%s\n' "$note_id"
+fi
 exit "$wrapper_exit"

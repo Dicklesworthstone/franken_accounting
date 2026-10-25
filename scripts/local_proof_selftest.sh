@@ -175,6 +175,10 @@ bash scripts/local_proof_verify.sh --repository "$fixture" "$pass_proof" >/dev/n
 grep -Fxq 'format_version=3' "$pass_proof/manifest.txt" || fail "producer did not emit v3"
 git notes --ref=fa-verdict show "$commit_a" | grep -Fxq 'verdict=pass' \
   || fail "--publish-note did not record refs/notes/fa-verdict on commit"
+bash scripts/local_proof_verify.sh --repository "$fixture" --note "$commit_a" >/dev/null \
+  || fail "local_proof_verify.sh --note did not validate published refs/notes/fa-verdict note"
+bash scripts/local_proof_verify.sh --repository "$fixture" "$commit_a" >/dev/null \
+  || fail "local_proof_verify.sh commit-arg did not validate published refs/notes/fa-verdict note"
 
 # Split-run positive: Run 1 has 1 PASS + 1 UNRUN; Run 2 resumes from Run 1 and completes fake-step-2 -> PASS
 split1_proof="$base/split-1"

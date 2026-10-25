@@ -117,9 +117,9 @@ classify_rch_step() {
     return
   fi
   local executed=0
-  grep -q 'Remote command finished' "$log" && executed=1
+  grep -Fq 'Remote command finished' "$log" && executed=1
   if [ "$rc" -eq 103 ] \
-    || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -Eq '^\[RCH\] .*(refusing local fallback|completion unconfirmed)' "$log"; }; }; then
+    || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -Eiq '(\[RCH(-E[0-9]+)?\]|rch::).*(SSH command timed out|refusing local fallback|no local fallback|no admissible worker|completion unconfirmed|RCH_SCOPED_COMPLETION_UNCONFIRMED|Connection timed out|Connection refused|Broken pipe)|\[RCH-E[0-9]+\]|SSH command timed out|no admissible workers?|refusing local fallback|completion unconfirmed|RCH_SCOPED_COMPLETION_UNCONFIRMED' "$log"; }; }; then
     printf 'UNRUN\n'
   else
     printf 'FAIL\n'
@@ -281,6 +281,8 @@ evaluate_once() {
 
   git -C "$worktree" -c user.name="fa owner-watch" -c user.email="owner-watch@localhost" \
     notes --ref="$NOTES_REF" add -f -m "$note_text" "$tip"
+  local note_id
+  note_id="$(git -C "$worktree" notes --ref="$NOTES_REF" list "$tip" 2>/dev/null | awk '{print $1}' || echo none)"
   if [ "$push_notes" -eq 1 ]; then
     git -C "$worktree" push --quiet "$remote_url" "refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" 2>/dev/null || true
   fi
@@ -304,8 +306,8 @@ evaluate_once() {
     fi
   fi
 
-  printf 'OWNER_WATCH_%s commit=%s tree=%s clippy=%s test=%s worker=%s\n' \
-    "$overall_verdict" "$tip" "$tree_sha" "$clippy_verdict" "$test_verdict" "$test_worker"
+  printf 'OWNER_WATCH_%s commit=%s tree=%s note_id=%s clippy=%s test=%s worker=%s\n' \
+    "$overall_verdict" "$tip" "$tree_sha" "${note_id:-none}" "$clippy_verdict" "$test_verdict" "$test_worker"
   case "$overall_verdict" in
     GREEN) return 0 ;;
     RED) return 1 ;;

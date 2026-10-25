@@ -157,6 +157,26 @@ PY
   return 1
 }
 
+# is_rch_offloader_unrun <exit_code> <log_file>
+# Returns 0 (UNRUN) when a nonzero exit came from the rch offloader failing to
+# run or complete the command on a worker (exit 1/100/101/103 with "SSH command
+# timed out", "no admissible workers", "refusing local fallback", "completion
+# unconfirmed", etc. and no "Remote command finished" marker). If "Remote
+# command finished" is present, the remote command executed and its exit code
+# is a product verdict (returns 1 -> FAIL).
+is_rch_offloader_unrun() {
+  local rc="$1" log="$2"
+  [ "$rc" -eq 103 ] && return 0
+  if [ -f "$log" ] && grep -Fq 'Remote command finished' "$log"; then
+    return 1
+  fi
+  [ "$rc" -eq 100 ] && return 0
+  if [ -f "$log" ] && grep -Eiq '(\[RCH(-E[0-9]+)?\]|rch::).*(SSH command timed out|refusing local fallback|no local fallback|no admissible worker|completion unconfirmed|RCH_SCOPED_COMPLETION_UNCONFIRMED|Connection timed out|Connection refused|Broken pipe)|\[RCH-E[0-9]+\]|SSH command timed out|no admissible workers?|refusing local fallback|completion unconfirmed|RCH_SCOPED_COMPLETION_UNCONFIRMED' "$log"; then
+    return 0
+  fi
+  return 1
+}
+
 gate_init "check.sh"
 if [ -n "${CHECK_RESUME_FROM:-}" ]; then
   if ! bash "$ROOT/scripts/local_proof_verify.sh" --repository "$ROOT" --for-resume "$CHECK_RESUME_FROM" \
@@ -205,12 +225,9 @@ run_step() {
     gate_pass "$label"
     return
   fi
-  local executed=0
-  grep -q 'Remote command finished' "$log" && executed=1
-  if [ "$rc" -eq 103 ] \
-    || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -Eq '^\[RCH\] .*(refusing local fallback|completion unconfirmed)' "$log"; }; }; then
+  if is_rch_offloader_unrun "$rc" "$log"; then
     record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
-    gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, or lost the worker before execution; retryable, not a product verdict); log: $log"
+    gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, SSH timeout, or lost the worker before completion; retryable, not a product verdict); log: $log"
   else
     record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
     gate_fail "$label (exit $rc); log: $log"
@@ -288,12 +305,9 @@ cargo_build() {
     gate_pass "$label"
     return
   fi
-  local executed=0
-  grep -q 'Remote command finished' "$log" && executed=1
-  if [ "$rc" -eq 103 ] \
-    || { [ "$executed" -eq 0 ] && { [ "$rc" -eq 100 ] || grep -Eq '^\[RCH\] .*(refusing local fallback|completion unconfirmed)' "$log"; }; }; then
+  if is_rch_offloader_unrun "$rc" "$log"; then
     record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
-    gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, or lost the worker before execution; retryable, not a product verdict); log: $log"
+    gate_unrun "$label — the rch offloader did not run the command (exit $rc: refused, no admissible worker, SSH timeout, or lost the worker before completion; retryable, not a product verdict); log: $log"
   else
     record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
     gate_fail "$label (exit $rc); log: $log"
@@ -443,6 +457,9 @@ run_gate "gate-evidence-negative" "$ROOT/scripts/tests/gate_evidence_negative.sh
   "$ROOT" "$LOG_DIR/gate-evidence-negative"
 run_step "local-proof-selftest" bash "$ROOT/scripts/local_proof_selftest.sh"
 run_gate "tier0-selftest" "$ROOT/scripts/tests/tier0_selftest.sh"
+run_gate "check-classify" "$ROOT/scripts/tests/check_classify.sh"
+run_gate "merge-train-selftest" "$ROOT/scripts/tests/merge_train_selftest.sh"
+run_gate "owner-watch-selftest" "$ROOT/scripts/tests/owner_watch_selftest.sh"
 
 # Registries: every TOML under registries/ is consumed by compiled code and
 # validated by the fa-registry / fa-model tests, which `test` above ran. This

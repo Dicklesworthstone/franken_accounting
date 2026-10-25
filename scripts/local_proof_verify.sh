@@ -9,11 +9,14 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: bash scripts/local_proof_verify.sh [--repository DIR] [--for-resume] PROOF_DIR
+Usage: bash scripts/local_proof_verify.sh [--repository DIR] [--for-resume] [PROOF_DIR]
+       bash scripts/local_proof_verify.sh [--repository DIR] --note COMMIT_OR_REF
 
 Options:
   --repository DIR  Require DIR's Git object database to contain the proof's
                     commit, tree, and exact tracked scripts/check.sh blob.
+  --note REV        Verify a published refs/notes/fa-verdict note for REV in
+                    --repository DIR (defaults to current repository).
   --for-resume      Require v3, a stable tree matching DIR's current tree,
                     identical check script/toolchain, and zero FAIL records.
   -h, --help        Show this help.
@@ -30,12 +33,18 @@ fail() {
 
 repository=""
 proof_arg=""
+note_arg=""
 for_resume=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repository)
       [ "$#" -ge 2 ] || fail "--repository requires a directory"
       repository="$2"
+      shift 2
+      ;;
+    --note)
+      [ "$#" -ge 2 ] || fail "--note requires a commit or ref"
+      note_arg="$2"
       shift 2
       ;;
     --for-resume) for_resume=1; shift ;;
@@ -45,23 +54,127 @@ while [ "$#" -gt 0 ]; do
       ;;
     -*) fail "unknown argument: $1" ;;
     *)
-      [ -z "$proof_arg" ] || fail "only one proof directory may be supplied"
+      [ -z "$proof_arg" ] || fail "only one proof directory or commit may be supplied"
       proof_arg="$1"
       shift
       ;;
   esac
 done
-[ -n "$proof_arg" ] || { usage >&2; exit 2; }
+[ -n "$proof_arg" ] || [ -n "$note_arg" ] || { usage >&2; exit 2; }
 
-proof="$proof_arg"
-[ -d "$proof" ] || fail "not a directory: $proof"
-proof="$(cd "$proof" && pwd -P)"
 if [ -n "$repository" ]; then
   [ -d "$repository" ] || fail "not a repository directory: $repository"
   repository="$(cd "$repository" && pwd -P)"
   git -C "$repository" rev-parse --git-dir >/dev/null 2>&1 \
     || fail "--repository is not a Git worktree or repository"
 fi
+
+# If --note REV is supplied, or if --repository DIR is supplied and PROOF_DIR is
+# not a directory on disk but resolves to a commit in DIR, verify the published
+# refs/notes/fa-verdict note for that commit.
+if [ -z "$note_arg" ] && [ -n "$proof_arg" ] && [ ! -d "$proof_arg" ] && [ -n "$repository" ] && [ "$for_resume" -eq 0 ]; then
+  if git -C "$repository" rev-parse --verify --quiet "${proof_arg}^{commit}" >/dev/null 2>&1; then
+    note_arg="$proof_arg"
+  fi
+fi
+
+if [ -n "$note_arg" ]; then
+  [ "$for_resume" -eq 0 ] || fail "--for-resume requires a retained proof directory"
+  repo_for_note="${repository:-$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)}"
+  git -C "$repo_for_note" rev-parse --git-dir >/dev/null 2>&1 \
+    || fail "--note requires a Git repository (--repository DIR)"
+  target_commit="$(git -C "$repo_for_note" rev-parse --verify --quiet "${note_arg}^{commit}" 2>/dev/null)" \
+    || fail "commit $note_arg does not exist in $repo_for_note"
+  target_tree="$(git -C "$repo_for_note" rev-parse --verify "${target_commit}^{tree}")"
+  target_script_blob="$(git -C "$repo_for_note" rev-parse --verify "${target_commit}:scripts/check.sh" 2>/dev/null || echo "")"
+  note_blob="$(git -C "$repo_for_note" notes --ref=fa-verdict list "$target_commit" 2>/dev/null | awk '{print $1}' || true)"
+  [ -n "$note_blob" ] || fail "missing refs/notes/fa-verdict note for $target_commit"
+  note_text="$(git -C "$repo_for_note" notes --ref=fa-verdict show "$target_commit" 2>/dev/null)" \
+    || fail "cannot read refs/notes/fa-verdict note for $target_commit"
+
+  python3 -B - "$target_commit" "$target_tree" "$target_script_blob" "$note_blob" "$note_text" <<'PY' || exit 1
+import json
+import re
+import sys
+
+target_commit, target_tree, target_script_blob, note_blob, note_text = sys.argv[1:6]
+
+def require(cond, msg):
+    if not cond:
+        print(f"local-proof-verify: {msg}", file=sys.stderr)
+        sys.exit(1)
+
+kv = {}
+steps = []
+for raw in note_text.splitlines():
+    if not raw.strip():
+        continue
+    require("=" in raw, f"malformed note line: {raw}")
+    k, v = raw.split("=", 1)
+    if k == "step_verdict":
+        steps.append(json.loads(v))
+    else:
+        require(k not in kv, f"duplicate note key: {k}")
+        kv[k] = v
+
+require(kv.get("format_version") == "3", "note format_version must be 3")
+require(kv.get("commit") == target_commit, f"note commit {kv.get('commit')} != {target_commit}")
+require(kv.get("tree") == target_tree, f"note tree {kv.get('tree')} != {target_tree}")
+require(kv.get("check_script_path") == "scripts/check.sh", "unexpected check_script_path in note")
+if target_script_blob:
+    require(kv.get("check_script_blob") == target_script_blob, "note check_script_blob mismatch")
+require(kv.get("tree_stable") in ("true", "false"), "invalid tree_stable in note")
+verdict = kv.get("verdict")
+require(verdict in ("pass", "red", "void"), f"invalid verdict in note: {verdict}")
+check_exit = int(kv.get("check_exit", "-1"))
+require(0 <= check_exit <= 255, "invalid check_exit in note")
+auth = kv.get("authority", "")
+require(auth.startswith("check.sh exit code") and "not product correctness beyond them" in auth,
+        "note authority lacks no-claim boundary")
+require("not product correctness beyond them" in kv.get("no_claim_boundary", ""),
+        "note lacks no_claim_boundary")
+toolchain = kv.get("toolchain", "")
+require(bool(toolchain), "note lacks toolchain")
+require(bool(re.fullmatch(r"[0-9a-f]{64}", kv.get("proof_sums_sha256", ""))), "note lacks valid proof_sums_sha256")
+inv_digest = kv.get("test_inventory_digest", "")
+require(inv_digest == "none" or bool(re.fullmatch(r"[0-9a-f]{64}", inv_digest)), "invalid test_inventory_digest in note")
+require(bool(steps), "note contains zero step_verdict records")
+
+for rec in steps:
+    name = rec.get("step", "")
+    require(bool(name), "step_verdict missing step name")
+    require(rec.get("status") in ("PASS", "FAIL", "UNRUN"), f"{name}: invalid step status")
+    require(rec.get("tree_hash") == target_tree, f"{name}: step tree_hash mismatch")
+    require(rec.get("toolchain") == toolchain, f"{name}: step toolchain mismatch")
+    require(isinstance(rec.get("duration_ms"), int) and rec["duration_ms"] >= 0, f"{name}: invalid duration_ms")
+    witness = rec.get("witness")
+    require(isinstance(witness, dict) and witness.get("log_digest") == rec.get("log_digest"),
+            f"{name}: missing or mismatched step work witness")
+    if name == "test-list" and rec["status"] == "PASS":
+        require(bool(re.fullmatch(r"[0-9a-f]{64}", inv_digest)), "test-list PASS requires hex test_inventory_digest")
+
+if verdict == "pass":
+    require(kv["tree_stable"] == "true" and check_exit == 0, "pass note must be stable with exit 0")
+    require(all(r["status"] == "PASS" for r in steps), "pass note has non-PASS step")
+elif verdict == "red":
+    require(kv["tree_stable"] == "true" and check_exit != 0, "red note must be stable with nonzero exit")
+    require(any(r["status"] in ("FAIL", "UNRUN") for r in steps), "red note lacks failing/unrun step")
+
+print("LOCAL_PROOF_VERIFIED")
+print(f"note_id={note_blob}")
+print(f"commit={target_commit}")
+print(f"tree={target_tree}")
+print(f"check_script_blob={kv.get('check_script_blob', '')}")
+print(f"check_exit={check_exit}")
+print(f"tree_stable={kv['tree_stable']}")
+print(f"verdict={verdict}")
+PY
+  exit 0
+fi
+
+proof="$proof_arg"
+[ -d "$proof" ] || fail "not a directory: $proof"
+proof="$(cd "$proof" && pwd -P)"
 
 base_files=(
   manifest.txt SHA256SUMS command.txt tools.txt
