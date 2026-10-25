@@ -461,6 +461,7 @@ run_gate "check-classify" "$ROOT/scripts/tests/check_classify.sh"
 run_gate "merge-train-selftest" "$ROOT/scripts/tests/merge_train_selftest.sh"
 run_gate "owner-watch-selftest" "$ROOT/scripts/tests/owner_watch_selftest.sh"
 run_gate "close-bead-selftest" "$ROOT/scripts/tests/close_bead_selftest.sh"
+run_gate "gate-health-selftest" "$ROOT/scripts/tests/gate_health_selftest.sh"
 
 # Registries: every TOML under registries/ is consumed by compiled code and
 # validated by the fa-registry / fa-model tests, which `test` above ran. This

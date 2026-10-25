@@ -263,6 +263,13 @@ evaluate_once() {
   no_bead_commits="$(git -C "$worktree" log -n 10 --format='%h %s' "$tip" 2>/dev/null \
     | grep -Ev 'fa-[a-z0-9]+' | head -n 5 | tr '\n' ';' || true)"
 
+  # Gate capacity & disk headroom summary from scripts/gate_health.sh (fa-abhg)
+  local gate_health_summary=""
+  if [ -r "$ROOT/scripts/gate_health.sh" ]; then
+    gate_health_summary="$(bash "$ROOT/scripts/gate_health.sh" --repo "$worktree" 2>/dev/null \
+      | sed -n 's/^GATE_HEALTH_SUMMARY=//p' | tail -n 1 || true)"
+  fi
+
   local recorded_utc
   recorded_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local note_text
@@ -275,6 +282,7 @@ evaluate_once() {
     printf 'worker=%s\n' "$test_worker"
     printf 'steps=clippy:%s,test:%s\n' "$clippy_verdict" "$test_verdict"
     printf 'test_totals=passed:%s,failed:%s\n' "$test_passed" "$test_failed"
+    [ -n "$gate_health_summary" ] && printf 'gate_health=%s\n' "$gate_health_summary"
     [ -n "$first_error" ] && printf 'first_error=%s\n' "$first_error"
     [ -n "$no_bead_commits" ] && printf 'tracker_drift_no_bead=%s\n' "$no_bead_commits"
   )"
