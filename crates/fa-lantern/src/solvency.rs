@@ -263,7 +263,9 @@ impl AuthenticatedObligationSchedule {
                     w.i32(inst.due_date.0).i128(inst.amount);
                 })
                 .list(&ob.evidence_refs, |w, ev| {
-                    w.fixed(&ev.document_oid.0).fixed(&ev.doc_commit).u8(ev.role);
+                    w.fixed(&ev.document_oid.0)
+                        .fixed(&ev.doc_commit)
+                        .u8(ev.role);
                 });
             })
             .list(&self.commitments, |w, c| {
@@ -278,7 +280,9 @@ impl AuthenticatedObligationSchedule {
                         w.u128(entry.0).u16(*ord);
                     })
                     .list(&c.evidence_refs, |w, ev| {
-                        w.fixed(&ev.document_oid.0).fixed(&ev.doc_commit).u8(ev.role);
+                        w.fixed(&ev.document_oid.0)
+                            .fixed(&ev.doc_commit)
+                            .u8(ev.role);
                     });
             })
             .list(&self.expected_inflows, |w, inf| {
@@ -290,7 +294,9 @@ impl AuthenticatedObligationSchedule {
                         w.u128(e.0);
                     })
                     .list(&inf.evidence_refs, |w, ev| {
-                        w.fixed(&ev.document_oid.0).fixed(&ev.doc_commit).u8(ev.role);
+                        w.fixed(&ev.document_oid.0)
+                            .fixed(&ev.doc_commit)
+                            .u8(ev.role);
                     });
             });
         w.finish()
@@ -415,8 +421,7 @@ pub fn schedule_from_inline_extensions(
     let mut any_inline = false;
     let mut obligations = Vec::new();
     let live = snapshot.live_postings_through(Some(as_of))?;
-    let scope =
-        crate::projection::entity_scope(live.iter().flat_map(|e| &e.entry.proposal.legs))?;
+    let scope = crate::projection::entity_scope(live.iter().flat_map(|e| &e.entry.proposal.legs))?;
 
     for e in &live {
         for (tag, bytes) in &e.entry.proposal.extensions {
@@ -589,7 +594,10 @@ pub fn evaluate_cash_flow_solvency(
                 *cell = cell
                     .checked_add(signed)
                     .ok_or(LanternError::Overflow("cash_flow_test cash fold"))?;
-                scope_accounts.entry(key).or_default().insert(leg.account_ref);
+                scope_accounts
+                    .entry(key)
+                    .or_default()
+                    .insert(leg.account_ref);
                 scope_entries.entry(key).or_default().insert(e.vid);
             } else if at == AccountType::LIABILITY {
                 if eff <= as_of && leg.side == Side::Credit {
@@ -607,7 +615,10 @@ pub fn evaluate_cash_flow_solvency(
                                 open: mag,
                             },
                         );
-                        scope_accounts.entry(key).or_default().insert(leg.account_ref);
+                        scope_accounts
+                            .entry(key)
+                            .or_default()
+                            .insert(leg.account_ref);
                         scope_entries.entry(key).or_default().insert(e.vid);
                     }
                 } else if eff <= horizon_end && leg.side == Side::Debit {
@@ -701,7 +712,10 @@ pub fn evaluate_cash_flow_solvency(
                 ),
             });
         }
-        if scheduled_by_leg.insert((ob.entry, ob.ordinal), ob).is_some() {
+        if scheduled_by_leg
+            .insert((ob.entry, ob.ordinal), ob)
+            .is_some()
+        {
             return Err(LanternError::Parameter {
                 procedure: procedure.into(),
                 name: "obligations".into(),
@@ -752,7 +766,9 @@ pub fn evaluate_cash_flow_solvency(
                 ),
             });
         };
-        if ob.account != open_leg.account || ob.unit != open_leg.unit || ob.entity != open_leg.entity
+        if ob.account != open_leg.account
+            || ob.unit != open_leg.unit
+            || ob.entity != open_leg.entity
         {
             return Err(LanternError::Parameter {
                 procedure: procedure.into(),
@@ -763,7 +779,12 @@ pub fn evaluate_cash_flow_solvency(
                 ),
             });
         }
-        let doc_oids = validate_evidence_refs(procedure, snapshot, "scheduled obligation", &ob.evidence_refs)?;
+        let doc_oids = validate_evidence_refs(
+            procedure,
+            snapshot,
+            "scheduled obligation",
+            &ob.evidence_refs,
+        )?;
         let key = (ob.unit.0, ob.entity);
         let acc = accum_by_scope.entry(key).or_default();
         acc.docs.extend(doc_oids);
@@ -836,7 +857,8 @@ pub fn evaluate_cash_flow_solvency(
                 for inst in sorted_inst {
                     let relieved = to_relieve.min(inst.amount);
                     to_relieve = amount_difference(to_relieve, relieved, "installment relief")?;
-                    let remaining = amount_difference(inst.amount, relieved, "installment remaining")?;
+                    let remaining =
+                        amount_difference(inst.amount, relieved, "installment remaining")?;
                     if remaining == 0 {
                         continue;
                     }
@@ -846,8 +868,12 @@ pub fn evaluate_cash_flow_solvency(
                             remaining,
                             "maturing obligations sum",
                         )?;
-                        acc.selected_obligations
-                            .push((entry_vid, ordinal, inst.due_date, remaining));
+                        acc.selected_obligations.push((
+                            entry_vid,
+                            ordinal,
+                            inst.due_date,
+                            remaining,
+                        ));
                     } else {
                         acc.deferred_obligations = amount_sum(
                             acc.deferred_obligations,
@@ -1312,7 +1338,13 @@ fn test_fixture(as_of: DateDay) -> (Snapshot, BookContext, VId, VId, Oid) {
         class: EntryClass::SCHEMA_CONTROL,
         effective_date: day(2026, 1, 1),
         document_date: None,
-        description: Erasable::seal(&"assign cash role".to_string(), None, &book.seal_key, [1; 32], [1; 24]),
+        description: Erasable::seal(
+            &"assign cash role".to_string(),
+            None,
+            &book.seal_key,
+            [1; 32],
+            [1; 24],
+        ),
         effective_period: None,
         unit_totals: Vec::new(),
         legs: Vec::new(),
@@ -1409,7 +1441,13 @@ fn make_posting(
         class,
         effective_date: eff,
         document_date: Some(eff),
-        description: Erasable::seal(&"posting".to_string(), None, &book.seal_key, [2; 32], [2; 24]),
+        description: Erasable::seal(
+            &"posting".to_string(),
+            None,
+            &book.seal_key,
+            [2; 32],
+            [2; 24],
+        ),
         effective_period: None,
         unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
         legs,
