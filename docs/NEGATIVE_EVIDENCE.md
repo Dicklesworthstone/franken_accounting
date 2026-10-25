@@ -635,3 +635,61 @@ currently have empirical confusion-matrix counts; the remaining 56 procedures
 previously labeled `calibration = "planted"` had unit tests over planted books
 without retained confusion-matrix counts and are therefore recorded as
 `calibration = "uncalibrated"` until per-procedure calibration manifests land.
+
+## 2026-10-25 — False closures found by the 10-20 check (`fa-ldfy`)
+
+The 2026-10-20 reality check (`fa-hlnd`) audited closed and open beads at
+`0d338c0` and identified 15 closed beads whose acceptance criteria were unmet at
+closure time (hiding remaining vision scope from `br ready`) and 6 open beads
+whose descriptions had drifted behind landed slices. Rather than silently
+reopening another owner's closure where a dedicated corrective bead already
+exists under `fa-hlnd`, each of the 15 closed beads now carries a dated audit
+comment citing exact `file:line` evidence, reproduction commands, and its
+corrective bead ID(s):
+
+- **`fa-tu58`, `fa-i5s` (§17 benchmarks and SLO baselines):** Baselines were
+  hand-entered and benches timed fixture setup rather than the stated workloads
+  (`crates/fa-bench/src/lib.rs:1057-1134`, `registries/slo.toml`). Retracted in
+  `fa-e75k` (closed); real §17 measurement harness tracked in `fa-ykbp`.
+- **`fa-uqq`, `fa-8x9` (Lean 4 formal proof lanes):** Lean was never compiled in
+  the gate and a synthetic `.olean`/`.fln` header check stood in for `lake build`
+  (`crates/fa-money/tests/formal_anchors.rs:323-357`). Retracted in `fa-2lsv`
+  (closed); real Lean compilation and theorem-inventory witness tracked in `fa-09q8`.
+- **`fa-6dw` (TLA+ merge-train model):** Spec was not wired to
+  `scripts/merge_train.sh` and TLC state exploration was unrecorded. Tracked in
+  `fa-dj6j` and `fa-apde`.
+- **`fa-npi`, `fa-faim` (external plain-text and standards oracles):**
+  Beancount/hledger differential was a self-oracle and XBRL checked a 28-element
+  internal fixture rather than a real taxonomy calculation linkbase. Retracted in
+  `fa-kkxl` (closed); real external oracles tracked in `fa-sa4w` and `fa-ipom`.
+- **`fa-oz3` (`RestatementCase` and `Reclassification`):** `RestatementCase` was
+  library-only at closure (later surfaced in `fa-75j4`), and
+  `EntryClass::Reclassification` / `fa reclass` remained refused (`FA-REF-102`).
+  Tracked in `fa-xvba`.
+- **`fa-os2` (calendars and time zones):** `Custom` calendar kind, surfaced
+  business-day calendars, non-UTC `time_zone_policy`, and golden vectors through
+  2100 were absent. Tracked in `fa-94qd`.
+- **`fa-vn4` (register checkpoints):** `crates/fa-registers/src/maintainer.rs:1-20`
+  had no journaled `RegisterCheckpoint` object or checkpoint-bounded historical
+  rebuild. Tracked in `fa-9xf9`.
+- **`fa-i9yn`, `fa-pbm` (custom statement definitions and regulatory schedules):**
+  Statement lint, custom `StatementDefinition` objects, and FFIEC 031/041 / FR
+  Y-9C schedules were library-only with zero CLI/MCP callers. Tracked in
+  `fa-qh60` and `fa-doa9`.
+- **`fa-12x` (Polish Bar simulated-agent corpus):** Closure cited a
+  simulated-agent corpus with zero `useless_error`, which did not exist in the
+  tree. Tracked in `fa-nmk4`.
+- **`fa-hlvs` (metamorphic relations):** Substituted `plan+commit` for genuine
+  `draft-promote == trunk-post` and lacked retention/compaction and real fixture
+  `export -> import` identity checks. Tracked in `fa-eid6`.
+- **`fa-f3bo` (provenance closure):** Full provenance closure enumeration
+  (`fa explain evidence`), closure digest in certificates, and complete bundle
+  closure packaging remained incomplete. Tracked in `fa-ge0y`.
+
+In addition, the 6 open beads with stale descriptions (`fa-4o0`, `fa-6l9`,
+`fa-3ock`, `fa-ehd`, `fa-z5u`, `fa-i7e`) now carry dated `Current state 2026-10-20`
+notes distinguishing landed slices from remaining scope, and `fa-8jcr`
+mechanizes evidence-bound closure (`scripts/close_bead.sh --verdict`) so future
+code/script beads cannot close without their named `acceptance-tests` passing in
+a verified verdict note.
+
