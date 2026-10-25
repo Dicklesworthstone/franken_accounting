@@ -1,0 +1,8 @@
+tier0 v1
+verdict=pass
+commit=315eb06642e2e5f7e69d9eca287eeb5f06027d4b
+tree=b2aa06ae81b731e2062ba837443215492e83f942
+lane=remote
+host=hetzner1:Linux-x86_64
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+recorded_utc=2026-10-25T06:12:57Z
