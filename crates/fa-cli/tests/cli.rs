@@ -4937,7 +4937,8 @@ fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> s
         "adjustment.json",
         r#"{"class":"Adjusting","effective_date":"2026-03-12","idempotency_key":"closed-adjustment","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#,
     );
-    // Without an approval the Closed cell refuses it.
+    // Without an approval the Closed cell refuses it (the post is confirmed:
+    // --grant post_closed is dangerous).
     let (code, out) = run(&[
         "post",
         "--intent",
@@ -4946,6 +4947,7 @@ fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> s
         &evidence,
         "--grant",
         "post_closed",
+        "--yes",
         "--json",
     ]);
     assert_eq!(code, 7, "{out}");
@@ -4960,8 +4962,6 @@ fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> s
         &adjustment,
         "--evidence",
         &evidence,
-        "--grant",
-        "post_closed",
         "--review-out",
         review,
         "--json",
@@ -4984,6 +4984,7 @@ fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> s
         &own,
         "--grant",
         "post_closed",
+        "--yes",
         "--json",
     ]);
     assert_eq!(code, 7, "{out}");
@@ -4997,6 +4998,7 @@ fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> s
         &"00".repeat(32),
         "--grant",
         "post_closed",
+        "--yes",
         "--json",
     ]);
     assert_eq!(code, 2, "{out}");
