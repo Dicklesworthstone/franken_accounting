@@ -33,21 +33,9 @@ reason = "FDIC Part 370 files need ORC capacity codes on account-participant edg
 expires = "2026-11-21"
 
 [[unwired]]
-path = "fa_lantern::conformal"
-owner_bead = "fa-4psc"
-reason = "Split-conformal threshold calibration has no calibration surface."
-expires = "2026-11-21"
-
-[[unwired]]
 path = "fa_statements::regulatory"
 owner_bead = "fa-doa9"
 reason = "FFIEC 031/041 and FR Y-9C schedule definitions key on two-digit code prefixes that do not match templates/charts/us-bank-call-report.json, so they cannot be surfaced as they stand."
-expires = "2026-11-21"
-
-[[unwired]]
-path = "fa_time::business"
-owner_bead = "fa-94qd"
-reason = "Business-day calendars and day-roll conventions are not creatable or applied from any surface."
 expires = "2026-11-21"
 
 [[verification]]

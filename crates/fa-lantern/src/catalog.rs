@@ -14,6 +14,11 @@ use fgdb_types::VId;
 use crate::aging::{InventoryAging, OpenItemsAging};
 use crate::assertion_drift::AssertionDrift;
 use crate::bank_reconciliation::BankStatementDrift;
+pub use crate::conformal::{
+    DetectorThresholdCard, LabeledDetectorMetrics, SplitConformalBound,
+    ThresholdCandidateEvaluation, WilsonIntervalBps, calibrate_detector_threshold,
+    calibrate_split_conformal, wilson_interval_95_bps,
+};
 use crate::cutoff::{
     ConfirmCoverage, DamagesAttestedBaseline, DistributionProRata, DistributionRisingTide,
     ExpenseCapitalization, LookbackFraudulentTransfer, LookbackPreferences, PartyMasterChanges,
@@ -52,9 +57,35 @@ pub fn registered() -> Result<Vec<Row>, LanternError> {
 
 /// The measured precision, recall and clean-corpus flag rate of every
 /// `calibration = "corpus"` procedure (registries/lantern_calibration.toml,
-/// fa-4psc).
+/// fa-4psc), verified against exact 95% Wilson confidence intervals.
 pub fn calibration() -> Result<LanternCalibration, LanternError> {
-    Ok(LanternCalibration::embedded()?)
+    let cal = LanternCalibration::embedded()?;
+    for row in &cal.rows {
+        let tn = row.clean_entries.saturating_sub(row.clean_flagged);
+        let metrics = LabeledDetectorMetrics::from_counts(
+            row.true_positives,
+            row.false_positives,
+            tn,
+            row.false_negatives,
+        );
+        let clean = wilson_interval_95_bps(row.clean_flagged, row.clean_entries);
+        if metrics.precision.point_estimate_bps != row.precision_bps
+            || metrics.precision.lower_bps != row.precision_lower_bps
+            || metrics.precision.upper_bps != row.precision_upper_bps
+            || metrics.recall.point_estimate_bps != row.recall_bps
+            || metrics.recall.lower_bps != row.recall_lower_bps
+            || metrics.recall.upper_bps != row.recall_upper_bps
+            || clean.point_estimate_bps != row.clean_rate_bps
+            || clean.upper_bps != row.clean_rate_upper_bps
+        {
+            return Err(LanternError::Parameter {
+                procedure: row.id.clone(),
+                name: "lantern_calibration".into(),
+                message: "calibration row Wilson interval does not match confusion counts".into(),
+            });
+        }
+    }
+    Ok(cal)
 }
 
 /// Build the registered procedure `id` with `params` (which must belong to

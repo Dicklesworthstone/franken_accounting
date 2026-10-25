@@ -11,6 +11,36 @@ pub use fa_journal::recurring::{
     RecurringBatch, RecurringBlocked, RecurringPlan, RecurringRecorded, RecurringSpec,
     RecurringView,
 };
+pub use fa_time::business::{
+    AdjustedOccurrence, BusinessCalendar, BusinessDayConvention, BusinessDayError,
+};
+
+/// Build an ISO Monday–Friday business calendar with explicit holiday dates.
+pub fn weekday_business_calendar(
+    holidays: Vec<fa_time::DateDay>,
+) -> Result<BusinessCalendar, BusinessDayError> {
+    use fa_time::Weekday::{Friday, Monday, Thursday, Tuesday, Wednesday};
+    BusinessCalendar::new(&[Monday, Tuesday, Wednesday, Thursday, Friday], holidays)
+}
+
+/// Apply `convention` over `calendar` to `view.next_date`, preserving both the
+/// contractual unadjusted occurrence date and its adjusted business day.
+pub fn adjust_next_occurrence(
+    view: &RecurringView,
+    calendar: &BusinessCalendar,
+    convention: BusinessDayConvention,
+) -> Result<Option<AdjustedOccurrence>, BusinessDayError> {
+    view.next_date
+        .map(|date| {
+            Ok(AdjustedOccurrence {
+                index: view.next_index,
+                unadjusted: date,
+                adjusted: calendar.adjust(date, convention)?,
+                convention,
+            })
+        })
+        .transpose()
+}
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Bind a fixed template, explicit monthly cadence and current execution
