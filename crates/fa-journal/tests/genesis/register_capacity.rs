@@ -333,6 +333,283 @@ fn pending_release_is_judged_in_the_final_atomic_state_across_periods() {
 }
 
 #[test]
+fn pending_release_uses_final_state_without_intermediate_false_refusal() {
+    for release_first in [false, true] {
+        let mut h = harness();
+        let mut reference = oracle(&h);
+        let mut old = intent(&h, i128::MAX, b"full-cap-hold");
+        old.class = "Pending".into();
+        let fa_reference::Verdict::Posted {
+            index: old_index, ..
+        } = reference.post(&old)
+        else {
+            panic!("oracle hold fits");
+        };
+        let hold = h
+            .post(h.request(
+                h.pending(h.rent_legs(i128::MAX), b"full-cap-hold"),
+                &["post"],
+            ))
+            .unwrap();
+        let target = committed(&hold).unwrap().0;
+        h.transition(
+            &h.april.clone(),
+            PeriodTransition::Open,
+            b"open-april-final-state",
+        )
+        .unwrap();
+        reference
+            .transition(&h.april, PeriodTransition::Open)
+            .unwrap();
+
+        let mut next = h.pending(h.rent_legs(i128::MAX), b"replacement-max-hold");
+        next.effective_date = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let mut release = h.resolution_voids(target, b"release-full-cap-hold");
+        release.effective_date = next.effective_date;
+        let members = if release_first {
+            vec![release, next]
+        } else {
+            // Even when the new MAX hold precedes the release in the batch,
+            // admission judges the final atomic state (0 in March, MAX in April,
+            // MAX in cumulative stock) without a false intermediate refusal.
+            vec![next, release]
+        };
+        h.post_batch(h.batch(b"swap-max-hold", members))
+            .expect("final atomic pending state is representable in both member orders");
+
+        let mut ref_next = intent(&h, i128::MAX, b"replacement-max-hold");
+        ref_next.class = "Pending".into();
+        ref_next.date = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let mut ref_release = ref_next.clone();
+        ref_release.class = "Resolution".into();
+        ref_release.key = b"release-full-cap-hold".to_vec();
+        ref_release.legs.clear();
+        ref_release.resolves = Some(fa_reference::Resolve {
+            target: old_index,
+            posts: None,
+        });
+        let ref_members = if release_first {
+            vec![ref_release, ref_next]
+        } else {
+            vec![ref_next, ref_release]
+        };
+        assert!(matches!(
+            reference.post_batch(b"swap-max-hold", &ref_members),
+            fa_reference::BatchVerdict::Posted { .. }
+        ));
+        assert_leg_projections(&h);
+
+        // Adding 1 more pending unit on top of the active April MAX hold is
+        // refused atomically with FA-REF-198.
+        let head = h.db.frontier().unwrap();
+        let mut over = h.pending(h.rent_legs(1), b"over-after-swap");
+        over.effective_date = DateDay::from_ymd(2026, 4, 1).unwrap();
+        let refusal = h.post(h.request(over, &["post"])).unwrap_err();
+        assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3), "{refusal}");
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+}
+
+#[test]
+fn migration_finalize_capacity_failure_is_atomic() {
+    use fa_journal::migration::{
+        RunBody, RunControlRequest, RunMode, RunState, TrialBalanceLine, kind, open_proposal,
+        open_run, plan_run_transition, read_run, transition_run,
+    };
+
+    for (staged_amount, live_amount, expect_ok) in
+        [(i128::MAX, 1_i128, false), (i128::MAX - 1, 1_i128, true)]
+    {
+        let mut h = harness();
+        for (step, key) in [
+            (PeriodTransition::Open, b"open-fy26-open".as_slice()),
+            (PeriodTransition::SoftClose, b"soft-fy26-open".as_slice()),
+            (PeriodTransition::Close, b"close-fy26-open".as_slice()),
+            (PeriodTransition::Lock, b"lock-fy26-open".as_slice()),
+        ] {
+            h.transition("FY2026-OPEN", step, key).unwrap();
+        }
+        let opening_day = DateDay::from_ymd(2026, 1, 1).unwrap();
+        let tb_doc = h.document(
+            18,
+            HUMAN_UPLOAD,
+            b"account,unit,mantissa\n6000,USD,max\n1000,USD,-max\n",
+        );
+        h.add_document(&tb_doc).unwrap();
+        let tb_ref = tb_doc.evidence_ref(1);
+        let body = RunBody {
+            book_id: h.book.book_id,
+            run_key: "capacity-atomic-opening".into(),
+            source_system: "legacy-gl".into(),
+            mode: RunMode::OpeningOnly,
+            trial_balance: tb_ref.document_oid,
+            opening_date: opening_day,
+            lines: vec![
+                TrialBalanceLine {
+                    account_code: "1000".into(),
+                    unit: h.usd,
+                    mantissa: -staged_amount,
+                },
+                TrialBalanceLine {
+                    account_code: "6000".into(),
+                    unit: h.usd,
+                    mantissa: staged_amount,
+                },
+            ],
+            periods: Vec::new(),
+            detail_base: Vec::new(),
+            sole_opening_source: false,
+        };
+        let cap = Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap();
+        let open_prop = open_proposal(
+            &h.book,
+            PRINCIPAL,
+            &body,
+            vec![tb_ref],
+            b"open-capacity-migration",
+            h.proposal(vec![], b"open-desc", EntryClass::ORIGINAL)
+                .description,
+        )
+        .unwrap();
+        let ctx = h.ctx();
+        let opened = h
+            .runtime
+            .block_on(open_run(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                &body,
+                RunControlRequest {
+                    proposal: open_prop,
+                    capability: cap.clone(),
+                    approvals: Vec::new(),
+                },
+            ))
+            .unwrap()
+            .unwrap();
+
+        let mut chunk = h.proposal(
+            h.rent_legs(staged_amount),
+            b"staged-capacity-chunk",
+            EntryClass::MIGRATION,
+        );
+        chunk.effective_date = opening_day;
+        chunk.effective_period = Some(fa_model::PeriodRef {
+            calendar: h.book.calendar.id.clone(),
+            code: "FY2026-OPEN".into(),
+        });
+        chunk.evidence = vec![tb_ref];
+        chunk.origin = EntryOrigin::Migration {
+            run_ref: opened.run,
+            source_system: "legacy-gl".into(),
+            source_id: h
+                .proposal(vec![], b"src-id", EntryClass::ORIGINAL)
+                .description,
+            source_recorded_at_ns: None,
+            source_entered_by: None,
+            source_approved_by: None,
+            batch_oid: tb_ref.document_oid,
+        };
+        let chunk_digest = chunk.proposal_digest().unwrap();
+        let chunk_approvals = vec![h.approve_transition(chunk_digest), {
+            let ctx = h.ctx();
+            let req = ApprovalRequest {
+                capability: Capability::embedded(VId(71), &["approve"]).unwrap(),
+                approved_proposal_digest: chunk_digest,
+                role: 0,
+            };
+            h.runtime
+                .block_on(record_approval(&mut h.db, &ctx, &h.book, req))
+                .unwrap()
+                .unwrap()
+                .approval()
+        }];
+        h.post(PostRequest {
+            proposal: chunk,
+            approvals: chunk_approvals,
+            plan_certificate: None,
+            capability: cap.clone(),
+        })
+        .expect("staged migration chunk commits while invisible to live registers");
+
+        // While the migration run is Open, its staged chunk is invisible, so a
+        // live posting in March is admitted against the live register only.
+        h.post(h.request(
+            h.proposal(
+                h.rent_legs(live_amount),
+                b"live-march",
+                EntryClass::ORIGINAL,
+            ),
+            &["post"],
+        ))
+        .expect("live post succeeds while migration is staged");
+
+        let fin_prop = plan_run_transition(
+            &h.db,
+            &h.book,
+            opened.run,
+            kind::FINALIZE,
+            PRINCIPAL,
+            b"finalize-capacity-migration",
+            h.proposal(vec![], b"fin-desc", EntryClass::ORIGINAL)
+                .description,
+        )
+        .unwrap()
+        .unwrap();
+        let fin_digest = fin_prop.proposal_digest().unwrap();
+        let fin_approvals = vec![h.approve_transition(fin_digest), {
+            let ctx = h.ctx();
+            let req = ApprovalRequest {
+                capability: Capability::embedded(VId(71), &["approve"]).unwrap(),
+                approved_proposal_digest: fin_digest,
+                role: 0,
+            };
+            h.runtime
+                .block_on(record_approval(&mut h.db, &ctx, &h.book, req))
+                .unwrap()
+                .unwrap()
+                .approval()
+        }];
+        let head_before = h.db.frontier().unwrap();
+        let ctx = h.ctx();
+        let res = h
+            .runtime
+            .block_on(transition_run(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                RunControlRequest {
+                    proposal: fin_prop,
+                    capability: cap,
+                    approvals: fin_approvals,
+                },
+            ))
+            .unwrap();
+        if expect_ok {
+            res.expect("fitting staged + live stock activates at Finalize");
+            assert_eq!(
+                read_run(&h.db, opened.run, None).unwrap().unwrap().state,
+                RunState::Finalized
+            );
+        } else {
+            let refusal = res.expect_err("over-cap Finalize must refuse atomically");
+            assert_eq!((refusal.code, refusal.exit), ("FA-REF-198", 3), "{refusal}");
+            assert_eq!(
+                h.db.frontier().unwrap(),
+                head_before,
+                "failed Finalize must not advance the commit frontier"
+            );
+            assert_eq!(
+                read_run(&h.db, opened.run, None).unwrap().unwrap().state,
+                RunState::Open,
+                "failed Finalize must leave the migration run Open"
+            );
+        }
+        assert_leg_projections(&h);
+    }
+}
+
+#[test]
 fn atomic_batch_capacity_refusal_publishes_neither_members_nor_outcome() {
     let mut h = harness();
     let before = h.db.frontier().unwrap();

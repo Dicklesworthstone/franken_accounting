@@ -1353,3 +1353,621 @@ fn concurrent_posts_on_a_limited_account_conflict_through_the_limit_cell_cas_in_
     assert!(h.post_rent(400, b"limit-ok-1").is_ok());
     assert!(h.post_rent(500, b"limit-ok-2").is_ok());
 }
+
+mod register_capacity {
+    use super::*;
+
+    /// Independent 192-bit unsigned limb arithmetic (`[lo, mid, hi]`) that shares
+    /// no code with `i128` register folds or `fa_journal::register_capacity`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct Limbs192([u64; 3]);
+
+    impl Limbs192 {
+        const CAP: Self = Self([u64::MAX, i64::MAX as u64, 0]);
+
+        fn from_u128(v: u128) -> Self {
+            Self([v as u64, (v >> 64) as u64, 0])
+        }
+
+        fn add(self, rhs: Self) -> Self {
+            let (lo, c0) = self.0[0].overflowing_add(rhs.0[0]);
+            let (mid1, c1) = self.0[1].overflowing_add(rhs.0[1]);
+            let (mid, c2) = mid1.overflowing_add(u64::from(c0));
+            let hi = self.0[2]
+                .checked_add(rhs.0[2])
+                .and_then(|v| v.checked_add(u64::from(c1 || c2)))
+                .expect("192-bit limb capacity");
+            Self([lo, mid, hi])
+        }
+
+        fn sub(self, rhs: Self) -> Self {
+            let (lo, b0) = self.0[0].overflowing_sub(rhs.0[0]);
+            let (mid1, b1) = self.0[1].overflowing_sub(rhs.0[1]);
+            let (mid, b2) = mid1.overflowing_sub(u64::from(b0));
+            let hi = self.0[2]
+                .checked_sub(rhs.0[2])
+                .and_then(|v| v.checked_sub(u64::from(b1 || b2)))
+                .expect("non-negative 192-bit limb subtraction");
+            Self([lo, mid, hi])
+        }
+
+        fn exceeds_cap(self) -> bool {
+            (self.0[2], self.0[1], self.0[0]) > (Self::CAP.0[2], Self::CAP.0[1], Self::CAP.0[0])
+        }
+
+        fn to_i128_checked(self) -> Option<i128> {
+            if self.exceeds_cap() {
+                None
+            } else {
+                Some(((u128::from(self.0[1]) << 64) | u128::from(self.0[0])) as i128)
+            }
+        }
+    }
+
+    #[test]
+    fn every_activation_path_preserves_representable_cells() {
+        const T: &str = "every_activation_path_preserves_representable_cells";
+        use fa_journal::migration::{
+            RunBody, RunControlRequest, RunMode, RunState, TrialBalanceLine, kind, open_proposal,
+            open_run, plan_run_transition, read_run, transition_run,
+        };
+        use fa_journal::{ApprovalRequest, PostBatch, PostIntent, post_batch, record_approval};
+        use fa_model::{
+            ControlPayload, Disposition, EntryClass, EntryOrigin, Erasable, LegPayload, Pending,
+            PeriodRef, Supersession, SupersessionKind, period_vid,
+        };
+        use fa_money::{Amount, Side};
+        use fa_policy::Capability;
+        use fa_registers::{balance_as_of, fold_functional_stock, fold_period};
+        use fa_time::{DateDay, PeriodState, PeriodTransition};
+
+        let march_day = DateDay::from_ymd(2026, 3, 15).expect("march 15");
+        let april_day = DateDay::from_ymd(2026, 4, 15).expect("april 15");
+        let cap_minus_one = Limbs192::from_u128((i128::MAX - 1) as u128);
+        let one = Limbs192::from_u128(1);
+        assert_eq!(cap_minus_one.add(one), Limbs192::CAP);
+        assert!(!cap_minus_one.add(one).exceeds_cap());
+        assert!(Limbs192::CAP.add(one).exceeds_cap());
+
+        // 1. Single post: cap-1 -> cap -> cap+1 refused, uncertain-ack retry of cap
+        //    is idempotent, and literal period/stock/functional folds agree with Limbs192.
+        let mut h = KernelHarness::new(None);
+        assert!(h.post_rent(i128::MAX - 1, b"single-cap-minus-1").is_ok());
+        assert!(h.post_rent(1, b"single-at-cap").is_ok());
+        let head_at_cap = h.db.frontier().expect("head at cap");
+        let over = h
+            .post_rent(1, b"single-over-cap")
+            .expect_err("cap+1 must refuse");
+        assert_eq!((over.code, over.exit), ("FA-REF-198", 3), "{over}");
+        assert_eq!(h.db.frontier().expect("head unchanged"), head_at_cap);
+        let retry = h
+            .post_rent(1, b"single-at-cap")
+            .expect("uncertain-ack retry of committed cap post");
+        assert!(matches!(retry, fa_journal::Posted::AlreadyRecorded { .. }));
+        assert_eq!(h.db.frontier().expect("retry writes nothing"), head_at_cap);
+        let march_fold = fold_period(&h.db, &h.book, &h.march).expect("march fold at cap");
+        let expected_cap = Limbs192::CAP.to_i128_checked().expect("cap fits i128");
+        assert_eq!(
+            (
+                march_fold.cells.iter().map(|c| c.debits).sum::<i128>(),
+                march_fold.cells.iter().map(|c| c.credits).sum::<i128>(),
+            ),
+            (expected_cap, expected_cap)
+        );
+        let stock_fold = balance_as_of(&h.db, &h.book, march_day, None).expect("stock fold at cap");
+        assert_eq!(
+            stock_fold.unit_totals.get(&h.usd.0),
+            Some(&(expected_cap, expected_cap))
+        );
+        let func_fold =
+            fold_functional_stock(&h.db, &h.book, march_day, None).expect("functional fold at cap");
+        assert_eq!(
+            func_fold.total_debits().expect("functional debits"),
+            expected_cap
+        );
+
+        // 2. Gross overflow with zero net: MAX posted then reversed leaves net 0
+        //    but both gross columns at MAX; +1 in either direction is refused.
+        let mut h = KernelHarness::new(None);
+        let max_entry = h
+            .post_rent(i128::MAX, b"gross-max")
+            .expect("max fits")
+            .entry_ref();
+        let mut rev = h.proposal_on(
+            march_day,
+            vec![
+                LegPayload::simple(Side::Credit, h.rent, Amount::new(h.usd, i128::MAX)),
+                LegPayload::simple(Side::Debit, h.cash, Amount::new(h.usd, i128::MAX)),
+            ],
+            b"gross-max-rev",
+        );
+        rev.class = EntryClass::REVERSAL;
+        rev.supersession = vec![Supersession {
+            target: max_entry,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        let ctx = h.ctx();
+        let rev_req = h.request(rev, &["post"]);
+        h.runtime
+            .block_on(async { fa_journal::post(&mut h.db, &ctx, &h.book, rev_req).await })
+            .expect("reversal kernel")
+            .expect("reversal fits opposite gross columns");
+        let head_after_rev = h.db.frontier().expect("head after rev");
+        assert!(Limbs192::CAP.add(one).exceeds_cap());
+        let gross_over = h
+            .post_rent(1, b"gross-over-zero-net")
+            .expect_err("net is zero but gross column would be MAX+1");
+        assert_eq!((gross_over.code, gross_over.exit), ("FA-REF-198", 3));
+        assert_eq!(h.db.frontier().expect("head unchanged"), head_after_rev);
+
+        // 3. Two prepared writers at basis MAX-1 in both commit orders: winner commits,
+        //    loser conflicts (FA-REF-030, exit 6), re-prepared loser refuses FA-REF-198,
+        //    and uncertain-ack retry of winner returns AlreadyRecorded.
+        for first_wins in [true, false] {
+            let mut h = KernelHarness::new(None);
+            assert!(h.post_rent(i128::MAX - 1, b"race-basis").is_ok());
+            let p_a = h.prepare_post(h.rent_proposal_on(march_day, 1, b"race-a"));
+            let p_b = h.prepare_post(h.rent_proposal_on(march_day, 1, b"race-b"));
+            let (winner, loser, win_key, lose_key) = if first_wins {
+                (p_a, p_b, b"race-a".as_slice(), b"race-b".as_slice())
+            } else {
+                (p_b, p_a, b"race-b".as_slice(), b"race-a".as_slice())
+            };
+            let ctx = h.ctx();
+            let win_res = h
+                .runtime
+                .block_on(async { winner.commit(&mut h.db, &ctx).await })
+                .expect("winner kernel")
+                .expect("winner commits to MAX");
+            let head_after_win = h.db.frontier().expect("head after winner");
+            let lose_err = h
+                .runtime
+                .block_on(async { loser.commit(&mut h.db, &ctx).await })
+                .expect("loser kernel")
+                .expect_err("second prepared writer must conflict on account witness");
+            assert_eq!((lose_err.code, lose_err.exit), ("FA-REF-030", 6));
+            assert_eq!(h.db.frontier().expect("head unchanged"), head_after_win);
+
+            let retry_lose = h
+                .post_rent(1, lose_key)
+                .expect_err("re-submitting loser at new head sees MAX and refuses FA-REF-198");
+            assert_eq!((retry_lose.code, retry_lose.exit), ("FA-REF-198", 3));
+            assert_eq!(h.db.frontier().expect("head unchanged"), head_after_win);
+
+            let win_req = h.request(h.rent_proposal_on(march_day, 1, win_key), &["post"]);
+            let retry_win = fa_journal::prepare_post(&mut h.db, &ctx, &h.book, win_req)
+                .expect("retry winner kernel")
+                .expect("uncertain-ack retry of winner is admitted");
+            match retry_win {
+                fa_journal::post::PostPreparation::AlreadyRecorded(recorded) => {
+                    assert_eq!(recorded.entry_ref(), win_res.entry_ref());
+                }
+                fa_journal::post::PostPreparation::Ready(_) => {
+                    panic!("expected AlreadyRecorded on winner retry")
+                }
+            }
+        }
+
+        // 4. Atomic batch: individually fitting members whose aggregate exceeds MAX
+        //    refuse atomically without consuming batch or member keys.
+        let mut h = KernelHarness::new(None);
+        let head_before_batch = h.db.frontier().expect("head before batch");
+        let ctx = h.ctx();
+        let over_batch = PostBatch::new(
+            b"batch-cap".to_vec(),
+            vec![
+                PostIntent::new(
+                    h.rent_proposal_on(march_day, i128::MAX - 1, b"bm-1"),
+                    Vec::new(),
+                )
+                .expect("intent 1"),
+                PostIntent::new(h.rent_proposal_on(march_day, 2, b"bm-2"), Vec::new())
+                    .expect("intent 2"),
+            ],
+        )
+        .expect("over batch");
+        let batch_err = h
+            .runtime
+            .block_on(async {
+                post_batch(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    Capability::embedded(PRINCIPAL, &["post"]).expect("cap"),
+                    over_batch,
+                )
+                .await
+            })
+            .expect("batch kernel")
+            .expect_err("aggregate MAX+1 must refuse");
+        assert_eq!((batch_err.code, batch_err.exit), ("FA-REF-198", 3));
+        assert_eq!(
+            h.db.frontier().expect("atomic batch refusal"),
+            head_before_batch
+        );
+
+        // Corrected retry with the same batch and member keys commits cleanly to MAX.
+        let ok_batch = PostBatch::new(
+            b"batch-cap".to_vec(),
+            vec![
+                PostIntent::new(
+                    h.rent_proposal_on(march_day, i128::MAX - 1, b"bm-1"),
+                    Vec::new(),
+                )
+                .expect("intent 1"),
+                PostIntent::new(h.rent_proposal_on(march_day, 1, b"bm-2"), Vec::new())
+                    .expect("intent 2"),
+            ],
+        )
+        .expect("ok batch");
+        h.runtime
+            .block_on(async {
+                post_batch(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    Capability::embedded(PRINCIPAL, &["post"]).expect("cap"),
+                    ok_batch,
+                )
+                .await
+            })
+            .expect("batch retry kernel")
+            .expect("corrected batch commits to MAX");
+
+        // 5. Cross-period pending release in final atomic state + over-cap refusal.
+        let mut h = KernelHarness::new(None);
+        let mut march_hold = h.rent_proposal_on(march_day, i128::MAX, b"march-max-hold");
+        march_hold.class = EntryClass::PENDING;
+        march_hold.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        let ctx = h.ctx();
+        let hold_req = h.request(march_hold, &["post"]);
+        let hold_ref = h
+            .runtime
+            .block_on(async { fa_journal::post(&mut h.db, &ctx, &h.book, hold_req).await })
+            .expect("hold kernel")
+            .expect("march hold fits")
+            .entry_ref();
+        let mut april_hold = h.rent_proposal_on(april_day, i128::MAX, b"april-max-hold");
+        april_hold.class = EntryClass::PENDING;
+        april_hold.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        let mut void_march = h.proposal_on(april_day, Vec::new(), b"void-march-hold");
+        void_march.class = EntryClass::RESOLUTION;
+        void_march.control = Some(ControlPayload::ReservationRelease);
+        void_march.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(hold_ref),
+            disposition: Some(Disposition::Voids),
+        });
+        // Even with april_hold ordered before void_march, final stock pending is
+        // Limbs192::CAP.sub(Limbs192::CAP).add(Limbs192::CAP) == Limbs192::CAP.
+        assert_eq!(
+            Limbs192::CAP.sub(Limbs192::CAP).add(Limbs192::CAP),
+            Limbs192::CAP
+        );
+        let swap_batch = PostBatch::new(
+            b"cross-period-hold-swap".to_vec(),
+            vec![
+                PostIntent::new(april_hold, Vec::new()).expect("april hold intent"),
+                PostIntent::new(void_march, Vec::new()).expect("void march intent"),
+            ],
+        )
+        .expect("swap batch");
+        h.runtime
+            .block_on(async {
+                post_batch(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    Capability::embedded(PRINCIPAL, &["post"]).expect("cap"),
+                    swap_batch,
+                )
+                .await
+            })
+            .expect("swap batch kernel")
+            .expect("released March hold leaves room for April MAX hold");
+        let stock_after_swap =
+            balance_as_of(&h.db, &h.book, april_day, None).expect("stock after swap");
+        assert_eq!(
+            stock_after_swap.pending_unit_totals.get(&h.usd.0),
+            Some(&(expected_cap, expected_cap))
+        );
+
+        // 6. Staged migration invisibility + atomic Finalize refusal on over-cap stock.
+        let mut h = KernelHarness::new(None);
+        for (step, key) in [
+            (PeriodTransition::Open, b"open-fy26-open".as_slice()),
+            (PeriodTransition::SoftClose, b"soft-fy26-open".as_slice()),
+            (PeriodTransition::Close, b"close-fy26-open".as_slice()),
+            (PeriodTransition::Lock, b"lock-fy26-open".as_slice()),
+        ] {
+            let desc = Erasable::seal(
+                &"open".to_string(),
+                None,
+                &h.book.seal_key,
+                [9; 32],
+                [8; 24],
+            );
+            let approvals = if matches!(step, PeriodTransition::Lock) {
+                let period = fa_journal::policy::calendar_period(&h.book, "FY2026-OPEN")
+                    .expect("open period");
+                let digest = fa_journal::transition_proposal(
+                    &h.book,
+                    &period,
+                    PeriodState::Closed,
+                    PeriodState::Locked,
+                    PRINCIPAL,
+                    1,
+                    key,
+                    desc.clone(),
+                )
+                .proposal_digest()
+                .expect("digest");
+                let ctx = h.ctx();
+                let app = h
+                    .runtime
+                    .block_on(async {
+                        record_approval(
+                            &mut h.db,
+                            &ctx,
+                            &h.book,
+                            ApprovalRequest {
+                                capability: Capability::embedded(VId(70), &["approve"]).unwrap(),
+                                approved_proposal_digest: digest,
+                                role: 0,
+                            },
+                        )
+                        .await
+                    })
+                    .unwrap()
+                    .unwrap()
+                    .approval();
+                vec![app]
+            } else {
+                Vec::new()
+            };
+            let ctx = h.ctx();
+            h.runtime
+                .block_on(async {
+                    fa_journal::transition_period(
+                        &mut h.db,
+                        &ctx,
+                        &h.book,
+                        "FY2026-OPEN",
+                        step,
+                        PRINCIPAL,
+                        1,
+                        key,
+                        desc,
+                        &Capability::embedded(PRINCIPAL, &["close", "post"]).unwrap(),
+                        &approvals,
+                    )
+                    .await
+                })
+                .unwrap()
+                .unwrap();
+        }
+        let tb_doc = fa_journal::evidence::Document {
+            book_id: h.book.book_id,
+            kind: 18,
+            mime: "text/csv".into(),
+            grade: 3,
+            retrieved_by: PRINCIPAL,
+            bytes: b"account,unit,mantissa\n6000,USD,max\n1000,USD,-max\n".to_vec(),
+        };
+        let ctx = h.ctx();
+        h.runtime
+            .block_on(async {
+                fa_journal::evidence::add_document(&mut h.db, &ctx, &h.book, &tb_doc).await
+            })
+            .unwrap()
+            .unwrap();
+        let tb_ref = tb_doc.evidence_ref(1);
+        let opening_day = DateDay::from_ymd(2026, 1, 1).unwrap();
+        let body = RunBody {
+            book_id: h.book.book_id,
+            run_key: "conformance-cap-run".into(),
+            source_system: "legacy".into(),
+            mode: RunMode::OpeningOnly,
+            trial_balance: tb_ref.document_oid,
+            opening_date: opening_day,
+            lines: vec![
+                TrialBalanceLine {
+                    account_code: "1000".into(),
+                    unit: h.usd,
+                    mantissa: -i128::MAX,
+                },
+                TrialBalanceLine {
+                    account_code: "6000".into(),
+                    unit: h.usd,
+                    mantissa: i128::MAX,
+                },
+            ],
+            periods: Vec::new(),
+            detail_base: Vec::new(),
+            sole_opening_source: false,
+        };
+        let mig_cap = Capability::embedded(PRINCIPAL, &["post", "migrate"]).unwrap();
+        let open_prop = open_proposal(
+            &h.book,
+            PRINCIPAL,
+            &body,
+            vec![tb_ref],
+            b"conf-open-mig",
+            Erasable::seal(
+                &"open mig".to_string(),
+                None,
+                &h.book.seal_key,
+                [3; 32],
+                [4; 24],
+            ),
+        )
+        .unwrap();
+        let opened = h
+            .runtime
+            .block_on(async {
+                open_run(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    &body,
+                    RunControlRequest {
+                        proposal: open_prop,
+                        capability: mig_cap.clone(),
+                        approvals: Vec::new(),
+                    },
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+        let mut chunk = h.rent_proposal_on(opening_day, i128::MAX, b"conf-mig-chunk");
+        chunk.class = EntryClass::MIGRATION;
+        chunk.effective_period = Some(PeriodRef {
+            calendar: h.book.calendar.id.clone(),
+            code: "FY2026-OPEN".into(),
+        });
+        chunk.evidence = vec![tb_ref];
+        chunk.origin = EntryOrigin::Migration {
+            run_ref: opened.run,
+            source_system: "legacy".into(),
+            source_id: Erasable::seal(
+                &"legacy-1".to_string(),
+                None,
+                &h.book.seal_key,
+                [5; 32],
+                [6; 24],
+            ),
+            source_recorded_at_ns: None,
+            source_entered_by: None,
+            source_approved_by: None,
+            batch_oid: tb_ref.document_oid,
+        };
+        let chunk_digest = chunk.proposal_digest().unwrap();
+        let mut chunk_approvals = Vec::new();
+        for approver in [VId(70), VId(71)] {
+            let app = h
+                .runtime
+                .block_on(async {
+                    record_approval(
+                        &mut h.db,
+                        &ctx,
+                        &h.book,
+                        ApprovalRequest {
+                            capability: Capability::embedded(approver, &["approve"]).unwrap(),
+                            approved_proposal_digest: chunk_digest,
+                            role: 0,
+                        },
+                    )
+                    .await
+                })
+                .unwrap()
+                .unwrap()
+                .approval();
+            chunk_approvals.push(app);
+        }
+        h.runtime
+            .block_on(async {
+                fa_journal::post(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    fa_journal::PostRequest {
+                        proposal: chunk,
+                        approvals: chunk_approvals,
+                        plan_certificate: None,
+                        capability: mig_cap.clone(),
+                    },
+                )
+                .await
+            })
+            .unwrap()
+            .expect("staged migration chunk commits while Open");
+        assert!(
+            h.post_rent(1, b"live-while-staged").is_ok(),
+            "staged migration remains invisible until Finalize"
+        );
+        let fin_prop = plan_run_transition(
+            &h.db,
+            &h.book,
+            opened.run,
+            kind::FINALIZE,
+            PRINCIPAL,
+            b"conf-fin-mig",
+            Erasable::seal(
+                &"fin mig".to_string(),
+                None,
+                &h.book.seal_key,
+                [7; 32],
+                [8; 24],
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        let fin_digest = fin_prop.proposal_digest().unwrap();
+        let mut fin_approvals = Vec::new();
+        for approver in [VId(70), VId(71)] {
+            let app = h
+                .runtime
+                .block_on(async {
+                    record_approval(
+                        &mut h.db,
+                        &ctx,
+                        &h.book,
+                        ApprovalRequest {
+                            capability: Capability::embedded(approver, &["approve"]).unwrap(),
+                            approved_proposal_digest: fin_digest,
+                            role: 0,
+                        },
+                    )
+                    .await
+                })
+                .unwrap()
+                .unwrap()
+                .approval();
+            fin_approvals.push(app);
+        }
+        let head_before_fin = h.db.frontier().unwrap();
+        let fin_err = h
+            .runtime
+            .block_on(async {
+                transition_run(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    RunControlRequest {
+                        proposal: fin_prop,
+                        capability: mig_cap,
+                        approvals: fin_approvals,
+                    },
+                )
+                .await
+            })
+            .unwrap()
+            .expect_err("over-cap Finalize must refuse atomically");
+        assert_eq!((fin_err.code, fin_err.exit), ("FA-REF-198", 3));
+        assert_eq!(h.db.frontier().unwrap(), head_before_fin);
+        assert_eq!(
+            read_run(&h.db, opened.run, None).unwrap().unwrap().state,
+            RunState::Open
+        );
+        assert!(
+            period_vid("cal", "FY2026-OPEN").0 > 0,
+            "period vertex remains intact"
+        );
+
+        relied_upon(
+            T,
+            true,
+            "every activation path (single post, gross-over-zero-net, prepared races in both commit orders, atomic batch, cross-period pending release, and migration Finalize) preserves representable i128 register cells and agrees with 192-bit limb arithmetic",
+        );
+    }
+}
