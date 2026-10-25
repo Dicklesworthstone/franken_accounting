@@ -2549,7 +2549,14 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
     };
     if let Err(why) = completion.check() {
         txn.abort();
-        return Ok(Err(completion_refused(why)));
+        let suggested = if completion_day < report_release_day {
+            report_release_day.render()
+        } else {
+            DateDay(report_release_day.0.saturating_add(45)).render()
+        };
+        return Ok(Err(completion_refused(why)
+            .at("engagement", engagement)
+            .or_field_change("completion_date", vec![suggested])));
     }
     let record = record_proposal(
         book,
@@ -2654,14 +2661,17 @@ pub async fn complete_documentation<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-fn carry_forward_refused(message: impl Into<String>) -> Refusal {
+fn carry_forward_refused(prior: &str, message: impl Into<String>) -> Refusal {
     Refusal::new(
         code::CARRY_FORWARD,
         exit::REFUSAL,
         message.into(),
         "plan §11.12 (audit.sud under both SAB 108 methods with prior-year carry-forward)",
-        "carry forward another engagement of this book in the same unit, whose scope periods all end before this one's begin, naming only its uncorrected proposals (`fa engagement sud <prior> --json` lists them)",
+        format!(
+            "carry forward another engagement of this book in the same unit, whose scope periods all end before this one's begin, naming only its uncorrected proposals (`fa engagement sud {prior} --json` lists them)"
+        ),
     )
+    .at("prior", prior)
 }
 
 /// The earliest start and the latest end of `profile`'s scope periods, or
@@ -2718,9 +2728,10 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     if vid == prior_vid {
-        return Ok(Err(carry_forward_refused(format!(
-            "engagement `{engagement}` cannot carry forward its own misstatements"
-        ))));
+        return Ok(Err(carry_forward_refused(
+            prior,
+            format!("engagement `{engagement}` cannot carry forward its own misstatements"),
+        )));
     }
     let key = record_key(Kind::CarryForward, vid, &req.idempotency_key);
     let evid = entry_vid(book.book_id, &req.capability.holder().0.to_le_bytes(), &key);
@@ -2788,10 +2799,13 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
     }
     if prior_profile.unit != profile.unit {
         txn.abort();
-        return Ok(Err(carry_forward_refused(format!(
-            "engagement `{prior}` states its misstatements in unit {}, `{engagement}` in unit {}",
-            prior_profile.unit.0, profile.unit.0
-        ))));
+        return Ok(Err(carry_forward_refused(
+            prior,
+            format!(
+                "engagement `{prior}` states its misstatements in unit {}, `{engagement}` in unit {}",
+                prior_profile.unit.0, profile.unit.0
+            ),
+        )));
     }
     match (
         scope_bounds(book, &prior_profile),
@@ -2800,9 +2814,12 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
         (Some((_, prior_end)), Some((start, _))) if prior_end <= start => {}
         (Some(_), Some(_)) => {
             txn.abort();
-            return Ok(Err(carry_forward_refused(format!(
-                "engagement `{prior}`'s scope periods do not all end before `{engagement}`'s begin"
-            ))));
+            return Ok(Err(carry_forward_refused(
+                prior,
+                format!(
+                    "engagement `{prior}`'s scope periods do not all end before `{engagement}`'s begin"
+                ),
+            )));
         }
         _ => {
             txn.abort();
@@ -2824,9 +2841,10 @@ pub async fn carry_forward<V: asupersync::fs::Vfs + Clone>(
         })
     {
         txn.abort();
-        return Ok(Err(carry_forward_refused(format!(
-            "engagement `{prior}` has no uncorrected proposal {ordinal}"
-        ))));
+        return Ok(Err(carry_forward_refused(
+            prior,
+            format!("engagement `{prior}` has no uncorrected proposal {ordinal}"),
+        )));
     }
     let record = record_proposal(
         book,

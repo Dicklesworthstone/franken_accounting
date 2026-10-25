@@ -3261,6 +3261,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 target.proposal.class.carries_open_items() && !target.proposal.legs.is_empty();
             if !open_item_class {
                 txn.abort();
+                let acct = &accounts[i].code;
                 return Ok(Err(Refusal::new(
                     code::SETTLE_TARGET,
                     exit::REFUSAL,
@@ -3270,8 +3271,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                         target.proposal.class.name().unwrap_or("?")
                     ),
                     "plan §5.7 (open items are posted legs; a hold, a release, or a reversal leg is not one)",
-                    "apply to the posted entry; fa open-items --account <code>",
-                )));
+                    format!("apply to the posted entry; `fa open-items --account {acct}`"),
+                )
+                .at("leg", i)
+                .at("entry", format!("{:032x}", s.target.vid.0))));
             }
             // A migrated leg is open iff its run is Finalized and its chunk
             // counts (ruling 3733 C1); the run state is a point witness.
@@ -3316,6 +3319,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             }
             let Some(target_leg) = target.proposal.legs.get(usize::from(s.ordinal)) else {
                 txn.abort();
+                let candidates: Vec<String> = (0..target.proposal.legs.len())
+                    .filter(|&k| {
+                        let tl = &target.proposal.legs[k];
+                        tl.account_ref == leg.account_ref
+                            && tl.amount.unit == leg.amount.unit
+                            && tl.side != leg.side
+                    })
+                    .chain(0..target.proposal.legs.len())
+                    .map(|k| k.to_string())
+                    .collect();
                 return Ok(Err(Refusal::new(
                     code::SETTLE_SHAPE,
                     exit::REFUSAL,
@@ -3326,8 +3339,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                         s.ordinal
                     ),
                     "plan §5.7",
-                    "fa entry show <vid> and name the 0-based leg being settled",
-                )));
+                    format!(
+                        "`fa entry show {:032x}` and name the 0-based leg being settled",
+                        s.target.vid.0
+                    ),
+                )
+                .at("leg", i)
+                .at("settles", j)
+                .at("entry", format!("{:032x}", s.target.vid.0))
+                .or_field_change(format!("legs[{i}].settles[{j}].ordinal"), candidates)));
             };
             if target_leg.account_ref != leg.account_ref
                 || target_leg.amount.unit != leg.amount.unit
@@ -3490,8 +3510,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     exit::REFUSAL,
                     format!("entry {:032x} is a {class}: {why}", target.vid.0),
                     "plan §8.2 (a reversal negates posted legs; supersession_kinds.toml target_class)",
-                    corrective_route,
-                )));
+                    format!(
+                        "inspect the target with `fa entry show {:032x}`; {corrective_route}",
+                        target.vid.0
+                    ),
+                )
+                .at("entry", format!("{:032x}", target.vid.0))));
             }
             Err(error) => {
                 return Err(KernelError::Corrupt(format!(
@@ -3534,6 +3558,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     "post the reversal in `{}` if its class is permitted there, or a later open Normal period",
                     target_period.code
                 ),
+            )
+            .at("period", period.code.clone())
+            .at("target_period", target_period.code.clone())
+            .or_field_change(
+                "effective",
+                vec![original.proposal.effective_date.render()],
             )));
         }
         // A reversal cancels the target's committed functional carrying
@@ -3562,7 +3592,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     target.vid.0
                 )));
             }
-            for i in 0..anc_entry.proposal.legs.len() {
+            for (i, anc_leg) in anc_entry.proposal.legs.iter().enumerate() {
                 let ordinal = u16::try_from(i)
                     .map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
                 let lvid = leg_vid(anc_vid, ordinal);
@@ -3572,6 +3602,13 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 let live = applied_witness(&row)?;
                 if live != 0 {
                     txn.abort();
+                    let acct = accounts
+                        .get(i)
+                        .filter(|_| {
+                            proposal.legs.get(i).map(|l| l.account_ref) == Some(anc_leg.account_ref)
+                        })
+                        .map(|a| a.code.clone())
+                        .unwrap_or_else(|| "<code>".to_string());
                     return Ok(Err(Refusal::new(
                         code::LIVE_APPLICATIONS,
                         exit::REFUSAL,
@@ -3580,8 +3617,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                             anc_vid.0
                         ),
                         "plan §5.7 (reversing an open item with live applications would strand them)",
-                        "reverse the applying entries first (fa open-items --account <code> lists them), then reverse this entry",
-                    )));
+                        format!(
+                            "reverse the applying entries first (`fa open-items --account {acct}` lists them), then reverse this entry"
+                        ),
+                    )
+                    .at("leg", i)
+                    .at("entry", format!("{:032x}", anc_vid.0))));
                 }
             }
             if anc_entry.proposal.class == EntryClass::REVERSAL
@@ -3681,8 +3722,12 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     pending_entry.proposal.class.name().unwrap_or("?")
                 ),
                 "plan §5.4 (only a pending entry is resolved)",
-                "name the pending entry; a posted entry is corrected with a Reversal",
-            )));
+                format!(
+                    "inspect the entry with `fa entry show {:032x}`; name the pending entry; a posted entry is corrected with a Reversal",
+                    target.vid.0
+                ),
+            )
+            .at("entry", format!("{:032x}", target.vid.0))));
         }
         hold = Some(pending_entry.proposal.clone());
         hold_seq = Some(row.created_at);
@@ -3719,6 +3764,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 }
                 if leg.amount.mantissa <= 0 || leg.amount.mantissa > src.amount.mantissa {
                     txn.abort();
+                    let reserved = shown(book, src.amount.unit, src.amount.mantissa);
                     return Ok(Err(Refusal::new(
                         code::RESOLUTION_SHAPE,
                         exit::REFUSAL,
@@ -3728,7 +3774,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                         ),
                         "plan §5.4 (each posted mantissa ≤ its pending mantissa)",
                         "post at most the reserved amount; the remainder is released automatically",
-                    )));
+                    )
+                    .at("leg", i)
+                    .at("reserved", reserved.clone())
+                    .or_field_change("amount", vec![reserved])));
                 }
             }
         }
@@ -4719,7 +4768,38 @@ fn reclassification_admissible<V: asupersync::fs::Vfs + Clone>(
         };
     match fa_palimpsest::validate_reclassification(&remaining, target, proposal) {
         Ok(()) => Ok(Ok(())),
-        Err(e) => Ok(Err(reclassification_shape(e.to_string()))),
+        Err(e) => {
+            let mut r = reclassification_shape(e.to_string())
+                .at("entry", format!("{:032x}", target.vid.0));
+            let mut caps = Vec::new();
+            for rleg in &proposal.legs {
+                let opposite = match rleg.side {
+                    Side::Debit => Side::Credit,
+                    Side::Credit => Side::Debit,
+                };
+                let avail: i128 = remaining
+                    .legs
+                    .iter()
+                    .filter(|t| {
+                        t.account_ref == rleg.account_ref
+                            && t.amount.unit == rleg.amount.unit
+                            && t.side == opposite
+                            && t.dimension_set == rleg.dimension_set
+                    })
+                    .map(|t| t.amount.mantissa)
+                    .sum();
+                if avail > 0 && rleg.amount.mantissa > avail {
+                    let s = shown(book, rleg.amount.unit, avail);
+                    if !caps.contains(&s) {
+                        caps.push(s);
+                    }
+                }
+            }
+            if let Some(first) = caps.first().cloned() {
+                r = r.at("remaining", first).or_field_change("amount", caps);
+            }
+            Ok(Err(r))
+        }
     }
 }
 
