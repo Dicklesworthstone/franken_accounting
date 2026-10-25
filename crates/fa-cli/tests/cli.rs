@@ -5030,9 +5030,15 @@ fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> s
         "--json",
     ]);
     assert!(planned.contains("\"event\":\"plan\""), "{planned}");
-    let posted = ok(&["commit", "--plan", plan, "--grant", "post_closed", "--json"]);
-    assert_eq!(field(&posted, "event"), Some("posted"), "{posted}");
-    assert_eq!(field(&posted, "class"), Some("Adjusting"), "{posted}");
+    let committed = ok(&["commit", "--plan", plan, "--grant", "post_closed", "--json"]);
+    assert_eq!(
+        field(&committed, "event"),
+        Some("plan_committed"),
+        "{committed}"
+    );
+    let vid = field(&committed, "vid").unwrap_or_default().to_string();
+    let shown = ok(&["entry", "show", &vid, "--json"]);
+    assert!(shown.contains("\"Adjusting\""), "{shown}");
     let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
     assert!(tb.contains("1.00 USD"), "{tb}");
     Ok(())

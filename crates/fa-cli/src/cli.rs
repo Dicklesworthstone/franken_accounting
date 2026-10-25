@@ -8500,7 +8500,9 @@ fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .to_string();
     let intent = PostIntent::new(review.proposal().clone(), approvals)
         .map_err(|e| usage(format!("post review approvals: {e}"), POST_REVIEW_EXAMPLE))?;
-    let capability = ctx.capability(args, &["read", "post"])?;
+    // The capability `fa commit --plan` acts under, so a plan made here
+    // commits unchanged.
+    let capability = ctx.capability(args, &["post"])?;
     let out = &ctx.out;
     let mut book = ctx.books.open_admitted(args, |_| Ok(()))?;
     let plan = book.plan(intent, &capability)??;
