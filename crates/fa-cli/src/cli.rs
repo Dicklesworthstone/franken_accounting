@@ -7112,6 +7112,15 @@ fn resolve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 fn post_with(ctx: &mut Ctx<'_>, args: &Args, forced: Option<EntryClass>) -> Result<(), Fail> {
     check_post_planning_options(args)?;
+    if args.flag("--review").is_some() {
+        return post_review(ctx, args);
+    }
+    if args.flag("--digest").is_some() || !args.flag_all("--approval").is_empty() {
+        return Err(usage(
+            "--digest and --approval restore a sealed review; nothing was posted",
+            POST_REVIEW_EXAMPLE,
+        ));
+    }
     let path = args.require("--intent", "entry.json (or - for stdin)")?;
     let text = ctx.files.read_text(path)?;
     let doc = parse_json(path, &text)?;
@@ -8260,6 +8269,17 @@ pub(crate) fn post_document(
         let name = name.to_string();
         return plan_document_into_draft(ctx, args, &name, forced, &doc);
     }
+    let review_mode = args.switch("--review-only") || args.flag("--review-out").is_some();
+    if review_mode
+        && (args.switch("--dry-run")
+            || args.flag("--balancing").is_some()
+            || doc.get("intents").is_some())
+    {
+        return Err(usage(
+            "a review seals one entry proposal for approval: no --dry-run, --balancing or batch; nothing was posted",
+            "fa post --intent entry.json --review-out review.bin (then fa approve --proposal <proposal_digest> --as <approver>)",
+        ));
+    }
     if forced.is_none() && doc.get("intents").is_some() {
         return post_batch_document(ctx, args, &doc);
     }
@@ -8276,6 +8296,21 @@ pub(crate) fn post_document(
         typed_reversal,
         reversal_detail,
     } = build_post_request(out, &mut book, args, forced, &doc, who, capability)?;
+    if review_mode {
+        if !req.approvals.is_empty() {
+            return Err(usage(
+                "a review is the unapproved proposal; approvals attach when it is restored",
+                POST_REVIEW_EXAMPLE,
+            ));
+        }
+        let intent = PostIntent::new(req.proposal, Vec::new()).map_err(|e| {
+            usage(
+                format!("cannot seal this entry for review: {e}"),
+                "check the entry intent",
+            )
+        })?;
+        return emit_post_review(out, &ctx.files, args, &intent, &class_name);
+    }
     if args.switch("--dry-run") {
         let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
             usage(
@@ -8331,6 +8366,150 @@ pub(crate) fn post_document(
         reversal_detail,
         amounts,
     )
+}
+
+const POST_REVIEW_EXAMPLE: &str = "fa post --review <file|hex|-> --digest <review_digest> --approval <vid> [--dry-run [--plan-out <new-file>]] --json";
+
+/// `fa post --intent <file> --review-only | --review-out <new-file>` (fa-6f3g,
+/// the case-studies plan's A0): the entry proposal sealed once, as the
+/// portable canonical bytes of an unapproved PostIntent. Re-parsing the intent
+/// would seal its description afresh and change its digest, so an approval
+/// is recorded against this review's proposal_digest (`fa approve
+/// --proposal`), and the review is restored unchanged with `--review`.
+/// Nothing is published.
+fn emit_post_review(
+    out: &Out,
+    files: &Files,
+    args: &Args,
+    intent: &PostIntent,
+    class_name: &str,
+) -> Result<(), Fail> {
+    let bytes = intent
+        .canonical_bytes()
+        .map_err(|e| Fail::Internal(format!("post review bytes: {e}")))?;
+    let review_digest = intent
+        .digest()
+        .map_err(|e| Fail::Internal(format!("post review digest: {e}")))?;
+    let proposal_digest = intent
+        .proposal()
+        .proposal_digest()
+        .map_err(|e| Fail::Internal(format!("post proposal digest: {e}")))?;
+    if let Some(path) = args.flag("--review-out") {
+        write_review_file(files, path, &bytes)?;
+    }
+    out.event(
+        "post_reviewed",
+        vec![
+            ("class", s(class_name)),
+            (
+                "effective_date",
+                s(intent.proposal().effective_date.render()),
+            ),
+            ("legs", Json::Int(intent.proposal().legs.len() as i128)),
+            ("review_digest", s(hex(&review_digest))),
+            ("proposal_digest", s(hex(&proposal_digest))),
+            ("bytes", s(hex(&bytes))),
+            ("file", args.flag("--review-out").map_or(Json::Null, s)),
+        ],
+        &format!(
+            "review {class_name} proposal {}; an approver records fa approve --proposal {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
+            hex(&proposal_digest),
+            hex(&proposal_digest),
+            hex(&review_digest)
+        ),
+    );
+    Ok(())
+}
+
+/// `fa post --review <file|hex|-> --digest <review_digest> [--approval
+/// <vid>]... [--dry-run [--plan-out <new-file>]]` (fa-6f3g): restore an
+/// unchanged `fa post` review, attach the recorded approvals of its
+/// proposal_digest, and plan or post it under the ordinary posting laws. A
+/// closing review is restored by `fa close year-end --review`.
+fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    for flag in [
+        "--intent",
+        "--evidence",
+        "--event",
+        "--balancing",
+        "--timeout-ns",
+        "--reverse-on",
+        "--prior-period-error",
+        "--draft",
+        "--scenario",
+        "--review-out",
+    ] {
+        if !args.flag_all(flag).is_empty() {
+            return Err(usage(
+                format!(
+                    "a restored review supplies the complete unchanged proposal; it takes no {flag}"
+                ),
+                POST_REVIEW_EXAMPLE,
+            ));
+        }
+    }
+    if args.switch("--review-only") {
+        return Err(usage(
+            "--review-only seals a new review from --intent; --review restores one",
+            POST_REVIEW_EXAMPLE,
+        ));
+    }
+    let expected = parse_digest(
+        args.require("--digest", "<review_digest>")?,
+        "review digest",
+    )?;
+    let path = args.require("--review", "<file|hex|->")?;
+    let bytes = read_review_bytes(&ctx.files, path, ctx.authority().is_some())?;
+    let review = PostIntent::decode(&bytes).map_err(|e| {
+        usage(
+            format!("invalid post review: {e}"),
+            "use the unchanged bytes of fa post --review-only or --review-out",
+        )
+    })?;
+    if review
+        .digest()
+        .map_err(|e| Fail::Internal(format!("post review digest: {e}")))?
+        != expected
+        || !review.approvals().is_empty()
+        || review.proposal().class == EntryClass::CLOSING
+    {
+        return Err(usage(
+            "post review digest or type does not match",
+            "use the review's independently retained review_digest; a closing review is restored by fa close year-end --review",
+        ));
+    }
+    let digest = review
+        .proposal()
+        .proposal_digest()
+        .map_err(|e| Fail::Internal(format!("post proposal digest: {e}")))?;
+    let approvals = args
+        .flag_all("--approval")
+        .iter()
+        .map(|value| {
+            Ok(fa_model::ApprovalRef {
+                approval_vid: parse_vid(value, "--approval")?,
+                approved_digest: digest,
+            })
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let class_name = review
+        .proposal()
+        .class
+        .name()
+        .unwrap_or("Entry")
+        .to_string();
+    let intent = PostIntent::new(review.proposal().clone(), approvals)
+        .map_err(|e| usage(format!("post review approvals: {e}"), POST_REVIEW_EXAMPLE))?;
+    let capability = ctx.capability(args, &["read", "post"])?;
+    let out = &ctx.out;
+    let mut book = ctx.books.open_admitted(args, |_| Ok(()))?;
+    let plan = book.plan(intent, &capability)??;
+    if args.switch("--dry-run") {
+        return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
+    }
+    let posted = book.commit_plan(plan, &capability)??;
+    out.at_book(&book)?;
+    emit_posted(out, posted, &class_name, false, None, None)
 }
 
 /// A plan is portable canonical bytes, never an authority token supplied by
