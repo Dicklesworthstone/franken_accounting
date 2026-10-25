@@ -2902,6 +2902,48 @@ fn corpus_snapshot(corpus: &fa_gen::GeneratedCorpus) -> (BookContext, Snapshot, 
                 .expect("role admitted");
         }
     }
+    // fa-b6xs: the corpus's party directory, journaled as `fa party create`
+    // journals it, so a leg naming a party is a PAID node.
+    for p in &corpus.parties {
+        let kind = match p.role.as_str() {
+            "customer" => fa_model::PartyKind::Customer,
+            "vendor" => fa_model::PartyKind::Vendor,
+            "employee" => fa_model::PartyKind::Employee,
+            "bank" => fa_model::PartyKind::Bank,
+            _ => fa_model::PartyKind::Counterparty,
+        };
+        let spec = fa_model::PartySpec {
+            code: p.code.clone(),
+            kind,
+            name: Erasable::seal(&p.name, None, &book.seal_key, [7; 32], [7; 24]),
+            identifiers: Vec::new(),
+            external_ids: Vec::new(),
+        };
+        let description = Erasable::seal(
+            &"gen-party".to_string(),
+            None,
+            &book.seal_key,
+            [6; 32],
+            [6; 24],
+        );
+        runtime
+            .block_on(async {
+                create_party(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    &spec,
+                    PREPARER,
+                    jan1,
+                    format!("party:{}", p.code).as_bytes(),
+                    description,
+                    &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+                )
+                .await
+            })
+            .expect("create_party")
+            .expect("party admitted");
+    }
     let (_, periods) = runtime
         .block_on(async {
             create_periods(
@@ -2988,11 +3030,18 @@ fn corpus_snapshot(corpus: &fa_gen::GeneratedCorpus) -> (BookContext, Snapshot, 
             .legs
             .iter()
             .map(|l| {
-                LegPayload::simple(
+                let mut leg = LegPayload::simple(
                     l.side,
                     account_vid(book.book_id, &l.account_code),
                     Amount::new(usd, l.cents),
-                )
+                );
+                if let Some(code) = &l.party_code {
+                    leg.dimension_set.push((
+                        fa_model::PARTY_DIMENSION,
+                        fa_model::party_value_vid(book.book_id, code),
+                    ));
+                }
+                leg
             })
             .collect();
         let proposal = EntryPayload {

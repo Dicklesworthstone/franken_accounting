@@ -334,6 +334,12 @@ pub struct GenLeg {
     pub account_code: String,
     pub side: Side,
     pub cents: i128,
+    /// The counterparty this leg records (its party dimension, bead
+    /// fa-b6xs): the customer's receivable, the vendor's or employee's
+    /// expense line, an investor's capital or distribution, the
+    /// intermediary through which a clearing account is held. `None` on cash
+    /// and on transfers among the book's own accounts.
+    pub party_code: Option<String>,
 }
 
 impl GenLeg {
@@ -343,6 +349,7 @@ impl GenLeg {
             account_code: account_code.to_string(),
             side: Side::Debit,
             cents,
+            party_code: None,
         }
     }
 
@@ -352,7 +359,15 @@ impl GenLeg {
             account_code: account_code.to_string(),
             side: Side::Credit,
             cents,
+            party_code: None,
         }
+    }
+
+    /// This leg, naming `party_code` as its counterparty.
+    #[must_use]
+    pub fn naming(mut self, party_code: &str) -> Self {
+        self.party_code = Some(party_code.to_string());
+        self
     }
 }
 
@@ -548,6 +563,16 @@ impl GeneratedCorpus {
                     Side::Credit => 1,
                 }]);
                 h.update(&l.cents.to_le_bytes());
+                match &l.party_code {
+                    Some(code) => {
+                        h.update(&[1]);
+                        h.update(&(code.len() as u64).to_le_bytes());
+                        h.update(code.as_bytes());
+                    }
+                    None => {
+                        h.update(&[0]);
+                    }
+                }
             }
             h.update(&(e.external_ids.len() as u64).to_le_bytes());
             for (sys, id) in &e.external_ids {
@@ -908,7 +933,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(date),
                 description: desc,
                 legs: vec![
-                    GenLeg::debit(debit_acct, cents),
+                    GenLeg::debit(debit_acct, cents).naming(party_code),
                     GenLeg::credit(credit_acct, cents),
                 ],
                 external_ids: vec![(ext_sys.into(), ext_id)],
@@ -970,7 +995,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                         document_date: Some(date),
                         description: desc,
                         legs: vec![
-                            GenLeg::debit(debit_acct, cents),
+                            GenLeg::debit(debit_acct, cents).naming(party_code),
                             GenLeg::credit(credit_acct, cents),
                         ],
                         external_ids: vec![(ext_sys.into(), ext_id)],
@@ -1018,7 +1043,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 2, 3)),
                 description: "Quarter-end distributor pull-in shipment".into(),
                 legs: vec![
-                    GenLeg::debit("1200", 2_500_000),
+                    GenLeg::debit("1200", 2_500_000).naming("CUST-STUFF-01"),
                     GenLeg::credit("4000", 2_500_000),
                 ],
                 external_ids: vec![("ar_invoice".into(), format!("INV-{inv_seq:04}"))],
@@ -1071,7 +1096,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 1, 29)),
                 description: "Top-side promotional revenue recognition accrual".into(),
                 legs: vec![
-                    GenLeg::debit("1200", 5_000_000),
+                    GenLeg::debit("1200", 5_000_000).naming("CUST-STUFF-01"),
                     GenLeg::credit("4000", 5_000_000),
                 ],
                 external_ids: Vec::new(),
@@ -1230,7 +1255,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 description: "Cohort B subscription wire receipt".into(),
                 legs: vec![
                     GenLeg::debit("1020", 3_000_000),
-                    GenLeg::credit("2410", 3_000_000),
+                    GenLeg::credit("2410", 3_000_000).naming("INV-COHORT-B"),
                 ],
                 external_ids: Vec::new(),
                 party_code: Some("INV-COHORT-B".into()),
@@ -1247,7 +1272,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 2, 27)),
                 description: "pay".into(), // 3 chars < min_chars(4) -> thin_descriptions!
                 legs: vec![
-                    GenLeg::debit("6500", 3_000_000),
+                    GenLeg::debit("6500", 3_000_000).naming("INV-COHORT-A"),
                     GenLeg::credit("1020", 3_000_000),
                 ],
                 external_ids: Vec::new(),
@@ -1368,7 +1393,10 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                     effective_date: day(2026, 2, d),
                     document_date: Some(day(2026, 2, d)),
                     description: format!("Intermediary clearing funding tranche #{}", i + 1),
-                    legs: vec![GenLeg::debit("1030", cents), GenLeg::credit("1000", cents)],
+                    legs: vec![
+                        GenLeg::debit("1030", cents).naming("SHELL-01"),
+                        GenLeg::credit("1000", cents),
+                    ],
                     external_ids: Vec::new(),
                     party_code: Some("SHELL-01".into()),
                     self_approve: false,
@@ -1400,7 +1428,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 3, 16)),
                 description: "Advisory retainer invoice disbursement A".into(),
                 legs: vec![
-                    GenLeg::debit("6200", 642_115),
+                    GenLeg::debit("6200", 642_115).naming("SHELL-02"),
                     GenLeg::credit("1000", 642_115),
                 ],
                 external_ids: Vec::new(),
@@ -1418,7 +1446,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 3, 16)),
                 description: "Advisory retainer invoice disbursement B".into(),
                 legs: vec![
-                    GenLeg::debit("6200", 642_115),
+                    GenLeg::debit("6200", 642_115).naming("SHELL-02"),
                     GenLeg::credit("1000", 642_115),
                 ],
                 external_ids: Vec::new(),
@@ -1436,7 +1464,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 3, 20)),
                 description: "Advisory retainer invoice repeat disbursement".into(),
                 legs: vec![
-                    GenLeg::debit("6200", 642_115),
+                    GenLeg::debit("6200", 642_115).naming("SHELL-02"),
                     GenLeg::credit("1000", 642_115),
                 ],
                 external_ids: Vec::new(),
@@ -1535,7 +1563,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 description: "Sunday top-side prepaid capacity capitalization".into(),
                 legs: vec![
                     GenLeg::debit("1500", 4_000_000),
-                    GenLeg::credit("2100", 4_000_000),
+                    GenLeg::credit("2100", 4_000_000).naming("CARRIER-01"),
                 ],
                 external_ids: Vec::new(),
                 party_code: Some("CARRIER-01".into()),
@@ -1578,7 +1606,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 2, 13)),
                 description: "Biweekly payroll direct deposit — Alice Rivera".into(),
                 legs: vec![
-                    GenLeg::debit("6300", 384_512),
+                    GenLeg::debit("6300", 384_512).naming("EMP-01"),
                     GenLeg::credit("1050", 384_512),
                 ],
                 external_ids: vec![("payroll_dd".into(), "PAY-2001".into())],
@@ -1596,7 +1624,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 2, 13)),
                 description: "Biweekly payroll direct deposit — R. Phantom".into(),
                 legs: vec![
-                    GenLeg::debit("6300", 384_512),
+                    GenLeg::debit("6300", 384_512).naming("EMP-GHOST-01"),
                     GenLeg::credit("1050", 384_512),
                 ],
                 // Skips PAY-2002!
@@ -1615,7 +1643,7 @@ pub fn generate(config: GenConfig) -> GeneratedCorpus {
                 document_date: Some(day(2026, 2, 15)),
                 description: "dd".into(), // 2 chars < 4 -> thin_descriptions!
                 legs: vec![
-                    GenLeg::debit("6300", 384_512),
+                    GenLeg::debit("6300", 384_512).naming("EMP-GHOST-01"),
                     GenLeg::credit("1050", 384_512),
                 ],
                 external_ids: vec![("payroll_dd".into(), "PAY-2004".into())],
@@ -1751,6 +1779,68 @@ mod tests {
             };
             assert_eq!(s3.entries.len() - s1.entries.len(), expected_delta);
             assert_eq!(s1.labels.len(), s3.labels.len());
+        }
+    }
+
+    /// fa-b6xs: every leg naming a counterparty names a party of the
+    /// corpus's directory, the one its entry names; every scenario's planted
+    /// parties are named on some leg except the bank in a kite, whose
+    /// transfers run among the book's own accounts; and the leg party enters
+    /// the corpus digest.
+    #[test]
+    fn leg_parties_name_the_entry_counterparty_from_the_directory() {
+        for scenario in ScenarioKind::ALL {
+            let corpus = generate(GenConfig::new(scenario, 7));
+            let directory: BTreeSet<&str> =
+                corpus.parties.iter().map(|p| p.code.as_str()).collect();
+            let mut named = BTreeSet::new();
+            for entry in &corpus.entries {
+                for leg in &entry.legs {
+                    let Some(code) = &leg.party_code else {
+                        continue;
+                    };
+                    assert!(
+                        directory.contains(code.as_str()),
+                        "{scenario}/{}: {code}",
+                        entry.key
+                    );
+                    assert_eq!(
+                        entry.party_code.as_ref(),
+                        Some(code),
+                        "{scenario}/{}",
+                        entry.key
+                    );
+                    named.insert(code.as_str());
+                }
+            }
+            let unnamed: Vec<&str> = corpus
+                .parties
+                .iter()
+                .filter(|p| p.planted_anomaly && !named.contains(p.code.as_str()))
+                .map(|p| p.code.as_str())
+                .collect();
+            let expected: &[&str] = if scenario == ScenarioKind::KitingBank {
+                &["BANK-KITE-01"]
+            } else {
+                &[]
+            };
+            assert_eq!(unnamed, expected, "{scenario}");
+            assert!(
+                named.contains("CUST-01") && named.contains("VEND-01"),
+                "{scenario}"
+            );
+
+            let mut unnamed_legs = corpus.clone();
+            for entry in &mut unnamed_legs.entries {
+                for leg in &mut entry.legs {
+                    leg.party_code = None;
+                }
+            }
+            assert_ne!(
+                corpus.corpus_digest(),
+                unnamed_legs.corpus_digest(),
+                "{scenario}"
+            );
         }
     }
 }

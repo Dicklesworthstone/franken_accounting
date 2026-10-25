@@ -326,8 +326,8 @@ fn a_counterparty_cycle_through_one_clearing_account_is_found_through_parties() 
 /// seeded generated histories: one or two units, an implicit, a single named
 /// or two named legal entities, several legs a side, and legs naming a
 /// registered party, an unregistered value, none, the same value twice or two
-/// values. fa-gen's corpora name no party, so they would compare nothing;
-/// these histories exercise every node rule. Planted negative: a reference
+/// values. fa-gen's corpora (the next test) name one registered party a leg in
+/// one unit; these histories exercise every node rule. Planted negative: a reference
 /// that gives a two-value leg its first party instead of the book disagrees,
 /// so the comparison is not vacuous.
 #[test]
@@ -521,6 +521,137 @@ fn party_paid_projection_matches_reference() {
         disagreements > 0,
         "the planted rule change was never observed"
     );
+}
+
+/// fa-b6xs acceptance 1 on every fa-gen corpus: each scenario, journaled
+/// through the kernel with its party directory and the counterparty each leg
+/// names, projects exactly the PAID cells fa-reference's literal fold computes
+/// from the corpus as generated (never from the book read back). The planted
+/// counterparty flows are pinned by hand: the stuffed distributor's
+/// receivables, the Ponzi subscription and payout, the shell tranches and
+/// retainers, the carrier's accrual, the employees' pay. The kite runs among
+/// the book's own accounts and adds no edge. Planted negative: the Ponzi
+/// corpus with no leg naming a party projects no PAID edge at all.
+#[test]
+fn party_paid_projection_matches_reference_on_every_fa_gen_corpus() {
+    use fa_gen::{GenConfig, ScenarioKind, generate};
+    use fa_reference::lantern::{PAID_BOOK, PaidLeg, paid_fold};
+
+    fn cells(snapshot: &Snapshot) -> BTreeMap<(u128, u128, u32, Option<u128>), i128> {
+        let mut cells = BTreeMap::new();
+        for s in party_flow_legs(snapshot).unwrap() {
+            let key = (
+                s.leg.from.0,
+                s.leg.to.0,
+                s.leg.unit_id,
+                s.legal_entity.map(|e| e.0),
+            );
+            let slot = cells.entry(key).or_insert(0i128);
+            *slot = slot.checked_add(s.leg.mantissa).unwrap();
+        }
+        cells
+    }
+
+    let mut edges = 0;
+    for scenario in ScenarioKind::ALL {
+        for seed in [1, 7] {
+            let corpus = generate(GenConfig::new(scenario, seed));
+            let (book, snapshot, posted) = corpus_snapshot(&corpus);
+            assert!(
+                posted.iter().all(|vid| vid.0 != 0),
+                "{scenario}/{seed}: an entry did not post"
+            );
+            let usd = book.units.lookup("USD").unwrap().0;
+            let value = |code: &str| fa_model::party_value_vid(book.book_id, code).0;
+            let party = |code: &str| fa_model::party_vid(book.book_id, code).0;
+            let parties: BTreeMap<u128, u128> = corpus
+                .parties
+                .iter()
+                .map(|p| (value(&p.code), party(&p.code)))
+                .collect();
+            let reference: Vec<Vec<PaidLeg>> = corpus
+                .entries
+                .iter()
+                .map(|e| {
+                    e.legs
+                        .iter()
+                        .map(|l| PaidLeg {
+                            debit: l.side == Side::Debit,
+                            party_values: l.party_code.iter().map(|code| value(code)).collect(),
+                            unit: usd,
+                            entity: None,
+                            mantissa: l.cents,
+                        })
+                        .collect()
+                })
+                .collect();
+            let projected = cells(&snapshot);
+            assert_eq!(
+                projected,
+                paid_fold(&reference, &parties).unwrap(),
+                "{scenario}/{seed}"
+            );
+
+            let cell = |from: u128, to: u128| projected.get(&(from, to, usd, None)).copied();
+            assert!(
+                cell(PAID_BOOK, party("CUST-01")).is_some()
+                    && cell(PAID_BOOK, party("VEND-01")).is_some(),
+                "{scenario}/{seed}: the retail background names its customer and vendor"
+            );
+            let planted: Vec<(u128, u128, i128)> = match scenario {
+                ScenarioKind::CleanRetailer | ScenarioKind::KitingBank => Vec::new(),
+                ScenarioKind::ChannelStuffing => {
+                    vec![(PAID_BOOK, party("CUST-STUFF-01"), 7_500_000)]
+                }
+                ScenarioKind::Ponzi => vec![
+                    (party("INV-COHORT-B"), PAID_BOOK, 3_000_000),
+                    (PAID_BOOK, party("INV-COHORT-A"), 3_000_000),
+                ],
+                ScenarioKind::ShellNetwork => vec![
+                    // The three tranches, 950_025 + 961_050 + 942_075.
+                    (PAID_BOOK, party("SHELL-01"), 2_853_150),
+                    // Three retainers of 642_115.
+                    (PAID_BOOK, party("SHELL-02"), 1_926_345),
+                ],
+                ScenarioKind::WorldComCapitalization => {
+                    vec![(party("CARRIER-01"), PAID_BOOK, 4_000_000)]
+                }
+                ScenarioKind::GhostPayroll => vec![
+                    (PAID_BOOK, party("EMP-01"), 384_512),
+                    // Two ghost deposits of 384_512.
+                    (PAID_BOOK, party("EMP-GHOST-01"), 769_024),
+                ],
+            };
+            for (from, to, total) in planted {
+                assert_eq!(
+                    cell(from, to),
+                    Some(total),
+                    "{scenario}/{seed}: {from:x} -> {to:x}"
+                );
+            }
+            let kite = party("BANK-KITE-01");
+            assert!(
+                !projected
+                    .keys()
+                    .any(|(from, to, ..)| *from == kite || *to == kite),
+                "{scenario}/{seed}: a kite between the book's own accounts names no party"
+            );
+            edges += projected.len();
+        }
+    }
+
+    let mut unnamed = generate(GenConfig::new(ScenarioKind::Ponzi, 7));
+    for entry in &mut unnamed.entries {
+        for leg in &mut entry.legs {
+            leg.party_code = None;
+        }
+    }
+    let (_, snapshot, _) = corpus_snapshot(&unnamed);
+    assert!(
+        party_flow_legs(&snapshot).unwrap().is_empty(),
+        "a corpus whose legs name no party must project no PAID edge"
+    );
+    println!("PAID on fa-gen corpora: {edges} cells over 7 scenarios x 2 seeds");
 }
 
 /// fa-b6xs: `graph.party_communities` groups counterparties by amount. A, B
