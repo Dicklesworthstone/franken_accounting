@@ -1,0 +1,8 @@
+owner-watch v1
+verdict=UNRUN
+commit=5280b0d6ea9d2a69f924d0f8ee248337806ce9c9
+tree=6777429f9aea26036f85e249bc95704ace67be9e
+recorded_utc=2026-10-25T07:24:58Z
+worker=unknown
+steps=clippy:UNRUN,test:UNRUN
+test_totals=passed:0,failed:0
