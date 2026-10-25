@@ -386,7 +386,10 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
             ),
             ("next_index", Json::Int(i128::from(row.next_index))),
-            ("next_date", next_date.map_or(Json::Null, |day| s(day.render()))),
+            (
+                "next_date",
+                next_date.map_or(Json::Null, |day| s(day.render())),
+            ),
             ("blocked", row.blocked.as_ref().map_or(Json::Null, s)),
         ]));
     }

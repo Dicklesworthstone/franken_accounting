@@ -3347,7 +3347,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 .at("leg", i)
                 .at("settles", j)
                 .at("entry", format!("{:032x}", s.target.vid.0))
-                .or_field_change(format!("legs[{i}].settles[{j}].ordinal"), candidates)));
+                .or_field_change(
+                    format!("legs[{i}].settles[{j}].ordinal"),
+                    candidates,
+                )));
             };
             if target_leg.account_ref != leg.account_ref
                 || target_leg.amount.unit != leg.amount.unit
@@ -4769,8 +4772,8 @@ fn reclassification_admissible<V: asupersync::fs::Vfs + Clone>(
     match fa_palimpsest::validate_reclassification(&remaining, target, proposal) {
         Ok(()) => Ok(Ok(())),
         Err(e) => {
-            let mut r = reclassification_shape(e.to_string())
-                .at("entry", format!("{:032x}", target.vid.0));
+            let mut r =
+                reclassification_shape(e.to_string()).at("entry", format!("{:032x}", target.vid.0));
             let mut caps = Vec::new();
             for rleg in &proposal.legs {
                 let opposite = match rleg.side {
