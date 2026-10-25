@@ -3510,7 +3510,16 @@ fa verify open-items --book ./books/myco                      # exit 8 if an app
 \n\
 fa explain balance 1000 --period FY2026-P03 --book ./books/myco --json   # cells, fold digest, every leg, history\n\
 fa explain balance 1000 --period FY2026-P03 --as-known-at 12 --book ./books/myco --json\n\
-fa robot-docs schema balance_explained --json\n";
+fa robot-docs schema balance_explained --json\n\
+\n\
+# fa query: GQL over the book's graph in the FrankenAccounting profile (fa robot-docs schema query_rows)\n\
+fa query \"MATCH (l:Leg)-[:POSTS_TO]->(a:Account) RETURN a.code AS account, COUNT(*) AS legs ORDER BY account FOR PERIOD 'FY2026-P03'\" --book ./books/myco --json\n\
+fa query \"MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side EFFECTIVE AT '2026-03-31'\" --book ./books/myco --json\n\
+fa query \"MATCH (a:Account) RETURN a.code AS KNOWN AT HEAD\" --book ./books/myco --json   # or AS KNOWN AT <seq>: the chart as recorded then\n\
+fa query \"CALL fa.trial_balance FOR PERIOD 'FY2026-P03'\" --book ./books/myco --json   # is fa tb --period FY2026-P03\n\
+fa query \"CALL fa.statement('income-statement') FOR PERIOD 'FY2026-P03'\" --book ./books/myco --json\n\
+fa query \"CALL fa.jet('round_amounts')\" --book ./books/myco --json   # is fa procedure run jet.round_amounts\n\
+fa query \"EXPLAIN (CERTIFICATE) MATCH (a:Account) RETURN a.code\" --book ./books/myco --json   # retains a certificate; fa replay C:<oid> reproduces it\n";
 
 // ---------------------------------------------------------------------------
 // Shared helpers

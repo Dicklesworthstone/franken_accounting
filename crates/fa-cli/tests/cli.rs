@@ -23945,6 +23945,56 @@ fn query_runs_the_profile_over_the_books_graph() -> std::io::Result<()> {
     Ok(())
 }
 
+/// fa-5c1: every `fa query` line `fa robot-docs examples` teaches runs, exit
+/// 0, on the book its own chart.json and entry.json build, so the in-tool
+/// examples cannot drift from the profile.
+#[test]
+fn robot_docs_query_examples_run_on_the_example_book() -> std::io::Result<()> {
+    let (code, examples, _) = fa(None, &["robot-docs", "examples"]);
+    assert_eq!(code, 0, "{examples}");
+    let dir = tmp("examples-query")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}{err}");
+        out
+    };
+    let section = |name: &str| -> String {
+        examples
+            .split(&format!("# {name}\n"))
+            .nth(1)
+            .and_then(|rest| rest.split("\n\n").next())
+            .unwrap_or_else(|| panic!("no {name} in the examples"))
+            .to_string()
+    };
+    ok(&["book", "create", "--name", "My Co", "--json"]);
+    let chart = write(&dir, "chart.json", &section("chart.json"));
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let entry = write(&dir, "entry.json", &section("entry.json"));
+    let evidence = source_doc(&dir, &book);
+    ok(&[
+        "post",
+        "--intent",
+        &entry,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let statements: Vec<&str> = examples
+        .lines()
+        .filter_map(|line| line.strip_prefix("fa query \""))
+        .filter_map(|rest| rest.split("\" --book").next())
+        .collect();
+    assert!(statements.len() >= 7, "{examples}");
+    for statement in statements {
+        let out = ok(&["query", statement, "--json"]);
+        assert!(!out.trim().is_empty(), "{statement}");
+    }
+    Ok(())
+}
+
 /// fa-5c1 slice 2: `fa query --certify` retains the result's certificate.
 /// `fa replay` replays the native read and reproduces the rows byte for byte
 /// after later postings, from the store and from the saved file; `fa
