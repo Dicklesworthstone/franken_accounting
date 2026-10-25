@@ -27,9 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::genesis::BookContext;
-use fa_model::{
-    AccountType, DecodeError, EncodeError, EntryClass, EvidenceRef, Id128, Oid, Reader, Writer,
-};
+use fa_model::{AccountType, EncodeError, EntryClass, EvidenceRef, Id128, Oid, Writer};
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
 use fgdb_crypto::Hasher;
@@ -45,8 +43,9 @@ pub const OBLIGATION_SCHEDULE_DOMAIN: &[u8] = b"fa:solvency-obligation-schedule:
 /// Domain tag for per-unit cash-flow solvency certificate closure digests.
 pub const SOLVENCY_CLOSURE_DOMAIN: &[u8] = b"fa:solvency-cash-flow-closure:v1";
 
-/// Extension tag (`0x534f` = `"SO"`) for per-entry inline obligation maturity schedules.
-pub const OBLIGATION_MATURITY_EXT_TAG: u16 = 0x534f;
+/// Entry extension 33, `fa:obligation-maturity:v1`: the per-entry inline
+/// obligation maturity terms, registered and validated by fa-model.
+pub const OBLIGATION_MATURITY_EXT_TAG: u16 = fa_model::entry::OBLIGATION_MATURITY_EXTENSION;
 
 /// Current schema version of `AuthenticatedObligationSchedule`.
 pub const SCHEDULE_SCHEMA_VERSION: u16 = 1;
@@ -84,98 +83,9 @@ pub fn checked_horizon_end(
     Ok(DateDay(end_days))
 }
 
-/// One contractual installment on an obligation (`amount > 0` in the
-/// obligation's unit, due on `due_date`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ObligationInstallment {
-    pub due_date: DateDay,
-    pub amount: i128,
-}
-
-/// Status of a scheduled obligation leg at `as_of`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ObligationStatus {
-    /// Contractual maturity schedule is known and complete.
-    Contractual,
-    /// Disputed liability; tracked separately with a reason code.
-    Disputed { reason_code: u16 },
-    /// Maturity terms are missing/unknown; prevents claiming complete
-    /// maturity-based cash-flow solvency.
-    MissingMaturity,
-}
-
-impl ObligationStatus {
-    const fn tag(self) -> u8 {
-        match self {
-            Self::Contractual => 1,
-            Self::Disputed { .. } => 2,
-            Self::MissingMaturity => 3,
-        }
-    }
-}
-
-/// Per-entry inline maturity schedule carried in `EntryPayload::extensions`
-/// under [`OBLIGATION_MATURITY_EXT_TAG`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InlineObligationTerms {
-    pub ordinal: u16,
-    pub status: ObligationStatus,
-    pub installments: Vec<ObligationInstallment>,
-}
-
-impl InlineObligationTerms {
-    pub fn encode_list(terms: &[Self]) -> Result<Vec<u8>, EncodeError> {
-        let mut w = Writer::new();
-        w.u16(SCHEDULE_SCHEMA_VERSION).list(terms, |w, item| {
-            w.u16(item.ordinal).u8(item.status.tag());
-            if let ObligationStatus::Disputed { reason_code } = item.status {
-                w.u16(reason_code);
-            }
-            w.list(&item.installments, |w, inst| {
-                w.i32(inst.due_date.0).i128(inst.amount);
-            });
-        });
-        w.finish()
-    }
-
-    pub fn decode_list(bytes: &[u8]) -> Result<Vec<Self>, DecodeError> {
-        let mut r = Reader::new(bytes);
-        let version = r.u16("inline_obligation_terms.version")?;
-        if version != SCHEDULE_SCHEMA_VERSION {
-            return Err(r.invalid("inline_obligation_terms.version"));
-        }
-        let list = r.list(256, "inline_obligation_terms.items", |r| {
-            let ordinal = r.u16("inline_obligation_terms.ordinal")?;
-            let status = match r.u8("inline_obligation_terms.status")? {
-                1 => ObligationStatus::Contractual,
-                2 => ObligationStatus::Disputed {
-                    reason_code: r.u16("inline_obligation_terms.reason_code")?,
-                },
-                3 => ObligationStatus::MissingMaturity,
-                tag => return Err(r.bad_tag("inline_obligation_terms.status", tag)),
-            };
-            let installments = r.list(256, "inline_obligation_terms.installments", |r| {
-                let due_date = DateDay(r.i32("installment.due_date")?);
-                let amount = r.i128("installment.amount")?;
-                if amount <= 0 {
-                    return Err(r.invalid("installment.amount"));
-                }
-                Ok(ObligationInstallment { due_date, amount })
-            })?;
-            Ok(Self {
-                ordinal,
-                status,
-                installments,
-            })
-        })?;
-        r.finish()?;
-        Ok(list)
-    }
-
-    pub fn to_extension(terms: &[Self]) -> Result<(u16, Vec<u8>), EncodeError> {
-        Ok((OBLIGATION_MATURITY_EXT_TAG, Self::encode_list(terms)?))
-    }
-}
+/// The inline terms' types and codec live in fa-model, where the kernel
+/// validates them against the legs before an entry carrying them posts.
+pub use fa_model::obligation::{InlineObligationTerms, ObligationInstallment, ObligationStatus};
 
 /// One authenticated obligation row in an [`AuthenticatedObligationSchedule`].
 #[derive(Clone, Debug, PartialEq, Eq)]

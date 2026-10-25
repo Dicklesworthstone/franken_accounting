@@ -42,6 +42,7 @@ mod laws;
 pub mod lease;
 mod migration_import;
 pub(crate) mod notary;
+mod obligation;
 pub mod panic;
 mod production;
 mod proof;

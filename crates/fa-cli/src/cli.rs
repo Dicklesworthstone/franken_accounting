@@ -7379,6 +7379,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "prior_period_error",
         "fx",
         "external_subledger",
+        "obligations",
     ];
     if let Some((field, _)) = fields
         .iter()
@@ -8243,6 +8244,7 @@ fn build_post_request_with_prior(
         .map_err(BookError::Kernel)?,
         None => proposal,
     };
+    let proposal = crate::obligation::declare_terms(book, doc, proposal)?;
     Ok(BuiltPost {
         request: PostRequest {
             proposal,
