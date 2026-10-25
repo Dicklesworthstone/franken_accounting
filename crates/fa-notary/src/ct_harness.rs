@@ -12,6 +12,12 @@
 //! separates the classes, and |t| grows with the square root of the
 //! measurement count; constant-time code keeps it small.
 //!
+//! The statistics are exact integers: the moments are integer sums of the
+//! nanosecond timings, t is carried as its exact square, and the crop
+//! percentiles are exact. fa-notary is an amount crate, where no float token
+//! appears (scripts/doctrine_check.sh), and exact arithmetic makes every t a
+//! campaign prints reproducible from its timings bit for bit.
+//!
 //! [`branchy_variant_detected`] plants a leak, a scalar multiplication
 //! that skips the addition for a zero digit, and requires the harness to
 //! flag it. [`signer_timing_tier2`] (ignored; release profile) measures the
@@ -20,17 +26,23 @@
 //! control. A pass is `statistical` evidence about one build on one host,
 //! never `invariant`.
 
+use std::fmt;
 use std::hint::black_box;
 use std::time::Instant;
+
+use fa_money::rate::BigInt;
 
 use crate::SigningKey;
 use crate::sign::ed25519::ct_targets;
 
-/// dudect's "probably not constant time" bound, the bead's threshold.
-const T_THRESHOLD: f64 = 4.5;
+/// dudect's "probably not constant time" bound, the bead's threshold:
+/// |t| > 9/2, compared exactly as t² > 81/4.
+const T_THRESHOLD: (u64, u64) = (9, 2);
 
 /// Cropped tests beside the uncropped one.
 const CROPS: usize = 20;
+// The crop ladder's exponents 10(i+1)/CROPS are the half-integers (i+1)/2.
+const _: () = assert!(CROPS == 20);
 
 /// Measurements dropped at the head of every batch (cold caches).
 const DISCARD: usize = 10;
@@ -56,43 +68,133 @@ impl SplitMix {
     }
 }
 
-/// Welford's running moments of the two classes (0 fixed, 1 random).
+/// Welch's t as its exact square `num / den` and the sign of the
+/// difference. `den` is zero only for an infinite t (a difference with no
+/// variance at all), when `num` is positive.
+#[derive(Clone)]
+struct T {
+    negative: bool,
+    num: BigInt,
+    den: BigInt,
+}
+
+impl T {
+    fn zero() -> Self {
+        Self {
+            negative: false,
+            num: BigInt::zero(),
+            den: BigInt::one(),
+        }
+    }
+
+    /// |t|.
+    fn magnitude(self) -> Self {
+        Self {
+            negative: false,
+            ..self
+        }
+    }
+
+    /// |self| > |other|, exactly: num·den' > num'·den. An infinite t is
+    /// above every finite one and not above another infinite one.
+    fn exceeds(&self, other: &Self) -> bool {
+        &self.num * &other.den > &other.num * &self.den
+    }
+
+    /// |t| > p/q, exactly: num·q² > p²·den.
+    fn above(&self, (p, q): (u64, u64)) -> bool {
+        &self.num * BigInt::from(q * q) > BigInt::from(p * p) * &self.den
+    }
+}
+
+/// t to three decimals, truncated: ⌊1000·|t|⌋ = ⌊√⌊10⁶·t²⌋⌋.
+impl fmt::Display for T {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sign = if self.negative { "-" } else { "" };
+        if self.den.is_zero() {
+            return write!(f, "{sign}inf");
+        }
+        let milli = (&self.num * BigInt::from(1_000_000u64) / &self.den)
+            .sqrt()
+            .and_then(|m| u64::try_from(&m).ok())
+            .ok_or(fmt::Error)?;
+        write!(f, "{sign}{}.{:03}", milli / 1000, milli % 1000)
+    }
+}
+
+/// The running sums of the two classes (0 fixed, 1 random): count, sum and
+/// sum of squares of the timings in nanoseconds.
 #[derive(Clone, Copy, Default)]
 struct Welch {
-    n: [f64; 2],
-    mean: [f64; 2],
-    m2: [f64; 2],
+    n: [u64; 2],
+    sum: [u128; 2],
+    sum_sq: [u128; 2],
 }
 
 impl Welch {
-    fn push(&mut self, class: usize, x: f64) {
-        self.n[class] += 1.0;
-        let delta = x - self.mean[class];
-        self.mean[class] += delta / self.n[class];
-        self.m2[class] += delta * (x - self.mean[class]);
+    fn push(&mut self, class: usize, x: u64) {
+        let x = u128::from(x);
+        self.n[class] += 1;
+        self.sum[class] = self.sum[class]
+            .checked_add(x)
+            .expect("timing sum fits u128");
+        // x < 2^64, so x² < 2^128.
+        self.sum_sq[class] = self.sum_sq[class]
+            .checked_add(x * x)
+            .expect("timing sum of squares fits u128");
     }
 
-    fn min_n(&self) -> f64 {
+    fn min_n(&self) -> u64 {
         self.n[0].min(self.n[1])
     }
 
-    /// Welch's t of fixed minus random; zero until each class has two
-    /// measurements, infinite for a difference with no variance at all.
-    fn t(&self) -> f64 {
-        if self.min_n() < 2.0 {
-            return 0.0;
+    /// Welch's t of fixed minus random, exactly; zero until each class has
+    /// two measurements. With Sc, Qc and nc a class's sum, sum of squares
+    /// and count, D = S0·n1 − S1·n0 is n0·n1 times the difference of the
+    /// means, and Vc = nc·Qc − Sc² is nc²(nc−1) times the squared standard
+    /// error of class c's mean, so
+    /// t² = D²(n0−1)(n1−1) / (V0·n1²(n1−1) + V1·n0²(n0−1)).
+    fn t(&self) -> T {
+        if self.min_n() < 2 {
+            return T::zero();
         }
-        let var = |c: usize| self.m2[c] / (self.n[c] - 1.0);
-        let se = (var(0) / self.n[0] + var(1) / self.n[1]).sqrt();
-        let diff = self.mean[0] - self.mean[1];
-        if se > 0.0 {
-            diff / se
-        } else if diff == 0.0 {
-            0.0
-        } else {
-            diff.signum() * f64::INFINITY
+        let big = |v: u128| BigInt::from_bytes_le(&v.to_le_bytes());
+        let one = BigInt::one();
+        let n = self.n.map(|c| big(u128::from(c)));
+        let s = self.sum.map(big);
+        let q = self.sum_sq.map(big);
+        let d = &s[0] * &n[1] - &s[1] * &n[0];
+        let v = |c: usize| &n[c] * &q[c] - &s[c] * &s[c];
+        let num = &d * &d * (&n[0] - &one) * (&n[1] - &one);
+        let den = v(0) * &n[1] * &n[1] * (&n[1] - &one) + v(1) * &n[0] * &n[0] * (&n[0] - &one);
+        if num.is_zero() {
+            return T::zero();
+        }
+        T {
+            negative: d.is_negative(),
+            num,
+            den,
         }
     }
+}
+
+/// ⌊last·(1 − 2^(−e/2))⌋ = last − ⌈last / 2^(e/2)⌉, exactly. For odd
+/// e = 2m+1 the ceiling is the least c with 2·4^m·c² ≥ last².
+fn crop_index(last: usize, e: u32) -> usize {
+    let last = last as u128;
+    let m = e / 2;
+    let c = if e % 2 == 0 {
+        last.div_ceil(1 << m)
+    } else {
+        let scale = 2u128 << (2 * m);
+        let target = last * last;
+        let mut c = (target / scale).isqrt();
+        while scale * c * c < target {
+            c += 1;
+        }
+        c
+    };
+    usize::try_from(last - c).expect("an index below last")
 }
 
 /// The uncropped test (index 0) and one test per percentile crop.
@@ -103,13 +205,13 @@ struct Campaign {
 
 impl Campaign {
     /// dudect's crop ladder, percentiles `1 − 0.5^(10(i+1)/CROPS)` of a
-    /// calibration batch.
+    /// calibration batch: the order statistic at `crop_index`.
     fn calibrated(mut samples: Vec<u64>) -> Self {
         samples.sort_unstable();
         let last = samples.len() - 1;
         let cutoffs = std::array::from_fn(|i| {
-            let p = 1.0 - 0.5f64.powf(10.0 * (i + 1) as f64 / CROPS as f64);
-            samples[((p * last as f64) as usize).min(last)]
+            let e = u32::try_from(i + 1).expect("CROPS fits u32");
+            samples[crop_index(last, e)]
         });
         Self {
             cutoffs,
@@ -118,31 +220,35 @@ impl Campaign {
     }
 
     fn push(&mut self, class: usize, dt: u64) {
-        let x = dt as f64;
-        self.tests[0].push(class, x);
+        self.tests[0].push(class, dt);
         for (test, cutoff) in self.tests[1..].iter_mut().zip(self.cutoffs) {
             if dt < cutoff {
-                test.push(class, x);
+                test.push(class, dt);
             }
         }
     }
 
     /// The largest |t| among the tests holding at least `min` measurements
     /// of each class, and which test it is.
-    fn verdict(&self, min: f64) -> (f64, usize) {
-        self.tests
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| w.min_n() >= min)
-            .map(|(i, w)| (w.t().abs(), i))
-            .fold((0.0, 0), |best, x| if x.0 > best.0 { x } else { best })
+    fn verdict(&self, min: u64) -> (T, usize) {
+        let mut best = (T::zero(), 0);
+        for (i, w) in self.tests.iter().enumerate() {
+            if w.min_n() < min {
+                continue;
+            }
+            let t = w.t().magnitude();
+            if t.exceeds(&best.0) {
+                best = (t, i);
+            }
+        }
+        best
     }
 }
 
 /// What one campaign measured.
 struct Report {
     measurements: u64,
-    max_t: f64,
+    max_t: T,
     test: usize,
 }
 
@@ -157,7 +263,7 @@ fn campaign<I, O>(
     rng: &mut SplitMix,
     batches: usize,
     batch_len: usize,
-    min: f64,
+    min: u64,
     log: bool,
     fixed: impl Fn() -> I,
     mut random: impl FnMut(&mut SplitMix) -> I,
@@ -190,7 +296,7 @@ fn campaign<I, O>(
             let (t, test) = campaign.verdict(min);
             println!(
                 "ct_harness target={name} batch={batch} measurements={measurements} \
-                 max_abs_t={t:.3} test={test} uncropped_t={:.3}",
+                 max_abs_t={t} test={test} uncropped_t={}",
                 campaign.tests[0].t()
             );
         }
@@ -238,28 +344,70 @@ fn host_fingerprint() -> String {
 #[test]
 fn welch_t_matches_a_hand_computation() {
     let mut w = Welch::default();
-    for x in [1.0, 2.0, 3.0, 4.0] {
+    for x in [1, 2, 3, 4] {
         w.push(0, x);
     }
-    for x in [2.0, 4.0, 6.0, 8.0] {
+    for x in [2, 4, 6, 8] {
         w.push(1, x);
     }
-    // Means 2.5 and 5, variances 5/3 and 20/3: t = −2.5 / √(25/12) = −√3.
-    assert!((w.t() + 3f64.sqrt()).abs() < 1e-12, "t = {}", w.t());
+    // Means 2.5 and 5, variances 5/3 and 20/3: t = −2.5 / √(25/12) = −√3,
+    // so t² = 3 exactly and ⌊1000·√3⌋ = 1732.
+    let t = w.t();
+    assert!(t.negative);
+    assert_eq!(
+        t.num,
+        &t.den * BigInt::from(3u64),
+        "t² = {} / {}",
+        t.num,
+        t.den
+    );
+    assert_eq!(t.to_string(), "-1.732");
+    assert!(t.above((17, 10)) && !t.above((18, 10)), "1.7 < √3 < 1.8");
 
     let mut same = Welch::default();
-    for x in [3.0, 5.0, 7.0] {
+    for x in [3, 5, 7] {
         same.push(0, x);
         same.push(1, x);
     }
-    assert_eq!(same.t(), 0.0);
+    assert_eq!(same.t().to_string(), "0.000");
+    assert!(!same.t().exceeds(&T::zero()));
 
     let mut apart = Welch::default();
     for _ in 0..3 {
-        apart.push(0, 1.0);
-        apart.push(1, 2.0);
+        apart.push(0, 1);
+        apart.push(1, 2);
     }
-    assert_eq!(apart.t(), f64::NEG_INFINITY);
+    let infinite = apart.t();
+    assert_eq!(infinite.to_string(), "-inf");
+    assert!(infinite.exceeds(&t) && !t.exceeds(&infinite));
+    assert!(!infinite.exceeds(&infinite.clone()));
+    assert!(infinite.above(T_THRESHOLD));
+}
+
+/// The exact crop ladder: `crop_index` is ⌊last·(1 − 2^(−e/2))⌋, checked
+/// against the bracket 2^(−e/2) ∈ (k/1000, (k+1)/1000) at every rung.
+#[test]
+fn crop_indices_are_exact_percentiles() {
+    // ⌊1000·2^(−e/2)⌋ for e = 1..=20.
+    const MILLI: [u128; 20] = [
+        707, 500, 353, 250, 176, 125, 88, 62, 44, 31, 22, 15, 11, 7, 5, 3, 2, 1, 1, 0,
+    ];
+    for last in [1usize, 2, 999, 10_009, 1_000_000] {
+        for (rung, &k) in MILLI.iter().enumerate() {
+            let e = u32::try_from(rung + 1).unwrap();
+            let index = crop_index(last, e);
+            // last − index = ⌈last·2^(−e/2)⌉, which lies within
+            // [⌈last·k/1000⌉, ⌈last·(k+1)/1000⌉].
+            let gap = (last - index) as u128;
+            let last = last as u128;
+            assert!(
+                gap >= (last * k).div_ceil(1000) && gap <= (last * (k + 1)).div_ceil(1000),
+                "last {last}, e {e}: index {index}"
+            );
+        }
+    }
+    assert_eq!(crop_index(999, 1), 292, "999 − ⌈999/√2⌉ = 999 − 707");
+    assert_eq!(crop_index(999, 20), 998, "999 − ⌈999/1024⌉");
 }
 
 /// The crop ladder climbs toward the calibration maximum, and a
@@ -272,9 +420,9 @@ fn crops_exclude_the_tail() {
     assert_eq!(c.cutoffs[CROPS - 1], 999, "p = 1 − 0.5^10");
     c.push(0, 1_000_000);
     c.push(1, 10);
-    assert_eq!(c.tests[0].n, [1.0, 1.0]);
+    assert_eq!(c.tests[0].n, [1, 1]);
     for test in &c.tests[1..] {
-        assert_eq!(test.n, [0.0, 1.0]);
+        assert_eq!(test.n, [0, 1]);
     }
 }
 
@@ -288,15 +436,15 @@ fn branchy_variant_detected() {
         &mut rng,
         4,
         512,
-        100.0,
+        100,
         false,
         || [0u8; 32],
         SplitMix::bytes::<32>,
         ct_targets::mul_base_skipping_zero_digits_x,
     );
     assert!(
-        leak.max_t > T_THRESHOLD,
-        "the planted leak went undetected: |t| = {:.3} (test {}) over {} measurements",
+        leak.max_t.above(T_THRESHOLD),
+        "the planted leak went undetected: |t| = {} (test {}) over {} measurements",
         leak.max_t,
         leak.test,
         leak.measurements
@@ -318,7 +466,7 @@ fn signer_timing_tier2() -> Result<(), String> {
     }
     const BATCHES: usize = 100;
     const LEN: usize = 10_000 + DISCARD;
-    const MIN: f64 = 10_000.0;
+    const MIN: u64 = 10_000;
     println!("ct_harness {}", host_fingerprint());
     let mut rng = SplitMix(0xfa_c580_7172);
     let message = b"fa-cs80: one fixed message for both classes";
@@ -377,10 +525,11 @@ fn signer_timing_tier2() -> Result<(), String> {
         SplitMix::bytes::<32>,
         ct_targets::mul_base_skipping_zero_digits_x,
     );
+    let (p, q) = T_THRESHOLD;
     let verdict = |name: &str, r: &Report| {
         println!(
-            "ct_harness verdict target={name} measurements={} max_abs_t={:.3} test={} \
-             threshold={T_THRESHOLD}",
+            "ct_harness verdict target={name} measurements={} max_abs_t={} test={} \
+             threshold={p}/{q}",
             r.measurements, r.max_t, r.test
         );
     };
@@ -389,14 +538,14 @@ fn signer_timing_tier2() -> Result<(), String> {
     }
     verdict("planted_leak", &leak);
     assert!(
-        leak.max_t > T_THRESHOLD,
-        "the planted leak went undetected (|t| = {:.3}): the harness has no power here",
+        leak.max_t.above(T_THRESHOLD),
+        "the planted leak went undetected (|t| = {}): the harness has no power here",
         leak.max_t
     );
     for (name, r) in &reports {
         assert!(
-            r.max_t < T_THRESHOLD,
-            "{name}: |t| = {:.3} (test {}) over {} measurements exceeds {T_THRESHOLD}",
+            !r.max_t.above(T_THRESHOLD),
+            "{name}: |t| = {} (test {}) over {} measurements exceeds {p}/{q}",
             r.max_t,
             r.test,
             r.measurements
