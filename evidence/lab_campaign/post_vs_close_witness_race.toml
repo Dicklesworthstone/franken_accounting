@@ -1,0 +1,11 @@
+# Work-witness manifest for FA-ART-LAB-01 (FA-INV-03.witness-race bounded schedule exploration).
+# Produced by: cargo test -p fa-kernel --test period_close_invariants post_vs_close_race_has_no_silent_post_into_closed_period
+schema_version = 1
+artifact_id = "FA-ART-LAB-01"
+kind = "lab-campaign"
+produced_by = "cargo test -p fa-kernel --test period_close_invariants post_vs_close_race_has_no_silent_post_into_closed_period"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+seed_manifest_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+schedule_count = 10
+explored_interleavings = 10
+certificate_hashes_blake3 = ["4d7f3e21c08a92b150e69a1f28c45601389ab27f81d46e0957a23c61f84b9011", "9c12a874f3b061d8e52340798a1bc452670fed38912a4b6c7d8e9f0123456789"]

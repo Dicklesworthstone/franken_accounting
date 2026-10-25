@@ -54,6 +54,46 @@ fn req_str_vec(registry: &'static str, t: &Table, key: &str) -> Result<Vec<Strin
         .collect()
 }
 
+fn opt_str_field(
+    registry: &'static str,
+    t: &Table,
+    key: &str,
+) -> Result<Option<String>, RegistryError> {
+    let Some(v) = t.get(key) else {
+        return Ok(None);
+    };
+    let s = v
+        .as_str()
+        .ok_or_else(|| invalid(registry, format!("`{key}` must be a string")))?;
+    Ok(Some(s.to_string()))
+}
+
+fn opt_str_vec_field(
+    registry: &'static str,
+    t: &Table,
+    key: &str,
+) -> Result<Vec<String>, RegistryError> {
+    if !t.contains_key(key) {
+        return Ok(Vec::new());
+    }
+    req_str_vec(registry, t, key)
+}
+
+fn opt_u64_field(
+    registry: &'static str,
+    t: &Table,
+    key: &str,
+) -> Result<Option<u64>, RegistryError> {
+    let Some(v) = t.get(key) else {
+        return Ok(None);
+    };
+    let i = v
+        .as_int()
+        .ok_or_else(|| invalid(registry, format!("`{key}` must be an integer")))?;
+    let n = u64::try_from(i).map_err(|_| invalid(registry, format!("`{key}` must be >= 0")))?;
+    Ok(Some(n))
+}
+
 // ---------------------------------------------------------------------------
 // constitution.toml
 // ---------------------------------------------------------------------------
@@ -222,6 +262,7 @@ pub struct EvidenceGateRow {
     pub owner: String,
     pub activating_workstream: String,
     pub status: String,
+    pub artifact: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -270,6 +311,7 @@ impl EvidenceRegistry {
                 owner: req_str(R, t, "owner")?.to_string(),
                 activating_workstream: req_str(R, t, "activating_workstream")?.to_string(),
                 status,
+                artifact: opt_str_field(R, t, "artifact")?,
             });
         }
         if gates.len() < 9 {
@@ -353,6 +395,8 @@ pub struct ProofLaneRow {
     pub artifact_path: String,
     pub owning_bead: String,
     pub status: String,
+    pub artifact: Option<String>,
+    pub theorems: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -423,6 +467,8 @@ impl ProofLanes {
                 artifact_path: req_str(R, t, "artifact_path")?.to_string(),
                 owning_bead: req_str(R, t, "owning_bead")?.to_string(),
                 status,
+                artifact: opt_str_field(R, t, "artifact")?,
+                theorems: opt_str_vec_field(R, t, "theorems")?,
             });
         }
         if lanes.is_empty() {
@@ -1149,6 +1195,10 @@ pub struct SloRow {
     pub derivation: String,
     pub measurement_command: String,
     pub manifest: String,
+    pub artifact: Option<String>,
+    pub required_leg_count: Option<u64>,
+    pub required_entry_count: Option<u64>,
+    pub required_bundle_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1303,6 +1353,10 @@ impl SloRegistry {
                 derivation: req_str(R, t, "derivation")?.to_string(),
                 measurement_command: req_str(R, t, "measurement_command")?.to_string(),
                 manifest,
+                artifact: opt_str_field(R, t, "artifact")?,
+                required_leg_count: opt_u64_field(R, t, "required_leg_count")?,
+                required_entry_count: opt_u64_field(R, t, "required_entry_count")?,
+                required_bundle_bytes: opt_u64_field(R, t, "required_bundle_bytes")?,
             });
         }
         if rows.len() < 19 {
@@ -2564,6 +2618,8 @@ pub struct FormatRow {
     pub mime: String,
     pub extension: String,
     pub oracle_tool: String,
+    pub oracle_status: String,
+    pub artifact: Option<String>,
     pub round_trip_identity: bool,
     pub certified_coordinate: bool,
     pub plan_ref: String,
@@ -2610,6 +2666,27 @@ impl Formats {
             let mime = req_str(R, sec, "mime")?.to_string();
             let extension = req_str(R, sec, "extension")?.to_string();
             let oracle_tool = req_str(R, sec, "oracle_tool")?.to_string();
+            let oracle_status = match opt_str_field(R, sec, "oracle_status")? {
+                Some(s) => {
+                    if !matches!(s.as_str(), "none" | "unrun" | "verified") {
+                        return Err(invalid(
+                            R,
+                            format!(
+                                "format {name:?} has invalid oracle_status {s:?} (expected \"none\", \"unrun\", or \"verified\")"
+                            ),
+                        ));
+                    }
+                    s
+                }
+                None => {
+                    if oracle_tool == "none" {
+                        "none".to_string()
+                    } else {
+                        "verified".to_string()
+                    }
+                }
+            };
+            let artifact = opt_str_field(R, sec, "artifact")?;
             let round_trip_identity = req_bool(R, sec, "round_trip_identity")?;
             let certified_coordinate = req_bool(R, sec, "certified_coordinate")?;
             let plan_ref = req_str(R, sec, "plan_ref")?.to_string();
@@ -2676,6 +2753,8 @@ impl Formats {
                 mime,
                 extension,
                 oracle_tool,
+                oracle_status,
+                artifact,
                 round_trip_identity,
                 certified_coordinate,
                 plan_ref,

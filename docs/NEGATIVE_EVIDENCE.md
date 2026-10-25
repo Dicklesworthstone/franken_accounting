@@ -623,3 +623,15 @@ terminal acknowledgement. The transcript is
 `rch-recover-72123-20261023.json`. The positive standalone census controls do
 not establish launcher health. All three repaired campaigns are UNRUN. Stop
 retries and retain the review train, original acceptance and canonical gate.
+
+## 2026-10-25 — Work-witness evidence schema and unmeasured procedure calibration downgrade (`fa-vtzt`)
+
+The work-witness evidence ledger (`registries/evidence_artifacts.toml` and `evidence/**`)
+requires every `calibration = "corpus"` or `"planted"` procedure in
+`registries/procedures.toml` to cite a `calibration` artifact carrying
+per-procedure TP/FP/FN/TN confusion counts (`TP + FN >= 1`). Only the 12
+procedures measured in `registries/lantern_calibration.toml` (`FA-ART-CAL-01`)
+currently have empirical confusion-matrix counts; the remaining 56 procedures
+previously labeled `calibration = "planted"` had unit tests over planted books
+without retained confusion-matrix counts and are therefore recorded as
+`calibration = "uncalibrated"` until per-procedure calibration manifests land.

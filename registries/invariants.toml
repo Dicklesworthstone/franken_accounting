@@ -387,6 +387,7 @@ status = "live"
 statement = "A transition and a post cannot both commit against a stale period state: the conflict oracle over post-vs-close interleavings in both orders under DPOR."
 evidence_class = "bounded_model"
 checker_strength = "model"
+artifact = "FA-ART-LAB-01"
 first_gate = "G2"
 owner = "fa-zy1"
 checkers = ["fa-conformance::tests/substrate.rs::post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period"]

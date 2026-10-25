@@ -12,6 +12,7 @@ pub mod account_roles;
 pub mod admissibility_plan;
 pub mod capability_caveats;
 pub mod document_stores;
+pub mod evidence_artifacts;
 pub mod evidence_policy;
 pub mod foundations;
 pub mod g0;

@@ -13,6 +13,10 @@ use std::process::ExitCode as ProcessExitCode;
 
 use fa_registry::account_roles::AccountRoles;
 use fa_registry::document_stores::DocumentStores;
+use fa_registry::evidence_artifacts::{
+    ArtifactVerificationLog, EvidenceArtifacts, verify_claim_artifact_cross_refs,
+    verify_prose_claims_lint,
+};
 use fa_registry::evidence_policy::EvidencePolicy;
 use fa_registry::foundations::Ledger;
 use fa_registry::g0::{
@@ -103,6 +107,7 @@ const EXPECTED_REGISTRIES: &[&str] = &[
     "document_stores.toml",
     "entry_classes.toml",
     "evidence.toml",
+    "evidence_artifacts.toml",
     "evidence_policy.toml",
     "exit_codes.toml",
     "formats.toml",
@@ -149,6 +154,7 @@ pub struct CheckSummary {
     /// on-demand clusters are checked but not exposed by default.
     pub mcp_default_tools: usize,
     pub markers_checked: usize,
+    pub evidence_logs: Vec<ArtifactVerificationLog>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -757,13 +763,33 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let _supersession_kinds = SupersessionKinds::parse(&read("supersession_kinds.toml")?, &classes)
         .map_err(|e| e.to_string())?;
     let procedures = Procedures::from_text(&read("procedures.toml")?).map_err(|e| e.to_string())?;
-    let _calibration =
+    let calibration =
         LanternCalibration::from_text(&read("lantern_calibration.toml")?, &procedures)
             .map_err(|e| e.to_string())?;
     let _tracing_laws =
         TracingLaws::parse(&read("tracing_laws.toml")?, &procedures).map_err(|e| e.to_string())?;
     let _fx_laws = FxLaws::parse(&read("fx_laws.toml")?, &classes).map_err(|e| e.to_string())?;
-    let _formats = Formats::parse(&read("formats.toml")?).map_err(|e| e.to_string())?;
+    let formats = Formats::parse(&read("formats.toml")?).map_err(|e| e.to_string())?;
+    let evidence_artifacts = EvidenceArtifacts::from_text(&read("evidence_artifacts.toml")?)
+        .map_err(|e| e.to_string())?;
+    let evidence_logs = if root.join("evidence").is_dir() {
+        evidence_artifacts
+            .verify_store(root)
+            .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    verify_claim_artifact_cross_refs(
+        &evidence_artifacts,
+        &slo_reg,
+        &invariants,
+        &proof_lanes,
+        &formats,
+        &evidence_reg,
+        &procedures,
+        &calibration,
+    )
+    .map_err(|e| e.to_string())?;
     let _unwired =
         UnwiredModules::from_text(&read("unwired_modules.toml")?).map_err(|e| e.to_string())?;
     let claims_config =
@@ -826,6 +852,9 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     for s in &slo_reg.rows {
         known_markers.insert(s.id.clone());
     }
+    for art in &evidence_artifacts.artifacts {
+        known_markers.insert(art.id.clone());
+    }
 
     let mut loaded_docs = Vec::new();
     for rel_doc in &claims_config.scanned_docs {
@@ -841,6 +870,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         .map(|(n, c)| (n.as_str(), c.as_str()))
         .collect();
     let markers_checked = check_claims_lint(&claims_config, &known_markers, &doc_refs)?;
+    verify_prose_claims_lint(root, &evidence_artifacts, &invariants).map_err(|e| e.to_string())?;
 
     // 4. Parse nested TOML schemas under object_schemas/, bundle_schema/, and statements/.
     let mut extra_files = 0usize;
@@ -891,6 +921,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
         mcp_tools_checked,
         mcp_default_tools,
         markers_checked,
+        evidence_logs,
     })
 }
 
@@ -967,25 +998,36 @@ fn run() -> Result<(), String> {
     }
     if json {
         println!(
-            "{{\"event\":\"registry_check\",\"status\":\"ok\",\"files_checked\":{},\"invariants_live\":{},\"invariants_total\":{},\"refusals_checked\":{},\"verbs_checked\":{},\"mcp_tools_checked\":{},\"markers_checked\":{}}}",
+            "{{\"event\":\"registry_check\",\"status\":\"ok\",\"files_checked\":{},\"invariants_live\":{},\"invariants_total\":{},\"refusals_checked\":{},\"verbs_checked\":{},\"mcp_tools_checked\":{},\"markers_checked\":{},\"evidence_artifacts_verified\":{}}}",
             summary.files_checked,
             summary.invariants_live,
             summary.invariants_total,
             summary.refusals_checked,
             summary.verbs_checked,
             summary.mcp_tools_checked,
-            summary.markers_checked
+            summary.markers_checked,
+            summary.evidence_logs.len()
         );
     } else {
+        for log in &summary.evidence_logs {
+            println!(
+                "  evidence artifact_id={} kind={} witness_fields_checked={} verdict={}",
+                log.artifact_id,
+                log.kind.as_str(),
+                log.witness_fields_checked,
+                log.verdict
+            );
+        }
         println!(
-            "registry-check: ok ({} TOML files, {}/{} live invariant clauses, {} refusals, {} verbs, {} MCP tools, {} doc markers)",
+            "registry-check: ok ({} TOML files, {}/{} live invariant clauses, {} refusals, {} verbs, {} MCP tools, {} doc markers, {} evidence artifacts)",
             summary.files_checked,
             summary.invariants_live,
             summary.invariants_total,
             summary.refusals_checked,
             summary.verbs_checked,
             summary.mcp_tools_checked,
-            summary.markers_checked
+            summary.markers_checked,
+            summary.evidence_logs.len()
         );
     }
     Ok(())
@@ -1004,6 +1046,7 @@ fn main() -> ProcessExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fa_registry::evidence_artifacts::verify_prose_claims_lint_text;
 
     #[test]
     fn real_workspace_registries_pass() {
@@ -1169,6 +1212,301 @@ mod tests {
             SloRegistry::parse(&bad_slo_floor, &op_costs).expect_err("slo row below barrier floor");
         assert!(
             err.to_string().contains("derivability law violation"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn benchmark_artifact_requires_scale_witness() {
+        let valid = r#"
+schema_version = 1
+
+[[artifact]]
+id = "FA-ART-BENCH-01"
+kind = "benchmark"
+manifest_path = "evidence/benchmark/tb_100k.toml"
+manifest_blake3 = "1111111111111111111111111111111111111111111111111111111111111111"
+produced_by = "cargo bench -p fa-registers"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+summary = "Trial balance 100k benchmark"
+scale_witness_entry_count = 100000
+scale_witness_leg_count = 200000
+iterations = 50
+warmup = 10
+quantile_samples_ns = [120000, 125000, 131000]
+flamegraph_svg_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+host_cpu_model = "AMD EPYC 9654"
+host_kernel = "Linux 6.8"
+runner = "rch-worker"
+"#;
+        EvidenceArtifacts::from_text(valid).expect("valid benchmark artifact parses");
+
+        let zero_scale = valid
+            .replace("scale_witness_entry_count = 100000\n", "")
+            .replace("scale_witness_leg_count = 200000\n", "");
+        let err = EvidenceArtifacts::from_text(&zero_scale)
+            .expect_err("benchmark without scale_witness must fail");
+        assert!(err.to_string().contains("scale_witness"), "{err}");
+
+        let unsorted = valid.replace(
+            "quantile_samples_ns = [120000, 125000, 131000]",
+            "quantile_samples_ns = [131000, 120000]",
+        );
+        let err = EvidenceArtifacts::from_text(&unsorted)
+            .expect_err("unsorted quantile_samples_ns must fail");
+        assert!(err.to_string().contains("sorted ascending"), "{err}");
+    }
+
+    #[test]
+    fn oracle_artifact_requires_compared_cells() {
+        let valid = r#"
+schema_version = 1
+
+[[artifact]]
+id = "FA-ART-ORA-01"
+kind = "external-oracle"
+manifest_path = "evidence/external_oracle/beancount_v3.toml"
+manifest_blake3 = "1111111111111111111111111111111111111111111111111111111111111111"
+produced_by = "bean-check fixture.beancount"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+summary = "External bean-check balance comparison"
+tool_binary_path = "/usr/bin/bean-check"
+tool_version_stdout = "Beancount 3.0.0"
+tool_binary_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+input_fixture_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+tool_stdout_sha256 = "4444444444444444444444444444444444444444444444444444444444444444"
+tool_exit_code = 0
+compared_cells = 42
+"#;
+        EvidenceArtifacts::from_text(valid).expect("valid external-oracle artifact parses");
+
+        let zero_cells = valid.replace("compared_cells = 42", "compared_cells = 0");
+        let err = EvidenceArtifacts::from_text(&zero_cells)
+            .expect_err("compared_cells = 0 must be refused");
+        assert!(err.to_string().contains("compared_cells"), "{err}");
+    }
+
+    #[test]
+    fn lean_artifact_requires_theorem_inventory() {
+        let valid = r#"
+schema_version = 1
+
+[[artifact]]
+id = "FA-ART-LEAN-01"
+kind = "lean"
+manifest_path = "evidence/lean/abacus.toml"
+manifest_blake3 = "1111111111111111111111111111111111111111111111111111111111111111"
+produced_by = "lake build"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+summary = "Lean 4 Abacus theorems"
+lean_version = "leanprover/lean4:v4.12.0"
+lake_manifest_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+olean_tar_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+theorem_inventory = ["abacus_conservation:Fa.Abacus:0:propext"]
+"#;
+        EvidenceArtifacts::from_text(valid).expect("valid lean artifact parses");
+
+        let with_sorry = valid.replace(
+            "abacus_conservation:Fa.Abacus:0:propext",
+            "abacus_conservation:Fa.Abacus:1:propext",
+        );
+        let err = EvidenceArtifacts::from_text(&with_sorry)
+            .expect_err("Lean theorem with sorry_count > 0 must fail");
+        assert!(err.to_string().contains("sorry_count"), "{err}");
+
+        let with_classical_choice = valid.replace(
+            "abacus_conservation:Fa.Abacus:0:propext",
+            "abacus_conservation:Fa.Abacus:0:Classical.choice",
+        );
+        let err = EvidenceArtifacts::from_text(&with_classical_choice)
+            .expect_err("Lean theorem with Classical.choice must fail");
+        assert!(err.to_string().contains("Classical.choice"), "{err}");
+    }
+
+    #[test]
+    fn tlc_artifact_requires_state_count() {
+        let valid = r#"
+schema_version = 1
+
+[[artifact]]
+id = "FA-ART-TLC-01"
+kind = "tlc"
+manifest_path = "evidence/tlc/period_law.toml"
+manifest_blake3 = "1111111111111111111111111111111111111111111111111111111111111111"
+produced_by = "tlc2.TLC PeriodLaw.tla"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+summary = "TLC model check of period transitions"
+tlc_version = "TLC 2.18"
+spec_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+cfg_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+distinct_states = 1840
+states_generated = 5120
+depth = 12
+result = "pass"
+"#;
+        EvidenceArtifacts::from_text(valid).expect("valid tlc artifact parses");
+
+        let zero_states = valid.replace("distinct_states = 1840", "distinct_states = 0");
+        let err = EvidenceArtifacts::from_text(&zero_states)
+            .expect_err("distinct_states = 0 must be refused");
+        assert!(err.to_string().contains("distinct_states"), "{err}");
+
+        let zero_depth = valid.replace("depth = 12", "depth = 0");
+        let err = EvidenceArtifacts::from_text(&zero_depth).expect_err("depth = 0 must be refused");
+        assert!(err.to_string().contains("depth"), "{err}");
+    }
+
+    #[test]
+    fn calibration_artifact_requires_confusion_counts() {
+        let valid = r#"
+schema_version = 1
+
+[[artifact]]
+id = "FA-ART-CAL-99"
+kind = "calibration"
+manifest_path = "evidence/calibration/sample.toml"
+manifest_blake3 = "1111111111111111111111111111111111111111111111111111111111111111"
+produced_by = "cargo test -p fa-lantern"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+summary = "Sample calibration"
+corpus_manifest_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+case_count = 30
+per_procedure_confusion = ["jet.round_amounts:90:0:0:1200"]
+"#;
+        EvidenceArtifacts::from_text(valid).expect("valid calibration artifact parses");
+
+        let zero_pos = valid.replace(
+            "jet.round_amounts:90:0:0:1200",
+            "jet.round_amounts:0:0:0:1200",
+        );
+        let err = EvidenceArtifacts::from_text(&zero_pos)
+            .expect_err("calibration with TP + FN = 0 must fail");
+        assert!(err.to_string().contains("TP + FN = 0"), "{err}");
+    }
+
+    #[test]
+    fn claims_lint_covers_docs() {
+        let artifacts = EvidenceArtifacts::embedded().expect("evidence_artifacts.toml");
+        let invariants = Invariants::embedded().expect("invariants.toml");
+
+        // Backed prose claims pass.
+        let backed = "The 12 procedures were measured across 210 synthetic corpora (FA-ART-CAL-01).\n\nEvery balance fold is deterministic and exact (FA-INV-01).";
+        verify_prose_claims_lint_text("docs/example.md", backed, &artifacts, &invariants)
+            .expect("backed prose claims pass");
+
+        // Unbacked prose claims fail.
+        for unbacked in [
+            "We measured 500k postings per second on the reference host.",
+            "The ledger was verified against an external oracle on 50 fixtures.",
+            "Every detector is calibrated on production financial statements.",
+            "This formal proof establishes conservation across all currencies.",
+            "Balance queries execute in constant-time regardless of history depth.",
+            "We observed exact agreement across three independent CLI implementations.",
+        ] {
+            let err =
+                verify_prose_claims_lint_text("docs/planted.md", unbacked, &artifacts, &invariants)
+                    .expect_err(unbacked);
+            assert!(err.to_string().contains("docs/planted.md"), "{err}");
+        }
+    }
+
+    #[test]
+    fn external_oracle_claim_requires_artifact() {
+        let artifacts = EvidenceArtifacts::embedded().expect("evidence_artifacts.toml");
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
+        let invariants = Invariants::embedded().expect("invariants.toml");
+        let proof_lanes = ProofLanes::embedded(&invariants).expect("proof_lanes.toml");
+        let mut formats = Formats::embedded().expect("formats.toml");
+        let evidence = EvidenceRegistry::embedded().expect("evidence.toml");
+        let procedures = Procedures::embedded().expect("procedures.toml");
+        let calibration = LanternCalibration::embedded().expect("lantern_calibration.toml");
+
+        // Flipping `beancount_v3` from `oracle_status = "unrun"` to `"verified"` without
+        // citing an external-oracle artifact must fail cross-check (fa-kkxl / fa-vtzt).
+        formats
+            .rows
+            .iter_mut()
+            .find(|r| r.name == "beancount_v3")
+            .expect("beancount_v3")
+            .oracle_status = "verified".to_string();
+        let err = verify_claim_artifact_cross_refs(
+            &artifacts,
+            &slo,
+            &invariants,
+            &proof_lanes,
+            &formats,
+            &evidence,
+            &procedures,
+            &calibration,
+        )
+        .expect_err("external oracle claim without artifact must fail");
+        assert!(
+            err.to_string().contains("beancount_v3") && err.to_string().contains("external-oracle"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn proof_class_requires_lean_build_artifact() {
+        let artifacts = EvidenceArtifacts::embedded().expect("evidence_artifacts.toml");
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
+        let invariants = Invariants::embedded().expect("invariants.toml");
+        let mut proof_lanes = ProofLanes::embedded(&invariants).expect("proof_lanes.toml");
+        let formats = Formats::embedded().expect("formats.toml");
+        let evidence = EvidenceRegistry::embedded().expect("evidence.toml");
+        let procedures = Procedures::embedded().expect("procedures.toml");
+        let calibration = LanternCalibration::embedded().expect("lantern_calibration.toml");
+
+        // Activating a Lean proof lane (`FA-PROOF-01`) without a Lean build artifact
+        // covering its theorems must fail cross-check (fa-2lsv / fa-vtzt).
+        proof_lanes.lanes[0].status = "live".to_string();
+        let err = verify_claim_artifact_cross_refs(
+            &artifacts,
+            &slo,
+            &invariants,
+            &proof_lanes,
+            &formats,
+            &evidence,
+            &procedures,
+            &calibration,
+        )
+        .expect_err("live proof lane without Lean artifact must fail");
+        assert!(
+            err.to_string().contains("FA-PROOF-01") && err.to_string().contains("artifact"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn activated_slo_requires_measurement_artifact() {
+        let artifacts = EvidenceArtifacts::embedded().expect("evidence_artifacts.toml");
+        let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
+        let mut slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
+        let invariants = Invariants::embedded().expect("invariants.toml");
+        let proof_lanes = ProofLanes::embedded(&invariants).expect("proof_lanes.toml");
+        let formats = Formats::embedded().expect("formats.toml");
+        let evidence = EvidenceRegistry::embedded().expect("evidence.toml");
+        let procedures = Procedures::embedded().expect("procedures.toml");
+        let calibration = LanternCalibration::embedded().expect("lantern_calibration.toml");
+
+        // Flipping `activated = true` on any SLO row without a benchmark artifact
+        // must fail cross-check (fa-e75k / fa-vtzt).
+        slo.rows[0].activated = true;
+        let err = verify_claim_artifact_cross_refs(
+            &artifacts,
+            &slo,
+            &invariants,
+            &proof_lanes,
+            &formats,
+            &evidence,
+            &procedures,
+            &calibration,
+        )
+        .expect_err("activated SLO without benchmark artifact must fail");
+        assert!(
+            err.to_string().contains(&slo.rows[0].id) && err.to_string().contains("benchmark"),
             "{err}"
         );
     }

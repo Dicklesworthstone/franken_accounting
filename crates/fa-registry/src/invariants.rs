@@ -281,6 +281,10 @@ pub struct Clause {
     pub first_gate: String,
     /// Full clause ids (`FA-INV-14.leaf-envelope`).
     pub depends: Vec<String>,
+    /// Optional work-witness artifact (`FA-ART-*`) backing a proof or model clause.
+    pub artifact: Option<String>,
+    /// Optional Lean 4 theorem names covered by the artifact (`fa-vtzt`).
+    pub theorems: Vec<String>,
 }
 
 impl Clause {
@@ -602,6 +606,15 @@ impl Invariants {
             }
             other => return Err(bad(format!("{what}: status `{other}` is not live|dormant"))),
         };
+        let artifact = match t.get("artifact") {
+            None => None,
+            Some(v) => Some(
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| bad(format!("{what}: `artifact` must be a string")))?,
+            ),
+        };
+        let theorems = strings(t, "theorems", &what)?;
         Ok(Clause {
             statement: s(t, "statement", &what)?.to_string(),
             depends: strings(t, "depends", &what)?,
@@ -610,6 +623,8 @@ impl Invariants {
             status,
             evidence_class,
             first_gate,
+            artifact,
+            theorems,
         })
     }
 

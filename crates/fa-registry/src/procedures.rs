@@ -139,6 +139,7 @@ pub struct Procedure {
     pub tie_break: TieBreak,
     pub complexity: String,
     pub calibration: Calibration,
+    pub artifact: Option<String>,
     pub summary: String,
     pub effective_through: EffectiveThrough,
     pub inputs: Vec<Input>,
@@ -249,6 +250,14 @@ impl Procedures {
                     )
                 })?,
             };
+            let artifact = match t.get("artifact") {
+                None => None,
+                Some(v) => Some(
+                    v.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid(R, format!("{id}: `artifact` must be a string")))?,
+                ),
+            };
             rows.push(Procedure {
                 id,
                 version,
@@ -257,6 +266,7 @@ impl Procedures {
                 tie_break,
                 complexity,
                 calibration,
+                artifact,
                 summary,
                 effective_through,
                 inputs: Vec::new(),

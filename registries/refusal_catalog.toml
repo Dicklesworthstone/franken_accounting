@@ -1233,6 +1233,22 @@ exit = "refusal"
 cite = "plan §5.2; limits.toml register_capacity (gross native and functional register representability before publication)"
 fix = "reduce the proposed gross activity or use an admissible registered unit; a reversal adds gross activity and cannot repair a historical over-cap prefix; preserve that prefix for diagnosis"
 
+[[refusal]]
+code = "FA-REF-199"
+name = "RETENTION_FLOOR_ACTIVE"
+owners = ["fa-journal"]
+exit = "safety"
+cite = "plan §8.5 (retention cut cannot drop a record inside an active RetentionPolicy floor; bead fa-v6di)"
+fix = "wait until the commit sequence or effective date exceeds the active RetentionPolicy floor, or supersede the RetentionPolicy under dual-control policy-activate authority"
+
+[[refusal]]
+code = "FA-REF-200"
+name = "RETENTION_CADENCE_EXCEEDS_FLOOR"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §8.5 (register checkpoint cadence must not exceed any active RetentionPolicy floor; beads fa-v6di, fa-9xf9)"
+fix = "choose a register checkpoint cadence smaller than or equal to the active RetentionPolicy floor"
+
 # ---- Proof export (145–146) ---
 [[refusal]]
 code = "FA-REF-145"

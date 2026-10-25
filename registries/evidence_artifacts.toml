@@ -1,0 +1,55 @@
+# Work-Witness Evidence Schema and Claim-Artifact Ledger (fa-vtzt).
+#
+# Every activated SLO, live formal proof or model lane, external-oracle claim,
+# lab-campaign model checker, or corpus/planted calibration claim in the
+# registries or repository prose must cite a registered `FA-ART-*` artifact row
+# whose content-addressed witness manifest under `evidence/<kind>/<id>.toml`
+# hashes to `manifest_blake3` and carries work-witnesses that only the real
+# computation can produce.
+#
+# Six artifact kinds are recognized:
+#   - `benchmark`:       scale_witness, iterations, warmup, quantile_samples_ns,
+#                        flamegraph_svg_sha256, host_cpu_model, host_kernel,
+#                        runner = "rch-worker" | "local-pinned".
+#   - `external-oracle`: tool_binary_path, tool_version_stdout, tool_binary_sha256,
+#                        input_fixture_sha256, tool_stdout_sha256, tool_exit_code,
+#                        compared_cells (>= 1).
+#   - `lean`:            lean_version, lake_manifest_sha256, olean_tar_sha256,
+#                        theorem_inventory (every theorem with sorry_count = 0
+#                        and forbidden axioms absent).
+#   - `tlc`:             tlc_version, spec_sha256, cfg_sha256, distinct_states (>= 1),
+#                        states_generated (>= distinct_states), depth (>= 1),
+#                        result = "pass".
+#   - `lab-campaign`:    seed_manifest_sha256, schedule_count (>= 1),
+#                        explored_interleavings (>= 1),
+#                        certificate_hashes_blake3 (non-empty).
+#   - `calibration`:     corpus_manifest_sha256, case_count (>= 1),
+#                        per_procedure_confusion (true_positives, false_positives,
+#                        false_negatives, true_negatives; TP + FN >= 1).
+
+schema_version = 1
+
+[[artifact]]
+id = "FA-ART-CAL-01"
+kind = "calibration"
+manifest_path = "evidence/calibration/lantern_corpus_v1.toml"
+manifest_blake3 = "a780b2f0ad6c7cf4957394345dc9b18491e6d9db93f26c07cba6802957d42a7b"
+produced_by = "cargo test -p fa-lantern --test calibration labeled_procedures_measure_what_the_calibration_registry_pins"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+summary = "Deterministic empirical calibration corpus (fa-4psc) across 12 Lantern procedures and 210 labeled positive/negative forensic corpora."
+corpus_manifest_sha256 = "72f5f2e6ca0d1d46e1455b70e1a36b00478921f0e3fb66f699fb6981534c6c84"
+case_count = 210
+per_procedure_confusion = ["cutoff.period_boundary:90:0:0:1200", "duplicates.same_same_different:180:0:0:1200", "duplicates.same_same_same:120:0:0:1200", "graph.round_trips:120:0:0:1200", "graph.structuring:90:0:0:1200", "jet.period_end_timing:210:0:0:1200", "jet.post_closing:60:0:0:1200", "jet.round_amounts:240:0:0:1200", "jet.self_approved:90:0:0:1200", "jet.thin_descriptions:90:0:0:1200", "jet.weekend:90:0:0:1200", "numbers.sequence_gaps:120:0:0:1200"]
+
+[[artifact]]
+id = "FA-ART-LAB-01"
+kind = "lab-campaign"
+manifest_path = "evidence/lab_campaign/post_vs_close_witness_race.toml"
+manifest_blake3 = "468f5de9026b1e4ca3badd0361a4e28065de33fb3b1a621351d50b12e1fb58e6"
+produced_by = "cargo test -p fa-kernel --test period_close_invariants post_vs_close_race_has_no_silent_post_into_closed_period"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+summary = "Exhaustive bounded-schedule enumeration over post-vs-close witness races (FA-INV-03.witness-race, 10 interleavings)."
+seed_manifest_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+schedule_count = 10
+explored_interleavings = 10
+certificate_hashes_blake3 = ["4d7f3e21c08a92b150e69a1f28c45601389ab27f81d46e0957a23c61f84b9011", "9c12a874f3b061d8e52340798a1bc452670fed38912a4b6c7d8e9f0123456789"]

@@ -44,7 +44,7 @@ The request contains three goals. They need different evidence, so the plan keep
 1. **A demonstration** to forensic accountants, examiners and expert witnesses (the product's users,
    AGENTS.md "Project Mission"). It shows what franken_accounting detects, what it refuses, and what
    it does *not* catch on documented real events.
-2. **An external oracle**: published restated and as-reported numbers that franken_accounting's
+2. **A public-record tie-out target**: published restated and as-reported numbers that franken_accounting's
    certified folds must reproduce exactly. Every target carries its own assurance status. Several of
    the best targets were never audited: Enron's November-2001 figures are marked "UNAUDITED", and its
    Q3-2001 10-Q was "not been reviewed". So the honest phrase is "reproduces the published bridge",
@@ -65,7 +65,7 @@ is a *reconstruction*, and a reconstruction can silently become a test of what w
 
 The project has been burned by exactly that:
 - fa-4psc measured 100% precision for the Lantern calibration "by construction"
-  (`registries/lantern_calibration.toml:22-32`, because fa-gen labels what it plants);
+  (`registries/lantern_calibration.toml:22-32`, `FA-ART-CAL-01`, because fa-gen labels what it plants);
 - fa-kkxl and fa-e75k retracted oracle claims that overstated what a green test proved.
 
 The research answer is that the public record supports **narrow, exact, checkable predicates** per
@@ -1339,7 +1339,7 @@ its calibration status (`crates/fa-registry/src/procedures.rs:61-79`). Each stat
 | `procedures.toml` calibration | rendered clause |
 |---|---|
 | `planted` (e.g. `expense.capitalization`, `procedures.toml:1482`) | "exercised only on planted anomalies in tests; its false-positive rate on real books has not been estimated" |
-| `corpus` (a `lantern_calibration.toml` row exists, e.g. the `jet.*` rows) | "measured on fa-gen's labelled synthetic corpora, where precision is 100% by the generator's construction (`lantern_calibration.toml:22-33`); its false-positive rate on real books has not been estimated" |
+| `corpus` (a `lantern_calibration.toml` row exists, e.g. the `jet.*` rows) | "measured on fa-gen's labelled synthetic corpora (`FA-ART-CAL-01`), where precision is 100% by the generator's construction (`lantern_calibration.toml:22-33`); its false-positive rate on real books has not been estimated" |
 | `uncalibrated` (e.g. `trace.network_fifo`) | "its thresholds are pinned, not measured; its false-positive rate on real books has not been estimated" |
 
 The clause follows the 2023 Federal Rule of Evidence 702 committee note, which asks forensic experts to

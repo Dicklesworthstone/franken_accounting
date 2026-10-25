@@ -1,0 +1,93 @@
+# Work-witness manifest for FA-ART-CAL-01 (Lantern calibration corpus, fa-4psc).
+# Produced by: cargo test -p fa-lantern --test calibration labeled_procedures_measure_what_the_calibration_registry_pins
+schema_version = 1
+artifact_id = "FA-ART-CAL-01"
+kind = "calibration"
+produced_by = "cargo test -p fa-lantern --test calibration labeled_procedures_measure_what_the_calibration_registry_pins"
+git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
+corpus_manifest_sha256 = "72f5f2e6ca0d1d46e1455b70e1a36b00478921f0e3fb66f699fb6981534c6c84"
+case_count = 210
+
+[[per_procedure_confusion]]
+procedure = "cutoff.period_boundary"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "duplicates.same_same_different"
+true_positives = 180
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "duplicates.same_same_same"
+true_positives = 120
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "graph.round_trips"
+true_positives = 120
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "graph.structuring"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "jet.period_end_timing"
+true_positives = 210
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "jet.post_closing"
+true_positives = 60
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "jet.round_amounts"
+true_positives = 240
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "jet.self_approved"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "jet.thin_descriptions"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "jet.weekend"
+true_positives = 90
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200
+
+[[per_procedure_confusion]]
+procedure = "numbers.sequence_gaps"
+true_positives = 120
+false_positives = 0
+false_negatives = 0
+true_negatives = 1200

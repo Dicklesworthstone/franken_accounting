@@ -67,6 +67,8 @@ pub struct LanternCalibration {
     pub seeds: u64,
     /// The `fa-gen` volume multiplier the corpora were generated at.
     pub scale: u64,
+    /// Optional work-witness artifact (`FA-ART-*`) backing this calibration table.
+    pub artifact: Option<String>,
     /// Ascending by procedure id.
     pub rows: Vec<CalibrationRow>,
 }
@@ -81,13 +83,22 @@ impl LanternCalibration {
         if req_int(R, &doc.root, "schema_version")? != 1 {
             return Err(invalid(R, "schema_version must be 1"));
         }
-        if let Some(key) = doc
-            .root
-            .keys()
-            .find(|k| !matches!(k.as_str(), "schema_version" | "seeds" | "scale"))
-        {
+        if let Some(key) = doc.root.keys().find(|k| {
+            !matches!(
+                k.as_str(),
+                "schema_version" | "seeds" | "scale" | "artifact"
+            )
+        }) {
             return Err(invalid(R, format!("unknown top-level key `{key}`")));
         }
+        let artifact = match doc.root.get("artifact") {
+            None => None,
+            Some(v) => Some(
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| invalid(R, "`artifact` must be a string"))?,
+            ),
+        };
         if let Some(key) = doc.arrays.keys().find(|k| *k != "procedure") {
             return Err(invalid(R, format!("unknown table array `[[{key}]]`")));
         }
@@ -166,7 +177,12 @@ impl LanternCalibration {
                 ),
             ));
         }
-        Ok(Self { seeds, scale, rows })
+        Ok(Self {
+            seeds,
+            scale,
+            artifact,
+            rows,
+        })
     }
 
     #[must_use]

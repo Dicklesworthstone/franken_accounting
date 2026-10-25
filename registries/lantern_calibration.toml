@@ -35,6 +35,7 @@
 schema_version = 1
 seeds = 30
 scale = 1
+artifact = "FA-ART-CAL-01"
 
 [[procedure]]
 id = "cutoff.period_boundary"
