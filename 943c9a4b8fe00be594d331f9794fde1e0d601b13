@@ -1,0 +1,9 @@
+owner-watch v1
+verdict=UNRUN
+commit=943c9a4b8fe00be594d331f9794fde1e0d601b13
+tree=608955284a2a736d373f7214915d6f18d3bdbebd
+recorded_utc=2026-10-25T15:49:24Z
+worker=unknown
+steps=clippy:UNRUN,test:UNRUN
+test_totals=passed:0,failed:0
+tracker_drift_no_bead=7089a599 merge: keep the docs-sync gate and origin's TigerBeetle and document-read work;
