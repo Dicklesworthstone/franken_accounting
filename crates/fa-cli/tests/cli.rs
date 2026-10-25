@@ -4885,6 +4885,157 @@ fn reclass_closed_period_requires_post_closed() -> std::io::Result<()> {
     Ok(())
 }
 
+/// fa-6f3g (case-studies A0): an entry whose period cell needs an approval,
+/// an Adjusting entry in a Closed period (`with:post_closed,1`), posts from
+/// the CLI. `fa post --review-out` seals the proposal once; an independent
+/// approver approves its proposal_digest; `fa post --review --digest
+/// --approval` restores the unchanged bytes and plans it for `fa commit
+/// --plan` (or posts). Without the approval the cell refuses FA-REF-012, a
+/// self-approval is FA-REF-008, and a review that is not the one its digest
+/// names is a usage error.
+#[test]
+fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> std::io::Result<()> {
+    let dir = tmp("post-review")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Review Co", "--json"]);
+    let keys = fa::BookKeys::load(&book.join("book.keys")).unwrap();
+    let head = || {
+        fa::Book::open_dir(&book, keys.clone(), fa::Entropy::production())
+            .unwrap()
+            .head()
+            .unwrap()
+    };
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    let adjustment = write(
+        &dir,
+        "adjustment.json",
+        r#"{"class":"Adjusting","effective_date":"2026-03-12","idempotency_key":"closed-adjustment","legs":[{"side":"debit","account":"1000","amount":"1.00 USD"},{"side":"credit","account":"4000","amount":"1.00 USD"}]}"#,
+    );
+    // Without an approval the Closed cell refuses it.
+    let (code, out) = run(&[
+        "post",
+        "--intent",
+        &adjustment,
+        "--evidence",
+        &evidence,
+        "--grant",
+        "post_closed",
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-012"), "{out}");
+    // Seal the proposal once; nothing is published.
+    let review = dir.join("adjustment.review");
+    let review = review.to_str().unwrap();
+    let before = head();
+    let reviewed = doc(&ok(&[
+        "post",
+        "--intent",
+        &adjustment,
+        "--evidence",
+        &evidence,
+        "--grant",
+        "post_closed",
+        "--review-out",
+        review,
+        "--json",
+    ]));
+    assert_eq!(head(), before, "a review publishes nothing");
+    assert_eq!(text(&reviewed, "class"), "Adjusting");
+    assert!(std::path::Path::new(review).exists());
+    let review_digest = text(&reviewed, "review_digest").to_string();
+    let proposal_digest = text(&reviewed, "proposal_digest").to_string();
+    // The preparer approving its own proposal is refused at posting.
+    let own = doc(&ok(&["approve", "--proposal", &proposal_digest, "--json"]));
+    let own = text(&own, "approval_vid").to_string();
+    let (code, out) = run(&[
+        "post",
+        "--review",
+        review,
+        "--digest",
+        &review_digest,
+        "--approval",
+        &own,
+        "--grant",
+        "post_closed",
+        "--json",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-008"), "{out}");
+    // A review its digest does not name is a usage error.
+    let (code, out) = run(&[
+        "post",
+        "--review",
+        review,
+        "--digest",
+        &"00".repeat(32),
+        "--grant",
+        "post_closed",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    // An independent approver, then a plan the reviewer can read and commit.
+    let approval = doc(&ok(&[
+        "approve",
+        "--proposal",
+        &proposal_digest,
+        "--as",
+        "independent-reviewer",
+        "--json",
+    ]));
+    let approval = text(&approval, "approval_vid").to_string();
+    let plan = dir.join("adjustment.plan");
+    let plan = plan.to_str().unwrap();
+    let planned = ok(&[
+        "post",
+        "--review",
+        review,
+        "--digest",
+        &review_digest,
+        "--approval",
+        &approval,
+        "--grant",
+        "post_closed",
+        "--dry-run",
+        "--plan-out",
+        plan,
+        "--json",
+    ]);
+    assert!(planned.contains("\"event\":\"plan\""), "{planned}");
+    let posted = ok(&["commit", "--plan", plan, "--grant", "post_closed", "--json"]);
+    assert_eq!(field(&posted, "event"), Some("posted"), "{posted}");
+    assert_eq!(field(&posted, "class"), Some("Adjusting"), "{posted}");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(tb.contains("1.00 USD"), "{tb}");
+    Ok(())
+}
+
 /// `fa law list|show` and `fa unit list` (plan §6.2–§6.4, Appendix D): the
 /// registered laws and unit versions, without a book.
 #[test]
@@ -10392,6 +10543,15 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         ),
     );
     run2(&["settle", "--intent", &settle_ev, "--review-only"]);
+    // fa-6f3g: a sealed post review (post_reviewed); nothing is published.
+    run2(&[
+        "post",
+        "--intent",
+        &fee_entry,
+        "--evidence",
+        &bank_oid,
+        "--review-only",
+    ]);
     run2(&["explain", "entry", &fee_vid]);
     run2(&["explain", "lineage", &fee_vid]);
     run2(&["document", "attach", &fee_vid, "--evidence", &bank_oid]);
