@@ -255,6 +255,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, _| Ok(db.frontier().map_err(KernelError::from)?))
     }
 
+    /// Materialize a substrate storage checkpoint and retention cut over the
+    /// committed spine (plan §16.6): upon reopen, delta cursors prior to the
+    /// compacted frontier are retired while all certified reads remain intact.
+    pub async fn compact_storage(&mut self, cx: &PurposeContexts) -> Result<(), BookError> {
+        let commit = cx.commit();
+        commit.checkpoint().map_err(BookError::Context)?;
+        self.db
+            .compact(&commit)
+            .await
+            .map_err(|e| KernelError::Write(fgdb::WriteError::from(e)))?;
+        Ok(())
+    }
+
+    /// Whether the substrate's live delta stream still retains commits since
+    /// `since` (`false` once `since` precedes a reopened compaction cut).
+    pub fn has_delta_since(
+        &self,
+        cx: &PurposeContexts,
+        since: CommitSeq,
+    ) -> Result<bool, BookError> {
+        self.query(cx, |db, _| match db.delta_since(since) {
+            Ok(_) => Ok(true),
+            Err(fgdb::ReadError::DeltaCursorRetired { .. }) => Ok(false),
+            Err(e) => Err(KernelError::from(e).into()),
+        })
+    }
+
     /// The genesis spec journaled on the book root (base unit, calendar,
     /// opening date, entities): what `fa book info` reports.
     pub fn spec(&self, cx: &PurposeContexts) -> Result<BookSpec, BookError> {
