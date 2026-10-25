@@ -42,12 +42,23 @@ cat > scripts/check.sh <<'CHECK'
 #!/usr/bin/env bash
 set -eu
 printf 'run\n' >> "${FAKE_CHECK_COUNTER:-/dev/null}"
+tree_hash="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo unknown)"
+toolchain="$(rustc --version 2>/dev/null || echo unavailable)"
+log_dir="${CHECK_LOG_DIR:-/tmp}"
+manifest="${CHECK_STEP_MANIFEST:-/dev/null}"
+mkdir -p "$log_dir"
+printf 'fake check log\n' > "$log_dir/fake.log"
+digest="$(sha256sum "$log_dir/fake.log" | awk '{print $1}')"
 if [ -e RED ]; then
+  printf '{"step":"fake","status":"FAIL","tree_hash":"%s","toolchain":"%s","worker":"local","started":"2026-10-20T00:00:00Z","finished":"2026-10-20T00:00:01Z","duration_secs":1,"log_digest":"%s"}\n' \
+    "$tree_hash" "$toolchain" "$digest" > "$manifest"
   printf 'FAIL fake gate: RED is tracked\n'
   printf 'QUALITY GATE RED\n'
   printf 'QUALITY GATE RED\n' >&2
   exit 7
 fi
+printf '{"step":"fake","status":"PASS","tree_hash":"%s","toolchain":"%s","worker":"local","started":"2026-10-20T00:00:00Z","finished":"2026-10-20T00:00:01Z","duration_secs":1,"log_digest":"%s"}\n' \
+  "$tree_hash" "$toolchain" "$digest" > "$manifest"
 printf 'PASS fake gate\n'
 printf 'ALL GATES GREEN\n'
 CHECK
