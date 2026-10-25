@@ -1,8 +1,9 @@
 owner-watch v1
-verdict=UNRUN
+verdict=RED
 commit=90fbbcc4c5bd42f4e7e51f9fca67198e7f95b051
 tree=5a054da016b8c10f8b8e5aad82bccb332e50437c
-recorded_utc=2026-10-25T06:29:55Z
-worker=unknown
-steps=clippy:UNRUN,test:UNRUN
+recorded_utc=2026-10-25T06:49:55Z
+worker=vmi1149989
+steps=clippy:FAIL,test:UNRUN
 test_totals=passed:0,failed:0
+first_error=error: this function has too many arguments (8/7)
