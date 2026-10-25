@@ -14073,18 +14073,19 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.flag("--as-known-at").is_some()
         && !matches!(
             target,
-            Some("periods" | "close" | "usage" | "fx-conversion")
+            Some("periods" | "close" | "usage" | "fx-conversion" | "search")
         )
     {
         return Err(usage(
-            "--as-known-at is supported only by verify periods, verify close, verify usage and verify fx-conversion",
-            "select periods, close, usage or fx-conversion for historical verification, or omit --as-known-at",
+            "--as-known-at is supported only by verify periods, verify close, verify usage, verify fx-conversion and verify search",
+            "select periods, close, usage, fx-conversion or search for historical verification, or omit --as-known-at",
         ));
     }
     match target {
         Some("book") => verify_book(ctx, args),
         Some("export") => crate::export::verify_export(ctx, args),
         Some("fx-conversion") => verify_fx_conversion(ctx, args),
+        Some("search") => verify_search(ctx, args),
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
         Some("usage") => {
@@ -21982,6 +21983,118 @@ fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fai
     ]))
 }
 
+fn gather_search_records(
+    book: &mut Book,
+    who: VId,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+    wants: impl Fn(fa::SearchRecordKind) -> bool,
+) -> Result<Vec<fa::SearchIndexableRecord>, Fail> {
+    let mut records = Vec::new();
+    // Documents are read through this capability. One it sees only
+    // redacted, may not read, or that is erased contributes nothing; one
+    // that fails its own proof is drift and fails the search (exit 8).
+    if wants(fa::SearchRecordKind::Document) {
+        for summary in book.documents(known_at)?? {
+            let document = match book.read_document_for(capability, &summary.oid)? {
+                Ok(fa_journal::DocumentRead::Full(document)) => document,
+                Err(refusal) if refusal.exit == fa_journal::exit::VERIFICATION => {
+                    return Err(Fail::Refusal(refusal));
+                }
+                Ok(fa_journal::DocumentRead::Redacted(_)) | Err(_) => continue,
+            };
+            if let Some(text) = fa::document_search_text(&document) {
+                records.push(fa::SearchIndexableRecord {
+                    id: fa::SearchRecordId::Document(summary.oid),
+                    recorded_at: summary.recorded_at.0,
+                    subject_ref: None,
+                    text,
+                });
+            }
+        }
+    }
+    // Findings are the certified replays of every run recorded at the
+    // frontier, never a graph cache: a run that does not replay fails the
+    // search. Each finding is searched by its procedure and narrative.
+    if wants(fa::SearchRecordKind::Finding) {
+        let mut request = fa::findings::lookup::FindingRunPageRequest {
+            known_at,
+            after: None,
+            limit: fa::findings::lookup::MAX_FINDING_RUN_PAGE,
+        };
+        loop {
+            let page = book.finding_runs(who, capability, &request)??;
+            for run in &page.runs {
+                let recorded =
+                    book.read_findings_with_history(who, capability, &run.certificate_digest)??;
+                for (vid, finding) in recorded.finding_ids.iter().zip(&recorded.report.findings) {
+                    records.push(fa::SearchIndexableRecord {
+                        id: fa::SearchRecordId::Finding(*vid),
+                        recorded_at: recorded.recorded_at.0,
+                        subject_ref: None,
+                        text: format!("{}\n{}", finding.procedure, finding.narrative),
+                    });
+                }
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            request.after = Some(next);
+        }
+    }
+    Ok(records)
+}
+
+fn verify_search(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str =
+        "fa verify search [--as-known-at HEAD|<seq>|<RFC3339>] --book <dir> --json";
+    if args.positional.len() != 2
+        || args.flag("--period").is_some()
+        || args.flag("--fiscal-year").is_some()
+    {
+        return Err(usage(
+            "verify search rebuilds and checks the full-text index at one recorded prefix and takes no period filter",
+            EXAMPLE,
+        ));
+    }
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_whole_book_read(
+            book,
+            &capability,
+            &[fa_policy::Op::Verify],
+            "verifying the full-text search index",
+        )
+    })?;
+    let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
+    let records = gather_search_records(&mut book, who, &capability, known_at, |_| true)?;
+    let v = book.verify_search(known_at, &records)?;
+    ctx.out.known_at(v.known_at);
+    ctx.out.event(
+        "search_verified",
+        vec![
+            ("known_at", Json::Int(i128::from(v.known_at.0))),
+            ("entries", Json::Int(v.entries as i128)),
+            ("documents", Json::Int(v.documents as i128)),
+            ("findings", Json::Int(v.findings as i128)),
+            ("records", Json::Int(v.records as i128)),
+            ("corpus_hash", s(hex(&v.corpus_hash))),
+            ("index_digest", s(hex(&v.index_digest))),
+        ],
+        &format!(
+            "search index verified from journal at {}: {} records ({} entries, {} documents, {} findings), manifest {}",
+            v.known_at.0,
+            v.records,
+            v.entries,
+            v.documents,
+            v.findings,
+            hex(&v.index_digest),
+        ),
+    );
+    Ok(())
+}
+
 /// `fa search <query> [--kind entry|document|finding|all]` (plan §9, fa-qip):
 /// rank the entries whose description or memos match the query, the
 /// documents whose text does, and the findings whose procedure or narrative
@@ -22036,58 +22149,7 @@ fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         admit_whole_book_read(book, &capability, &[], "searching the journal")
     })?;
     let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-    let mut records = Vec::new();
-    // Documents are read through this capability. One it sees only
-    // redacted, may not read, or that is erased contributes nothing; one
-    // that fails its own proof is drift and fails the search (exit 8).
-    if wants(fa::SearchRecordKind::Document) {
-        for summary in book.documents(known_at)?? {
-            let document = match book.read_document_for(&capability, &summary.oid)? {
-                Ok(fa_journal::DocumentRead::Full(document)) => document,
-                Err(refusal) if refusal.exit == fa_journal::exit::VERIFICATION => {
-                    return Err(Fail::Refusal(refusal));
-                }
-                Ok(fa_journal::DocumentRead::Redacted(_)) | Err(_) => continue,
-            };
-            if let Some(text) = fa::document_search_text(&document) {
-                records.push(fa::SearchIndexableRecord {
-                    id: fa::SearchRecordId::Document(summary.oid),
-                    recorded_at: summary.recorded_at.0,
-                    subject_ref: None,
-                    text,
-                });
-            }
-        }
-    }
-    // Findings are the certified replays of every run recorded at the
-    // frontier, never a graph cache: a run that does not replay fails the
-    // search. Each finding is searched by its procedure and narrative.
-    if wants(fa::SearchRecordKind::Finding) {
-        let mut request = fa::findings::lookup::FindingRunPageRequest {
-            known_at,
-            after: None,
-            limit: fa::findings::lookup::MAX_FINDING_RUN_PAGE,
-        };
-        loop {
-            let page = book.finding_runs(who, &capability, &request)??;
-            for run in &page.runs {
-                let recorded =
-                    book.read_findings_with_history(who, &capability, &run.certificate_digest)??;
-                for (vid, finding) in recorded.finding_ids.iter().zip(&recorded.report.findings) {
-                    records.push(fa::SearchIndexableRecord {
-                        id: fa::SearchRecordId::Finding(*vid),
-                        recorded_at: recorded.recorded_at.0,
-                        subject_ref: None,
-                        text: format!("{}\n{}", finding.procedure, finding.narrative),
-                    });
-                }
-            }
-            let Some(next) = page.next_cursor else {
-                break;
-            };
-            request.after = Some(next);
-        }
-    }
+    let records = gather_search_records(&mut book, who, &capability, known_at, wants)?;
     let results = book.search(query, known_at, &records, kind)?;
     ctx.out.known_at(results.known_at);
     let shown = &results.hits[..results.hits.len().min(limit)];

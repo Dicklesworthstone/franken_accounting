@@ -5268,6 +5268,18 @@ impl Book {
         with_store!(&self.store, core => core.search(&self.purposes(), query, known_at, documents, kind))
     }
 
+    /// Rebuild the search index at `known_at` (the head when `None`) over
+    /// every visible entry and the caller's `documents_and_findings`, and
+    /// verify its corpus hash and manifest digest (`fa verify search`; see
+    /// [`crate::search`]).
+    pub fn verify_search(
+        &self,
+        known_at: Option<CommitSeq>,
+        documents_and_findings: &[crate::SearchIndexableRecord],
+    ) -> Result<crate::SearchVerification, BookError> {
+        with_store!(&self.store, core => core.verify_search(&self.purposes(), known_at, documents_and_findings))
+    }
+
     /// `selection` at `from` and at `to` (the head when `None`), what
     /// changed between them, and every entry recorded after `from` through
     /// `to` (`fa diff`; see [`crate::ledger_diff`]).

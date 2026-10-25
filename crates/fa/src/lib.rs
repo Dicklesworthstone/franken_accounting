@@ -294,7 +294,7 @@ pub use scenario::{
     SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
     ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
-pub use search::{SearchResults, document_search_text};
+pub use search::{SearchResults, SearchVerification, document_search_text};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
