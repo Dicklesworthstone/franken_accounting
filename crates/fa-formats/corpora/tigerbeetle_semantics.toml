@@ -87,3 +87,13 @@ accounts = ["1000:USD:0", "2000:USD:0"]
 steps = ["pending:P1:1000:2000:5000:day=10:expiry=30", "capture:R1:P1:5001:day=12"]
 expected_outcomes = ["P1:committed", "R1:refused_exceeds_pending"]
 expected_balances = ["1000:dp=5000:dpost=0:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=5000:cpost=0"]
+
+[[scenario]]
+id = "tb_09_partial_capture_releases_the_whole_hold_on_a_limited_account"
+description = "A partial capture of a pending debit on a limited account releases the entire reservation, so a later transfer that fits only without the old hold is admitted."
+divergence = "none"
+divergence_reason = "Exact agreement: post_pending posts the captured amount and releases the full pending amount (debits_pending falls by 8000, not by 2000), so the limit is judged against debits_posted alone."
+accounts = ["1000:USD:10000", "2000:USD:0"]
+steps = ["pending:P1:1000:2000:8000:day=10:expiry=30", "capture:R1:P1:6000:day=12", "post:T2:1000:2000:4000:day=13"]
+expected_outcomes = ["P1:committed", "R1:committed", "T2:committed"]
+expected_balances = ["1000:dp=0:dpost=10000:cp=0:cpost=0", "2000:dp=0:dpost=0:cp=0:cpost=10000"]

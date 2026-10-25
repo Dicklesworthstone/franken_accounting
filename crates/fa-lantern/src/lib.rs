@@ -1486,8 +1486,14 @@ mod tests {
         ));
 
         let taken = std::cell::Cell::new(0);
-        let run = run_over_metered(&snapshot, &book, &StepLoop::new(100, &taken), Some(100), None)
-            .expect("a run within its budget completes");
+        let run = run_over_metered(
+            &snapshot,
+            &book,
+            &StepLoop::new(100, &taken),
+            Some(100),
+            None,
+        )
+        .expect("a run within its budget completes");
         assert_eq!(run.findings.len(), 1);
         assert_eq!(run.work.comparisons, 100);
     }
@@ -1519,8 +1525,14 @@ mod tests {
         let taken = std::cell::Cell::new(0);
         let mut procedure = StepLoop::new(1_000_000, &taken);
         procedure.cancel_after = Some((5_000, &cancel));
-        let err = run_over_metered(&snapshot, &book, &procedure, None, Some(&CancelFlag(&cancel)))
-            .expect_err("cancellation arriving mid-run stops it within one interval");
+        let err = run_over_metered(
+            &snapshot,
+            &book,
+            &procedure,
+            None,
+            Some(&CancelFlag(&cancel)),
+        )
+        .expect_err("cancellation arriving mid-run stops it within one interval");
         let LanternError::Cancelled { used, .. } = err else {
             panic!("{err:?}");
         };
