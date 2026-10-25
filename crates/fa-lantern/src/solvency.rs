@@ -1427,13 +1427,13 @@ fn test_fixture(as_of: DateDay) -> (Snapshot, BookContext, VId, VId, Oid) {
 fn make_posting(
     book: &BookContext,
     vid: VId,
-    seq: u64,
     eff: DateDay,
     class: EntryClass,
     legs: Vec<LegPayload>,
     extensions: Vec<(u16, Vec<u8>)>,
     doc_oid: Oid,
 ) -> SnapshotEntry {
+    let seq = u64::try_from(vid.0).unwrap();
     let payload = EntryPayload {
         schema_minor: if extensions.is_empty() { 0 } else { 2 },
         book_id: book.book_id,
@@ -1496,7 +1496,6 @@ fn cash_flow_horizon_uses_maturity_not_booking_date() {
     let e_cash_and_long_debt = make_posting(
         &book,
         VId(10),
-        10,
         day(2026, 1, 1),
         EntryClass::ORIGINAL,
         vec![
@@ -1563,15 +1562,14 @@ fn cash_flow_horizon_uses_maturity_not_booking_date() {
 
     // 2. Add debt 40 due May 15, boundary debt 35 due May 30 (inclusive at 30 days),
     // and boundary debt 50 due May 31 (excluded at 30 days, included at 31 days).
-    for (vid, seq, due, amt) in [
-        (VId(11), 11u64, day(2026, 5, 15), 40i128),
-        (VId(12), 12u64, day(2026, 5, 30), 35i128),
-        (VId(13), 13u64, day(2026, 5, 31), 50i128),
+    for (vid, due, amt) in [
+        (VId(11), day(2026, 5, 15), 40i128),
+        (VId(12), day(2026, 5, 30), 35i128),
+        (VId(13), day(2026, 5, 31), 50i128),
     ] {
         snapshot.entries.push(make_posting(
             &book,
             vid,
-            seq,
             day(2026, 4, 10),
             EntryClass::ORIGINAL,
             vec![
@@ -1646,7 +1644,6 @@ fn settlements_and_commitments_are_counted_once() {
     let e_inv = make_posting(
         &book,
         VId(20),
-        20,
         day(2026, 4, 1),
         EntryClass::ORIGINAL,
         vec![
@@ -1673,7 +1670,6 @@ fn settlements_and_commitments_are_counted_once() {
     let e_pay = make_posting(
         &book,
         VId(21),
-        21,
         day(2026, 4, 20),
         EntryClass::ORIGINAL,
         vec![
@@ -1695,7 +1691,6 @@ fn settlements_and_commitments_are_counted_once() {
     let e_pending = make_posting(
         &book,
         VId(22),
-        22,
         day(2026, 4, 25),
         EntryClass::PENDING,
         vec![
