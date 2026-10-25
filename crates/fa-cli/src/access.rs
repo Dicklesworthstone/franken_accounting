@@ -41,6 +41,9 @@ fn log(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let who = ctx.principal(args);
     let capability = ctx.capability(args, &["read"])?;
     let book = ctx.books.open_admitted(args, |book| {
+        let (_audit, check): (fa::access_log::AccessAuditRecord, _) =
+            fa::access_log::audit_access_log_read(book.context().book_id, &capability);
+        check.map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
         book.read_scope(who, &capability)??;
         Ok(())
     })?;

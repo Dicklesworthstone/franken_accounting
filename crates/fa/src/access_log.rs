@@ -18,6 +18,7 @@ use fa_journal::refusal::{KernelError, Refusal, code, exit};
 use fa_journal::rows::{prop, scalar_bytes};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{Id128, Reader, Writer, access_event_vid, domain_digest};
+pub use fa_steward::{AccessAuditRecord, audit_capability_op, profile_default_ops};
 use fgdb::{Database, WriteBatch};
 use fgdb_gql::RelationBind;
 use fgdb_types::context::PurposeContexts;
@@ -64,6 +65,22 @@ pub struct RecordedAccess {
 pub fn request_digest(argv: &[String]) -> [u8; 32] {
     let parts: Vec<&[u8]> = argv.iter().map(String::as_bytes).collect();
     domain_digest(b"fa:access-request:v1", &parts)
+}
+
+/// Evaluate whether `capability` is admitted to read the access log of `book_id`
+/// and return the structured [`AccessAuditRecord`] alongside the admission result.
+pub fn audit_access_log_read(
+    book_id: Id128,
+    capability: &fa_policy::Capability,
+) -> (AccessAuditRecord, Result<(), fa_policy::Denial>) {
+    let default_ops = profile_default_ops(capability.profile());
+    debug_assert!(default_ops.contains(&fa_policy::Op::Read));
+    audit_capability_op(
+        book_id,
+        capability,
+        fa_policy::Op::Read,
+        "reading the access log",
+    )
 }
 
 fn invalid(message: impl Into<String>) -> Refusal {

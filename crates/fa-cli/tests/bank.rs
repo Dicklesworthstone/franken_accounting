@@ -3914,5 +3914,140 @@ fn bank_fetch_runs_the_hosts_fwc_and_retains_its_payload() {
     );
 }
 
+/// fa-lzrn: `fa export warehouse` runs the host's `fwc` (`fwc robot export`)
+/// after admission and report-certificate verification, writes the canonical
+/// `WarehouseExportReceipt` control record, and `fa verify export warehouse`
+/// re-reads and verifies it against the book. Planted: missing or failing
+/// `fwc` (exit 4), unknown or mismatched connector (exit 2), unverified
+/// certificate (exit 8), and tampered receipt file (exit 8).
+#[cfg(unix)]
+#[test]
+fn warehouse_export_runs_the_hosts_fwc_and_verifies_its_receipt() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let tb_events = certified_events(&f.book, &["tb", "--period", "FY2026-P03", "--certify"]);
+    let tb = &tb_events[0];
+    let cert_oid = text(tb, "certificate").to_string();
+    let receipt_hash = "ab".repeat(32);
+
+    let bin = f.dir.join("wh-bin");
+    let empty = f.dir.join("wh-empty");
+    let failing = f.dir.join("wh-failing");
+    let mismatch = f.dir.join("wh-mismatch");
+    for d in [&bin, &empty, &failing, &mismatch] {
+        std::fs::create_dir(d).unwrap();
+    }
+    let fake = |dir: &Path, body: &str| {
+        let path = dir.join("fwc");
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    fake(
+        &bin,
+        &format!(
+            "#!/bin/sh\nPATH=/usr/bin:/bin\n[ \"$*\" = 'robot export --connector snowflake --destination analytics.gl.tb --certificate {cert_oid}' ] || exit 9\nprintf '{{\"robot_schema_version\":\"fwc.robot.v1\",\"connector\":\"snowflake\",\"receipt_hash\":\"{receipt_hash}\"}}\\n'\n"
+        ),
+    );
+    fake(
+        &failing,
+        "#!/bin/sh\necho 'snowflake: warehouse suspended' >&2\nexit 3\n",
+    );
+    fake(
+        &mismatch,
+        &format!(
+            "#!/bin/sh\nprintf '{{\"robot_schema_version\":\"fwc.robot.v1\",\"connector\":\"bigquery\",\"receipt_hash\":\"{receipt_hash}\"}}\\n'\n"
+        ),
+    );
+
+    let run_wh = |path: &Path, args: &[&str]| -> (i32, Json) {
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&f.book)
+            .args(args)
+            .arg("--json")
+            .env_remove("FA_BOOK")
+            .env_remove("FA_TOKEN")
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let line = stdout.lines().last().unwrap_or_default();
+        fa_cli::verbs::registry()
+            .unwrap()
+            .check_line(line)
+            .unwrap_or_else(|error| panic!("{error}\n{stdout}"));
+        (output.status.code().unwrap(), json::parse(line).unwrap())
+    };
+
+    let refused_out = f.dir.join("refused-receipt.toml");
+    let refused_out_str = refused_out.to_str().unwrap();
+    let zero_cert = format!("C:{}", "00".repeat(32));
+    for (path, connector, cert, expected_exit) in [
+        (&empty, "snowflake", cert_oid.as_str(), 4),
+        (&failing, "snowflake", cert_oid.as_str(), 4),
+        (&bin, "postgres", cert_oid.as_str(), 2),
+        (&mismatch, "snowflake", cert_oid.as_str(), 2),
+        (&bin, "snowflake", zero_cert.as_str(), 8),
+    ] {
+        let (code, refused) = run_wh(
+            path,
+            &[
+                "export",
+                "warehouse",
+                "--connector",
+                connector,
+                "--destination",
+                "analytics.gl.tb",
+                "--report",
+                cert,
+                "--out",
+                refused_out_str,
+            ],
+        );
+        assert_eq!(code, expected_exit, "{}", refused.render());
+        assert!(!refused_out.exists(), "refused export must not create --out");
+    }
+
+    let receipt_path = f.dir.join("warehouse-receipt.toml");
+    let receipt_path_str = receipt_path.to_str().unwrap();
+    let (code, exported) = run_wh(
+        &bin,
+        &[
+            "export",
+            "warehouse",
+            "--connector",
+            "snowflake",
+            "--destination",
+            "analytics.gl.tb",
+            "--report",
+            &cert_oid,
+            "--out",
+            receipt_path_str,
+        ],
+    );
+    assert_eq!(code, 0, "{}", exported.render());
+    let exp_data = data(&exported);
+    assert_eq!(text(exp_data, "format"), "warehouse");
+    assert_eq!(text(exp_data, "certificate_digest"), cert_oid);
+    let control_oid = text(exp_data, "content_digest").to_string();
+    assert!(receipt_path.exists());
+
+    let (v_code, verified) = run_wh(&bin, &["verify", "export", "warehouse", receipt_path_str]);
+    assert_eq!(v_code, 0, "{}", verified.render());
+    let ver_data = data(&verified);
+    assert_eq!(text(ver_data, "format"), "warehouse");
+    assert_eq!(text(ver_data, "reread"), "receipt");
+    assert_eq!(text(ver_data, "certificate_digest"), cert_oid);
+    assert_eq!(text(ver_data, "content_digest"), control_oid);
+
+    let mut tampered = std::fs::read_to_string(&receipt_path).unwrap();
+    tampered = tampered.replacen("analytics.gl.tb", "analytics.gl.tx", 1);
+    let tampered_path = f.dir.join("warehouse-receipt-tampered.toml");
+    let tampered_str = tampered_path.to_str().unwrap();
+    std::fs::write(&tampered_path, tampered).unwrap();
+    let (t_code, t_out) = run_wh(&bin, &["verify", "export", "warehouse", tampered_str]);
+    assert_eq!(t_code, 8, "{}", t_out.render());
+}
+
 #[path = "bank/csv_layout.rs"]
 mod csv_layout;

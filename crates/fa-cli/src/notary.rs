@@ -42,7 +42,7 @@ fn certificate_invalid(message: impl Into<String>) -> Fail {
 
 /// A comparison or trace may reach earlier sources than its final displayed
 /// coordinate. Prepare that actual retained prefix, never a sentinel cutoff.
-fn prepare_artifact_history(
+pub(crate) fn prepare_artifact_history(
     book: &mut Book,
     principal: VId,
     capability: &Capability,
@@ -128,7 +128,7 @@ fn certificate_digest(text: &str) -> Result<Option<[u8; 32]>, Fail> {
 /// Resolve a retained digest, or a file/stdin containing canonical binary or hex.
 /// A bare 64-hex argument is a digest; prefix a filename with ./ if it has
 /// that shape. Bound file/stdin reads before allocating for them.
-fn read_certificate_bytes(
+pub(crate) fn read_certificate_bytes(
     book: &Book,
     files: &Files,
     path: &str,

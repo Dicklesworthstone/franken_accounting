@@ -919,14 +919,14 @@ example = "fa bank import statement.xml --bank-format camt053 --account 1000 --b
 
 [[verb]]
 name = "export"
-summary = "Export the committed journal at one coordinate in an interop format (plan §8.6, §15.9): the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount or hledger, or an XBRL 2.1 instance validated against the vendored calculation linkbase, each with its export coordinate certificate."
+summary = "Export the committed journal at one coordinate in an interop format (plan §8.6, §15.9): the AICPA ADS GL package, OECD SAF-T, a CSV GL extract, Beancount or hledger, an XBRL 2.1 instance validated against the vendored calculation linkbase, or a warehouse export (snowflake, bigquery, s3) through the host's `fwc` connector, each with its export coordinate or report certificate."
 writes = false
-subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger", "ndjson", "xbrl"]
-flags = ["--period", "--as-of", "--as-known-at", "--out", "--grant", "--state"]
+subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger", "ndjson", "xbrl", "warehouse"]
+flags = ["--period", "--as-of", "--as-known-at", "--out", "--grant", "--state", "--connector", "--destination", "--report"]
 switches = ["--with-proofs"]
 events = ["journal_exported"]
-exits = [0, 2, 3, 4, 5, 7]
-usage = ["export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>]", "export ads (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>]   (plan §13.1, the auditor's extract proved complete: the package is selected at exactly the recorded accumulator state's sequence, and ADS_Proof.fab (the state's complete-prefix bundle, seq_range_complete) with its signed ADS_Proof.receipt is written beside it. `fa-verify ads <dir> --key <checkpoint_public_key>` checks offline that GL_Detail is exactly the proven entries the export selects and Trial_Balance exactly their refold; no --as-known-at, since the state names the sequence; a book with no recorded state is refused, and the owner publishes one with fa checkpoint create --grant witness)","The export selects what the trial balance folds: every entry visible at the known-at prefix whose effective date is on or before --as-of (or the period's last day), with legs and not a pending hold. Refolding the exported legs gives the stock trial balance at that coordinate. Every format writes the same selection. ndjson is the streaming GL detail: a gl_stream_header coordinate row, one gl_detail_row per leg, and a gl_stream_footer with the row count and refold digest.", "ads writes four tables (Chart_of_Accounts, GL_Detail, Trial_Balance, ADS_Coordinate_Certificate.toml); its --out names a new directory. The other formats write one file. Without --out the content is returned inline; an export too large for the inline transport is refused, never truncated.", "Descriptions, leg memos and migration source ids are opened with the book's key; an erased field exports empty. Requires read and produce: an export discloses the journal."]
+exits = [0, 2, 3, 4, 5, 7, 8]
+usage = ["export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>]", "export ads (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>]   (plan §13.1, the auditor's extract proved complete: the package is selected at exactly the recorded accumulator state's sequence, and ADS_Proof.fab (the state's complete-prefix bundle, seq_range_complete) with its signed ADS_Proof.receipt is written beside it. `fa-verify ads <dir> --key <checkpoint_public_key>` checks offline that GL_Detail is exactly the proven entries the export selects and Trial_Balance exactly their refold; no --as-known-at, since the state names the sequence; a book with no recorded state is refused, and the owner publishes one with fa checkpoint create --grant witness)", "export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>]   (runs the host's `fwc robot export` after admission and certificate verification and emits a canonical WarehouseExportReceipt control record; a missing or failing fwc did not run: exit 4, nothing written)", "The export selects what the trial balance folds: every entry visible at the known-at prefix whose effective date is on or before --as-of (or the period's last day), with legs and not a pending hold. Refolding the exported legs gives the stock trial balance at that coordinate. Every format writes the same selection. ndjson is the streaming GL detail: a gl_stream_header coordinate row, one gl_detail_row per leg, and a gl_stream_footer with the row count and refold digest.", "ads writes four tables (Chart_of_Accounts, GL_Detail, Trial_Balance, ADS_Coordinate_Certificate.toml); its --out names a new directory. The other formats write one file. Without --out the content is returned inline; an export too large for the inline transport is refused, never truncated.", "Descriptions, leg memos and migration source ids are opened with the book's key; an erased field exports empty. Requires read and produce: an export discloses the journal."]
 example = "fa export ads --period FY2026-P03 --out ./ads-2026-03 --book ./books/myco --json"
 
 [[verb]]
@@ -3929,6 +3929,11 @@ subcommand = "fetch"
 reason = "host-only: it runs the host's `fwc` connector as a subprocess with the host's connector credentials; over MCP, fa_bank_import takes a saved payload inline with bank_format plaid-sync"
 
 [[mcp.excluded]]
+verb = "export"
+subcommand = "warehouse"
+reason = "host-only: it runs the host's `fwc` connector as a subprocess with the host's warehouse credentials; over MCP, fa_io_export returns exports inline"
+
+[[mcp.excluded]]
 verb = "void-reserve"
 reason = "host-only: a void releases the hold for good and needs --yes, which an MCP session never carries; fa_post_resolve with disposition posts is the safe alternative"
 
@@ -6003,6 +6008,7 @@ ops = ["read", "produce"]
 # before resolving periods, reading the journal, or writing output.
 [[bound]]
 verbs = ["export"]
+subcommands = ["ads", "saft", "csv-gl", "beancount", "hledger", "ndjson", "xbrl"]
 ops = ["read", "produce"]
 reach = "judged"
 

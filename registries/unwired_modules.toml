@@ -45,12 +45,6 @@ reason = "FFIEC 031/041 and FR Y-9C schedule definitions key on two-digit code p
 expires = "2026-11-21"
 
 [[unwired]]
-path = "fa_steward"
-owner_bead = "fa-lzrn"
-reason = "The crate's own items (audit_capability_op, AccessAuditRecord, profile_default_ops) have no caller outside tests; its re-exports are reached through their home crates."
-expires = "2026-11-21"
-
-[[unwired]]
 path = "fa_time::business"
 owner_bead = "fa-94qd"
 reason = "Business-day calendars and day-roll conventions are not creatable or applied from any surface."

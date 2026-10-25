@@ -132,6 +132,10 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // fa-lzrn: verifying an export reads a file or ADS directory on
             // the host; MCP exports are inline, never host files.
             || (e.verb == "verify" && e.subcommand.as_deref() == Some("export"))
+            // fa-lzrn: a warehouse export runs the host's `fwc` connector
+            // subprocess with the host's warehouse credentials; MCP exports
+            // are returned inline through fa_io_export.
+            || (e.verb == "export" && e.subcommand.as_deref() == Some("warehouse"))
             // fa-i7e: a void releases a hold for good and needs --yes, which
             // no MCP session carries; fa_post_resolve is the safe path.
             || (e.verb == "void-reserve" && e.subcommand.is_none())
