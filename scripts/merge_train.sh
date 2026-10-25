@@ -346,10 +346,9 @@ print(chosen)
 PY
 }
 
-# tier0_in_cand <cand_dir> <label_tag> -> sets TIER0_LAST_VERDICT (PASS|RED|UNRUN), TIER0_LAST_FAIL_LINE, TIER0_LAST_LOG
+# tier0_in_cand <cand_dir> <label_tag> -> sets TIER0_LAST_VERDICT (PASS|RED|UNRUN), TIER0_LAST_FAIL_LINE
 TIER0_LAST_VERDICT=""
 TIER0_LAST_FAIL_LINE=""
-TIER0_LAST_LOG=""
 TIER0_COUNT=0
 
 tier0_in_cand() {
@@ -367,7 +366,6 @@ tier0_in_cand() {
 
   local t0_rc=0
   (cd "$cand" && bash scripts/tier0.sh --publish-note --log-dir "$t0_dir") >"$t0_log" 2>"$t0_err" || t0_rc=$?
-  TIER0_LAST_LOG="$t0_log"
   TIER0_LAST_FAIL_LINE=""
 
   if [ "$t0_rc" -eq 0 ] \
