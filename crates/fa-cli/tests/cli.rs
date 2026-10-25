@@ -7050,6 +7050,144 @@ fn timed_cli_intents_preserve_their_requests_and_execute_under_recorded_ticks()
     Ok(())
 }
 
+/// fa-gpd4 (plan §5.4, §7.6, FA-CFG-02): `fa sweep now` (and `fa schedule
+/// sweep`) drains due timed holds and due scheduled reversals in bounded
+/// batches under the book's intrinsic System principal, advances the
+/// disposable paged sweep index to the resulting head, and keeps `fa verify
+/// schedules` green; non-System callers are refused with FA-REF-011.
+#[test]
+fn sweep_now_expires_due_holds() -> std::io::Result<()> {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{Book, BookKeys, Entropy};
+    use fa_journal::Capability;
+    use fgdb_types::VId;
+
+    const ANCHOR_NS: u64 = 1_773_576_000_000_000_000;
+    const APRIL_NS: u64 = 1_775_001_600_000_000_000;
+    let dir = tmp("sweep-now")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "args={args:?}\n{out}\n{err}");
+        assert!(err.is_empty(), "{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Sweep Now Co",
+        "--time-zone",
+        "UTC",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&["period", "open", "FY2026-P04", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let open = || Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let witness = Capability::embedded(VId(7), &["witness"]).unwrap();
+    let tick = |ns| {
+        let mut handle = open();
+        runtime
+            .block_on(handle.record_tick(&root, ns, true, &witness))
+            .unwrap()
+            .unwrap()
+    };
+    tick(ANCHOR_NS);
+    for (key, timeout) in [("hold-a", "5"), ("hold-b", "7")] {
+        let path = write(
+            &dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"class":"Pending","effective_date":"2026-03-15","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6000","amount":"1.00 USD"}},{{"side":"credit","account":"1000","amount":"1.00 USD"}}]}}"#
+            ),
+        );
+        ok(&[
+            "reserve",
+            "--intent",
+            &path,
+            "--evidence",
+            &evidence,
+            "--timeout-ns",
+            timeout,
+            "--json",
+        ]);
+    }
+    let adj_path = write(
+        &dir,
+        "adjust.json",
+        r#"{"class":"Adjusting","effective_date":"2026-03-15","idempotency_key":"adjust-1","reverse_on":"2026-04-01","legs":[{"side":"debit","account":"6000","amount":"2.00 USD"},{"side":"credit","account":"1000","amount":"2.00 USD"}]}"#,
+    );
+    ok(&[
+        "post",
+        "--intent",
+        &adj_path,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+
+    tick(ANCHOR_NS + 10);
+    let triage_before = doc(&ok(&["triage", "--json"]));
+    assert_eq!(int(&triage_before, "due_holds"), Some(2));
+    assert_eq!(int(&triage_before, "due_reversals"), Some(0));
+
+    // Planted negative: a non-System principal is refused with FA-REF-011
+    // (exit 7) and expires nothing.
+    let head_before = open().head().unwrap();
+    let (code, refused, _) = fa(Some(&book), &["sweep", "now", "--as", "alice", "--json"]);
+    assert_eq!(code, 7, "{refused}");
+    assert_eq!(
+        field(&refused, "refusal_id"),
+        Some("FA-REF-011"),
+        "{refused}"
+    );
+    assert_eq!(open().head().unwrap(), head_before);
+
+    // Host System sweep via `fa sweep now` drains both due holds and advances
+    // the paged sweep index to the resulting head.
+    let swept = doc(&ok(&["sweep", "now", "--json"]));
+    assert_eq!(int(&swept, "expired"), Some(2));
+    assert_eq!(int(&swept, "expiry_batches"), Some(1));
+    assert_eq!(int(&swept, "reversals_minted"), Some(0));
+    assert_eq!(int(&swept, "due_holds_remaining"), Some(0));
+    assert_eq!(
+        int(&swept, "index_through"),
+        Some(i128::from(open().head().unwrap().0))
+    );
+    let triage_after = doc(&ok(&["triage", "--json"]));
+    assert_eq!(int(&triage_after, "due_holds"), Some(0));
+    let verified = doc(&ok(&["verify", "schedules", "--json"]));
+    assert!(arr(&verified, "drift").is_empty(), "{verified:?}");
+
+    // Advance time to April 1 UTC and sweep the due scheduled reversal via
+    // `fa schedule sweep`.
+    tick(APRIL_NS);
+    let swept_rev = doc(&ok(&["schedule", "sweep", "--json"]));
+    assert_eq!(int(&swept_rev, "expired"), Some(0));
+    assert_eq!(int(&swept_rev, "reversals_minted"), Some(1));
+    assert_eq!(int(&swept_rev, "reversal_batches"), Some(1));
+    assert_eq!(int(&swept_rev, "due_reversals_remaining"), Some(0));
+    let verified_after = doc(&ok(&["verify", "schedules", "--json"]));
+    assert_eq!(int(&verified_after, "executed"), Some(1));
+    assert!(
+        arr(&verified_after, "drift").is_empty(),
+        "{verified_after:?}"
+    );
+    Ok(())
+}
+
 /// fa-7uhr (plan §7.6): `fa period open --dry-run` lists the scheduled
 /// reversals the open would mint, exactly those the open then mints, dated
 /// by the latest tick. Planted: while the latest tick is uncorroborated an

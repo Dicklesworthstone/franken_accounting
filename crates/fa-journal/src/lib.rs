@@ -220,7 +220,7 @@ pub use scenario::{
 };
 pub use schedule::{
     DueReversal, ReversalBatch, ReversalStatus, Schedule, ScheduleVerification, due_reversals,
-    sweep_reversals_batch, verify_schedules, with_auto_reverse,
+    due_reversals_with_witness, sweep_reversals_batch, verify_schedules, with_auto_reverse,
 };
 pub use scratch::{SeqMap, SeqPair, replay_into};
 pub use subledger::{
@@ -228,8 +228,11 @@ pub use subledger::{
     create_native_subledger, native_subledger_vid, native_subledgers_at,
 };
 pub use sweep::{
-    DueHold, Op, Profile, SweepBatch, SweepRequest, Swept, Tick, TickRequest, Ticked, due_holds,
-    latest_tick, record_tick, sweep, sweep_batch,
+    DueHold, IndexedHold, Op, Profile, SWEEP_INDEX_PAGE_SIZE, SweepBatch, SweepIndexPageMeta,
+    SweepIndexState, SweepIndexVerification, SweepReadWitness, SweepRequest, Swept, Tick,
+    TickRequest, Ticked, advance_sweep_index, due_holds, due_holds_with_witness, latest_tick,
+    rebuild_sweep_index, record_tick, sweep, sweep_batch, sweep_batch_with_witness,
+    verify_sweep_index,
 };
 pub use temporal::{InstantSelection, resolve_instant_at};
 pub use upload::{

@@ -1155,6 +1155,10 @@ expands = ["export", "csv-gl"]
 name = "sample random"
 expands = ["sample", "uniform"]
 
+[[alias]]
+name = "sweep now"
+expands = ["schedule", "sweep"]
+
 # Operations that cannot be undone in practice (plan §15.3, Appendix D
 # FA-REF-007). Without --yes, or a --plan file naming the exact proposal,
 # they are refused with exit 7 before anything is written, and the refusal's
@@ -4044,6 +4048,11 @@ verb = "capability"
 subcommand = "revoke"
 reason = "host-only: revokes a capability commitment with --grant issue_capability and --yes, neither of which a bound MCP session can hold or supply (plan §14.2/§15.4 registered exclusion)"
 
+[[mcp.excluded]]
+verb = "schedule"
+subcommand = "sweep"
+reason = "host-only: sweeping due holds and scheduled reversals exercises the book's intrinsic System principal, which only the local book-key holder or fad --bootstrap-system holds (plan §5.4, §7.6, FA-CFG-02)"
+
 # ---- fa.orient --------------------------------------------------------------
 
 [[mcp.cluster]]
@@ -6531,15 +6540,21 @@ ops = ["read"]
 
 [[verb]]
 name = "schedule"
-summary = "Approved recurring fixed entries driven by committed TimeEvidence: prepare an exact template and calendar cadence, activate it with independent approval, inspect journal-derived progress, and stop future occurrences by cancellation lineage."
+summary = "Approved recurring fixed entries and System sweep execution driven by committed TimeEvidence: prepare an exact template and calendar cadence, activate it with independent approval, inspect journal-derived progress, stop future occurrences by cancellation lineage, or drain due timed holds and scheduled reversals in bounded batches (`fa sweep now`)."
 writes = true
-subcommands = ["recurring"]
+subcommands = ["recurring", "sweep"]
 flags = ["--template", "--every-months", "--month-end", "--end", "--plan", "--plan-out", "--approval", "--reason"]
 switches = ["--dry-run"]
-events = ["recurring_plan", "recurring_recorded", "recurring_schedules", "recurring_cancelled"]
+events = ["recurring_plan", "recurring_recorded", "recurring_schedules", "recurring_cancelled", "swept"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["schedule recurring create <name> --template <entry.json|-> --every-months <positive integer> --month-end PreserveDay|ClampToMonthEnd|LastDayStaysLast [--end YYYY-MM-DD] --dry-run [--plan-out <new-file>]   (template is an Original intent with explicit native legs, evidence, idempotency_key and effective_date as its start. Description, evidence and effects are fixed. No applications, FX derivation, pending entries or automatic reversals. The plan binds the current execution capability and requires a declared book time-zone policy.)", "schedule recurring create <name> --plan <file|hex|-> --approval <vid>...   (one independent Human approves proposal_digest with fa approve. Use the unchanged plan and creator capability. Creation journals a ScheduleControl and is idempotent by schedule name. The plan authorizes fixed effects; it does not exempt later occurrences from current account, amount, authority, evidence or period laws.)", "schedule recurring list   (current schedules, explicit cadence, next occurrence and any calendar refusal; read authority required)", "schedule recurring cancel <name> --reason <text>   (creator or a principal holding approve may stop future execution under current read/post authority. Cancellation is journaled; existing occurrences require ordinary corrections.)", "The daemon sweeps due occurrences only under corroborated committed TimeEvidence ticks. Each occurrence has a deterministic schedule/index identity, and cancellation, tick and execution progress are transaction witnesses. A Closed period blocks the named occurrence. Agent-profile activation and draft recurring schedules remain unsupported in this slice; a Human creates the approved schedule."]
+usage = ["schedule recurring create <name> --template <entry.json|-> --every-months <positive integer> --month-end PreserveDay|ClampToMonthEnd|LastDayStaysLast [--end YYYY-MM-DD] --dry-run [--plan-out <new-file>]   (template is an Original intent with explicit native legs, evidence, idempotency_key and effective_date as its start. Description, evidence and effects are fixed. No applications, FX derivation, pending entries or automatic reversals. The plan binds the current execution capability and requires a declared book time-zone policy.)", "schedule recurring create <name> --plan <file|hex|-> --approval <vid>...   (one independent Human approves proposal_digest with fa approve. Use the unchanged plan and creator capability. Creation journals a ScheduleControl and is idempotent by schedule name. The plan authorizes fixed effects; it does not exempt later occurrences from current account, amount, authority, evidence or period laws.)", "schedule recurring list   (current schedules, explicit cadence, next occurrence and any calendar refusal; read authority required)", "schedule recurring cancel <name> --reason <text>   (creator or a principal holding approve may stop future execution under current read/post authority. Cancellation is journaled; existing occurrences require ordinary corrections.)", "sweep now   (or schedule sweep: host-only; drains due timed holds, due scheduled reversals and due recurring occurrences in bounded batches under the latest corroborated TimeEvidence tick and the book's intrinsic System principal, then advances the disposable paged sweep index to the head)", "The daemon sweeps due occurrences only under corroborated committed TimeEvidence ticks. Each occurrence has a deterministic schedule/index identity, and cancellation, tick and execution progress are transaction witnesses. A Closed period blocks the named occurrence. Agent-profile activation and draft recurring schedules remain unsupported in this slice; a Human creates the approved schedule."]
 example = "fa schedule recurring create monthly-rent --template rent.json --every-months 1 --month-end ClampToMonthEnd --end 2026-12-31 --dry-run --plan-out rent.plan --book ./books/myco --json"
+
+[[event]]
+name = "swept"
+book = true
+doc = "One bounded System sweep cycle under the latest corroborated TimeEvidence tick (fa sweep now / fa schedule sweep, plan §5.4, §7.6, FA-CFG-02): due timed holds expired, due scheduled reversals minted, and due recurring schedule occurrences posted, with the disposable paged sweep index advanced to the resulting head."
+fields = ["tick_entry:hex?", "tick_utc_ns:int?", "expiry_batches:int", "expired:int", "reversal_batches:int", "reversals_minted:int", "reversals_blocked:int", "recurring_batches:int", "recurring_posted:int", "recurring_blocked:int", "due_holds_remaining:int", "due_reversals_remaining:int", "index_through:seq"]
 
 [[event]]
 name = "recurring_plan"

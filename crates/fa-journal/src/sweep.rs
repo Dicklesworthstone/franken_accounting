@@ -37,14 +37,14 @@
 //! period has since closed or locked is still released, unconditionally,
 //! and closing or locking a period never waits on its holds.
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as MapEntry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_CLOCK_SKEW_NS};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlPayload, Disposition, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
-    Id128, Oid, Pending, entry_mirrors, entry_vid, period_vid,
+    Id128, Oid, Pending, Reader, SupersessionKind, Writer, entry_mirrors, entry_vid, period_vid,
 };
 use fa_money::Side;
 use fa_policy::{Intent, Party};
@@ -54,6 +54,8 @@ pub use fa_policy::{Op, Profile};
 use fa_registry::{Admissibility, Decision, EntryClasses};
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
+use fgdb_crypto::Hasher;
+use fgdb_delta_types::{DeltaRow, IndexError};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
@@ -63,9 +65,16 @@ use crate::policy;
 use crate::post::{Capability, Identity, Posted, recorded_or_conflict};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{
-    AccountRow, book_root, edge_id, prop, resolution_vid, scalar_bytes, state_from_scalar,
-    sweep_cursor_vid,
+    AccountRow, book_root, bytes, edge_id, prop, resolution_vid, reversal_vid, scalar_bytes,
+    state_from_scalar, sweep_cursor_vid, sweep_index_page_vid, sweep_index_vid,
 };
+
+/// Fixed page size for the disposable `SweepIndex` (FA-CFG-02).
+pub const SWEEP_INDEX_PAGE_SIZE: usize = 64;
+
+const SWEEP_INDEX_MAGIC: &[u8; 4] = b"FASI";
+const SWEEP_INDEX_PAGE_MAGIC: &[u8; 4] = b"FASP";
+const SWEEP_INDEX_VERSION: u16 = 1;
 
 /// `TimeEvidence.source`: the daemon's clock (plan §7.1a). The only source
 /// this slice admits; `AuthorityDocument` and `SubstrateMarker` land with
@@ -202,6 +211,11 @@ pub fn latest_corroborated_tick<V: asupersync::fs::Vfs + Clone>(
     .ok_or_else(|| KernelError::Corrupt("the latest tick's entry is missing".into()))?;
     if tick_corroborated(&latest_row)? {
         return Ok(Some(latest));
+    }
+    if at.is_none()
+        && let Ok(Some(tick)) = indexed_latest_corroborated_tick(db)
+    {
+        return Ok(tick);
     }
     let rows = match at {
         None => db.vertices()?,
@@ -391,23 +405,115 @@ pub struct DueHold {
     pub deadline_ns: u64,
 }
 
+/// Witness of the substrate reads performed during a sweep discovery or
+/// batch cycle (plan §5.4, §7.6, FA-CFG-02).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SweepReadWitness {
+    /// Whether a servable `SweepIndex` root was used.
+    pub used_index: bool,
+    /// Number of `SweepIndex` page vertices read.
+    pub pages_read: usize,
+    /// Number of due candidate holds/schedules inspected from read pages.
+    pub candidates_read: usize,
+    /// Total substrate vertex / property point reads plus any full-scan rows.
+    pub substrate_rows_read: usize,
+    /// Number of delta batches after the index cursor examined.
+    pub delta_batches_read: usize,
+    /// Number of unrelated (non-Pending/Resolution/TimeControl/Reversal)
+    /// `Entry` payloads decoded.
+    pub unrelated_entries_decoded: usize,
+}
+
+/// One unresolved timed hold stored in a `SweepIndex` hold page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedHold {
+    pub hold: EntryRef,
+    pub recorded_at: CommitSeq,
+    pub deadline_ns: u64,
+}
+
+/// Metadata for one page of the disposable `SweepIndex`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SweepIndexPageMeta {
+    pub page: u32,
+    pub min_key: i128,
+    pub max_key: i128,
+    pub count: u32,
+    pub digest: [u8; 32],
+}
+
+/// Disposable root state of the paged `SweepIndex` (FA-CFG-02).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SweepIndexState {
+    pub book_id: Id128,
+    pub through: CommitSeq,
+    pub latest_corroborated_tick: Option<(CommitSeq, Tick)>,
+    pub hold_pages: Vec<SweepIndexPageMeta>,
+    pub schedule_pages: Vec<SweepIndexPageMeta>,
+}
+
+/// Result of refolding and verifying the disposable `SweepIndex` against
+/// the authoritative journal (FA-CFG-02).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SweepIndexVerification {
+    pub index_present: bool,
+    pub through: Option<CommitSeq>,
+    pub holds_checked: usize,
+    pub schedules_checked: usize,
+    pub pages_checked: usize,
+    pub drift: Vec<String>,
+}
+
+impl SweepIndexVerification {
+    #[must_use]
+    pub fn is_green(&self) -> bool {
+        self.drift.is_empty()
+    }
+}
+
 /// Every unresolved timed hold that `at` (the latest tick when `None`) has
 /// made due, in the holds' commit order — the backlog `fa triage` reports
-/// as `due` (plan §5.4, FA-CFG-02). A snapshot scan at head: the sweep
-/// re-reads each candidate as a point witness inside its transaction.
+/// as `due` (plan §5.4, FA-CFG-02). Uses the paged `SweepIndex` plus any
+/// committed delta tail when available, falling back to a snapshot scan
+/// when no servable index is present; the sweep re-reads each candidate as
+/// a point witness inside its transaction.
 pub fn due_holds<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     at: Option<Tick>,
 ) -> Result<Vec<DueHold>, KernelError> {
+    Ok(due_holds_with_witness(db, at)?.0)
+}
+
+/// [`due_holds`] together with a [`SweepReadWitness`] recording the
+/// substrate reads performed during candidate discovery (FA-CFG-02).
+pub fn due_holds_with_witness<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    at: Option<Tick>,
+) -> Result<(Vec<DueHold>, SweepReadWitness), KernelError> {
+    let mut witness = SweepReadWitness::default();
     let at = match at {
         Some(t) => Some(t),
-        None => latest_tick(db)?,
+        None => {
+            witness.substrate_rows_read += 1;
+            latest_tick(db)?
+        }
     };
     let Some(at) = at else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), witness));
     };
+    if let Ok(Some((due, indexed_witness))) = indexed_due_holds(db, at) {
+        witness.used_index = true;
+        witness.pages_read += indexed_witness.pages_read;
+        witness.candidates_read += indexed_witness.candidates_read;
+        witness.substrate_rows_read += indexed_witness.substrate_rows_read;
+        witness.delta_batches_read += indexed_witness.delta_batches_read;
+        witness.unrelated_entries_decoded += indexed_witness.unrelated_entries_decoded;
+        return Ok((due, witness));
+    }
+    let rows = db.vertices()?;
+    witness.substrate_rows_read += rows.len();
     let mut due = Vec::new();
-    for row in db.vertices()? {
+    for row in rows {
         if !row.labels.contains(&label::ENTRY)
             || prop(&row, property::CLASS)
                 != Some(&CanonicalScalar::Int(i64::from(EntryClass::PENDING.0)))
@@ -422,6 +528,8 @@ pub fn due_holds<V: asupersync::fs::Vfs + Clone>(
         else {
             continue;
         };
+        witness.candidates_read += 1;
+        witness.substrate_rows_read += 1;
         if db.vertex(resolution_vid(row.vid))?.is_some() {
             continue;
         }
@@ -435,7 +543,7 @@ pub fn due_holds<V: asupersync::fs::Vfs + Clone>(
         }
     }
     due.sort_by_key(|d| (d.recorded_at, d.hold.vid));
-    Ok(due)
+    Ok((due, witness))
 }
 
 /// One TimeEvidence observation to journal (plan §7.1a). The kernel reads
@@ -1063,27 +1171,55 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     req: &SweepRequest,
     describe: &mut Describe<'_>,
 ) -> Outcome<Option<SweepBatch>> {
+    match sweep_batch_with_witness(db, ctx, book, req, describe).await? {
+        Ok((batch, _)) => Ok(Ok(batch)),
+        Err(r) => Ok(Err(r)),
+    }
+}
+
+/// [`sweep_batch`] together with a [`SweepReadWitness`] recording the
+/// substrate reads performed during candidate discovery and witness
+/// validation (FA-CFG-02).
+pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: &SweepRequest,
+    describe: &mut Describe<'_>,
+) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
+    let mut witness = SweepReadWitness::default();
     let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Expire");
     if let Err(r) = admit_sweep(db, book, req, &sweep_key)? {
         return Ok(Err(r));
     }
+    witness.substrate_rows_read += 1;
 
     // The candidates, from the head snapshot this single-writer handle is
     // about to open its transaction on; each is re-read as a witness below.
+    witness.substrate_rows_read += 1;
     let Some(tick) = latest_tick(db)? else {
-        return Ok(Ok(None));
+        return Ok(Ok((None, witness)));
     };
     // Automatic effects take time only from a corroborated committed tick;
     // the transaction below witnesses that this tick is still the latest.
+    witness.substrate_rows_read += 1;
     if let Err(r) = corroborated_at_head(db, tick)? {
         return Ok(Err(r));
     }
+    witness.substrate_rows_read += 1;
     let root = root_row(db, None)?.ok_or_else(|| KernelError::Corrupt("no book root".into()))?;
     let cursor = Cursor::from_scalar(prop(&root, property::SWEEP_CURSOR))?;
-    let mut due = due_holds(db, Some(tick))?;
+    let (mut due, due_witness) = due_holds_with_witness(db, Some(tick))?;
+    witness.used_index = due_witness.used_index;
+    witness.pages_read += due_witness.pages_read;
+    witness.candidates_read += due_witness.candidates_read;
+    witness.substrate_rows_read += due_witness.substrate_rows_read;
+    witness.delta_batches_read += due_witness.delta_batches_read;
+    witness.unrelated_entries_decoded += due_witness.unrelated_entries_decoded;
     if let Some(c) = cursor
         && c.tick == tick.entry
     {
+        witness.substrate_rows_read += 1;
         let last = db.vertex(c.last_pending)?.ok_or_else(|| {
             KernelError::Corrupt(format!(
                 "the sweep cursor names hold {:032x}, which is missing",
@@ -1094,7 +1230,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
         due.retain(|d| (d.recorded_at, d.hold.vid) > at);
     }
     if due.is_empty() {
-        return Ok(Ok(None));
+        return Ok(Ok((None, witness)));
     }
     let take = due.len().min(req.max_batch);
     let remaining_due = due.len() - take;
@@ -1102,17 +1238,22 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
 
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
+    witness.substrate_rows_read += 1;
     if let Err(r) = policy::capability_witness(&txn, db, book, &req.capability)? {
         txn.abort();
         return Ok(Err(r));
     }
+    witness.substrate_rows_read += 1;
     let (_, witnessed_tick) = tick_witness(&txn, db)?;
     if witnessed_tick != Some(tick) {
         txn.abort();
         return Ok(Err(conflict("the sweep's tick", "a tick committed")));
     }
+    witness.substrate_rows_read += 1;
     let witnessed_cursor = txn.vertex_property(db, book_root(), property::SWEEP_CURSOR)?;
+    witness.substrate_rows_read += 1;
     let epoch = policy::epoch_witness(&txn, db)?;
+    witness.substrate_rows_read += 1;
     let tick_row = txn
         .vertex(db, tick.entry)?
         .ok_or_else(|| KernelError::Corrupt("the latest tick's entry is missing".into()))?;
@@ -1132,6 +1273,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     let mut expired = Vec::with_capacity(due.len());
     for d in &due {
         let hold_vid = d.hold.vid;
+        witness.substrate_rows_read += 1;
         let row = txn
             .vertex(db, hold_vid)?
             .ok_or_else(|| KernelError::Corrupt("a due hold is missing".into()))?;
@@ -1143,6 +1285,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             )));
         }
         let rvid = resolution_vid(hold_vid);
+        witness.substrate_rows_read += 1;
         if txn.vertex(db, rvid)?.is_some() {
             txn.abort();
             return Ok(Err(conflict(
@@ -1154,6 +1297,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
         // admits Voids/Expires in every state but Future.
         let period = limit::period_code(book, &hold.proposal)?;
         let pvid = period_vid(&book.calendar.id, &period);
+        witness.substrate_rows_read += 1;
         let state_scalar = txn.vertex_property(db, pvid, property::STATE)?;
         let state = state_from_scalar(state_scalar.as_ref())
             .ok_or_else(|| KernelError::Corrupt(format!("period `{period}` state mirror")))?;
@@ -1194,6 +1338,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
             txn.abort();
             return Ok(Err(r));
         }
+        witness.substrate_rows_read += 1;
         if let Err(refusal) = crate::outcome::require_fresh_key(&txn, db, book, &proposal, rvid)? {
             txn.abort();
             return Ok(Err(refusal));
@@ -1211,6 +1356,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
         );
         expired.push((d.hold, entry.entry_ref(rvid)));
     }
+    witness.substrate_rows_read += accounts.len() + cells.len();
 
     let last = due
         .last()
@@ -1221,6 +1367,7 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
         last_pending: last,
     };
     let cvid = sweep_cursor_vid(tick.entry, last);
+    witness.substrate_rows_read += 1;
     if txn.vertex(db, cvid)?.is_some() {
         txn.abort();
         return Ok(Err(conflict(
@@ -1277,13 +1424,16 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     );
     txn.write_ordered(db, vec![entries, resolves])?;
     match txn.commit(db, &ctx.commit()).await {
-        Ok(seq) => Ok(Ok(Some(SweepBatch {
-            tick,
-            expired,
-            cursor_entry: cursor_entry.entry_ref(cvid),
-            recorded_at: seq,
-            remaining_due,
-        }))),
+        Ok(seq) => Ok(Ok((
+            Some(SweepBatch {
+                tick,
+                expired,
+                cursor_entry: cursor_entry.entry_ref(cvid),
+                recorded_at: seq,
+                remaining_due,
+            }),
+            witness,
+        ))),
         Err(WriteTxnError::Write(fgdb::WriteError::FirstCommitterWins { detail, .. })) => {
             Ok(Err(conflict("a witness of this sweep batch", detail)))
         }
@@ -1366,6 +1516,1170 @@ pub async fn sweep<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+pub(crate) fn sweep_index_digest(book_id: Id128, payload: &[u8]) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(b"fa:sweep-index-payload:v1");
+    h.update(&book_id.0);
+    h.update(payload);
+    h.finalize().0
+}
+
+pub(crate) fn sweep_page_digest(book_id: Id128, kind: u8, page: u32, payload: &[u8]) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(b"fa:sweep-index-page-payload:v1");
+    h.update(&book_id.0);
+    h.update(&[kind]);
+    h.update(&page.to_le_bytes());
+    h.update(payload);
+    h.finalize().0
+}
+
+pub(crate) fn encode_sweep_index_state(state: &SweepIndexState) -> Result<Vec<u8>, KernelError> {
+    let mut w = Writer::new();
+    w.fixed(SWEEP_INDEX_MAGIC)
+        .u16(SWEEP_INDEX_VERSION)
+        .fixed(&state.book_id.0)
+        .u64(state.through.0);
+    w.opt(state.latest_corroborated_tick.as_ref(), |w, (seq, tick)| {
+        w.u64(seq.0).u64(tick.observed_utc_ns).u128(tick.entry.0);
+    });
+    w.list(&state.hold_pages, |w, m| {
+        w.u32(m.page)
+            .i128(m.min_key)
+            .i128(m.max_key)
+            .u32(m.count)
+            .fixed(&m.digest);
+    });
+    w.list(&state.schedule_pages, |w, m| {
+        w.u32(m.page)
+            .i128(m.min_key)
+            .i128(m.max_key)
+            .u32(m.count)
+            .fixed(&m.digest);
+    });
+    w.finish().map_err(|e| KernelError::Corrupt(e.to_string()))
+}
+
+pub(crate) fn decode_sweep_index_state(payload: &[u8]) -> Result<SweepIndexState, KernelError> {
+    let read = || -> Result<SweepIndexState, fa_model::DecodeError> {
+        let mut r = Reader::new(payload);
+        if &r.fixed::<4>("sweep-index.magic")? != SWEEP_INDEX_MAGIC
+            || r.u16("sweep-index.version")? != SWEEP_INDEX_VERSION
+        {
+            return Err(r.invalid("sweep-index.format"));
+        }
+        let book_id = Id128(r.fixed::<16>("sweep-index.book_id")?);
+        let through = CommitSeq(r.u64("sweep-index.through")?);
+        let latest_corroborated_tick = r.opt("sweep-index.latest_corroborated_tick", |r| {
+            let seq = CommitSeq(r.u64("sweep-index.tick_seq")?);
+            let observed_utc_ns = r.u64("sweep-index.tick_ns")?;
+            let entry = VId(r.u128("sweep-index.tick_vid")?);
+            Ok((
+                seq,
+                Tick {
+                    observed_utc_ns,
+                    entry,
+                },
+            ))
+        })?;
+        let read_meta = |r: &mut Reader<'_>| -> Result<SweepIndexPageMeta, fa_model::DecodeError> {
+            let page = r.u32("sweep-index.page")?;
+            let min_key = r.i128("sweep-index.min_key")?;
+            let max_key = r.i128("sweep-index.max_key")?;
+            let count = r.u32("sweep-index.count")?;
+            let digest = r.fixed::<32>("sweep-index.page_digest")?;
+            if count == 0 || count as usize > SWEEP_INDEX_PAGE_SIZE || min_key > max_key {
+                return Err(r.invalid("sweep-index.page_meta"));
+            }
+            Ok(SweepIndexPageMeta {
+                page,
+                min_key,
+                max_key,
+                count,
+                digest,
+            })
+        };
+        let hold_pages = r.list(
+            fa_model::limits::MAX_BATCH_ENTRIES,
+            "sweep-index.hold_pages",
+            read_meta,
+        )?;
+        let schedule_pages = r.list(
+            fa_model::limits::MAX_BATCH_ENTRIES,
+            "sweep-index.schedule_pages",
+            read_meta,
+        )?;
+        r.finish()?;
+        Ok(SweepIndexState {
+            book_id,
+            through,
+            latest_corroborated_tick,
+            hold_pages,
+            schedule_pages,
+        })
+    };
+    read().map_err(|e| KernelError::Corrupt(format!("sweep index state: {e}")))
+}
+
+pub(crate) fn encode_hold_page(holds: &[IndexedHold]) -> Result<Vec<u8>, KernelError> {
+    let mut w = Writer::new();
+    w.fixed(SWEEP_INDEX_PAGE_MAGIC)
+        .u16(SWEEP_INDEX_VERSION)
+        .u8(SWEEP_EXPIRY);
+    w.list(holds, |w, h| {
+        w.u128(h.hold.vid.0)
+            .fixed(&h.hold.entry_digest)
+            .u64(h.recorded_at.0)
+            .u64(h.deadline_ns);
+    });
+    w.finish().map_err(|e| KernelError::Corrupt(e.to_string()))
+}
+
+pub(crate) fn decode_hold_page(payload: &[u8]) -> Result<Vec<IndexedHold>, KernelError> {
+    let read = || -> Result<Vec<IndexedHold>, fa_model::DecodeError> {
+        let mut r = Reader::new(payload);
+        if &r.fixed::<4>("sweep-page.magic")? != SWEEP_INDEX_PAGE_MAGIC
+            || r.u16("sweep-page.version")? != SWEEP_INDEX_VERSION
+            || r.u8("sweep-page.kind")? != SWEEP_EXPIRY
+        {
+            return Err(r.invalid("sweep-page.format"));
+        }
+        let holds = r.list(SWEEP_INDEX_PAGE_SIZE, "sweep-page.holds", |r| {
+            let vid = VId(r.u128("sweep-page.hold_vid")?);
+            let entry_digest = r.fixed::<32>("sweep-page.hold_digest")?;
+            let recorded_at = CommitSeq(r.u64("sweep-page.recorded_at")?);
+            let deadline_ns = r.u64("sweep-page.deadline_ns")?;
+            Ok(IndexedHold {
+                hold: EntryRef { vid, entry_digest },
+                recorded_at,
+                deadline_ns,
+            })
+        })?;
+        r.finish()?;
+        Ok(holds)
+    };
+    read().map_err(|e| KernelError::Corrupt(format!("sweep hold page: {e}")))
+}
+
+pub(crate) fn encode_schedule_page(
+    schedules: &[crate::schedule::Schedule],
+) -> Result<Vec<u8>, KernelError> {
+    let mut w = Writer::new();
+    w.fixed(SWEEP_INDEX_PAGE_MAGIC)
+        .u16(SWEEP_INDEX_VERSION)
+        .u8(crate::schedule::SWEEP_REVERSAL);
+    w.list(schedules, |w, s| {
+        w.u128(s.vid.0)
+            .u128(s.target.vid.0)
+            .fixed(&s.target.entry_digest)
+            .i32(s.reverse_on.0)
+            .str(&s.period)
+            .str(&s.exec_op)
+            .fixed(&s.effects_digest)
+            .u64(s.recorded_at.0);
+    });
+    w.finish().map_err(|e| KernelError::Corrupt(e.to_string()))
+}
+
+pub(crate) fn decode_schedule_page(
+    payload: &[u8],
+) -> Result<Vec<crate::schedule::Schedule>, KernelError> {
+    let read = || -> Result<Vec<crate::schedule::Schedule>, fa_model::DecodeError> {
+        let mut r = Reader::new(payload);
+        if &r.fixed::<4>("sweep-page.magic")? != SWEEP_INDEX_PAGE_MAGIC
+            || r.u16("sweep-page.version")? != SWEEP_INDEX_VERSION
+            || r.u8("sweep-page.kind")? != crate::schedule::SWEEP_REVERSAL
+        {
+            return Err(r.invalid("sweep-page.format"));
+        }
+        let schedules = r.list(SWEEP_INDEX_PAGE_SIZE, "sweep-page.schedules", |r| {
+            let vid = VId(r.u128("sweep-page.schedule_vid")?);
+            let target_vid = VId(r.u128("sweep-page.target_vid")?);
+            let entry_digest = r.fixed::<32>("sweep-page.target_digest")?;
+            let reverse_on = DateDay(r.i32("sweep-page.reverse_on")?);
+            let period = r.str(64, "sweep-page.period")?.to_string();
+            let exec_op = r.str(64, "sweep-page.exec_op")?.to_string();
+            let effects_digest = r.fixed::<32>("sweep-page.effects_digest")?;
+            let recorded_at = CommitSeq(r.u64("sweep-page.recorded_at")?);
+            Ok(crate::schedule::Schedule {
+                vid,
+                target: EntryRef {
+                    vid: target_vid,
+                    entry_digest,
+                },
+                reverse_on,
+                period,
+                exec_op,
+                effects_digest,
+                recorded_at,
+            })
+        })?;
+        r.finish()?;
+        Ok(schedules)
+    };
+    read().map_err(|e| KernelError::Corrupt(format!("sweep schedule page: {e}")))
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SweepDeltaTail {
+    pub latest_corroborated_tick: Option<(CommitSeq, Tick)>,
+    pub added_holds: BTreeMap<VId, IndexedHold>,
+    pub resolved_holds: BTreeSet<VId>,
+    pub added_schedules: BTreeMap<VId, crate::schedule::Schedule>,
+    pub reversed_targets: BTreeSet<VId>,
+    pub witness: SweepReadWitness,
+}
+
+pub(crate) fn load_servable_sweep_index<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+) -> Result<Option<(SweepIndexState, CanonicalScalar)>, KernelError> {
+    let basis = db.frontier()?;
+    let Some(row) = db.vertex(sweep_index_vid())? else {
+        return Ok(None);
+    };
+    if row.labels != vec![label::REGISTER_STATE] {
+        return Ok(None);
+    }
+    let Ok(owner) = bytes(&row, property::BOOK_ID, "sweep-index.book") else {
+        return Ok(None);
+    };
+    let Ok(book_id_bytes): Result<[u8; 16], _> = owner.try_into() else {
+        return Ok(None);
+    };
+    let book_id = Id128(book_id_bytes);
+    let Ok(payload) = bytes(&row, property::FA_PAYLOAD, "sweep-index.payload") else {
+        return Ok(None);
+    };
+    let Ok(digest) = bytes(&row, property::FA_DIGEST, "sweep-index.digest") else {
+        return Ok(None);
+    };
+    if digest.as_slice() != &sweep_index_digest(book_id, &payload)[..] {
+        return Ok(None);
+    }
+    let Ok(state) = decode_sweep_index_state(&payload) else {
+        return Ok(None);
+    };
+    if state.book_id != book_id || state.through > basis {
+        return Ok(None);
+    }
+    Ok(Some((state, scalar_bytes("sweep-index.payload", payload)?)))
+}
+
+fn deadline_with_tracked_tick<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    seq: CommitSeq,
+    timeout_ns: u64,
+    tracked: Option<(CommitSeq, Tick)>,
+) -> Result<u64, KernelError> {
+    if let Some((tick_seq, tick)) = tracked
+        && tick_seq < seq
+    {
+        return tick.observed_utc_ns.checked_add(timeout_ns).ok_or_else(|| {
+            KernelError::Corrupt(format!(
+                "a timed hold committed at {} has a deadline beyond u64",
+                seq.0
+            ))
+        });
+    }
+    deadline(db, seq, timeout_ns)
+}
+
+pub(crate) fn fold_sweep_delta_tail<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    from: CommitSeq,
+    initial_tick: Option<(CommitSeq, Tick)>,
+) -> Result<Option<SweepDeltaTail>, KernelError> {
+    let batches = match db.delta_since(from) {
+        Ok(b) => b,
+        Err(fgdb::ReadError::DeltaCursorRetired { .. }) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut tail = SweepDeltaTail {
+        latest_corroborated_tick: initial_tick,
+        ..SweepDeltaTail::default()
+    };
+    for batch in batches {
+        tail.witness.delta_batches_read += 1;
+        let seq = batch.commit_seq();
+        let mut batch_entries = Vec::new();
+        let mut batch_schedules = Vec::new();
+        for coordinate in batch.coordinate_entries() {
+            for row in &coordinate.rows {
+                if let DeltaRow::CreateVertex {
+                    vid,
+                    labels,
+                    props,
+                    birth_ordinal,
+                    ..
+                } = row
+                {
+                    if labels.contains(&label::REVERSAL_SCHEDULE) {
+                        let vrow = VertexRow {
+                            vid: *vid,
+                            labels: labels.clone(),
+                            props: props.clone(),
+                            created_at: seq,
+                            birth_ordinal: *birth_ordinal,
+                            retired_at: None,
+                        };
+                        batch_schedules.push(crate::schedule::decode_schedule(&vrow)?);
+                        continue;
+                    }
+                    if !labels.contains(&label::ENTRY) {
+                        continue;
+                    }
+                    let class_tag = props.iter().find_map(|(k, v)| {
+                        if *k == property::CLASS
+                            && let CanonicalScalar::Int(c) = v
+                        {
+                            u16::try_from(*c).ok()
+                        } else {
+                            None
+                        }
+                    });
+                    if !matches!(
+                        class_tag,
+                        Some(c)
+                            if c == EntryClass::TIME_CONTROL.0
+                                || c == EntryClass::PENDING.0
+                                || c == EntryClass::RESOLUTION.0
+                                || c == EntryClass::REVERSAL.0
+                    ) {
+                        continue;
+                    }
+                    let payload = props
+                        .iter()
+                        .find_map(|(k, v)| {
+                            if *k == property::FA_PAYLOAD
+                                && let CanonicalScalar::Bytes(b) = v
+                            {
+                                Some(b.as_slice())
+                            } else {
+                                None
+                            }
+                        })
+                        .ok_or_else(|| {
+                            KernelError::Corrupt("delta Entry lacks canonical payload".into())
+                        })?;
+                    let entry = Entry::decode(payload)?;
+                    batch_entries.push((*vid, entry));
+                }
+            }
+        }
+        batch_entries.sort_by_key(|(vid, _)| vid.0);
+        batch_schedules.sort_by_key(|s| s.vid.0);
+        for s in batch_schedules {
+            tail.added_schedules.insert(s.target.vid, s);
+        }
+        for (vid, entry) in batch_entries {
+            match entry.proposal.class {
+                EntryClass::TIME_CONTROL => {
+                    if let Some(ControlPayload::TimeTick {
+                        observed_utc_ns,
+                        monotonic_ok: true,
+                        ..
+                    }) = entry.proposal.control
+                    {
+                        let candidate = (
+                            seq,
+                            Tick {
+                                observed_utc_ns,
+                                entry: vid,
+                            },
+                        );
+                        if tail
+                            .latest_corroborated_tick
+                            .is_none_or(|(s, t)| (candidate.0, candidate.1.entry) > (s, t.entry))
+                        {
+                            tail.latest_corroborated_tick = Some(candidate);
+                        }
+                    }
+                }
+                EntryClass::PENDING => {
+                    if let Some(Pending {
+                        timeout_ns: Some(timeout),
+                        ..
+                    }) = entry.proposal.pending
+                    {
+                        let deadline_ns = deadline_with_tracked_tick(
+                            db,
+                            seq,
+                            timeout,
+                            tail.latest_corroborated_tick,
+                        )?;
+                        tail.added_holds.insert(
+                            vid,
+                            IndexedHold {
+                                hold: entry.entry_ref(vid),
+                                recorded_at: seq,
+                                deadline_ns,
+                            },
+                        );
+                    }
+                }
+                EntryClass::RESOLUTION => {
+                    if let Some(Pending {
+                        resolution_of: Some(target),
+                        ..
+                    }) = entry.proposal.pending
+                    {
+                        tail.added_holds.remove(&target.vid);
+                        tail.resolved_holds.insert(target.vid);
+                    }
+                }
+                EntryClass::REVERSAL => {
+                    for sup in &entry.proposal.supersession {
+                        if sup.kind == SupersessionKind::Reverses {
+                            tail.added_schedules.remove(&sup.target.vid);
+                            tail.reversed_targets.insert(sup.target.vid);
+                        }
+                    }
+                }
+                _ => {
+                    tail.witness.unrelated_entries_decoded += 1;
+                }
+            }
+        }
+    }
+    Ok(Some(tail))
+}
+
+fn indexed_latest_corroborated_tick<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+) -> Result<Option<Option<Tick>>, KernelError> {
+    let Some((state, _)) = load_servable_sweep_index(db)? else {
+        return Ok(None);
+    };
+    let Some(tail) = fold_sweep_delta_tail(db, state.through, state.latest_corroborated_tick)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(tail.latest_corroborated_tick.map(|(_, t)| t)))
+}
+
+fn read_hold_page_checked<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book_id: Id128,
+    meta: &SweepIndexPageMeta,
+) -> Result<Option<Vec<IndexedHold>>, KernelError> {
+    let Some(row) = db.vertex(sweep_index_page_vid(SWEEP_EXPIRY, meta.page))? else {
+        return Ok(None);
+    };
+    if row.labels != vec![label::REGISTER_STATE] {
+        return Ok(None);
+    }
+    let Ok(owner) = bytes(&row, property::BOOK_ID, "sweep-page.book") else {
+        return Ok(None);
+    };
+    if owner.as_slice() != &book_id.0[..] {
+        return Ok(None);
+    }
+    let Ok(payload) = bytes(&row, property::FA_PAYLOAD, "sweep-page.payload") else {
+        return Ok(None);
+    };
+    let Ok(digest) = bytes(&row, property::FA_DIGEST, "sweep-page.digest") else {
+        return Ok(None);
+    };
+    if digest.as_slice() != &meta.digest[..]
+        || sweep_page_digest(book_id, SWEEP_EXPIRY, meta.page, &payload) != meta.digest
+    {
+        return Ok(None);
+    }
+    let Ok(holds) = decode_hold_page(&payload) else {
+        return Ok(None);
+    };
+    if holds.len() != meta.count as usize
+        || holds.first().map(|h| i128::from(h.deadline_ns)) != Some(meta.min_key)
+        || holds.last().map(|h| i128::from(h.deadline_ns)) != Some(meta.max_key)
+    {
+        return Ok(None);
+    }
+    Ok(Some(holds))
+}
+
+pub(crate) fn read_schedule_page_checked<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book_id: Id128,
+    meta: &SweepIndexPageMeta,
+) -> Result<Option<Vec<crate::schedule::Schedule>>, KernelError> {
+    let Some(row) = db.vertex(sweep_index_page_vid(
+        crate::schedule::SWEEP_REVERSAL,
+        meta.page,
+    ))?
+    else {
+        return Ok(None);
+    };
+    if row.labels != vec![label::REGISTER_STATE] {
+        return Ok(None);
+    }
+    let Ok(owner) = bytes(&row, property::BOOK_ID, "sweep-page.book") else {
+        return Ok(None);
+    };
+    if owner.as_slice() != &book_id.0[..] {
+        return Ok(None);
+    }
+    let Ok(payload) = bytes(&row, property::FA_PAYLOAD, "sweep-page.payload") else {
+        return Ok(None);
+    };
+    let Ok(digest) = bytes(&row, property::FA_DIGEST, "sweep-page.digest") else {
+        return Ok(None);
+    };
+    if digest.as_slice() != &meta.digest[..]
+        || sweep_page_digest(
+            book_id,
+            crate::schedule::SWEEP_REVERSAL,
+            meta.page,
+            &payload,
+        ) != meta.digest
+    {
+        return Ok(None);
+    }
+    let Ok(schedules) = decode_schedule_page(&payload) else {
+        return Ok(None);
+    };
+    if schedules.len() != meta.count as usize
+        || schedules.first().map(|s| i128::from(s.reverse_on.0)) != Some(meta.min_key)
+        || schedules.last().map(|s| i128::from(s.reverse_on.0)) != Some(meta.max_key)
+    {
+        return Ok(None);
+    }
+    Ok(Some(schedules))
+}
+
+fn indexed_due_holds<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    at: Tick,
+) -> Result<Option<(Vec<DueHold>, SweepReadWitness)>, KernelError> {
+    let Some((state, _)) = load_servable_sweep_index(db)? else {
+        return Ok(None);
+    };
+    let Some(mut tail) = fold_sweep_delta_tail(db, state.through, state.latest_corroborated_tick)?
+    else {
+        return Ok(None);
+    };
+    tail.witness.used_index = true;
+    // 1 vertex read for `sweep_index_vid()`.
+    tail.witness.substrate_rows_read += 1;
+
+    let cutoff = i128::from(at.observed_utc_ns);
+    let mut due = Vec::new();
+    for meta in &state.hold_pages {
+        if meta.min_key > cutoff {
+            continue;
+        }
+        tail.witness.pages_read += 1;
+        tail.witness.substrate_rows_read += 1;
+        let Some(holds) = read_hold_page_checked(db, state.book_id, meta)? else {
+            return Ok(None);
+        };
+        for h in holds {
+            if h.deadline_ns > at.observed_utc_ns || tail.resolved_holds.contains(&h.hold.vid) {
+                continue;
+            }
+            tail.witness.candidates_read += 1;
+            tail.witness.substrate_rows_read += 1;
+            if db.vertex(resolution_vid(h.hold.vid))?.is_some() {
+                continue;
+            }
+            due.push(DueHold {
+                hold: h.hold,
+                recorded_at: h.recorded_at,
+                deadline_ns: h.deadline_ns,
+            });
+        }
+    }
+    for h in tail.added_holds.into_values() {
+        if h.deadline_ns > at.observed_utc_ns || tail.resolved_holds.contains(&h.hold.vid) {
+            continue;
+        }
+        tail.witness.candidates_read += 1;
+        tail.witness.substrate_rows_read += 1;
+        if db.vertex(resolution_vid(h.hold.vid))?.is_some() {
+            continue;
+        }
+        due.push(DueHold {
+            hold: h.hold,
+            recorded_at: h.recorded_at,
+            deadline_ns: h.deadline_ns,
+        });
+    }
+    due.sort_by_key(|d| (d.recorded_at, d.hold.vid));
+    Ok(Some((due, tail.witness)))
+}
+
+#[allow(clippy::type_complexity)]
+fn refold_sweep_index_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    through: CommitSeq,
+) -> Result<
+    (
+        Option<(CommitSeq, Tick)>,
+        Vec<IndexedHold>,
+        Vec<crate::schedule::Schedule>,
+    ),
+    KernelError,
+> {
+    let rows = if through == db.frontier()? {
+        db.vertices()?
+    } else {
+        db.vertices_at(through)?
+    };
+    let mut latest_corroborated: Option<(CommitSeq, Tick)> = None;
+    let mut pending_rows = Vec::new();
+    let mut schedule_rows = Vec::new();
+    for row in rows {
+        if row.created_at > through {
+            continue;
+        }
+        if row.labels.contains(&label::REVERSAL_SCHEDULE) {
+            schedule_rows.push(row);
+            continue;
+        }
+        if !row.labels.contains(&label::ENTRY) {
+            continue;
+        }
+        let class_tag = match prop(&row, property::CLASS) {
+            Some(CanonicalScalar::Int(c)) => u16::try_from(*c).ok(),
+            _ => None,
+        };
+        if class_tag == Some(EntryClass::TIME_CONTROL.0) {
+            let entry = decode_entry(&row)?;
+            if let Some(ControlPayload::TimeTick {
+                observed_utc_ns,
+                monotonic_ok: true,
+                ..
+            }) = entry.proposal.control
+            {
+                let candidate = (
+                    row.created_at,
+                    Tick {
+                        observed_utc_ns,
+                        entry: row.vid,
+                    },
+                );
+                if latest_corroborated
+                    .is_none_or(|(s, t)| (candidate.0, candidate.1.entry) > (s, t.entry))
+                {
+                    latest_corroborated = Some(candidate);
+                }
+            }
+        } else if class_tag == Some(EntryClass::PENDING.0) {
+            pending_rows.push(row);
+        }
+    }
+    let at_head = through == db.frontier()?;
+    let mut holds = Vec::new();
+    for row in pending_rows {
+        let entry = decode_entry(&row)?;
+        let Some(Pending {
+            timeout_ns: Some(timeout),
+            ..
+        }) = entry.proposal.pending
+        else {
+            continue;
+        };
+        let resolved = if at_head {
+            db.vertex(resolution_vid(row.vid))?.is_some()
+        } else {
+            db.vertex_at(resolution_vid(row.vid), through)?.is_some()
+        };
+        if resolved {
+            continue;
+        }
+        let deadline_ns = deadline(db, row.created_at, timeout)?;
+        holds.push(IndexedHold {
+            hold: entry.entry_ref(row.vid),
+            recorded_at: row.created_at,
+            deadline_ns,
+        });
+    }
+    holds.sort_by_key(|h| (h.deadline_ns, h.recorded_at, h.hold.vid));
+
+    let mut schedules = Vec::new();
+    for row in schedule_rows {
+        let s = crate::schedule::decode_schedule(&row)?;
+        let reversed = if at_head {
+            db.vertex(reversal_vid(s.target.vid))?.is_some()
+        } else {
+            db.vertex_at(reversal_vid(s.target.vid), through)?.is_some()
+        };
+        if !reversed {
+            schedules.push(s);
+        }
+    }
+    schedules.sort_by_key(|s| (s.reverse_on, s.recorded_at, s.vid));
+    Ok((latest_corroborated, holds, schedules))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_sweep_index_write(
+    book_id: Id128,
+    through: CommitSeq,
+    latest_corroborated_tick: Option<(CommitSeq, Tick)>,
+    mut holds: Vec<IndexedHold>,
+    mut schedules: Vec<crate::schedule::Schedule>,
+    prev_hold_pages: usize,
+    prev_schedule_pages: usize,
+    expected_root_payload: Option<CanonicalScalar>,
+) -> Result<(SweepIndexState, WriteBatch), KernelError> {
+    holds.sort_by_key(|h| (h.deadline_ns, h.recorded_at, h.hold.vid));
+    schedules.sort_by_key(|s| (s.reverse_on, s.recorded_at, s.vid));
+
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    let mut hold_pages = Vec::new();
+    for (idx, chunk) in holds.chunks(SWEEP_INDEX_PAGE_SIZE).enumerate() {
+        let page = u32::try_from(idx)
+            .map_err(|_| KernelError::Corrupt("sweep index hold page overflow".into()))?;
+        let page_bytes = encode_hold_page(chunk)?;
+        let digest = sweep_page_digest(book_id, SWEEP_EXPIRY, page, &page_bytes);
+        let min_key = i128::from(chunk.first().map_or(0, |h| h.deadline_ns));
+        let max_key = i128::from(chunk.last().map_or(0, |h| h.deadline_ns));
+        hold_pages.push(SweepIndexPageMeta {
+            page,
+            min_key,
+            max_key,
+            count: chunk.len() as u32,
+            digest,
+        });
+        let pvid = sweep_index_page_vid(SWEEP_EXPIRY, page);
+        batch.ensure_vertex(pvid, vec![label::REGISTER_STATE], Vec::new());
+        batch.set_vertex_label(pvid, label::REGISTER_STATE, true);
+        batch.set_vertex_property(
+            pvid,
+            property::BOOK_ID,
+            Some(scalar_bytes("sweep-page.book", book_id.0.to_vec())?),
+        );
+        batch.set_vertex_property(
+            pvid,
+            property::FA_DIGEST,
+            Some(scalar_bytes("sweep-page.digest", digest.to_vec())?),
+        );
+        batch.set_vertex_property(
+            pvid,
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("sweep-page.payload", page_bytes)?),
+        );
+    }
+    for old_idx in hold_pages.len()..prev_hold_pages {
+        if let Ok(page) = u32::try_from(old_idx) {
+            let pvid = sweep_index_page_vid(SWEEP_EXPIRY, page);
+            batch.set_vertex_label(pvid, label::REGISTER_STATE, false);
+            batch.set_vertex_property(pvid, property::FA_DIGEST, None);
+            batch.set_vertex_property(pvid, property::FA_PAYLOAD, None);
+        }
+    }
+
+    let mut schedule_pages = Vec::new();
+    for (idx, chunk) in schedules.chunks(SWEEP_INDEX_PAGE_SIZE).enumerate() {
+        let page = u32::try_from(idx)
+            .map_err(|_| KernelError::Corrupt("sweep index schedule page overflow".into()))?;
+        let page_bytes = encode_schedule_page(chunk)?;
+        let digest = sweep_page_digest(book_id, crate::schedule::SWEEP_REVERSAL, page, &page_bytes);
+        let min_key = i128::from(chunk.first().map_or(0, |s| s.reverse_on.0));
+        let max_key = i128::from(chunk.last().map_or(0, |s| s.reverse_on.0));
+        schedule_pages.push(SweepIndexPageMeta {
+            page,
+            min_key,
+            max_key,
+            count: chunk.len() as u32,
+            digest,
+        });
+        let pvid = sweep_index_page_vid(crate::schedule::SWEEP_REVERSAL, page);
+        batch.ensure_vertex(pvid, vec![label::REGISTER_STATE], Vec::new());
+        batch.set_vertex_label(pvid, label::REGISTER_STATE, true);
+        batch.set_vertex_property(
+            pvid,
+            property::BOOK_ID,
+            Some(scalar_bytes("sweep-page.book", book_id.0.to_vec())?),
+        );
+        batch.set_vertex_property(
+            pvid,
+            property::FA_DIGEST,
+            Some(scalar_bytes("sweep-page.digest", digest.to_vec())?),
+        );
+        batch.set_vertex_property(
+            pvid,
+            property::FA_PAYLOAD,
+            Some(scalar_bytes("sweep-page.payload", page_bytes)?),
+        );
+    }
+    for old_idx in schedule_pages.len()..prev_schedule_pages {
+        if let Ok(page) = u32::try_from(old_idx) {
+            let pvid = sweep_index_page_vid(crate::schedule::SWEEP_REVERSAL, page);
+            batch.set_vertex_label(pvid, label::REGISTER_STATE, false);
+            batch.set_vertex_property(pvid, property::FA_DIGEST, None);
+            batch.set_vertex_property(pvid, property::FA_PAYLOAD, None);
+        }
+    }
+
+    let state = SweepIndexState {
+        book_id,
+        through,
+        latest_corroborated_tick,
+        hold_pages,
+        schedule_pages,
+    };
+    let root_bytes = encode_sweep_index_state(&state)?;
+    let root_digest = sweep_index_digest(book_id, &root_bytes);
+    let rvid = sweep_index_vid();
+    batch.ensure_vertex(rvid, vec![label::REGISTER_STATE], Vec::new());
+    batch.set_vertex_label(rvid, label::REGISTER_STATE, true);
+    batch.set_vertex_property(
+        rvid,
+        property::BOOK_ID,
+        Some(scalar_bytes("sweep-index.book", book_id.0.to_vec())?),
+    );
+    batch.set_vertex_property(
+        rvid,
+        property::FA_DIGEST,
+        Some(scalar_bytes("sweep-index.digest", root_digest.to_vec())?),
+    );
+    batch.compare_and_set_vertex_property(
+        rvid,
+        property::FA_PAYLOAD,
+        expected_root_payload,
+        scalar_bytes("sweep-index.payload", root_bytes)?,
+        WriteMismatchPolicy::AbortWrite,
+    );
+    Ok((state, batch))
+}
+
+/// Discard any cached `SweepIndex` and rebuild it from the authoritative
+/// journal at head (plan §5.4, §7.6, FA-CFG-02).
+pub async fn rebuild_sweep_index<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+) -> Result<SweepIndexState, KernelError> {
+    let basis = db.frontier()?;
+    let existing = db.vertex(sweep_index_vid())?;
+    let expected_payload = existing
+        .as_ref()
+        .and_then(|r| prop(r, property::FA_PAYLOAD).cloned());
+    let (prev_holds, prev_schedules) = existing
+        .as_ref()
+        .and_then(|r| bytes(r, property::FA_PAYLOAD, "sweep-index.payload").ok())
+        .and_then(|b| decode_sweep_index_state(&b).ok())
+        .map_or((0, 0), |s| (s.hold_pages.len(), s.schedule_pages.len()));
+    let (latest_corroborated, holds, schedules) = refold_sweep_index_at(db, basis)?;
+    let (state, batch) = stage_sweep_index_write(
+        book.book_id,
+        basis,
+        latest_corroborated,
+        holds,
+        schedules,
+        prev_holds,
+        prev_schedules,
+        expected_payload,
+    )?;
+    db.write(&ctx.commit(), batch).await?;
+    Ok(state)
+}
+
+/// Advance the disposable `SweepIndex` over the committed delta stream to
+/// the current frontier, skipping unrelated `Original` entries via their
+/// `CLASS` mirror without decoding their payloads (plan §5.4, §7.6,
+/// FA-CFG-02). Falls back to [`rebuild_sweep_index`] when no valid state
+/// exists or the delta cursor has been retired.
+pub async fn advance_sweep_index<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+) -> Result<SweepIndexState, KernelError> {
+    let basis = db.frontier()?;
+    let (
+        from,
+        mut holds_map,
+        mut schedules_map,
+        initial_tick,
+        prev_holds,
+        prev_schedules,
+        expected,
+    ) = match load_servable_sweep_index(db)? {
+        Some((state, payload)) if state.book_id == book.book_id => {
+            if state.through == basis {
+                return Ok(state);
+            }
+            let mut hmap = BTreeMap::new();
+            for meta in &state.hold_pages {
+                let Some(page_holds) = read_hold_page_checked(db, book.book_id, meta)? else {
+                    return rebuild_sweep_index(db, ctx, book).await;
+                };
+                for h in page_holds {
+                    hmap.insert(h.hold.vid, h);
+                }
+            }
+            let mut smap = BTreeMap::new();
+            for meta in &state.schedule_pages {
+                let Some(page_schedules) = read_schedule_page_checked(db, book.book_id, meta)?
+                else {
+                    return rebuild_sweep_index(db, ctx, book).await;
+                };
+                for s in page_schedules {
+                    smap.insert(s.target.vid, s);
+                }
+            }
+            (
+                state.through,
+                hmap,
+                smap,
+                state.latest_corroborated_tick,
+                state.hold_pages.len(),
+                state.schedule_pages.len(),
+                Some(payload),
+            )
+        }
+        _ => {
+            let existing = db.vertex(sweep_index_vid())?;
+            if existing.is_some() {
+                return rebuild_sweep_index(db, ctx, book).await;
+            }
+            (
+                CommitSeq::ORIGIN,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                None,
+                0,
+                0,
+                None,
+            )
+        }
+    };
+
+    if let Err(err) = db.ensure_delta_window(&ctx.commit(), from).await {
+        return match err {
+            fgdb::RebuildError::Index {
+                error: IndexError::CursorRetired { .. },
+                ..
+            } => rebuild_sweep_index(db, ctx, book).await,
+            other => Err(fgdb::WriteError::from(other).into()),
+        };
+    }
+
+    let Some(tail) = fold_sweep_delta_tail(db, from, initial_tick)? else {
+        return rebuild_sweep_index(db, ctx, book).await;
+    };
+    for resolved in &tail.resolved_holds {
+        holds_map.remove(resolved);
+    }
+    for (vid, hold) in tail.added_holds {
+        if !tail.resolved_holds.contains(&vid) && db.vertex(resolution_vid(vid))?.is_none() {
+            holds_map.insert(vid, hold);
+        }
+    }
+    for reversed in &tail.reversed_targets {
+        schedules_map.remove(reversed);
+    }
+    for (target_vid, schedule) in tail.added_schedules {
+        if !tail.reversed_targets.contains(&target_vid)
+            && db.vertex(reversal_vid(target_vid))?.is_none()
+        {
+            schedules_map.insert(target_vid, schedule);
+        }
+    }
+
+    let (state, batch) = stage_sweep_index_write(
+        book.book_id,
+        basis,
+        tail.latest_corroborated_tick,
+        holds_map.into_values().collect(),
+        schedules_map.into_values().collect(),
+        prev_holds,
+        prev_schedules,
+        expected,
+    )?;
+    db.write(&ctx.commit(), batch).await?;
+    Ok(state)
+}
+
+/// Refold the authoritative journal and verify the disposable `SweepIndex`
+/// root and all of its hold/schedule pages against the refold (plan §5.4,
+/// §7.6, FA-CFG-02).
+pub fn verify_sweep_index<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+) -> Result<SweepIndexVerification, KernelError> {
+    let mut v = SweepIndexVerification::default();
+    let Some(root_row) = db.vertex(sweep_index_vid())? else {
+        for (kind, name) in [
+            (SWEEP_EXPIRY, "hold"),
+            (crate::schedule::SWEEP_REVERSAL, "schedule"),
+        ] {
+            if db
+                .vertex(sweep_index_page_vid(kind, 0))?
+                .is_some_and(|r| r.labels.contains(&label::REGISTER_STATE))
+            {
+                v.drift.push(format!(
+                    "sweep index {name} page 0 exists without a sweep index root"
+                ));
+            }
+        }
+        return Ok(v);
+    };
+    v.index_present = true;
+    if root_row.labels != vec![label::REGISTER_STATE] {
+        v.drift
+            .push("sweep index root does not carry label RegisterState".into());
+        return Ok(v);
+    }
+    let owner = match bytes(&root_row, property::BOOK_ID, "sweep-index.book") {
+        Ok(b) => b,
+        Err(e) => {
+            v.drift.push(format!("sweep index root book_id: {e}"));
+            return Ok(v);
+        }
+    };
+    if owner.as_slice() != &book.book_id.0[..] {
+        v.drift
+            .push("sweep index root book_id disagrees with book".into());
+        return Ok(v);
+    }
+    let payload = match bytes(&root_row, property::FA_PAYLOAD, "sweep-index.payload") {
+        Ok(b) => b,
+        Err(e) => {
+            v.drift.push(format!("sweep index root payload: {e}"));
+            return Ok(v);
+        }
+    };
+    let digest = match bytes(&root_row, property::FA_DIGEST, "sweep-index.digest") {
+        Ok(b) => b,
+        Err(e) => {
+            v.drift.push(format!("sweep index root digest: {e}"));
+            return Ok(v);
+        }
+    };
+    if digest.as_slice() != &sweep_index_digest(book.book_id, &payload)[..] {
+        v.drift.push("sweep index root checksum mismatch".into());
+        return Ok(v);
+    }
+    let state = match decode_sweep_index_state(&payload) {
+        Ok(s) => s,
+        Err(e) => {
+            v.drift.push(e.to_string());
+            return Ok(v);
+        }
+    };
+    v.through = Some(state.through);
+    let frontier = db.frontier()?;
+    if state.through > frontier {
+        v.drift.push(format!(
+            "sweep index cursor {} exceeds book frontier {}",
+            state.through.0, frontier.0
+        ));
+        return Ok(v);
+    }
+
+    let mut stored_holds = Vec::new();
+    for (idx, meta) in state.hold_pages.iter().enumerate() {
+        v.pages_checked += 1;
+        if meta.page as usize != idx {
+            v.drift.push(format!(
+                "sweep index hold page ordinal {} is out of sequence at {idx}",
+                meta.page
+            ));
+        }
+        match read_hold_page_checked(db, book.book_id, meta)? {
+            Some(page_holds) => stored_holds.extend(page_holds),
+            None => v.drift.push(format!(
+                "sweep index hold page {} is missing, corrupted, or fails its digest/range check",
+                meta.page
+            )),
+        }
+    }
+
+    let mut stored_schedules = Vec::new();
+    for (idx, meta) in state.schedule_pages.iter().enumerate() {
+        v.pages_checked += 1;
+        if meta.page as usize != idx {
+            v.drift.push(format!(
+                "sweep index schedule page ordinal {} is out of sequence at {idx}",
+                meta.page
+            ));
+        }
+        match read_schedule_page_checked(db, book.book_id, meta)? {
+            Some(page_schedules) => stored_schedules.extend(page_schedules),
+            None => v.drift.push(format!(
+                "sweep index schedule page {} is missing, corrupted, or fails its digest/range check",
+                meta.page
+            )),
+        }
+    }
+
+    let (expected_tick, expected_holds, expected_schedules) =
+        refold_sweep_index_at(db, state.through)?;
+    v.holds_checked = expected_holds.len();
+    v.schedules_checked = expected_schedules.len();
+
+    if state.latest_corroborated_tick != expected_tick {
+        v.drift.push(format!(
+            "sweep index latest_corroborated_tick {:?} disagrees with journal refold {:?}",
+            state.latest_corroborated_tick, expected_tick
+        ));
+    }
+
+    let stored_hold_map: BTreeMap<VId, &IndexedHold> =
+        stored_holds.iter().map(|h| (h.hold.vid, h)).collect();
+    let expected_hold_map: BTreeMap<VId, &IndexedHold> =
+        expected_holds.iter().map(|h| (h.hold.vid, h)).collect();
+    for (vid, exp) in &expected_hold_map {
+        match stored_hold_map.get(vid) {
+            None => v.drift.push(format!(
+                "sweep index omits unresolved timed hold {:032x} (deadline {} ns)",
+                vid.0, exp.deadline_ns
+            )),
+            Some(got) if *got != *exp => v.drift.push(format!(
+                "sweep index entry for hold {:032x} disagrees with journal refold",
+                vid.0
+            )),
+            Some(_) => {}
+        }
+    }
+    for vid in stored_hold_map.keys() {
+        if !expected_hold_map.contains_key(vid) {
+            v.drift.push(format!(
+                "sweep index retains resolved or unknown hold {:032x}",
+                vid.0
+            ));
+        }
+    }
+    if v.drift.is_empty() && stored_holds != expected_holds {
+        v.drift
+            .push("sweep index hold page ordering disagrees with journal refold".into());
+    }
+
+    let stored_sched_map: BTreeMap<VId, &crate::schedule::Schedule> =
+        stored_schedules.iter().map(|s| (s.vid, s)).collect();
+    let expected_sched_map: BTreeMap<VId, &crate::schedule::Schedule> =
+        expected_schedules.iter().map(|s| (s.vid, s)).collect();
+    for (vid, exp) in &expected_sched_map {
+        match stored_sched_map.get(vid) {
+            None => v.drift.push(format!(
+                "sweep index omits unreversed schedule {:032x} (target {:032x})",
+                vid.0, exp.target.vid.0
+            )),
+            Some(got) if *got != *exp => v.drift.push(format!(
+                "sweep index entry for schedule {:032x} disagrees with journal refold",
+                vid.0
+            )),
+            Some(_) => {}
+        }
+    }
+    for vid in stored_sched_map.keys() {
+        if !expected_sched_map.contains_key(vid) {
+            v.drift.push(format!(
+                "sweep index retains reversed or unknown schedule {:032x}",
+                vid.0
+            ));
+        }
+    }
+    if v.drift.is_empty() && stored_schedules != expected_schedules {
+        v.drift
+            .push("sweep index schedule page ordering disagrees with journal refold".into());
+    }
+
+    Ok(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1437,6 +2751,554 @@ mod tests {
         assert_eq!(
             utc_day(u64::MAX).expect("day"),
             DateDay(i32::try_from(u64::MAX / NS_PER_DAY).expect("fits"))
+        );
+    }
+
+    struct SweepTestEnv {
+        runtime: asupersync::runtime::Runtime,
+        root: asupersync::Cx,
+        db: Database<fgdb::MemVfs>,
+        book: BookContext,
+        usd: fa_money::UnitId,
+        cash: VId,
+        rent: VId,
+        evidence: Vec<fa_model::EvidenceRef>,
+    }
+
+    impl SweepTestEnv {
+        fn new() -> Self {
+            use asupersync::Budget;
+            use asupersync::runtime::RuntimeBuilder;
+            use fa_model::{SealKey, SymbolTable, account_vid};
+            use fa_money::UnitRegistry;
+            use fa_time::{FiscalCalendar, PeriodKind, PeriodTransition};
+            use fgdb::DatabaseKeys;
+            use fgdb_types::ids::DatabaseSecurityNamespaceId;
+
+            let runtime = RuntimeBuilder::new().build().expect("runtime");
+            let root = runtime.request_cx_with_budget(Budget::INFINITE);
+            let ctx = PurposeContexts::narrow_runtime_root(&root);
+            let keys = DatabaseKeys::new(
+                [0x5a; 32],
+                DatabaseSecurityNamespaceId([0x5b; 32]),
+                [0x5c; 32],
+            );
+            let mut db = runtime
+                .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+                .expect("open");
+            let units = UnitRegistry::with_defaults();
+            let usd = units.lookup("USD").expect("USD");
+            let calendar = FiscalCalendar::monthly("cal", 1, 1).expect("calendar");
+            let book_id = Id128([9; 16]);
+            let spec = crate::genesis::BookSpec {
+                book_id,
+                name: "Sweep Test Co".into(),
+                base_unit: usd,
+                calendar: calendar.clone(),
+                time_zone_policy: Some(crate::genesis::TimeZonePolicy::Utc),
+                entities: Vec::new(),
+                opening_date: None,
+            };
+            let symbols = SymbolTable::compiled();
+            runtime
+                .block_on(async {
+                    crate::genesis::create_book(&mut db, &ctx, &spec, &units, &symbols).await
+                })
+                .expect("create_book");
+            let book = BookContext {
+                book_id,
+                calendar,
+                units,
+                seal_key: SealKey([0x11; 32]),
+                symbols,
+            };
+            let principal = VId(7);
+            let chart = vec![
+                crate::genesis::AccountSpec {
+                    code: "1000".into(),
+                    name: "Cash".into(),
+                    account_type: 1,
+                    normal_balance: 0,
+                    is_leaf: true,
+                    unit_policy: crate::genesis::UnitPolicy::Single(usd),
+                    parent_code: None,
+                    limit: None,
+                },
+                crate::genesis::AccountSpec {
+                    code: "6000".into(),
+                    name: "Rent".into(),
+                    account_type: 5,
+                    normal_balance: 0,
+                    is_leaf: true,
+                    unit_policy: crate::genesis::UnitPolicy::Single(usd),
+                    parent_code: None,
+                    limit: None,
+                },
+            ];
+            let day = DateDay::from_ymd(2026, 3, 15).expect("day");
+            let schema_cap = Capability::embedded(principal, &["schema_change"]).expect("cap");
+            runtime
+                .block_on(async {
+                    crate::genesis::install_chart(
+                        &mut db,
+                        &ctx,
+                        &book,
+                        &chart,
+                        principal,
+                        day,
+                        b"chart-1",
+                        Erasable::seal(
+                            &"chart".to_string(),
+                            None,
+                            &book.seal_key,
+                            [5; 32],
+                            [6; 24],
+                        ),
+                        &schema_cap,
+                    )
+                    .await
+                })
+                .expect("install_chart")
+                .expect("admitted");
+            let (_, periods) = runtime
+                .block_on(async {
+                    crate::genesis::create_periods(
+                        &mut db,
+                        &ctx,
+                        &book,
+                        2026,
+                        principal,
+                        Erasable::seal(
+                            &"periods".to_string(),
+                            None,
+                            &book.seal_key,
+                            [1; 32],
+                            [2; 24],
+                        ),
+                        &schema_cap,
+                    )
+                    .await
+                })
+                .expect("create_periods")
+                .expect("admitted");
+            let march = periods
+                .iter()
+                .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+                .expect("march")
+                .code
+                .clone();
+            let doc = crate::evidence::Document {
+                book_id,
+                kind: 1,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: principal,
+                bytes: b"INVOICE 2026-0315 Sweep Test Co fixture source document".to_vec(),
+            };
+            runtime
+                .block_on(async { crate::evidence::add_document(&mut db, &ctx, &book, &doc).await })
+                .expect("add_document")
+                .expect("admitted");
+            let evidence = vec![doc.evidence_ref(1)];
+            let open_cap = Capability::embedded(principal, &["close"]).expect("cap");
+            runtime
+                .block_on(async {
+                    crate::period::transition_period(
+                        &mut db,
+                        &ctx,
+                        &book,
+                        &march,
+                        PeriodTransition::Open,
+                        principal,
+                        1,
+                        b"open-march",
+                        Erasable::seal(&"open".to_string(), None, &book.seal_key, [3; 32], [4; 24]),
+                        &open_cap,
+                        &[],
+                    )
+                    .await
+                })
+                .expect("open")
+                .expect("admitted");
+
+            Self {
+                runtime,
+                root,
+                db,
+                book,
+                usd,
+                cash: account_vid(book_id, "1000"),
+                rent: account_vid(book_id, "6000"),
+                evidence,
+            }
+        }
+
+        fn ctx(&self) -> PurposeContexts {
+            PurposeContexts::narrow_runtime_root(&self.root)
+        }
+
+        fn seal(&self, s: &str) -> Erasable<String> {
+            Erasable::seal(
+                &s.to_string(),
+                None,
+                &self.book.seal_key,
+                [0x22; 32],
+                [0x33; 24],
+            )
+        }
+
+        fn record_tick_at(&mut self, ns: u64, key: &[u8]) -> Ticked {
+            let principal = VId(7);
+            let cap = Capability::embedded(principal, &["witness"]).expect("witness cap");
+            let req = TickRequest {
+                observed_utc_ns: ns,
+                source: SOURCE_DAEMON_CLOCK,
+                monotonic_ok: true,
+                principal_ref: principal,
+                capability: cap,
+                idempotency_key: key.to_vec(),
+                description: self.seal("tick"),
+            };
+            let ctx = self.ctx();
+            self.runtime
+                .block_on(record_tick(&mut self.db, &ctx, &self.book, req))
+                .expect("kernel")
+                .expect("tick recorded")
+        }
+
+        fn post_timed_hold(&mut self, timeout_ns: u64, key: &[u8]) -> EntryRef {
+            use fa_model::LegPayload;
+            use fa_money::Amount;
+            let principal = VId(7);
+            let legs = vec![
+                LegPayload::simple(Side::Debit, self.rent, Amount::new(self.usd, 1_000)),
+                LegPayload::simple(Side::Credit, self.cash, Amount::new(self.usd, 1_000)),
+            ];
+            let unit_totals = EntryPayload::fold_unit_totals(&legs).expect("totals");
+            let proposal = EntryPayload {
+                schema_minor: 0,
+                book_id: self.book.book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::PENDING,
+                effective_date: DateDay::from_ymd(2026, 3, 15).expect("day"),
+                document_date: None,
+                description: self.seal("timed hold"),
+                effective_period: None,
+                legs,
+                control: None,
+                unit_totals,
+                base_totals: None,
+                idempotency_key: key.to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: principal,
+                session_ref: None,
+                evidence: self.evidence.clone(),
+                supersession: Vec::new(),
+                pending: Some(Pending {
+                    timeout_ns: Some(timeout_ns),
+                    resolution_of: None,
+                    disposition: None,
+                }),
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            };
+            let cap = Capability::embedded(principal, &["post"]).expect("post cap");
+            let req = crate::post::PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap,
+            };
+            let ctx = self.ctx();
+            match self
+                .runtime
+                .block_on(crate::post::post(&mut self.db, &ctx, &self.book, req))
+                .expect("kernel")
+                .expect("posted")
+            {
+                Posted::Committed { entry_ref, .. } | Posted::AlreadyRecorded { entry_ref, .. } => {
+                    entry_ref
+                }
+            }
+        }
+
+        fn bulk_append_unrelated_originals(&mut self, count: usize) {
+            use fa_model::LegPayload;
+            use fa_money::Amount;
+            let principal = VId(7);
+            let legs = vec![
+                LegPayload::simple(Side::Debit, self.rent, Amount::new(self.usd, 100)),
+                LegPayload::simple(Side::Credit, self.cash, Amount::new(self.usd, 100)),
+            ];
+            let unit_totals = EntryPayload::fold_unit_totals(&legs).expect("totals");
+            let template_proposal = EntryPayload {
+                schema_minor: 0,
+                book_id: self.book.book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: DateDay::from_ymd(2026, 3, 15).expect("day"),
+                document_date: None,
+                description: self.seal("unrelated original"),
+                effective_period: None,
+                legs,
+                control: None,
+                unit_totals,
+                base_totals: None,
+                idempotency_key: b"bulk-template".to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: principal,
+                session_ref: None,
+                evidence: self.evidence.clone(),
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            };
+            let template_entry = template_proposal.seal(Vec::new(), None).expect("seal");
+            let mirrors = entry_mirrors(&template_entry).expect("mirrors");
+            let ctx = self.ctx();
+            let chunk_size = 50_000;
+            for chunk_start in (0..count).step_by(chunk_size) {
+                let chunk_end = (chunk_start + chunk_size).min(count);
+                let mut batch = WriteBatch::new(relation::IN_BOOK);
+                for idx in chunk_start..chunk_end {
+                    let vid = VId(0x9000_0000_0000_0000_u128 + idx as u128);
+                    batch.create_vertex(vid, vec![label::ENTRY], mirrors.clone());
+                }
+                self.runtime
+                    .block_on(self.db.write(&ctx.commit(), batch))
+                    .expect("bulk write");
+            }
+        }
+    }
+
+    #[test]
+    fn cycle_reads_are_independent_of_unrelated_history() {
+        let t0 = 1_773_532_800_000_000_000_u64;
+        let t1 = t0 + 120_000_000_000;
+
+        // Baseline book: 3 due holds, 70 future holds (spanning 2 index pages), 0 unrelated entries.
+        let mut small = SweepTestEnv::new();
+        small.record_tick_at(t0, b"tick-0");
+        for i in 0..3 {
+            small.post_timed_hold(60_000_000_000, format!("due-{i}").as_bytes());
+        }
+        for i in 0..70 {
+            small.post_timed_hold(86_400_000_000_000, format!("future-{i}").as_bytes());
+        }
+        let ctx_small = small.ctx();
+        let small_state = small
+            .runtime
+            .block_on(advance_sweep_index(&mut small.db, &ctx_small, &small.book))
+            .expect("advance_sweep_index");
+        assert_eq!(small_state.hold_pages.len(), 2);
+        small.record_tick_at(t1, b"tick-1");
+
+        let system = crate::rows::system_principal(small.book.book_id);
+        let sys_cap = Capability::new(system, Profile::System, &[Op::Post], VId(7)).expect("cap");
+        let req = SweepRequest {
+            principal_ref: system,
+            capability: sys_cap.clone(),
+            max_batch: 64,
+        };
+        let small_seal_key = small.book.seal_key.clone();
+        let mut describe_small = |s: &str| {
+            Ok(Erasable::seal(
+                &s.to_string(),
+                None,
+                &small_seal_key,
+                [0x22; 32],
+                [0x33; 24],
+            ))
+        };
+        let (small_batch, small_witness) = small
+            .runtime
+            .block_on(sweep_batch_with_witness(
+                &mut small.db,
+                &ctx_small,
+                &small.book,
+                &req,
+                &mut describe_small,
+            ))
+            .expect("kernel")
+            .expect("sweep_batch");
+        let small_batch = small_batch.expect("3 due holds expired");
+        assert_eq!(small_batch.expired.len(), 3);
+        assert_eq!(small_batch.remaining_due, 0);
+        assert!(small_witness.used_index);
+        // Page 0 contains the 3 due holds; Page 1 has min_key = t0 + 24h > t1 so it is skipped!
+        assert_eq!(small_witness.pages_read, 1);
+        assert_eq!(small_witness.candidates_read, 3);
+        assert_eq!(small_witness.unrelated_entries_decoded, 0);
+
+        // Large book: 3 due holds, 70 future holds, and 100,000 unrelated Original entries!
+        let mut large = SweepTestEnv::new();
+        large.record_tick_at(t0, b"tick-0");
+        for i in 0..3 {
+            large.post_timed_hold(60_000_000_000, format!("due-{i}").as_bytes());
+        }
+        for i in 0..70 {
+            large.post_timed_hold(86_400_000_000_000, format!("future-{i}").as_bytes());
+        }
+        large.bulk_append_unrelated_originals(100_000);
+        let ctx_large = large.ctx();
+        let large_state = large
+            .runtime
+            .block_on(advance_sweep_index(&mut large.db, &ctx_large, &large.book))
+            .expect("advance_sweep_index on 100k book");
+        assert_eq!(large_state.hold_pages.len(), 2);
+        large.record_tick_at(t1, b"tick-1");
+
+        let large_seal_key = large.book.seal_key.clone();
+        let mut describe_large = |s: &str| {
+            Ok(Erasable::seal(
+                &s.to_string(),
+                None,
+                &large_seal_key,
+                [0x22; 32],
+                [0x33; 24],
+            ))
+        };
+        let (large_batch, large_witness) = large
+            .runtime
+            .block_on(sweep_batch_with_witness(
+                &mut large.db,
+                &ctx_large,
+                &large.book,
+                &req,
+                &mut describe_large,
+            ))
+            .expect("kernel")
+            .expect("sweep_batch");
+        let large_batch = large_batch.expect("3 due holds expired");
+        assert_eq!(large_batch.expired.len(), 3);
+        assert_eq!(large_batch.remaining_due, 0);
+        assert!(large_witness.used_index);
+        assert_eq!(large_witness.pages_read, 1);
+        assert_eq!(large_witness.candidates_read, 3);
+        assert_eq!(large_witness.unrelated_entries_decoded, 0);
+        // Exact O(due + page) independence: 100,000 unrelated entries add 0 substrate reads.
+        assert_eq!(
+            large_witness.substrate_rows_read,
+            small_witness.substrate_rows_read
+        );
+        assert!(large_witness.substrate_rows_read <= 32);
+    }
+
+    #[test]
+    fn index_drift_detected_by_refold() {
+        let t0 = 1_773_532_800_000_000_000_u64;
+        let mut env = SweepTestEnv::new();
+        env.record_tick_at(t0, b"tick-0");
+        let h1 = env.post_timed_hold(60_000_000_000, b"hold-1");
+        let h2 = env.post_timed_hold(90_000_000_000, b"hold-2");
+        let ctx = env.ctx();
+        let clean_state = env
+            .runtime
+            .block_on(advance_sweep_index(&mut env.db, &ctx, &env.book))
+            .expect("advance_sweep_index");
+        let verified = verify_sweep_index(&env.db, &env.book).expect("verify_sweep_index");
+        assert!(verified.is_green(), "{verified:?}");
+        assert_eq!(verified.holds_checked, 2);
+
+        // Drift 1: Coherently re-checksummed index missing due hold h2.
+        let page0_row = env
+            .db
+            .vertex(sweep_index_page_vid(SWEEP_EXPIRY, 0))
+            .expect("read")
+            .expect("page 0");
+        let page0_bytes = bytes(&page0_row, property::FA_PAYLOAD, "page0").expect("page0 payload");
+        let mut holds = decode_hold_page(&page0_bytes).expect("decode page0");
+        assert_eq!(holds.len(), 2);
+        holds.retain(|h| h.hold.vid != h2.vid);
+        let root_row = env
+            .db
+            .vertex(sweep_index_vid())
+            .expect("read")
+            .expect("root");
+        let expected_root = prop(&root_row, property::FA_PAYLOAD).cloned();
+        let (_, missing_batch) = stage_sweep_index_write(
+            env.book.book_id,
+            clean_state.through,
+            clean_state.latest_corroborated_tick,
+            holds.clone(),
+            Vec::new(),
+            1,
+            0,
+            expected_root,
+        )
+        .expect("stage missing hold");
+        env.runtime
+            .block_on(env.db.write(&ctx.commit(), missing_batch))
+            .expect("write missing hold");
+
+        let drift_missing = verify_sweep_index(&env.db, &env.book).expect("verify missing");
+        assert!(!drift_missing.is_green(), "{drift_missing:?}");
+        assert!(
+            drift_missing.drift.iter().any(|d| {
+                d.contains(&format!("{:032x}", h2.vid.0))
+                    && d.contains("omits unresolved timed hold")
+            }),
+            "expected missing-hold drift, got: {:?}",
+            drift_missing.drift
+        );
+
+        // Drift 2: Coherently re-checksummed index with a corrupted/forged deadline on h1,
+        // plus a corrupted page digest.
+        let mut forged = decode_hold_page(&page0_bytes).expect("decode original");
+        for item in &mut forged {
+            if item.hold.vid == h1.vid {
+                item.deadline_ns += 999_999;
+            }
+        }
+        let root_row = env
+            .db
+            .vertex(sweep_index_vid())
+            .expect("read")
+            .expect("root");
+        let expected_root = prop(&root_row, property::FA_PAYLOAD).cloned();
+        let (_, forged_batch) = stage_sweep_index_write(
+            env.book.book_id,
+            clean_state.through,
+            clean_state.latest_corroborated_tick,
+            forged,
+            Vec::new(),
+            1,
+            0,
+            expected_root,
+        )
+        .expect("stage forged hold");
+        env.runtime
+            .block_on(env.db.write(&ctx.commit(), forged_batch))
+            .expect("write forged hold");
+
+        let drift_forged = verify_sweep_index(&env.db, &env.book).expect("verify forged");
+        assert!(!drift_forged.is_green(), "{drift_forged:?}");
+        assert!(
+            drift_forged.drift.iter().any(|d| {
+                d.contains(&format!("{:032x}", h1.vid.0))
+                    && d.contains("disagrees with journal refold")
+            }),
+            "expected forged-entry drift, got: {:?}",
+            drift_forged.drift
+        );
+
+        // Rebuild restores a clean index.
+        env.runtime
+            .block_on(rebuild_sweep_index(&mut env.db, &ctx, &env.book))
+            .expect("rebuild_sweep_index");
+        assert!(
+            verify_sweep_index(&env.db, &env.book)
+                .expect("verify rebuilt")
+                .is_green()
         );
     }
 }

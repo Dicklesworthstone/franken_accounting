@@ -438,28 +438,68 @@ const LIVE_APPLICATIONS_ROW: &str = "plan §5.7 (live applications against the t
 /// The live schedules whose date the latest tick has reached, in the commit
 /// order of their targets, with their status (plan §7.6, R4): `Due`,
 /// `Waiting { period }`, or `Blocked { state, row }`. Empty when the book
-/// declares no `time_zone_policy` or has no tick. A snapshot scan at head;
-/// execution re-reads everything as witnesses.
+/// declares no `time_zone_policy` or has no tick. Uses the paged `SweepIndex`
+/// when servable; execution re-reads everything as witnesses.
 pub fn due_reversals<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
 ) -> Result<Vec<DueReversal>, KernelError> {
+    Ok(due_reversals_with_witness(db, book)?.0)
+}
+
+/// [`due_reversals`] together with a [`crate::sweep::SweepReadWitness`]
+/// recording the substrate reads performed during candidate discovery
+/// (FA-CFG-02).
+pub fn due_reversals_with_witness<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+) -> Result<(Vec<DueReversal>, crate::sweep::SweepReadWitness), KernelError> {
+    let mut witness = crate::sweep::SweepReadWitness::default();
+    witness.substrate_rows_read += 2;
     let (Some(policy), Some(tick)) = (book_policy(db)?, latest_tick(db)?) else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), witness));
     };
     let today = policy.civil_date(tick.observed_utc_ns);
     let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
         Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let mut out = Vec::new();
-    for row in db.vertices()? {
-        if !row.labels.contains(&label::REVERSAL_SCHEDULE) {
-            continue;
+
+    let candidates = match indexed_due_schedules(db, book, today) {
+        Ok(Some((scheds, idx_witness))) => {
+            witness.used_index = true;
+            witness.pages_read += idx_witness.pages_read;
+            witness.candidates_read += idx_witness.candidates_read;
+            witness.substrate_rows_read += idx_witness.substrate_rows_read;
+            witness.delta_batches_read += idx_witness.delta_batches_read;
+            witness.unrelated_entries_decoded += idx_witness.unrelated_entries_decoded;
+            scheds
         }
-        let schedule = decode_schedule(&row)?;
-        if schedule.reverse_on > today || db.vertex(reversal_vid(schedule.target.vid))?.is_some() {
-            continue;
+        _ => {
+            let rows = db.vertices()?;
+            witness.substrate_rows_read += rows.len();
+            let mut scheds = Vec::new();
+            for row in rows {
+                if !row.labels.contains(&label::REVERSAL_SCHEDULE) {
+                    continue;
+                }
+                let schedule = decode_schedule(&row)?;
+                if schedule.reverse_on > today {
+                    continue;
+                }
+                witness.candidates_read += 1;
+                witness.substrate_rows_read += 1;
+                if db.vertex(reversal_vid(schedule.target.vid))?.is_some() {
+                    continue;
+                }
+                scheds.push(schedule);
+            }
+            scheds
         }
+    };
+
+    let mut out = Vec::with_capacity(candidates.len());
+    for schedule in candidates {
+        witness.substrate_rows_read += 1;
         let status = match db.vertex(period_vid(&book.calendar.id, &schedule.period))? {
             None => ReversalStatus::Waiting {
                 period: schedule.period.clone(),
@@ -476,6 +516,7 @@ pub fn due_reversals<V: asupersync::fs::Vfs + Clone>(
                         }
                     }
                     ReversalStatus::Due => {
+                        witness.substrate_rows_read += 1;
                         let row = db.vertex(schedule.target.vid)?.ok_or_else(|| {
                             KernelError::Corrupt("a scheduled target is missing".into())
                         })?;
@@ -502,7 +543,64 @@ pub fn due_reversals<V: asupersync::fs::Vfs + Clone>(
         out.push(DueReversal { schedule, status });
     }
     out.sort_by_key(|d| (d.schedule.recorded_at, d.schedule.vid));
-    Ok(out)
+    Ok((out, witness))
+}
+
+fn indexed_due_schedules<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    today: DateDay,
+) -> Result<Option<(Vec<Schedule>, crate::sweep::SweepReadWitness)>, KernelError> {
+    let Some((state, _)) = crate::sweep::load_servable_sweep_index(db)? else {
+        return Ok(None);
+    };
+    if state.book_id != book.book_id {
+        return Ok(None);
+    }
+    let Some(mut tail) =
+        crate::sweep::fold_sweep_delta_tail(db, state.through, state.latest_corroborated_tick)?
+    else {
+        return Ok(None);
+    };
+    tail.witness.used_index = true;
+    tail.witness.substrate_rows_read += 1;
+
+    let cutoff = i128::from(today.0);
+    let mut due = Vec::new();
+    for meta in &state.schedule_pages {
+        if meta.min_key > cutoff {
+            continue;
+        }
+        tail.witness.pages_read += 1;
+        tail.witness.substrate_rows_read += 1;
+        let Some(schedules) = crate::sweep::read_schedule_page_checked(db, book.book_id, meta)?
+        else {
+            return Ok(None);
+        };
+        for s in schedules {
+            if s.reverse_on > today || tail.reversed_targets.contains(&s.target.vid) {
+                continue;
+            }
+            tail.witness.candidates_read += 1;
+            tail.witness.substrate_rows_read += 1;
+            if db.vertex(reversal_vid(s.target.vid))?.is_some() {
+                continue;
+            }
+            due.push(s);
+        }
+    }
+    for s in tail.added_schedules.into_values() {
+        if s.reverse_on > today || tail.reversed_targets.contains(&s.target.vid) {
+            continue;
+        }
+        tail.witness.candidates_read += 1;
+        tail.witness.substrate_rows_read += 1;
+        if db.vertex(reversal_vid(s.target.vid))?.is_some() {
+            continue;
+        }
+        due.push(s);
+    }
+    Ok(Some((due, tail.witness)))
 }
 
 fn live_applications<V: asupersync::fs::Vfs + Clone>(
@@ -1650,6 +1748,8 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
                 .push(format!("schedule {:032x} has no requesting entry", svid.0));
         }
     }
+    let idx = crate::sweep::verify_sweep_index(db, book)?;
+    v.drift.extend(idx.drift);
     Ok(v)
 }
 

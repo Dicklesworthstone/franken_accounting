@@ -196,6 +196,26 @@ pub fn schedule_cursor_vid(tick: VId, last_target: VId) -> VId {
     vid_from(h)
 }
 
+/// Deterministic identity of the disposable sweep index root
+/// (`H("fa:vid:sweep-index:v1")`, plan §5.4, §7.6, FA-CFG-02).
+#[must_use]
+pub fn sweep_index_vid() -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:sweep-index:v1");
+    vid_from(h)
+}
+
+/// Deterministic identity of one disposable sweep-index page
+/// (`H("fa:vid:sweep-index-page:v1" ‖ [kind] ‖ page.to_le_bytes())`).
+#[must_use]
+pub fn sweep_index_page_vid(kind: u8, page: u32) -> VId {
+    let mut h = Hasher::new();
+    h.update(b"fa:vid:sweep-index-page:v1");
+    h.update(&[kind]);
+    h.update(&page.to_le_bytes());
+    vid_from(h)
+}
+
 /// `vid(Leg) = H("fa:vid:leg:v1" ‖ entry_vid ‖ ordinal)`.
 #[must_use]
 pub fn leg_vid(entry: VId, ordinal: u16) -> VId {

@@ -78,18 +78,115 @@ fn recorded(name: &str, value: &RecurringRecorded) -> Vec<(&'static str, Json)> 
 }
 
 pub(crate) fn schedule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    if args.positional.get(1).map(String::as_str) != Some("recurring") {
-        return Err(usage(
-            "schedule needs recurring create, list or cancel",
+    match args.positional.get(1).map(String::as_str) {
+        Some("recurring") => match args.positional.get(2).map(String::as_str) {
+            Some("create") => create(ctx, args),
+            Some("list") => list(ctx, args),
+            Some("cancel") => cancel(ctx, args),
+            _ => Err(usage("recurring needs create, list or cancel", HELP)),
+        },
+        Some("sweep") => sweep(ctx, args),
+        _ => Err(usage(
+            "schedule needs recurring (create, list or cancel) or sweep",
             HELP,
+        )),
+    }
+}
+
+fn sweep(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "sweep takes no extra positional arguments",
+            "fa sweep now --book <dir> [--json]",
         ));
     }
-    match args.positional.get(2).map(String::as_str) {
-        Some("create") => create(ctx, args),
-        Some("list") => list(ctx, args),
-        Some("cancel") => cancel(ctx, args),
-        _ => Err(usage("recurring needs create, list or cancel", HELP)),
-    }
+    options(args, &[], false)?;
+    let user_cap =
+        if ctx.authority().is_some() || args.flag("--as").is_some_and(|who| who != "system") {
+            Some(ctx.capability(args, &["post"])?)
+        } else {
+            None
+        };
+    let mut book = ctx.books.open(args)?;
+    let capability = match user_cap {
+        Some(cap) => cap,
+        None => {
+            let system = fa_journal::rows::system_principal(book.context().book_id);
+            fa_policy::Capability::new(
+                system,
+                fa_policy::Profile::System,
+                &[fa_policy::Op::Post],
+                system,
+            )
+            .map_err(|e| Fail::Internal(e.to_string()))?
+        }
+    };
+    let swept = book.sweep_now(&capability, fa_model::limits::MAX_BATCH_ENTRIES)??;
+    let head = book.head()?;
+    let tick = book.corroborated_tick_at(head)?;
+    let due_holds_remaining = book.due_holds()?.len();
+    let due_reversals_remaining = book
+        .due_reversals()?
+        .iter()
+        .filter(|r| r.status == fa_journal::ReversalStatus::Due)
+        .count();
+    let index_through = if tick.is_some()
+        || !swept.expiry.is_empty()
+        || !swept.reversals.is_empty()
+        || !swept.recurring.is_empty()
+    {
+        head.0
+    } else {
+        0
+    };
+    let expired: usize = swept.expiry.iter().map(|b| b.expired.len()).sum();
+    let reversals_minted: usize = swept.reversals.iter().map(|b| b.minted.len()).sum();
+    let reversals_blocked: usize = swept.reversals.iter().map(|b| b.blocked.len()).sum();
+    let recurring_posted: usize = swept.recurring.iter().map(|b| b.posted.len()).sum();
+    let recurring_blocked: usize = swept.recurring.iter().map(|b| b.blocked.len()).sum();
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "swept",
+        vec![
+            (
+                "tick_entry",
+                tick.as_ref()
+                    .map_or(Json::Null, |t| s(format!("{:032x}", t.entry.0))),
+            ),
+            (
+                "tick_utc_ns",
+                tick.as_ref()
+                    .map_or(Json::Null, |t| Json::Int(i128::from(t.observed_utc_ns))),
+            ),
+            ("expiry_batches", Json::Int(swept.expiry.len() as i128)),
+            ("expired", Json::Int(expired as i128)),
+            ("reversal_batches", Json::Int(swept.reversals.len() as i128)),
+            ("reversals_minted", Json::Int(reversals_minted as i128)),
+            ("reversals_blocked", Json::Int(reversals_blocked as i128)),
+            (
+                "recurring_batches",
+                Json::Int(swept.recurring.len() as i128),
+            ),
+            ("recurring_posted", Json::Int(recurring_posted as i128)),
+            ("recurring_blocked", Json::Int(recurring_blocked as i128)),
+            (
+                "due_holds_remaining",
+                Json::Int(due_holds_remaining as i128),
+            ),
+            (
+                "due_reversals_remaining",
+                Json::Int(due_reversals_remaining as i128),
+            ),
+            ("index_through", Json::Int(i128::from(index_through))),
+        ],
+        &format!(
+            "swept: {expired} hold(s) expired across {} batch(es), {reversals_minted} reversal(s) minted ({reversals_blocked} blocked) across {} batch(es), {recurring_posted} recurring occurrence(s) posted ({recurring_blocked} blocked) across {} batch(es); index through {index_through}",
+            swept.expiry.len(),
+            swept.reversals.len(),
+            swept.recurring.len()
+        ),
+    );
+    Ok(())
 }
 
 fn create(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {

@@ -159,6 +159,11 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         Some("test"),
         "reads a rule's golden corpus, a host directory of case files, and writes nothing; MCP evaluates a rule over a recorded event inline (fa-c34)",
     ),
+    (
+        "schedule",
+        Some("sweep"),
+        "sweeping due holds and scheduled reversals exercises the book's intrinsic System principal on the host (fa-gpd4)",
+    ),
     ("demo", Some("init"), "creates a sandbox book"),
 ];
 

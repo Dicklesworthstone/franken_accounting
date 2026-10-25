@@ -3605,6 +3605,55 @@ impl Book {
         with_store!(&mut self.store, core => core.sweep(&purposes, capability, max_batch).await)
     }
 
+    /// Drain expiry batches and then reversal batches synchronously under this
+    /// book's runtime and the supplied System capability (`fa sweep now`,
+    /// plan §5.4, §7.6, FA-CFG-02), advancing the disposable sweep index to
+    /// the resulting head once admitted.
+    pub fn sweep_now(
+        &mut self,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+    ) -> Outcome<fa_journal::Swept> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(async {
+            let head = core.head(&purposes)?;
+            let has_corroborated_tick = core.corroborated_tick_at(&purposes, head)?.is_some();
+            if capability.profile() == fa_policy::Profile::System && has_corroborated_tick {
+                core.advance_sweep_index(&purposes).await?;
+            }
+            let outcome = core.sweep(&purposes, capability, max_batch).await?;
+            if let Ok(swept) = &outcome
+                && (has_corroborated_tick
+                    || !swept.expiry.is_empty()
+                    || !swept.reversals.is_empty()
+                    || !swept.recurring.is_empty())
+            {
+                core.advance_sweep_index(&purposes).await?;
+            }
+            Ok(outcome)
+        }))
+    }
+
+    /// Advance the disposable paged sweep index over the committed delta stream
+    /// to the current head (plan §5.4, §7.6, FA-CFG-02).
+    pub fn advance_sweep_index(&mut self) -> Result<fa_journal::SweepIndexState, BookError> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.advance_sweep_index(&purposes)))
+    }
+
+    /// Rebuild the disposable paged sweep index from the authoritative journal
+    /// at the current head (plan §5.4, §7.6, FA-CFG-02).
+    pub fn rebuild_sweep_index(&mut self) -> Result<fa_journal::SweepIndexState, BookError> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.rebuild_sweep_index(&purposes)))
+    }
+
+    /// Refold the disposable paged sweep index from the authoritative journal
+    /// and report any drift without mutating the book (plan §5.4, §7.6).
+    pub fn verify_sweep_index(&self) -> Result<fa_journal::SweepIndexVerification, BookError> {
+        with_store!(&self.store, core => core.verify_sweep_index(&self.purposes()))
+    }
+
     /// Every account of the chart, sorted by code.
     pub fn accounts(&self) -> Result<Vec<AccountRow>, BookError> {
         with_store!(&self.store, core => core.accounts(&self.purposes()))

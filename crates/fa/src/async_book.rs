@@ -2447,6 +2447,35 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::sweep(&mut self.db, cx, book, &req, &mut describe).await?)
     }
 
+    /// Advance the disposable paged sweep index over the committed delta stream
+    /// to the current head (plan §5.4, §7.6, FA-CFG-02).
+    pub async fn advance_sweep_index(
+        &mut self,
+        cx: &PurposeContexts,
+    ) -> Result<fa_journal::SweepIndexState, BookError> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::advance_sweep_index(&mut self.db, cx, &self.context).await?)
+    }
+
+    /// Rebuild the disposable paged sweep index from the authoritative journal
+    /// at the current head (plan §5.4, §7.6, FA-CFG-02).
+    pub async fn rebuild_sweep_index(
+        &mut self,
+        cx: &PurposeContexts,
+    ) -> Result<fa_journal::SweepIndexState, BookError> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::rebuild_sweep_index(&mut self.db, cx, &self.context).await?)
+    }
+
+    /// Refold the disposable paged sweep index from the authoritative journal
+    /// and report any drift without mutating the book (plan §5.4, §7.6).
+    pub fn verify_sweep_index(
+        &self,
+        cx: &PurposeContexts,
+    ) -> Result<fa_journal::SweepIndexVerification, BookError> {
+        self.query(cx, |db, book| Ok(fa_journal::verify_sweep_index(db, book)?))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn open_migration_proposal(
         &self,

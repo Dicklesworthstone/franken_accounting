@@ -138,7 +138,10 @@ fn every_verb_and_subcommand_is_one_tool_or_a_registered_exclusion() {
             // fa-c34: a rule's golden corpus is a host directory of case
             // files (like an export verify, fa-lzrn); MCP evaluates a rule
             // over a recorded event inline through fa_rules_rule.
-            || (e.verb == "rule" && e.subcommand.as_deref() == Some("test"));
+            || (e.verb == "rule" && e.subcommand.as_deref() == Some("test"))
+            // fa-gpd4: sweeping due holds and scheduled reversals exercises
+            // the book's intrinsic System principal on the host.
+            || (e.verb == "schedule" && e.subcommand.as_deref() == Some("sweep"));
         assert!(
             is_allowed_host_only,
             "only plan §15.4 registered host-only verbs are excluded: {e:?}"
