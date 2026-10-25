@@ -6,7 +6,7 @@ use asupersync::{Budget, Cx};
 use fa_journal::{AccountSpec, BookSpec, Document, PostRequest, UnitPolicy};
 use fa_model::{
     AccountType, EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, LegPayload, Oid,
-    Settlement, account_vid,
+    Settlement, Supersession, SupersessionKind, account_vid,
 };
 use fa_money::{Amount, Side, UnitRegistry};
 use fa_time::{FiscalCalendar, PeriodTransition};
@@ -173,7 +173,6 @@ impl Harness {
         amount: i128,
         target: Option<EntryRef>,
     ) -> EntryRef {
-        let cx = self.cx();
         let mut legs = vec![
             LegPayload::simple(Side::Debit, self.id(accounts.0), Amount::new(unit, amount)),
             LegPayload::simple(Side::Credit, self.id(accounts.1), Amount::new(unit, amount)),
@@ -185,11 +184,44 @@ impl Harness {
                 amount: Amount::new(unit, amount),
             });
         }
+        self.publish(key, date, EntryClass::ORIGINAL, legs, Vec::new())
+    }
+    /// Reverse `target`, the `accounts` posting of `amount` in `unit`: its
+    /// legs in their order, each side exchanged.
+    pub(super) fn reverse(
+        &mut self,
+        key: &str,
+        date: &str,
+        unit: UnitId,
+        accounts: (&str, &str),
+        amount: i128,
+        target: EntryRef,
+    ) -> EntryRef {
+        let legs = vec![
+            LegPayload::simple(Side::Credit, self.id(accounts.0), Amount::new(unit, amount)),
+            LegPayload::simple(Side::Debit, self.id(accounts.1), Amount::new(unit, amount)),
+        ];
+        let reverses = Supersession {
+            kind: SupersessionKind::Reverses,
+            target,
+            reason_code: 1,
+        };
+        self.publish(key, date, EntryClass::REVERSAL, legs, vec![reverses])
+    }
+    fn publish(
+        &mut self,
+        key: &str,
+        date: &str,
+        class: EntryClass,
+        legs: Vec<LegPayload>,
+        supersession: Vec<Supersession>,
+    ) -> EntryRef {
+        let cx = self.cx();
         let proposal = EntryPayload {
             schema_minor: 0,
             book_id: BOOK,
             branch_id: Id128::TRUNK,
-            class: EntryClass::ORIGINAL,
+            class,
             effective_date: day(date),
             document_date: None,
             description: self.book.seal_text(&cx, key).unwrap(),
@@ -206,7 +238,7 @@ impl Harness {
             principal_ref: PRINCIPAL,
             session_ref: None,
             evidence: vec![self.evidence],
-            supersession: Vec::new(),
+            supersession,
             pending: None,
             external_ids: Vec::new(),
             extensions: Vec::new(),

@@ -688,16 +688,27 @@ fn report_families_match_reference_oracle_across_multiseed_campaign_and_kill_pla
 
             // (b) Partial collection of P1 receivable invoice in P2:
             //     Dr 1000 Cash (Operating), Cr 1100 AR (settling leg 0 of inv_entry; WorkingCapital adjustment +collect_amt)
+            //     A foreign collection is posted unapplied, its credit an open
+            //     item of its own: a foreign application relieves the open
+            //     item's base carrying value (fa-pvt7, RemainingCarryingValue
+            //     from a Settlement rate), and these foreign invoices carry
+            //     no base valuation, so an unbound one is FA-REF-071.
             let collect_amt = inv_amt / 2;
-            let settle_prod = vec![Settlement {
-                target: EntryRef {
-                    vid: inv_entry.vid,
-                    entry_digest: inv_entry.digest,
-                },
-                ordinal: 0,
-                amount: Amount::new(*u, collect_amt),
-            }];
-            let settle_oracle = vec![(inv_entry.oracle_index, 0usize, collect_amt)];
+            let (settle_prod, settle_oracle) = if *u == usd {
+                (
+                    vec![Settlement {
+                        target: EntryRef {
+                            vid: inv_entry.vid,
+                            entry_digest: inv_entry.digest,
+                        },
+                        ordinal: 0,
+                        amount: Amount::new(*u, collect_amt),
+                    }],
+                    vec![(inv_entry.oracle_index, 0usize, collect_amt)],
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
             let e_collect = post_original(
                 &mut book,
                 &mut oracle,

@@ -362,24 +362,28 @@ fn malformed_containers_and_unbounded_or_noncanonical_scopes_are_refused() {
 #[test]
 fn workpaper_keeps_control_only_units_exact_amounts_selected_detail_and_uncovered_leaves() {
     let mut h = Harness::new();
-    let invoice = h.post("usd", "2026-03-01", h.usd, ("ar", "sales"), 100, None);
-    h.post(
-        "fully-paid",
+    // EUR is the control-only unit: its invoice is reversed, so its control
+    // moves and no open item remains. A foreign application would relieve a
+    // base carrying value these unvalued invoices lack (FA-REF-071), so the
+    // partial application is in the book's base unit.
+    let invoice = h.post("eur", "2026-03-01", h.eur, ("ar", "sales"), 100, None);
+    h.reverse(
+        "eur-reversed",
         "2026-03-15",
-        h.usd,
-        ("cash", "ar"),
+        h.eur,
+        ("ar", "sales"),
         100,
-        Some(invoice),
+        invoice,
     );
     let exact = (1_i128 << 90) + 1;
-    let eur = h.post("eur", "2026-03-01", h.eur, ("ar", "sales"), exact, None);
+    let usd = h.post("usd", "2026-03-01", h.usd, ("ar", "sales"), exact, None);
     h.post(
         "partially-paid",
         "2026-03-15",
-        h.eur,
+        h.usd,
         ("cash", "ar"),
         7,
-        Some(eur),
+        Some(usd),
     );
     let request = AgingPortfolioRequest {
         scope: AgingAccountScope::Selected(vec![h.id("ar"), h.id("idle")]),
