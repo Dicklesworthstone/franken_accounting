@@ -735,7 +735,6 @@ fn every_plan_leaf_present_or_registered() {
         ),
         ("fa close run", "fa-4o0: the CloseRun task DAG"),
         ("fa close status", "fa-4o0: the CloseRun task DAG"),
-        ("fa exhibit mark", "fa-6l9"),
         (
             "fa finding dismiss",
             "fa-waow: today fa finding review --action dismiss",

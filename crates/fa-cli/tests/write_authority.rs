@@ -652,6 +652,19 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
         ),
         row(
             &[
+                "exhibit",
+                "mark",
+                document,
+                "--label",
+                "Px-1",
+                "--matter",
+                "matrix-matter",
+            ],
+            &[Op::Produce],
+            Succeeds,
+        ),
+        row(
+            &[
                 "produce",
                 "--matter",
                 "no-such-matter",

@@ -3826,8 +3826,8 @@ fn bundle_limits_refuse_too_many_balances_and_oversized_inline_documents_while_a
 #[test]
 fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
     use fa_notary::{
-        ConfidentialityDesignation, ExhibitMark, LoadFileFormat, MatterProductionRegistry,
-        PrivilegeMetadata, PrivilegeTreatment, ProductionProfile, assemble_matter_package,
+        BatesAssignment, ConfidentialityDesignation, LoadFileFormat, PrivilegeMetadata,
+        PrivilegeTreatment, assemble_matter_package, bates_assignments_from_produced,
     };
 
     let mut h = harness();
@@ -3930,22 +3930,101 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
         },
     );
 
-    let mut registry = MatterProductionRegistry::new();
-    let mut profile_sec =
-        ProductionProfile::new("MATTER-SEC", "ACME-SEC", 1, LoadFileFormat::Both).unwrap();
-    profile_sec
-        .designations
-        .insert(doc_oid, ConfidentialityDesignation::Confidential);
-    registry.register_profile(profile_sec).unwrap();
-    registry
-        .register_profile(
-            ProductionProfile::new("MATTER-CIVIL", "ACME-CIV", 100, LoadFileFormat::EdrmXml)
-                .unwrap(),
-        )
-        .unwrap();
+    let produce_cap = Capability::embedded(PRINCIPAL, &["produce"]).expect("produce");
+    let day = DateDay::from_ymd(2026, 3, 20).unwrap();
+    let req_for = |key: &[u8]| ProductionRequest {
+        capability: produce_cap.clone(),
+        effective_date: day,
+        description: Erasable::seal(
+            &"production".to_string(),
+            None,
+            &h.book.seal_key,
+            [3; 32],
+            [4; 24],
+        ),
+        idempotency_key: key.to_vec(),
+    };
 
-    let mut page_counts = std::collections::BTreeMap::new();
-    page_counts.insert(doc_oid, 4);
+    let ctx = h.ctx();
+    let (produced_sec, produced_civ, marked) = h.runtime.block_on(async {
+        open_production(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ProductionProfile {
+                book_id: h.book.book_id,
+                matter: "MATTER-SEC".into(),
+                bates_prefix: "ACME-SEC".into(),
+                first_bates: 1,
+                load_file_format: LoadFileFormat::Both.tag(),
+                protective_order: None,
+            },
+            req_for(b"open-sec"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        open_production(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ProductionProfile {
+                book_id: h.book.book_id,
+                matter: "MATTER-CIVIL".into(),
+                bates_prefix: "ACME-CIV".into(),
+                first_bates: 100,
+                load_file_format: LoadFileFormat::EdrmXml.tag(),
+                protective_order: None,
+            },
+            req_for(b"open-civ"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let produced_sec = produce(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "MATTER-SEC",
+            vec![ProducedDocument {
+                document: doc_oid,
+                pages: Some(4),
+                designation: Some(ConfidentialityDesignation::Confidential.tag()),
+            }],
+            req_for(b"produce-sec"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let produced_civ = produce(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "MATTER-CIVIL",
+            vec![ProducedDocument {
+                document: doc_oid,
+                pages: Some(4),
+                designation: None,
+            }],
+            req_for(b"produce-civ"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let marked = mark_exhibit(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &produce_cap,
+            "MATTER-SEC",
+            doc_oid,
+            "PX-001",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        (produced_sec, produced_civ, marked)
+    });
 
     let pkg_sec = assemble_matter_package(
         "MATTER-SEC",
@@ -3954,10 +4033,9 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
         receipt.clone(),
         &h.signer.public_key(),
         &reads,
-        &page_counts,
+        bates_assignments_from_produced(&produced_sec).unwrap(),
         &[withheld_oid],
         &privilege_meta,
-        &mut registry,
     )
     .unwrap();
 
@@ -3968,15 +4046,18 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
         receipt,
         &h.signer.public_key(),
         &reads,
-        &page_counts,
+        bates_assignments_from_produced(&produced_civ).unwrap(),
         &[withheld_oid],
         &privilege_meta,
-        &mut registry,
     )
     .unwrap();
 
-    // Document produced in two matters carries both Bates ranges without mutating doc_commit.
-    let doc_bates = registry.bates_for_document(&doc_oid);
+    // Document produced in two matters carries both journaled Bates ranges without mutating doc_commit.
+    let doc_bates: Vec<BatesAssignment> = document_ranges(&h.db, &h.book, &doc_oid)
+        .unwrap()
+        .iter()
+        .map(|(p, r)| BatesAssignment::from_journaled(p, &r.range).unwrap())
+        .collect();
     assert_eq!(doc_bates.len(), 2);
     assert_eq!(
         doc_bates[0].range_label(),
@@ -3989,14 +4070,15 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
     assert_eq!(doc_bates[0].doc_commit, original_commit);
     assert_eq!(doc_bates[1].doc_commit, original_commit);
 
-    // Exhibit mark binds subject_oid and signed_digest per matter.
-    let mark =
-        ExhibitMark::new(doc_oid, "PX-001", "MATTER-SEC", PRINCIPAL, bundle_1.digest).unwrap();
-    registry.mark_exhibit(mark.clone()).unwrap();
-    assert_eq!(
-        registry.exhibits_for_subject("MATTER-SEC", &doc_oid),
-        vec![mark]
-    );
+    // Exhibit mark is journaled as an attestation on the matter's ProductionView.
+    let sec_view = read_production(&h.db, &h.book, "MATTER-SEC")
+        .unwrap()
+        .unwrap();
+    assert_eq!(sec_view.exhibits.len(), 1);
+    assert_eq!(sec_view.exhibits[0].attestation, marked.attestation);
+    assert_eq!(sec_view.exhibits[0].document, doc_oid);
+    assert_eq!(sec_view.exhibits[0].label, "PX-001");
+    assert_eq!(sec_view.exhibits[0].signed_digest, marked.signed_digest);
 
     // Privilege log contains both the redacted-in-part document and the withheld-in-full document.
     assert_eq!(pkg_sec.privilege_log.rows.len(), 2);

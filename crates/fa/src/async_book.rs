@@ -1649,6 +1649,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Mark `document` as exhibit `label` in `matter` (plan §13.2, Appendix B
+    /// `MarkExhibit`).
+    pub async fn mark_exhibit(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        matter: &str,
+        document: fa_model::Oid,
+        label: &str,
+    ) -> Outcome<fa_journal::ExhibitMarkedOutcome> {
+        Ok(fa_journal::mark_exhibit(
+            &mut self.db,
+            cx,
+            &self.context,
+            &capability,
+            matter,
+            document,
+            label,
+        )
+        .await?)
+    }
+
     fn engagement_request(
         &self,
         cx: &PurposeContexts,

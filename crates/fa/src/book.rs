@@ -1865,6 +1865,21 @@ impl Book {
         with_store!(&self.store, core => core.document_bates_ranges(&self.purposes(), document))
     }
 
+    /// Mark `document` as exhibit `label` in `matter` (plan §13.2, Appendix B
+    /// `MarkExhibit`).
+    pub fn mark_exhibit(
+        &mut self,
+        capability: fa_journal::Capability,
+        matter: &str,
+        document: fa_model::Oid,
+        label: &str,
+    ) -> Outcome<fa_journal::ExhibitMarkedOutcome> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.mark_exhibit(
+            &purposes, capability, matter, document, label,
+        )))
+    }
+
     /// Open the engagement `profile.engagement` (plan §11.12, bead fa-zgn):
     /// its kind, scope periods and stated materiality parameters.
     pub fn open_engagement(

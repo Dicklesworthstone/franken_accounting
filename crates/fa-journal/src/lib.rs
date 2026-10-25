@@ -77,9 +77,9 @@ pub use account_role::{
 };
 pub use allocation::AllocationPosting;
 pub use attestation::{
-    AttestationClaim, Attested, confirmation_received_by, confirmed_vid, read_attestation,
-    record_confirmation, record_manual_assertion, record_representation, record_review,
-    represented_vid,
+    AttestationClaim, Attested, confirmation_received_by, confirmed_vid, exhibit_mark_vid,
+    read_attestation, record_confirmation, record_manual_assertion, record_representation,
+    record_review, represented_vid,
 };
 pub use batch::{
     BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
@@ -188,9 +188,10 @@ pub use post::{
     explain_entry_lineage, post, post_replacement_pair, prepare_post, superseded_by,
 };
 pub use production::{
-    BatesRange, Produced, ProducedDocument, ProducedRange, ProductionOpened, ProductionProfile,
-    ProductionRequest, ProductionState, ProductionView, RecordedRange, document_ranges,
-    list_productions, open_production, produce, read_production,
+    BatesRange, ExhibitMarkedOutcome, Produced, ProducedDocument, ProducedRange, ProductionOpened,
+    ProductionProfile, ProductionRequest, ProductionState, ProductionView, RecordedExhibit,
+    RecordedRange, document_ranges, list_productions, mark_exhibit, open_production, produce,
+    read_production,
 };
 pub use rea::{
     DIMENSION_KIND_PARTY, EventRow, ExternalIdRow, InstrumentRow, LegalEntityRow, PartyRow,

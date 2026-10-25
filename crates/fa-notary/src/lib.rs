@@ -64,10 +64,10 @@ pub use checkpoint::TransparencyCheckpoint;
 pub use journal::{Journal, Leaf, LeafEnvelope, LeafKinds, Record};
 pub use migration_balance::prove_balance_with_migrations;
 pub use production::{
-    BatesAssignment, ConfidentialityDesignation, ExhibitMark, Fre902Package, LoadFileFormat,
-    MatterProductionPackage, MatterProductionRegistry, PrivilegeLog, PrivilegeLogRow,
-    PrivilegeMetadata, PrivilegeTreatment, ProductionError, ProductionProfile,
-    assemble_matter_package,
+    BatesAssignment, ConfidentialityDesignation, Fre902Package, LoadFileFormat,
+    MatterProductionPackage, PrivilegeLog, PrivilegeLogRow, PrivilegeMetadata, PrivilegeTreatment,
+    ProductionError, assemble_matter_package, bates_assignments_from_produced,
+    bates_assignments_from_view,
 };
 pub use scope::{ScopeIndex, ScopeRequest};
 pub use sign::{CheckpointSigner, SigningKey};

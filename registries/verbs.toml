@@ -809,6 +809,18 @@ usage = ["produce --matter <matter> --document <oid>[:pages[:designation]]... --
 example = "fa produce --matter SEC-v-Acme --document <oid>:12:confidential --document <oid> --out ./prod-001 --book ./books/myco --json"
 
 [[verb]]
+name = "exhibit"
+summary = "Litigation exhibit marks (plan §13.2, Appendix B MarkExhibit): journal an ExhibitMarked attestation binding an exhibit label to a document in an open matter."
+writes = true
+subcommands = ["mark"]
+flags = ["--label", "--matter", "--grant"]
+switches = []
+events = ["exhibit_marked"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["exhibit mark <document> --label <label> --matter <matter> [--grant produce]   (journals an ExhibitMarked attestation over the document in the open matter, under produce authority; the label is 1..=64 printable ASCII bytes without surrounding spaces; repeating the identical mark returns the recorded attestation; marking another document under the same label in the same matter is refused FA-REF-032)"]
+example = "fa exhibit mark <oid> --label Px-12 --matter SEC-v-Acme --book ./books/myco --json"
+
+[[verb]]
 name = "subledger"
 summary = "Native receivable/payable subledgers (plan §5.6): designate one control leaf whose legs must name parties, inspect its journaled definition, and reconcile party detail with the control account at an explicit coordinate."
 writes = true
@@ -4956,6 +4968,18 @@ dont = ["Opening a matter needs produce and a Human launch profile: an Agent-pro
 mistakes = ["Passing load_file edrm or both: this build writes Concordance DAT/OPT only.", "Naming a document by doc_commit instead of its 64-hex oid in action document.", "Expecting action show to list documents of another matter: each matter numbers only its own productions."]
 
 [[mcp.tool]]
+cluster = "fa.notary"
+name = "mark_exhibit"
+verb = "exhibit"
+subcommands = ["mark"]
+positionals = ["document"]
+flags = ["--label", "--matter"]
+switches = []
+required = ["document", "--label", "--matter"]
+dont = ["Needs produce and a Human launch profile: an Agent-profile session cannot journal an exhibit mark on trunk (FA-REF-013).", "Don't reuse an exhibit label in the same matter for a second document: each label in a matter marks one document, and a conflicting mark is refused (FA-REF-032)."]
+mistakes = ["Marking a document before opening the matter's profile with fa_notary_production(action='open').", "Passing doc_commit instead of the document's 64-hex oid."]
+
+[[mcp.tool]]
 cluster = "fa.proof"
 name = "gl"
 verb = "gl"
@@ -5472,8 +5496,19 @@ fields = ["productions:[production_summary]"]
 [[event]]
 name = "production_detail"
 book = true
-doc = "One matter's production profile and every Bates range its Produce records assigned, ascending."
-fields = ["production:production_summary", "ranges:[bates_range]"]
+doc = "One matter's production profile, every Bates range its Produce records assigned, ascending, and every exhibit mark attested in the matter."
+fields = ["production:production_summary", "ranges:[bates_range]", "exhibits:[exhibit_mark]"]
+
+[[event]]
+name = "exhibit_marked"
+book = true
+doc = "A document was marked as an exhibit in a matter by an ExhibitMarked attestation (or the identical exhibit mark was already recorded: then nothing was written)."
+fields = ["attestation:hex", "matter:string", "document:hex", "label:string", "signed_digest:hex", "recorded_at:seq", "already_recorded:bool"]
+
+[[shape]]
+name = "exhibit_mark"
+doc = "One exhibit mark attested in a matter (plan §13.2, Appendix A ExhibitMark, Appendix B MarkExhibit)."
+fields = ["attestation:hex", "document:hex", "label:string", "signed_digest:hex", "recorded_at:seq", "attested_by:hex"]
 
 [[event]]
 name = "document_bates_ranges"
@@ -6002,6 +6037,11 @@ ops = ["read"]
 [[bound]]
 verbs = ["produce"]
 ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["exhibit"]
+subcommands = ["mark"]
+ops = ["produce"]
 
 # An engagement's records are the auditor's work product (fa-zgn).
 [[bound]]

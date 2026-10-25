@@ -706,6 +706,11 @@ fn attestation_record(
                 }
                 r.i32("represented.as_of")?;
             }
+            // ExhibitMarked: matter (1..=128 bytes) and label (1..=64 bytes).
+            10 => {
+                non_empty_str(&mut r, 128, "exhibit_marked.matter")?;
+                non_empty_str(&mut r, 64, "exhibit_marked.label")?;
+            }
             4 => {
                 let account = r.u128("register_equals.account")?;
                 let unit_id = r.u32("register_equals.unit_id")?;
@@ -736,7 +741,7 @@ fn attestation_record(
         let subject_tag = r.u8("attestation.subject")?;
         let subject_bytes = r.fixed::<32>("attestation.subject")?;
         let valid_subject = match (claim_tag, subject_tag) {
-            (2, 1) | (8, 2) | (5, 1) | (9, 1) => true,
+            (2, 1) | (8, 2) | (5, 1) | (9, 1) | (10, 1) => true,
             (4, 3) => expected_cell == Some(subject_bytes),
             (3, 1) => expected_source
                 .as_ref()

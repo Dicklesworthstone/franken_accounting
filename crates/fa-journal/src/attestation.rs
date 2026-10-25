@@ -94,9 +94,10 @@ const SCHEME_CAPABILITY: u8 = 0;
 pub const MANUAL_ASSERTION_SCOPE: &str = "manual_assertion";
 
 /// `AttestationClaim` tags, in Appendix A's order; 8 is §9.2's
-/// ManualAssertion and 9 §11.12's Represented. [`claim::REVIEWED`],
-/// [`claim::RECONCILED`], [`claim::REGISTER_EQUALS`], [`claim::CONFIRMED`],
-/// [`claim::MANUAL_ASSERTION`] and [`claim::REPRESENTED`] are implemented.
+/// ManualAssertion, 9 §11.12's Represented, and 10 §13.2's ExhibitMarked.
+/// [`claim::REVIEWED`], [`claim::RECONCILED`], [`claim::REGISTER_EQUALS`],
+/// [`claim::CONFIRMED`], [`claim::MANUAL_ASSERTION`], [`claim::REPRESENTED`]
+/// and [`claim::EXHIBIT_MARKED`] are implemented.
 pub mod claim {
     pub const PREPARED: u8 = 1;
     pub const REVIEWED: u8 = 2;
@@ -107,10 +108,24 @@ pub mod claim {
     pub const CUSTOM: u8 = 7;
     pub const MANUAL_ASSERTION: u8 = 8;
     pub const REPRESENTED: u8 = 9;
+    pub const EXHIBIT_MARKED: u8 = 10;
 }
 
 /// The claims one management representation may carry.
 pub const MAX_REPRESENTATION_CLAIMS: usize = 64;
+/// An exhibit label's bound, in bytes (Appendix A `ExhibitMark`).
+pub const MAX_EXHIBIT_LABEL_BYTES: usize = 64;
+
+pub(crate) fn valid_exhibit_claim(matter: &str, label: &str) -> bool {
+    !matter.is_empty()
+        && matter.len() <= crate::production::MAX_MATTER_BYTES
+        && matter.trim() == matter
+        && !matter.chars().any(char::is_control)
+        && !label.is_empty()
+        && label.len() <= MAX_EXHIBIT_LABEL_BYTES
+        && label.trim() == label
+        && label.bytes().all(|b| (0x20..=0x7E).contains(&b))
+}
 
 /// Subject tags of `subject_refs`.
 const SUBJECT_DOCUMENT: u8 = 1;
@@ -329,6 +344,9 @@ pub enum AttestationClaim {
         claims: Vec<Erasable<String>>,
         as_of: DateDay,
     },
+    /// "This document is marked as exhibit `label` in `matter`" (plan §13.2,
+    /// Appendix A `ExhibitMark`, Appendix B `MarkExhibit`).
+    ExhibitMarked { matter: String, label: String },
 }
 
 impl AttestationClaim {
@@ -341,6 +359,7 @@ impl AttestationClaim {
             Self::Reconciled(_) => claim::RECONCILED,
             Self::Confirmed { .. } => claim::CONFIRMED,
             Self::Represented { .. } => claim::REPRESENTED,
+            Self::ExhibitMarked { .. } => claim::EXHIBIT_MARKED,
         }
     }
 
@@ -354,6 +373,7 @@ impl AttestationClaim {
             Self::Reconciled(_) => "Reconciled",
             Self::Confirmed { .. } => "Confirmed",
             Self::Represented { .. } => "Represented",
+            Self::ExhibitMarked { .. } => "ExhibitMarked",
         }
     }
 }
@@ -476,6 +496,19 @@ pub fn reconciled_vid(book: Id128, manifest: Oid, known_at: CommitSeq, principal
     VId(u128::from_le_bytes(short))
 }
 
+/// `vid(ExhibitMarked) = H("fa:vid:attestation-exhibit:v1" ‖ book ‖ matter ‖ label)`:
+/// one exhibit mark per `(matter, label)` in the book.
+#[must_use]
+pub fn exhibit_mark_vid(book: Id128, matter: &str, label: &str) -> VId {
+    let digest = domain_digest(
+        b"fa:vid:attestation-exhibit:v1",
+        &[&book.0, matter.as_bytes(), label.as_bytes()],
+    );
+    let mut short = [0; 16];
+    short.copy_from_slice(&digest[..16]);
+    VId(u128::from_le_bytes(short))
+}
+
 impl Attestation {
     /// The derived identity: the claim and its subject decide it.
     #[must_use]
@@ -492,6 +525,11 @@ impl Attestation {
             }
             (AttestationClaim::Represented { .. }, Subject::Document(oid)) => {
                 Some(represented_vid(self.book_id, oid))
+            }
+            (AttestationClaim::ExhibitMarked { matter, label }, Subject::Document(_))
+                if valid_exhibit_claim(matter, label) =>
+            {
+                Some(exhibit_mark_vid(self.book_id, matter, label))
             }
             (AttestationClaim::RegisterEquals(c), Subject::Cell(d)) if *d == c.cell_digest() => {
                 Some(register_equals_vid(
@@ -554,6 +592,10 @@ impl Attestation {
                     c.encode(w);
                 });
                 w.i32(as_of.0);
+            }
+            // `str matter ‖ str label`.
+            AttestationClaim::ExhibitMarked { matter, label } => {
+                w.str(matter).str(label);
             }
         }
         w.list(&[self.subject], |w, s| match s {
@@ -653,6 +695,18 @@ impl StoredAttestation {
                             claims,
                             as_of: DateDay(r.i32("represented.as_of")?),
                         }
+                    }
+                    claim::EXHIBIT_MARKED => {
+                        let matter = r
+                            .str(crate::production::MAX_MATTER_BYTES, "exhibit_marked.matter")?
+                            .to_string();
+                        let label = r
+                            .str(MAX_EXHIBIT_LABEL_BYTES, "exhibit_marked.label")?
+                            .to_string();
+                        if !valid_exhibit_claim(&matter, &label) {
+                            return Err(r.invalid("exhibit_marked"));
+                        }
+                        AttestationClaim::ExhibitMarked { matter, label }
                     }
                     // Prepared, Examined, Custom: not in this build.
                     t => return Err(r.bad_tag("attestation.claim", t)),
@@ -885,7 +939,8 @@ pub fn witness_manual_assertion<V: asupersync::fs::Vfs + Clone>(
         | AttestationClaim::RegisterEquals(_)
         | AttestationClaim::Reconciled(_)
         | AttestationClaim::Confirmed { .. }
-        | AttestationClaim::Represented { .. } => Ok(Err(attestation_drift(
+        | AttestationClaim::Represented { .. }
+        | AttestationClaim::ExhibitMarked { .. } => Ok(Err(attestation_drift(
             vid,
             "another claim sits at a ManualAssertion's identity",
         ))),
@@ -973,7 +1028,7 @@ fn human_reviewer(
 }
 
 /// The capability binding stored with an attestation.
-fn binding(capability: &Capability) -> Result<CapabilityBinding, KernelError> {
+pub(crate) fn binding(capability: &Capability) -> Result<CapabilityBinding, KernelError> {
     Ok(CapabilityBinding {
         profile: capability.profile(),
         capability_commitment: capability
@@ -1036,10 +1091,24 @@ async fn commit_attestation<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
+    txn: WriteTxn,
+    attestation: &Attestation,
+    binding: &CapabilityBinding,
+    attests: Option<VId>,
+) -> Outcome<Attested> {
+    commit_attestation_in_case(db, ctx, book, txn, attestation, binding, attests, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn commit_attestation_in_case<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
     mut txn: WriteTxn,
     attestation: &Attestation,
     binding: &CapabilityBinding,
     attests: Option<VId>,
+    in_case: Option<VId>,
 ) -> Outcome<Attested> {
     let vid = attestation
         .vid()
@@ -1073,7 +1142,19 @@ async fn commit_attestation<V: asupersync::fs::Vfs + Clone>(
     if let Some(target) = attests {
         batch.add_edge(edge_id(relation::ATTESTS, vid, target), vid, target, vec![]);
     }
-    if let Err(e) = txn.write(db, batch) {
+    let write_res = if let Some(case_vid) = in_case {
+        let mut case_batch = WriteBatch::new(relation::IN_CASE);
+        case_batch.add_edge(
+            edge_id(relation::IN_CASE, vid, case_vid),
+            vid,
+            case_vid,
+            vec![],
+        );
+        txn.write_ordered(db, vec![batch, case_batch])
+    } else {
+        txn.write(db, batch)
+    };
+    if let Err(e) = write_res {
         txn.abort();
         return Err(e.into());
     }
@@ -1120,18 +1201,23 @@ fn recorded_or_conflict(row: &VertexRow, ours: &Attestation, key: &SealKey) -> O
             already_recorded: true,
         }));
     }
-    let what = match &stored.attestation.subject {
-        Subject::Document(oid) => format!(
+    let what = match (&stored.attestation.claim, &stored.attestation.subject) {
+        (AttestationClaim::ExhibitMarked { matter, label }, Subject::Document(oid)) => format!(
+            "exhibit `{label}` in matter `{matter}` already marks document {} (by principal {:032x})",
+            hex(&oid.0),
+            stored.attestation.principal.0
+        ),
+        (_, Subject::Document(oid)) => format!(
             "document {} already carries a {} attestation by principal {:032x}",
             hex(&oid.0),
             stored.attestation.claim.name(),
             stored.attestation.principal.0
         ),
-        Subject::Proposal(d) => format!(
+        (_, Subject::Proposal(d)) => format!(
             "proposal {} already carries a ManualAssertion with a different statement",
             hex(d)
         ),
-        Subject::Cell(d) => format!(
+        (_, Subject::Cell(d)) => format!(
             "register cell {} already carries this principal's RegisterEquals at this sequence with different content",
             hex(d)
         ),
@@ -1889,12 +1975,29 @@ mod tests {
             claim::REGISTER_EQUALS,
             claim::EXAMINED,
             claim::CUSTOM,
-            10,
+            11,
         ] {
             let mut t = bytes.clone();
             t[18] = tag;
             assert!(StoredAttestation::decode(&t).is_err(), "claim tag {tag}");
         }
+        let exhibit = Attestation {
+            book_id: Id128([5; 16]),
+            claim: AttestationClaim::ExhibitMarked {
+                matter: "SEC-2026-0042".into(),
+                label: "Px-12".into(),
+            },
+            subject: Subject::Document(Oid([9; 32])),
+            principal: VId(8),
+            evidence_refs: Vec::new(),
+        };
+        let ex_bytes = exhibit.canonical_bytes(&binding()).unwrap();
+        let ex_stored = StoredAttestation::decode(&ex_bytes).unwrap();
+        assert_eq!(ex_stored.attestation, exhibit);
+        assert_eq!(
+            exhibit.vid(),
+            Some(exhibit_mark_vid(Id128([5; 16]), "SEC-2026-0042", "Px-12"))
+        );
         let unsorted = Attestation {
             claim: AttestationClaim::Reviewed {
                 against: vec![Oid([2; 32]), Oid([1; 32])],

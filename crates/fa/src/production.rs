@@ -512,6 +512,7 @@ impl Book {
             Ok(held) => held,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        let view = self.production(&profile.matter)?;
         let mut records = Vec::with_capacity(produced.ranges.len());
         let mut natives = Vec::new();
         let mut rows = Vec::new();
@@ -597,6 +598,13 @@ impl Book {
             let document_kind = policy
                 .kind_by_tag(summary.kind)
                 .map_or_else(|| summary.kind.to_string(), |k| k.name.clone());
+            let exhibit_labels = view.as_ref().map_or_else(Vec::new, |v| {
+                v.exhibits
+                    .iter()
+                    .filter(|e| e.document == range.document)
+                    .map(|e| e.label.clone())
+                    .collect()
+            });
             records.push(LoadFileRecord {
                 doc_id: beg,
                 document_oid_hex: hex(&range.document.0),
@@ -608,7 +616,7 @@ impl Book {
                 byte_length: summary.size,
                 redacted: redaction_contract.is_some(),
                 redaction_contract,
-                exhibit_labels: Vec::new(),
+                exhibit_labels,
                 text_path: String::new(),
                 native_path,
             });

@@ -1096,3 +1096,120 @@ fn a_bundle_production_numbers_the_cited_documents_and_delivers_the_bundle_edrm_
     assert_eq!(status, 2, "{}", output.render());
     assert_eq!(head(&f.book), after);
 }
+
+#[test]
+fn exhibit_mark_journals_attestation() {
+    let f = Fixture::new();
+    let invoice = f.document("invoice.txt", "INVOICE 2042", "Invoice");
+    let contract = f.document("contract.txt", "CONTRACT 2042", "Invoice");
+
+    // Marking in an unknown matter refuses before journaling anything.
+    refused(
+        &f.book,
+        &[
+            "exhibit",
+            "mark",
+            &invoice,
+            "--label",
+            "Px-12",
+            "--matter",
+            "SEC-2026-0042",
+        ],
+        3,
+        "FA-REF-170",
+    );
+
+    ok(
+        &f.book,
+        &[
+            "production",
+            "open",
+            "SEC-2026-0042",
+            "--bates-prefix",
+            "ACME-SEC",
+        ],
+    );
+
+    let marked = ok(
+        &f.book,
+        &[
+            "exhibit",
+            "mark",
+            &invoice,
+            "--label",
+            "Px-12",
+            "--matter",
+            "SEC-2026-0042",
+        ],
+    );
+    assert_eq!(text(&marked, "event"), "exhibit_marked");
+    assert_eq!(text(data(&marked), "matter"), "SEC-2026-0042");
+    assert_eq!(text(data(&marked), "document"), invoice);
+    assert_eq!(text(data(&marked), "label"), "Px-12");
+    assert!(!flag(data(&marked), "already_recorded"));
+
+    // Repeating the identical exhibit mark is idempotent and writes nothing.
+    let before = head(&f.book);
+    let again = ok(
+        &f.book,
+        &[
+            "exhibit",
+            "mark",
+            &invoice,
+            "--label",
+            "Px-12",
+            "--matter",
+            "SEC-2026-0042",
+        ],
+    );
+    assert!(flag(data(&again), "already_recorded"));
+    assert_eq!(
+        text(data(&again), "attestation"),
+        text(data(&marked), "attestation")
+    );
+    assert_eq!(head(&f.book), before);
+
+    // Marking a different document with the same exhibit label in the same matter is refused (FA-REF-032).
+    refused(
+        &f.book,
+        &[
+            "exhibit",
+            "mark",
+            &contract,
+            "--label",
+            "Px-12",
+            "--matter",
+            "SEC-2026-0042",
+        ],
+        6,
+        "FA-REF-032",
+    );
+
+    // `fa production show` displays the journaled exhibit mark attestation.
+    let shown = ok(&f.book, &["production", "show", "SEC-2026-0042"]);
+    let exhibits = rows(data(&shown), "exhibits");
+    assert_eq!(exhibits.len(), 1);
+    assert_eq!(text(&exhibits[0], "label"), "Px-12");
+    assert_eq!(text(&exhibits[0], "document"), invoice);
+    assert_eq!(
+        text(&exhibits[0], "attestation"),
+        text(data(&marked), "attestation")
+    );
+
+    // Producing the marked document includes its exhibit label in the Concordance DAT load file.
+    let out = f.path("vol-exhibit");
+    ok(
+        &f.book,
+        &[
+            "produce",
+            "--matter",
+            "SEC-2026-0042",
+            "--document",
+            &invoice,
+            "--out",
+            &out,
+        ],
+    );
+    let dat = std::fs::read_to_string(format!("{out}/VOL001.dat")).expect("dat");
+    assert!(dat.contains("Px-12"), "{dat}");
+}

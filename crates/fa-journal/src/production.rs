@@ -236,6 +236,20 @@ fn check_matter(matter: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_exhibit_label(label: &str) -> Result<(), String> {
+    if label.is_empty()
+        || label.len() > crate::attestation::MAX_EXHIBIT_LABEL_BYTES
+        || label.trim() != label
+        || !label.bytes().all(|b| (0x20..=0x7E).contains(&b))
+    {
+        return Err(format!(
+            "an exhibit label is 1..={} printable ASCII bytes with no surrounding spaces; `{label}` is not",
+            crate::attestation::MAX_EXHIBIT_LABEL_BYTES
+        ));
+    }
+    Ok(())
+}
+
 /// One document's Bates range in a matter, as its Produce record journals it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatesRange {
@@ -425,6 +439,30 @@ pub struct RecordedRange {
     pub produced_by: VId,
 }
 
+/// One exhibit mark attested in a matter (plan §13.2, Appendix A `ExhibitMark`,
+/// Appendix B `MarkExhibit`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedExhibit {
+    pub attestation: VId,
+    pub document: Oid,
+    pub label: String,
+    pub signed_digest: [u8; 32],
+    pub recorded_at: CommitSeq,
+    pub attested_by: VId,
+}
+
+/// Outcome of [`mark_exhibit`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExhibitMarkedOutcome {
+    pub attestation: VId,
+    pub matter: String,
+    pub document: Oid,
+    pub label: String,
+    pub signed_digest: [u8; 32],
+    pub recorded_at: CommitSeq,
+    pub already_recorded: bool,
+}
+
 /// A matter's production profile and every range its records assigned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionView {
@@ -436,6 +474,8 @@ pub struct ProductionView {
     pub next_bates: u64,
     /// Ascending by Bates number.
     pub ranges: Vec<RecordedRange>,
+    /// Ascending by `(recorded_at, label, attestation)`.
+    pub exhibits: Vec<RecordedExhibit>,
 }
 
 #[derive(Clone, Copy)]
@@ -1191,6 +1231,93 @@ fn bates_record(entry: &fa_model::Entry) -> Result<Option<BatesRecord>, KernelEr
     BatesRecord::decode(ext).map(Some)
 }
 
+/// Record an `ExhibitMarked` attestation binding `label` to `document` in
+/// `matter` (plan §13.2, Appendix B `MarkExhibit`).
+pub async fn mark_exhibit<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    matter: &str,
+    document: Oid,
+    label: &str,
+) -> Outcome<ExhibitMarkedOutcome> {
+    if let Err(why) = check_matter(matter).and_then(|()| check_exhibit_label(label)) {
+        return Ok(Err(usage(
+            why,
+            "fa exhibit mark <document> --label <label> --matter <matter> --json",
+        )));
+    }
+    if let Err(r) = admit(db, book, capability, Kind::Produce)? {
+        return Ok(Err(r));
+    }
+    let binding = crate::attestation::binding(capability)?;
+    let attestation = crate::attestation::Attestation {
+        book_id: book.book_id,
+        claim: crate::attestation::AttestationClaim::ExhibitMarked {
+            matter: matter.to_string(),
+            label: label.to_string(),
+        },
+        subject: crate::attestation::Subject::Document(document),
+        principal: capability.holder(),
+        evidence_refs: Vec::new(),
+    };
+    let profile_vid = production_profile_vid(book.book_id, matter);
+    let txn_cx = ctx.txn();
+    let txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let Some(row) = txn.vertex(db, profile_vid)? else {
+        txn.abort();
+        return Ok(Err(unknown(matter)));
+    };
+    if !row.labels.contains(&label::PRODUCTION_PROFILE) {
+        txn.abort();
+        return Err(KernelError::Corrupt(format!(
+            "production identity {:032x} holds a vertex that is not a ProductionProfile",
+            profile_vid.0
+        )));
+    }
+    let profile = profile_of(&row)?;
+    if profile.vid() != profile_vid {
+        txn.abort();
+        return Err(KernelError::Corrupt(format!(
+            "production profile {:032x} carries another matter's body",
+            profile_vid.0
+        )));
+    }
+    if let Err(r) = witness_document(&txn, db, &document)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let attested = match crate::attestation::commit_attestation_in_case(
+        db,
+        ctx,
+        book,
+        txn,
+        &attestation,
+        &binding,
+        Some(document_vid(&document)),
+        Some(profile_vid),
+    )
+    .await?
+    {
+        Ok(attested) => attested,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    Ok(Ok(ExhibitMarkedOutcome {
+        attestation: attested.vid,
+        matter: matter.to_string(),
+        document,
+        label: label.to_string(),
+        signed_digest: attested.signed_digest,
+        recorded_at: attested.recorded_at,
+        already_recorded: attested.already_recorded,
+    }))
+}
+
 /// The production profile of `matter` and every range its records assigned,
 /// at the head.
 pub fn read_production<V: asupersync::fs::Vfs + Clone>(
@@ -1267,6 +1394,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let seq = db.frontier()?;
     let mut opened = None;
     let mut ranges = Vec::new();
+    let mut exhibits = Vec::new();
     let open = ProductionState::Open.tag();
     for edge in db.edges_at(seq)? {
         let e = &edge.entry;
@@ -1279,6 +1407,36 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         let Some(src) = db.vertex_at(e.src, seq)? else {
             continue;
         };
+        if src.labels.contains(&label::ATTESTATION) {
+            let stored = crate::attestation::verify_attestation_row(&src).map_err(|why| {
+                KernelError::Corrupt(format!("exhibit attestation {:032x}: {why}", e.src.0))
+            })?;
+            let (
+                crate::attestation::AttestationClaim::ExhibitMarked { matter, label },
+                crate::attestation::Subject::Document(document),
+            ) = (stored.attestation.claim, stored.attestation.subject)
+            else {
+                return Err(KernelError::Corrupt(format!(
+                    "attestation {:032x} in production `{}` is not an ExhibitMarked attestation",
+                    e.src.0, profile.matter
+                )));
+            };
+            if matter != profile.matter || stored.attestation.book_id != profile.book_id {
+                return Err(KernelError::Corrupt(format!(
+                    "exhibit attestation {:032x} names matter `{matter}`, not `{}`",
+                    e.src.0, profile.matter
+                )));
+            }
+            exhibits.push(RecordedExhibit {
+                attestation: e.src,
+                document,
+                label,
+                signed_digest: stored.signed_digest,
+                recorded_at: src.created_at,
+                attested_by: stored.attestation.principal,
+            });
+            continue;
+        }
         if !src.labels.contains(&label::ENTRY) {
             continue;
         }
@@ -1369,6 +1527,13 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
             profile.matter, profile.first_bates
         )));
     }
+    exhibits.sort_by(|a, b| {
+        (a.recorded_at, a.label.as_str(), a.attestation.0).cmp(&(
+            b.recorded_at,
+            b.label.as_str(),
+            b.attestation.0,
+        ))
+    });
     Ok(ProductionView {
         vid,
         profile,
@@ -1377,6 +1542,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         opened_by,
         next_bates,
         ranges,
+        exhibits,
     })
 }
 
