@@ -183,7 +183,7 @@ impl Welch {
 fn crop_index(last: usize, e: u32) -> usize {
     let last = last as u128;
     let m = e / 2;
-    let c = if e % 2 == 0 {
+    let c = if e.is_multiple_of(2) {
         last.div_ceil(1 << m)
     } else {
         let scale = 2u128 << (2 * m);
