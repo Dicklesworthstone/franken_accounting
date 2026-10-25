@@ -1820,8 +1820,9 @@ pub fn supplements_of<V: asupersync::fs::Vfs + Clone>(
 /// The order is the one the live mechanism will keep: the `erase` op is
 /// admitted before any read (doctrine 8); a revoked capability is refused
 /// at the head before the subject is read (FA-REF-023, plan §14.2); then a
-/// legal hold active on the subject refuses it (FA-REF-117, §14.6); only
-/// then is the absence itself the answer (FA-REF-088).
+/// legal hold active on the subject refuses it (FA-REF-117, §14.6); then an
+/// active retention policy floor covering the subject refuses it (FA-REF-199,
+/// §8.5); only then is the absence itself the answer (FA-REF-088).
 pub fn erasure_cut<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1853,6 +1854,9 @@ pub fn erasure_cut<V: asupersync::fs::Vfs + Clone>(
         crate::legal_hold::Pinned::Erasure,
     )? {
         return Ok(held);
+    }
+    if let Some(floor) = crate::retention::check_erasure_retention_floor(db, book, subject)? {
+        return Ok(floor);
     }
     Ok(Refusal::new(
         code::ERASURE_ABSENT,

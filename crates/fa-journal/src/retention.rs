@@ -989,6 +989,129 @@ fn subject_effective_day(subject_row: &VertexRow, fallback: DateDay) -> DateDay 
     fallback
 }
 
+fn judge_retention_floors(
+    subject: VId,
+    subject_row: Option<&VertexRow>,
+    covering_policies: &[&ActiveRetentionPolicy],
+    cut_at_seq: CommitSeq,
+    cut_at_day: Option<DateDay>,
+) -> Option<Refusal> {
+    let row = subject_row?;
+    for active in covering_policies {
+        match active.policy.floor {
+            RetentionFloor::Commits(floor_seq) => {
+                let min_cut_seq = row.created_at.0.saturating_add(floor_seq);
+                if cut_at_seq.0 < min_cut_seq {
+                    return Some(Refusal::new(
+                        RETENTION_FLOOR_ACTIVE,
+                        exit::SAFETY,
+                        format!(
+                            "{:032x} (recorded at seq {}) is inside retention policy {} (entry {:032x}, authority {}, floor {} commits; earliest cut seq is {min_cut_seq}, requested {})",
+                            subject.0,
+                            row.created_at.0,
+                            hex(&active.policy_oid.0),
+                            active.control_entry.0,
+                            hex(&active.policy.authority.0),
+                            floor_seq,
+                            cut_at_seq.0,
+                        ),
+                        "plan §8.5 (retention floors are registered Policy objects; any retention cut that would drop an in-floor object is refused)",
+                        format!(
+                            "retain {:032x} until at least commit sequence {min_cut_seq}",
+                            subject.0
+                        ),
+                    ));
+                }
+            }
+            RetentionFloor::Days(floor_days) => {
+                let origin_day = subject_effective_day(row, active.policy.effective_from);
+                let Some(cut_day) = cut_at_day else {
+                    return Some(Refusal::new(
+                        RETENTION_FLOOR_ACTIVE,
+                        exit::SAFETY,
+                        format!(
+                            "{:032x} (effective {}) is covered by retention policy {} (entry {:032x}, authority {}, floor {} days), and no corroborated TimeEvidence tick bounds the cut",
+                            subject.0,
+                            origin_day.render(),
+                            hex(&active.policy_oid.0),
+                            active.control_entry.0,
+                            hex(&active.policy.authority.0),
+                            floor_days,
+                        ),
+                        "plan §8.5 (retention floors are registered Policy objects; any retention cut that would drop an in-floor object is refused); §7.1a",
+                        format!(
+                            "journal a corroborated TimeEvidence tick at least {floor_days} days after {} before requesting a cut of {:032x}",
+                            origin_day.render(),
+                            subject.0
+                        ),
+                    ));
+                };
+                let min_cut_day = i64::from(origin_day.0).saturating_add(i64::from(floor_days));
+                if i64::from(cut_day.0) < min_cut_day {
+                    return Some(Refusal::new(
+                        RETENTION_FLOOR_ACTIVE,
+                        exit::SAFETY,
+                        format!(
+                            "{:032x} (effective {}) is inside retention policy {} (entry {:032x}, authority {}, floor {} days; requested cut at {})",
+                            subject.0,
+                            origin_day.render(),
+                            hex(&active.policy_oid.0),
+                            active.control_entry.0,
+                            hex(&active.policy.authority.0),
+                            floor_days,
+                            cut_day.render(),
+                        ),
+                        "plan §8.5 (retention floors are registered Policy objects; any retention cut that would drop an in-floor object is refused)",
+                        format!(
+                            "retain {:032x} until at least {floor_days} days after {}",
+                            subject.0,
+                            origin_day.render()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Judge active [`RetentionPolicy`] floors covering `subject` at the book's
+/// current frontier and latest corroborated `TimeEvidence` tick UTC day
+/// (called by [`crate::evidence::erasure_cut`] after the legal-hold check and
+/// before the `FA-REF-088` absence).
+pub fn check_erasure_retention_floor<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    subject: VId,
+) -> Result<Option<Refusal>, KernelError> {
+    let all_policies = active_retention_policies(db, book.book_id)?;
+    if all_policies.is_empty() {
+        return Ok(None);
+    }
+    let Some(row) = db.vertex(subject)? else {
+        return Ok(None);
+    };
+    let covering: Vec<&ActiveRetentionPolicy> = all_policies
+        .iter()
+        .filter(|p| scope_covers_subject(&p.policy.scope, &row))
+        .collect();
+    if covering.is_empty() {
+        return Ok(None);
+    }
+    let cut_at_seq = db.frontier()?;
+    let cut_at_day = match crate::sweep::latest_corroborated_tick(db, None)? {
+        Some(tick) => Some(crate::sweep::utc_day(tick.observed_utc_ns)?),
+        None => None,
+    };
+    Ok(judge_retention_floors(
+        subject,
+        Some(&row),
+        &covering,
+        cut_at_seq,
+        cut_at_day,
+    ))
+}
+
 /// Evaluate a retention cut on `subject` at `(cut_at_seq, cut_at_day)` (plan §8.5):
 ///
 /// 1. Admits `capability` (`Op::Erase`, whole-book reach, current, not revoked).
@@ -1074,61 +1197,14 @@ pub fn retention_cut<V: asupersync::fs::Vfs + Clone>(
         )));
     }
 
-    if let Some(row) = &subject_row {
-        for active in &covering_policies {
-            match active.policy.floor {
-                RetentionFloor::Commits(floor_seq) => {
-                    let min_cut_seq = row.created_at.0.saturating_add(floor_seq);
-                    if cut_at_seq.0 < min_cut_seq {
-                        return Ok(Err(Refusal::new(
-                            RETENTION_FLOOR_ACTIVE,
-                            exit::SAFETY,
-                            format!(
-                                "{:032x} (recorded at seq {}) is inside retention policy {} (entry {:032x}, authority {}, floor {} commits; earliest cut seq is {min_cut_seq}, requested {})",
-                                subject.0,
-                                row.created_at.0,
-                                hex(&active.policy_oid.0),
-                                active.control_entry.0,
-                                hex(&active.policy.authority.0),
-                                floor_seq,
-                                cut_at_seq.0,
-                            ),
-                            "plan §8.5 (retention floors are registered Policy objects; any retention cut that would drop an in-floor object is refused)",
-                            format!(
-                                "retain {:032x} until at least commit sequence {min_cut_seq}",
-                                subject.0
-                            ),
-                        )));
-                    }
-                }
-                RetentionFloor::Days(floor_days) => {
-                    let origin_day = subject_effective_day(row, active.policy.effective_from);
-                    let min_cut_day = i64::from(origin_day.0).saturating_add(i64::from(floor_days));
-                    if i64::from(cut_at_day.0) < min_cut_day {
-                        return Ok(Err(Refusal::new(
-                            RETENTION_FLOOR_ACTIVE,
-                            exit::SAFETY,
-                            format!(
-                                "{:032x} (effective {}) is inside retention policy {} (entry {:032x}, authority {}, floor {} days; requested cut at {})",
-                                subject.0,
-                                origin_day.render(),
-                                hex(&active.policy_oid.0),
-                                active.control_entry.0,
-                                hex(&active.policy.authority.0),
-                                floor_days,
-                                cut_at_day.render(),
-                            ),
-                            "plan §8.5 (retention floors are registered Policy objects; any retention cut that would drop an in-floor object is refused)",
-                            format!(
-                                "retain {:032x} until at least {floor_days} days after {}",
-                                subject.0,
-                                origin_day.render()
-                            ),
-                        )));
-                    }
-                }
-            }
-        }
+    if let Some(r) = judge_retention_floors(
+        subject,
+        subject_row.as_ref(),
+        &covering_policies,
+        cut_at_seq,
+        Some(cut_at_day),
+    ) {
+        return Ok(Err(r));
     }
 
     Ok(Err(Refusal::new(
@@ -1491,5 +1567,151 @@ mod tests {
             .expect("kernel")
             .expect_err("single approval must be refused");
         assert_eq!(refusal.exit, exit::SAFETY);
+    }
+
+    #[test]
+    fn erasure_cut_judges_active_days_and_commits_retention_floors() {
+        let mut env = TestEnv::new();
+        let erase_cap = TestEnv::cap(TestEnv::PREPARER, &["erase"]);
+
+        // 1. With no retention policy active, erasure_cut answers FA-REF-088 (ERASURE_ABSENT).
+        let r0 = crate::evidence::erasure_cut(&env.db, &env.book, &erase_cap, env.subject_doc_vid)
+            .expect("kernel");
+        assert_eq!((r0.code, r0.exit), (code::ERASURE_ABSENT, exit::REFUSAL));
+
+        // 2. Activate a 1-commit floor: frontier already exceeds created_at + 1, so out-of-floor
+        // subject falls through to FA-REF-088.
+        let short_commits = RetentionPolicy::new(
+            env.book.book_id,
+            RetentionScope::Book,
+            RetentionFloor::Commits(1),
+            env.authority_oid,
+            DateDay::from_ymd(2026, 1, 1).unwrap(),
+        );
+        env.activate_policy_dual_control(short_commits, b"ret-short-commits")
+            .expect("activated");
+        let r1 = crate::evidence::erasure_cut(&env.db, &env.book, &erase_cap, env.subject_doc_vid)
+            .expect("kernel");
+        assert_eq!((r1.code, r1.exit), (code::ERASURE_ABSENT, exit::REFUSAL));
+
+        // 3. Activate a 100-commit floor: subject is inside the floor -> FA-REF-199 (exit 7).
+        let long_commits = RetentionPolicy::new(
+            env.book.book_id,
+            RetentionScope::Book,
+            RetentionFloor::Commits(100),
+            env.authority_oid,
+            DateDay::from_ymd(2026, 1, 1).unwrap(),
+        );
+        let act_commits = env
+            .activate_policy_dual_control(long_commits, b"ret-long-commits")
+            .expect("activated");
+        let r2 = crate::evidence::erasure_cut(&env.db, &env.book, &erase_cap, env.subject_doc_vid)
+            .expect("kernel");
+        assert_eq!((r2.code, r2.exit), (RETENTION_FLOOR_ACTIVE, exit::SAFETY));
+        assert!(r2.message.contains(&hex(&act_commits.policy_oid.0)));
+
+        // 4. On a fresh book with a Days(30) floor and no corroborated TimeEvidence tick,
+        // erasure_cut fails closed with FA-REF-199 naming the missing time evidence.
+        let mut env_days = TestEnv::new();
+        let days_pol = RetentionPolicy::new(
+            env_days.book.book_id,
+            RetentionScope::Book,
+            RetentionFloor::Days(30),
+            env_days.authority_oid,
+            DateDay::from_ymd(2026, 1, 1).unwrap(),
+        );
+        let act_days = env_days
+            .activate_policy_dual_control(days_pol, b"ret-days-floor")
+            .expect("activated");
+        let r3 = crate::evidence::erasure_cut(
+            &env_days.db,
+            &env_days.book,
+            &erase_cap,
+            env_days.subject_doc_vid,
+        )
+        .expect("kernel");
+        assert_eq!((r3.code, r3.exit), (RETENTION_FLOOR_ACTIVE, exit::SAFETY));
+        assert!(r3.message.contains("no corroborated TimeEvidence tick"));
+        assert!(r3.message.contains(&hex(&act_days.policy_oid.0)));
+
+        // Journal a corroborated tick on 2026-01-10 (inside the 30-day floor from 2026-01-01):
+        // still refused with FA-REF-199.
+        let sys_vid = crate::rows::system_principal(env_days.book.book_id);
+        let tick_cap = Capability::new(
+            sys_vid,
+            fa_policy::Profile::System,
+            &[Op::Witness],
+            TestEnv::BOB,
+        )
+        .unwrap();
+        let jan10_ns =
+            u64::try_from(DateDay::from_ymd(2026, 1, 10).unwrap().0).unwrap() * 86_400_000_000_000;
+        let ctx = env_days.ctx();
+        let tick_desc = env_days.seal("tick jan 10");
+        env_days
+            .runtime
+            .block_on(async {
+                crate::sweep::record_tick(
+                    &mut env_days.db,
+                    &ctx,
+                    &env_days.book,
+                    crate::sweep::TickRequest {
+                        observed_utc_ns: jan10_ns,
+                        source: crate::sweep::SOURCE_DAEMON_CLOCK,
+                        monotonic_ok: true,
+                        principal_ref: sys_vid,
+                        capability: tick_cap.clone(),
+                        idempotency_key: b"tick-jan10".to_vec(),
+                        description: tick_desc,
+                    },
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("tick recorded");
+        let r4 = crate::evidence::erasure_cut(
+            &env_days.db,
+            &env_days.book,
+            &erase_cap,
+            env_days.subject_doc_vid,
+        )
+        .expect("kernel");
+        assert_eq!((r4.code, r4.exit), (RETENTION_FLOOR_ACTIVE, exit::SAFETY));
+        assert!(r4.message.contains("requested cut at 2026-01-10"));
+
+        // Journal a corroborated tick on 2026-02-05 (outside the 30-day floor):
+        // falls through to FA-REF-088.
+        let feb5_ns =
+            u64::try_from(DateDay::from_ymd(2026, 2, 5).unwrap().0).unwrap() * 86_400_000_000_000;
+        let tick_desc2 = env_days.seal("tick feb 5");
+        env_days
+            .runtime
+            .block_on(async {
+                crate::sweep::record_tick(
+                    &mut env_days.db,
+                    &ctx,
+                    &env_days.book,
+                    crate::sweep::TickRequest {
+                        observed_utc_ns: feb5_ns,
+                        source: crate::sweep::SOURCE_DAEMON_CLOCK,
+                        monotonic_ok: true,
+                        principal_ref: sys_vid,
+                        capability: tick_cap,
+                        idempotency_key: b"tick-feb5".to_vec(),
+                        description: tick_desc2,
+                    },
+                )
+                .await
+            })
+            .expect("kernel")
+            .expect("tick recorded");
+        let r5 = crate::evidence::erasure_cut(
+            &env_days.db,
+            &env_days.book,
+            &erase_cap,
+            env_days.subject_doc_vid,
+        )
+        .expect("kernel");
+        assert_eq!((r5.code, r5.exit), (code::ERASURE_ABSENT, exit::REFUSAL));
     }
 }

@@ -208,8 +208,8 @@ pub use retention::{
     RETENTION_POLICY_DOMAIN, RETENTION_POLICY_VERSION, RetentionActivationRequest, RetentionFloor,
     RetentionPolicy, RetentionPolicyActivated, RetentionScope, RetentionVerification,
     activate_retention_policy, active_retention_policies, check_checkpoint_cadence,
-    retention_activation_proposal, retention_cell_vid, retention_cut, retention_policy_vid,
-    verify_retention_policies,
+    check_erasure_retention_floor, retention_activation_proposal, retention_cell_vid,
+    retention_cut, retention_policy_vid, verify_retention_policies,
 };
 pub use revaluation::{FxRevaluationRequest, PreparedFxRevaluation, prepare_fx_revaluation};
 pub use rows::{AccountRow, PeriodRow};
