@@ -144,15 +144,15 @@ id = "admitted_durable_refusal"
 name = "Admitted durable refusal"
 substrate_class = "Authorized refusal publication"
 substrate_transactions = "1 when published"
-today_posture = "One publication when durable IntentOutcome refusal is persisted"
-today_transactions = 1
+today_posture = "0 publications today (durable IntentOutcome refusal persistence is unimplemented; see FA-INV-09.intent-outcome)"
+today_transactions = 0
 barrier_count = 2
-today_barrier_count = 2
-derived_objects = "1 immutable IntentOutcome"
+today_barrier_count = 0
+derived_objects = "0 objects today (1 immutable IntentOutcome when durable refusal publication lands)"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(1) IntentOutcome vertex write when published"
-notes = "refusal registry classifies which failures can be durable (§5.9)"
+complexity_witness = "0 writes today; O(1) IntentOutcome vertex write when durable refusal publication lands"
+notes = "refusal registry classifies which failures can be durable (§5.9); durable refusal outcomes remain unimplemented today"
 
 [[operation_class]]
 id = "release_only_resolution"
@@ -178,10 +178,10 @@ today_posture = "0 extra publications when canonically embedded in the sealed pl
 today_transactions = 0
 barrier_count = 0
 today_barrier_count = 0
-derived_objects = "1 manifest per effect set; O(N) bounded ProposalRefs plus target/authorization references; bytes charged to plan/approval closure"
+derived_objects = "1 manifest per effect set; O(N) bounded proposal references (vid + proposal_digest) plus target/authorization references; bytes charged to plan/approval closure"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "O(N) ProposalRefs hashed into effects_digest"
+complexity_witness = "O(N) proposal references hashed into effects_digest"
 notes = "never multiply the full manifest per member unless those duplicated bytes are charged; persist/embedding choice is a schema row"
 
 [[operation_class]]
@@ -339,7 +339,7 @@ id = "bulk_migration"
 name = "Bulk migration (M lines)"
 substrate_class = "substrate bulk protocol (staged chunks, one finalizing transaction)"
 substrate_transactions = "1 + chunk staging"
-today_posture = "Bounded staged Migration chunks + 1 finalizing tie-out publication"
+today_posture = "1 publication per staged Migration chunk + 1 finalizing tie-out publication (single finalizing substrate bulk protocol tracked on fa-zddh)"
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
@@ -347,7 +347,7 @@ derived_objects = "Migration entries; opening attestation"
 hot_object_exceptions = []
 external_authorities = "none"
 complexity_witness = "O(chunks * legs) staged migration entries + 1 finalizing MigrationControl(Finalize) with tie_out_digest + final-overlay capacity fold O(snapshot vertices + journal legs), including newly activated chunks, with native row/insertion witnesses and no extra writes"
-notes = "gap-free chunk manifests"
+notes = "gap-free chunk manifests; today each chunk stages in its own publication before the 1 finalizing MigrationControl(Finalize) publication (see fa-zddh)"
 
 # ---- Counted Kernel Operation Witnesses (bead fa-i5s) -----------------------
 # Checked against the deterministic operation counter in `fa-bench` / `fa-sim`

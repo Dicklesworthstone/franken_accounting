@@ -922,10 +922,10 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let agents_path = root.join("AGENTS.md");
     let check_sh_path = root.join("scripts/check.sh");
     if readme_path.is_file() && agents_path.is_file() && check_sh_path.is_file() {
-        let readme_text =
-            fs::read_to_string(&readme_path).map_err(|e| format!("{}: {e}", readme_path.display()))?;
-        let agents_text =
-            fs::read_to_string(&agents_path).map_err(|e| format!("{}: {e}", agents_path.display()))?;
+        let readme_text = fs::read_to_string(&readme_path)
+            .map_err(|e| format!("{}: {e}", readme_path.display()))?;
+        let agents_text = fs::read_to_string(&agents_path)
+            .map_err(|e| format!("{}: {e}", agents_path.display()))?;
         let check_sh_text = fs::read_to_string(&check_sh_path)
             .map_err(|e| format!("{}: {e}", check_sh_path.display()))?;
         let prefixes: Vec<String> = claims_config
@@ -1092,6 +1092,31 @@ pub fn check_operation_costs_derived_objects(
     Ok(checked)
 }
 
+fn scan_text_for_bead_ids(text: &str, ids: &mut BTreeSet<String>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        if &bytes[i..i + 3] == b"fa-"
+            && (i == 0
+                || !(bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b'_'
+                    || bytes[i - 1] == b'-'))
+        {
+            let len = text[i + 3..]
+                .bytes()
+                .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'.')
+                .count();
+            if (3..=6).contains(&len) {
+                let next = text[i + 3 + len..].as_bytes().first().copied();
+                if !next.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+                    ids.insert(text[i..i + 3 + len].to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
 fn collect_known_bead_ids(root: &Path) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     let jsonl = root.join(".beads/issues.jsonl");
@@ -1112,30 +1137,16 @@ fn collect_known_bead_ids(root: &Path) -> BTreeSet<String> {
             if path.extension().and_then(|s| s.to_str()) == Some("toml")
                 && let Ok(text) = fs::read_to_string(&path)
             {
-                let bytes = text.as_bytes();
-                let mut i = 0;
-                while i + 4 <= bytes.len() {
-                    if &bytes[i..i + 3] == b"fa-"
-                        && (i == 0
-                            || !(bytes[i - 1].is_ascii_alphanumeric()
-                                || bytes[i - 1] == b'_'
-                                || bytes[i - 1] == b'-'))
-                    {
-                        let len = text[i + 3..]
-                            .bytes()
-                            .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'.')
-                            .count();
-                        if (3..=6).contains(&len) {
-                            let next = text[i + 3 + len..].as_bytes().first().copied();
-                            if !next.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                            {
-                                ids.insert(text[i..i + 3 + len].to_string());
-                            }
-                        }
-                    }
-                    i += 1;
-                }
+                scan_text_for_bead_ids(&text, &mut ids);
             }
+        }
+    }
+    for doc_rel in [
+        "COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md",
+        "docs/NEGATIVE_EVIDENCE.md",
+    ] {
+        if let Ok(text) = fs::read_to_string(root.join(doc_rel)) {
+            scan_text_for_bead_ids(&text, &mut ids);
         }
     }
     ids
@@ -1176,9 +1187,15 @@ fn parse_iso_date_days(ymd: &str) -> Result<i64, String> {
     if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
         return Err(format!("invalid ISO date `{ymd}`"));
     }
-    let y: i64 = parts[0].parse().map_err(|_| format!("invalid year in `{ymd}`"))?;
-    let m: i64 = parts[1].parse().map_err(|_| format!("invalid month in `{ymd}`"))?;
-    let d: i64 = parts[2].parse().map_err(|_| format!("invalid day in `{ymd}`"))?;
+    let y: i64 = parts[0]
+        .parse()
+        .map_err(|_| format!("invalid year in `{ymd}`"))?;
+    let m: i64 = parts[1]
+        .parse()
+        .map_err(|_| format!("invalid month in `{ymd}`"))?;
+    let d: i64 = parts[2]
+        .parse()
+        .map_err(|_| format!("invalid day in `{ymd}`"))?;
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return Err(format!("out-of-range month/day in `{ymd}`"));
     }
@@ -1231,9 +1248,9 @@ pub fn check_readme_agents_sync(
     let mut aliases: Vec<(Vec<String>, Vec<String>)> = Vec::new();
     if let Some(alias_rows) = verbs_doc.arrays.get("alias") {
         for a in alias_rows {
-            let from = req_str_array("verbs.toml", a, "from")?;
-            let to = req_str_array("verbs.toml", a, "to")?;
-            aliases.push((from, to));
+            let name = req_str("verbs.toml", a, "name")?.to_string();
+            let expands = req_str_array("verbs.toml", a, "expands")?;
+            aliases.push((vec![name], expands));
         }
     }
     aliases.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
@@ -1332,11 +1349,11 @@ pub fn check_readme_agents_sync(
     }
     let (status_line, status_ymd) = status_date
         .ok_or_else(|| "README.md:1: missing `> **Status (YYYY-MM-DD):` status line".to_string())?;
-    let status_days = parse_iso_date_days(&status_ymd)
-        .map_err(|e| format!("README.md:{status_line}: {e}"))?;
+    let status_days =
+        parse_iso_date_days(&status_ymd).map_err(|e| format!("README.md:{status_line}: {e}"))?;
     if let Some((ver_line, ver_ymd)) = verified_date {
-        let ver_days = parse_iso_date_days(&ver_ymd)
-            .map_err(|e| format!("README.md:{ver_line}: {e}"))?;
+        let ver_days =
+            parse_iso_date_days(&ver_ymd).map_err(|e| format!("README.md:{ver_line}: {e}"))?;
         let diff = (ver_days - status_days).abs();
         if diff > 7 {
             return Err(format!(
@@ -1378,9 +1395,8 @@ pub fn check_readme_agents_sync(
     let (agents_line, a_list) = agents_steps.ok_or_else(|| {
         "AGENTS.md:1: missing `<!-- check-sh-steps: ... -->` step list".to_string()
     })?;
-    let (check_line, c_list) = check_steps.ok_or_else(|| {
-        "scripts/check.sh:1: missing `# CANONICAL_STEPS: ...` header".to_string()
-    })?;
+    let (check_line, c_list) = check_steps
+        .ok_or_else(|| "scripts/check.sh:1: missing `# CANONICAL_STEPS: ...` header".to_string())?;
     if a_list != c_list {
         return Err(format!(
             "AGENTS.md:{agents_line}: check.sh step list {a_list:?} disagrees with scripts/check.sh:{check_line} CANONICAL_STEPS {c_list:?}"
@@ -1974,5 +1990,173 @@ per_procedure_confusion = ["jet.round_amounts:90:0:0:1200"]
             err.to_string().contains(&slo.rows[0].id) && err.to_string().contains("benchmark"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn operation_costs_derived_objects_match_write_path() {
+        let root = default_workspace_root();
+        let op_costs_text = fs::read_to_string(root.join("registries/operation_costs.toml"))
+            .expect("operation_costs.toml");
+
+        let checked = check_operation_costs_derived_objects(&root, &op_costs_text)
+            .expect("live operation_costs.toml derived_objects must resolve");
+        assert!(
+            checked >= 5,
+            "expected >= 5 derived object tokens, got {checked}"
+        );
+
+        // Planted negative: non-existent EffectManifest / PhantomLedgerCell object kinds fail.
+        for bad_kind in ["EffectManifest", "PhantomLedgerCell"] {
+            let planted = format!(
+                "{op_costs_text}\n[[operation_class]]\nid = \"planted_bad\"\nderived_objects = \"1 {bad_kind}\"\n"
+            );
+            let err = check_operation_costs_derived_objects(&root, &planted)
+                .expect_err("unknown derived_objects kind must fail");
+            assert!(
+                err.contains("registries/operation_costs.toml:")
+                    && err.contains("planted_bad")
+                    && err.contains(bad_kind),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn readme_agents_sync() {
+        let root = default_workspace_root();
+        let readme_text = fs::read_to_string(root.join("README.md")).expect("README.md");
+        let agents_text = fs::read_to_string(root.join("AGENTS.md")).expect("AGENTS.md");
+        let check_sh_text =
+            fs::read_to_string(root.join("scripts/check.sh")).expect("scripts/check.sh");
+        let verbs_text =
+            fs::read_to_string(root.join("registries/verbs.toml")).expect("verbs.toml");
+        let claims_config = ClaimsLintConfig::embedded().expect("claims_lint.toml");
+        let prefixes: Vec<String> = claims_config
+            .marker_families
+            .iter()
+            .map(|f| f.prefix.clone())
+            .collect();
+        let mut known_markers = BTreeSet::new();
+        for entry in fs::read_dir(root.join("registries")).expect("read registries") {
+            let path = entry.expect("entry").path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml")
+                && let Ok(text) = fs::read_to_string(&path)
+            {
+                for m in extract_markers(&text, &prefixes) {
+                    known_markers.insert(m);
+                }
+            }
+        }
+
+        let cmds = check_readme_agents_sync(
+            &readme_text,
+            &agents_text,
+            &check_sh_text,
+            &verbs_text,
+            &known_markers,
+            &prefixes,
+        )
+        .expect("live README.md / AGENTS.md / scripts/check.sh must be in sync");
+        assert!(cmds >= 50, "expected >= 50 checked fa commands, got {cmds}");
+
+        // (a) Unresolved marker in README.md or AGENTS.md fails with file:line.
+        let bad_readme_marker = format!("{readme_text}\nSee FA-INV-99.\n");
+        let err = check_readme_agents_sync(
+            &bad_readme_marker,
+            &agents_text,
+            &check_sh_text,
+            &verbs_text,
+            &known_markers,
+            &prefixes,
+        )
+        .expect_err("unresolved marker in README.md must fail");
+        assert!(
+            err.contains("README.md:") && err.contains("FA-INV-99"),
+            "unexpected error: {err}"
+        );
+
+        // (b) Present-tense `fa ` command above `## TL;DR` not in verbs.toml fails with file:line.
+        let bad_readme_cmd = readme_text.replacen(
+            "\n## TL;DR\n",
+            "\n```bash\nfa conjure --book demo.fa\n```\n\n## TL;DR\n",
+            1,
+        );
+        let err = check_readme_agents_sync(
+            &bad_readme_cmd,
+            &agents_text,
+            &check_sh_text,
+            &verbs_text,
+            &known_markers,
+            &prefixes,
+        )
+        .expect_err("unregistered fa verb above TL;DR must fail");
+        assert!(
+            err.contains("README.md:") && err.contains("conjure"),
+            "unexpected error: {err}"
+        );
+
+        // (c) Status date > 7 days from verdict date fails with file:line.
+        let stale_readme = readme_text.replacen("Status (2026-", "Status (2025-", 1);
+        let err = check_readme_agents_sync(
+            &stale_readme,
+            &agents_text,
+            &check_sh_text,
+            &verbs_text,
+            &known_markers,
+            &prefixes,
+        )
+        .expect_err("stale status date must fail");
+        assert!(
+            err.contains("README.md:") && err.contains("max 7 days"),
+            "unexpected error: {err}"
+        );
+
+        // (d) AGENTS.md check.sh step list diverging from scripts/check.sh fails with file:line.
+        let drifted_agents = agents_text.replacen(
+            "<!-- check-sh-steps:",
+            "<!-- check-sh-steps: phantom-step,",
+            1,
+        );
+        let err = check_readme_agents_sync(
+            &readme_text,
+            &drifted_agents,
+            &check_sh_text,
+            &verbs_text,
+            &known_markers,
+            &prefixes,
+        )
+        .expect_err("drifted check.sh steps in AGENTS.md must fail");
+        assert!(
+            err.contains("AGENTS.md:") && err.contains("scripts/check.sh:"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fuzz_targets_cite_existing_beads() {
+        let root = default_workspace_root();
+        let fuzz_lib_text =
+            fs::read_to_string(root.join("crates/fa-fuzz/src/lib.rs")).expect("fa-fuzz/src/lib.rs");
+
+        let checked = check_fuzz_targets_cite_existing_beads(&root, &fuzz_lib_text)
+            .expect("live fa-fuzz targets must cite existing beads");
+        assert!(
+            checked >= 3,
+            "expected >= 3 dormant fuzz targets, got {checked}"
+        );
+
+        for nonexistent in ["fa-795", "fa-a6h", "fa-0t0"] {
+            let planted = format!(
+                "{fuzz_lib_text}\n    FuzzTargetSpec {{\n        name: \"planted_target\",\n        activating_bead: \"{nonexistent}\",\n    }},\n"
+            );
+            let err = check_fuzz_targets_cite_existing_beads(&root, &planted)
+                .expect_err("fuzz target citing nonexistent bead must fail");
+            assert!(
+                err.contains("crates/fa-fuzz/src/lib.rs:")
+                    && err.contains("planted_target")
+                    && err.contains(nonexistent),
+                "unexpected error: {err}"
+            );
+        }
     }
 }
