@@ -54,8 +54,9 @@ fn cli_ok_data(book: &Path, argv: &[&str]) -> String {
 }
 
 fn frontier(book: &Path) -> i128 {
-    let info = json::parse(&cli_ok_data(book, &["book", "info"])).unwrap();
-    match info
+    let (exit, line) = run_cli(book, &["book", "info"]);
+    assert_eq!(exit, 0, "book info: {}", line.render());
+    match line
         .get("coordinate")
         .and_then(|c| c.get("known_at"))
         .expect("known_at")
@@ -171,7 +172,7 @@ fn solvency_inputs_and_refusals_match_cli() {
                 r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[
 {{"side":"debit","account":"{acct}","amount":"{amt}","party":"{party}"}},
 {{"side":"credit","account":"2000","amount":"{amt}","party":"{party}"}}
-]}}"#
+],"obligation_maturity":[{{"ordinal":1,"status":"contractual","installments":[{{"due_date":"2026-12-31","amount":"{amt}"}}]}}]}}"#
             ),
         );
         cli_ok_data(&book, &["post", "--intent", &f, "--evidence", &evidence]);
@@ -211,7 +212,7 @@ fn solvency_inputs_and_refusals_match_cli() {
         cli_ok_data(&book, &["post", "--intent", &f, "--evidence", &evidence]);
     }
 
-    let adapter = make_adapter(&book, &["read", "produce"]);
+    let adapter = make_adapter(&book, &["read", "produce", "post"]);
 
     // Verify CLI and MCP byte-for-byte parity on lookback.preferences, ponzi.net_investment,
     // distribution.pro_rata, solvency.cash_flow_test (30d and 31d), and solvency.balance_sheet_test.
@@ -336,8 +337,14 @@ fn solvency_inputs_and_refusals_match_cli() {
     ))
     .unwrap();
     assert_eq!(
-        replayed.get("verified"),
-        Some(&Json::Bool(true)),
+        replayed.get("certificate").and_then(Json::as_str),
+        Some(cert.as_str()),
+        "{}",
+        replayed.render()
+    );
+    assert_eq!(
+        replayed.get("finding_count"),
+        Some(&Json::Int(1)),
         "{}",
         replayed.render()
     );
@@ -394,7 +401,7 @@ fn solvency_inputs_and_refusals_match_cli() {
             }),
         )
         .expect_err("read-only adapter must refuse finding record");
-    assert_eq!(auth_err.exit, 3);
+    assert_eq!(auth_err.exit, 7);
     assert_eq!(frontier(&book), head_before);
 
     // (c) Balance-sheet solvency with contra-assets, explicit valuation input, and stale valuation refusal:
@@ -445,7 +452,7 @@ fn solvency_inputs_and_refusals_match_cli() {
         cli_ok_data(&bs_book, &["post", "--intent", &f, "--evidence", &bs_ev]);
     }
 
-    let bs_adapter = make_adapter(&bs_book, &["read", "produce"]);
+    let bs_adapter = make_adapter(&bs_book, &["read", "produce", "post"]);
     let cli_bs = cli_ok_data(
         &bs_book,
         &[

@@ -7686,6 +7686,8 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "fx",
         "external_subledger",
         "obligations",
+        "obligation_maturity",
+        "valuation_adjustments",
     ];
     if let Some((field, _)) = fields
         .iter()
@@ -8677,12 +8679,14 @@ fn apply_solvency_extensions(
                     });
                 }
             }
+            installments.sort_unstable();
             terms.push(InlineObligationTerms {
                 ordinal,
                 status,
                 installments,
             });
         }
+        terms.sort_by_key(|t| t.ordinal);
         let ext = InlineObligationTerms::to_extension(&terms).map_err(|e| {
             usage(
                 format!("obligation_maturity: {e}"),

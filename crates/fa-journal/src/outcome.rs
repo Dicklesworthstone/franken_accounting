@@ -635,7 +635,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
             && matches!(
                 &proposal.control,
                 Some(fa_model::ControlPayload::SchemaChange {
-                    kind: 2 | 3 | 4,
+                    kind: 2..=4,
                     ..
                 })
             ));
