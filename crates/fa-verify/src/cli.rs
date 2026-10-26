@@ -105,7 +105,7 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,...]               independently recompute native or dimension-filtered
                                                 trial balances, statements, open items, balance explanations,
-                                                or effective-date aging.
+                                                effective-date aging or account roll-forwards.
                                                 V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
@@ -1318,7 +1318,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         .ok_or_else(|| {
                             usage(
                                 format!("`--expect {raw}` is not 64 hex characters"),
-                                "pass the independently selected report certificate digest (the outer certificate for aging)",
+                                "pass the independently selected report certificate digest (the outer certificate for composed aging and roll-forward reports)",
                             )
                         })
                 })
@@ -1382,6 +1382,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "balance_explanation"
                                 } else if report.aging.is_some() {
                                     "effective_date_aging"
+                                } else if report.roll_forward.is_some() {
+                                    "roll_forward"
                                 } else if report.open_items.is_some() {
                                     "open_items"
                                 } else if report.activity {
@@ -1397,6 +1399,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     explanation.contributions.len()
                                 } else if let Some(aging) = &report.aging {
                                     aging.items.len()
+                                } else if let Some(schedule) = &report.roll_forward {
+                                    schedule.rows.len()
                                 } else if let Some(open_items) = &report.open_items {
                                     open_items.items.len()
                                 } else if let Some(statement) = &report.statement {
@@ -1475,6 +1479,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(aging) = &report.aging {
                         checks.extend(aging_checks(aging));
+                    }
+                    if let Some(schedule) = &report.roll_forward {
+                        checks.extend(roll_forward_checks(schedule));
                     }
                     for row in &report.rows {
                         checks.push(Check::pass(
@@ -1951,6 +1958,116 @@ fn aging_checks(report: &crate::report::VerifiedAging) -> Vec<Check> {
     checks
 }
 
+fn roll_forward_checks(report: &crate::report::VerifiedRollForward) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "roll_forward_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("label", s(&report.label)),
+            ("effective_from", day(Some(report.effective_from))),
+            ("effective_through", day(Some(report.effective_through))),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "units",
+                Json::List(
+                    report
+                        .units
+                        .iter()
+                        .map(|&unit| n(u64::from(unit)))
+                        .collect(),
+                ),
+            ),
+            ("amount_basis", s("native units; debit minus credit")),
+            (
+                "classification_basis",
+                s(
+                    "recorded entry class, numeric supersession reasons and Rule-origin version; rule execution not judged",
+                ),
+            ),
+        ],
+    )];
+    for account in &report.accounts {
+        checks.push(Check::pass(
+            "roll_forward_account",
+            "authenticated_metadata",
+            vec![
+                ("account", s(format!("{:032x}", account.id))),
+                ("code", s(&account.code)),
+                ("name", s(&account.name)),
+                ("account_type", n(u64::from(account.account_type))),
+                ("is_leaf", Json::Bool(account.is_leaf)),
+            ],
+        ));
+    }
+    for (index, bucket) in report.buckets.iter().enumerate() {
+        checks.push(Check::pass(
+            "roll_forward_bucket",
+            "recomputation",
+            vec![
+                ("bucket", n(index as u64)),
+                ("class", n(u64::from(bucket.class))),
+                ("reason_code", s(&bucket.reason_code)),
+                (
+                    "rule_digest",
+                    bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| h(digest)),
+                ),
+            ],
+        ));
+    }
+    for row in &report.rows {
+        checks.push(Check::pass(
+            "roll_forward_row",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", row.account_id))),
+                ("unit", n(u64::from(row.unit_id))),
+                ("opening", amount(row.opening)),
+                (
+                    "activity",
+                    Json::List(row.activity.iter().copied().map(amount).collect()),
+                ),
+                ("net_change", amount(row.net_change)),
+                ("closing", amount(row.closing)),
+            ],
+        ));
+    }
+    for movement in &report.movements {
+        checks.push(Check::pass(
+            "roll_forward_movement",
+            "recomputation",
+            vec![
+                ("entry_digest", h(&movement.entry_digest)),
+                ("leg_index", n(u64::from(movement.leg_index))),
+                ("recorded_seq", n(movement.recorded_seq)),
+                ("effective_day", day(Some(movement.effective_day))),
+                ("account", s(format!("{:032x}", movement.account_id))),
+                ("unit", n(u64::from(movement.unit_id))),
+                ("class", n(u64::from(movement.bucket.class))),
+                ("reason_code", s(&movement.bucket.reason_code)),
+                (
+                    "rule_digest",
+                    movement
+                        .bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| h(digest)),
+                ),
+                ("debits", amount(movement.debits)),
+                ("credits", amount(movement.credits)),
+            ],
+        ));
+    }
+    checks
+}
+
 fn statement_checks(
     statement: &crate::report::VerifiedStatement,
     unit_universe_source: &str,
@@ -2318,6 +2435,77 @@ mod tests {
         ] {
             assert!(json.contains(&expected), "{expected}: {json}");
         }
+    }
+
+    #[test]
+    fn roll_forward_renders_exact_signed_rows_and_complete_classified_citations() {
+        use crate::report::*;
+        let bucket = RollForwardBucket {
+            class: 4,
+            reason_code: "supersession:1,2".into(),
+            rule_digest: Some([7; 32]),
+        };
+        let report = VerifiedRollForward {
+            book_id: [3; 16],
+            known_at: 9,
+            label: "Lead schedule".into(),
+            effective_from: 10,
+            effective_through: 40,
+            source_certificate_digest: [4; 32],
+            accounts: vec![RollForwardAccount {
+                id: 1,
+                code: "1000".into(),
+                name: "Cash".into(),
+                account_type: 1,
+                is_leaf: true,
+            }],
+            units: vec![0],
+            buckets: vec![bucket.clone()],
+            rows: vec![RollForwardRow {
+                account_id: 1,
+                unit_id: 0,
+                opening: i128::MAX,
+                activity: vec![-i128::MAX],
+                net_change: -i128::MAX,
+                closing: 0,
+            }],
+            movements: vec![RollForwardMovement {
+                entry_digest: [5; 32],
+                leg_index: 2,
+                recorded_seq: 8,
+                effective_day: 30,
+                account_id: 1,
+                unit_id: 0,
+                bucket,
+                debits: 0,
+                credits: i128::MAX,
+            }],
+        };
+        let checks = roll_forward_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "roll_forward_parameters",
+                "roll_forward_account",
+                "roll_forward_bucket",
+                "roll_forward_row",
+                "roll_forward_movement",
+            ]
+        );
+        let render = |index: usize| {
+            let mut value = String::new();
+            Json::Obj(checks[index].detail.clone()).write(&mut value);
+            value
+        };
+        assert!(render(0).contains("rule execution not judged"));
+        assert!(render(2).contains("\"reason_code\":\"supersession:1,2\""));
+        assert!(render(2).contains(&format!("\"rule_digest\":\"{}\"", "07".repeat(32))));
+        assert!(render(3).contains(&format!("\"activity\":[\"{}\"]", -i128::MAX)));
+        assert!(render(3).contains(&format!("\"opening\":\"{}\"", i128::MAX)));
+        assert!(render(4).contains("\"recorded_seq\":8"));
+        assert!(render(4).contains("\"leg_index\":2"));
+        assert!(render(4).contains(&format!("\"entry_digest\":\"{}\"", "05".repeat(32))));
+        assert!(render(4).contains(&format!("\"credits\":\"{}\"", i128::MAX)));
     }
 
     #[test]

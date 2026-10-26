@@ -10,7 +10,7 @@ use super::{ReportError, failed, metadata};
 use crate::blake3::hash_parts;
 use crate::codec::Writer;
 use crate::envelope::{LeafEnvelope, Leg};
-use arithmetic::Sum;
+pub(super) use arithmetic::Sum;
 use definition::{Definition, Source};
 use std::collections::{BTreeMap, BTreeSet};
 

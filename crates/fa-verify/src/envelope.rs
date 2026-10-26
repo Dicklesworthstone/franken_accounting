@@ -283,6 +283,21 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
     let book_id = r.fixed("entry.book_id")?;
     let branch_id = r.fixed("entry.branch_id")?;
     let class = r.u16("entry.class")?;
+    // The supported native registry assigns posting classes 1..=15 and
+    // control classes 16..=30. Validate this vocabulary while deriving every
+    // record, before a report can exclude its date, prefix or retired state.
+    if class == 0 {
+        return Err(r.error("entry.class", Reason::BadTag(0)));
+    }
+    if class > 30 {
+        return Err(r.error(
+            "entry.class",
+            Reason::TooLong {
+                max: 30,
+                actual: usize::from(class),
+            },
+        ));
+    }
     let effective_date = r.i32("entry.effective_date")?;
     if r.present("entry.document_date")? {
         r.i32("entry.document_date")?;
@@ -293,7 +308,11 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
         r.bytes(MAX_RECORD_BYTES, "entry.effective_period.code")?;
     }
     // side u8, account u128, amount (u32, i128), option tag, two counts, memo tag.
-    let legs = r.count(MAX_ENVELOPE_LIST, 1 + 16 + 20 + 1 + 4 + 1 + 4, "entry.legs")?;
+    // Native control records carry no monetary legs, including the dated
+    // PeriodControl and MigrationControl classes. Enforce zero before any
+    // leg allocation; otherwise a resealed control could masquerade as a post.
+    let max_legs = if class >= 16 { 0 } else { MAX_ENVELOPE_LIST };
+    let legs = r.count(max_legs, 1 + 16 + 20 + 1 + 4 + 1 + 4, "entry.legs")?;
     let mut parsed = Vec::with_capacity(legs);
     let mut leg_details = Vec::with_capacity(legs);
     for _ in 0..legs {

@@ -19,6 +19,8 @@
 //! Effective-date AgingCertificate v1 wraps a complete v3 OpenItems source;
 //! its cutoff is applied before settlement/reversal netting, and its outer
 //! digest binds every age band and output row.
+//! RollForwardCertificate v1 wraps a native as-of trial balance and recomputes
+//! opening, every classified posted movement, closing and exact leg citations.
 //! Native v2 trial balances, v3 reports and v4
 //! statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
@@ -35,6 +37,7 @@ mod explain;
 mod metadata;
 mod open_items;
 mod registry;
+mod roll_forward;
 mod statement;
 mod temporal;
 pub use aging::{
@@ -53,6 +56,9 @@ pub use open_items::{
     VerifiedOpenItemAccount, VerifiedOpenItems,
 };
 pub use registry::Reason as ExplanationReason;
+pub use roll_forward::{
+    RollForwardAccount, RollForwardBucket, RollForwardMovement, RollForwardRow, VerifiedRollForward,
+};
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
@@ -148,6 +154,8 @@ pub struct VerifiedReport {
     pub explanation: Option<VerifiedBalanceExplanation>,
     /// Present for independently reconstructed historical effective-date aging.
     pub aging: Option<VerifiedAging>,
+    /// Complete account/unit lead schedule with every classified posted leg.
+    pub roll_forward: Option<VerifiedRollForward>,
     /// Whether report units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
@@ -521,11 +529,17 @@ fn verify_report_with_inputs(
     } else {
         None
     };
-    let cert = certificate(
-        aging
-            .as_ref()
-            .map_or(certificate_bytes, |value| value.source),
-    )?;
+    let roll_forward = if roll_forward::recognizes(certificate_bytes) {
+        Some(roll_forward::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    let source = aging
+        .as_ref()
+        .map(|value| value.source)
+        .or_else(|| roll_forward.as_ref().map(|value| value.source))
+        .unwrap_or(certificate_bytes);
+    let cert = certificate(source)?;
     if aging.is_some()
         && (!matches!(cert.selection, Selection::OpenItems(_)) || cert.time_selection.is_some())
     {
@@ -534,22 +548,40 @@ fn verify_report_with_inputs(
             "effective-date aging requires a sequence-selected native OpenItems source",
         ));
     }
-    let certificate_digest = aging.as_ref().map_or(cert.digest, |value| value.digest);
+    if let Some(request) = &roll_forward
+        && (cert.selection != Selection::AsOf(request.effective_through)
+            || cert.time_selection.is_some()
+            || cert.dimension.is_some())
+    {
+        return Err(failed(
+            "supported_report",
+            "roll-forward requires a sequence-selected native trial balance as of its closing day",
+        ));
+    }
+    let certificate_digest = aging
+        .as_ref()
+        .map(|value| value.digest)
+        .or_else(|| roll_forward.as_ref().map(|value| value.digest))
+        .unwrap_or(cert.digest);
     let is_statement = matches!(cert.selection, Selection::Statement(_));
     let is_open_items = matches!(cert.selection, Selection::OpenItems(_));
     let is_explanation = matches!(cert.selection, Selection::ExplainBalance { .. });
     if (!is_statement && recipient_units.is_some())
-        || (!is_statement && !is_open_items && !is_explanation && major == 2)
+        || (!is_statement
+            && !is_open_items
+            && !is_explanation
+            && roll_forward.is_none()
+            && major == 2)
     {
         return Err(failed(
             "supported_report",
-            "registry bundles require a v4 statement or v3 OpenItems/ExplainBalance; explicit unit universes require a v4 statement",
+            "registry bundles require a native statement, OpenItems, ExplainBalance or composed roll-forward; explicit unit universes require a v4 statement",
         ));
     }
-    if (is_open_items || is_explanation) && major != 2 {
+    if (is_open_items || is_explanation || roll_forward.is_some()) && major != 2 {
         return Err(failed(
             "registry_closure",
-            "native v3 reports require a version-2 bundle with their authenticated complete registry closure",
+            "native v3 reports and roll-forwards require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -567,7 +599,7 @@ fn verify_report_with_inputs(
     if major == 2 && receipt.is_none() && expected_certificate.is_none() {
         return Err(failed(
             "report_input_authority",
-            "native report inputs, aging cutoff/buckets and complete unit registries require a valid production receipt or an independently selected report certificate digest",
+            "native report inputs, composed report selections and complete unit registries require a valid production receipt or an independently selected outer report certificate digest",
         ));
     }
     let signed_bytes = r.bytes(1024 * 1024, "report_bundle.checkpoint")?;
@@ -800,6 +832,7 @@ fn verify_report_with_inputs(
                 open_items: None,
                 explanation: None,
                 aging: Some(aging),
+                roll_forward: None,
                 unit_universe_source: "authenticated-registry",
                 output,
                 checked_records: records.len(),
@@ -823,6 +856,7 @@ fn verify_report_with_inputs(
             open_items: Some(open_items),
             explanation: None,
             aging: None,
+            roll_forward: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -867,6 +901,7 @@ fn verify_report_with_inputs(
             open_items: None,
             explanation: Some(explanation),
             aging: None,
+            roll_forward: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -917,6 +952,7 @@ fn verify_report_with_inputs(
             open_items: None,
             explanation: None,
             aging: None,
+            roll_forward: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -1044,6 +1080,44 @@ fn verify_report_with_inputs(
             },
         ));
     }
+    if let Some(certificate) = &roll_forward {
+        let (roll_forward, output) = roll_forward::replay(
+            certificate,
+            cert.book,
+            cert.known_at,
+            cert.digest,
+            &units,
+            &schema,
+            envelopes,
+            &infos,
+            &legs,
+            &visible_migrations,
+            &rows,
+        )?;
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            bundle_digest: digest,
+            certificate_digest,
+            output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: None,
+            effective_through: Some(roll_forward.effective_through),
+            activity: false,
+            periods: Vec::new(),
+            rows: Vec::new(),
+            statement: None,
+            dimension: None,
+            open_items: None,
+            explanation: None,
+            aging: None,
+            roll_forward: Some(roll_forward),
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
     Ok(VerifiedReport {
         scope: "recomputation",
         bundle_digest: digest,
@@ -1061,6 +1135,7 @@ fn verify_report_with_inputs(
         open_items: None,
         explanation: None,
         aging: None,
+        roll_forward: None,
         unit_universe_source: "not-applicable",
         output,
         checked_records: records.len(),

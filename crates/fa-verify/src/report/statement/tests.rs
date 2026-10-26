@@ -25,6 +25,7 @@ fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::Entry
         legacy_identity: None,
         supersession: target.into_iter().collect(),
         supersession_reasons: target.map(|_| 1).into_iter().collect(),
+        rule_version_oid: None,
         evidence: Vec::new(),
     }
 }

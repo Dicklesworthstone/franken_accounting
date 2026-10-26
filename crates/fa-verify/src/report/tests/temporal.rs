@@ -96,7 +96,29 @@ fn tick_with_shape(
     let proposal = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&w.buf]);
     let digest = hash_parts(ENTRY_DIGEST_DOMAIN, &[&proposal, &[]]);
     w.fixed(&proposal).fixed(&digest);
-    let envelope = envelope_of_entry(&w.buf, len, seq, 0).unwrap();
+    let envelope = if malformed == Some(MalformedTick::Legs) {
+        // Keep the hostile, correctly hashed control in the authenticated
+        // prefix even though the canonical constructor now rejects its legs.
+        // The report verifier must reject it before a later tick retires it.
+        assert_eq!(
+            crate::envelope::entry_record_digest(&w.buf, len).unwrap(),
+            digest
+        );
+        LeafEnvelope {
+            kind: crate::envelope::KIND_ENTRY,
+            book_id: BOOK,
+            branch_id: [0; 16],
+            commit_seq: seq,
+            within_commit_ordinal: 0,
+            record_digest: digest,
+            class: 19,
+            effective_day: None,
+            account_vids: vec![account_id("1000")],
+            unit_ids: vec![1],
+        }
+    } else {
+        envelope_of_entry(&w.buf, len, seq, 0).unwrap()
+    };
     Record {
         bytes: w.buf,
         len,
@@ -271,26 +293,43 @@ fn malformed_retired_time_ticks_are_rejected_before_retirement() {
     // structurally invalid authenticated entry into admissible TimeEvidence.
     let digest = hash_parts(b"", &[&999_u64.to_le_bytes()]);
     let mut attacks = vec![
-        (tick_source(4, 999, false, 255), "registered bound"),
-        (tick_source(4, u64::MAX, false, 0), "registered bound"),
+        (
+            tick_source(4, 999, false, 255),
+            "time_history",
+            "registered bound",
+        ),
+        (
+            tick_source(4, u64::MAX, false, 0),
+            "time_history",
+            "registered bound",
+        ),
     ];
     attacks.extend(
         [
-            (MalformedTick::Legs, "monetary legs"),
-            (MalformedTick::UnitTotals, "monetary totals"),
-            (MalformedTick::Pending, "pending block"),
-            (MalformedTick::EmptyKey, "key of 1..=64 bytes"),
-            (MalformedTick::LongKey, "key of 1..=64 bytes"),
+            (MalformedTick::Legs, "record_derivation", "entry.legs"),
+            (MalformedTick::UnitTotals, "time_history", "monetary totals"),
+            (MalformedTick::Pending, "time_history", "pending block"),
+            (
+                MalformedTick::EmptyKey,
+                "time_history",
+                "key of 1..=64 bytes",
+            ),
+            (
+                MalformedTick::LongKey,
+                "time_history",
+                "key of 1..=64 bytes",
+            ),
         ]
         .into_iter()
-        .map(|(shape, reason)| {
+        .map(|(shape, predicate, reason)| {
             (
                 tick_with_shape(4, 999, false, 0, digest, Some(shape)),
+                predicate,
                 reason,
             )
         }),
     );
-    for (malformed, reason) in attacks {
+    for (malformed, predicate, reason) in attacks {
         let mut records = schema();
         records.extend([
             tick(3, 100, true),
@@ -303,7 +342,7 @@ fn malformed_retired_time_ticks_are_rejected_before_retirement() {
         let (bytes, anchor) = bundle(&records, 5, Selection::AsOf(15), &rows(100, 0));
         let (bytes, _) = with_time(&bytes, &time);
         let error = verify_fixture(&bytes, anchor).unwrap_err();
-        assert_eq!(error.predicate, "time_history", "{error}");
+        assert_eq!(error.predicate, predicate, "{error}");
         assert!(error.detail.contains(reason), "{error}");
     }
 }
