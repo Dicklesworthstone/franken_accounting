@@ -2360,7 +2360,11 @@ fn make_posting(
 ) -> SnapshotEntry {
     let seq = u64::try_from(vid.0).unwrap();
     let payload = EntryPayload {
-        schema_minor: if extensions.is_empty() { 0 } else { 2 },
+        schema_minor: if extensions.is_empty() {
+            0
+        } else {
+            fa_model::entry::EXTENSIONS_MINOR
+        },
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class,
@@ -3277,7 +3281,7 @@ fn explicit_valuation_inputs_are_visible_applicable_and_cited() {
     let mut inline_snap = snapshot.clone();
     inline_snap.entries[1].entry = {
         let mut p = inline_snap.entries[1].entry.proposal.clone();
-        p.schema_minor = 2;
+        p.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
         p.extensions = vec![
             InlineValuationTerms::to_extension(&[InlineValuationTerms {
                 valuation_id: "VAL-INLINE-2".into(),

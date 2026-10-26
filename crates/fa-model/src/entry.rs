@@ -1627,6 +1627,26 @@ impl EntryPayload {
         Ok(totals)
     }
 
+    /// [`Self::validate`] for a payload this build is about to write: it also
+    /// refuses a `schema_minor` above [`SCHEMA_MINOR`] (fa-hoi5). Reading
+    /// still accepts a newer writer's minor and preserves its unknown
+    /// extensions (the additive-minor law); writing one would journal
+    /// extensions this build never validated.
+    pub fn validate_for_write(&self) -> Result<(), EntryError> {
+        self.validate()?;
+        self.check_writer_minor()
+    }
+
+    fn check_writer_minor(&self) -> Result<(), EntryError> {
+        if self.schema_minor > SCHEMA_MINOR {
+            return Err(invalid(
+                "schema_minor",
+                "a writer seals only the schema minors it knows; register a new extension instead of claiming a newer minor",
+            ));
+        }
+        Ok(())
+    }
+
     /// Structural validation (not the accounting laws).
     pub fn validate(&self) -> Result<(), EntryError> {
         if !self.class.is_registered() {
@@ -2240,8 +2260,21 @@ impl EntryPayload {
     }
 
     /// Bind the envelope — the dry-run plan certificate (if any) and the
-    /// approval transcript — and produce the committed entry.
+    /// approval transcript — and produce the committed entry. Every new
+    /// entry is sealed here, so a schema minor this build does not know is
+    /// refused here as well as at admission (fa-hoi5).
     pub fn seal(
+        self,
+        approvals: Vec<ApprovalRef>,
+        plan_certificate: Option<Oid>,
+    ) -> Result<Entry, EntryError> {
+        self.check_writer_minor()?;
+        self.seal_unchecked(approvals, plan_certificate)
+    }
+
+    /// [`Self::seal`] without the writer-minor check: how a newer writer's
+    /// entry is built for this module's own decode tests.
+    fn seal_unchecked(
         self,
         approvals: Vec<ApprovalRef>,
         plan_certificate: Option<Oid>,
@@ -3252,7 +3285,26 @@ mod tests {
             }
         ));
         p.schema_minor = SCHEMA_MINOR + 1;
-        let e = p.clone().seal(vec![], None).unwrap();
+        // This build reads a newer writer's entry (it validates, preserving
+        // the unknown tag), but never writes one (fa-hoi5): validate_for_write
+        // and seal refuse the minor it does not know.
+        assert!(p.validate().is_ok());
+        for refused in [
+            p.validate_for_write().unwrap_err(),
+            p.clone().seal(vec![], None).unwrap_err(),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    EntryError::Invalid {
+                        what: "schema_minor",
+                        ..
+                    }
+                ),
+                "{refused:?}"
+            );
+        }
+        let e = p.clone().seal_unchecked(vec![], None).unwrap();
         let back = Entry::decode(&e.encode().unwrap()).unwrap();
         assert_eq!(back.proposal.extensions, vec![(999, vec![1, 2, 3])]);
         let mut q = p.clone();

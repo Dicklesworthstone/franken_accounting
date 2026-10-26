@@ -981,7 +981,7 @@ pub(crate) fn authorize_effects<V: asupersync::fs::Vfs + Clone>(
 /// Reject malformed or foreign intents before admission observes policy or
 /// hydrates history, including through the asynchronous compound entrypoints.
 fn validate_post_coordinate(book: &BookContext, proposal: &EntryPayload) -> Result<(), Refusal> {
-    proposal.validate().map_err(|error| {
+    proposal.validate_for_write().map_err(|error| {
         Refusal::new(
             code::STRUCTURE,
             exit::USAGE,
@@ -4968,7 +4968,7 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
     // Both capabilities precede the first target lookup, even if the
     // other request would otherwise disclose a more specific refusal.
     for request in [&reversal_req, &replacement_req] {
-        if let Err(error) = request.proposal.validate() {
+        if let Err(error) = request.proposal.validate_for_write() {
             return Ok(Err(Refusal::new(
                 code::STRUCTURE,
                 exit::USAGE,

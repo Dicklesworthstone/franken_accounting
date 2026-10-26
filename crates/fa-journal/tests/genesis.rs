@@ -876,6 +876,35 @@ fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
     assert!(h.db.vertex(vid).unwrap().is_none());
 }
 
+/// fa-hoi5: a balanced proposal that claims a schema minor this build does
+/// not know, carrying an extension no reader registered, is refused at
+/// admission (FA-REF-100, naming `schema_minor`) and writes nothing. At its
+/// own minor the same proposal is the ordinary unregistered-tag refusal.
+#[test]
+fn a_proposal_claiming_a_future_schema_minor_is_refused() {
+    let mut h = harness();
+    let before = h.db.frontier().unwrap();
+    let mut proposal = h.proposal(h.rent_legs(5_000), b"future-minor", EntryClass::ORIGINAL);
+    proposal.schema_minor = fa_model::entry::SCHEMA_MINOR + 1;
+    proposal.extensions = vec![(999, vec![1, 2, 3])];
+    let r = h.post(h.request(proposal.clone(), &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("schema_minor"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let vid = fa_model::entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"future-minor");
+    assert!(h.db.vertex(vid).unwrap().is_none());
+
+    proposal.schema_minor = fa_model::entry::SCHEMA_MINOR;
+    let r = h.post(h.request(proposal, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(
+        r.message.contains("unregistered extension tag"),
+        "{}",
+        r.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+}
+
 #[test]
 fn closed_period_refuses_originals_and_admits_an_exact_reversal_under_post_closed() {
     let mut h = harness();
