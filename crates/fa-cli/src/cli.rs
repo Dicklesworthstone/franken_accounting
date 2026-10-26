@@ -1257,6 +1257,88 @@ pub fn run_for_daemon_bound(
     )
 }
 
+/// Admit a daemon command through the same parser, authority, confirmation and
+/// file-containment checks as execution, without invoking its handler. The
+/// returned flag requests a fresh TimeEvidence observation before a critical
+/// publication. Help, previews and ordinary reads never request one.
+///
+/// This is a preflight, not a permission token: execution repeats admission at
+/// the new frontier after the daemon's tick, including current revocations and
+/// capability expiry. No request supplies the daemon's clock or System authority.
+pub fn preflight_for_daemon(
+    argv: &[String],
+    book: &mut Book,
+    dir: PathBuf,
+    files_root: Option<PathBuf>,
+    client_cwd: Option<PathBuf>,
+    authority: Option<&LaunchAuthority>,
+) -> Result<bool, (u8, Captured)> {
+    let daemon_files = DaemonFiles {
+        book_dir: dir.clone(),
+        files_root,
+    };
+    let mut needs_tick = false;
+    let result = run_scoped_with(
+        argv,
+        Books::Held { book, dir },
+        Files {
+            cwd: client_cwd,
+            stdin: Stdin::Missing,
+        },
+        authority,
+        Some(daemon_files),
+        true,
+        |ctx, reg, args| {
+            dispatch_with(ctx, reg, args, |ctx, verb, args, _handler| {
+                if !needs_command_time_evidence(&verb.name, args) {
+                    return Ok(());
+                }
+                if let Some(authority) = &ctx.authority {
+                    ctx.books
+                        .admit_current_before_input(args, authority.capability())?;
+                }
+                // Checkpoint creation has no implicit owner grant. Preserve
+                // that check before the daemon journals anything on its behalf.
+                if verb.name == "checkpoint" {
+                    let capability = ctx.capability(args, &[])?;
+                    fa_policy::require(
+                        &capability,
+                        fa_policy::Op::Witness,
+                        "creating a checkpoint",
+                    )
+                    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+                }
+                needs_tick = true;
+                Ok(())
+            })
+        },
+    );
+    if result.0 == 0 {
+        Ok(needs_tick)
+    } else {
+        Err(result)
+    }
+}
+
+/// Only committed operations, after aliases and registered defaults resolve.
+/// A tick must precede planning the final publication, so a read-only preview
+/// never advances the very frontier it is meant to inspect.
+fn needs_command_time_evidence(verb: &str, args: &Args) -> bool {
+    let sub = args.positional.get(1).map(String::as_str);
+    match (verb, sub) {
+        ("checkpoint", Some("create")) => true,
+        ("period", Some("soft-close" | "close" | "lock")) => {
+            !args.switch("--dry-run") && args.flag("--plan-out").is_none()
+        }
+        ("close", Some("year-end")) => {
+            !post_plan_only(verb, args) && args.flag("--plan-out").is_none()
+        }
+        ("statement", Some("issue")) => !args.switch("--dry-run") && args.flag("--plan").is_some(),
+        ("schedule", Some("sweep")) => !args.switch("--dry-run"),
+        _ => false,
+    }
+}
+
 /// Run under the immutable authority supplied by the host. Hosts opening
 /// a directory should use [`crate::entry::fa_with_authority`] for the
 /// writer lease as well. This route never self-issues an owner capability.
@@ -1413,10 +1495,30 @@ fn correct_read_flags(argv: &[String], reg: &Registry) -> (Vec<String>, Vec<Stri
 fn run_scoped(
     argv: &[String],
     books: Books<'_>,
+    files: Files,
+    authority: Option<&LaunchAuthority>,
+    daemon_files: Option<DaemonFiles>,
+    capture: bool,
+) -> (u8, Captured) {
+    run_scoped_with(
+        argv,
+        books,
+        files,
+        authority,
+        daemon_files,
+        capture,
+        dispatch,
+    )
+}
+
+fn run_scoped_with(
+    argv: &[String],
+    books: Books<'_>,
     mut files: Files,
     authority: Option<&LaunchAuthority>,
     daemon_files: Option<DaemonFiles>,
     capture: bool,
+    dispatch: impl FnOnce(&mut Ctx<'_>, &Registry, &Args) -> Result<(), Fail>,
 ) -> (u8, Captured) {
     let reg = match registry() {
         Ok(r) => r,
@@ -1662,6 +1764,17 @@ pub fn environment_error(argv: &[String], message: String, capture: bool) -> (u8
 #[must_use]
 pub fn book_error(argv: &[String], error: BookError, capture: bool) -> (u8, Captured) {
     host_failure(argv, Fail::Book(error), capture)
+}
+
+/// A host-side book failure with the session binding preserved in the envelope.
+#[must_use]
+pub fn book_error_with_authority(
+    argv: &[String],
+    error: BookError,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure_with_authority(argv, Fail::Book(error), authority, capture)
 }
 
 /// A foundation failure (exit 5) raised by a host before any command runs.
@@ -1978,6 +2091,17 @@ pub fn version_metadata_json(binary: &str) -> Json {
 }
 
 fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> {
+    dispatch_with(ctx, reg, args, |ctx, _verb, args, handler| {
+        handler(ctx, args)
+    })
+}
+
+fn dispatch_with(
+    ctx: &mut Ctx<'_>,
+    reg: &Registry,
+    args: &Args,
+    execute: impl FnOnce(&mut Ctx<'_>, &Verb, &Args, Handler) -> Result<(), Fail>,
+) -> Result<(), Fail> {
     let out = &ctx.out;
     if args.switch("--version") {
         let text = version_text("fa");
@@ -2113,7 +2237,7 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
                 verb.name
             ))
         })?;
-    handler(ctx, args)
+    execute(ctx, verb, args, handler)
 }
 
 /// The current period planner returns before every publication. Only this
@@ -8306,7 +8430,9 @@ fn apply_solvency_extensions(
                 })?;
             let ordinal = u16::try_from(ordinal_raw).map_err(|_| {
                 usage(
-                    format!("obligation_maturity[{i}]: `ordinal` {ordinal_raw} is out of u16 range"),
+                    format!(
+                        "obligation_maturity[{i}]: `ordinal` {ordinal_raw} is out of u16 range"
+                    ),
                     "\"ordinal\": 0..65535",
                 )
             })?;
@@ -8361,7 +8487,9 @@ fn apply_solvency_extensions(
                     )?;
                     let amt = Amount::parse(amt_s, &ctx.units).map_err(|e| {
                         usage(
-                            format!("obligation_maturity[{i}].installments[{j}].amount `{amt_s}`: {e:?}"),
+                            format!(
+                                "obligation_maturity[{i}].installments[{j}].amount `{amt_s}`: {e:?}"
+                            ),
                             "amount: \"1000.00 USD\"",
                         )
                     })?;
@@ -8387,8 +8515,12 @@ fn apply_solvency_extensions(
                 installments,
             });
         }
-        let ext = InlineObligationTerms::to_extension(&terms)
-            .map_err(|e| usage(format!("obligation_maturity: {e}"), "check obligation_maturity fields"))?;
+        let ext = InlineObligationTerms::to_extension(&terms).map_err(|e| {
+            usage(
+                format!("obligation_maturity: {e}"),
+                "check obligation_maturity fields",
+            )
+        })?;
         proposal.schema_minor = proposal.schema_minor.max(2);
         proposal.extensions.retain(|(t, _)| *t != ext.0);
         proposal.extensions.push(ext);
@@ -8408,11 +8540,12 @@ fn apply_solvency_extensions(
             let valuation_id = req_str(item, "valuation_id", &where_s)?.to_string();
             let subject = if let Some(inst_s) = item.get("instrument").and_then(Json::as_str) {
                 let carrying_code = req_str(item, "carrying_account", &where_s)?;
-                let inst_vid = if inst_s.len() == 32 && inst_s.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    parse_vid(inst_s, "instrument")?
-                } else {
-                    fa_model::instrument_vid(ctx.book_id, inst_s)
-                };
+                let inst_vid =
+                    if inst_s.len() == 32 && inst_s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        parse_vid(inst_s, "instrument")?
+                    } else {
+                        fa_model::instrument_vid(ctx.book_id, inst_s)
+                    };
                 ValuationSubject::Instrument {
                     instrument: inst_vid,
                     carrying_account: account_vid(ctx.book_id, carrying_code),
@@ -8422,11 +8555,13 @@ fn apply_solvency_extensions(
                 ValuationSubject::Account(account_vid(ctx.book_id, acct_code))
             };
             let entity = match item.get("entity").and_then(Json::as_str) {
-                Some(e_code) => Some(if e_code.len() == 32 && e_code.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    parse_vid(e_code, "entity")?
-                } else {
-                    fa_model::legal_entity_vid(ctx.book_id, e_code)
-                }),
+                Some(e_code) => Some(
+                    if e_code.len() == 32 && e_code.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        parse_vid(e_code, "entity")?
+                    } else {
+                        fa_model::legal_entity_vid(ctx.book_id, e_code)
+                    },
+                ),
                 None => None,
             };
             let basis_s = item

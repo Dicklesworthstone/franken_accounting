@@ -43,6 +43,165 @@ type Run = (Vec<Vec<String>>, Ended, Vec<Vec<u8>>);
 /// The book directory the lab connections serve.
 const BOOK: &str = "/books/lab";
 
+#[test]
+fn critical_requests_admit_before_observation_and_preserve_preview_frontiers() {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{BookKeys, Entropy};
+    use fa_journal::BookSpec;
+    use fa_model::Id128;
+    use fa_money::UnitRegistry;
+    use fa_time::{FiscalCalendar, PeriodState};
+
+    let mut book = Book::create_memory(
+        BookKeys::for_development(184),
+        BookSpec {
+            book_id: Id128([184; 16]),
+            name: "Command time evidence".into(),
+            base_unit: UnitRegistry::embedded().unwrap().lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("command-clock", 1, 1).unwrap(),
+            time_zone_policy: Some(fa_journal::TimeZonePolicy::Utc),
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(184),
+    )
+    .unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let cx = runtime.request_cx_with_budget(Budget::INFINITE);
+    let work = timed::TimedWork::bootstrap(
+        &cx,
+        &book,
+        timed::Policy {
+            tick_ns: 3_600_000_000_000,
+            sweep_batch: 1,
+            clock_drift_ns: 1_000_000_000,
+        },
+    )
+    .unwrap();
+    let mut server = Server {
+        book: &mut book,
+        dir: PathBuf::from(BOOK),
+        socket: PathBuf::from(BOOK).join("fad.sock"),
+        files_root: None,
+        requests: 0,
+        timed: Some(work),
+        daemon_uid: None,
+        timings: Vec::new(),
+    };
+    let request = |argv: &[&str]| Request {
+        op: Op::Run,
+        argv: argv.iter().map(|s| (*s).to_owned()).collect(),
+        cwd: None,
+        stdin: None,
+        token: None,
+    };
+    for argv in [
+        vec!["period", "create", "--fiscal-year", "2026", "--json"],
+        vec!["period", "open", "FY2026-P03", "--json"],
+    ] {
+        let (response, _) = runtime.block_on(server.handle(&cx, request(&argv)));
+        assert_eq!(response.exit, 0, "{}{}", response.stdout, response.stderr);
+    }
+    assert!(server.book.latest_tick().unwrap().is_none());
+    let before = server.book.head().unwrap();
+    for (argv, exit) in [
+        (
+            vec!["period", "soft-close", "FY2026-P03", "--dry-run", "--json"],
+            0,
+        ),
+        (vec!["period", "close", "--help", "--json"], 0),
+        (vec!["period", "close", "FY2026-P03", "--json"], 7),
+        (vec!["checkpoint", "create", "--json"], 7),
+        (
+            vec!["checkpoint", "create", "--grant", "witness", "--json"],
+            7,
+        ),
+        (
+            vec![
+                "period",
+                "close",
+                "FY2026-P03",
+                "--dry-run",
+                "--plan",
+                "-",
+                "--json",
+            ],
+            2,
+        ),
+        (vec!["sweep", "now", "--dry-run", "--json"], 2),
+    ] {
+        let (response, _) = runtime.block_on(server.handle(&cx, request(&argv)));
+        assert_eq!(
+            response.exit, exit,
+            "{argv:?}: {}{}",
+            response.stdout, response.stderr
+        );
+        assert_eq!(server.book.head().unwrap(), before, "{argv:?}");
+        assert!(server.book.latest_tick().unwrap().is_none(), "{argv:?}");
+    }
+    let mut forged = request(&["period", "soft-close", "FY2026-P03", "--json"]);
+    forged.token = Some(vec![0; 32]);
+    let (refused, _) = runtime.block_on(server.handle(&cx, forged));
+    assert_eq!(refused.exit, 2);
+    assert_eq!(server.book.head().unwrap(), before);
+
+    // The first actual command records the startup observation honestly, and
+    // is refused until a later independent sample corroborates the clock.
+    let close = request(&["period", "soft-close", "FY2026-P03", "--json"]);
+    let (startup, _) = runtime.block_on(server.handle(&cx, close.clone()));
+    assert_eq!(startup.exit, 3, "{}{}", startup.stdout, startup.stderr);
+    assert!(startup.stdout.contains("FA-REF-144"));
+    assert_eq!(
+        server
+            .book
+            .periods()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.code == "FY2026-P03")
+            .unwrap()
+            .state,
+        PeriodState::Open
+    );
+    let first = server.book.latest_tick().unwrap().unwrap();
+    let (closed, _) = runtime.block_on(server.handle(&cx, close));
+    assert_eq!(closed.exit, 0, "{}{}", closed.stdout, closed.stderr);
+    assert_eq!(
+        server
+            .book
+            .periods()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.code == "FY2026-P03")
+            .unwrap()
+            .state,
+        PeriodState::SoftClosed
+    );
+    let second = server.book.latest_tick().unwrap().unwrap();
+    assert!(second.observed_utc_ns > first.observed_utc_ns);
+    assert_eq!(
+        server.status_data().get("timed_cycles"),
+        Some(&Json::Int(0))
+    );
+
+    // The public alias and its canonical command both request fresh time.
+    for argv in [
+        vec!["sweep", "now", "--json"],
+        vec!["schedule", "sweep", "--json"],
+    ] {
+        let previous = server.book.latest_tick().unwrap().unwrap();
+        let (response, _) = runtime.block_on(server.handle(&cx, request(&argv)));
+        assert_eq!(
+            response.exit, 0,
+            "{argv:?}: {}{}",
+            response.stdout, response.stderr
+        );
+        assert!(
+            server.book.latest_tick().unwrap().unwrap().observed_utc_ns > previous.observed_utc_ns
+        );
+    }
+}
+
 /// Real dispatcher and memory book, with a long timer so the commit hook
 /// itself must make maintenance ready. No virtual handler stands in for it.
 #[test]
@@ -96,17 +255,20 @@ fn server_wakes_configured_registers_only_when_a_request_commits() {
         token: None,
     };
     let before = server.book.head().unwrap();
-    let (read, _) = server.handle(run(&["book", "info", "--json"]));
+    let (read, _) = runtime.block_on(server.handle(&cx, run(&["book", "info", "--json"])));
     assert_eq!(read.exit, 0, "{}{}", read.stdout, read.stderr);
     assert_eq!(server.book.head().unwrap(), before);
     assert_eq!(server.deadline(), scheduled);
-    let (bad, _) = server.handle(run(&["period", "create", "--fiscal-year", "bad", "--json"]));
+    let (bad, _) = runtime.block_on(server.handle(
+        &cx,
+        run(&["period", "create", "--fiscal-year", "bad", "--json"]),
+    ));
     assert_ne!(bad.exit, 0);
     assert_eq!(server.book.head().unwrap(), before);
     assert_eq!(server.deadline(), scheduled);
 
     let create = run(&["period", "create", "--fiscal-year", "2026", "--json"]);
-    let (created, _) = server.handle(create.clone());
+    let (created, _) = runtime.block_on(server.handle(&cx, create.clone()));
     assert_eq!(created.exit, 0, "{}{}", created.stdout, created.stderr);
     let committed = server.book.head().unwrap();
     assert!(committed > before);
@@ -133,7 +295,7 @@ fn server_wakes_configured_registers_only_when_a_request_commits() {
             .is_green()
     );
     let maintained = server.book.head().unwrap();
-    let (retry, _) = server.handle(create);
+    let (retry, _) = runtime.block_on(server.handle(&cx, create));
     assert_eq!(retry.exit, 0, "{}{}", retry.stdout, retry.stderr);
     assert_eq!(server.book.head().unwrap(), maintained);
     assert_eq!(

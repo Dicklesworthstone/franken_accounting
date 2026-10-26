@@ -21,6 +21,7 @@ use fa_cli::json::{Json, s};
 use fa_cli::verbs::Daemon;
 use fa_journal::{Refusal, ReversalBatch, SweepBatch, Tick, Ticked};
 use fa_model::Id128;
+use fgdb_types::CommitSeq;
 use fgdb_types::context::PurposeContexts;
 
 use crate::clock::{self, ClockError, Judge, Observation, SystemClock};
@@ -74,9 +75,9 @@ impl fmt::Display for TimedError {
             Self::Book(e) => e.fmt(f),
             Self::Refused(e) => write!(f, "{}: {}", e.code, e.message),
             Self::Authority(why) => write!(f, "daemon System bootstrap refused: {why}"),
-            Self::StaleTick => {
-                f.write_str("the returned tick is not the book's latest tick; no sweep ran")
-            }
+            Self::StaleTick => f.write_str(
+                "the returned tick is not a fresh latest observation; no requested effect ran",
+            ),
         }
     }
 }
@@ -106,6 +107,7 @@ fn admitted<T>(outcome: Outcome<T>) -> Result<T, TimedError> {
 /// adapter never constructs a production Runtime.
 pub(crate) trait TimedBook {
     fn latest_tick(&self, cx: &Cx) -> Result<Option<Tick>, BookError>;
+    fn corroborated_tick_at(&self, cx: &Cx, at: CommitSeq) -> Result<Option<Tick>, BookError>;
     async fn record_tick(
         &mut self,
         cx: &Cx,
@@ -136,6 +138,10 @@ pub(crate) trait TimedBook {
 impl TimedBook for Book {
     fn latest_tick(&self, _cx: &Cx) -> Result<Option<Tick>, BookError> {
         Book::latest_tick(self)
+    }
+
+    fn corroborated_tick_at(&self, _cx: &Cx, at: CommitSeq) -> Result<Option<Tick>, BookError> {
+        Book::corroborated_tick_at(self, at)
     }
 
     async fn record_tick(
@@ -179,6 +185,10 @@ impl TimedBook for Book {
 impl<V: Vfs + Clone, B: Vfs + Clone> TimedBook for AsyncBook<V, B> {
     fn latest_tick(&self, cx: &Cx) -> Result<Option<Tick>, BookError> {
         AsyncBook::latest_tick(self, &PurposeContexts::narrow_runtime_root(cx))
+    }
+
+    fn corroborated_tick_at(&self, cx: &Cx, at: CommitSeq) -> Result<Option<Tick>, BookError> {
+        AsyncBook::corroborated_tick_at(self, &PurposeContexts::narrow_runtime_root(cx), at)
     }
 
     async fn record_tick(
@@ -406,6 +416,59 @@ impl TimedWork {
         let _ = self.schedule_next(cx);
     }
 
+    /// Journal a fresh, locally corroborated observation for an already
+    /// admitted critical command. This does not sweep, advance registers, or
+    /// postpone the periodic deadline: only the requested command may follow.
+    pub(crate) async fn before_command(
+        &mut self,
+        cx: &Cx,
+        book: &mut Book,
+    ) -> Result<Ticked, TimedError> {
+        let sample = SystemClock.observe(cx);
+        self.command_observation(cx, book, sample).await
+    }
+
+    pub(crate) async fn command_observation<B: TimedBook>(
+        &mut self,
+        cx: &Cx,
+        book: &mut B,
+        sample: Result<Observation, ClockError>,
+    ) -> Result<Ticked, TimedError> {
+        let result = match sample {
+            Ok(sample) => self.record_observation(cx, book, sample).await,
+            Err(error) => Err(error.into()),
+        };
+        let recorded = result
+            .as_ref()
+            .is_ok_and(|(ticked, _)| !ticked.already_recorded);
+        let result = result.and_then(|(ticked, corroborated)| {
+            if ticked.already_recorded {
+                return Err(TimedError::StaleTick);
+            }
+            // A startup sample or a clock jump is recorded honestly, but cannot
+            // supply corroborated time for a critical publication. Retrying
+            // waits for the real clock to corroborate; no synthetic increment.
+            if corroborated {
+                Ok(ticked)
+            } else {
+                Err(TimedError::Refused(Refusal::new(
+                    fa_journal::refusal::code::TICK_UNCORROBORATED,
+                    fa_journal::exit::REFUSAL,
+                    "the fresh daemon TimeEvidence tick is not corroborated; the requested operation was not run",
+                    "plan §7.1a; fa-7uhr (fresh time evidence before critical publication)",
+                    "wait for the daemon's next locally corroborated clock observation, then retry the same command; inspect fad status for timed_work_error",
+                )))
+            }
+        });
+        self.error = result.as_ref().err().map(ToString::to_string);
+        // Even an uncorroborated tick is a committed observation. Its consumer
+        // still performs current-authority admission at the new frontier.
+        if recorded {
+            self.notify_commit();
+        }
+        result
+    }
+
     /// One shared production/lab path. Cache maintenance is independent of
     /// UTC corroboration: it consumes committed facts, never authorizes an
     /// expiry or reversal. Preserve timing errors and per-period errors
@@ -468,23 +531,7 @@ impl TimedWork {
         book: &mut B,
         sample: Observation,
     ) -> Result<Cycle, TimedError> {
-        clock::timer(cx)?;
-        let capability = self
-            .capability
-            .as_ref()
-            .ok_or_else(|| TimedError::Authority("timed accounting effects are disabled".into()))?;
-        let corroborated = self.judge.observe(sample)?;
-        let ticked = admitted(
-            book.record_tick(cx, sample.utc_ns, corroborated, capability)
-                .await,
-        )?;
-        // An idempotent retry may return an old tick. It is not current
-        // clock evidence, even if that old tick was corroborated.
-        if book.latest_tick(cx)? != Some(ticked.tick) {
-            return Err(TimedError::StaleTick);
-        }
-        self.last_tick_utc_ns = Some(ticked.tick.observed_utc_ns);
-        self.last_tick_monotonic_ok = Some(corroborated);
+        let (_ticked, corroborated) = self.record_observation(cx, book, sample).await?;
         let mut cycle = Cycle {
             corroborated,
             ..Cycle::default()
@@ -492,6 +539,10 @@ impl TimedWork {
         if !corroborated {
             return Ok(cycle);
         }
+        let capability = self
+            .capability
+            .as_ref()
+            .ok_or_else(|| TimedError::Authority("timed accounting effects are disabled".into()))?;
         // Both kernel paths also witness current tick corroboration and
         // current capability policy inside their own transactions.
         cx.checkpoint().map_err(|_| ClockError::Cancelled)?;
@@ -518,6 +569,36 @@ impl TimedWork {
             cycle.blocked_recurring = batch.blocked.len();
         }
         Ok(cycle)
+    }
+
+    async fn record_observation<B: TimedBook>(
+        &mut self,
+        cx: &Cx,
+        book: &mut B,
+        sample: Observation,
+    ) -> Result<(Ticked, bool), TimedError> {
+        clock::timer(cx)?;
+        let capability = self
+            .capability
+            .as_ref()
+            .ok_or_else(|| TimedError::Authority("timed accounting effects are disabled".into()))?;
+        let corroborated = self.judge.observe(sample)?;
+        let ticked = admitted(
+            book.record_tick(cx, sample.utc_ns, corroborated, capability)
+                .await,
+        )?;
+        // An idempotent retry may return an old tick. It is not current
+        // clock evidence, even if that old tick was corroborated.
+        if book.latest_tick(cx)? != Some(ticked.tick) {
+            return Err(TimedError::StaleTick);
+        }
+        // The kernel can downgrade an observation under its retained clock
+        // skew law. Judge the committed evidence, not only the caller's flag.
+        let corroborated =
+            corroborated && book.corroborated_tick_at(cx, ticked.recorded_at)? == Some(ticked.tick);
+        self.last_tick_utc_ns = Some(ticked.tick.observed_utc_ns);
+        self.last_tick_monotonic_ok = Some(corroborated);
+        Ok((ticked, corroborated))
     }
 }
 

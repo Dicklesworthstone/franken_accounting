@@ -312,7 +312,7 @@ trait Service {
     fn should_stop(&mut self) -> bool {
         false
     }
-    fn handle(&mut self, request: Request) -> (Response, Next);
+    async fn handle(&mut self, cx: &Cx, request: Request) -> (Response, Next);
     fn deadline(&self) -> Option<Time>;
     async fn tick(&mut self, cx: &Cx);
     fn on_connection_closed(&mut self, _timing: ConnectionTiming) {}
@@ -348,7 +348,7 @@ impl<H: FnMut(Request) -> (Response, Next)> Service for Untimed<'_, H> {
             .is_some_and(|token| request.stdin.as_deref() == Some(&token[..]))
     }
 
-    fn handle(&mut self, request: Request) -> (Response, Next) {
+    async fn handle(&mut self, _cx: &Cx, request: Request) -> (Response, Next) {
         if request.op == Op::Stop
             && let Some(token) = &self.owner_token
             && request.stdin.as_deref() != Some(&token[..])
@@ -596,7 +596,7 @@ where
             }
         };
         let (response, next) = match bind_connection_session(&mut session_token, &mut request) {
-            Ok(()) => service.handle(request),
+            Ok(()) => service.handle(cx, request).await,
             Err(refusal_response) => (refusal_response, Next::Continue),
         };
         let mut reply = response.to_json(limits.protocol).render();
@@ -694,8 +694,8 @@ impl Service for Server<'_> {
         request.stdin.as_deref() == Some(&token[..])
     }
 
-    fn handle(&mut self, request: Request) -> (Response, Next) {
-        Server::handle(self, request)
+    async fn handle(&mut self, cx: &Cx, request: Request) -> (Response, Next) {
+        Server::handle(self, cx, request).await
     }
 
     fn deadline(&self) -> Option<Time> {
@@ -726,8 +726,84 @@ impl Service for Server<'_> {
 }
 
 impl Server<'_> {
-    /// Answer one request.
-    pub fn handle(&mut self, request: Request) -> (Response, Next) {
+    /// Answer one request under the serving region. Critical publications in
+    /// timed mode first pass the real CLI admission checks, then journal a
+    /// fresh corroborated observation, and finally recheck current authority.
+    pub async fn handle(&mut self, cx: &Cx, request: Request) -> (Response, Next) {
+        if request.op != Op::Run
+            || !self
+                .timed
+                .as_ref()
+                .is_some_and(timed::TimedWork::timing_enabled)
+        {
+            return self.execute(request);
+        }
+        let authority = match request.token.as_deref().map(|bytes| self.session(bytes)) {
+            None => None,
+            Some(Ok(authority)) => Some(authority),
+            // The ordinary dispatcher renders the token error. An unbound or
+            // forged request must never cause the System actor to publish.
+            Some(Err(_)) => return self.execute(request),
+        };
+        let preflight = cli::preflight_for_daemon(
+            &request.argv,
+            &mut *self.book,
+            self.dir.clone(),
+            self.files_root.clone(),
+            request.cwd.as_ref().map(PathBuf::from),
+            authority.as_ref(),
+        );
+        let failure = match preflight {
+            Ok(false) => return self.execute(request),
+            Err(failure) => Some(failure),
+            Ok(true) => {
+                let result = match self.timed.as_mut() {
+                    Some(work) => work.before_command(cx, self.book).await,
+                    None => unreachable!("timing was checked before command admission"),
+                };
+                result.err().map(|error| match (error, authority.as_ref()) {
+                    (timed::TimedError::Refused(refusal), Some(authority)) => {
+                        cli::refuse_with_authority(&request.argv, refusal, authority, true)
+                    }
+                    (timed::TimedError::Refused(refusal), None) => {
+                        cli::refuse(&request.argv, refusal, true)
+                    }
+                    (timed::TimedError::Book(error), Some(authority)) => {
+                        cli::book_error_with_authority(&request.argv, error, authority, true)
+                    }
+                    (timed::TimedError::Book(error), None) => {
+                        cli::book_error(&request.argv, error, true)
+                    }
+                    (error, Some(authority)) => cli::environment_error_with_authority(
+                        &request.argv,
+                        format!("fresh daemon time evidence unavailable: {error}; the requested operation was not run"),
+                        authority,
+                        true,
+                    ),
+                    (error, None) => cli::environment_error(
+                        &request.argv,
+                        format!("fresh daemon time evidence unavailable: {error}; the requested operation was not run"),
+                        true,
+                    ),
+                })
+            }
+        };
+        if let Some((exit, out)) = failure {
+            self.requests = self.requests.saturating_add(1);
+            return (
+                Response {
+                    op: Op::Run,
+                    exit,
+                    stdout: out.stdout,
+                    stderr: out.stderr,
+                },
+                Next::Continue,
+            );
+        }
+        self.execute(request)
+    }
+
+    fn execute(&mut self, request: Request) -> (Response, Next) {
         self.requests = self.requests.saturating_add(1);
         let json = request.argv.iter().any(|a| a == "--json");
         match request.op {
@@ -1279,8 +1355,8 @@ impl<F: FnMut() -> bool> Service for UntilStop<'_, '_, F> {
         (self.should_stop)()
     }
 
-    fn handle(&mut self, request: Request) -> (Response, Next) {
-        self.inner.handle(request)
+    async fn handle(&mut self, cx: &Cx, request: Request) -> (Response, Next) {
+        self.inner.handle(cx, request).await
     }
 
     fn deadline(&self) -> Option<Time> {
@@ -1590,7 +1666,7 @@ async fn serve_with<L: Listener, H: Service>(
                             &mut connections[idx].session_token,
                             &mut request,
                         ) {
-                            Ok(()) => service.handle(request),
+                            Ok(()) => service.handle(cx, request).await,
                             Err(refusal_response) => (refusal_response, Next::Continue),
                         };
                         let mut reply = response.to_json(limits.protocol).render();

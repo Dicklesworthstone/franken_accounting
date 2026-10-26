@@ -158,6 +158,16 @@ authorize automatic effects. Rejected jumps retain the original comparison
 baseline; repeated bad samples cannot gradually establish trust in a jump.
 Monotonic agreement is corroboration, not proof of UTC accuracy.
 
+In timed mode, admitted period close/lock, year-end close, statement issuance,
+and explicit sweep requests obtain a fresh observation before their final
+publication. The command uses the corroboration grade actually committed by
+the kernel. An uncorroborated startup or jump is retained as evidence and
+refuses the requested operation with `FA-REF-144`; retry after a corroborated
+observation. Help and read-only previews do not request an extra observation.
+The command observation does not run unrelated sweeps or postpone the periodic
+timer. Existing authority checks still apply: daemon callers cannot add a
+witness grant, and checkpoint creation remains subject to that restriction.
+
 After the daemon has recorded an anchor, submit ordinary evidence-backed
 intent files through the same CLI:
 
@@ -179,8 +189,9 @@ cycle count, latest tick, corroboration and the last cycle error. Cancellation
 and Stop end timed work through the server's structured lifetime.
 
 These bounds limit published effects per cycle; candidate discovery still
-scans the book. Journaled capability issuance, a sweep-now command, paged
-backlog discovery and the full timing simulation campaign remain unfinished.
+scans the book. Journaled capability issuance, paged backlog discovery and the
+full timing simulation campaign remain unfinished. `fa sweep now` (also
+`fa schedule sweep`) requests an explicit sweep under the caller's authority.
 MCP exposes the same intent fields as `timeout_ns` and `reverse_on`, subject
 to its fixed launch capability; it cannot grant itself System authority.
 
@@ -314,6 +325,22 @@ postings arrive. An open upper bracket is explicit; this is a clock-observation
 bucket, without a claim about the physical instant of each commit. The same
 instant selector is available on `open-items` and `explain balance`. Ticks are
 journaled through the library API and by `fad serve --bootstrap-system`.
+
+Native trial-balance and statement certificates selected by an instant can
+also be exported with `fa bundle produce --certificate C:<oid>`. The selected
+checkpoint must cover the certificate's retained time frontier, which can be
+later than its accounting sequence. `fa-verify report` reconstructs the exact
+bucket from the authenticated history and reports the requested instant,
+frontier, resolved sequence, bracket identities and source grade. Later ticks
+do not reinterpret the original selection. The complete-prefix bundle exposes
+every covered record and requires whole-book read and produce authority.
+
+Instant report production currently refuses books with an opening-date policy
+or migration history because the checkpoint format does not authenticate the
+book's genesis policy. Use a sequence-selected certificate for those books.
+The verifier explicitly leaves genesis-policy admission, physical commit time
+and external UTC accuracy unjudged; functional-currency reports remain outside
+this native report format.
 
 The original call emits two robot lines: `trial_balance`, `balance_explained`,
 or `open_items`, followed by `report_certificate`, with the certificate digest
@@ -562,7 +589,7 @@ Applied counters and settlement edges retain their separate
 
 ### Entry accumulator checkpoints
 
-The CLI can publish an unsigned checkpoint over the book's entry prefix and
+The CLI can publish a checkpoint over the book's entry prefix and
 recompute the stored chain from the journal:
 
 ```bash
@@ -591,6 +618,16 @@ below); witnesses and key rotation remain
 unfinished. The
 [CLI tests](./crates/fa-cli/tests/notary.rs) exercise persistence, later
 postings, authorization and real storage corruption.
+
+New signed checkpoints bind the complete Entry digest of the latest
+TimeEvidence in their covered prefix, including an observation whose payload
+says it is uncorroborated. Bundle and report receipts copy the selected
+checkpoint's binding, so a later clock observation cannot change the evidence
+for an older export. Books with no tick and historical checkpoints originally
+published without a binding retain `None`. Accumulator verification rejects
+later checkpoint rewrites, including a re-signed removal of an existing time
+binding. These references identify recorded evidence; they do not assert an
+exact physical production time.
 
 ### Portable proofs and the offline verifier
 
