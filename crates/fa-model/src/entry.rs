@@ -73,6 +73,12 @@ pub const DATE_BASIS_EXTENSION: u16 = 3;
 /// document and party recorded at or before `through`; fa-k07b). On a
 /// Release: `1u8 ‖ u128 hold`, the Place it releases.
 pub const LEGAL_HOLD_SCOPE_EXTENSION: u16 = 4;
+/// Extension tag 5, `fa:allocation-posting:v1` (plan §6.3; fa-joq): an
+/// `Allocation` entry's computation binding — the driver basis's canonical
+/// bytes, law digest and basis digest
+/// (`registries/object_schemas/allocation.toml`). fa-journal `allocation`
+/// interprets it in full.
+pub const ALLOCATION_EXTENSION: u16 = 5;
 /// Extension tag 6, `fa:event-ref:v1` (plan §4.1 `Event`, §4.5, FA-INV-05,
 /// bead `fa-f3bo`): binds an `EntryProposal` to a committed REA `Event`
 /// vertex — `event_vid: u128 LE ‖ event_digest: [u8; 32]` (48 bytes).
@@ -228,6 +234,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     AUTO_REVERSE_EXTENSION,
     DATE_BASIS_EXTENSION,
     LEGAL_HOLD_SCOPE_EXTENSION,
+    ALLOCATION_EXTENSION,
     EVENT_REF_EXTENSION,
     CAPABILITY_BODY_EXTENSION,
     DRAFT_BODY_EXTENSION,

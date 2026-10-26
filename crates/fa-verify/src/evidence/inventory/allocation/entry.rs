@@ -17,13 +17,13 @@ pub(super) fn verify(
 ) -> Result<EvidenceCitation, AllocationError> {
     let mut r = Reader::new(proposal);
     if r.u16("entry.major")? != 1
-        || r.u16("entry.minor")? != 2
+        || r.u16("entry.minor")? != 1
         || r.fixed::<16>("entry.book")? != checkpoint.book_id
         || r.fixed::<16>("entry.branch")? != checkpoint.branch_id
         || checkpoint.branch_id != [0; 16]
         || r.u16("entry.class")? != 9
     {
-        return Err(invalid("expected a minor-2 trunk Allocation entry"));
+        return Err(invalid("expected a minor-1 trunk Allocation entry"));
     }
     r.i32("entry.effective_day")?;
     if r.present("entry.document_day")? {

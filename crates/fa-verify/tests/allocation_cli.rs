@@ -111,8 +111,9 @@ fn fixture(
         &[&(basis.len() as u32).to_le_bytes(), &basis],
     );
     let mut p = Wire::default();
+    // Entry major 1, minor 1: Allocation's extension 5 is a known tag there.
     p.u16(1)
-        .u16(2)
+        .u16(1)
         .raw(&BOOK)
         .raw(&[0; 16])
         .u16(9)

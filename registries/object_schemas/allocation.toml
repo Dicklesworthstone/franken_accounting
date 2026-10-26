@@ -3,7 +3,7 @@
 schema_version = 1
 name = "fa:allocation-posting:v1"
 entry_extension_tag = 5
-entry_schema_minor = 2
+entry_schema_minor = 1
 max_targets = 1024
 document_kind = 21
 evidence_role = 1

@@ -7,10 +7,11 @@
 //! This is not a fold-derived balance sweep, FX valuation, settlement or Canon.
 //!
 //! The basis is an ordinary Workpaper document. Its exact canonical bytes,
-//! law digest and basis digest also ride extension 5 of an entry at minor 2.
-//! Every leg inherits that binding through its containing proposal. The core
-//! entry codec preserves additive extensions; this module interprets this
-//! extension in full. Older kernels still refuse the Allocation class.
+//! law digest and basis digest also ride extension 5 of an entry at minor 1,
+//! a tag the entry model registers (a writer never claims a minor it does not
+//! know, fa-hoi5). Every leg inherits that binding through its containing
+//! proposal. This module interprets the extension in full. Older kernels
+//! still refuse the Allocation class.
 //! The native posting pipeline checks the computed legs before staging and
 //! resolves the exact driver citation in its ordinary evidence transaction.
 
@@ -32,8 +33,8 @@ use crate::genesis::{BookContext, UnitPolicy};
 use crate::refusal::{Outcome, Refusal, code, exit};
 use crate::rows::AccountRow;
 
-pub const ALLOCATION_EXTENSION: u16 = 5;
-pub const ALLOCATION_SCHEMA_MINOR: u16 = 2;
+pub use fa_model::entry::ALLOCATION_EXTENSION;
+pub const ALLOCATION_SCHEMA_MINOR: u16 = fa_model::entry::EXTENSIONS_MINOR;
 pub const ALLOCATION_DOCUMENT_KIND: u8 = 21; // Workpaper
 pub const ALLOCATION_EVIDENCE_ROLE: u8 = 1; // Source
 /// This posting format also has to fit the existing 64 KiB extension bound.
@@ -329,7 +330,7 @@ pub(crate) fn admit(proposal: &EntryPayload) -> Result<Option<AllocationPosting>
     };
     if proposal.schema_minor != ALLOCATION_SCHEMA_MINOR || proposal.extensions.len() != 1 {
         return Err(structure(
-            "allocation requires exactly its minor-2 computation extension",
+            "allocation requires exactly its minor-1 computation extension",
         ));
     }
     let basis = AllocationPosting::decode_record(bytes)?;
