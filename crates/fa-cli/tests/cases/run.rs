@@ -20,6 +20,7 @@ use fa_oracles::cases::check::{self, Verdict};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::CASES;
 use fa_oracles::cases::expect::ExpectationType;
+use fa_oracles::cases::filler::{self, FillerVariant, Posting};
 use fa_oracles::cases::harness_verbs::{HARNESS_VERBS, missing};
 use fa_oracles::cases::log::{StepRecord, VerdictRecord};
 use fa_oracles::cases::observe::Observation;
@@ -29,6 +30,7 @@ use fa_oracles::cases::verdict::{RowLine, RowVerdict};
 use fa_oracles::cases::{Case, CaseFiles, intent_json, stub};
 use fa_oracles::json::Json;
 
+use super::budget::Budget;
 use super::cells;
 use super::evaluate;
 
@@ -280,6 +282,11 @@ pub struct BookRun<'c> {
     /// Whether a batch reads each member back to map its legs (a property
     /// micro-book maps native leg ordinals itself, A5a).
     pub map_batch_legs: bool,
+    /// The filler variant this run posts at its `filler_batch` steps (A6);
+    /// none, or the empty variant, posts nothing.
+    pub filler: Option<FillerVariant>,
+    /// The most members one filler chunk posts (`max_batch_entries`, A7c).
+    pub chunk_max: usize,
 }
 
 impl<'c> BookRun<'c> {
@@ -314,6 +321,8 @@ impl<'c> BookRun<'c> {
             lines: Vec::new(),
             failure: None,
             map_batch_legs: true,
+            filler: None,
+            chunk_max: filler::max_batch_entries().unwrap_or(8190),
         }
     }
 
@@ -725,6 +734,9 @@ impl<'c> BookRun<'c> {
         if let Some(fact) = stub_of.strip_prefix("placeholder:") {
             return Some(stub::placeholder(fact));
         }
+        if let Some(variant) = stub_of.strip_prefix("filler:") {
+            return Some(stub::filler(&self.case.header.id, variant));
+        }
         if let Some(src) = self.case.sources.iter().find(|x| x.id == stub_of) {
             return Some(stub::source_stub(src));
         }
@@ -791,7 +803,7 @@ impl<'c> BookRun<'c> {
     }
 
     /// The documented history in `[[step]]` order (plan §3.3 steps 3 and 6).
-    fn replay(&mut self) {
+    pub(crate) fn replay(&mut self) {
         let book = self.book;
         for step in &book.steps {
             if self.failure.is_some() {
@@ -856,6 +868,7 @@ impl<'c> BookRun<'c> {
                     self.rule_step(step);
                 }
                 Some(StepKind::EventRecord) => self.event_record(step),
+                Some(StepKind::FillerBatch) => self.filler_batch(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -1458,6 +1471,94 @@ impl<'c> BookRun<'c> {
         }
     }
 
+    /// A `filler_batch` step: this run's filler variant for the step's id,
+    /// posted as `PostBatch` chunks of at most `chunk_max` members, each
+    /// chunk under A6's chunk key and logged as its own step with the
+    /// variant's label (A7c). No variant, or the empty one, posts nothing.
+    fn filler_batch(&mut self, step: &StepDef) {
+        let Some(variant) = self
+            .filler
+            .clone()
+            .filter(|v| v.spec.variant == step.reference && !v.intents.is_empty())
+        else {
+            return;
+        };
+        if variant.posting == Posting::Staged {
+            if !self.unrun_steps.contains(&step.kind) {
+                self.unrun_steps.push(step.kind.clone());
+            }
+            return;
+        }
+        let Some(doc) = self.documents.get(&variant.document).cloned() else {
+            self.fail(format!(
+                "expected filler document {} added (step {}) observed none",
+                variant.document, step.seq
+            ));
+            return;
+        };
+        // The members render from the book with the variant's legs.
+        let mut book = self.book.clone();
+        book.intents.extend(variant.intents.iter().cloned());
+        book.legs.extend(variant.legs.iter().cloned());
+        for chunk in filler::chunks(&variant, self.chunk_max) {
+            let mut rendered = Vec::new();
+            for id in &chunk.intents {
+                let Some(it) = book.intents.iter().find(|i| &i.id == id) else {
+                    continue;
+                };
+                match intent_json::render(&book, it, &|_| None) {
+                    Ok(Json::Object(mut fields)) => {
+                        fields.push(("evidence".into(), Json::Array(vec![Json::Str(doc.clone())])));
+                        rendered.push(Json::Object(fields));
+                    }
+                    Ok(other) => rendered.push(other),
+                    Err(e) => {
+                        self.fail(format!(
+                            "expected filler intent {id} to render (step {}) observed {e:?}",
+                            step.seq
+                        ));
+                        return;
+                    }
+                }
+            }
+            let body = Json::Object(vec![
+                ("idempotency_key".into(), Json::Str(chunk.key.clone())),
+                ("intents".into(), Json::Array(rendered)),
+            ]);
+            let file = self.write(
+                &format!("filler-{}-{}.json", step.seq, chunk.index),
+                body.to_string().as_bytes(),
+            );
+            let call = self.call(
+                step.seq,
+                &step.reference,
+                "batch",
+                vec![
+                    s("batch"),
+                    s("--intent"),
+                    file,
+                    s("--as"),
+                    variant.principal.clone(),
+                    s("--json"),
+                ],
+            );
+            if let Some(last) = self.steps.last_mut() {
+                last.filler_variant = Some(variant.spec.label());
+            }
+            if call.exit != 0 {
+                self.lines.push(reproduce(&call));
+                self.fail(format!(
+                    "expected filler chunk {} of {} posted (step {}) observed exit={}",
+                    chunk.index,
+                    variant.spec.label(),
+                    step.seq,
+                    call.exit
+                ));
+                return;
+            }
+        }
+    }
+
     /// Reads the posted entry back and maps its legs, in order, to the
     /// intent's `[[leg]]` rows (sorted by ordinal, as rendered), checking
     /// each side; this is what projects a leg or account cite to its fact.
@@ -1647,6 +1748,16 @@ impl<'c> BookRun<'c> {
 
 /// Runs a case through every stage with the given verb table.
 pub fn run_case(files: &CaseFiles<'_>, verbs: &[(&str, Option<&str>)]) -> RunOutcome {
+    run_case_with(files, verbs, None)
+}
+
+/// [`run_case`] under a budget of `budget_ms` (else `FA_CASES_BUDGET_MS`,
+/// else 60 s; A7c).
+pub fn run_case_with(
+    files: &CaseFiles<'_>,
+    verbs: &[(&str, Option<&str>)],
+    budget_ms: Option<u64>,
+) -> RunOutcome {
     let root = tmp(files.id);
     let mut out = RunOutcome {
         lines: Vec::new(),
@@ -1715,11 +1826,17 @@ pub fn run_case(files: &CaseFiles<'_>, verbs: &[(&str, Option<&str>)]) -> RunOut
     }
     // 3–10. Each book variant.
     let mut sweep_failed = false;
-    for book in case.books.values() {
+    let mut budget = Budget::new(budget_ms);
+    for (index, book) in case.books.values().enumerate() {
+        let book_started = Instant::now();
+        let steps_before = out.steps.len();
         let work = root.join(&book.stem);
         std::fs::create_dir_all(&work).expect("variant dir");
         let mut run = BookRun::new(&case, book, work, files.files);
         run.build();
+        if let Some(code) = run.periods.values().next() {
+            budget.measure_warm(&run.dir, code);
+        }
         out.books.insert(book.stem.clone(), run.dir.clone());
         run.replay();
         run.self_procedure();
@@ -1798,11 +1915,22 @@ pub fn run_case(files: &CaseFiles<'_>, verbs: &[(&str, Option<&str>)]) -> RunOut
                 sweep_failed = true;
             }
         }
+        let line = budget.book(
+            files.id,
+            &book.stem,
+            index + 1,
+            out.steps.len() - steps_before,
+            book_started.elapsed().as_millis(),
+        );
+        out.lines.push(line);
     }
-    // The case passes when no row FAILs and every claimed expectation's
-    // verdict, the worst of its rows, is PASS.
+    let (budget_lines, within_budget) = budget.finish(files.id);
+    out.lines.extend(budget_lines);
+    // The case passes when no row FAILs, it kept its budget, and every
+    // claimed expectation's verdict, the worst of its rows, is PASS.
     let verdicts = evaluate::expectation_verdicts(&out.verdicts);
     out.ok = !sweep_failed
+        && within_budget
         && verdicts.values().all(|v| *v != RowVerdict::Fail)
         && case
             .header

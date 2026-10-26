@@ -84,6 +84,22 @@ pub fn placeholder(fact: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// What a filler document says: it is harness filler, not a record.
+pub const FILLER_STATEMENT: &str =
+    "harness filler a case generates around its documented entries; it records no event";
+
+/// The `fa:case-filler:v1` document every member of `case`'s filler variant
+/// `variant` cites (plan §2.7): kind Other, reviewed by
+/// `case-second-reader`, never a provenance stub or a placeholder.
+#[must_use]
+pub fn filler(case: &str, variant: &str) -> Vec<u8> {
+    let mut out = String::from("fa:case-filler:v1\n");
+    line(&mut out, "case", case);
+    line(&mut out, "variant", variant);
+    line(&mut out, "statement", FILLER_STATEMENT);
+    out.into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
