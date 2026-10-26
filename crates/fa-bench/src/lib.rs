@@ -31,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 pub mod driver;
+pub mod post;
 pub mod rebuild;
 pub mod stats;
 
