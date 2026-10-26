@@ -252,11 +252,83 @@ pub(super) fn replay(
     visible_migrations: &BTreeSet<u64>,
     migration_activations: &BTreeMap<u64, u64>,
 ) -> Result<(VerifiedOpenItems, Vec<u8>), ReportError> {
+    let report = replay_inner(
+        known_at,
+        account_filter,
+        None,
+        units,
+        schema,
+        envelopes,
+        infos,
+        legs,
+        records,
+        visible_migrations,
+        migration_activations,
+    )?;
+    let output = encode(known_at, &report);
+    Ok((report, output))
+}
+
+/// Re-select authenticated entries before lineage and application netting.
+/// The caller first verifies the complete, all-effective native source through
+/// replay(). A partial effective-time history is not a committed prefix, so
+/// its intermediate capacity states must not be mistaken for admitted states.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn replay_as_of(
+    known_at: u64,
+    account_filter: Option<u128>,
+    effective_through: i32,
+    units: &[u32],
+    schema: &metadata::Schema,
+    envelopes: &[LeafEnvelope],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    legs: &[Vec<Leg>],
+    records: &[(usize, &[u8])],
+    visible_migrations: &BTreeSet<u64>,
+    migration_activations: &BTreeMap<u64, u64>,
+) -> Result<VerifiedOpenItems, ReportError> {
+    replay_inner(
+        known_at,
+        account_filter,
+        Some(effective_through),
+        units,
+        schema,
+        envelopes,
+        infos,
+        legs,
+        records,
+        visible_migrations,
+        migration_activations,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replay_inner(
+    _known_at: u64,
+    account_filter: Option<u128>,
+    effective_through: Option<i32>,
+    units: &[u32],
+    schema: &metadata::Schema,
+    envelopes: &[LeafEnvelope],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    legs: &[Vec<Leg>],
+    records: &[(usize, &[u8])],
+    visible_migrations: &BTreeSet<u64>,
+    migration_activations: &BTreeMap<u64, u64>,
+) -> Result<VerifiedOpenItems, ReportError> {
     let selected: BTreeSet<_> = infos
         .keys()
         .copied()
         .filter(|index| {
-            envelopes[*index].class != 12 || visible_migrations.contains(&(*index as u64))
+            (envelopes[*index].class != 12 || visible_migrations.contains(&(*index as u64)))
+                && effective_through.is_none_or(|cutoff| {
+                    envelopes[*index]
+                        .effective_day
+                        .is_some_and(|day| day <= cutoff)
+                        && account_filter.is_none_or(|account| {
+                            legs[*index].iter().any(|leg| leg.account == account)
+                        })
+                })
         })
         .collect();
     let mut details = BTreeMap::new();
@@ -308,6 +380,28 @@ pub(super) fn replay(
         }
         details.insert(index, parsed);
     }
+    if effective_through.is_some() {
+        let all_identities: BTreeMap<_, _> = infos
+            .iter()
+            .map(|(&index, info)| (info.identity, index))
+            .collect();
+        for &index in &selected {
+            if envelopes[index].class == 4 {
+                for (target, _, kind) in &infos[&index].supersession {
+                    if *kind == 1
+                        && all_identities
+                            .get(target)
+                            .is_some_and(|target| !selected.contains(target))
+                    {
+                        return Err(failed(
+                            "aging_effective_selection",
+                            "effective cutoff splits a reversal from its later-effective target",
+                        ));
+                    }
+                }
+            }
+        }
+    }
     let timelines = timelines(
         &selected,
         envelopes,
@@ -326,6 +420,11 @@ pub(super) fn replay(
     let mut remaining_events = 16 * super::MAX_ROWS;
     for (&index, timeline) in &timelines {
         for (ordinal, (leg, detail)) in legs[index].iter().zip(&details[&index]).enumerate() {
+            if effective_through.is_some()
+                && account_filter.is_some_and(|account| account != leg.account)
+            {
+                continue;
+            }
             let ordinal = u16::try_from(ordinal)
                 .map_err(|_| failed("bounded_input", "open-item ordinal exceeds u16"))?;
             let mut sum = 0;
@@ -342,7 +441,14 @@ pub(super) fn replay(
                 }
                 sum = add(sum, reference.amount)?;
                 let target = *identities.get(&reference.target).ok_or_else(|| {
-                    absent_identity(infos, reference.target, "application_target")
+                    if effective_through.is_some() {
+                        failed(
+                            "aging_effective_selection",
+                            "effective cutoff splits a settlement from its later-effective target",
+                        )
+                    } else {
+                        absent_identity(infos, reference.target, "application_target")
+                    }
                 })?;
                 let target_leg = legs[target]
                     .get(usize::from(reference.ordinal))
@@ -396,26 +502,28 @@ pub(super) fn replay(
                         recorded_at: envelopes[index].commit_seq,
                         live: timeline.last().is_some_and(|event| event.1),
                     });
-                let events = changes.entry(key).or_default();
-                let mut was_live = false;
-                for &(seq, live) in timeline {
-                    if live == was_live {
-                        continue;
+                if effective_through.is_none() {
+                    let events = changes.entry(key).or_default();
+                    let mut was_live = false;
+                    for &(seq, live) in timeline {
+                        if live == was_live {
+                            continue;
+                        }
+                        remaining_events = remaining_events.checked_sub(1).ok_or_else(|| {
+                            failed(
+                                "bounded_input",
+                                "application replay exceeds its event bound",
+                            )
+                        })?;
+                        let delta = if live {
+                            reference.amount
+                        } else {
+                            -reference.amount
+                        };
+                        let previous = events.get(&seq).copied().unwrap_or(0);
+                        events.insert(seq, add(previous, delta)?);
+                        was_live = live;
                     }
-                    remaining_events = remaining_events.checked_sub(1).ok_or_else(|| {
-                        failed(
-                            "bounded_input",
-                            "application replay exceeds its event bound",
-                        )
-                    })?;
-                    let delta = if live {
-                        reference.amount
-                    } else {
-                        -reference.amount
-                    };
-                    let previous = events.get(&seq).copied().unwrap_or(0);
-                    events.insert(seq, add(previous, delta)?);
-                    was_live = live;
                 }
             }
             if sum > leg.mantissa {
@@ -430,6 +538,11 @@ pub(super) fn replay(
     let mut items = Vec::new();
     for (&index, timeline) in &timelines {
         for (ordinal, leg) in legs[index].iter().enumerate() {
+            if effective_through.is_some()
+                && account_filter.is_some_and(|account| account != leg.account)
+            {
+                continue;
+            }
             let ordinal = u16::try_from(ordinal)
                 .map_err(|_| failed("bounded_input", "open-item ordinal exceeds u16"))?;
             let key = (index, ordinal);
@@ -438,26 +551,45 @@ pub(super) fn replay(
                 .mantissa
                 .checked_sub(applied_out)
                 .ok_or_else(|| failed("exact_arithmetic", "open-item capacity underflow"))?;
-            let mut frontiers: BTreeMap<u64, (Option<bool>, i128)> = timeline
-                .iter()
-                .map(|&(seq, live)| (seq, (Some(live), 0)))
-                .collect();
-            for (seq, delta) in changes.remove(&key).unwrap_or_default() {
-                frontiers.entry(seq).or_insert((None, 0)).1 = delta;
-            }
-            let mut live = false;
-            let mut applied = 0;
-            for (_, (state, delta)) in frontiers {
-                if let Some(state) = state {
-                    live = state;
+            let (live, applied) = if effective_through.is_some() {
+                // Only final liveness belongs to this effective-date projection.
+                // The complete source has already checked actual commit history.
+                let applied = applications
+                    .get(&key)
+                    .into_iter()
+                    .flatten()
+                    .filter(|application| application.live)
+                    .try_fold(0, |sum, application| add(sum, application.amount))?;
+                (timeline.last().is_some_and(|event| event.1), applied)
+            } else {
+                let mut frontiers: BTreeMap<u64, (Option<bool>, i128)> = timeline
+                    .iter()
+                    .map(|&(seq, live)| (seq, (Some(live), 0)))
+                    .collect();
+                for (seq, delta) in changes.remove(&key).unwrap_or_default() {
+                    frontiers.entry(seq).or_insert((None, 0)).1 = delta;
                 }
-                applied = add(applied, delta)?;
-                if applied < 0 || applied > capacity || (!live && applied != 0) {
-                    return Err(failed(
-                        "application_capacity",
-                        "a committed frontier over-applies or strands an application on a reversed item",
-                    ));
+                let mut live = false;
+                let mut applied = 0;
+                for (_, (state, delta)) in frontiers {
+                    if let Some(state) = state {
+                        live = state;
+                    }
+                    applied = add(applied, delta)?;
+                    if applied < 0 || applied > capacity || (!live && applied != 0) {
+                        return Err(failed(
+                            "application_capacity",
+                            "a committed frontier over-applies or strands an application on a reversed item",
+                        ));
+                    }
                 }
+                (live, applied)
+            };
+            if effective_through.is_some() && !live && applied != 0 {
+                return Err(failed(
+                    "aging_effective_selection",
+                    "effective cutoff strands a live settlement on a reversed target item",
+                ));
             }
             if !live || account_filter.is_some_and(|account| account != leg.account) {
                 continue;
@@ -508,8 +640,7 @@ pub(super) fn replay(
         accounts,
         items,
     };
-    let output = encode(known_at, &report);
-    Ok((report, output))
+    Ok(report)
 }
 
 fn encode(known_at: u64, report: &VerifiedOpenItems) -> Vec<u8> {

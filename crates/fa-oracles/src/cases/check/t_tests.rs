@@ -42,7 +42,7 @@ const T_KINDS: [(&str, &str); 7] = [
     ),
 ];
 
-fn t_kinds() -> Case {
+pub(super) fn t_kinds() -> Case {
     let files: Vec<(&'static str, String)> = T_KINDS
         .iter()
         .map(|(p, t)| (*p, (*t).to_string()))
@@ -364,8 +364,24 @@ fn basis_reaching_a_synthetic_fact_is_refused() {
 
 #[test]
 fn bridge_whose_a_posting_cites_another_filing_is_refused() {
+    // On the native stem the A posting's figure is its fact's.
     let mut case = t_kinds();
     let book = case.books.get_mut("native").expect("native");
+    let it = book
+        .intents
+        .iter_mut()
+        .find(|i| i.id == "F-Aa")
+        .expect("F-Aa");
+    it.fact = "F-B".into();
+    fail_line(
+        &run(&case, "K-VINTAGE"),
+        "X-T-01",
+        "A intent F-Aa posts F-B of SRC-TK-B, not of the A: source",
+    );
+    // On a statement stem it is its evidence stub's.
+    let mut case = t_kinds();
+    let book = case.books.get_mut("native").expect("native");
+    book.kind = super::super::book::VariantKind::Statement;
     let it = book
         .intents
         .iter_mut()

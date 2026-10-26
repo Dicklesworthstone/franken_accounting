@@ -247,7 +247,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &AgingCertificate,
         expected: &AgingRequest,
     ) -> Outcome<EffectiveDateAging> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+        if let Err(r) = authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            Some(certificate.source.known_at),
+            false,
+        )? {
             return Ok(Err(r));
         }
         if expected.known_at.is_none() {
@@ -284,7 +291,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         certificate: &AgingCertificate,
         expected: &AgingRequest,
     ) -> Outcome<String> {
-        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+        if let Err(r) = authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            Some(certificate.source.known_at),
+            true,
+        )? {
             return Ok(Err(r));
         }
         let report = match self.replay_effective_date_aging_for(

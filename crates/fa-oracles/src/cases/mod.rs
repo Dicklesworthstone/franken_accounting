@@ -50,6 +50,7 @@ macro_rules! closed_set {
 
 pub mod amount;
 pub mod book;
+pub mod branch;
 pub mod check;
 pub mod date;
 pub mod derive;
@@ -58,12 +59,15 @@ pub mod error;
 pub mod expect;
 pub mod fact;
 mod fields;
+pub mod filler;
 pub mod harness_verbs;
 pub mod header;
 pub mod intent_json;
 pub mod log;
+pub mod names;
 pub mod normalize;
 pub mod observe;
+pub mod phrases;
 pub mod receipt;
 pub mod remedy;
 pub mod roles;
@@ -72,11 +76,15 @@ pub mod scope;
 pub mod selfrow;
 pub mod sentence;
 pub mod source;
+pub mod stream;
 pub mod stub;
+pub mod sweep;
 pub mod templates;
 #[cfg(test)]
 mod tests;
+pub mod tiers;
 pub mod trace;
+pub mod twin;
 pub mod verdict;
 
 use std::collections::{BTreeMap, BTreeSet};

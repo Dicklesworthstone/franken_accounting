@@ -925,3 +925,65 @@ fn functional_statement_mcp_preserves_basis_comparatives_and_certificate_authori
         ["read"]
     );
 }
+
+#[test]
+fn functional_trial_balance_mcp_preserves_scope_time_and_certificate_authority() {
+    let (mcp, reg) = embedded();
+    let tool = mcp.tool_for("tb", None).unwrap();
+    assert_eq!(tool.wire_name(), "fa_read_trial_balance");
+    let schema = tool.input_schema(&mcp, reg);
+    for property in ["functional", "activity", "certify"] {
+        assert_eq!(schema["properties"][property]["type"], json!("boolean"));
+    }
+    assert!(schema["properties"].get("certificate_out").is_none());
+    for (arguments, command) in [
+        (
+            json!({"functional": true, "period": ["FY2026-P02"], "as_known_at": "17", "certify": true}),
+            "fa tb --functional --period FY2026-P02 --as-known-at 17 --certify --json",
+        ),
+        (
+            json!({"functional": true, "activity": true, "period": ["FY2026-P02"], "certify": true}),
+            "fa tb --functional --activity --period FY2026-P02 --certify --json",
+        ),
+        (
+            json!({"functional": true, "as_of": "2026-02-28", "as_known_at": "2026-03-15T12:00:05Z", "certify": true}),
+            "fa tb --functional --as-of 2026-02-28 --as-known-at 2026-03-15T12:00:05Z --certify --json",
+        ),
+    ] {
+        let invocation = tool.invocation(&mcp, reg, &arguments).unwrap();
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert!(parsed.switch("--functional"));
+        assert!(parsed.switch("--certify"));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("tb", &parsed)
+                .unwrap()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>(),
+            ["read", "produce"]
+        );
+        let translated = mcp.command_to_call(reg, command).unwrap();
+        assert_eq!(translated.tool, tool.wire_name());
+        assert_eq!(translated.arguments, arguments);
+        let mut forbidden = arguments;
+        forbidden["certificate_out"] = json!("/outside-launch-root/tb.cert");
+        assert!(tool.invocation(&mcp, reg, &forbidden).is_err());
+    }
+    let plain = tool
+        .invocation(
+            &mcp,
+            reg,
+            &json!({"functional": true, "period": "FY2026-P02"}),
+        )
+        .unwrap();
+    let parsed = fa_cli::args::parse(&plain.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("tb", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read"]
+    );
+}

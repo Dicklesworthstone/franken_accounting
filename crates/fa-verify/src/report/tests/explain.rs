@@ -1005,7 +1005,7 @@ fn retained_instant_explanation_uses_its_historical_bucket() {
     assert_eq!(result.explanation, Some(report));
 }
 
-fn migration_body(mode: u8, sole: bool) -> (u128, Vec<u8>, [u8; 32]) {
+pub(super) fn migration_body(mode: u8, sole: bool) -> (u128, Vec<u8>, [u8; 32]) {
     let mut id = Writer::default();
     id.bytes(&BOOK).bytes(b"migration-run");
     let hash = hash_parts(b"fa:vid:migration-run:v1", &[&id.buf]);
@@ -1031,7 +1031,7 @@ fn migration_body(mode: u8, sole: bool) -> (u128, Vec<u8>, [u8; 32]) {
     );
     (run, body.buf, digest)
 }
-fn migration_record(
+pub(super) fn migration_record(
     run: u128,
     body: [u8; 32],
     kind: Option<u8>,
@@ -1083,7 +1083,7 @@ fn migration_record(
         .count(0);
     seal(w, at)
 }
-fn migration_id(run: u128, seq: u64) -> u128 {
+pub(super) fn migration_id(run: u128, seq: u64) -> u128 {
     let mut w = Writer::default();
     w.bytes(&BOOK)
         .bytes(&run.to_le_bytes())

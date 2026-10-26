@@ -4,7 +4,7 @@
 //! source and retrieval metadata do not authenticate a provider or a clock.
 //! Monetary proposals always use the ordinary independently verifying kernel.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use fa::{Book, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms};
 use fa_journal::{Capability, KernelError};
@@ -14,14 +14,14 @@ use fa_time::DateDay;
 
 use crate::args::Args;
 use crate::cli::{
-    Ctx, Fail, hex, known_at_read_flag, parse_json, registered_unit_code, render_amount, usage,
+    Ctx, Fail, Out, hex, known_at_read_flag, parse_json, registered_unit_code, render_amount, usage,
 };
 use crate::json::{Json, obj, s};
+use crate::notary;
 
 const RATE_USAGE: &str = "fa fx rate add --from-json rate.json (or - for stdin); rate_num and rate_den are positive decimal integer strings, base_unit is the book's functional currency, quote_unit is the foreign currency";
-const ACTIVITY_USAGE: &str =
-    "fa tb --functional --activity --period FY2026-P03 [--as-known-at HEAD|<seq>|<RFC3339>]";
-const STOCK_USAGE: &str = "fa tb --functional (--period FY2026-P03 | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>]; add --activity with one --period for period movement";
+const ACTIVITY_USAGE: &str = "fa tb --functional --activity --period FY2026-P03 [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]";
+const STOCK_USAGE: &str = "fa tb --functional (--period FY2026-P03 | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]; add --activity with one --period for period movement";
 const INTENT_USAGE: &str = r#""fx":{"law":"SpotClose","rates":["D:<retained Rate document oid>"]}; current SpotClose and PeriodAverage laws require HalfEven. SpotClose as_of equals effective_date; PeriodAverage as_of is the posting period's last included day. Base amounts are calculated from retained evidence"#;
 
 /// Embedded owners acquire the read operation needed to resolve selected Rate
@@ -449,7 +449,6 @@ pub(crate) fn functional_tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         "--as-of",
         "--fiscal-year",
         "--root",
-        "--certificate-out",
         "--branch",
         "--as-issued-to",
         "--as-reported-in",
@@ -463,7 +462,6 @@ pub(crate) fn functional_tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     }
     for flag in [
         "--summary",
-        "--certify",
         "--as-originally-reported",
         "--as-currently-stated",
     ] {
@@ -474,113 +472,11 @@ pub(crate) fn functional_tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
             ));
         }
     }
-    let capability = ctx.capability(args, &["read"])?;
-    let mut book = ctx.books.open_admitted(args, |book| {
-        fa_policy::admit_read(&capability, capability.holder(), book.context().book_id)
-            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-        book.read_scope(capability.holder(), &capability)??;
-        Ok(())
-    })?;
-    let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
-    let report = book.functional_period_activity(&capability, periods[0], known_at)??;
-    let accounts: BTreeMap<_, _> = book
-        .accounts_at(report.known_at, &capability)??
-        .into_iter()
-        .map(|account| (account.vid, account.code))
-        .collect();
-    let units = &book.context().units;
-    let render = |amount| render_amount(Amount::new(report.base_unit, amount), units);
-    let corrupt = || {
-        Fail::Book(fa::BookError::Kernel(KernelError::Corrupt(
-            "functional report total overflow or missing account".into(),
-        )))
-    };
-    let rows = |cells: &[fa_registers::FunctionalCell]| -> Result<Vec<Json>, Fail> {
-        cells
-            .iter()
-            .map(|cell| {
-                let account = accounts.get(&cell.key.account).ok_or_else(corrupt)?;
-                Ok(obj(vec![
-                    ("account", s(account)),
-                    ("account_ref", s(format!("{:032x}", cell.key.account.0))),
-                    ("entity", cell.key.entity.as_ref().map_or(Json::Null, s)),
-                    ("debits", s(render(cell.debits)?)),
-                    ("credits", s(render(cell.credits)?)),
-                    ("net", s(render(cell.net().ok_or_else(corrupt)?)?)),
-                    ("entry_count", Json::Int(i128::from(cell.entry_count))),
-                ]))
-            })
-            .collect()
-    };
-    let totals = |cells: &[fa_registers::FunctionalCell]| -> Result<(Json, bool), Fail> {
-        let (mut debit, mut credit) = (0i128, 0i128);
-        for cell in cells {
-            debit = debit.checked_add(cell.debits).ok_or_else(corrupt)?;
-            credit = credit.checked_add(cell.credits).ok_or_else(corrupt)?;
-        }
-        Ok((
-            obj(vec![
-                ("debits", s(render(debit)?)),
-                ("credits", s(render(credit)?)),
-                (
-                    "net",
-                    s(render(debit.checked_sub(credit).ok_or_else(corrupt)?)?),
-                ),
-            ]),
-            debit == credit,
-        ))
-    };
-    let (total, balanced) = totals(&report.cells)?;
-    let (pending_total, pending_balanced) = totals(&report.pending)?;
-    let base = registered_unit_code(report.base_unit, units)?;
-    let mut human = vec![format!(
-        "functional period activity · {} · {base} · known at {}",
-        report.period, report.known_at.0
-    )];
-    for (label, cells) in [("posted", &report.cells), ("pending", &report.pending)] {
-        for cell in cells {
-            human.push(format!(
-                "{label} {}{}  debit {}  credit {}  net {}",
-                accounts.get(&cell.key.account).ok_or_else(corrupt)?,
-                cell.key
-                    .entity
-                    .as_ref()
-                    .map_or(String::new(), |entity| format!(" [{entity}]")),
-                render(cell.debits)?,
-                render(cell.credits)?,
-                render(cell.net().ok_or_else(corrupt)?)?
-            ));
-        }
-    }
-    // open_admitted already stamped the book. Preserve any instant-resolution
-    // evidence attached by known_at_read_flag while pinning the report prefix.
-    ctx.out.known_at(report.known_at);
-    ctx.out.effective(format!("period:{}", report.period));
-    ctx.out.event(
-        "functional_trial_balance",
-        vec![
-            ("scope", s("period_activity")),
-            ("period", s(&report.period)),
-            ("base_unit", s(base)),
-            ("known_at", Json::Int(i128::from(report.known_at.0))),
-            (
-                "watermark",
-                report
-                    .watermark
-                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
-            ),
-            ("entries", Json::Int(i128::from(report.entries))),
-            ("fold_digest", s(hex(&report.fold_digest))),
-            ("rows", Json::Arr(rows(&report.cells)?)),
-            ("pending_rows", Json::Arr(rows(&report.pending)?)),
-            ("totals", total),
-            ("pending_totals", pending_total),
-            ("balanced", Json::Bool(balanced)),
-            ("pending_balanced", Json::Bool(pending_balanced)),
-        ],
-        &human.join("\n"),
-    );
-    Ok(())
+    functional_selected(
+        ctx,
+        args,
+        fa::TrialBalanceSelection::Activity(vec![periods[0].to_string()]),
+    )
 }
 
 fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -597,7 +493,6 @@ fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     for flag in [
         "--fiscal-year",
         "--root",
-        "--certificate-out",
         "--branch",
         "--as-issued-to",
         "--as-reported-in",
@@ -611,7 +506,6 @@ fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     for flag in [
         "--summary",
-        "--certify",
         "--as-originally-reported",
         "--as-currently-stated",
     ] {
@@ -633,90 +527,158 @@ fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })
         })
         .transpose()?;
-    let capability = ctx.capability(args, &["read"])?;
+    let selection = match as_of {
+        Some(date) => fa::TrialBalanceSelection::AsOf(date),
+        None => fa::TrialBalanceSelection::Periods(vec![periods[0].to_string()]),
+    };
+    functional_selected(ctx, args, selection)
+}
+
+fn functional_selected(
+    ctx: &mut Ctx<'_>,
+    args: &Args,
+    selection: fa::TrialBalanceSelection,
+) -> Result<(), Fail> {
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let capability = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
     let mut book = ctx.books.open_admitted(args, |book| {
         fa_policy::admit_read(&capability, capability.holder(), book.context().book_id)
+            .and_then(|()| {
+                if certify {
+                    fa_policy::require(
+                        &capability,
+                        fa_policy::Op::Produce,
+                        "certifying a functional trial balance",
+                    )
+                } else {
+                    Ok(())
+                }
+            })
             .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
         book.read_scope(capability.holder(), &capability)??;
         Ok(())
     })?;
-    let (known_at, _) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
-    // This report verifies the complete retained Entry history. Judge that
-    // whole-book reach at the selected prefix before resolving period metadata.
-    let selected = book
-        .read_scope(capability.holder(), &capability)??
-        .admit_whole_book(known_at)??;
-    let through = if let Some(date) = as_of {
-        date
+    let (known_at, requested_utc_ns) = known_at_read_flag(args, &book, &ctx.out, &capability)?;
+    let (report, certificate) = if certify {
+        let certified = match requested_utc_ns {
+            Some(instant) => {
+                book.certify_functional_trial_balance_at_instant(&capability, selection, instant)??
+            }
+            None => book.certify_functional_trial_balance(&capability, selection, known_at)??,
+        };
+        ctx.out
+            .time_selection(certified.certificate.time_selection.as_ref());
+        let fa::ReportOutput::FunctionalTrialBalance(report) = certified.report else {
+            return Err(Fail::Internal(
+                "functional trial-balance certification returned another report kind".into(),
+            ));
+        };
+        (*report, Some(certified.certificate))
     } else {
-        // A historical Period row may be outside the live snapshot retained
-        // by an idle, compacted store. Hydrate the admitted prefix before
-        // looking up its end date, just as the stock fold does for entries.
-        book.prepare_report_history(capability.holder(), &capability, Some(selected))??;
-        let periods_verified = book.verify_periods(Some(selected))?;
-        if !periods_verified.is_green() {
-            return Err(Fail::Verification {
-                message: "functional stock cannot use a period whose retained definition or state has drifted".into(),
-                detail: obj(vec![(
-                    "drift",
-                    Json::Arr(periods_verified.drift.iter().map(s).collect()),
-                )]),
-                cite: Some("FA-INV-02 (period dates and state derive from the journal)".into()),
-                fix: Some("inspect fa verify periods at the same known-at prefix; preserve the native history".into()),
-            });
-        }
-        let period = book
-            .read_scope(capability.holder(), &capability)??
-            .period_at(periods[0], Some(selected))??
-            .ok_or_else(|| {
-                usage(
-                    format!(
-                        "period {} does not exist at known-at {}",
-                        periods[0], selected.0
-                    ),
-                    STOCK_USAGE,
-                )
-            })?;
-        period.end.pred().map_err(|error| {
-            usage(
-                format!("cannot resolve the period end: {error}"),
-                STOCK_USAGE,
-            )
-        })?
+        (
+            book.functional_trial_balance(&capability, selection, known_at)??,
+            None,
+        )
     };
-    let report = book.functional_balance_as_of(&capability, through, Some(selected))??;
-    let accounts: BTreeMap<_, _> = book
-        .accounts_at(report.known_at, &capability)??
-        .into_iter()
-        .map(|account| (account.vid, account.code))
-        .collect();
-    let units = &book.context().units;
+    // Validate every displayed cell and amount before publishing retention or
+    // emitting success. Replay uses the same presentation and historical names.
+    let presentation = functional_presentation(&report, &book.context().units)?;
+    let retained = certificate
+        .as_ref()
+        .map(|certificate| {
+            notary::retain_report_certificate(&mut book, &ctx.files, args, certificate, &capability)
+        })
+        .transpose()?;
+    let digest = certificate
+        .as_ref()
+        .map(|certificate| hex(&certificate.digest));
+    emit_functional_trial_balance(&ctx.out, &report, presentation, digest.as_deref());
+    if let (Some(certificate), Some((bytes, retained))) = (certificate.as_ref(), retained) {
+        notary::emit_report_certificate(&ctx.out, args, certificate, &bytes, &retained);
+    }
+    Ok(())
+}
+
+struct FunctionalPresentation {
+    event: &'static str,
+    effective: String,
+    fields: Vec<(&'static str, Json)>,
+    human: String,
+}
+
+fn functional_presentation(
+    report: &fa::FunctionalTrialBalance,
+    units: &UnitRegistry,
+) -> Result<FunctionalPresentation, Fail> {
     let render = |amount| render_amount(Amount::new(report.base_unit, amount), units);
     let corrupt = || {
         Fail::Book(fa::BookError::Kernel(KernelError::Corrupt(
-            "functional stock total overflow or missing account".into(),
+            "functional trial balance has an invalid selector, account, unit or total".into(),
         )))
     };
     let base = registered_unit_code(report.base_unit, units)?;
+    let (event, effective, mut fields, heading) = match &report.selection {
+        fa::TrialBalanceSelection::Activity(periods)
+            if periods.len() == 1 && report.effective_through.is_none() =>
+        {
+            (
+                "functional_trial_balance",
+                format!("period:{}", periods[0]),
+                vec![("scope", s("period_activity")), ("period", s(&periods[0]))],
+                format!("functional period activity · {}", periods[0]),
+            )
+        }
+        fa::TrialBalanceSelection::Periods(periods) if periods.len() == 1 => {
+            let through = report.effective_through.ok_or_else(corrupt)?;
+            (
+                "functional_stock_balance",
+                format!("through:{}", through.render()),
+                vec![
+                    ("scope", s("stock")),
+                    ("effective_through", s(through.render())),
+                ],
+                format!("functional stock through {}", through.render()),
+            )
+        }
+        fa::TrialBalanceSelection::AsOf(through) if report.effective_through == Some(*through) => (
+            "functional_stock_balance",
+            format!("through:{}", through.render()),
+            vec![
+                ("scope", s("stock")),
+                ("effective_through", s(through.render())),
+            ],
+            format!("functional stock through {}", through.render()),
+        ),
+        _ => return Err(corrupt()),
+    };
     let mut human = vec![format!(
-        "functional stock through {} · {base} · known at {}",
-        through.render(),
+        "{heading} · {base} · known at {}",
         report.known_at.0
     )];
     let mut column = |label: &str,
-                      cells: &[fa_registers::FunctionalStockCell]|
+                      cells: &[fa::FunctionalTrialBalanceCell]|
      -> Result<(Json, Json, bool), Fail> {
         let mut rows = Vec::with_capacity(cells.len());
         let (mut debits, mut credits) = (0i128, 0i128);
         for cell in cells {
-            let account = accounts.get(&cell.key.account).ok_or_else(corrupt)?;
+            if cell.unit_id != report.base_unit.0 {
+                return Err(corrupt());
+            }
+            let account = &report.accounts.get(&cell.account).ok_or_else(corrupt)?.code;
             let net = cell.debits.checked_sub(cell.credits).ok_or_else(corrupt)?;
             debits = debits.checked_add(cell.debits).ok_or_else(corrupt)?;
             credits = credits.checked_add(cell.credits).ok_or_else(corrupt)?;
             rows.push(obj(vec![
                 ("account", s(account)),
-                ("account_ref", s(format!("{:032x}", cell.key.account.0))),
-                ("entity", cell.key.entity.as_ref().map_or(Json::Null, s)),
+                ("account_ref", s(format!("{:032x}", cell.account.0))),
+                ("entity", cell.entity.as_ref().map_or(Json::Null, s)),
                 ("debits", s(render(cell.debits)?)),
                 ("credits", s(render(cell.credits)?)),
                 ("net", s(render(net)?)),
@@ -724,8 +686,7 @@ fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ]));
             human.push(format!(
                 "{label} {account}{}  debit {}  credit {}  net {}",
-                cell.key
-                    .entity
+                cell.entity
                     .as_ref()
                     .map_or(String::new(), |entity| format!(" [{entity}]")),
                 render(cell.debits)?,
@@ -745,31 +706,55 @@ fn functional_stock(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let (rows, totals, balanced) = column("posted", &report.cells)?;
     let (pending_rows, pending_totals, pending_balanced) = column("pending", &report.pending)?;
-    ctx.out.known_at(report.known_at);
-    ctx.out.effective(format!("through:{}", through.render()));
-    ctx.out.event(
-        "functional_stock_balance",
-        vec![
-            ("scope", s("stock")),
-            ("effective_through", s(through.render())),
-            ("base_unit", s(base)),
-            ("known_at", Json::Int(i128::from(report.known_at.0))),
-            (
-                "watermark",
-                report
-                    .watermark
-                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
-            ),
-            ("entries", Json::Int(i128::from(report.entries))),
-            ("fold_digest", s(hex(&report.fold_digest))),
-            ("rows", rows),
-            ("pending_rows", pending_rows),
-            ("totals", totals),
-            ("pending_totals", pending_totals),
-            ("balanced", Json::Bool(balanced)),
-            ("pending_balanced", Json::Bool(pending_balanced)),
-        ],
-        &human.join("\n"),
+    fields.extend([
+        ("base_unit", s(base)),
+        ("known_at", Json::Int(i128::from(report.known_at.0))),
+        (
+            "watermark",
+            report
+                .watermark
+                .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+        ),
+        ("entries", Json::Int(i128::from(report.entries))),
+        ("fold_digest", s(hex(&report.fold_digest))),
+        ("rows", rows),
+        ("pending_rows", pending_rows),
+        ("totals", totals),
+        ("pending_totals", pending_totals),
+        ("balanced", Json::Bool(balanced)),
+        ("pending_balanced", Json::Bool(pending_balanced)),
+    ]);
+    Ok(FunctionalPresentation {
+        event,
+        effective,
+        fields,
+        human: human.join("\n"),
+    })
+}
+
+fn emit_functional_trial_balance(
+    out: &Out,
+    report: &fa::FunctionalTrialBalance,
+    presentation: FunctionalPresentation,
+    certificate: Option<&str>,
+) {
+    out.known_at(report.known_at);
+    out.effective(presentation.effective);
+    out.event_with_certificate(
+        presentation.event,
+        presentation.fields,
+        &presentation.human,
+        certificate,
     );
+}
+
+pub(crate) fn render_functional_trial_balance(
+    out: &Out,
+    book: &Book,
+    report: &fa::FunctionalTrialBalance,
+    certificate: Option<&str>,
+) -> Result<(), Fail> {
+    let presentation = functional_presentation(report, &book.context().units)?;
+    emit_functional_trial_balance(out, report, presentation, certificate);
     Ok(())
 }

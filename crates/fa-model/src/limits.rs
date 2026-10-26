@@ -65,6 +65,14 @@ pub const MAX_DAEMON_CONNECTIONS: usize = 64;
 /// An oversized chain refuses; a truncated chain never establishes continuity.
 pub const MAX_BANK_PREDECESSOR_DEPTH: usize = 4096;
 
+/// Canonical native-period checkpoint body, including both amount columns and
+/// unresolved hold digests. Chunking preserves the substrate's row bound;
+/// admission of the complete maintenance transaction still belongs to FGDB.
+pub const MAX_REGISTER_CHECKPOINT_BYTES: usize = 8 * 1024 * 1024;
+/// Distinct account/unit/period keys across a checkpoint's posted and pending
+/// columns. The byte bound is enforced independently before allocation.
+pub const MAX_REGISTER_CHECKPOINT_CELLS: usize = 100_000;
+
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
     ("max_entry_bytes", MAX_ENTRY_BYTES as u64),
@@ -111,6 +119,14 @@ pub const ALL: &[(&str, u64)] = &[
     (
         "max_bank_predecessor_depth",
         MAX_BANK_PREDECESSOR_DEPTH as u64,
+    ),
+    (
+        "max_register_checkpoint_bytes",
+        MAX_REGISTER_CHECKPOINT_BYTES as u64,
+    ),
+    (
+        "max_register_checkpoint_cells",
+        MAX_REGISTER_CHECKPOINT_CELLS as u64,
     ),
 ];
 

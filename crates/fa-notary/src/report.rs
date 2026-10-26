@@ -1,5 +1,5 @@
 //! Portable native and dimension-filtered trial balances, statements, open
-//! items and balance explanations over a payload-complete checkpoint.
+//! items, balance explanations and effective-date aging over a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
 //! independent verifier derives selectors from every record, reconstructs the
@@ -33,7 +33,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, or v4 statement certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement or effective-date aging certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -60,7 +60,7 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Package an already replayed native or dimension-filtered trial balance, or
-/// statement. Open-item reports and balance explanations require the authenticated registry closure in
+/// statement. Open items, balance explanations and aging require the authenticated registry closure in
 /// `assemble_with_registries`. For an instant-selected certificate, the facade
 /// supplies its observed time frontier
 /// as `known_at` so the complete upper-tick closure is retained as well.
@@ -84,12 +84,14 @@ pub fn assemble(
     assemble_inner(journal, checkpoint, certificate, known_at, bodies, &[])
 }
 
-/// Package a native statement, open-item report or balance explanation with
+/// Package a native statement, open-item report, balance explanation or aging with
 /// the exact canonical registry documents bound by its source certificate.
 /// The facade verifies their closure and the book's complete unit table before
 /// calling this API. Open items pass `check_open_items_scope`; explanations
 /// pass `check_explanation_scope` and append their original reason-code
-/// registry as the fifth document. No v1 fallback serves either v3 selector.
+/// registry as the fifth document. Aging retains its outer certificate after
+/// replaying the cutoff, buckets and output; its nested OpenItems source needs
+/// four documents. No v1 fallback serves either v3 selector or aging.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -112,8 +114,9 @@ pub fn assemble_with_registries(
     } else {
         &["account_types", "entry_classes", "units", "foundations"]
     };
-    if !(certificate.starts_with(b"fa:report-certificate:v4")
+    if !(certificate_format(certificate, b"fa:report-certificate:v4")
         || open_items_certificate(certificate)
+        || aging_certificate(certificate)
         || explanation)
         || registries
             .iter()
@@ -124,7 +127,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for statements and open items, five including reason_codes for balance explanations",
+            "native reports require their exact canonical registry profile in closure order: four documents for statements, open items and aging, five including reason_codes for balance explanations",
         )));
     }
     assemble_inner(
@@ -148,6 +151,19 @@ fn explanation_certificate(certificate: &[u8]) -> bool {
     v3_certificate(certificate, "fa:balance-explanation:v1", 0)
 }
 
+// A version tag is followed by the framed replay scope. Matching only its
+// byte prefix would admit v10 as v1 (and future v40 as v4), even though the
+// portable interpreter does not support those report families.
+fn certificate_format(certificate: &[u8], format: &[u8]) -> bool {
+    let Some(fields) = certificate.strip_prefix(format) else {
+        return false;
+    };
+    let mut reader = Reader::new(fields);
+    reader
+        .str(64, "report scope")
+        .is_ok_and(|scope| scope == "fa-fold-over-prefix")
+}
+
 fn v3_certificate(certificate: &[u8], output: &str, selector: u8) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -169,6 +185,24 @@ fn v3_certificate(certificate: &[u8], output: &str, selector: u8) -> bool {
     header().unwrap_or(false)
 }
 
+/// Recognize only the effective-date aging wrapper around an OpenItems
+/// source. This is format routing, not accounting verification: the facade
+/// replays the complete outer certificate before assembly, and the independent
+/// verifier checks its digest, source, cutoff and exact output again.
+fn aging_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "aging format")? != b"fa:aging-certificate:v1" {
+            return Ok(false);
+        }
+        reader.u128("aging producer")?;
+        reader.fixed::<32>("aging capability")?;
+        let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "aging source")?;
+        Ok(open_items_certificate(source))
+    };
+    header().unwrap_or(false)
+}
+
 fn assemble_inner(
     journal: &Journal,
     checkpoint: &StoredCheckpoint,
@@ -179,17 +213,18 @@ fn assemble_inner(
 ) -> Outcome<Bundle> {
     let major = if registries.is_empty() { 1 } else { 2 };
     if !(major == 1
-        && (certificate.starts_with(b"fa:report-certificate:v1")
-            || certificate.starts_with(b"fa:report-certificate:v2")
-            || certificate.starts_with(b"fa:report-certificate:v4")
-            || certificate.starts_with(b"fa:report-certificate:v8"))
+        && (certificate_format(certificate, b"fa:report-certificate:v1")
+            || certificate_format(certificate, b"fa:report-certificate:v2")
+            || certificate_format(certificate, b"fa:report-certificate:v4")
+            || certificate_format(certificate, b"fa:report-certificate:v8"))
         || major == 2
-            && (certificate.starts_with(b"fa:report-certificate:v4")
+            && (certificate_format(certificate, b"fa:report-certificate:v4")
                 || open_items_certificate(certificate)
-                || explanation_certificate(certificate)))
+                || explanation_certificate(certificate)
+                || aging_certificate(certificate)))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report or balance explanation with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report, balance explanation or effective-date aging with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -284,4 +319,36 @@ fn assemble_inner(
         bytes,
         digest: hash.finalize().0,
     }))
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn supported_version_headers_do_not_admit_later_decimal_versions() {
+        for version in [1, 2, 4, 8] {
+            let format = format!("fa:report-certificate:v{version}");
+            let mut writer = Writer::new();
+            writer.fixed(format.as_bytes()).str("fa-fold-over-prefix");
+            assert!(certificate_format(
+                &writer.finish().unwrap(),
+                format.as_bytes()
+            ));
+            for later in [version * 10, version * 10 + 1] {
+                let mut writer = Writer::new();
+                writer
+                    .fixed(format!("fa:report-certificate:v{later}").as_bytes())
+                    .str("fa-fold-over-prefix");
+                assert!(!certificate_format(
+                    &writer.finish().unwrap(),
+                    format.as_bytes()
+                ));
+            }
+        }
+        assert!(!certificate_format(
+            b"fa:report-certificate:v1",
+            b"fa:report-certificate:v1"
+        ));
+    }
 }

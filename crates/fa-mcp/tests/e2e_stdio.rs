@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 use fa_cli::json::Json;
 use fastmcp_rust::{JsonValue, json};
 
+#[path = "e2e_stdio/aging_bundle.rs"]
+mod aging_bundle;
 #[path = "e2e_stdio/draft_review.rs"]
 mod draft_review;
 #[path = "e2e_stdio/explanation_bundle.rs"]

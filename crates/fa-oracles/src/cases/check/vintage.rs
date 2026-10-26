@@ -17,12 +17,15 @@
 //!   value. A superseded T is refused unless its `read_selector` is
 //!   `reported_in:<period>[#<n>]` and that `issue` step files a stub of S.
 //! - **The A posting** (`bridge`): every intent outside a case Δ that posts
-//!   to an account the read selects cites, as its `evidence` document, a
-//!   stub of an `A:` source (§2.7).
+//!   to an account the read selects posts the `A:` filing's figure. On a
+//!   `statement` or `ledger` stem its `evidence` document is a stub of an
+//!   `A:` source (§2.7); on a `native` or `migration` stem, whose documented
+//!   entries never cite a stub (K-EVID, A3c), its fact is a sourced fact of
+//!   an `A:` source.
 
 use std::collections::BTreeSet;
 
-use super::super::book::{BookVariant, StepKind};
+use super::super::book::{BookVariant, StepKind, VariantKind};
 use super::super::expect::TKind;
 use super::super::fact::Provenance;
 use super::super::trace::{Read, fact_closure, read_accounts, t_reads};
@@ -229,7 +232,8 @@ fn issuance_stub(book: &BookVariant, selector: &str) -> Option<String> {
         .map(|d| d.stub_of.clone())
 }
 
-/// A bridge's A postings cite a stub of an `A:` source.
+/// A bridge's A postings post an `A:` source's figure: by their evidence
+/// stub on a statement or ledger stem, by their fact on an entry-level one.
 fn a_posting_problems(case: &Case, read: &Read<'_>) -> Vec<String> {
     let Some(book) = case.books.get(read.str("book_variant").unwrap_or_default()) else {
         return Vec::new();
@@ -248,6 +252,26 @@ fn a_posting_problems(case: &Case, read: &Read<'_>) -> Vec<String> {
         .iter()
         .filter(|i| intents.contains(i.id.as_str()) && !i.is_delta())
     {
+        if matches!(book.kind, VariantKind::Native | VariantKind::Migration) {
+            let source = case
+                .facts
+                .iter()
+                .find(|f| f.id == it.fact)
+                .and_then(|f| f.sourced())
+                .map(|s| s.source.as_str());
+            match source {
+                Some(s) if a_sources.contains(s) => {}
+                Some(s) => out.push(format!(
+                    "A intent {} posts {} of {s}, not of the A: source {a_sources:?}",
+                    it.id, it.fact
+                )),
+                None => out.push(format!(
+                    "A intent {} posts {}, not a sourced fact of the A: source {a_sources:?}",
+                    it.id, it.fact
+                )),
+            }
+            continue;
+        }
         let cites = it
             .evidence
             .as_deref()

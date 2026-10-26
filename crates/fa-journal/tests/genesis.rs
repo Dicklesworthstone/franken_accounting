@@ -53,6 +53,8 @@ mod policy_outcome_keys;
 mod recurring_tests;
 #[path = "genesis/register_capacity.rs"]
 mod register_capacity;
+#[path = "genesis/registration_outcome_keys.rs"]
+mod registration_outcome_keys;
 #[path = "genesis/scheduled_admission.rs"]
 mod scheduled_admission_tests;
 #[path = "genesis/subledger.rs"]
@@ -874,6 +876,35 @@ fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
     );
     let vid = fa_model::entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"inv-2");
     assert!(h.db.vertex(vid).unwrap().is_none());
+}
+
+/// fa-hoi5: a balanced proposal that claims a schema minor this build does
+/// not know, carrying an extension no reader registered, is refused at
+/// admission (FA-REF-100, naming `schema_minor`) and writes nothing. At its
+/// own minor the same proposal is the ordinary unregistered-tag refusal.
+#[test]
+fn a_proposal_claiming_a_future_schema_minor_is_refused() {
+    let mut h = harness();
+    let before = h.db.frontier().unwrap();
+    let mut proposal = h.proposal(h.rent_legs(5_000), b"future-minor", EntryClass::ORIGINAL);
+    proposal.schema_minor = fa_model::entry::SCHEMA_MINOR + 1;
+    proposal.extensions = vec![(999, vec![1, 2, 3])];
+    let r = h.post(h.request(proposal.clone(), &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("schema_minor"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let vid = fa_model::entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"future-minor");
+    assert!(h.db.vertex(vid).unwrap().is_none());
+
+    proposal.schema_minor = fa_model::entry::SCHEMA_MINOR;
+    let r = h.post(h.request(proposal, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(
+        r.message.contains("unregistered extension tag"),
+        "{}",
+        r.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
 }
 
 #[test]
@@ -7073,6 +7104,97 @@ fn balancing_post_plan_requires_approval_of_the_resolved_effects() {
     let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
     assert_eq!(entry.proposal, resolved);
     assert_eq!(entry.approvals, vec![approval]);
+}
+
+#[test]
+fn balancing_review_manual_assertion_binds_actual_movement_not_requested_amount() {
+    let mut h = harness_configured(
+        Vec::new(),
+        None,
+        Some(BalanceLimit {
+            lower: Some(-700),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    );
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let mut proposal = balancing_proposal(
+        h.proposal(
+            h.rent_legs(1_000),
+            b"reviewed-capped-assertion",
+            EntryClass::ORIGINAL,
+        ),
+        1,
+    )
+    .unwrap();
+    proposal.evidence.clear();
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let purposes = h.ctx();
+    let resolved = fa_journal::limit::review_balancing(
+        &mut h.db,
+        &purposes,
+        &h.book,
+        proposal.clone(),
+        capability.clone(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolved.legs[0].amount.mantissa, 700);
+    assert_eq!(resolved.legs[1].amount.mantissa, 700);
+    assert_eq!(
+        fa_journal::limit::request_form(&resolved).unwrap(),
+        Some(proposal.clone())
+    );
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+
+    // An assertion over the requested 1,000 is a different claim from the
+    // actual 700 movement. Neither direct posting nor planning may use it.
+    h.assert_manually(
+        PRINCIPAL,
+        &proposal,
+        1,
+        h.statement("Synthetic requested movement has no issued document", 71),
+    )
+    .unwrap();
+    let before = h.db.frontier().unwrap();
+    for planned in [false, true] {
+        let request = h.request(proposal.clone(), &["post"]);
+        let refusal = if planned {
+            h.post_plan(request).unwrap_err()
+        } else {
+            h.post(request).unwrap_err()
+        };
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-080", exit::REFUSAL),
+            "{refusal}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+    }
+
+    // Recording the actual reviewed claim does not change availability. The
+    // original request remains portable, and the posted proposal is exactly
+    // the one the preparer asserted, not the larger requested movement.
+    h.assert_manually(
+        PRINCIPAL,
+        &resolved,
+        1,
+        h.statement("Synthetic actual movement has no issued document", 72),
+    )
+    .unwrap();
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    assert_eq!(plan.proposal(), &resolved);
+    let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal, resolved);
+    assert_eq!(
+        h.publish_plan(plan, &capability).unwrap().entry_ref(),
+        posted.entry_ref()
+    );
+    assert_eq!(h.db.frontier().unwrap(), posted.recorded_at());
 }
 
 #[test]

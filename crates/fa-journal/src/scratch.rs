@@ -70,12 +70,13 @@ const MAINTENANCE_PROPERTIES: [PropertyKeyId; 1] = [property::ACCUMULATOR_HEAD];
 /// commit as the `AccumulatorState` it signs.
 /// A scratch report must issue its own certificate; the source's
 /// retained artifact remains unchanged in its original book.
-const MAINTENANCE: [LabelId; 5] = [
+const MAINTENANCE: [LabelId; 6] = [
     label::REGISTER,
     label::ACCUMULATOR_STATE,
     label::TRANSPARENCY_CHECKPOINT,
     label::REGISTER_STATE,
     label::CERTIFICATE,
+    label::REGISTER_CHECKPOINT,
 ];
 
 /// The map from source `CommitSeq`s to scratch `CommitSeq`s (plan §15.2).

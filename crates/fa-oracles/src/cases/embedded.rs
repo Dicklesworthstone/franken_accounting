@@ -14,8 +14,43 @@ pub struct EmbeddedCase {
     pub files: &'static [(&'static str, &'static str)],
 }
 
-/// Every committed case (none yet; the self-test, A7a, is the first).
-pub const CASES: &[EmbeddedCase] = &[];
+/// Every committed case.
+pub const CASES: &[EmbeddedCase] = &[SELFTEST];
+
+/// The harness self-test (A7a; A8a completes it).
+pub const SELFTEST: EmbeddedCase = EmbeddedCase {
+    id: "_selftest",
+    files: &[
+        ("case.toml", include_str!("../../cases/_selftest/case.toml")),
+        (
+            "roles.toml",
+            include_str!("../../cases/_selftest/roles.toml"),
+        ),
+        (
+            "facts.toml",
+            include_str!("../../cases/_selftest/facts.toml"),
+        ),
+        (
+            "books/native.toml",
+            include_str!("../../cases/_selftest/books/native.toml"),
+        ),
+        (
+            "expectations.toml",
+            include_str!("../../cases/_selftest/expectations.toml"),
+        ),
+    ],
+};
+
+impl EmbeddedCase {
+    /// The case's files as a [`super::CaseFiles`].
+    #[must_use]
+    pub const fn case_files(&self) -> super::CaseFiles<'static> {
+        super::CaseFiles {
+            id: self.id,
+            files: self.files,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -33,6 +68,24 @@ mod tests {
                 files_under(&path, base, out);
             } else if let Ok(rel) = path.strip_prefix(base) {
                 out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    #[test]
+    fn every_committed_case_loads_and_no_load_check_fails() {
+        for case in CASES {
+            let loaded = crate::cases::load(&case.case_files());
+            assert!(loaded.is_ok(), "{}: {:#?}", case.id, loaded.err());
+            let Ok(loaded) = loaded else { continue };
+            for report in crate::cases::check::run_load_checks(&loaded) {
+                assert_ne!(
+                    report.verdict,
+                    crate::cases::check::Verdict::Fail,
+                    "{}:\n{}",
+                    case.id,
+                    report.render(Some(case.id))
+                );
             }
         }
     }

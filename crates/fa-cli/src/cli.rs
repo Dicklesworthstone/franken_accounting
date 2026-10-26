@@ -2625,6 +2625,8 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--workpaper-out",
         "--review-out",
         "--receipt-out",
+        "--csv-out",
+        "--applications-csv-out",
     ] {
         if let Some(value) = args.flag(flag) {
             paths.push((flag, value, HostPath::Output));
@@ -7685,7 +7687,6 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "prior_period_error",
         "fx",
         "external_subledger",
-        "obligations",
         "obligation_maturity",
         "valuation_adjustments",
     ];
@@ -8552,7 +8553,7 @@ fn build_post_request_with_prior(
         .map_err(BookError::Kernel)?,
         None => proposal,
     };
-    let proposal = apply_solvency_extensions(doc, &ctx, proposal)?;
+    let proposal = apply_valuation_adjustments(doc, &ctx, proposal)?;
     let proposal = crate::obligation::declare_terms(book, doc, proposal)?;
     Ok(BuiltPost {
         request: PostRequest {
@@ -8567,137 +8568,18 @@ fn build_post_request_with_prior(
     })
 }
 
-fn apply_solvency_extensions(
+/// The intent's `valuation_adjustments`, if any, as the proposal's extension
+/// 34 (plan §11.6, fa-8j3g): explicit dated valuation inputs, each naming its
+/// basis law and its applicability. The kernel validates the terms before the
+/// entry posts; `solvency.balance_sheet_test` applies and cites them.
+fn apply_valuation_adjustments(
     doc: &Json,
     ctx: &fa_journal::BookContext,
     mut proposal: EntryPayload,
 ) -> Result<EntryPayload, Fail> {
-    use fa_lantern::solvency::{
-        InlineObligationTerms, InlineValuationTerms, ObligationInstallment, ObligationStatus,
-        ValuationApplicabilityLaw, ValuationBasisLaw, ValuationSubject,
+    use fa_model::valuation::{
+        InlineValuationTerms, ValuationApplicabilityLaw, ValuationBasisLaw, ValuationSubject,
     };
-
-    if let Some(raw_maturity) = doc.get("obligation_maturity") {
-        let items = raw_maturity.as_arr().ok_or_else(|| {
-            usage(
-                "intent: `obligation_maturity` must be an array",
-                "\"obligation_maturity\": [{\"ordinal\": 1, \"status\": \"contractual\", \"installments\": [{\"due_date\": \"2026-12-31\", \"amount\": \"1000.00 USD\"}]}]",
-            )
-        })?;
-        let mut terms = Vec::with_capacity(items.len());
-        for (i, item) in items.iter().enumerate() {
-            let ordinal_raw = item
-                .get("ordinal")
-                .and_then(|v| match v {
-                    Json::Int(n) => Some(*n),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    usage(
-                        format!("obligation_maturity[{i}]: `ordinal` must be an integer leg index"),
-                        "\"ordinal\": 1",
-                    )
-                })?;
-            let ordinal = u16::try_from(ordinal_raw).map_err(|_| {
-                usage(
-                    format!(
-                        "obligation_maturity[{i}]: `ordinal` {ordinal_raw} is out of u16 range"
-                    ),
-                    "\"ordinal\": 0..65535",
-                )
-            })?;
-            let status_s = item
-                .get("status")
-                .and_then(Json::as_str)
-                .unwrap_or("contractual");
-            let status = match status_s {
-                "contractual" | "Contractual" => ObligationStatus::Contractual,
-                "missing_maturity" | "MissingMaturity" => ObligationStatus::MissingMaturity,
-                "disputed" | "Disputed" => {
-                    let rc = item
-                        .get("reason_code")
-                        .and_then(|v| match v {
-                            Json::Int(n) => u16::try_from(*n).ok(),
-                            _ => None,
-                        })
-                        .unwrap_or(1);
-                    ObligationStatus::Disputed { reason_code: rc }
-                }
-                other => {
-                    return Err(usage(
-                        format!("obligation_maturity[{i}]: unknown status `{other}`"),
-                        "\"status\": \"contractual\" | \"disputed\" | \"missing_maturity\"",
-                    ));
-                }
-            };
-            let mut installments = Vec::new();
-            if let Some(raw_inst) = item.get("installments") {
-                let arr = raw_inst.as_arr().ok_or_else(|| {
-                    usage(
-                        format!("obligation_maturity[{i}].installments must be an array"),
-                        "\"installments\": [{\"due_date\": \"2026-12-31\", \"amount\": \"1000.00 USD\"}]",
-                    )
-                })?;
-                for (j, inst) in arr.iter().enumerate() {
-                    let due_s = req_str(
-                        inst,
-                        "due_date",
-                        &format!("obligation_maturity[{i}].installments[{j}]"),
-                    )?;
-                    let due_date = DateDay::parse(due_s).map_err(|e| {
-                        usage(
-                            format!("obligation_maturity[{i}].installments[{j}].due_date `{due_s}`: {e:?}"),
-                            "due_date: \"YYYY-MM-DD\"",
-                        )
-                    })?;
-                    let amt_s = req_str(
-                        inst,
-                        "amount",
-                        &format!("obligation_maturity[{i}].installments[{j}]"),
-                    )?;
-                    let amt = Amount::parse(amt_s, &ctx.units).map_err(|e| {
-                        usage(
-                            format!(
-                                "obligation_maturity[{i}].installments[{j}].amount `{amt_s}`: {e:?}"
-                            ),
-                            "amount: \"1000.00 USD\"",
-                        )
-                    })?;
-                    if let Some(leg) = proposal.legs.get(usize::from(ordinal))
-                        && leg.amount.unit != amt.unit
-                    {
-                        return Err(usage(
-                            format!(
-                                "obligation_maturity[{i}].installments[{j}].amount unit does not match leg {ordinal}"
-                            ),
-                            "use the same unit as the scheduled liability leg",
-                        ));
-                    }
-                    installments.push(ObligationInstallment {
-                        due_date,
-                        amount: amt.mantissa,
-                    });
-                }
-            }
-            installments.sort_unstable();
-            terms.push(InlineObligationTerms {
-                ordinal,
-                status,
-                installments,
-            });
-        }
-        terms.sort_by_key(|t| t.ordinal);
-        let ext = InlineObligationTerms::to_extension(&terms).map_err(|e| {
-            usage(
-                format!("obligation_maturity: {e}"),
-                "check obligation_maturity fields",
-            )
-        })?;
-        proposal.schema_minor = proposal.schema_minor.max(2);
-        proposal.extensions.retain(|(t, _)| *t != ext.0);
-        proposal.extensions.push(ext);
-        proposal.extensions.sort_by_key(|(t, _)| *t);
-    }
 
     if let Some(raw_val) = doc.get("valuation_adjustments") {
         let items = raw_val.as_arr().ok_or_else(|| {
@@ -8736,10 +8618,8 @@ fn apply_solvency_extensions(
                 ),
                 None => None,
             };
-            let basis_s = item
-                .get("basis_law")
-                .and_then(Json::as_str)
-                .unwrap_or("signed_delta");
+            // A valuation names its law; none is assumed.
+            let basis_s = req_str(item, "basis_law", &where_s)?;
             let basis_law = match basis_s {
                 "signed_delta" | "SignedDelta" => ValuationBasisLaw::SignedDelta,
                 "absolute_signed_basis" | "AbsoluteSignedBasis" => {
@@ -8804,13 +8684,21 @@ fn apply_solvency_extensions(
                 supersedes,
             });
         }
+        // Canonical order is by valuation_id; the kernel refuses a repeat.
+        terms.sort_by(|a, b| a.valuation_id.cmp(&b.valuation_id));
         let ext = InlineValuationTerms::to_extension(&terms).map_err(|e| {
             usage(
                 format!("valuation_adjustments: {e}"),
                 "check valuation_adjustments fields",
             )
         })?;
-        proposal.schema_minor = proposal.schema_minor.max(2);
+        fa_model::valuation::validate_terms(&ext.1).map_err(|(field, why)| {
+            usage(
+                format!("valuation_adjustments: {field} {why}"),
+                "\"valuation_adjustments\": [{\"valuation_id\": \"VAL-1\", \"account\": \"1510\", \"basis_law\": \"signed_delta\", \"effective_date\": \"2026-04-30\", \"amount\": \"22.00 USD\"}]",
+            )
+        })?;
+        proposal.schema_minor = proposal.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
         proposal.extensions.retain(|(t, _)| *t != ext.0);
         proposal.extensions.push(ext);
         proposal.extensions.sort_by_key(|(t, _)| *t);
@@ -8834,13 +8722,9 @@ pub(crate) fn post_document(
         return plan_document_into_draft(ctx, args, &name, forced, &doc);
     }
     let review_mode = args.switch("--review-only") || args.flag("--review-out").is_some();
-    if review_mode
-        && (args.switch("--dry-run")
-            || args.flag("--balancing").is_some()
-            || doc.get("intents").is_some())
-    {
+    if review_mode && (args.switch("--dry-run") || doc.get("intents").is_some()) {
         return Err(usage(
-            "a review seals one entry proposal for approval: no --dry-run, --balancing or batch; nothing was posted",
+            "a review seals one entry proposal for approval: no --dry-run or batch; nothing was posted",
             "fa post --intent entry.json --review-out review.bin (then fa approve --proposal <proposal_digest> --as <approver>)",
         ));
     }
@@ -8867,13 +8751,19 @@ pub(crate) fn post_document(
                 POST_REVIEW_EXAMPLE,
             ));
         }
-        let intent = PostIntent::new(req.proposal, Vec::new()).map_err(|e| {
+        let req = prepare_balancing_request(args, req)?;
+        let proposal = if balancing_leg(args)?.is_some() {
+            book.review_balancing(req.proposal, &req.capability)??
+        } else {
+            req.proposal
+        };
+        let intent = PostIntent::new(proposal, Vec::new()).map_err(|e| {
             usage(
                 format!("cannot seal this entry for review: {e}"),
                 "check the entry intent",
             )
         })?;
-        return emit_post_review(out, &ctx.files, args, &intent, &class_name);
+        return emit_post_review(out, &book, &ctx.files, args, &intent, &class_name);
     }
     if args.switch("--dry-run") {
         let req = prepare_balancing_request(args, req)?;
@@ -8936,6 +8826,7 @@ const POST_REVIEW_EXAMPLE: &str = "fa post --review <file|hex|-> --digest <revie
 /// Nothing is published.
 fn emit_post_review(
     out: &Out,
+    book: &Book,
     files: &Files,
     args: &Args,
     intent: &PostIntent,
@@ -8951,6 +8842,7 @@ fn emit_post_review(
         .proposal()
         .proposal_digest()
         .map_err(|e| Fail::Internal(format!("post proposal digest: {e}")))?;
+    let amounts = balancing_review_amounts(book, intent.proposal())?;
     if let Some(path) = args.flag("--review-out") {
         write_review_file(files, path, &bytes)?;
     }
@@ -8965,17 +8857,51 @@ fn emit_post_review(
             ("legs", Json::Int(intent.proposal().legs.len() as i128)),
             ("review_digest", s(hex(&review_digest))),
             ("proposal_digest", s(hex(&proposal_digest))),
+            ("requested", amounts.as_ref().map_or(Json::Null, |(requested, _)| s(requested))),
+            ("moved", amounts.as_ref().map_or(Json::Null, |(_, moved)| s(moved))),
             ("bytes", s(hex(&bytes))),
             ("file", args.flag("--review-out").map_or(Json::Null, s)),
         ],
         &format!(
-            "review {class_name} proposal {}; an approver records fa approve --proposal {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
+            "review {class_name} proposal {}{}; an approver records fa approve --proposal {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
             hex(&proposal_digest),
+            amounts.as_ref().map_or(String::new(), |(requested, moved)| format!(" (requested {requested}, reviewed movement {moved})")),
             hex(&proposal_digest),
             hex(&review_digest)
         ),
     );
     Ok(())
+}
+
+/// A balancing review carries the original request extension and the resolved
+/// legs the approver sees. No amount is recomputed in the surface.
+fn balancing_review_amounts(
+    book: &Book,
+    proposal: &EntryPayload,
+) -> Result<Option<(String, String)>, Fail> {
+    fa_journal::limit::balancing_request(proposal)
+        .map_err(|error| {
+            usage(
+                format!("invalid balancing review: {error}"),
+                POST_REVIEW_EXAMPLE,
+            )
+        })?
+        .map(|(ordinal, requested)| {
+            let leg = proposal.legs.get(usize::from(ordinal)).ok_or_else(|| {
+                usage(
+                    "balancing review lost its selected leg",
+                    POST_REVIEW_EXAMPLE,
+                )
+            })?;
+            Ok((
+                render_amount(
+                    Amount::new(leg.amount.unit, requested),
+                    &book.context().units,
+                )?,
+                render_amount(leg.amount, &book.context().units)?,
+            ))
+        })
+        .transpose()
 }
 
 /// `fa post --review <file|hex|-> --digest <review_digest> [--approval
@@ -9032,20 +8958,43 @@ fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .name()
         .unwrap_or("Entry")
         .to_string();
-    let intent = PostIntent::new(review.proposal().clone(), approvals)
-        .map_err(|e| usage(format!("post review approvals: {e}"), POST_REVIEW_EXAMPLE))?;
+    // The sealed review retains the admitted amount; the kernel always receives
+    // the original request so idempotency still binds R and the selected leg.
+    // Approval references above bind the retained resolved digest, never R.
+    let request = fa_journal::limit::request_form(review.proposal()).map_err(|error| {
+        usage(
+            format!("invalid balancing review request: {error}"),
+            POST_REVIEW_EXAMPLE,
+        )
+    })?;
+    let balancing = request.is_some();
+    let intent = PostIntent::new(
+        request.unwrap_or_else(|| review.proposal().clone()),
+        approvals,
+    )
+    .map_err(|e| usage(format!("post review approvals: {e}"), POST_REVIEW_EXAMPLE))?;
     // The capability `fa commit --plan` acts under, so a plan made here
     // commits unchanged.
     let capability = ctx.capability(args, &["post"])?;
     let out = &ctx.out;
     let mut book = ctx.books.open_admitted(args, |_| Ok(()))?;
     let plan = book.plan(intent, &capability)??;
+    if balancing && plan.certificate().proposal_digest != digest {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::PLAN_INVALIDATED,
+            fa_journal::refusal::exit::CONFLICT,
+            "available balance changed the movement retained in this review; nothing was posted",
+            "plan §5.5 / §4.6 (approval and review bind the resolved effects)",
+            "create a fresh --balancing review, inspect its requested and moved amounts, then obtain approvals for its new proposal_digest",
+        )));
+    }
     if args.switch("--dry-run") {
         return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
     }
     let posted = book.commit_plan(plan, &capability)??;
     out.at_book(&book)?;
-    emit_posted(out, posted, &class_name, false, None, None)
+    let amounts = balancing_review_amounts(&book, review.proposal())?;
+    emit_posted(out, posted, &class_name, false, None, amounts)
 }
 
 /// Restores an unchanged `fa post` review from `--review <file|hex|->` and
@@ -10538,6 +10487,17 @@ fn admit_allocation(book: &Book, who: VId, capability: &Capability) -> Result<()
     Ok(())
 }
 
+/// Adds the allocation's driver evidence to the caller's, keeping the list
+/// strictly ascending as the entry codec requires (`EntryPayload::validate`,
+/// fa-model). The driver's oid depends on the book id, so appending it
+/// unsorted refused about half of all `fa allocate --evidence` calls.
+fn with_driver_evidence(evidence: &mut Vec<fa_model::EvidenceRef>, driver: fa_model::EvidenceRef) {
+    if !evidence.contains(&driver) {
+        evidence.push(driver);
+        evidence.sort_unstable();
+    }
+}
+
 /// The allocation basis is the entry's driver evidence. It is supplied under
 /// the caller's capability, so `post` authority on this book is checked
 /// before the document is observed or written, and its uploader and grade
@@ -11016,9 +10976,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ensure_allocation_driver_imported(&mut book, prepared.posting(), &capability)?
         };
         let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
-        if !evidence.contains(&driver_ev) {
-            evidence.push(driver_ev);
-        }
+        with_driver_evidence(&mut evidence, driver_ev);
         let template = EntryPayload {
             schema_minor: 0,
             book_id: book_ctx.book_id,
@@ -11141,9 +11099,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ensure_allocation_driver_imported(&mut book, &posting, &capability)?
         };
         let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
-        if !evidence.contains(&driver_ev) {
-            evidence.push(driver_ev);
-        }
+        with_driver_evidence(&mut evidence, driver_ev);
         let template = EntryPayload {
             schema_minor: 0,
             book_id: book_ctx.book_id,
@@ -12546,7 +12502,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     if functional
         && (matches!(
             args.positional[1].as_str(),
-            "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
+            "trace" | "issue" | "issuances" | "lint" | "regulatory" | "equity-roll-forward"
         ) || args.flag("--branch").is_some()
             || args.flag("--from-diff").is_some()
             || crate::issuance::view_flag(args).is_some())
@@ -12561,6 +12517,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         "issue" => return crate::issuance::issue(ctx, args),
         "issuances" => return crate::issuance::issuances(ctx, args),
         "lint" => return statement_lint(ctx, args),
+        "regulatory" => return crate::regulatory::statement_regulatory(ctx, args),
         "equity-roll-forward" => return statement_equity_roll_forward(ctx, args),
         _ => {}
     }
@@ -15393,6 +15350,35 @@ pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
         (book.open_items_report(account, known_at)?, None)
     };
     validate_open_items_report(&report, &book.context().units)?;
+    // The same report as text CSV (fa-registers' exact exporters): every
+    // item with its original, applied and open mantissas, and every
+    // application against those items, undone ones included. New files only,
+    // written after admission.
+    type Csv = fn(
+        &fa_registers::open_items::OpenItemsReport,
+    ) -> Result<String, fa_registers::RegisterError>;
+    let exporters: [(&str, Csv); 2] = [
+        (
+            "--csv-out",
+            fa_registers::open_items::OpenItemsReport::to_csv,
+        ),
+        (
+            "--applications-csv-out",
+            fa_registers::open_items::OpenItemsReport::applications_to_csv,
+        ),
+    ];
+    for (flag, render) in exporters {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                "fa open-items --help",
+            ));
+        }
+        if let Some(path) = args.flag(flag) {
+            let csv = render(&report).map_err(BookError::Registers)?;
+            write_new_output_file(&ctx.files, path, csv.as_bytes(), "open-items", flag)?;
+        }
+    }
     let retained = certificate
         .as_ref()
         .zip(certify_cap.as_ref())
@@ -19738,6 +19724,44 @@ fn explain_refusal_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// The latest corroborated TimeEvidence tick committed before `recorded_at`
+/// (plan §7.1a): the entry recorded at that sequence was recorded after the
+/// tick's observed UTC instant. fad journals one immediately before every
+/// close it performs; a prefix with no corroborated tick yields null, never
+/// a clock reading taken now.
+fn recorded_after_tick(book: &Book, recorded_at: CommitSeq) -> Result<Json, Fail> {
+    let Some(before) = recorded_at.0.checked_sub(1) else {
+        return Ok(Json::Null);
+    };
+    let Some(tick) = book.corroborated_tick_at(CommitSeq(before))? else {
+        return Ok(Json::Null);
+    };
+    let Some((entry, tick_seq)) = book.read_entry(tick.entry)? else {
+        return Err(Fail::Internal(format!(
+            "the corroborated tick {:032x} has no entry",
+            tick.entry.0
+        )));
+    };
+    let Some(fa_model::ControlPayload::TimeTick {
+        observed_utc_ns,
+        source,
+        monotonic_ok,
+    }) = entry.proposal.control
+    else {
+        return Err(Fail::Internal(format!(
+            "the corroborated tick {:032x} is not a TimeEvidence entry",
+            tick.entry.0
+        )));
+    };
+    Ok(obj(vec![
+        ("entry", s(format!("{:032x}", tick.entry.0))),
+        ("recorded_at", Json::Int(i128::from(tick_seq.0))),
+        ("observed_utc_ns", Json::Int(i128::from(observed_utc_ns))),
+        ("source", Json::Int(i128::from(source))),
+        ("monotonic_ok", Json::Bool(monotonic_ok)),
+    ]))
+}
+
 fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let example = "fa explain period FY2026-P01 --book <dir>";
@@ -19773,28 +19797,27 @@ fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     let transitions_raw = book.period_transitions(code)?;
-    let transitions: Vec<Json> = transitions_raw
-        .iter()
-        .map(|t| {
-            let reason_name = reasons
-                .get(
-                    fa_journal::period::reason_scope_of(t.from, t.to),
-                    t.reason_code,
-                )
-                .map(|r| r.name.as_str());
-            obj(vec![
-                ("control_entry", s(format!("{:032x}", t.entry_vid.0))),
-                ("from", s(t.from.name())),
-                ("to", s(t.to.name())),
-                ("reason_code", Json::Int(i128::from(t.reason_code))),
-                ("reason", reason_name.map_or(Json::Null, s)),
-                ("principal", s(format!("{:032x}", t.principal_ref.0))),
-                ("approvals", Json::Int(t.approvals.len() as i128)),
-                ("effective_date", s(t.effective_date.render())),
-                ("recorded_at", Json::Int(i128::from(t.recorded_at.0))),
-            ])
-        })
-        .collect();
+    let mut transitions = Vec::with_capacity(transitions_raw.len());
+    for t in &transitions_raw {
+        let reason_name = reasons
+            .get(
+                fa_journal::period::reason_scope_of(t.from, t.to),
+                t.reason_code,
+            )
+            .map(|r| r.name.as_str());
+        transitions.push(obj(vec![
+            ("control_entry", s(format!("{:032x}", t.entry_vid.0))),
+            ("from", s(t.from.name())),
+            ("to", s(t.to.name())),
+            ("reason_code", Json::Int(i128::from(t.reason_code))),
+            ("reason", reason_name.map_or(Json::Null, s)),
+            ("principal", s(format!("{:032x}", t.principal_ref.0))),
+            ("approvals", Json::Int(t.approvals.len() as i128)),
+            ("effective_date", s(t.effective_date.render())),
+            ("recorded_at", Json::Int(i128::from(t.recorded_at.0))),
+            ("recorded_after", recorded_after_tick(&book, t.recorded_at)?),
+        ]));
+    }
 
     let classes = fa_registry::EntryClasses::embedded()
         .map_err(|e| Fail::Internal(format!("entry_classes.toml: {e}")))?;
@@ -20564,6 +20587,28 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("entries_decoded", Json::Int(advanced.entries_decoded as i128)),
                         ("rebuilt", Json::Bool(advanced.rebuilt)),
                         ("wrote", Json::Bool(advanced.wrote)),
+                        (
+                            "checkpoint_through",
+                            advanced.checkpoint.map_or(Json::Null, |checkpoint| {
+                                Json::Int(i128::from(checkpoint.through.0))
+                            }),
+                        ),
+                        (
+                            "checkpoint_digest",
+                            advanced.checkpoint.map_or(Json::Null, |checkpoint| {
+                                s(hex(&checkpoint.body_digest))
+                            }),
+                        ),
+                        (
+                            "checkpoint_cadence",
+                            Json::Int(i128::from(advanced.checkpoint_cadence)),
+                        ),
+                        (
+                            "recovered_from",
+                            advanced
+                                .recovered_from
+                                .map_or(Json::Null, |through| Json::Int(i128::from(through.0))),
+                        ),
                         ("cells", Json::Int(fold.cells.len() as i128)),
                         ("pending_cells", Json::Int(fold.pending.len() as i128)),
                         ("entries", Json::Int(fold.entries as i128)),
@@ -20584,6 +20629,8 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             "already current"
                         } else if advanced.rebuilt {
                             "rebuilt from journal"
+                        } else if advanced.recovered_from.is_some() {
+                            "recovered from checkpoint"
                         } else {
                             "advanced"
                         }
@@ -23149,6 +23196,29 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The driver evidence joins the caller's in ascending order, whichever
+    /// side of it the driver's oid falls on, and is never cited twice.
+    #[test]
+    fn allocation_driver_evidence_keeps_the_evidence_ascending() {
+        let ev = |b: u8| fa_model::EvidenceRef {
+            document_oid: Oid([b; 32]),
+            doc_commit: [0; 32],
+            role: 0,
+        };
+        for (caller, driver) in [
+            (vec![ev(0x10), ev(0xf0)], ev(0x00)),
+            (vec![ev(0x10)], ev(0x80)),
+        ] {
+            let mut evidence = caller.clone();
+            with_driver_evidence(&mut evidence, driver);
+            assert!(evidence.windows(2).all(|w| w[0] < w[1]), "{evidence:?}");
+            assert_eq!(evidence.len(), caller.len() + 1);
+        }
+        let mut evidence = vec![ev(0x10), ev(0x20)];
+        with_driver_evidence(&mut evidence, ev(0x20));
+        assert_eq!(evidence, [ev(0x10), ev(0x20)]);
+    }
 
     /// The trial balance's net is checked arithmetic: an in-range difference
     /// is exact, including a full-range negative, and one outside `i128` is

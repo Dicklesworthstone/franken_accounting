@@ -1,0 +1,245 @@
+# Twin gap fixture native book: three investors subscribe cash (A 1,000.00, B 800.00, C 500.00),
+# then B transfers 300.00 of principal to A through capital alone (no cash leg). Synthetic.
+
+[book]
+variant = "native"
+opening_date = "2026-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2026Q1"
+start = "2026-01-01"
+end = "2026-03-31"
+fiscal_year = 2026
+kind = "Normal"
+
+[[principal]]
+label = "selftest-preparer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce"]
+
+[[account]]
+code = "1000"
+name_fact = "G-A"
+type = "Asset"
+role = "cash"
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3100"
+name_fact = "G-A"
+type = "Equity"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[party]]
+id = "INV-A"
+label = "fixture-investor-a"
+kind = "Counterparty"
+
+[[party]]
+id = "INV-B"
+label = "fixture-investor-b"
+kind = "Counterparty"
+
+[[party]]
+id = "INV-C"
+label = "fixture-investor-c"
+kind = "Counterparty"
+
+[[document]]
+id = "DOC-PH-G-A"
+stub_of = "placeholder:G-A"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-G-B"
+stub_of = "placeholder:G-B"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-G-C"
+stub_of = "placeholder:G-C"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-G-T"
+stub_of = "placeholder:G-T"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "G-1"
+fact = "G-A"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-01-10"
+memo = "subscription A (twin gap fixture)"
+evidence = "DOC-PH-G-A"
+idempotency_key = "twins-gap-G-1"
+
+[[intent]]
+id = "G-2"
+fact = "G-B"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-01-12"
+memo = "subscription B (twin gap fixture)"
+evidence = "DOC-PH-G-B"
+idempotency_key = "twins-gap-G-2"
+
+[[intent]]
+id = "G-3"
+fact = "G-C"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-01-14"
+memo = "subscription C (twin gap fixture)"
+evidence = "DOC-PH-G-C"
+idempotency_key = "twins-gap-G-3"
+
+[[intent]]
+id = "G-4"
+fact = "G-T"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-02"
+memo = "principal transfer B to A (twin gap fixture)"
+evidence = "DOC-PH-G-T"
+idempotency_key = "twins-gap-G-4"
+
+[[leg]]
+intent = "G-1"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "1000.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "G-1"
+ordinal = 1
+account = "3100"
+side = "Cr"
+amount_literal = "1000.00"
+amount_rule = "synthetic"
+unit = "USD"
+party = "INV-A"
+
+[[leg]]
+intent = "G-2"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "800.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "G-2"
+ordinal = 1
+account = "3100"
+side = "Cr"
+amount_literal = "800.00"
+amount_rule = "synthetic"
+unit = "USD"
+party = "INV-B"
+
+[[leg]]
+intent = "G-3"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "500.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "G-3"
+ordinal = 1
+account = "3100"
+side = "Cr"
+amount_literal = "500.00"
+amount_rule = "synthetic"
+unit = "USD"
+party = "INV-C"
+
+[[leg]]
+intent = "G-4"
+ordinal = 0
+account = "3100"
+side = "Dr"
+amount_literal = "300.00"
+amount_rule = "synthetic"
+unit = "USD"
+party = "INV-B"
+
+[[leg]]
+intent = "G-4"
+ordinal = 1
+account = "3100"
+side = "Cr"
+amount_literal = "300.00"
+amount_rule = "synthetic"
+unit = "USD"
+party = "INV-A"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2026Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "intent"
+ref = "G-1"
+
+[[step]]
+seq = 3
+kind = "intent"
+ref = "G-2"
+
+[[step]]
+seq = 4
+kind = "intent"
+ref = "G-3"
+
+[[step]]
+seq = 5
+kind = "intent"
+ref = "G-4"
+
+[[step]]
+seq = 6
+kind = "finding_record"
+ref = "ponzi.net_investment@4"
+principal = "examiner-1"
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the fixture's documents are placeholders reviewed by case-second-reader (plan §2.6)"

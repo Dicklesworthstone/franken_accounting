@@ -2068,6 +2068,10 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     assert!(int(&initial, "entries_decoded").unwrap() > 0);
     let first_through = int(&initial, "through").unwrap();
     assert!(int(&initial, "recorded_at").unwrap() > first_through);
+    assert_eq!(int(&initial, "checkpoint_through"), Some(first_through));
+    assert_eq!(text(&initial, "checkpoint_digest").len(), 64);
+    assert_eq!(int(&initial, "checkpoint_cadence"), Some(1));
+    assert_eq!(initial.get("recovered_from"), Some(&Json::Null));
     // Follow the emitted next action after filling its documented selector;
     // a hint that omits the required period must fail through the real CLI.
     let envelope = robot_line(&initial_output);
@@ -2104,12 +2108,23 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     assert_eq!(int(&current, "entries"), Some(2));
     assert_eq!(current.get("wrote"), Some(&Json::Bool(true)));
     assert_eq!(current.get("rebuilt"), Some(&Json::Bool(false)));
+    assert_eq!(
+        int(&current, "checkpoint_through"),
+        int(&current, "through")
+    );
+    assert_ne!(
+        text(&current, "checkpoint_digest"),
+        text(&initial, "checkpoint_digest")
+    );
     ok(&["verify", "registers", "--period", period, "--json"]);
     let balance_before = report(&book, &["tb", "--period", period, "--json"]);
     assert_cash_credits(&balance_before, "30.00 USD");
     let no_op = doc(&ok(&advance));
     assert_eq!(no_op.get("wrote"), Some(&Json::Bool(false)));
     assert_eq!(no_op.get("recorded_at"), Some(&Json::Null));
+    assert_eq!(no_op.get("checkpoint_through"), Some(&Json::Null));
+    assert_eq!(no_op.get("checkpoint_digest"), Some(&Json::Null));
+    assert_eq!(no_op.get("recovered_from"), Some(&Json::Null));
     assert_eq!(int(&no_op, "entries_decoded"), Some(0));
     assert_eq!(int(&no_op, "from"), int(&current, "through"));
     assert_eq!(int(&no_op, "through"), int(&current, "through"));
@@ -4661,11 +4676,10 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         args.extend(["approve", "--proposal", digest.as_str(), "--json"]);
         text(&doc(&ok(&args)), "approval_vid").to_string()
     };
-    // An issued token cannot approve on the CLI: a token-bound session stays
-    // within the Preparer ceiling, which holds no `approve` (FA-REF-011). So
-    // a CLI approval is never under an issued capability, and the
-    // session_lineage refusals over issued tokens live in the library test
-    // (fa restatement_case).
+    // An issued Human token holding `approve` approves on the CLI under its
+    // own journaled capability (ead3caec5). The controller issued it, so it
+    // shares a session lineage with the controller: the case refuses that
+    // pair as its dual control (FA-REF-008) and stays Rehearsed.
     let token = dir.join("delegate.token").display().to_string();
     ok(&[
         "capability",
@@ -4686,18 +4700,25 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         "approve",
         "--json",
     ]);
+    let delegate = approval(&["--token", &token]);
+    let controller = approval(&["--as", "controller"]);
+    let auditor = approval(&["--as", "auditor"]);
     let (code, out) = run(&[
-        "--token",
-        &token,
+        "case",
         "approve",
-        "--proposal",
-        &digest,
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &delegate,
         "--json",
     ]);
     assert_eq!(code, 7, "{out}");
-    assert!(out.contains("FA-REF-011"), "{out}");
-    let controller = approval(&["--as", "controller"]);
-    let auditor = approval(&["--as", "auditor"]);
+    assert!(out.contains("FA-REF-008"), "{out}");
+    assert!(out.contains("session lineage"), "{out}");
+    let case = doc(&ok(&["case", "show", "1", "--json"]));
+    let state = case.get("case").map(|c| text(c, "state").to_string());
+    assert_eq!(state.as_deref(), Some("Rehearsed"));
     // One approval is not dual control; the case stays Rehearsed.
     let (code, out) = run(&["case", "approve", "1", "--approval", &controller, "--json"]);
     assert_eq!(code, 7, "{out}");
@@ -8276,6 +8297,65 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     );
     assert!(out.contains("\"live\":true"), "{out}");
 
+    // The same report as text CSV: the exact item, and its one application.
+    let items_csv = dir.join("open-items.csv");
+    let applications_csv = dir.join("applications.csv");
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "open-items",
+            "--account",
+            "1200",
+            "--csv-out",
+            items_csv.to_str().unwrap(),
+            "--applications-csv-out",
+            applications_csv.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let items = std::fs::read_to_string(&items_csv)?;
+    let rows: Vec<&str> = items.lines().collect();
+    assert!(
+        rows[0].starts_with("known_at,account_vid,account_code,account_name,"),
+        "{items}"
+    );
+    // Both legs on the receivable, zero-open items included: the invoice
+    // (original 500.00, applied 300.00, open 200.00) and the receipt's
+    // credit (300.00 applied out to the invoice, open 0).
+    assert_eq!(rows.len(), 3, "{items}");
+    let row = |vid: &str| {
+        rows.iter()
+            .find(|row| row.contains(vid))
+            .copied()
+            .unwrap_or_else(|| panic!("no row for {vid}: {items}"))
+    };
+    assert!(row(&inv_vid).contains(",1200,Receivable,"), "{items}");
+    assert!(row(&inv_vid).ends_with(",50000,30000,0,20000"), "{items}");
+    assert!(row(&rcpt_vid).ends_with(",30000,0,30000,0"), "{items}");
+    let applications = std::fs::read_to_string(&applications_csv)?;
+    let rows: Vec<&str> = applications.lines().collect();
+    assert_eq!(rows.len(), 2, "{applications}");
+    assert!(
+        rows[1].contains(&inv_vid) && rows[1].contains(&rcpt_vid),
+        "{applications}"
+    );
+    assert!(rows[1].ends_with(",30000,true"), "{applications}");
+    // An existing path is never overwritten.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "open-items",
+            "--account",
+            "1200",
+            "--csv-out",
+            items_csv.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(std::fs::read_to_string(&items_csv)?, items);
+
     // Over-application is refused with the open amount; reversing the
     // invoice is refused while the receipt is applied.
     let over = write(
@@ -9856,6 +9936,23 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "list"]).0, 0);
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
+    // fa-9ccl: an exhibit label on the produced document, in the open matter.
+    assert_eq!(
+        run(
+            true,
+            &[
+                "exhibit",
+                "mark",
+                &ev,
+                "--label",
+                "EVT-1",
+                "--matter",
+                "events-matter"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["document", "show", &ev]).0, 0);
     // Audit engagements (fa-zgn): open, propose, pass, list and show.
     assert_eq!(
@@ -9986,6 +10083,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["search", "rent"]).0, 0);
+    // fa-qip: the index rebuilt from the journal equals the one searched.
+    assert_eq!(run(true, &["verify", "search"]).0, 0);
+    // fa-gpd4: a host sweep with nothing due still reports what it swept.
+    assert_eq!(run(true, &["sweep", "now"]).0, 0);
     assert_eq!(
         run(true, &["diff", "--from", "HEAD", "--period", "FY2026-P03"]).0,
         0
@@ -12258,6 +12359,32 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         let mut argv = args.clone();
         argv.push("--json");
         let (code, out, err) = fa(Some(group.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+    }
+
+    // fa-doa9: a regulatory schedule needs the chart it maps by code.
+    let bank = dir.join("bank");
+    for args in [
+        vec!["book", "create", "--name", "Bank Co"],
+        vec!["chart", "import", "--template", "us-bank-call-report"],
+        vec!["period", "create", "--fiscal-year", "2026"],
+        vec![
+            "statement",
+            "regulatory",
+            "--form",
+            "041",
+            "--schedule",
+            "RC",
+            "--quarter",
+            "2026Q1",
+            "--for",
+            "FY2026-P03",
+        ],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(bank.as_path()), &argv);
         assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
         seen.extend(check_robot_output(&argv, code, &out));
     }
@@ -14835,7 +14962,6 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     );
     ok(&["chart", "import", &chart, "--json"]);
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
-    ok(&["period", "open", "FY2026-P03", "--json"]);
     let evidence = source_doc(&dir, &book);
     let intent = write(
         &dir,
@@ -14850,12 +14976,20 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
         &evidence,
         "--json",
     ];
+    // A period transition reserves the book's shared outcome key as a post
+    // does (4df0d52c0), so the first write that needs coverage here is the
+    // open: it is refused before anything is written and names the recovery.
+    let open = ["period", "open", "FY2026-P03", "--json"];
     let before = head();
-    let (code, out, err) = fa(Some(&book), &post);
+    let (code, out, err) = fa(Some(&book), &open);
     assert_eq!(code, 6, "{out}\n{err}");
     assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034");
     assert!(text(&doc(&out), "fix").contains("fa recover outcomes"));
-    assert_eq!(head(), before, "posting must not silently rebuild coverage");
+    assert_eq!(
+        head(),
+        before,
+        "a transition must not silently rebuild coverage"
+    );
 
     let dry_run = ["recover", "outcomes", "--dry-run", "--json"];
     let preview = ok(&dry_run);
@@ -14868,7 +15002,7 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(int(&planned, "basis"), Some(i128::from(before.0)));
     assert_eq!(ok(&dry_run), preview, "legacy preview is deterministic");
     assert_eq!(head(), before, "legacy preview publishes nothing");
-    assert_eq!(fa(Some(&book), &post).0, 6, "preview grants no coverage");
+    assert_eq!(fa(Some(&book), &open).0, 6, "preview grants no coverage");
     assert_eq!(head(), before);
 
     let basis = before.0.to_string();
@@ -14887,12 +15021,15 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(covered.get("already_covered"), Some(&Json::Bool(true)));
     assert_eq!(head(), recovered);
 
+    ok(&open);
+    let opened = head();
+    assert_eq!(opened.0, recovered.0 + 1);
     let posted = ok(&post);
     assert_eq!(field(&posted, "event"), Some("posted"));
     let entry_vid = field(&posted, "vid").unwrap();
     assert_eq!(entry_vid.len(), 32);
     let posted_at = head();
-    assert_eq!(posted_at.0, recovered.0 + 1);
+    assert_eq!(posted_at.0, opened.0 + 1);
     let retry = ok(&post);
     assert_eq!(field(&retry, "event"), Some("recorded"));
     assert_eq!(field(&retry, "vid"), Some(entry_vid));
@@ -16154,9 +16291,11 @@ fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
     ok(&["book", "create", "--name", "Triage Co", "--json"]);
     let (health, next) = next_of(&ok(&["triage", "--json"]));
     assert_eq!(health, "ok");
+    // Triage names runnable commands only, never a placeholder (fa-yugf.96,
+    // H16): with no accounts, the templates a chart can be installed from.
     assert_eq!(
         next.first().map(String::as_str),
-        Some("fa chart import <chart.json> --json")
+        Some("fa chart templates --json")
     );
     let chart = write(
         &dir,
@@ -16167,7 +16306,7 @@ fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
     let (_, next) = next_of(&ok(&["triage", "--json"]));
     assert_eq!(
         next.first().map(String::as_str),
-        Some("fa period create --fiscal-year <N> --json")
+        Some("fa period create --fiscal-year 2026 --json")
     );
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
     let (_, next) = next_of(&ok(&["triage", "--json"]));
@@ -18146,6 +18285,12 @@ fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::R
     assert_eq!(field(&period_ex, "kind"), Some("Normal"));
     let period_doc = doc(&period_ex);
     assert_eq!(arr(&period_doc, "transitions").len(), 1);
+    // No clock journaled a tick in this book, so the open names none.
+    assert_eq!(
+        arr(&period_doc, "transitions")[0].get("recorded_after"),
+        Some(&Json::Null),
+        "{period_ex}"
+    );
     assert!(!arr(&period_doc, "admissible_classes").is_empty());
 
     // 4. Add a document, post an entry, attach a supplement, and reverse the entry.
@@ -18573,7 +18718,7 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
         assert_eq!(text(&error, "class"), "usage");
         assert_eq!(
             text(&error, "message"),
-            "--as-known-at is supported only by verify periods, verify close, verify usage and verify fx-conversion"
+            "--as-known-at is supported only by verify periods, verify close, verify usage, verify fx-conversion and verify search"
         );
     }
     Ok(())

@@ -1,0 +1,11 @@
+# Filler fixture (fa-yugf.14, A6): a small synthetic book whose discipline each tier's filler
+# must obey. Never copied to cases/; claims nothing.
+id = "filler"
+title = "Filler fixture: a synthetic book with declared filler accounts, a sibling and a filler party"
+version = 1
+kind = "harness_selftest"
+scope = "the filler generator's per-tier discipline"
+claims = []
+capabilities = ["verb:post", "verb:batch", "procedure:jet.round_amounts@1"]
+pinned_commit = "d548f3d67"
+variants = ["native"]

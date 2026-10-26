@@ -1214,7 +1214,24 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     req: &SweepRequest,
     describe: &mut Describe<'_>,
 ) -> Outcome<Option<SweepBatch>> {
-    match sweep_batch_with_witness(db, ctx, book, req, describe).await? {
+    sweep_batch_with_crash(db, ctx, book, req, describe, None).await
+}
+
+/// [`sweep_batch`] through the substrate's production crash-point seam
+/// (`WriteTxn::commit_with_crash`), for the lab campaign that crashes an
+/// expiry batch's one publication at each registered point and checks the
+/// book after reopening (fa-0fl). `None` is `sweep_batch`: both run this one
+/// path.
+#[doc(hidden)]
+pub async fn sweep_batch_with_crash<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: &SweepRequest,
+    describe: &mut Describe<'_>,
+    crash_at: Option<fgdb::CrashPoint>,
+) -> Outcome<Option<SweepBatch>> {
+    match sweep_batch_at(db, ctx, book, req, describe, crash_at).await? {
         Ok((batch, _)) => Ok(Ok(batch)),
         Err(r) => Ok(Err(r)),
     }
@@ -1229,6 +1246,17 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: &SweepRequest,
     describe: &mut Describe<'_>,
+) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
+    sweep_batch_at(db, ctx, book, req, describe, None).await
+}
+
+async fn sweep_batch_at<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: &SweepRequest,
+    describe: &mut Describe<'_>,
+    crash_at: Option<fgdb::CrashPoint>,
 ) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
     let mut witness = SweepReadWitness::default();
     let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Expire");
@@ -1486,7 +1514,7 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
         WriteMismatchPolicy::AbortWrite,
     );
     txn.write_ordered(db, vec![entries, resolves])?;
-    match txn.commit(db, &ctx.commit()).await {
+    match txn.commit_with_crash(db, &ctx.commit(), crash_at).await {
         Ok(seq) => Ok(Ok((
             Some(SweepBatch {
                 tick,

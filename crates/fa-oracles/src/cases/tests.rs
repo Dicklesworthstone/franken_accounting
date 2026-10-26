@@ -38,6 +38,31 @@ pub(crate) fn load_files(
     load_with(&CaseFiles { id, files: &refs }, extensions)
 }
 
+/// The pilot's expectations (A1c), which [`pilot`] leaves out.
+pub(crate) const PILOT_EXPECTATIONS: &str =
+    include_str!("../../tests/fixtures/pilot/expectations.toml");
+
+/// The pilot with its expectations and each `(file, old, new)` edit applied
+/// in order: `old` occurs exactly once in the file as it then stands, or is
+/// empty to append `new`.
+pub(crate) fn pilot_planted(edits: &[(&str, &str, &str)]) -> Case {
+    let mut files = pilot();
+    files.push((EXPECTATIONS_FILE, PILOT_EXPECTATIONS.to_string()));
+    for (file, old, new) in edits {
+        let entry = files
+            .iter_mut()
+            .find(|(p, _)| p == file)
+            .expect("a pilot file");
+        if old.is_empty() {
+            entry.1.push_str(new);
+        } else {
+            assert_eq!(entry.1.matches(old).count(), 1, "`{old}` in {file}");
+            entry.1 = entry.1.replacen(old, new, 1);
+        }
+    }
+    load_files("worldcom", &files, CASE_EXTENSIONS).expect("the planted pilot loads")
+}
+
 /// The pilot with one file edited: `old` must occur exactly once in it.
 fn edited(file: &str, old: &str, new: &str) -> Files {
     let mut files = pilot();

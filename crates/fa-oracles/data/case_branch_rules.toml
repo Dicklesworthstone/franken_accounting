@@ -1,0 +1,96 @@
+# =============================================================================
+# crates/fa-oracles/data/case_branch_rules.toml: branch class rules
+# (docs/FORENSIC_CASE_STUDIES_PLAN.md §2.6 rules 4-5; bead fa-yugf.12, A5a)
+#
+# Consumer: the cell enumerator (src/cases/branch.rs), A5b's status checks, A7c's
+# cell sweeps, and the runner's property tests.
+# Gate: `cargo test -p fa-oracles` (every_seeded_rule_resolves and the enumerator
+# tests); the runner's branch_class_witnesses_give_the_class_verdict.
+# Retire: with the case-study program.
+#
+# A case book's [[branch_class]] names one rule here. A rule names the input it
+# branches (`attribute`, the §2.6 enum), who reads that input (`reader`: a
+# procedure id@version with an A4 tier row, or `kernel:<step>`, a step of
+# prepare_post_in named by its comment text), and how the input's values fall
+# into registered equivalence classes (`class_rule`):
+#   enum           the branch class's own values, within `classes` when listed;
+#   residue_mod    per branched leg, a whole multiple (m) or not (n) of 10^p
+#                  units, p the reader's `class_param` parameter;
+#   inside_window  inside or outside the last `class_param` days of the period;
+#   before_after   before, or on or after, the YYYY-MM-DD date `class_param`.
+# `parameters` lists the registry parameters of the reader the rule reads.
+# code_justification is the file:line where the reader branches on the input.
+# =============================================================================
+
+schema_version = 1
+# The most cells one (expectation, target) enumerates. A capped enumeration
+# never yields a single verdict (§2.6 rule 4); the per-case budget is met by
+# the cell-evaluation rules, not by this cap (§16). Revisited when A7c
+# measures the per-invocation cost.
+cap = 256
+
+[[rule]]
+id = "round_residue_legs"
+attribute = "leg_split"
+reader = "jet.round_amounts@1"
+class_rule = "residue_mod"
+class_param = "round_power"
+parameters = ["round_power"]
+classes = ["multiple", "non_multiple"]
+code_justification = "crates/fa-lantern/src/jet.rs:113-138"
+
+[[rule]]
+id = "round_residue_amount"
+attribute = "amount_precision"
+reader = "jet.round_amounts@1"
+class_rule = "residue_mod"
+class_param = "round_power"
+parameters = ["round_power"]
+classes = ["multiple", "non_multiple"]
+code_justification = "crates/fa-lantern/src/jet.rs:113-138"
+
+[[rule]]
+id = "capitalized_debit_legs"
+attribute = "leg_split"
+reader = "expense.capitalization@2"
+class_rule = "enum"
+parameters = []
+classes = []
+code_justification = "crates/fa-lantern/src/cutoff.rs:1095-1112"
+
+[[rule]]
+id = "period_end_window"
+attribute = "effective_date"
+reader = "jet.period_end_timing@1"
+class_rule = "inside_window"
+class_param = "window_days"
+parameters = ["window_days"]
+classes = ["inside_window", "outside_window"]
+code_justification = "crates/fa-lantern/src/jet.rs:187-191"
+
+[[rule]]
+id = "entry_class_admission"
+attribute = "entry_class"
+reader = "kernel:5. Period law"
+class_rule = "enum"
+parameters = []
+classes = []
+code_justification = "crates/fa-journal/src/post.rs:2631"
+
+[[rule]]
+id = "period_state_admission"
+attribute = "period_state_at_commit"
+reader = "kernel:5. Period law"
+class_rule = "enum"
+parameters = []
+classes = ["Future", "Open", "SoftClosed", "Closed", "Locked"]
+code_justification = "crates/fa-journal/src/post.rs:2631"
+
+[[rule]]
+id = "evidence_minimum"
+attribute = "evidence_attached"
+reader = "kernel:5b. Evidence minimum"
+class_rule = "enum"
+parameters = []
+classes = ["none", "placeholder_unreviewed", "placeholder_reviewed", "manual_assertion"]
+code_justification = "crates/fa-journal/src/post.rs:3049"

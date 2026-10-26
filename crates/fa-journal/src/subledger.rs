@@ -530,17 +530,38 @@ pub async fn create_native_subledger<V: Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), key);
     let vid = native_subledger_vid(book.book_id, spec.control_account);
+    if let Err(refusal) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let mut txn = db.begin(&ctx.txn())?;
     if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(refusal));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(refusal) =
+        crate::outcome::witness_named_key(&txn, db, book.book_id, principal, key, evid)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
-        if stored.proposal.semantic_digest(&book.seal_key)?
-            != proposal.semantic_digest(&book.seal_key)?
+        if row.labels.as_slice() != [label::ENTRY]
+            || row.props != entry_mirrors(&stored)?
+            || !stored.approvals.is_empty()
+            || stored.plan_certificate.is_some()
+            || !crate::outcome::verify_control_recorded(db, &row, &stored)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        if stored.proposal_digest != entry.proposal_digest
+            && stored.proposal.semantic_digest(&book.seal_key)?
+                != proposal.semantic_digest(&book.seal_key)?
         {
             return Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
@@ -561,6 +582,15 @@ pub async fn create_native_subledger<V: Vfs + Clone>(
             subledger,
             already_recorded: true,
         }));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let existing = native_subledgers_at(db, book, txn.basis())?;
     if existing
@@ -655,6 +685,7 @@ pub async fn create_native_subledger<V: Vfs + Clone>(
     };
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
     in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
     in_book.create_vertex(vid, vec![label::SUBLEDGER], projection(book, &record)?);
     in_book.compare_and_set_vertex_property(
         spec.control_account,

@@ -143,6 +143,15 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
         }
     } else {
         for ((acct_code, unit_code), signed_bal) in &balances {
+            // A scoped extract's contra legs are context, not balances.
+            if journal
+                .coordinate
+                .account_scope
+                .as_ref()
+                .is_some_and(|code| code != acct_code)
+            {
+                continue;
+            }
             let scale = unit_scale_by_code.get(unit_code).copied().unwrap_or(2);
             let (dc, mag) = if *signed_bal >= 0 {
                 ("D", *signed_bal)
@@ -181,7 +190,7 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
             journal.coordinate.base_unit_code.clone(),
         )
     };
-    let cert = format!(
+    let mut cert = format!(
         "schema_version = 1\nformat = \"{format}\"\n{book_key} = \"{book_name}\"\n{unit_key} = \"{unit_code}\"\nbase_unit_scale = {}\neffective_through = \"{}\"\nknown_at_seq = {}\nentry_count = {}\ncontent_digest = \"{}\"\ncertificate_digest = \"{}\"\n",
         journal.coordinate.base_unit_scale,
         format_date_iso(journal.coordinate.effective_through),
@@ -190,6 +199,18 @@ pub fn write_ads_package(journal: &FormatJournal) -> Result<AdsPackage, FormatEr
         hex_encode(&journal.coordinate.content_digest),
         hex_encode(&journal.coordinate.certificate_digest),
     );
+    // A whole-chart package's certificate bytes are unchanged; a scoped one
+    // names its account (plan §13.1).
+    if let Some(code) = &journal.coordinate.account_scope {
+        if escaped {
+            cert.push_str(&format!(
+                "account_scope_utf8_hex = \"{}\"\n",
+                hex_encode(code.as_bytes())
+            ));
+        } else {
+            cert.push_str(&format!("account_scope = \"{code}\"\n"));
+        }
+    }
 
     Ok(AdsPackage {
         chart_of_accounts: chart,
@@ -310,6 +331,23 @@ pub fn read_ads_package(
                 detail: "missing certificate_digest in ADS certificate".to_owned(),
             })?,
     )?;
+    let account_scope = match cert_doc.root.get(if escaped {
+        "account_scope_utf8_hex"
+    } else {
+        "account_scope"
+    }) {
+        None => None,
+        Some(value) => {
+            let code = value
+                .as_str()
+                .ok_or_else(|| text_error("invalid ADS certificate account_scope"))?;
+            Some(if escaped {
+                decode_hex_text(code)?
+            } else {
+                code.to_owned()
+            })
+        }
+    };
 
     let mut accounts = Vec::new();
     for (idx, line) in pkg.chart_of_accounts.lines().enumerate() {
@@ -504,7 +542,7 @@ pub fn read_ads_package(
         });
     }
 
-    let journal = FormatJournal::new(
+    let mut journal = FormatJournal::new(
         &book_name,
         &base_unit_code,
         base_unit_scale,
@@ -514,6 +552,33 @@ pub fn read_ads_package(
         entries,
         assertions,
     )?;
+    // A scoped package holds exactly its account's extract: every entry
+    // names the account and every balance is the account's own.
+    if let Some(code) = &account_scope {
+        if journal
+            .entries
+            .iter()
+            .any(|e| !e.legs.iter().any(|l| &l.account_code == code))
+            || journal.assertions.iter().any(|a| &a.account_code != code)
+        {
+            return Err(text_error(format!(
+                "an ADS package scoped to account {code} holds an entry or a balance of another account only"
+            )));
+        }
+        let coordinate = &journal.coordinate;
+        let scoped = ExportCoordinate::compute_digest(
+            &coordinate.book_name,
+            &coordinate.base_unit_code,
+            coordinate.base_unit_scale,
+            coordinate.effective_through,
+            coordinate.known_at_seq,
+            coordinate.entry_count,
+            &coordinate.content_digest,
+            Some(code),
+        );
+        journal.coordinate.certificate_digest = scoped;
+        journal.coordinate.account_scope = Some(code.clone());
+    }
 
     let expected_coord = ExportCoordinate {
         book_name,
@@ -524,6 +589,7 @@ pub fn read_ads_package(
         entry_count: journal.entries.len() as u64,
         content_digest: expected_content,
         certificate_digest: expected_cert,
+        account_scope,
     };
     if u64::try_from(journal.entries.len()).ok() != Some(expected_count) {
         return Err(text_error(

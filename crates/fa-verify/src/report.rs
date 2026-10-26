@@ -1,4 +1,4 @@
-//! Independent recomputation of native balances, statements and open items (plan §13.3).
+//! Independent recomputation of balances, statements, open items and aging (plan §13.3).
 //!
 //! Report bundles disclose the complete signed checkpoint prefix, including
 //! every payload that derives its selectors. The verifier reconstructs the
@@ -16,6 +16,9 @@
 //! supports native v3 OpenItems and ExplainBalance with complete history and
 //! historical account metadata. ExplainBalance also binds whole-period register
 //! commitments and committed evidence/lineage under its fifth reason-code registry.
+//! Effective-date AgingCertificate v1 wraps a complete v3 OpenItems source;
+//! its cutoff is applied before settlement/reversal netting, and its outer
+//! digest binds every age band and output row.
 //! Native v2 trial balances, v3 reports and v4
 //! statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
@@ -26,6 +29,7 @@
 //! recomputation, not economic truth, source-document authenticity, journaled
 //! registry activation, or database read attestations.
 
+mod aging;
 mod dimension;
 mod explain;
 mod metadata;
@@ -33,11 +37,16 @@ mod open_items;
 mod registry;
 mod statement;
 mod temporal;
+pub use aging::{
+    VerifiedAgedOpenItem, VerifiedAging, VerifiedAgingAmounts, VerifiedAgingBand,
+    VerifiedAgingCell, VerifiedAgingTotal,
+};
 pub use dimension::VerifiedDimensionSelection;
 pub use explain::{
     ExplanationCell, ExplanationCellChange, ExplanationColumn, ExplanationContribution,
     ExplanationEvidence, ExplanationSupersession, VerifiedBalanceExplanation,
 };
+pub(crate) use metadata::{DeclaredAccount, declared_chart};
 pub use open_items::VerifiedOpenItemAccount as VerifiedReportAccount;
 pub use open_items::{
     OpenItemBalanceLimit, OpenItemUnitPolicy, VerifiedApplication, VerifiedOpenItem,
@@ -137,6 +146,8 @@ pub struct VerifiedReport {
     pub open_items: Option<VerifiedOpenItems>,
     /// Exact period cells, whole-period commitment, contributions and history.
     pub explanation: Option<VerifiedBalanceExplanation>,
+    /// Present for independently reconstructed historical effective-date aging.
+    pub aging: Option<VerifiedAging>,
     /// Whether report units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
@@ -504,7 +515,26 @@ fn verify_report_with_inputs(
             "unsupported report bundle format",
         ));
     }
-    let cert = certificate(r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?)?;
+    let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
+    let aging = if aging::recognizes(certificate_bytes) {
+        Some(aging::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    let cert = certificate(
+        aging
+            .as_ref()
+            .map_or(certificate_bytes, |value| value.source),
+    )?;
+    if aging.is_some()
+        && (!matches!(cert.selection, Selection::OpenItems(_)) || cert.time_selection.is_some())
+    {
+        return Err(failed(
+            "supported_report",
+            "effective-date aging requires a sequence-selected native OpenItems source",
+        ));
+    }
+    let certificate_digest = aging.as_ref().map_or(cert.digest, |value| value.digest);
     let is_statement = matches!(cert.selection, Selection::Statement(_));
     let is_open_items = matches!(cert.selection, Selection::OpenItems(_));
     let is_explanation = matches!(cert.selection, Selection::ExplainBalance { .. });
@@ -528,7 +558,7 @@ fn verify_report_with_inputs(
             "a version-1 native statement requires independently supplied unit identifiers; use verify_statement_report or fa-verify report --units",
         ));
     }
-    if expected_certificate.is_some_and(|expected| *expected != cert.digest) {
+    if expected_certificate.is_some_and(|expected| *expected != certificate_digest) {
         return Err(failed(
             "recipient_certificate",
             "report uses another certificate than the recipient requested",
@@ -537,7 +567,7 @@ fn verify_report_with_inputs(
     if major == 2 && receipt.is_none() && expected_certificate.is_none() {
         return Err(failed(
             "report_input_authority",
-            "native report definitions and complete unit registries require a valid production receipt or an independently selected source certificate digest",
+            "native report inputs, aging cutoff/buckets and complete unit registries require a valid production receipt or an independently selected report certificate digest",
         ));
     }
     let signed_bytes = r.bytes(1024 * 1024, "report_bundle.checkpoint")?;
@@ -732,6 +762,50 @@ fn verify_report_with_inputs(
                 "open-item amounts, complete application history, account metadata or canonical bytes differ from independent replay",
             ));
         }
+        if let Some(aging_certificate) = &aging {
+            let historical = open_items::replay_as_of(
+                cert.known_at,
+                *account_filter,
+                aging_certificate.effective_through,
+                &units,
+                &schema,
+                envelopes,
+                &infos,
+                &legs,
+                &records,
+                &visible_migrations,
+                &migration_activations,
+            )?;
+            let (aging, output) = aging::replay(
+                aging_certificate,
+                cert.book,
+                cert.known_at,
+                cert.digest,
+                historical,
+            )?;
+            return Ok(VerifiedReport {
+                scope: "recomputation",
+                bundle_digest: digest,
+                certificate_digest,
+                output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                checkpoint: signed,
+                known_at: cert.known_at,
+                time_selection: None,
+                effective_through: Some(aging.effective_through),
+                activity: false,
+                periods: Vec::new(),
+                rows: Vec::new(),
+                statement: None,
+                dimension: None,
+                open_items: None,
+                explanation: None,
+                aging: Some(aging),
+                unit_universe_source: "authenticated-registry",
+                output,
+                checked_records: records.len(),
+                receipt,
+            });
+        }
         return Ok(VerifiedReport {
             scope: "recomputation",
             bundle_digest: digest,
@@ -748,6 +822,7 @@ fn verify_report_with_inputs(
             dimension: None,
             open_items: Some(open_items),
             explanation: None,
+            aging: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -791,6 +866,7 @@ fn verify_report_with_inputs(
             dimension: None,
             open_items: None,
             explanation: Some(explanation),
+            aging: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -840,6 +916,7 @@ fn verify_report_with_inputs(
             dimension: None,
             open_items: None,
             explanation: None,
+            aging: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -983,6 +1060,7 @@ fn verify_report_with_inputs(
         dimension,
         open_items: None,
         explanation: None,
+        aging: None,
         unit_universe_source: "not-applicable",
         output,
         checked_records: records.len(),

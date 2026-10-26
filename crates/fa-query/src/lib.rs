@@ -770,7 +770,7 @@ fn reserved(lexed: &Lexed<'_>) -> Result<(), Refusal> {
                 ));
             }
             Kind::Word
-                if (text == "Register" || text == "RegisterState")
+                if matches!(text, "Register" | "RegisterState" | "RegisterCheckpoint")
                     && i > 0
                     && (lexed.punct(i - 1, ':')
                         || lexed.punct(i - 1, '|')

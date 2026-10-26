@@ -897,6 +897,105 @@ pub fn balancing_proposal(mut proposal: EntryPayload, leg: u16) -> Result<EntryP
     Ok(proposal)
 }
 
+/// Resolve the amounts of a balancing proposal for approval without publishing
+/// or manufacturing an executable plan. The retained proposal keeps the original
+/// request extension but carries the exact currently available amounts. Approvals
+/// bind that resolved proposal digest. A caller restoring the review must submit
+/// [`request_form`] through the ordinary posting planner and compare its resolved
+/// proposal digest with the reviewed digest before committing.
+///
+/// Current posting authority and whole-book scope are admitted before reading
+/// accounting state. The same transaction witnesses the accounts and limit cells
+/// used by [`judge`], then aborts without staging anything. Period admission,
+/// evidence, approvals and every other posting law still run when planning the
+/// restored request; this availability review supplies no exemption from them.
+pub fn review_balancing<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    proposal: EntryPayload,
+    capability: fa_policy::Capability,
+) -> Outcome<EntryPayload> {
+    if let Err(denial) = fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None) {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    let req = PostRequest {
+        proposal,
+        approvals: Vec::new(),
+        capability,
+        plan_certificate: None,
+    };
+    if let Err(refusal) =
+        crate::post::authorize_request(db, book, &req, crate::post::Admission::Plan)?
+    {
+        return Ok(Err(refusal));
+    }
+    let Some((leg, _)) = (match balancing_request(&req.proposal) {
+        Ok(request) => request,
+        Err(why) => return Ok(Err(shape_refusal(why))),
+    }) else {
+        return Ok(Err(shape_refusal(
+            "a balancing review must name its original request and selected leg".into(),
+        )));
+    };
+    if let Some(why) = balancing_shape(&req.proposal, leg) {
+        return Ok(Err(shape_refusal(why)));
+    }
+    let fy = book.calendar.fiscal_year_of(req.proposal.effective_date)?;
+    let periods = book.calendar.periods_for_year(fy)?;
+    let period = match resolve_period(
+        &periods,
+        req.proposal.effective_date,
+        req.proposal
+            .effective_period
+            .as_ref()
+            .map(|p| p.code.as_str()),
+    ) {
+        Ok(period) => period,
+        Err(error) => {
+            return Ok(Err(Refusal::new(
+                code::PERIOD_RESOLVE,
+                exit::REFUSAL,
+                format!(
+                    "balancing review effective date does not resolve to one period: {error:?}"
+                ),
+                "plan §7.3 (effective_period discriminator)",
+                "name the intended effective_period when its date belongs to multiple periods",
+            )));
+        }
+    };
+    let txn = db.begin(&ctx.txn())?;
+    let reviewed = (|| {
+        if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, &req.capability)? {
+            return Ok(Err(refusal));
+        }
+        let accounts = match crate::post::admit_accounts(
+            db,
+            book,
+            req.proposal.class,
+            req.proposal.effective_date,
+            &req.proposal.legs,
+            |vid| Ok(txn.vertex(db, vid)?),
+        )? {
+            Ok(accounts) => accounts,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let judged = match judge(&txn, db, book, &accounts, &req.proposal, &period.code, None)? {
+            Ok(judged) => judged,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut resolved = req.proposal.clone();
+        resolved.legs = judged.resolved_legs.ok_or_else(|| {
+            KernelError::Corrupt("balancing review lost its resolved legs".into())
+        })?;
+        resolved.unit_totals = EntryPayload::fold_unit_totals(&resolved.legs)
+            .map_err(|error| KernelError::Corrupt(format!("balancing review totals: {error:?}")))?;
+        Ok(Ok(resolved))
+    })();
+    txn.abort();
+    reviewed
+}
+
 /// Post a two-leg single-unit entry with leg `leg` balancing (plan §5.5,
 /// TigerBeetle's `balancing_debit/credit`). The request — `leg` and the
 /// requested amount `R` the two legs carry — is recorded as the entry's

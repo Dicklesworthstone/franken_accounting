@@ -218,7 +218,7 @@ fn pilot_facts_pass_k_prov_bind_scope_anchor_derive() {
         ("K-BIND", "examined=7/7"),
         ("K-SCOPE", "examined=7/7"),
         ("K-ANCHOR", "examined=7/7"),
-        ("K-DERIVE", "examined=14/14"),
+        ("K-DERIVE", "examined=15/15"),
     ] {
         assert!(
             text.contains(&format!("CHECK {check} PASS {counts}\n")),
@@ -669,7 +669,7 @@ fn pending_rows_fact_and_its_derived_facts_are_counted_unrun() {
     let derive = run_with(&cx, "K-DERIVE");
     assert_eq!(
         derive.render(None).lines().next(),
-        Some("CHECK K-DERIVE PASS examined=14/15 unrun=1 (OD 2b)")
+        Some("CHECK K-DERIVE PASS examined=15/16 unrun=1 (OD 2b)")
     );
     // A case whose only inputs are pending examines nothing: UNRUN.
     let mut only = case.clone();
@@ -808,7 +808,13 @@ fn case_scoped_check_runs_only_on_its_case() {
             "K-BASIS",
             "K-TAUT",
             "K-ORACLE",
-            "K-VINTAGE"
+            "K-VINTAGE",
+            "K-TIER",
+            "K-ASSERT",
+            "K-ERRRATE",
+            "K-NAMES",
+            "K-EVID",
+            "K-REASON"
         ]
     );
     case.header.id = "xbrl".into();

@@ -27,9 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::genesis::{BookContext, UnitPolicy};
-use fa_model::{
-    AccountType, DecodeError, EncodeError, EntryClass, EvidenceRef, Id128, Oid, Reader, Writer,
-};
+use fa_model::{AccountType, EncodeError, EntryClass, EvidenceRef, Id128, Oid, Writer};
 use fa_money::{Amount, Side, UnitId};
 use fa_time::DateDay;
 use fgdb_crypto::Hasher;
@@ -57,8 +55,9 @@ pub const VALUATION_SCHEDULE_DOMAIN: &[u8] = b"fa:solvency-valuation-schedule:v1
 /// Domain tag for per-unit balance-sheet solvency certificate closure digests (`fa-8j3g`).
 pub const BALANCE_SHEET_CLOSURE_DOMAIN: &[u8] = b"fa:solvency-balance-sheet-closure:v1";
 
-/// Extension tag (`0x5356` = `"SV"`) for per-entry inline valuation adjustments (`fa-8j3g`).
-pub const VALUATION_ADJUSTMENT_EXT_TAG: u16 = 0x5356;
+/// Entry extension 34, `fa:valuation-adjustment:v1`: per-entry inline
+/// valuation adjustments, registered and validated by fa-model (`fa-8j3g`).
+pub const VALUATION_ADJUSTMENT_EXT_TAG: u16 = fa_model::entry::VALUATION_ADJUSTMENT_EXTENSION;
 
 /// Current schema version of `AuthenticatedObligationSchedule` and `AuthenticatedValuationSchedule`.
 pub const SCHEDULE_SCHEMA_VERSION: u16 = 1;
@@ -1196,212 +1195,11 @@ pub(crate) fn run_unscheduled_book_screen(
 // Balance-sheet solvency valuation inputs (plan §11.6, FA-EVID-L52, fa-8j3g)
 // ---------------------------------------------------------------------------
 
-/// Target of an explicit valuation adjustment (`fa-8j3g`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ValuationSubject {
-    /// Valuation targets a leaf Asset or Liability account directly.
-    Account(VId),
-    /// Valuation targets a registered REA instrument (`snapshot.rea.instruments`)
-    /// carried in `carrying_account`. Double-application to both an instrument
-    /// and its carrying account in the same scope is refused.
-    Instrument {
-        instrument: VId,
-        carrying_account: VId,
-    },
-}
-
-impl ValuationSubject {
-    const fn tag(self) -> u8 {
-        match self {
-            Self::Account(_) => 1,
-            Self::Instrument { .. } => 2,
-        }
-    }
-
-    #[must_use]
-    pub const fn carrying_account(self) -> VId {
-        match self {
-            Self::Account(acct) => acct,
-            Self::Instrument {
-                carrying_account, ..
-            } => carrying_account,
-        }
-    }
-}
-
-/// Law governing how `signed_amount` adjusts the subject's signed basis (`fa-8j3g`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ValuationBasisLaw {
-    /// Signed delta added to the subject's posted signed basis (`debit - credit`
-    /// for Assets, `credit - debit` for Liabilities).
-    SignedDelta,
-    /// Explicit signed basis replacement (`signed_amount` may be positive, zero,
-    /// or negative under explicit valuation law, never silently clamped).
-    AbsoluteSignedBasis,
-}
-
-impl ValuationBasisLaw {
-    const fn tag(self) -> u8 {
-        match self {
-            Self::SignedDelta => 1,
-            Self::AbsoluteSignedBasis => 2,
-        }
-    }
-
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::SignedDelta => "signed_delta",
-            Self::AbsoluteSignedBasis => "absolute_signed_basis",
-        }
-    }
-}
-
-/// Applicability law governing when a declared valuation input applies (`fa-8j3g`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ValuationApplicabilityLaw {
-    /// Applicable only when `as_of == effective_date`.
-    ExactAsOf { effective_date: DateDay },
-    /// Applicable when `effective_from <= as_of && as_of <= effective_through`.
-    EffectiveWindow {
-        effective_from: DateDay,
-        effective_through: DateDay,
-    },
-}
-
-impl ValuationApplicabilityLaw {
-    const fn tag(self) -> u8 {
-        match self {
-            Self::ExactAsOf { .. } => 1,
-            Self::EffectiveWindow { .. } => 2,
-        }
-    }
-
-    #[must_use]
-    pub fn describe(self) -> String {
-        match self {
-            Self::ExactAsOf { effective_date } => format!("exact_as_of({effective_date})"),
-            Self::EffectiveWindow {
-                effective_from,
-                effective_through,
-            } => format!("window({effective_from}..={effective_through})"),
-        }
-    }
-}
-
-/// Per-entry inline valuation adjustment carried in `EntryPayload::extensions`
-/// under [`VALUATION_ADJUSTMENT_EXT_TAG`] (`fa-8j3g`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InlineValuationTerms {
-    pub valuation_id: String,
-    pub subject: ValuationSubject,
-    pub entity: Option<VId>,
-    pub unit: UnitId,
-    pub basis_law: ValuationBasisLaw,
-    pub applicability: ValuationApplicabilityLaw,
-    pub signed_amount: i128,
-    pub supersedes: Option<String>,
-}
-
-impl InlineValuationTerms {
-    pub fn encode_list(terms: &[Self]) -> Result<Vec<u8>, EncodeError> {
-        let mut w = Writer::new();
-        w.u16(SCHEDULE_SCHEMA_VERSION).list(terms, |w, item| {
-            w.str(&item.valuation_id).u8(item.subject.tag());
-            match item.subject {
-                ValuationSubject::Account(acct) => {
-                    w.u128(acct.0);
-                }
-                ValuationSubject::Instrument {
-                    instrument,
-                    carrying_account,
-                } => {
-                    w.u128(instrument.0).u128(carrying_account.0);
-                }
-            }
-            w.opt(item.entity.as_ref(), |w, e| {
-                w.u128(e.0);
-            })
-            .u32(item.unit.0)
-            .u8(item.basis_law.tag())
-            .u8(item.applicability.tag());
-            match item.applicability {
-                ValuationApplicabilityLaw::ExactAsOf { effective_date } => {
-                    w.i32(effective_date.0);
-                }
-                ValuationApplicabilityLaw::EffectiveWindow {
-                    effective_from,
-                    effective_through,
-                } => {
-                    w.i32(effective_from.0).i32(effective_through.0);
-                }
-            }
-            w.i128(item.signed_amount)
-                .opt(item.supersedes.as_ref(), |w, s| {
-                    w.str(s);
-                });
-        });
-        w.finish()
-    }
-
-    pub fn decode_list(bytes: &[u8]) -> Result<Vec<Self>, DecodeError> {
-        let mut r = Reader::new(bytes);
-        let version = r.u16("inline_valuation_terms.version")?;
-        if version != SCHEDULE_SCHEMA_VERSION {
-            return Err(r.invalid("inline_valuation_terms.version"));
-        }
-        let list = r.list(256, "inline_valuation_terms.items", |r| {
-            let valuation_id = r.str(128, "inline_valuation_terms.id")?.to_string();
-            let subject = match r.u8("inline_valuation_terms.subject")? {
-                1 => ValuationSubject::Account(VId(r.u128("subject.account")?)),
-                2 => ValuationSubject::Instrument {
-                    instrument: VId(r.u128("subject.instrument")?),
-                    carrying_account: VId(r.u128("subject.carrying_account")?),
-                },
-                tag => return Err(r.bad_tag("inline_valuation_terms.subject", tag)),
-            };
-            let entity = r.opt("inline_valuation_terms.entity", |r| {
-                Ok(VId(r.u128("entity")?))
-            })?;
-            let unit = UnitId(r.u32("inline_valuation_terms.unit")?);
-            let basis_law = match r.u8("inline_valuation_terms.basis_law")? {
-                1 => ValuationBasisLaw::SignedDelta,
-                2 => ValuationBasisLaw::AbsoluteSignedBasis,
-                tag => return Err(r.bad_tag("inline_valuation_terms.basis_law", tag)),
-            };
-            let applicability = match r.u8("inline_valuation_terms.applicability")? {
-                1 => ValuationApplicabilityLaw::ExactAsOf {
-                    effective_date: DateDay(r.i32("applicability.effective_date")?),
-                },
-                2 => ValuationApplicabilityLaw::EffectiveWindow {
-                    effective_from: DateDay(r.i32("applicability.effective_from")?),
-                    effective_through: DateDay(r.i32("applicability.effective_through")?),
-                },
-                tag => return Err(r.bad_tag("inline_valuation_terms.applicability", tag)),
-            };
-            let signed_amount = r.i128("inline_valuation_terms.signed_amount")?;
-            let supersedes = r.opt("inline_valuation_terms.supersedes", |r| {
-                Ok(r.str(128, "supersedes")?.to_string())
-            })?;
-            Ok(Self {
-                valuation_id,
-                subject,
-                entity,
-                unit,
-                basis_law,
-                applicability,
-                signed_amount,
-                supersedes,
-            })
-        })?;
-        r.finish()?;
-        Ok(list)
-    }
-
-    pub fn to_extension(terms: &[Self]) -> Result<(u16, Vec<u8>), EncodeError> {
-        Ok((VALUATION_ADJUSTMENT_EXT_TAG, Self::encode_list(terms)?))
-    }
-}
+/// The valuation inputs' types and codec live in fa-model, where the kernel
+/// validates extension 34 before an entry carrying it posts (`fa-8j3g`).
+pub use fa_model::valuation::{
+    InlineValuationTerms, ValuationApplicabilityLaw, ValuationBasisLaw, ValuationSubject,
+};
 
 /// One typed, attributable, dated valuation input in an [`AuthenticatedValuationSchedule`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2562,7 +2360,11 @@ fn make_posting(
 ) -> SnapshotEntry {
     let seq = u64::try_from(vid.0).unwrap();
     let payload = EntryPayload {
-        schema_minor: if extensions.is_empty() { 0 } else { 2 },
+        schema_minor: if extensions.is_empty() {
+            0
+        } else {
+            fa_model::entry::EXTENSIONS_MINOR
+        },
         book_id: book.book_id,
         branch_id: Id128::TRUNK,
         class,
@@ -3479,7 +3281,7 @@ fn explicit_valuation_inputs_are_visible_applicable_and_cited() {
     let mut inline_snap = snapshot.clone();
     inline_snap.entries[1].entry = {
         let mut p = inline_snap.entries[1].entry.proposal.clone();
-        p.schema_minor = 2;
+        p.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
         p.extensions = vec![
             InlineValuationTerms::to_extension(&[InlineValuationTerms {
                 valuation_id: "VAL-INLINE-2".into(),

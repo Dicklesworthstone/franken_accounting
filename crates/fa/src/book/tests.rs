@@ -1056,20 +1056,14 @@ fn prepared_post_rechecks_its_capability_expiry_without_rejecting_unrelated_comm
     }
 }
 
-/// fa-0fl, the crash-point matrix for one post: the prepared rent post's
-/// publication crashes at each of the substrate's seven registered commit
-/// crash points, the fault VFS then loses every unsynced byte, and the book
-/// reopens. A crash before the commit marker leaves no entry; a crash point
-/// the commit's write path never passes leaves an ordinary commit, which
-/// must survive. After the marker the commit may or may not have reached
-/// disk, but never partly:
-/// the entry is whole (read back, folded into its cells, registers verified)
-/// or absent, the earlier journal is untouched, and a retry of the same
-/// intent records it exactly once. The no-crash control commits.
-#[test]
-fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
+/// The cases every fa-0fl commit crash-point matrix runs: each of the
+/// substrate's seven commit crash points, then the no-crash control. The
+/// second field is whether the crashed publication must survive the reopen,
+/// or `None` past the commit marker, where the commit may or may not have
+/// reached disk.
+fn commit_crash_cases() -> [(Option<fgdb::CrashPoint>, Option<bool>); 8] {
     use fgdb::CrashPoint;
-    let cases = [
+    [
         (Some(CrashPoint::BeforeCapsule), Some(false)),
         (Some(CrashPoint::AfterCapsuleBeforeD1), Some(false)),
         (
@@ -1087,10 +1081,45 @@ fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
             None,
         ),
         (None, Some(true)),
-    ];
-    for (i, (point, expected)) in cases.into_iter().enumerate() {
-        let seed = 700 + i as u64;
-        under_lab(seed, move |root| async move {
+    ]
+}
+
+/// One run of an fa-0fl crash-point matrix: the barrier whose publication
+/// crashed, the `commit_crash_cases` case and the seed it ran under, whether
+/// the crashed publication survived the reopen, and the book the run left
+/// after its recovery checks (the head and the March fold's digest).
+struct CrashObservation {
+    barrier: &'static str,
+    case: u8,
+    seed: u64,
+    kept: bool,
+    head: CommitSeq,
+    fold_digest: [u8; 32],
+}
+
+/// fa-0fl, the crash-point matrix for one post: the prepared rent post's
+/// publication crashes at each of the substrate's seven registered commit
+/// crash points, the fault VFS then loses every unsynced byte, and the book
+/// reopens. A crash before the commit marker leaves no entry; a crash point
+/// the commit's write path never passes leaves an ordinary commit, which
+/// must survive. After the marker the commit may or may not have reached
+/// disk, but never partly:
+/// the entry is whole (read back, folded into its cells, registers verified)
+/// or absent, the earlier journal is untouched, and a retry of the same
+/// intent records it exactly once. The no-crash control commits.
+#[test]
+fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
+    post_crash_matrix();
+}
+
+/// The runs of the post's crash-point matrix above, one per
+/// `commit_crash_cases` case; FA-ART-LAB-02 reuses them.
+fn post_crash_matrix() -> Vec<CrashObservation> {
+    use fgdb::CrashPoint;
+    let mut runs = Vec::new();
+    for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
+        let seed = 700 + u64::from(case);
+        runs.push(under_lab(seed, move |root| async move {
             let cx = PurposeContexts::narrow_runtime_root(&root);
             let PreparedFixture {
                 mut book,
@@ -1166,8 +1195,17 @@ fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
                 "{point:?}"
             );
             assert_journal_verifies(&book, &cx, point);
-        });
+            CrashObservation {
+                barrier: "post",
+                case,
+                seed,
+                kept: committed,
+                head: book.head(&cx).unwrap(),
+                fold_digest: fold.fold_digest,
+            }
+        }));
     }
+    runs
 }
 
 /// fa-0fl, the crash-point matrix for an atomic batch (plan §5.8): three
@@ -1180,29 +1218,17 @@ fn a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
 /// crash before the commit marker keeps nothing; the control keeps all.
 #[test]
 fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
+    batch_crash_matrix();
+}
+
+/// The runs of the atomic batch's crash-point matrix above, one per
+/// `commit_crash_cases` case; FA-ART-LAB-02 reuses them.
+fn batch_crash_matrix() -> Vec<CrashObservation> {
     use fgdb::CrashPoint;
-    let cases = [
-        (Some(CrashPoint::BeforeCapsule), Some(false)),
-        (Some(CrashPoint::AfterCapsuleBeforeD1), Some(false)),
-        (
-            Some(CrashPoint::AfterCapsuleFileSyncBeforeDirectorySync),
-            Some(false),
-        ),
-        (
-            Some(CrashPoint::AfterCapsuleDirectorySyncBeforeParentDirectorySync),
-            Some(false),
-        ),
-        (Some(CrashPoint::AfterD1), Some(false)),
-        (Some(CrashPoint::AfterMarkerBeforeD2), None),
-        (
-            Some(CrashPoint::AfterMarkerFileSyncBeforeDirectorySync),
-            None,
-        ),
-        (None, Some(true)),
-    ];
-    for (i, (point, expected)) in cases.into_iter().enumerate() {
-        let seed = 900 + i as u64;
-        under_lab(seed, move |root| async move {
+    let mut runs = Vec::new();
+    for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
+        let seed = 900 + u64::from(case);
+        runs.push(under_lab(seed, move |root| async move {
             let cx = PurposeContexts::narrow_runtime_root(&root);
             let PreparedFixture {
                 mut book,
@@ -1288,8 +1314,17 @@ fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
                 "{point:?}"
             );
             assert_journal_verifies(&book, &cx, point);
-        });
+            CrashObservation {
+                barrier: "batch",
+                case,
+                seed,
+                kept,
+                head: book.head(&cx).unwrap(),
+                fold_digest: fold.fold_digest,
+            }
+        }));
     }
+    runs
 }
 
 /// The journal's own verifiers after a crash and reopen (fa-0fl in-sim
@@ -1328,29 +1363,17 @@ fn period_state(book: &LabBook, cx: &PurposeContexts, code: &str) -> fa_time::Pe
 /// post_softclosed, which the fixture's capability lacks).
 #[test]
 fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() {
+    soft_close_crash_matrix();
+}
+
+/// The runs of the soft close's crash-point matrix above, one per
+/// `commit_crash_cases` case; FA-ART-LAB-02 reuses them.
+fn soft_close_crash_matrix() -> Vec<CrashObservation> {
     use fgdb::CrashPoint;
-    let cases = [
-        (Some(CrashPoint::BeforeCapsule), Some(false)),
-        (Some(CrashPoint::AfterCapsuleBeforeD1), Some(false)),
-        (
-            Some(CrashPoint::AfterCapsuleFileSyncBeforeDirectorySync),
-            Some(false),
-        ),
-        (
-            Some(CrashPoint::AfterCapsuleDirectorySyncBeforeParentDirectorySync),
-            Some(false),
-        ),
-        (Some(CrashPoint::AfterD1), Some(false)),
-        (Some(CrashPoint::AfterMarkerBeforeD2), None),
-        (
-            Some(CrashPoint::AfterMarkerFileSyncBeforeDirectorySync),
-            None,
-        ),
-        (None, Some(true)),
-    ];
-    for (i, (point, expected)) in cases.into_iter().enumerate() {
-        let seed = 800 + i as u64;
-        under_lab(seed, move |root| async move {
+    let mut runs = Vec::new();
+    for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
+        let seed = 800 + u64::from(case);
+        runs.push(under_lab(seed, move |root| async move {
             let cx = PurposeContexts::narrow_runtime_root(&root);
             let PreparedFixture {
                 mut book,
@@ -1441,9 +1464,617 @@ fn a_soft_close_crashed_at_every_commit_point_is_whole_or_absent_after_reopen() 
             // The soft-closed period admits an Original entry only under
             // post_softclosed, which the fixture's capability lacks.
             assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7), "{point:?}");
+            // Nothing reached March: its fold is empty.
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert!(fold.cells.is_empty(), "{point:?}: {fold:?}");
             assert_journal_verifies(&book, &cx, point);
-        });
+            CrashObservation {
+                barrier: "soft_close",
+                case,
+                seed,
+                kept: closed,
+                head: book.head(&cx).unwrap(),
+                fold_digest: fold.fold_digest,
+            }
+        }));
     }
+    runs
+}
+
+/// fa-0fl, the crash-point matrix for the register maintainer: the barrier
+/// between consuming the journal's delta and publishing the period's cursor
+/// (scoreboard GEN-06). March holds one posted rent whose cells an advance
+/// has published. A second rent is posted, and the advance that consumes it
+/// is crashed at each of the substrate's seven commit crash points; the fault
+/// VFS then loses every unsynced byte and the book reopens. The maintained
+/// state is the old one (the first cursor, one entry) or the new one (the
+/// cursor at the second post, two entries), never a mix: registers verify
+/// either way, a completed publication survives, and a fresh advance reaches
+/// the literal fold of both rents. A crash before the commit marker keeps the
+/// old state; the no-crash control publishes the new one.
+#[test]
+fn a_register_advance_crashed_at_every_commit_point_is_old_or_new_after_reopen() {
+    register_advance_crash_matrix();
+}
+
+/// The runs of the register maintainer's crash-point matrix above, one per
+/// `commit_crash_cases` case; FA-ART-LAB-02 reuses them.
+fn register_advance_crash_matrix() -> Vec<CrashObservation> {
+    use fgdb::CrashPoint;
+    let mut runs = Vec::new();
+    for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
+        let seed = 1000 + u64::from(case);
+        runs.push(under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let PreparedFixture {
+                mut book,
+                vfs,
+                request,
+                march,
+                usd,
+                ..
+            } = prepared_fixture(&root, seed).await;
+            let book_id = book.context().book_id;
+            let context = book.context().clone();
+            let mut second = request.clone();
+            second.proposal.idempotency_key = b"prepared-rent-2".to_vec();
+            second.proposal.description = book.seal_text(&cx, "second March rent").unwrap();
+            book.post(&cx, request).await.unwrap().unwrap();
+            book.advance_registers(&cx, &march).await.unwrap();
+            let old = fa_registers::maintainer::cursor(&book.db, &context, &march).unwrap();
+            assert!(old.is_some(), "the first advance publishes a cursor");
+            book.post(&cx, second.clone()).await.unwrap().unwrap();
+            let journal = journal_entries(&book, &cx);
+            let new = book.db.frontier().unwrap();
+            let outcome = fa_registers::maintainer::advance_with_crash(
+                &mut book.db,
+                &cx,
+                &context,
+                &march,
+                point,
+            )
+            .await;
+            // A crash point this publication's write path never passes leaves
+            // an ordinary commit; one it passes fails the publication. Either
+            // way, a completed publication must survive the crash below.
+            let published = outcome.is_ok();
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            assert!(
+                journal_entries(&book, &cx) == journal,
+                "{point:?}: a crashed advance changed the journal"
+            );
+            let cursor = fa_registers::maintainer::cursor(&book.db, &context, &march).unwrap();
+            let moved = if cursor == old {
+                false
+            } else if cursor == Some(new) {
+                true
+            } else {
+                panic!("{point:?}: cursor {cursor:?} is neither {old:?} nor {new:?}")
+            };
+            if published {
+                assert!(moved, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
+                assert_eq!(moved, expected, "{point:?}");
+            }
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}: the {} state does not verify",
+                if moved { "new" } else { "old" }
+            );
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(fold.entries, 2, "{point:?}: {fold:?}");
+            let cell = |code: &str| {
+                fold.cells
+                    .iter()
+                    .find(|c| c.key.account == account_vid(book_id, code) && c.key.unit_id == usd.0)
+                    .map(|c| (c.debits, c.credits, c.entry_count))
+            };
+            assert_eq!(cell("6000"), Some((300_000, 0, 2)), "{point:?}");
+            assert_eq!(cell("1000"), Some((0, 300_000, 2)), "{point:?}");
+            assert_eq!(
+                fa_registers::maintainer::cursor(&book.db, &context, &march).unwrap(),
+                Some(new),
+                "{point:?}: the fresh advance publishes the cursor at the second post"
+            );
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            CrashObservation {
+                barrier: "register_advance",
+                case,
+                seed,
+                kept: moved,
+                head: book.head(&cx).unwrap(),
+                fold_digest: fold.fold_digest,
+            }
+        }));
+    }
+    runs
+}
+
+/// fa-0fl, scoreboard GEN-06 ("crash at every barrier … and recover"): every
+/// barrier's crash-point matrix, run as one campaign. The post, the atomic
+/// batch and the soft close crash between plan and commit (at the crash
+/// points before the commit marker) and between commit and ack (after it);
+/// the register maintainer crashes between consuming the journal's delta
+/// and publishing its watermark. Each run recovers under its own matrix's
+/// assertions, and every barrier is seen both losing its crashed
+/// publication and keeping it.
+///
+/// It also produces FA-ART-LAB-02: the run count, the distinct (barrier,
+/// case) cells run, the SHA-256 of the seeds, and one BLAKE3 digest per run
+/// of its barrier, case, seed, outcome, head and March fold. The witness is
+/// recomputed on every run and must equal the ledger row, so a manifest
+/// this campaign did not produce fails here. After a deliberate change,
+/// rerun with `--nocapture` and copy the printed fields into the manifest
+/// and its ledger row.
+#[test]
+fn every_barrier_crashed_at_every_commit_point_recovers_as_fa_art_lab_02() {
+    let runs: Vec<CrashObservation> = [
+        post_crash_matrix(),
+        batch_crash_matrix(),
+        soft_close_crash_matrix(),
+        register_advance_crash_matrix(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    assert_lab_campaign(
+        "FA-ART-LAB-02",
+        b"fa:lab-seeds:all-barriers:v1",
+        b"fa:lab-witness:all-barriers:v1",
+        &runs,
+        &["batch", "post", "register_advance", "soft_close"],
+    );
+}
+
+/// An fa-0fl crash campaign's coverage and its ledger row. Every run is a
+/// distinct (barrier, case) cell, and each of `barriers` is seen with both
+/// outcomes. The witness is computed from the runs: the SHA-256 of
+/// `seed_domain` ‖ the run count ‖ each run's barrier, case and seed; the run
+/// and cell counts; and one BLAKE3 digest under `witness_domain` per run of
+/// its barrier, case, seed, outcome, head and March fold. It is printed,
+/// then asserted equal to `id`'s ledger row.
+fn assert_lab_campaign(
+    id: &str,
+    seed_domain: &[u8],
+    witness_domain: &[u8],
+    runs: &[CrashObservation],
+    barriers: &[&'static str],
+) {
+    use fa_registry::evidence_artifacts::{ArtifactWitness, EvidenceArtifacts, LabCampaignWitness};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let cells: BTreeSet<_> = runs.iter().map(|r| (r.barrier, r.case)).collect();
+    assert_eq!(cells.len(), runs.len(), "a (barrier, case) cell ran twice");
+    let mut outcomes = BTreeMap::<&str, BTreeSet<bool>>::new();
+    for r in runs {
+        outcomes.entry(r.barrier).or_default().insert(r.kept);
+    }
+    assert_eq!(
+        outcomes,
+        barriers
+            .iter()
+            .map(|barrier| (*barrier, BTreeSet::from([false, true])))
+            .collect(),
+        "every barrier must be seen with both outcomes"
+    );
+
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let mut seeds = seed_domain.to_vec();
+    seeds.extend_from_slice(&u32::try_from(runs.len()).unwrap().to_le_bytes());
+    for r in runs {
+        seeds.push(u8::try_from(r.barrier.len()).unwrap());
+        seeds.extend_from_slice(r.barrier.as_bytes());
+        seeds.push(r.case);
+        seeds.extend_from_slice(&r.seed.to_le_bytes());
+    }
+    let witness = LabCampaignWitness {
+        seed_manifest_sha256: hex(&fa_docket::intake::sha256(&seeds)),
+        schedule_count: u64::try_from(runs.len()).unwrap(),
+        explored_interleavings: u64::try_from(cells.len()).unwrap(),
+        certificate_hashes_blake3: runs
+            .iter()
+            .map(|r| {
+                hex(&fa_model::domain_digest(
+                    witness_domain,
+                    &[
+                        r.barrier.as_bytes(),
+                        &[r.case],
+                        &r.seed.to_le_bytes(),
+                        &[u8::from(r.kept)],
+                        &r.head.0.to_le_bytes(),
+                        &r.fold_digest,
+                    ],
+                ))
+            })
+            .collect(),
+    };
+    println!(
+        "{id} witness:\nseed_manifest_sha256 = \"{}\"\nschedule_count = {}\nexplored_interleavings = {}\ncertificate_hashes_blake3 = [{}]",
+        witness.seed_manifest_sha256,
+        witness.schedule_count,
+        witness.explored_interleavings,
+        witness
+            .certificate_hashes_blake3
+            .iter()
+            .map(|h| format!("\"{h}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let ledger = EvidenceArtifacts::embedded().expect("evidence_artifacts.toml");
+    let row = ledger
+        .get(id)
+        .unwrap_or_else(|| panic!("{id}: no ledger row"));
+    assert_eq!(
+        row.witness,
+        ArtifactWitness::LabCampaign(witness),
+        "{id} is not what this campaign observed"
+    );
+}
+
+/// Three timed holds in March, due: the anchor tick, three `Pending` posts
+/// with a 5 ns timeout, then a corroborated tick 10 ns later, under which a
+/// sweep may expire them as the book's `System` principal.
+struct TimedHolds {
+    fixture: PreparedFixture,
+    holds: Vec<fa_model::EntryRef>,
+    sweeper: Capability,
+}
+
+async fn timed_holds(root: &Cx, seed: u64) -> TimedHolds {
+    let cx = PurposeContexts::narrow_runtime_root(root);
+    let mut fixture = prepared_fixture(root, seed).await;
+    let witness = Capability::embedded(VId(1), &["witness"]).unwrap();
+    let system = fa_journal::rows::system_principal(fixture.book.context().book_id);
+    let sweeper = Capability::new(
+        system,
+        fa_policy::Profile::System,
+        &[fa_policy::Op::Post],
+        system,
+    )
+    .unwrap();
+    let march_ns =
+        u64::try_from(DateDay::from_ymd(2026, 3, 15).unwrap().0).unwrap() * 86_400_000_000_000;
+    fixture
+        .book
+        .record_tick(&cx, march_ns, true, &witness)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut holds = Vec::new();
+    for i in 0..3 {
+        let mut hold = fixture.request.clone();
+        hold.proposal.class = EntryClass::PENDING;
+        hold.proposal.idempotency_key = format!("timed-hold-{i}").into_bytes();
+        hold.proposal.pending = Some(fa_model::Pending {
+            timeout_ns: Some(5),
+            resolution_of: None,
+            disposition: None,
+        });
+        let posted = fixture.book.post(&cx, hold).await.unwrap().unwrap();
+        holds.push(posted.entry_ref());
+    }
+    fixture
+        .book
+        .record_tick(&cx, march_ns + 10, true, &witness)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.book.due_holds(&cx).unwrap().len(), 3);
+    TimedHolds {
+        fixture,
+        holds,
+        sweeper,
+    }
+}
+
+/// How many of `holds` have their one resolution (plan §5.4: a pending
+/// entry's resolution identity is derived from it).
+fn resolved(book: &LabBook, holds: &[fa_model::EntryRef]) -> usize {
+    holds
+        .iter()
+        .filter(|hold| {
+            book.db
+                .vertex(fa_journal::rows::resolution_vid(hold.vid))
+                .unwrap()
+                .is_some()
+        })
+        .count()
+}
+
+/// fa-0fl, the crash-point matrix for the expiry sweep (plan §5.4,
+/// scoreboard G2-04): three timed holds are due, and the sweep's one batch
+/// publication crashes at each of the substrate's seven commit crash points;
+/// the fault VFS then loses every unsynced byte and the book reopens. All
+/// three holds are expired (three `Expires` resolutions and the batch's
+/// `SweepControl` entry) or none is, never a partial batch; registers,
+/// projections and periods verify either way; a completed publication
+/// survives; and a rerun of the sweep expires exactly what the crash left
+/// due, so every hold ends resolved exactly once. A crash before the commit
+/// marker expires nothing; the control expires all three.
+#[test]
+fn an_expiry_sweep_crashed_at_every_commit_point_expires_all_or_none_after_reopen() {
+    expiry_sweep_crash_matrix();
+}
+
+/// The runs of the expiry sweep's crash-point matrix above, one per
+/// `commit_crash_cases` case; FA-ART-LAB-03 reuses them.
+fn expiry_sweep_crash_matrix() -> Vec<CrashObservation> {
+    use fgdb::CrashPoint;
+    let mut runs = Vec::new();
+    for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
+        let seed = 1100 + u64::from(case);
+        runs.push(under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let TimedHolds {
+                fixture:
+                    PreparedFixture {
+                        mut book,
+                        vfs,
+                        march,
+                        ..
+                    },
+                holds,
+                sweeper,
+            } = timed_holds(&root, seed).await;
+            let before = journal_entries(&book, &cx);
+            let outcome = book.sweep_expiry_with_crash(&cx, &sweeper, 3, point).await;
+            // A crash point this publication's write path never passes leaves
+            // an ordinary commit; one it passes fails the publication. Either
+            // way, a completed publication must survive the crash below.
+            let published = matches!(outcome, Ok(Ok(Some(_))));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let after = journal_entries(&book, &cx);
+            assert!(
+                before.iter().all(|e| after.contains(e)),
+                "{point:?}: the earlier journal changed"
+            );
+            let expired = match (resolved(&book, &holds), book.due_holds(&cx).unwrap().len()) {
+                (0, 3) => false,
+                (3, 0) => true,
+                other => {
+                    panic!("{point:?}: {other:?} (resolved, still due) of the batch's 3 holds")
+                }
+            };
+            if published {
+                assert!(expired, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
+                assert_eq!(expired, expected, "{point:?}");
+            }
+            assert_eq!(
+                after.len() - before.len(),
+                if expired { 4 } else { 0 },
+                "{point:?}: three resolutions and the SweepControl entry, or nothing"
+            );
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(
+                fold.pending.is_empty(),
+                expired,
+                "{point:?}: March's reservations are released exactly when its holds expired: {fold:?}"
+            );
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            let rerun = book.sweep_expiry(&cx, &sweeper, 3).await.unwrap().unwrap();
+            assert_eq!(
+                rerun.map(|batch| batch.expired.len()),
+                if expired { None } else { Some(3) },
+                "{point:?}: the rerun expires exactly what the crash left due"
+            );
+            assert!(book.due_holds(&cx).unwrap().is_empty(), "{point:?}");
+            assert_eq!(resolved(&book, &holds), 3, "{point:?}");
+            assert_eq!(journal_entries(&book, &cx).len(), before.len() + 4);
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert!(fold.pending.is_empty(), "{point:?}: {fold:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            CrashObservation {
+                barrier: "expiry_sweep",
+                case,
+                seed,
+                kept: expired,
+                head: book.head(&cx).unwrap(),
+                fold_digest: fold.fold_digest,
+            }
+        }));
+    }
+    runs
+}
+
+/// fa-0fl, a manual void racing the expiry sweep (plan §5.4, FA-INV-08: a
+/// pending entry is resolved at most once). The void of the first of three
+/// due holds is prepared while the hold is live, and the two commits land
+/// in both orders. When the void commits first, the sweep expires only the
+/// other two, and the void's retry is its recorded outcome. When the sweep
+/// commits first it expires all three; the prepared void's witness of the
+/// hold has moved, so its commit is a conflict that writes nothing
+/// (FA-REF-030, exit 6), and the re-plan its fix names finds the hold
+/// already resolved (FA-REF-062, exit 6). Either way every hold has exactly
+/// one resolution, the winner's, and registers, projections and periods
+/// verify.
+#[test]
+fn a_manual_void_and_the_expiry_sweep_resolve_each_hold_exactly_once_in_both_orders() {
+    void_and_sweep_orders();
+}
+
+/// The runs of the void-vs-sweep orders above (case 0: the void commits
+/// first; case 1: the sweep does); FA-ART-LAB-03 reuses them.
+fn void_and_sweep_orders() -> Vec<CrashObservation> {
+    (0u8..2)
+        .map(|case| {
+            let seed = 1200 + u64::from(case);
+            under_lab(seed, move |root| async move {
+                let cx = PurposeContexts::narrow_runtime_root(&root);
+                let TimedHolds {
+                    fixture:
+                        PreparedFixture {
+                            mut book,
+                            request,
+                            march,
+                            ..
+                        },
+                    holds,
+                    sweeper,
+                } = timed_holds(&root, seed).await;
+                let mut void = request.clone();
+                void.proposal.class = EntryClass::RESOLUTION;
+                void.proposal.idempotency_key = b"manual-void".to_vec();
+                void.proposal.description = book
+                    .seal_text(&cx, "manual void of the first timed hold")
+                    .unwrap();
+                void.proposal.legs = Vec::new();
+                void.proposal.unit_totals = Vec::new();
+                void.proposal.control = Some(fa_model::ControlPayload::ReservationRelease);
+                void.proposal.pending = Some(fa_model::Pending {
+                    timeout_ns: None,
+                    resolution_of: Some(holds[0]),
+                    disposition: Some(fa_model::Disposition::Voids),
+                });
+                let prepared = prepare_fixture_post(&mut book, &cx, void.clone());
+                let void_first = case == 0;
+                let before = journal_entries(&book, &cx);
+                let (voided, swept) = if void_first {
+                    let voided = prepared.commit(&mut book.db, &cx).await.unwrap();
+                    let swept = book.sweep_expiry(&cx, &sweeper, 3).await.unwrap().unwrap();
+                    (voided, swept)
+                } else {
+                    let swept = book.sweep_expiry(&cx, &sweeper, 3).await.unwrap().unwrap();
+                    let voided = prepared.commit(&mut book.db, &cx).await.unwrap();
+                    (voided, swept)
+                };
+                let swept = swept.expect("due holds remain for the sweep");
+                let expired: Vec<_> = swept.expired.iter().map(|(hold, _)| *hold).collect();
+                if void_first {
+                    assert!(matches!(voided, Ok(Posted::Committed { .. })), "{voided:?}");
+                    assert_eq!(expired, holds[1..], "the sweep skips the voided hold");
+                } else {
+                    // The void's plan read the hold before the sweep resolved
+                    // it, so its witness moved: a conflict that writes nothing.
+                    let refusal = voided.unwrap_err();
+                    assert_eq!(
+                        (refusal.code, refusal.exit),
+                        ("FA-REF-030", 6),
+                        "{refusal:?}"
+                    );
+                    assert_eq!(expired, holds, "the sweep expires all three");
+                }
+                // The retry its refusal names: the recorded void, or a re-plan
+                // that finds the hold already resolved by the sweep.
+                let retried = book.post(&cx, void).await.unwrap();
+                if void_first {
+                    assert!(
+                        matches!(retried, Ok(Posted::AlreadyRecorded { .. })),
+                        "{retried:?}"
+                    );
+                } else {
+                    let refusal = retried.unwrap_err();
+                    assert_eq!(
+                        (refusal.code, refusal.exit),
+                        ("FA-REF-062", 6),
+                        "{refusal:?}"
+                    );
+                }
+                assert_eq!(
+                    journal_entries(&book, &cx).len(),
+                    before.len() + 4,
+                    "three resolutions and the SweepControl entry, whoever won"
+                );
+                let first = book
+                    .read_entry(&cx, fa_journal::rows::resolution_vid(holds[0].vid))
+                    .unwrap()
+                    .expect("the first hold's one resolution")
+                    .0;
+                let disposition = first.proposal.pending.and_then(|p| p.disposition);
+                assert_eq!(
+                    matches!(disposition, Some(fa_model::Disposition::Voids)),
+                    void_first,
+                    "{disposition:?}"
+                );
+                assert_eq!(resolved(&book, &holds), 3);
+                assert!(book.due_holds(&cx).unwrap().is_empty());
+                let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+                assert!(fold.pending.is_empty(), "{fold:?}");
+                assert!(book.verify_registers(&cx, &march).unwrap().is_green());
+                assert_journal_verifies(&book, &cx, None);
+                CrashObservation {
+                    barrier: "void_vs_sweep",
+                    case,
+                    seed,
+                    kept: void_first,
+                    head: book.head(&cx).unwrap(),
+                    fold_digest: fold.fold_digest,
+                }
+            })
+        })
+        .collect()
+}
+
+/// fa-0fl, scoreboard G2-04 ("two-phase entries with expiry sweeps under
+/// lab"): the expiry sweep's crash-point matrix and the void-vs-sweep
+/// orders, run as one campaign under the lab runtime and its fault VFS.
+/// Every run ends with each timed hold resolved exactly once, and both
+/// barriers are seen with each outcome: a crashed sweep that kept its batch
+/// and one that lost it, a void that won and one that lost.
+///
+/// It also produces FA-ART-LAB-03: the run count, the distinct (barrier,
+/// case) cells run, the SHA-256 of the seeds, and one BLAKE3 digest per run
+/// of its barrier, case, seed, outcome, head and March fold. The witness is
+/// recomputed on every run and must equal the ledger row; after a
+/// deliberate change, rerun with `--nocapture` and copy the printed fields
+/// into the manifest and its ledger row.
+#[test]
+fn two_phase_holds_expire_exactly_once_under_lab_as_fa_art_lab_03() {
+    let runs: Vec<CrashObservation> = [expiry_sweep_crash_matrix(), void_and_sweep_orders()]
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_lab_campaign(
+        "FA-ART-LAB-03",
+        b"fa:lab-seeds:two-phase-expiry:v1",
+        b"fa:lab-witness:two-phase-expiry:v1",
+        &runs,
+        &["expiry_sweep", "void_vs_sweep"],
+    );
 }
 
 #[test]
@@ -3895,7 +4526,8 @@ fn report_replay_keeps_historical_account_metadata_and_status_refuses_rebinding(
             | ReportOutput::FunctionalStatement(_)
             | ReportOutput::Consolidation(_)
             | ReportOutput::FunctionalConsolidation(_)
-            | ReportOutput::DimensionTrialBalance(_) => {}
+            | ReportOutput::DimensionTrialBalance(_)
+            | ReportOutput::RegulatorySchedule(_) => {}
         }
         let refusal = book
             .certificate_status(&result.certificate)
@@ -5736,9 +6368,12 @@ fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
     assert!(
         scratch_rows.iter().all(|v| {
             !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)
+                && !v
+                    .labels
+                    .contains(&fa_model::symbols::label::REGISTER_CHECKPOINT)
                 && !v.labels.contains(&fa_model::symbols::label::CERTIFICATE)
         }),
-        "no maintainer state or source-bound certificate reaches the scratch book"
+        "no maintainer state, complete register checkpoint or source-bound certificate reaches the scratch book"
     );
 
     post_rent(&mut scratch, usd, principal, day, b"what-if", 150_000)

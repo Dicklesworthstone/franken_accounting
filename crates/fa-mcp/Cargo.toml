@@ -29,4 +29,5 @@ fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 fastmcp-rust = { workspace = true }
 
 [dev-dependencies]
+fa = { path = "../fa", version = "=0.0.1" }
 fa-verify = { path = "../fa-verify", version = "=0.0.1" }

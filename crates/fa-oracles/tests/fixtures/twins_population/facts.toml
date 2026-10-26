@@ -1,0 +1,49 @@
+# Twin population fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "B-1"
+provenance = "synthetic"
+reason = "the N's target: one 1,234.56 debit leg in the Benford population"
+discipline = "never cited by a case; the no_finding N's target"
+
+[[fact]]
+id = "B-2"
+provenance = "synthetic"
+reason = "17 debit legs of the 120-leg Benford population"
+discipline = "never cited by a case; population only"
+
+[[fact]]
+id = "B-3"
+provenance = "synthetic"
+reason = "17 debit legs of the 120-leg Benford population"
+discipline = "never cited by a case; population only"
+
+[[fact]]
+id = "B-4"
+provenance = "synthetic"
+reason = "17 debit legs of the 120-leg Benford population"
+discipline = "never cited by a case; population only"
+
+[[fact]]
+id = "B-5"
+provenance = "synthetic"
+reason = "17 debit legs of the 120-leg Benford population"
+discipline = "never cited by a case; population only"
+
+[[fact]]
+id = "B-6"
+provenance = "synthetic"
+reason = "17 debit legs of the 120-leg Benford population"
+discipline = "never cited by a case; population only"
+
+[[fact]]
+id = "B-7"
+provenance = "synthetic"
+reason = "17 debit legs of the 120-leg Benford population"
+discipline = "never cited by a case; population only"
+
+[[fact]]
+id = "B-8"
+provenance = "synthetic"
+reason = "17 debit legs of the 120-leg Benford population"
+discipline = "never cited by a case; population only"

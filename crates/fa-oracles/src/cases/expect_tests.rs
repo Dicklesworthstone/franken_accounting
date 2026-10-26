@@ -246,9 +246,58 @@ fn exact_gap_without_gap_amount_or_twin_target_is_refused() {
     );
     loads(
         &appended(&format!(
-            "{EXACT_GAP}gap_amount = \"0.01\"\ngap_unit = \"USD\"\ntwin_target = \"F2\"\n"
+            "{EXACT_GAP}gap_amount = \"0.01\"\ngap_unit = \"USD\"\ntwin_target = \"F2\"\n{EXACT_GAP_SOURCED}"
         )),
         "a complete exact_gap N",
+    );
+}
+
+/// The sourced values an exact_gap N's gap is measured from: one target row
+/// for its `target` (F4) and one for its `twin_target` (F2).
+const EXACT_GAP_SOURCED: &str = "\n[[target]]\nexpectation = \"W-N-02\"\nfact = \"F4\"\nstatistic_name = \"capitalized_amount\"\nstatistic_value = \"40000\"\nstatistic_scale = 2\n\n[[target]]\nexpectation = \"W-N-02\"\nfact = \"F2\"\nstatistic_name = \"capitalized_amount\"\nstatistic_value = \"0\"\n";
+
+#[test]
+fn exact_gap_without_its_sourced_target_rows_is_refused() {
+    let complete =
+        format!("{EXACT_GAP}gap_amount = \"0.01\"\ngap_unit = \"USD\"\ntwin_target = \"F2\"\n");
+    let errs = load(&appended(&complete)).expect_err("refused");
+    for (key, fact) in [("target", "F4"), ("twin_target", "F2")] {
+        refused(
+            &errs,
+            "expectations.toml",
+            LoadErrorKind::MissingField,
+            &format!("states its `{key}` {fact}'s sourced value in a [[target]] row"),
+        );
+    }
+    // The target's row alone still leaves the twin target unsourced.
+    let target_only = EXACT_GAP_SOURCED
+        .split("\n\n[[target]]")
+        .next()
+        .expect("the first row");
+    let errs = load(&appended(&format!("{complete}{target_only}\n"))).expect_err("refused");
+    refused(
+        &errs,
+        "expectations.toml",
+        LoadErrorKind::MissingField,
+        "states its `twin_target` F2's sourced value",
+    );
+    // A sourced row on a fact that is neither the target nor the twin target.
+    let stray = "\n[[target]]\nexpectation = \"W-N-02\"\nfact = \"F9\"\nstatistic_name = \"capitalized_amount\"\nstatistic_value = \"1\"\n";
+    refused_exp(
+        &appended(&format!("{complete}{EXACT_GAP_SOURCED}{stray}")),
+        LoadErrorKind::DanglingKey,
+        "an exact_gap N's target row is its `target` or `twin_target`, not `F9`",
+    );
+}
+
+#[test]
+fn a_sourced_value_on_a_no_finding_n_target_is_refused() {
+    refused_exp(
+        &appended(
+            "\n[[target]]\nexpectation = \"W-N-01\"\nfact = \"F2\"\nstatistic_value = \"1\"\n",
+        ),
+        LoadErrorKind::UnknownField,
+        "`statistic_value` on an N target belongs to an exact_gap N",
     );
 }
 

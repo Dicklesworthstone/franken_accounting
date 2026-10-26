@@ -1,0 +1,11 @@
+# Runner fixture (fa-yugf.15, A7a): one of each A1b step kind beyond the core history, on a small
+# synthetic book, for fa-cli's tests/cases.rs. Never copied to cases/; claims nothing.
+id = "runner_ext"
+title = "Runner fixture: the extension step kinds on a synthetic book"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's allocate, batch, manual-assertion, event_record, engagement_file, period_lock and finding_record params steps"
+claims = []
+capabilities = ["verb:post", "verb:allocate", "verb:batch", "procedure:jet.round_amounts@1"]
+pinned_commit = "f48662950"
+variants = ["native"]

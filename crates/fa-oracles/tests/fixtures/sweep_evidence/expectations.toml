@@ -1,0 +1,49 @@
+# Evidence sweep fixture expectations: one P row on S-1 (Original, in an Open quarter) whose table
+# branches its evidence. Original requires evidence or a ManualAssertion (registries/
+# evidence_policy.toml): none is FA-REF-080; an unreviewed AgentUpload placeholder is FA-REF-086
+# (plan 2.6); the reviewed placeholder and the asserted cell are admitted.
+
+[[expectation]]
+id = "sweep_evidence-P-01"
+type = "P"
+book_variant = "native"
+statement_template = "P.first_refusal"
+basis = ["S-1"]
+intent = "S-1"
+refusal = "FA-REF-080"
+law_row = "evidence_policy.toml#Original"
+attribute = "evidence_attached"
+reference_verdict = "not_modelled"
+
+[[target]]
+expectation = "sweep_evidence-P-01"
+fact = "S-1"
+branch_attrs = ["evidence_attached"]
+
+[[branch_cell]]
+expectation = "sweep_evidence-P-01"
+target = "S-1"
+cell = ["none"]
+expect = "FA-REF-080"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep_evidence-P-01"
+target = "S-1"
+cell = ["placeholder_unreviewed"]
+expect = "FA-REF-086"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep_evidence-P-01"
+target = "S-1"
+cell = ["placeholder_reviewed"]
+expect = "admit"
+record_consistent = true
+
+[[branch_cell]]
+expectation = "sweep_evidence-P-01"
+target = "S-1"
+cell = ["manual_assertion(InternalTransfer)"]
+expect = "admit"
+record_consistent = false

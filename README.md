@@ -348,6 +348,34 @@ representations, and reports that need an ambiguous legacy replacement identity.
 Identical dimension representations and current target-derived replacements are
 supported; native replay of the original certificate remains available.
 
+Effective-date aging certificates now use the same portable workflow:
+
+```bash
+fa gl aging --account 1200 --as-of 2026-03-31 --as-known-at 42 \
+  --certificate-out march-aging.cert --book ./books/acme --json
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate march-aging.cert --book ./books/acme \
+  --out march-aging.fab --receipt-out march-aging.receipt --json
+fa-verify report march-aging.fab --key <trusted-checkpoint-public-key> \
+  --receipt march-aging.receipt --json
+```
+
+The verifier first checks the complete native open-item source, then selects
+entries at the aging's inclusive effective cutoff before applying settlements
+and reversal lineage. A February payment therefore does not reduce January's
+aging even when both are known at the selected recorded sequence. It recomputes
+every open item, application, age band and per-account/unit debit and credit
+total, omitting fully settled items. A cutoff splitting a relevant backdated
+settlement or reversal is refused rather than silently losing a balance.
+
+Ages count civil days from posting effective dates; they do not establish
+contractual due dates or overdue status. Aging certificates retain sequence
+coordinates and the selected bucket bounds. The receipt and `--expect` pin the
+**outer aging certificate**, including its cutoff, buckets and output; a digest
+of the nested open-item source is insufficient. The complete-prefix authority,
+registry and historical-identity requirements above also apply. MCP accepts the
+retained `C:<oid>` or complete aging certificate hex through `fa_notary_bundle`.
+
 Instant-selected certificates also retain their requested instant, observed frontier,
 and tick identities. Replay uses those saved brackets even after later ticks or
 postings arrive. An open upper bracket is explicit; this is a clock-observation

@@ -866,6 +866,7 @@ dependencies = [
  "fa-model",
  "fa-money",
  "fa-notary",
+ "fa-oracles",
  "fa-policy",
  "fa-registers",
  "fa-registry",
@@ -1052,6 +1053,7 @@ name = "fa-mcp"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa",
  "fa-cli",
  "fa-registry",
  "fa-verify",

@@ -1,0 +1,149 @@
+# D-cells fixture native book: one quarter, one entry X-1 (a 3,000.00 debit against three
+# credit accounts, the split a leg_split branch), then a jet.round_amounts run. Synthetic; the
+# literal credits are one member of the mmm cell.
+
+[book]
+variant = "native"
+opening_date = "2026-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2026Q1"
+start = "2026-01-01"
+end = "2026-03-31"
+fiscal_year = 2026
+kind = "Normal"
+
+[[principal]]
+label = "selftest-preparer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce"]
+
+[[account]]
+code = "1500"
+name_fact = "X-1"
+type = "Asset"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6100"
+name_fact = "X-1"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6110"
+name_fact = "X-1"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6120"
+name_fact = "X-1"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-PH-X-1"
+stub_of = "placeholder:X-1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "X-1"
+fact = "X-1"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-10"
+memo = "line costs (d-cells fixture)"
+evidence = "DOC-PH-X-1"
+idempotency_key = "dcells-X-1"
+
+[[leg]]
+intent = "X-1"
+ordinal = 0
+account = "1500"
+side = "Dr"
+amount_literal = "3000.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "X-1"
+ordinal = 1
+account = "6100"
+side = "Cr"
+amount_literal = "1000.00"
+amount_rule = "branch:bc-X-split"
+unit = "USD"
+
+[[leg]]
+intent = "X-1"
+ordinal = 2
+account = "6110"
+side = "Cr"
+amount_literal = "1000.00"
+amount_rule = "branch:bc-X-split"
+unit = "USD"
+
+[[leg]]
+intent = "X-1"
+ordinal = 3
+account = "6120"
+side = "Cr"
+amount_literal = "1000.00"
+amount_rule = "branch:bc-X-split"
+unit = "USD"
+
+[[branch_class]]
+id = "bc-X-split"
+attribute = "leg_split"
+rule = "round_residue_legs"
+values = ["multiple", "non_multiple"]
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2026Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "intent"
+ref = "X-1"
+
+[[step]]
+seq = 3
+kind = "finding_record"
+ref = "jet.round_amounts@1"
+principal = "examiner-1"
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the fixture's document is a placeholder reviewed by case-second-reader (plan §2.6)"

@@ -417,7 +417,7 @@ evidence_class = "invariant"
 checker_strength = "differential"
 first_gate = "G1"
 owner = "fa-1kd"
-checkers = ["fa-registers::tests/registers.rs::fold_equals_the_posted_legs_with_the_last_commit_as_watermark", "fa-registers::tests/registers.rs::equal_sum_histories_with_different_leg_orders_have_distinct_fold_digests", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history", "fa-registers::lib::tests::fold_digest_is_a_function_of_cells_and_watermark", "fa-notary::tests/notary.rs::the_bundle_balance_law_is_the_register_fold_law"]
+checkers = ["fa-registers::tests/registers.rs::fold_equals_the_posted_legs_with_the_last_commit_as_watermark", "fa-registers::tests/registers.rs::equal_sum_histories_with_different_leg_orders_have_distinct_fold_digests", "fa-registers::tests/differential.rs::kernel_and_oracle_agree_on_a_generated_history", "fa-registers::lib::tests::fold_digest_is_a_function_of_cells_and_watermark", "fa-notary::tests/notary.rs::the_bundle_balance_law_is_the_register_fold_law", "fa::lib::book::tests::a_register_advance_crashed_at_every_commit_point_is_old_or_new_after_reopen"]
 negatives = ["fa-registers::tests/registers.rs::materialize_then_verify_is_green_and_a_tampered_register_is_drift", "fa-registers::tests/registers.rs::zero_phantom_cells_are_detected_and_rebuild_removes_them", "fa-registers::tests/registers.rs::register_metadata_and_watermark_corruption_cannot_verify", "fa-registers::tests/registers.rs::pending_column_corruption_is_detected_and_rebuilt_from_the_journal", "fa-registers::tests/registers.rs::prefix_verification_refuses_rewritten_or_retired_journal_entries"]
 waiver = "forbidden"
 

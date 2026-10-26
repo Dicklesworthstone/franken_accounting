@@ -653,6 +653,26 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     // exact 3373039f9, x86_64 (gate cg12, vmi1149989), after both complete
     // fixture executions agreed; the fold and every report-byte pin are
     // unchanged. This does not supply the still-unrun aarch64 qualification.
+    // 4df0d52c0 (period and time controls reserve shared outcome keys) then
+    // moved the three certificates and the bundle. The fixture's open of March
+    // now stages the PeriodControl's common IntentOutcome claim in the same
+    // commit, so the substrate snapshot at the unchanged known_at holds one more
+    // vertex and the `snapshot_identity` every certified native input binds
+    // differs. That is the only field that moved in the trial balance
+    // certificate: printed at 4df0d52c0 and at its parent a4070a989, the
+    // known_at, registry digest, journal root and leaf count, output and output
+    // digest are identical. A bisect over 6a55dfa21..9bcc76114 isolated the
+    // trial balance certificate's move to 4df0d52c0; the balance sheet, income
+    // statement and bundle pins bind the same native inputs and were
+    // re-measured, not bisected. The new pins were measured on exact
+    // e83c57d21, x86_64, after both complete fixture executions agreed;
+    // the fold and every report-byte pin are unchanged. This does not supply
+    // the still-unrun aarch64 qualification.
+    // Prior tb/bs/is certificate and bundle pins (6a55dfa21), retained here:
+    // 87b46764e1ecb79512b9f7bcab837d85af056d8c8d8a65da1856c06e8db229c0
+    // 78e5f94d2809bcbeccb95fe722f49c679b11cfc3e9514a830deb00711d89c44c
+    // 287809996f6d0d2a2636d4c11afcaab9d2e0a23e8a11b6e9ce934b5e2507da38
+    // a1d89b1572938b386ad312791d3761bc51fc78133a474230171ed647102a6f2a
     // Prior tb/bs/is certificate and bundle pins (eeedc189a), retained here:
     // 261fac98b23103fe450443e0d38b6673fbcdac12ce304432733d32754132b622
     // 45d27ea0598a7e3943a90589674d8fea420a2df94473756dbf9f204290d75b20
@@ -689,7 +709,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "87b46764e1ecb79512b9f7bcab837d85af056d8c8d8a65da1856c06e8db229c0",
+        "d5080d0f6aa895594babc1dd1071e132e0b552c284d11843243d60ae951d5608",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -701,7 +721,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "78e5f94d2809bcbeccb95fe722f49c679b11cfc3e9514a830deb00711d89c44c",
+        "564f51a70a5d2dcd1662f5b8839da0212de08a9a59aa90de01d868a85892cb27",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -713,13 +733,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "287809996f6d0d2a2636d4c11afcaab9d2e0a23e8a11b6e9ce934b5e2507da38",
+        "acbf4bd4f2dcae1545a05018d9bcd5fc3f6074ea319bee692b99993cf446da77",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "a1d89b1572938b386ad312791d3761bc51fc78133a474230171ed647102a6f2a",
+        "d04651ce9d377423b5dc000807d818106ef9d457a839f0e2e5f057b8dcccea01",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );

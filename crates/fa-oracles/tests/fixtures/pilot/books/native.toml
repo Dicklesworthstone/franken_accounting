@@ -4,7 +4,7 @@
 
 [book]
 variant = "native"
-opening_date = "2000-12-31"
+opening_date = "2001-01-01"
 calendar = "custom"
 base_unit = "USD"
 posture = "embedded-owner"
@@ -130,6 +130,22 @@ role_map_rule = "role_map"
 
 [[account]]
 code = "6100"
+name_fact = "F4"
+type = "Expense"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6110"
+name_fact = "F4"
+type = "Expense"
+role = ""
+opened = "2000-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6120"
 name_fact = "F4"
 type = "Expense"
 role = ""
@@ -282,13 +298,34 @@ amount_literal = "560000000.00"
 amount_rule = "value:F4-p26#1"
 unit = "USD"
 
+# F4's credits are over "three separate line cost accounts" with the split
+# unsourced (plan §6.2): one leg per named account (the declared default),
+# amounts a branch (A5a). The literals are one member of the nnn cell.
 [[leg]]
 intent = "F4"
 ordinal = 1
 account = "6100"
 side = "Cr"
-amount_literal = "560000000.00"
-amount_rule = "value:F4-p26#1"
+amount_literal = "186666666.67"
+amount_rule = "branch:bc-F4-credit-split"
+unit = "USD"
+
+[[leg]]
+intent = "F4"
+ordinal = 2
+account = "6110"
+side = "Cr"
+amount_literal = "186666666.67"
+amount_rule = "branch:bc-F4-credit-split"
+unit = "USD"
+
+[[leg]]
+intent = "F4"
+ordinal = 3
+account = "6120"
+side = "Cr"
+amount_literal = "186666666.66"
+amount_rule = "branch:bc-F4-credit-split"
 unit = "USD"
 
 [[leg]]
@@ -341,7 +378,25 @@ intent = "delta-F4"
 ordinal = 1
 account = "6100"
 side = "Dr"
-amount_literal = "560000000.00"
+amount_literal = "186666666.67"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F4"
+ordinal = 2
+account = "6110"
+side = "Dr"
+amount_literal = "186666666.67"
+amount_rule = "derived:negate"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F4"
+ordinal = 3
+account = "6120"
+side = "Dr"
+amount_literal = "186666666.66"
 amount_rule = "derived:negate"
 unit = "USD"
 
@@ -384,20 +439,38 @@ unit = "USD"
 [[branch_class]]
 id = "bc-F4-credit-split"
 attribute = "leg_split"
-rule = "f4_three_line_cost_credits"
-values = ["one_credit_leg", "three_credit_legs"]
+rule = "round_residue_legs"
+values = ["multiple", "non_multiple"]
+
+[[branch_class]]
+id = "bc-F9-debit-legs"
+attribute = "leg_split"
+rule = "capitalized_debit_legs"
+values = ["one_debit_leg", "two_debit_legs"]
 
 [[branch_class]]
 id = "bc-effective-date"
 attribute = "effective_date"
-rule = "quarter_end_window"
+rule = "period_end_window"
 values = ["inside_window", "outside_window"]
 
 [[branch_class]]
 id = "bc-entry-class"
 attribute = "entry_class"
-rule = "capitalization_class"
+rule = "entry_class_admission"
 values = ["Original", "Adjusting"]
+
+[[branch_class]]
+id = "bc-period-state"
+attribute = "period_state_at_commit"
+rule = "period_state_admission"
+values = ["Future", "Open", "SoftClosed", "Closed", "Locked"]
+
+[[branch_class]]
+id = "bc-evidence"
+attribute = "evidence_attached"
+rule = "evidence_minimum"
+values = ["none", "placeholder_unreviewed", "placeholder_reviewed"]
 
 [[default]]
 attribute = "effective_date"

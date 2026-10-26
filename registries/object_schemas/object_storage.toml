@@ -12,6 +12,7 @@ replacement_plan_kind = 2
 batch_plan_kind = 3
 intent_outcome_kind = 4
 registry_epoch_kind = 5
+register_checkpoint_kind = 6
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||
@@ -44,3 +45,7 @@ registry_epoch_kind = 5
 # label, like plan objects, and publish with the report in one transaction.
 # The distinct kind, body format and identity domain keep them separate from
 # report artifacts. Certificate storage is excluded from accounting scratch replay.
+# RegisterCheckpoint kind 6 stores complete native-period fold snapshots. Root
+# and fragments use RegisterCheckpoint, share immutable birth, and are published
+# atomically with the mutable RegisterState/cells and latest-checkpoint pointer.
+# They are rebuildable maintenance data, not authenticated opening-balance proof.

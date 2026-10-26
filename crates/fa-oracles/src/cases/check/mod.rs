@@ -1,6 +1,8 @@
 //! The load-time checks K-PROV, K-BIND, K-SCOPE, K-ANCHOR and K-DERIVE
 //! (docs/FORENSIC_CASE_STUDIES_PLAN.md §3.6; bead fa-yugf.7, A3a), and
-//! K-BASIS, K-TAUT, K-ORACLE and K-VINTAGE (bead fa-yugf.8, A3b): the
+//! K-BASIS, K-TAUT, K-ORACLE and K-VINTAGE (bead fa-yugf.8, A3b), K-TIER
+//! (bead fa-yugf.10, A4), and K-ASSERT, K-ERRRATE, K-NAMES, K-EVID and
+//! K-REASON (bead fa-yugf.9, A3c): the
 //! harness's refusals of its own research record, run offline over a loaded
 //! [`Case`] (tests never read the fetch cache, §4.3; a quote-less fact is
 //! bound by its receipt, §4.4).
@@ -23,21 +25,28 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::derive::Rules;
 use super::expect::ExpectationType;
 use super::fact::Provenance;
+use super::tiers::{self, Tiers};
 use super::trace::Read;
 use super::{Case, FACTS_FILE, Receipt};
 
 pub mod anchor;
+pub mod assert;
 pub mod basis;
 pub mod bind;
 pub mod derive;
+pub mod errrate;
+pub mod evid;
+pub mod names;
 pub mod oracle;
 pub mod prov;
+pub mod reason;
 pub mod scope;
 #[cfg(test)]
 mod t_tests;
 pub mod taut;
 #[cfg(test)]
 mod tests;
+pub mod tier;
 pub mod vintage;
 
 /// A check's verdict.
@@ -258,6 +267,11 @@ pub struct Context<'a> {
     /// A source's extraction text, when one is at hand (a test's fixture
     /// extraction; never the fetch cache).
     pub extraction: Option<Extraction<'a>>,
+    /// The two-reader procedure tier table (A4), or why it does not load.
+    pub tiers: Result<Tiers, String>,
+    /// `registries/procedures.toml` as K-TIER digests it (tests pass an
+    /// edited copy).
+    pub procedures: &'a str,
 }
 
 impl<'a> Context<'a> {
@@ -278,6 +292,8 @@ impl<'a> Context<'a> {
             rules,
             scales,
             extraction: None,
+            tiers: tier::embedded(),
+            procedures: tiers::PROCEDURES,
         }
     }
 
@@ -339,6 +355,12 @@ pub fn run_load_checks_with(cx: &Context<'_>, case_checks: &[CaseCheck]) -> Vec<
         taut::check(cx),
         oracle::check(cx),
         vintage::check(cx),
+        tier::check(cx),
+        assert::check(cx),
+        errrate::check(cx),
+        names::check(cx),
+        evid::check(cx),
+        reason::check(cx),
     ];
     for c in case_checks.iter().filter(|c| c.case == cx.case.header.id) {
         let mut report = (c.run)(cx.case);

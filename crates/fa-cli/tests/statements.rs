@@ -1523,3 +1523,366 @@ fn call_report_schedules_partition_the_bank_template() {
         .collect();
     assert_eq!(unmapped, ["4630"], "{report:?}");
 }
+
+/// fa-doa9: `fa statement regulatory` evaluates the FFIEC 041 RC and RI
+/// schedules over a bank book built on the us-bank-call-report template,
+/// certifies them, replays them byte for byte and reports later relevant
+/// entries. Every amount below is hand-computed from the six entries:
+/// - capital 1,000.00 into 1110;
+/// - deposits 5,000.00 into 1120;
+/// - a 4,000.00 loan out of 1120;
+/// - a 40.00 provision into the allowance;
+/// - 120.00 loan interest received;
+/// - 30.00 deposit interest paid.
+///
+/// Planted negatives: a quarter without its own instructions and an
+/// unregistered form are refused naming the registered schedules; a covered
+/// revenue leaf the RI schedule has no line for refuses the schedule.
+#[test]
+fn call_report_rc_ri_certified() {
+    let dir = temporary();
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Call report bank"]);
+    ok(
+        &book,
+        &["chart", "import", "--template", "us-bank-call-report"],
+    );
+    ok(&book, &["period", "create", "--fiscal-year", "2026"]);
+    for period in ["FY2026-P01", "FY2026-P02", "FY2026-P03", "FY2026-P04"] {
+        ok(&book, &["period", "open", period]);
+    }
+    let source = dir.join("source.txt");
+    std::fs::write(&source, b"Call report test source: bank ledger entries").unwrap();
+    let doc = ok(
+        &book,
+        &[
+            "document",
+            "add",
+            source.to_str().unwrap(),
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let evidence = text(data(&doc[0]), "oid").to_string();
+    let post = |key: &str, day: &str, debit: &str, credit: &str, amount: &str| {
+        let path = dir.join(format!("{key}.json"));
+        std::fs::write(&path, format!(r#"{{"idempotency_key":"{key}","effective_date":"{day}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount}"}},{{"side":"credit","account":"{credit}","amount":"{amount}"}}]}}"#)).unwrap();
+        ok(
+            &book,
+            &[
+                "post",
+                "--intent",
+                path.to_str().unwrap(),
+                "--evidence",
+                &evidence,
+            ],
+        );
+    };
+    for (key, day, debit, credit, amount) in [
+        ("capital", "2026-01-05", "1110", "3200", "1000.00 USD"),
+        ("deposits", "2026-01-10", "1120", "2120", "5000.00 USD"),
+        ("loan", "2026-02-01", "1420", "1120", "4000.00 USD"),
+        ("provision", "2026-02-28", "5400", "1430", "40.00 USD"),
+        (
+            "interest-income",
+            "2026-03-31",
+            "1120",
+            "4110",
+            "120.00 USD",
+        ),
+        (
+            "interest-expense",
+            "2026-03-31",
+            "5210",
+            "1120",
+            "30.00 USD",
+        ),
+    ] {
+        post(key, day, debit, credit, amount);
+    }
+    let usd = |amount: &str| vec![Json::Str(format!("{amount} USD"))];
+    let regulatory = |schedule: &str, periods: &[&str], certify: bool| -> Vec<Json> {
+        let mut args = vec![
+            "statement",
+            "regulatory",
+            "--form",
+            "041",
+            "--schedule",
+            schedule,
+            "--quarter",
+            "2026Q1",
+        ];
+        for period in periods {
+            args.extend(["--for", period]);
+        }
+        if certify {
+            args.push("--certify");
+        }
+        ok(&book, &args)
+    };
+
+    // RC, stock through March 31, uncertified.
+    let rc = regulatory("RC", &["FY2026-P03"], false);
+    assert_eq!(rc.len(), 2, "{rc:?}");
+    assert_eq!(text(&rc[0], "event"), "statement");
+    assert_eq!(rc[0].get("certificate"), Some(&Json::Null));
+    let statement = data(&rc[0]);
+    assert_eq!(text(statement, "name"), "ffiec_041_schedule_rc_2026q1");
+    assert_eq!(text(&array(statement, "columns")[0], "mode"), "stock");
+    for (code, amount) in [
+        ("RCON0081", "1000.00"),
+        ("RCON0071", "1090.00"),
+        ("RCON2122", "4000.00"),
+        ("RCON3123", "40.00"),
+        ("RCONB529", "3960.00"),
+        ("RCON2170", "6050.00"),
+        ("RCON2200", "5000.00"),
+        ("RCON2948", "5000.00"),
+        ("RCON3230", "1000.00"),
+        ("RCON3632", "50.00"),
+        ("RCON3210", "1050.00"),
+        ("RCON3300", "6050.00"),
+        ("rc_balance_check", "0.00"),
+    ] {
+        assert_eq!(line(statement, code, "USD"), usd(amount), "{code}");
+    }
+    assert_eq!(text(&rc[1], "event"), "regulatory_schedule");
+    let schedule = data(&rc[1]);
+    assert_eq!(text(schedule, "form"), "FFIEC041");
+    assert_eq!(text(schedule, "schedule"), "RC");
+    assert_eq!(text(schedule, "instruction_version"), "FFIEC-041-2026Q1");
+    assert_eq!(text(schedule, "edit_selector"), "FFIEC041:RC@2026Q1");
+    assert_eq!(schedule.get("edit_ids_published"), Some(&Json::Bool(false)));
+    assert_eq!(
+        schedule.get("instrument_inputs_read"),
+        Some(&Json::Bool(false))
+    );
+    assert_eq!(array(schedule, "declared_inputs").len(), 2);
+    assert_eq!(schedule.get("validity_failed"), Some(&Json::Int(0)));
+    assert_eq!(schedule.get("quality_failed"), Some(&Json::Int(0)));
+    let rows = array(schedule, "edit_rows");
+    let quality = rows
+        .iter()
+        .find(|row| text(row, "edit_id") == "FFIEC041-RC-Q001" && text(row, "unit") == "USD")
+        .unwrap_or_else(|| panic!("the loans-versus-allowance quality edit: {rows:?}"));
+    assert_eq!(text(quality, "lhs"), "4000.00 USD");
+    assert_eq!(text(quality, "rhs"), "40.00 USD");
+    assert_eq!(text(quality, "delta"), "3960.00 USD");
+    assert_eq!(quality.get("passed"), Some(&Json::Bool(true)));
+
+    // Certified RC: the same two events, then the certificate; replay
+    // re-runs both byte for byte.
+    let certified = regulatory("RC", &["FY2026-P03"], true);
+    assert_eq!(certified.len(), 3, "{certified:?}");
+    assert_eq!(text(&certified[2], "event"), "report_certificate");
+    let rc_oid = text(data(&certified[2]), "oid").to_string();
+    assert_eq!(text(&certified[0], "certificate"), rc_oid);
+    assert_eq!(data(&certified[0]), data(&rc[0]));
+    assert_eq!(data(&certified[1]), data(&rc[1]));
+    let rc_handle = format!("C:{rc_oid}");
+    assert_eq!(
+        ok(&book, &["replay", &rc_handle]),
+        certified[..2].to_vec(),
+        "replay prints the certified schedule byte for byte"
+    );
+
+    // RI, year to date: the activity of every --for period.
+    let ri = regulatory("RI", &["FY2026-P01", "FY2026-P02", "FY2026-P03"], true);
+    assert_eq!(ri.len(), 3, "{ri:?}");
+    let income = data(&ri[0]);
+    assert_eq!(text(income, "name"), "ffiec_041_schedule_ri_2026q1");
+    let column = &array(income, "columns")[0];
+    assert_eq!(text(column, "mode"), "activity");
+    assert_eq!(array(column, "periods").len(), 3);
+    for (code, amount) in [
+        ("RIAD4010", "120.00"),
+        ("RIAD4107", "120.00"),
+        ("RIAD4170", "30.00"),
+        ("RIAD4073", "30.00"),
+        ("RIAD4074", "90.00"),
+        ("RIADJJ33", "40.00"),
+        ("RIAD4301", "50.00"),
+        ("RIAD4302", "0.00"),
+        ("RIAD4340", "50.00"),
+    ] {
+        assert_eq!(line(income, code, "USD"), usd(amount), "{code}");
+    }
+    // RI's net income is RC's unclosed earnings at the same frontier.
+    assert_eq!(
+        line(income, "RIAD4340", "USD"),
+        line(statement, "RCON3632", "USD")
+    );
+    assert_eq!(data(&ri[1]).get("validity_failed"), Some(&Json::Int(0)));
+    let ri_oid = text(data(&ri[2]), "oid").to_string();
+    let ri_handle = format!("C:{ri_oid}");
+    assert_eq!(ok(&book, &["replay", &ri_handle]), ri[..2].to_vec());
+
+    // Status: an April entry is outside both; a March deposit changes RC
+    // (stock) but not RI; backdated March interest changes both.
+    let status = |handle: &str| -> String {
+        let events = ok(&book, &["certificate", "status", handle]);
+        text(data(&events[0]), "status").to_string()
+    };
+    assert_eq!(status(&rc_handle), "Current");
+    assert_eq!(status(&ri_handle), "Current");
+    post("april-deposit", "2026-04-02", "1110", "2110", "10.00 USD");
+    assert_eq!(status(&rc_handle), "Current");
+    assert_eq!(status(&ri_handle), "Current");
+    post("march-deposit", "2026-03-15", "1110", "2110", "25.00 USD");
+    assert_eq!(status(&rc_handle), "SupersededBy");
+    assert_eq!(status(&ri_handle), "Current");
+    post("march-interest", "2026-03-20", "1120", "4110", "5.00 USD");
+    assert_eq!(status(&ri_handle), "SupersededBy");
+    // Later entries never change a retained schedule's replay.
+    assert_eq!(ok(&book, &["replay", &rc_handle]), certified[..2].to_vec());
+    assert_eq!(ok(&book, &["replay", &ri_handle]), ri[..2].to_vec());
+
+    // Planted: no quarter borrows another's instructions, and an
+    // unregistered form is not guessed.
+    for (form, quarter, needle) in [
+        (
+            "041",
+            "2026Q3",
+            "no 041 schedule RC is registered for 2026Q3",
+        ),
+        ("031", "2026Q1", "unknown regulatory form `031`"),
+    ] {
+        let (exit, events, _) = run(
+            &book,
+            &[
+                "statement",
+                "regulatory",
+                "--form",
+                form,
+                "--schedule",
+                "RC",
+                "--quarter",
+                quarter,
+                "--for",
+                "FY2026-P03",
+            ],
+        );
+        assert_eq!(exit, 3, "{form} {quarter}: {events:?}");
+        assert_eq!(events.len(), 1, "{events:?}");
+        let error = data(&events[0]);
+        assert!(text(error, "message").contains(needle), "{error:?}");
+        assert!(
+            text(error, "fix").contains("--form 041 --schedule RC --quarter 2026Q1"),
+            "{error:?}"
+        );
+    }
+    // Planted: a covered revenue leaf no RI line maps refuses the schedule.
+    let extra = dir.join("extra.json");
+    std::fs::write(
+        &extra,
+        r#"{"code":"4630","name":"Unrealized gains on equity securities","type":"Revenue","unit":"USD"}"#,
+    )
+    .unwrap();
+    ok(
+        &book,
+        &[
+            "chart",
+            "open",
+            extra.to_str().unwrap(),
+            "--opened",
+            "2026-01-01",
+        ],
+    );
+    let (exit, events, _) = run(
+        &book,
+        &[
+            "statement",
+            "regulatory",
+            "--form",
+            "041",
+            "--schedule",
+            "RI",
+            "--quarter",
+            "2026Q1",
+            "--for",
+            "FY2026-P03",
+        ],
+    );
+    assert_eq!(exit, 3, "{events:?}");
+    assert!(
+        text(data(&events[0]), "message").contains("4630"),
+        "{events:?}"
+    );
+}
+
+/// fa-doa9: the edits come from registries/regulatory_edits/, and `--edit`
+/// runs only the registered edits it names. Planted: an edit id the
+/// registry does not hold is refused (exit 3), naming the registered ids,
+/// and `--edit` with `--certify` is a usage error, because a certified
+/// schedule's replay runs every edit.
+#[test]
+fn call_report_edits_select_by_registered_id() {
+    let dir = temporary();
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Call report edits"]);
+    ok(
+        &book,
+        &["chart", "import", "--template", "us-bank-call-report"],
+    );
+    ok(&book, &["period", "create", "--fiscal-year", "2026"]);
+    let rc = |extra: &[&str]| {
+        let mut args = vec![
+            "statement",
+            "regulatory",
+            "--form",
+            "041",
+            "--schedule",
+            "RC",
+            "--quarter",
+            "2026Q1",
+            "--for",
+            "FY2026-P03",
+        ];
+        args.extend_from_slice(extra);
+        run(&book, &args)
+    };
+
+    let (exit, all, _) = rc(&[]);
+    assert_eq!(exit, 0, "{all:?}");
+    let every = data(&all[1]);
+    assert_eq!(text(every, "edit_selector"), "FFIEC041:RC@2026Q1");
+    assert_eq!(every.get("edit_ids_published"), Some(&Json::Bool(false)));
+    let ids = |schedule: &Json| -> Vec<String> {
+        let mut ids: Vec<String> = array(schedule, "edit_rows")
+            .iter()
+            .map(|row| text(row, "edit_id").to_string())
+            .collect();
+        ids.dedup();
+        ids
+    };
+    assert_eq!(
+        ids(every),
+        [
+            "FFIEC041-RC-V001",
+            "FFIEC041-RC-V002",
+            "FFIEC041-RC-V003",
+            "FFIEC041-RC-Q001"
+        ]
+    );
+
+    let (exit, one, _) = rc(&["--edit", "FFIEC041-RC-Q001"]);
+    assert_eq!(exit, 0, "{one:?}");
+    let selected = data(&one[1]);
+    assert_eq!(ids(selected), ["FFIEC041-RC-Q001"]);
+    assert_eq!(selected.get("validity_passed"), Some(&Json::Int(0)));
+
+    let (exit, refused, _) = rc(&["--edit", "FFIEC041-RC-V999"]);
+    assert_eq!(exit, 3, "{refused:?}");
+    let error = data(&refused[0]);
+    assert!(
+        text(error, "message")
+            .contains("edit `FFIEC041-RC-V999` is not registered for FFIEC041:RC@2026Q1"),
+        "{error:?}"
+    );
+    assert!(text(error, "fix").contains("FFIEC041-RC-Q001"), "{error:?}");
+
+    let (exit, usage, _) = rc(&["--edit", "FFIEC041-RC-Q001", "--certify"]);
+    assert_eq!(exit, 2, "{usage:?}");
+}

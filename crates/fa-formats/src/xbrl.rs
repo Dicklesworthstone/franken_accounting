@@ -1548,6 +1548,7 @@ pub fn verify_format_journal_xbrl_xml(
         entry_count,
         content_digest,
         certificate_digest,
+        account_scope: None,
     };
     coordinate.verify(&content_digest)?;
     Ok((coordinate, report))

@@ -428,6 +428,8 @@ const EXP: &[(&str, Kind, &[ExpectationType])] = &[
     ("known_at", Kind::Str, ALL),
     ("procedure", Kind::Str, &[E::D, E::N]),
     ("version", Kind::Int, &[E::D, E::N]),
+    ("population", Kind::Str, &[E::D, E::N]),
+    ("population_basis", Kind::Strs, &[E::D, E::N]),
     ("intent", Kind::Str, &[E::P]),
     ("refusal", Kind::Str, &[E::P]),
     ("law_row", Kind::Str, &[E::P]),
@@ -474,9 +476,11 @@ const TARGET: &[(&str, Kind, &[ExpectationType])] = &[
     ("cite_status", Kind::Str, &[E::D]),
     ("severity", Kind::Str, &[E::D]),
     ("severity_status", Kind::Str, &[E::D]),
-    ("statistic_name", Kind::Str, &[E::D]),
-    ("statistic_value", Kind::Str, &[E::D]),
-    ("statistic_scale", Kind::Int, &[E::D]),
+    // On an exact_gap N's target and twin_target, the sourced value its gap
+    // is measured from (A11c).
+    ("statistic_name", Kind::Str, &[E::D, E::N]),
+    ("statistic_value", Kind::Str, &[E::D, E::N]),
+    ("statistic_scale", Kind::Int, &[E::D, E::N]),
     ("statistic_status", Kind::Str, &[E::D]),
     ("read_verb", Kind::Str, &[E::T, E::R]),
     ("read_target", Kind::Str, &[E::T, E::R]),
@@ -999,6 +1003,30 @@ impl<'a> Check<'a, '_> {
             }
             self.target(t);
         }
+        // An exact_gap N's gap is measured from sourced values: one target
+        // row each for its `target` and its `twin_target` (A11c).
+        for n in set.expectations.iter().filter(|e| {
+            e.kind == E::N && e.fields.str("kind").and_then(NKind::parse) == Some(NKind::ExactGap)
+        }) {
+            for key in ["target", "twin_target"] {
+                let Some(fact) = n.fields.str(key) else {
+                    continue;
+                };
+                if !set
+                    .targets_of(&n.id)
+                    .any(|t| t.fact == fact && t.fields.has("statistic_value"))
+                {
+                    self.push(
+                        n.fields.line,
+                        &n.id,
+                        LoadErrorKind::MissingField,
+                        format!(
+                            "an exact_gap N states its `{key}` {fact}'s sourced value in a [[target]] row (statistic_name, statistic_value)"
+                        ),
+                    );
+                }
+            }
+        }
         let mut cell_keys = BTreeSet::new();
         let mut defaults: BTreeMap<(&str, &str), usize> = BTreeMap::new();
         for c in &set.branch_cells {
@@ -1160,6 +1188,33 @@ impl<'a> Check<'a, '_> {
                     row,
                     LoadErrorKind::DanglingKey,
                     format!("basis `{b}` names no fact"),
+                );
+            }
+        }
+        // A4's §9.4 marker: a D over a sourced, complete comparison
+        // population names the facts that establish its completeness.
+        match (f.str("population"), f.strs("population_basis")) {
+            (Some(p), _) if p != "sourced_complete" => self.push(
+                f.line,
+                row,
+                LoadErrorKind::UnknownValue,
+                format!("`population = \"{p}\"` is \"sourced_complete\" or absent"),
+            ),
+            (Some(_), None) | (None, Some(_)) => self.push(
+                f.line,
+                row,
+                LoadErrorKind::MissingField,
+                "`population` and `population_basis` come together (§9.4)".into(),
+            ),
+            _ => {}
+        }
+        for b in f.strs("population_basis").unwrap_or(&[]) {
+            if self.view.fact(b).is_none() {
+                self.push(
+                    f.line,
+                    row,
+                    LoadErrorKind::DanglingKey,
+                    format!("population_basis `{b}` names no fact"),
                 );
             }
         }
@@ -1798,6 +1853,51 @@ impl<'a> Check<'a, '_> {
                     self.push(f.line, row, LoadErrorKind::DanglingKey, format!("cite `{c}` is neither `<fact or intent>#<leg ordinal>` nor an account code of `{variant}`"));
                 }
             }
+        }
+        if exp.kind == E::N {
+            self.n_target(exp, t);
+        }
+    }
+
+    /// An N's `[[target]]` states the sourced value of an exact_gap N's
+    /// `target` or `twin_target`, the value its gap is measured from (A11c).
+    fn n_target(&mut self, n: &Expectation, t: &Target) {
+        let f = &t.fields;
+        let row = t.fact.as_str();
+        let stat = ["statistic_name", "statistic_value", "statistic_scale"];
+        if n.fields.str("kind").and_then(NKind::parse) != Some(NKind::ExactGap) {
+            for k in stat.iter().filter(|k| f.has(k)) {
+                self.push(
+                    f.line,
+                    row,
+                    LoadErrorKind::UnknownField,
+                    format!("`{k}` on an N target belongs to an exact_gap N"),
+                );
+            }
+            return;
+        }
+        if ![n.fields.str("target"), n.fields.str("twin_target")].contains(&Some(row)) {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::DanglingKey,
+                format!(
+                    "an exact_gap N's target row is its `target` or `twin_target`, not `{row}`"
+                ),
+            );
+        }
+        self.require(f, row, &stat[..2], "an exact_gap N's target row");
+        if let Some(v) = f.str("statistic_value")
+            && v.parse::<i128>().is_err()
+        {
+            self.push(
+                f.line,
+                row,
+                LoadErrorKind::WrongType,
+                format!(
+                    "`statistic_value = \"{v}\"` is the statistic's integer mantissa at its scale"
+                ),
+            );
         }
     }
 

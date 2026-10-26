@@ -2244,6 +2244,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Read the witnessed availability for a balancing approval review. The
+    /// result is a sealed-input candidate, never an executable posting plan.
+    pub fn review_balancing(
+        &mut self,
+        cx: &PurposeContexts,
+        proposal: fa_model::EntryPayload,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_model::EntryPayload> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::limit::review_balancing(
+            &mut self.db,
+            cx,
+            &self.context,
+            proposal,
+            capability.clone(),
+        )?)
+    }
+
     /// Run the real posting preparation under the caller's transaction
     /// context, then abort it. No runtime or authority is created here.
     pub fn plan(
@@ -2452,12 +2470,35 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
         max_batch: usize,
     ) -> Outcome<Option<fa_journal::SweepBatch>> {
+        self.sweep_expiry_with_crash(cx, capability, max_batch, None)
+            .await
+    }
+
+    /// [`Self::sweep_expiry`] through the substrate's commit crash-point
+    /// seam, for the lab campaign that crashes an expiry batch's
+    /// publication and reopens the book (fa-0fl). `None` is `sweep_expiry`.
+    #[doc(hidden)]
+    pub async fn sweep_expiry_with_crash(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<Option<fa_journal::SweepBatch>> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let req = sweep_request(capability, max_batch);
         let book = &self.context;
         let entropy = &self.entropy;
         let mut describe = |text: &str| seal(cx, entropy, &book.seal_key, text);
-        Ok(fa_journal::sweep_batch(&mut self.db, cx, book, &req, &mut describe).await?)
+        Ok(fa_journal::sweep::sweep_batch_with_crash(
+            &mut self.db,
+            cx,
+            book,
+            &req,
+            &mut describe,
+            crash_at,
+        )
+        .await?)
     }
 
     /// Examine at most `max_batch` reached schedules in one transaction,
@@ -3437,7 +3478,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         period: &str,
     ) -> Result<Verification, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::verify_period(db, book, period)?)
+            Ok(fa_registers::verify_period_with_context(
+                db,
+                &cx.query(),
+                book,
+                period,
+            )?)
         })
     }
 
@@ -3550,6 +3596,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         state: Option<fa_model::Oid>,
         certificate: &crate::ReportCertificate,
     ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(cx, principal, capability, state, certificate, None)
+            .await
+    }
+
+    /// Export an effective-date aging schedule and its native OpenItems source
+    /// over one signed complete prefix. The outer certificate binds the cutoff,
+    /// bucket boundaries and exact historical output; it is never replaced by
+    /// the all-effective-time source certificate. Current whole-book read and
+    /// produce authority are required before either history is observed.
+    pub async fn produce_aging_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            certificate.source(),
+            Some(certificate),
+        )
+        .await
+    }
+
+    async fn produce_report_bundle_inner(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ReportCertificate,
+        aging: Option<&crate::AgingCertificate>,
+    ) -> Outcome<Option<ProducedBundle>> {
         cx.query().checkpoint().map_err(BookError::Context)?;
         let reach = fa_policy::Reach {
             observes: capability
@@ -3593,9 +3676,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        let replayed = match self.replay_report(cx, certificate)? {
-            Ok(report) => report,
-            Err(refusal) => return Ok(Err(refusal)),
+        let replayed = if let Some(aging) = aging {
+            if let Err(refusal) =
+                self.replay_effective_date_aging(cx, principal, capability, aging)?
+            {
+                return Ok(Err(refusal));
+            }
+            None
+        } else {
+            match self.replay_report(cx, certificate)? {
+                Ok(report) => Some(report),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
         };
         let closure_frontier = certificate
             .time_selection
@@ -3651,7 +3743,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         } else {
             None
         };
-        if let crate::ReportOutput::ExplainBalance(explanation) = &replayed
+        if let Some(crate::ReportOutput::ExplainBalance(explanation)) = &replayed
             && let Err(refusal) = crate::certificate::check_explanation_reasons_at(
                 &self.db,
                 &cx.query(),
@@ -3724,9 +3816,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(bodies) => bodies,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let bytes = certificate
-            .canonical_bytes()
-            .map_err(|error| KernelError::Model(error.into()))?;
+        let bytes = match aging {
+            Some(aging) => match aging.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            },
+            None => certificate
+                .canonical_bytes()
+                .map_err(|error| KernelError::Model(error.into()))?,
+        };
         let assembled = match registries.as_deref() {
             Some(registries) => fa_notary::report::assemble_with_registries(
                 &journal,
@@ -4408,6 +4506,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .and_then(crate::statements::certified))
     }
 
+    /// Evaluate a regulatory schedule (plan §12.6) from journal payloads at
+    /// one snapshot. Its columns fold as a statement of its kind does.
+    pub fn regulatory_schedule(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::RegulatorySelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        self.query(cx, |db, book| {
+            crate::statements::read_regulatory(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
     /// Resolve a UTC instant from the journal's retained TimeEvidence at HEAD.
     /// The returned frontier and brackets describe the precision of the read.
     pub fn resolve_known_at_instant(
@@ -4585,18 +4696,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::trial_balance_served_at(db, book, periods, known_at)?.0)
+            Ok(fa_registers::trial_balance_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                known_at,
+            )?
+            .0)
         })
     }
 
     /// Load the committed delta window back to the oldest maintained
-    /// register cursor (fa-715). A store reopened from a checkpoint holds
-    /// only its frontier, so without this a head read in a new process
+    /// register or complete checkpoint cursor (fa-715, fa-9xf9). A store
+    /// reopened from a checkpoint holds only its frontier, so without this
+    /// a head read in a new process
     /// cannot fold the tail after a cursor and folds the journal literally.
     /// Admitted like [`AsyncBook::prepare_report_history`]: whole-book read
     /// authority, checked before anything is observed. A book without
-    /// maintained cells loads nothing; an explicitly retired interval stays
-    /// retired, and reads over it keep folding literally.
+    /// maintained cells or checkpoints loads nothing; an explicitly retired
+    /// interval stays retired, and reads over it keep folding literally.
     pub async fn prepare_head_reads(
         &mut self,
         cx: &PurposeContexts,
@@ -4615,7 +4734,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let oldest = self.query(cx, |db, book| {
             let mut oldest: Option<CommitSeq> = None;
             for period in fa_journal::genesis::list_periods(db)? {
-                if let Some(cursor) = fa_registers::maintainer::cursor(db, book, &period.code)? {
+                if let Some(cursor) = fa_registers::maintainer::cursor_with_context(
+                    db,
+                    &cx.query(),
+                    book,
+                    &period.code,
+                )? {
                     oldest = Some(oldest.map_or(cursor, |seen: CommitSeq| seen.min(cursor)));
                 }
             }
@@ -4641,7 +4765,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::period_activity_served(db, book, periods)?)
+            Ok(fa_registers::period_activity_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                None,
+            )?)
         })
     }
 
@@ -4654,7 +4784,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::trial_balance_served(db, book, periods)?)
+            Ok(fa_registers::trial_balance_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                None,
+            )?)
         })
     }
 
@@ -4679,7 +4815,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::period_activity_served_at(db, book, periods, known_at)?.0)
+            Ok(fa_registers::period_activity_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                known_at,
+            )?
+            .0)
         })
     }
 }

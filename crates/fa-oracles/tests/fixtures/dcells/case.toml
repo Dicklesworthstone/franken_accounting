@@ -1,0 +1,12 @@
+# D-cells fixture (fa-yugf.17, A7c): one entry's leg-split table under jet.round_amounts (tier C),
+# its five feasible cells posted beside the entry on one book, for fa-cli's tests/cases.rs. Never
+# copied to cases/; claims nothing.
+id = "dcells"
+title = "D-cells fixture: a leg_split table read by co-resident cell copies"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's co-resident D cells: one copy per cell, one run, one line per cell"
+claims = []
+capabilities = ["verb:post", "procedure:jet.round_amounts@1"]
+pinned_commit = "b9ef7deb6"
+variants = ["native"]

@@ -1,0 +1,74 @@
+# D-cells fixture expectations: jet.round_amounts on X-1, every component a leg_split branch.
+# A leg is round when it is a whole multiple of 1,000.00; the debit (3,000.00) always is. So a
+# cell's cited legs are the debit and its `m` credits, the count is their number, and the severity
+# is Medium only when all four legs are round (crates/fa-lantern/src/jet.rs:113-138).
+
+[[expectation]]
+id = "dcells-D-01"
+type = "D"
+book_variant = "native"
+statement_template = "D.detection"
+basis = ["X-1"]
+granularity = "journal_entry"
+capabilities = ["procedure:jet.round_amounts@1"]
+procedure = "jet.round_amounts"
+version = 1
+
+[[target]]
+expectation = "dcells-D-01"
+fact = "X-1"
+basis = ["X-1"]
+branch_attrs = ["leg_split"]
+cite_status = "B(leg_split)"
+severity_status = "B(leg_split)"
+statistic_status = "B(leg_split)"
+
+[[branch_cell]]
+expectation = "dcells-D-01"
+target = "X-1"
+cell = ["mmm"]
+expect = "finding"
+cite = ["X-1#0", "X-1#1", "X-1#2", "X-1#3"]
+severity = "Medium"
+statistic_value = "4"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "dcells-D-01"
+target = "X-1"
+cell = ["nnm"]
+expect = "finding"
+cite = ["X-1#0", "X-1#3"]
+severity = "Low"
+statistic_value = "2"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "dcells-D-01"
+target = "X-1"
+cell = ["nmn"]
+expect = "finding"
+cite = ["X-1#0", "X-1#2"]
+severity = "Low"
+statistic_value = "2"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "dcells-D-01"
+target = "X-1"
+cell = ["mnn"]
+expect = "finding"
+cite = ["X-1#0", "X-1#1"]
+severity = "Low"
+statistic_value = "2"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "dcells-D-01"
+target = "X-1"
+cell = ["nnn"]
+expect = "finding"
+cite = ["X-1#0"]
+severity = "Low"
+statistic_value = "1"
+record_consistent = false

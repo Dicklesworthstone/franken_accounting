@@ -36,7 +36,7 @@ version = 2
 mechanism = "crates/fa-lantern/src/cutoff.rs:1066-1124"
 twin_kind = "mutation"
 twin_attribute = "chart_role_mapping"
-twin_value = "OLTA mapped to an Expense account"
+twin_value = "1400:Expense"
 twin_expect = "reports"
 
 [[expectation]]
@@ -126,15 +126,16 @@ expect = "finding"
 statistic_value = "30000000000"
 record_consistent = false
 
+# Per-leg residues of F4's three credit legs (A5a): in nnn only the debit leg
+# is round. No sourced fact selects a split, so no cell is record-consistent.
 [[branch_cell]]
 expectation = "W-D-03"
 target = "F4"
-cell = ["one_credit_leg"]
+cell = ["nnn"]
 expect = "finding"
 severity = "Low"
 statistic_value = "1"
-record_consistent = true
-default = true
+record_consistent = false
 
 [[branch_cell]]
 expectation = "W-P-02"

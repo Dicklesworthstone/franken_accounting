@@ -1691,6 +1691,31 @@ impl<'a> Check<'a, '_> {
     }
 
     fn periods(&mut self) {
+        // `fa book create --opening-date` admits only the first day of a
+        // Normal period of the book's calendar (`BookSpec::validate`,
+        // crates/fa-journal/src/genesis.rs).
+        let opening = self.book.book.opening_date.as_str();
+        if is_date(opening)
+            && !self
+                .book
+                .periods
+                .iter()
+                .any(|p| p.kind == "Normal" && p.start == opening)
+        {
+            let line = self
+                .text
+                .lines()
+                .position(|l| l.trim_start().starts_with("opening_date"))
+                .map(|n| n + 1);
+            self.push(
+                line,
+                None,
+                LoadErrorKind::UnknownPeriod,
+                format!(
+                    "`opening_date = \"{opening}\"` is not the first day of a Normal [[period]]; `fa book create --opening-date` admits no other day"
+                ),
+            );
+        }
         let mut seen = BTreeSet::new();
         for p in &self.book.periods {
             if !seen.insert(p.code.as_str()) {
@@ -2623,6 +2648,7 @@ impl<'a> Check<'a, '_> {
 
     fn branch_classes_and_defaults(&mut self) {
         let mut seen = BTreeSet::new();
+        let rules = super::branch::rules();
         for b in &self.book.branch_classes {
             if !seen.insert(b.id.as_str()) {
                 self.push(
@@ -2631,6 +2657,19 @@ impl<'a> Check<'a, '_> {
                     LoadErrorKind::DuplicateId,
                     format!("branch class `{}` is declared twice", b.id),
                 );
+            }
+            // Its rule is a registered class rule of the same attribute,
+            // whose classes admit every value (A5a).
+            let problem = match &rules {
+                // An empty list is refused where the row is read.
+                Ok(_) if b.values.is_empty() => None,
+                Ok(rules) => super::branch::class_problem(rules, b),
+                Err(errs) => errs
+                    .first()
+                    .map(|e| format!("{}: {e}", super::branch::FILE)),
+            };
+            if let Some(detail) = problem {
+                self.push(b.line, Some(&b.id), LoadErrorKind::UnknownValue, detail);
             }
         }
         for d in &self.book.defaults {
@@ -3151,9 +3190,35 @@ impl<'a> Check<'a, '_> {
                                 self.book.kind.as_str()
                             ),
                         ))
+                    } else if r.is_empty() {
+                        Some((LoadErrorKind::MissingField, "a filler_batch names its filler variant".into()))
+                    } else if self.book.kind == VariantKind::Migration {
+                        // Migration filler is staged chunks, before finalize (A6).
+                        self.book.steps[..i]
+                            .iter()
+                            .any(|p| p.step_kind() == Some(StepKind::MigrateFinalize))
+                            .then(|| {
+                                (
+                                    LoadErrorKind::UnknownPeriod,
+                                    format!(
+                                        "filler_batch step {} comes after `migrate_finalize`; migration filler is staged before it (A6)",
+                                        s.seq
+                                    ),
+                                )
+                            })
                     } else {
-                        r.is_empty()
-                            .then(|| (LoadErrorKind::MissingField, "a filler_batch names its filler variant".into()))
+                        // Filler posts while its periods are Open: after
+                        // their period_open step and before their first
+                        // soft-close, close or lock (A6).
+                        super::filler::open_at(self.book, s.seq).is_empty().then(|| {
+                            (
+                                LoadErrorKind::UnknownPeriod,
+                                format!(
+                                    "filler_batch step {} posts while no period is Open: filler for a period comes after its period_open step and before its first soft-close, close or lock (A6)",
+                                    s.seq
+                                ),
+                            )
+                        })
                     }
                 }
                 StepKind::Issue => (!self.period(r))

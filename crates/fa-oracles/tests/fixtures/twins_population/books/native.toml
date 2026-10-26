@@ -1,0 +1,1398 @@
+# Twin population fixture native book: B-1 (one 1,234.56 debit leg, the N's target) and B-2..B-8
+# (17 debit legs each): 120 eligible debit legs, below benford.first_digit's min_population of 500.
+# Synthetic; amounts are fixture values, spread over first digits 1-9 by a fixed stride.
+
+[book]
+variant = "native"
+opening_date = "2026-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2026Q1"
+start = "2026-01-01"
+end = "2026-03-31"
+fiscal_year = 2026
+kind = "Normal"
+
+[[principal]]
+label = "selftest-preparer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce"]
+
+[[account]]
+code = "1000"
+name_fact = "B-1"
+type = "Asset"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6000"
+name_fact = "B-1"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6100"
+name_fact = "B-1"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-PH-B-1"
+stub_of = "placeholder:B-1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-B-2"
+stub_of = "placeholder:B-2"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-B-3"
+stub_of = "placeholder:B-3"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-B-4"
+stub_of = "placeholder:B-4"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-B-5"
+stub_of = "placeholder:B-5"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-B-6"
+stub_of = "placeholder:B-6"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-B-7"
+stub_of = "placeholder:B-7"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-B-8"
+stub_of = "placeholder:B-8"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "B-1"
+fact = "B-1"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-02"
+memo = "population entry 1 (twin population fixture)"
+evidence = "DOC-PH-B-1"
+idempotency_key = "twins-population-B-1"
+
+[[intent]]
+id = "B-2"
+fact = "B-2"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-03"
+memo = "population entry 2 (twin population fixture)"
+evidence = "DOC-PH-B-2"
+idempotency_key = "twins-population-B-2"
+
+[[intent]]
+id = "B-3"
+fact = "B-3"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-04"
+memo = "population entry 3 (twin population fixture)"
+evidence = "DOC-PH-B-3"
+idempotency_key = "twins-population-B-3"
+
+[[intent]]
+id = "B-4"
+fact = "B-4"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-05"
+memo = "population entry 4 (twin population fixture)"
+evidence = "DOC-PH-B-4"
+idempotency_key = "twins-population-B-4"
+
+[[intent]]
+id = "B-5"
+fact = "B-5"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-06"
+memo = "population entry 5 (twin population fixture)"
+evidence = "DOC-PH-B-5"
+idempotency_key = "twins-population-B-5"
+
+[[intent]]
+id = "B-6"
+fact = "B-6"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-07"
+memo = "population entry 6 (twin population fixture)"
+evidence = "DOC-PH-B-6"
+idempotency_key = "twins-population-B-6"
+
+[[intent]]
+id = "B-7"
+fact = "B-7"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-08"
+memo = "population entry 7 (twin population fixture)"
+evidence = "DOC-PH-B-7"
+idempotency_key = "twins-population-B-7"
+
+[[intent]]
+id = "B-8"
+fact = "B-8"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-09"
+memo = "population entry 8 (twin population fixture)"
+evidence = "DOC-PH-B-8"
+idempotency_key = "twins-population-B-8"
+
+[[leg]]
+intent = "B-1"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "1234.56"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-1"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "1234.56"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "209.19"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "3008.38"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 2
+account = "6000"
+side = "Dr"
+amount_literal = "47.57"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 3
+account = "6100"
+side = "Dr"
+amount_literal = "506.76"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 4
+account = "6000"
+side = "Dr"
+amount_literal = "6005.95"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 5
+account = "6100"
+side = "Dr"
+amount_literal = "75.14"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 6
+account = "6000"
+side = "Dr"
+amount_literal = "804.33"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 7
+account = "6100"
+side = "Dr"
+amount_literal = "9003.52"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 8
+account = "6000"
+side = "Dr"
+amount_literal = "12.71"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 9
+account = "6100"
+side = "Dr"
+amount_literal = "201.90"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 10
+account = "6000"
+side = "Dr"
+amount_literal = "3001.09"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 11
+account = "6100"
+side = "Dr"
+amount_literal = "40.28"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 12
+account = "6000"
+side = "Dr"
+amount_literal = "509.47"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 13
+account = "6100"
+side = "Dr"
+amount_literal = "6008.66"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 14
+account = "6000"
+side = "Dr"
+amount_literal = "77.85"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 15
+account = "6100"
+side = "Dr"
+amount_literal = "807.04"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 16
+account = "6000"
+side = "Dr"
+amount_literal = "9006.23"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 17
+account = "1000"
+side = "Cr"
+amount_literal = "39326.07"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "15.42"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "204.61"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 2
+account = "6000"
+side = "Dr"
+amount_literal = "3003.80"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 3
+account = "6100"
+side = "Dr"
+amount_literal = "42.99"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 4
+account = "6000"
+side = "Dr"
+amount_literal = "502.18"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 5
+account = "6100"
+side = "Dr"
+amount_literal = "6001.37"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 6
+account = "6000"
+side = "Dr"
+amount_literal = "70.56"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 7
+account = "6100"
+side = "Dr"
+amount_literal = "809.75"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 8
+account = "6000"
+side = "Dr"
+amount_literal = "9008.94"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 9
+account = "6100"
+side = "Dr"
+amount_literal = "18.13"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 10
+account = "6000"
+side = "Dr"
+amount_literal = "207.32"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 11
+account = "6100"
+side = "Dr"
+amount_literal = "3006.51"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 12
+account = "6000"
+side = "Dr"
+amount_literal = "45.70"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 13
+account = "6100"
+side = "Dr"
+amount_literal = "504.89"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 14
+account = "6000"
+side = "Dr"
+amount_literal = "6004.08"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 15
+account = "6100"
+side = "Dr"
+amount_literal = "73.27"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 16
+account = "6000"
+side = "Dr"
+amount_literal = "802.46"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 17
+account = "1000"
+side = "Cr"
+amount_literal = "30321.98"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "9001.65"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "10.84"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 2
+account = "6000"
+side = "Dr"
+amount_literal = "200.03"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 3
+account = "6100"
+side = "Dr"
+amount_literal = "3009.22"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 4
+account = "6000"
+side = "Dr"
+amount_literal = "48.41"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 5
+account = "6100"
+side = "Dr"
+amount_literal = "507.60"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 6
+account = "6000"
+side = "Dr"
+amount_literal = "6006.79"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 7
+account = "6100"
+side = "Dr"
+amount_literal = "75.98"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 8
+account = "6000"
+side = "Dr"
+amount_literal = "805.17"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 9
+account = "6100"
+side = "Dr"
+amount_literal = "9004.36"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 10
+account = "6000"
+side = "Dr"
+amount_literal = "13.55"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 11
+account = "6100"
+side = "Dr"
+amount_literal = "202.74"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 12
+account = "6000"
+side = "Dr"
+amount_literal = "3001.93"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 13
+account = "6100"
+side = "Dr"
+amount_literal = "41.12"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 14
+account = "6000"
+side = "Dr"
+amount_literal = "500.31"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 15
+account = "6100"
+side = "Dr"
+amount_literal = "6009.50"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 16
+account = "6000"
+side = "Dr"
+amount_literal = "78.69"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 17
+account = "1000"
+side = "Cr"
+amount_literal = "38517.89"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "807.88"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "9007.07"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 2
+account = "6000"
+side = "Dr"
+amount_literal = "16.26"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 3
+account = "6100"
+side = "Dr"
+amount_literal = "205.45"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 4
+account = "6000"
+side = "Dr"
+amount_literal = "3004.64"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 5
+account = "6100"
+side = "Dr"
+amount_literal = "43.83"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 6
+account = "6000"
+side = "Dr"
+amount_literal = "503.02"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 7
+account = "6100"
+side = "Dr"
+amount_literal = "6002.21"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 8
+account = "6000"
+side = "Dr"
+amount_literal = "71.40"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 9
+account = "6100"
+side = "Dr"
+amount_literal = "800.59"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 10
+account = "6000"
+side = "Dr"
+amount_literal = "9009.78"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 11
+account = "6100"
+side = "Dr"
+amount_literal = "18.97"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 12
+account = "6000"
+side = "Dr"
+amount_literal = "208.16"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 13
+account = "6100"
+side = "Dr"
+amount_literal = "3007.35"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 14
+account = "6000"
+side = "Dr"
+amount_literal = "46.54"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 15
+account = "6100"
+side = "Dr"
+amount_literal = "505.73"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 16
+account = "6000"
+side = "Dr"
+amount_literal = "6004.92"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 17
+account = "1000"
+side = "Cr"
+amount_literal = "39263.80"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "74.11"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "803.30"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 2
+account = "6000"
+side = "Dr"
+amount_literal = "9002.49"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 3
+account = "6100"
+side = "Dr"
+amount_literal = "11.68"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 4
+account = "6000"
+side = "Dr"
+amount_literal = "200.87"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 5
+account = "6100"
+side = "Dr"
+amount_literal = "3000.06"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 6
+account = "6000"
+side = "Dr"
+amount_literal = "49.25"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 7
+account = "6100"
+side = "Dr"
+amount_literal = "508.44"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 8
+account = "6000"
+side = "Dr"
+amount_literal = "6007.63"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 9
+account = "6100"
+side = "Dr"
+amount_literal = "76.82"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 10
+account = "6000"
+side = "Dr"
+amount_literal = "806.01"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 11
+account = "6100"
+side = "Dr"
+amount_literal = "9005.20"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 12
+account = "6000"
+side = "Dr"
+amount_literal = "14.39"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 13
+account = "6100"
+side = "Dr"
+amount_literal = "203.58"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 14
+account = "6000"
+side = "Dr"
+amount_literal = "3002.77"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 15
+account = "6100"
+side = "Dr"
+amount_literal = "41.96"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 16
+account = "6000"
+side = "Dr"
+amount_literal = "501.15"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 17
+account = "1000"
+side = "Cr"
+amount_literal = "33309.71"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "6000.34"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "79.53"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 2
+account = "6000"
+side = "Dr"
+amount_literal = "808.72"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 3
+account = "6100"
+side = "Dr"
+amount_literal = "9007.91"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 4
+account = "6000"
+side = "Dr"
+amount_literal = "17.10"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 5
+account = "6100"
+side = "Dr"
+amount_literal = "206.29"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 6
+account = "6000"
+side = "Dr"
+amount_literal = "3005.48"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 7
+account = "6100"
+side = "Dr"
+amount_literal = "44.67"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 8
+account = "6000"
+side = "Dr"
+amount_literal = "503.86"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 9
+account = "6100"
+side = "Dr"
+amount_literal = "6003.05"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 10
+account = "6000"
+side = "Dr"
+amount_literal = "72.24"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 11
+account = "6100"
+side = "Dr"
+amount_literal = "801.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 12
+account = "6000"
+side = "Dr"
+amount_literal = "9000.62"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 13
+account = "6100"
+side = "Dr"
+amount_literal = "19.81"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 14
+account = "6000"
+side = "Dr"
+amount_literal = "209.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 15
+account = "6100"
+side = "Dr"
+amount_literal = "3008.19"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 16
+account = "6000"
+side = "Dr"
+amount_literal = "47.38"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 17
+account = "1000"
+side = "Cr"
+amount_literal = "38835.62"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "506.57"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 1
+account = "6100"
+side = "Dr"
+amount_literal = "6005.76"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 2
+account = "6000"
+side = "Dr"
+amount_literal = "74.95"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 3
+account = "6100"
+side = "Dr"
+amount_literal = "804.14"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 4
+account = "6000"
+side = "Dr"
+amount_literal = "9003.33"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 5
+account = "6100"
+side = "Dr"
+amount_literal = "12.52"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 6
+account = "6000"
+side = "Dr"
+amount_literal = "201.71"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 7
+account = "6100"
+side = "Dr"
+amount_literal = "3000.90"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 8
+account = "6000"
+side = "Dr"
+amount_literal = "40.09"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 9
+account = "6100"
+side = "Dr"
+amount_literal = "509.28"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 10
+account = "6000"
+side = "Dr"
+amount_literal = "6008.47"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 11
+account = "6100"
+side = "Dr"
+amount_literal = "77.66"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 12
+account = "6000"
+side = "Dr"
+amount_literal = "806.85"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 13
+account = "6100"
+side = "Dr"
+amount_literal = "9006.04"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 14
+account = "6000"
+side = "Dr"
+amount_literal = "15.23"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 15
+account = "6100"
+side = "Dr"
+amount_literal = "204.42"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 16
+account = "6000"
+side = "Dr"
+amount_literal = "3003.61"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 17
+account = "1000"
+side = "Cr"
+amount_literal = "39281.53"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2026Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "intent"
+ref = "B-1"
+
+[[step]]
+seq = 3
+kind = "intent"
+ref = "B-2"
+
+[[step]]
+seq = 4
+kind = "intent"
+ref = "B-3"
+
+[[step]]
+seq = 5
+kind = "intent"
+ref = "B-4"
+
+[[step]]
+seq = 6
+kind = "intent"
+ref = "B-5"
+
+[[step]]
+seq = 7
+kind = "intent"
+ref = "B-6"
+
+[[step]]
+seq = 8
+kind = "intent"
+ref = "B-7"
+
+[[step]]
+seq = 9
+kind = "intent"
+ref = "B-8"
+
+[[step]]
+seq = 10
+kind = "finding_record"
+ref = "benford.first_digit@2"
+principal = "examiner-1"
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the fixture's documents are placeholders reviewed by case-second-reader (plan §2.6)"

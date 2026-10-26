@@ -1120,6 +1120,12 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ReportOutput::FunctionalStatement(report),
                 ReportSelection::FunctionalStatement(_),
             ) => crate::cli::render_functional_statement(&ctx.out, &book, report, Some(&digest))?,
+            (
+                ReportOutput::FunctionalTrialBalance(report),
+                ReportSelection::FunctionalTrialBalance(_),
+            ) => {
+                crate::fx::render_functional_trial_balance(&ctx.out, &book, report, Some(&digest))?
+            }
             (ReportOutput::Consolidation(report), ReportSelection::Consolidation { .. }) => {
                 crate::consolidate::render_consolidation(&ctx.out, &book, report, Some(&digest))?
             }
@@ -1145,6 +1151,16 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     value: &report.value,
                     values: &report.values,
                 },
+                Some(&digest),
+            )?,
+            (
+                ReportOutput::RegulatorySchedule(report),
+                ReportSelection::RegulatorySchedule(selection),
+            ) => crate::regulatory::render_regulatory_schedule(
+                &ctx.out,
+                &book,
+                &selection.schedule,
+                report,
                 Some(&digest),
             )?,
             _ => {
@@ -1400,6 +1416,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     ctx.out.known_at(checked_at);
     match &certificate.selection {
         ReportSelection::TrialBalance(selection)
+        | ReportSelection::FunctionalTrialBalance(selection)
         | ReportSelection::DimensionTrialBalance { selection, .. } => {
             ctx.out.effective(match selection {
                 TrialBalanceSelection::AsOf(day) => format!("as-of:{day}"),
@@ -1412,6 +1429,9 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         }
         ReportSelection::OpenItems { .. } => {}
         ReportSelection::Statement(selection) | ReportSelection::FunctionalStatement(selection) => {
+            ctx.out.effective(periods_selector(&selection.periods));
+        }
+        ReportSelection::RegulatorySchedule(selection) => {
             ctx.out.effective(periods_selector(&selection.periods));
         }
         ReportSelection::Consolidation { period }

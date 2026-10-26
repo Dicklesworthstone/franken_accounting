@@ -2423,6 +2423,19 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.commit_replacement_plan(&purposes, plan, capability)))
     }
 
+    /// Resolve a balancing request's available amount for a sealed approval
+    /// review. This publishes nothing and grants no posting permission. Restore
+    /// its request form, run `plan`, and require the reviewed proposal digest
+    /// before committing; a changed amount requires a new review and approvals.
+    pub fn review_balancing(
+        &mut self,
+        proposal: fa_model::EntryPayload,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.review_balancing(&purposes, proposal, capability))
+    }
+
     /// Rehearse an intent through the posting kernel without publishing.
     ///
     /// The portable plan retains the original sealed proposal and approvals,
@@ -3033,6 +3046,48 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.functional_balance_as_of(
             &purposes, capability, effective_through, known_at,
+        )))
+    }
+
+    /// Functional-currency trial balance with its historical account metadata.
+    /// Select one period's activity, stock through one period end, or a civil date.
+    pub fn functional_trial_balance(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::FunctionalTrialBalance> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_trial_balance(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Certify exact retained functional valuations, original Rate evidence and
+    /// the selected journal prefix under current whole-book Read and Produce.
+    pub fn certify_functional_trial_balance(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_trial_balance(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Certify a functional trial balance at an instant resolved by retained
+    /// TimeEvidence; the certificate keeps the original tick brackets.
+    pub fn certify_functional_trial_balance_at_instant(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_trial_balance_at_instant(
+            &purposes, capability, selection, requested_utc_ns,
         )))
     }
 
@@ -3817,6 +3872,17 @@ impl Book {
         with_store!(&self.store, core => core.certify_statement_at_instant(&self.purposes(), selection, requested_utc_ns))
     }
 
+    /// Evaluate a regulatory schedule (plan §12.6, `fa statement
+    /// regulatory`) from authoritative journal payloads, without publishing
+    /// any object.
+    pub fn regulatory_schedule(
+        &self,
+        selection: crate::RegulatorySelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        with_store!(&self.store, core => core.regulatory_schedule(&self.purposes(), selection, known_at))
+    }
+
     /// Resolve a UTC instant from retained ticks without reading a clock.
     /// Keep the returned frontier and brackets with the resolved sequence.
     pub fn resolve_known_at_instant(
@@ -4270,6 +4336,29 @@ impl Book {
     ) -> Outcome<Option<ProducedBundle>> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.produce_report_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce a portable effective-date aging schedule for `fa-verify report`.
+    /// Replays both the source OpenItems certificate and the historical cutoff
+    /// under current whole-book read/produce authority. The complete signed
+    /// prefix and exact registry closure allow a recipient to reconstruct the
+    /// items, applications, age bands and separate debit/credit totals without
+    /// the source book. The receipt binds the outer aging certificate.
+    ///
+    /// Ages are measured from posting effective dates, not contractual due
+    /// dates. Sequence-selected trunk certificates are supported. Returns
+    /// `None` if the selected recorded checkpoint is unavailable.
+    pub fn produce_aging_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_aging_bundle(
             &purposes, principal, capability, state, certificate,
         )))
     }
@@ -6177,8 +6266,9 @@ impl ReadScope<'_> {
     /// period through its latest selected one (a `periods` caveat refuses
     /// it; an `effective` caveat admits it only through that period's last
     /// day); period activity and an explanation reach exactly their
-    /// periods; open items reach the whole book. A statement's columns,
-    /// current and comparative, reach what their basis folds: a stock basis
+    /// periods; open items reach the whole book. A statement's or a
+    /// regulatory schedule's columns, current and comparative, reach what
+    /// their basis folds: a stock basis
     /// is a balance through the latest of them, an activity basis exactly
     /// their periods.
     pub fn admit_report(
@@ -6205,10 +6295,15 @@ impl ReadScope<'_> {
             ReportSelection::ExplainBalance { period, .. } => {
                 self.authority.periods(book, seq, &[period.as_str()])
             }
-            ReportSelection::Statement(statement) => {
-                let mut reached = codes(&statement.periods);
-                reached.extend(codes(&statement.comparative));
-                match statement.definition.basis() {
+            ReportSelection::Statement(_) | ReportSelection::RegulatorySchedule(_) => {
+                let Some((kind, periods, comparative)) = selection.statement_columns() else {
+                    return Err(BookError::Kernel(fa_journal::KernelError::Corrupt(
+                        "a statement selection lacks its statement columns".into(),
+                    )));
+                };
+                let mut reached = codes(periods);
+                reached.extend(codes(comparative));
+                match kind.basis() {
                     fa_statements::Basis::Stock => {
                         self.authority.stock_through(book, seq, &reached)
                     }
@@ -6219,6 +6314,7 @@ impl ReadScope<'_> {
             // capability is refused, never filtered.
             ReportSelection::OpenItems { .. }
             | ReportSelection::FunctionalStatement(_)
+            | ReportSelection::FunctionalTrialBalance(_)
             | ReportSelection::Consolidation { .. }
             | ReportSelection::FunctionalConsolidation { .. }
             | ReportSelection::DimensionTrialBalance { .. } => self.authority.whole_book(seq),

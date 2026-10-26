@@ -12,10 +12,15 @@
 //! effective date and legs. A row's account is matched by deriving its vid
 //! from its code and the book id; unit codes are matched to the legs' unit
 //! ids one to one (the codes' names are not authenticated offline). A
-//! migration chunk in scope is not judged: its visibility is not proven
-//! offline, as for balances. `Trial_Balance.txt` must then be exactly the
-//! refold of those proven rows, so it is proven too; the chart's names and
-//! types are not.
+//! migration chunk counts exactly when its run makes it visible: a verified
+//! migration-aware balance over one of its cells (fa-mv0f) decides that from
+//! the run bodies it carries, and its fold reads exactly the visible chunks.
+//! A chunk no verified balance covers is refused, never guessed. `Trial_Balance.txt` must then be exactly the
+//! refold of those proven rows, so it is proven too. Against a complete
+//! prefix, `Chart_of_Accounts.txt` must be exactly the chart the proven
+//! entries declare at the sequence (code, name, type, normal balance); one
+//! account's scope-index run carries no chart declaration, so its chart is
+//! not judged and the report says so (`chart_rows: None`).
 
 use std::collections::BTreeMap;
 
@@ -40,11 +45,18 @@ pub struct AdsReport {
     /// The cutoff and sequence the coordinate certificate states.
     pub effective_through: String,
     pub known_at_seq: Option<u64>,
+    /// The one account the extract is scoped to (`fa export ads --account`),
+    /// else the whole chart.
+    pub account_scope: Option<String>,
     /// GL_Detail entries and rows matched to proven entries.
     pub entries: u64,
     pub rows: u64,
     /// Trial_Balance rows equal to the refold of those rows.
     pub tb_rows: u64,
+    /// Chart_of_Accounts rows equal to the chart the proven entries declare:
+    /// code, name, type and normal balance. `None` when the bundle proves
+    /// one account's run, which carries no chart declaration.
+    pub chart_rows: Option<u64>,
     /// Unit code to the unit id its rows matched, one to one.
     pub units: Vec<(String, u32)>,
     /// Every way the extract differs from the proven selection.
@@ -74,30 +86,86 @@ pub fn account_vid(book_id: &[u8; 16], code: &str) -> u128 {
     u128::from_le_bytes(low)
 }
 
-/// One GL_Detail row.
+/// One extract row (a GL_Detail row, or a SAF-T transaction line).
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Row {
-    journal_id: String,
-    line: u32,
-    date: String,
-    seq: u64,
-    class: u16,
-    account: String,
-    debit: bool,
-    mantissa: i128,
-    unit: String,
-    scale: u32,
+pub(crate) struct Row {
+    pub(crate) journal_id: String,
+    pub(crate) line: u32,
+    pub(crate) date: String,
+    pub(crate) seq: u64,
+    pub(crate) class: u16,
+    pub(crate) account: String,
+    pub(crate) debit: bool,
+    pub(crate) mantissa: i128,
+    pub(crate) unit: String,
+    pub(crate) scale: u32,
 }
 
 /// One extract entry: its rows in line order.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Extracted {
-    journal_id: String,
-    seq: u64,
-    date: String,
-    class: u16,
-    rows: Vec<Row>,
+pub(crate) struct Extracted {
+    pub(crate) journal_id: String,
+    pub(crate) seq: u64,
+    pub(crate) date: String,
+    pub(crate) class: u16,
+    pub(crate) rows: Vec<Row>,
 }
+
+/// One balance as an extract states it (a Trial_Balance row, or a SAF-T
+/// balance assertion). `side` is `D` or `C`; `scale` is stated by ADS only
+/// (SAF-T states it by the amount's decimals).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatedBalance {
+    pub(crate) line: String,
+    pub(crate) account: String,
+    pub(crate) as_of: String,
+    pub(crate) side: String,
+    pub(crate) amount: String,
+    pub(crate) unit: String,
+    pub(crate) scale: Option<u32>,
+}
+
+/// One chart row as an extract states it; `side` is `D` or `C`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatedAccount {
+    pub(crate) line: String,
+    pub(crate) code: String,
+    pub(crate) name: String,
+    pub(crate) account_type: String,
+    pub(crate) side: String,
+}
+
+/// What an extract states, read by its own format's reader: its coordinate,
+/// entries, balances and chart. A part that does not read is its error.
+pub(crate) struct Stated {
+    pub(crate) effective_through: String,
+    pub(crate) known_at_seq: Option<u64>,
+    pub(crate) entry_count: Option<u64>,
+    pub(crate) account_scope: Option<String>,
+    pub(crate) entries: Result<Vec<Extracted>, String>,
+    pub(crate) balances: Result<Vec<StatedBalance>, String>,
+    pub(crate) chart: Result<Vec<StatedAccount>, String>,
+}
+
+/// The names a format gives its parts, for failure messages.
+pub(crate) struct Parts {
+    /// `ADS` or `SAF-T`.
+    pub(crate) format: &'static str,
+    pub(crate) coordinate: &'static str,
+    pub(crate) entries: &'static str,
+    pub(crate) entry: &'static str,
+    pub(crate) balances: &'static str,
+    pub(crate) chart: &'static str,
+}
+
+const ADS_PARTS: Parts = Parts {
+    format: "ADS",
+    coordinate: "the certificate",
+    entries: "GL_Detail",
+    entry: "GL_Detail entry",
+    balances: "Trial_Balance",
+    chart: "Chart_of_Accounts",
+};
 
 /// One proven entry the export selects.
 struct Proven {
@@ -108,7 +176,7 @@ struct Proven {
 
 /// `value` at `scale` decimal places as an exact mantissa: digits, then a
 /// point and exactly `scale` digits when `scale > 0`.
-fn exact(value: &str, scale: u32) -> Option<i128> {
+pub(crate) fn exact(value: &str, scale: u32) -> Option<i128> {
     let (whole, fraction) = match value.split_once('.') {
         Some((w, f)) if scale > 0 && f.len() == usize::try_from(scale).ok()? => (w, f),
         None if scale == 0 => (value, ""),
@@ -260,6 +328,27 @@ fn extracted(gl_detail: &str, escaped: bool) -> Result<Vec<Extracted>, String> {
         .collect())
 }
 
+/// Lowercase hex of UTF-8 bytes (the v3 certificate's `*_utf8_hex` values).
+fn utf8_hex(hex: &str) -> Option<String> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            let pair = hex.get(i..i + 2)?;
+            if !pair
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return None;
+            }
+            u8::from_str_radix(pair, 16).ok()
+        })
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
 /// Read `key = value` (a TOML string or integer) from the certificate.
 fn field<'a>(certificate: &'a str, key: &str) -> Option<&'a str> {
     certificate.lines().find_map(|line| {
@@ -296,37 +385,81 @@ fn same(extract: &Extracted, proven: &Proven, book: &[u8; 16], units: &Units) ->
         })
 }
 
+/// The records a verified bundle authenticates: each record's leaf index,
+/// envelope, the legs it rebuilds and its proposal bytes.
+pub(crate) type Records = Vec<(u64, LeafEnvelope, Vec<Leg>, Vec<u8>)>;
+
+/// What a verified bundle authenticates: its records, and its balances, each
+/// with the leaves its fold read. A migration-aware balance proof decides
+/// each migration chunk of its cell from the run bodies it carries, and reads
+/// exactly the visible ones.
+pub(crate) struct Authenticated {
+    pub(crate) records: Records,
+    pub(crate) balances: Vec<crate::balance::Balance>,
+}
+
+/// Verify the bundle and keep what it authenticates.
+pub(crate) fn prove(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    receipt: Option<&[u8]>,
+) -> Result<(crate::bundle::BundleReport, Authenticated), BundleError> {
+    let mut records: Records = Vec::new();
+    let mut balances = Vec::new();
+    let report = verify_bundle_observing(
+        bundle,
+        trusted_keys,
+        receipt,
+        |_, balance| balances.push(balance.clone()),
+        |leaf, envelope, legs, proposal| {
+            records.push((leaf, envelope.clone(), legs.to_vec(), proposal.to_vec()));
+        },
+    )?;
+    Ok((report, Authenticated { records, balances }))
+}
+
+impl AdsReport {
+    /// The bundle's report, before any extract is judged against it.
+    pub(crate) fn new(
+        bundle: crate::bundle::BundleReport,
+        effective_through: String,
+        known_at_seq: Option<u64>,
+    ) -> Self {
+        Self {
+            bundle,
+            effective_through,
+            known_at_seq,
+            account_scope: None,
+            entries: 0,
+            rows: 0,
+            tb_rows: 0,
+            chart_rows: None,
+            units: Vec::new(),
+            failures: Vec::new(),
+        }
+    }
+}
+
 /// Verify the bundle, then the extract against the entries it proves. The
 /// bundle's own failure is reported, never masked; the extract is judged
 /// only against a verified complete-prefix bundle.
 pub fn verify_ads(
     certificate: &str,
+    chart_of_accounts: &str,
     gl_detail: &str,
     trial_balance: &str,
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
 ) -> Result<AdsReport, BundleError> {
-    let mut records: Vec<(LeafEnvelope, Vec<Leg>)> = Vec::new();
-    let report = verify_bundle_observing(
-        bundle,
-        trusted_keys,
-        receipt,
-        |_, _| {},
-        |envelope, legs| records.push((envelope.clone(), legs.to_vec())),
-    )?;
-    let mut out = AdsReport {
-        bundle: report,
-        effective_through: field(certificate, "effective_through")
+    let (report, authenticated) = prove(bundle, trusted_keys, receipt)?;
+    let mut out = AdsReport::new(
+        report,
+        field(certificate, "effective_through")
             .unwrap_or_default()
             .to_string(),
-        known_at_seq: field(certificate, "known_at_seq").and_then(|v| v.parse().ok()),
-        entries: 0,
-        rows: 0,
-        tb_rows: 0,
-        units: Vec::new(),
-        failures: Vec::new(),
-    };
+        field(certificate, "known_at_seq").and_then(|v| v.parse().ok()),
+    );
     if !out.bundle.verified() {
         out.failures
             .push("the bundle did not verify, so GL_Detail was not judged against it".into());
@@ -341,32 +474,116 @@ pub fn verify_ads(
             return Ok(out);
         }
     };
+    // One account's extract names its account; the whole chart names none.
+    let stated = if escaped {
+        field(certificate, "account_scope_utf8_hex").map(|hex| utf8_hex(hex).ok_or(()))
+    } else {
+        field(certificate, "account_scope").map(|code| Ok(code.to_string()))
+    };
+    let scoped = match stated {
+        None => None,
+        Some(Ok(code)) => Some(code),
+        Some(Err(())) => {
+            out.failures
+                .push("the certificate's account_scope is not hex UTF-8".into());
+            return Ok(out);
+        }
+    };
+    let stated = Stated {
+        effective_through: out.effective_through.clone(),
+        known_at_seq: out.known_at_seq,
+        entry_count: field(certificate, "entry_count").and_then(|v| v.parse().ok()),
+        account_scope: scoped,
+        entries: extracted(gl_detail, escaped),
+        balances: ads_balances(trial_balance, escaped),
+        chart: ads_chart(chart_of_accounts, escaped),
+    };
+    Ok(judge(out, authenticated, stated, &ADS_PARTS))
+}
+
+/// Judge what an extract states against the records a verified bundle
+/// authenticates (the core `fa-verify ads` and `fa-verify saft` share):
+/// the coordinate is the checkpoint's; the bundle proves the extract's scope
+/// complete; the entries are exactly the proven entries the export selects;
+/// the balances are exactly their refold; and, against a complete prefix,
+/// the chart is exactly the one the proven entries declare.
+pub(crate) fn judge(
+    mut out: AdsReport,
+    authenticated: Authenticated,
+    stated: Stated,
+    parts: &Parts,
+) -> AdsReport {
+    let Authenticated { records, balances } = authenticated;
+    let scoped = stated.account_scope;
+    out.account_scope.clone_from(&scoped);
     let manifest = out.bundle.manifest.clone();
-    if !matches!(manifest.scope, BundleScope::Prefix) {
-        out.failures.push(
-            "the bundle proves a narrower scope; an ADS extract is judged against a complete-prefix bundle"
-                .into(),
-        );
-        return Ok(out);
-    }
-    if out.known_at_seq != Some(manifest.through_seq) {
+    if stated.known_at_seq != Some(manifest.through_seq) {
         out.failures.push(format!(
-            "the certificate's known_at_seq ({}) is not the checkpoint's through_seq ({})",
-            out.known_at_seq
+            "{}'s known_at_seq ({}) is not the checkpoint's through_seq ({})",
+            parts.coordinate,
+            stated
+                .known_at_seq
                 .map_or_else(|| "absent".to_string(), |s| s.to_string()),
             manifest.through_seq
         ));
-        return Ok(out);
+        return out;
     }
-    let cutoff = out.effective_through.clone();
+    let cutoff = stated.effective_through.clone();
     if cutoff.len() != 10 {
-        out.failures
-            .push("the certificate states no effective_through date".into());
-        return Ok(out);
+        out.failures.push(format!(
+            "{} states no effective_through date",
+            parts.coordinate
+        ));
+        return out;
     }
+    // The whole chart needs a complete prefix. One account's extract needs
+    // the prefix or that account's scope-index run over every effective
+    // day through the cutoff (ScopeIndexComplete).
+    let account = scoped
+        .as_deref()
+        .map(|code| account_vid(&manifest.book_id, code));
+    let complete = match (&manifest.scope, account) {
+        (BundleScope::Prefix, _) => true,
+        (BundleScope::Account(claim), Some(vid)) => {
+            claim.account == vid && claim.from == i32::MIN && civil(claim.to) == cutoff
+        }
+        _ => false,
+    };
+    if !complete {
+        out.failures.push(match &scoped {
+            None => format!(
+                "the bundle proves a narrower scope; a whole-chart {} extract is judged against a complete-prefix bundle",
+                parts.format
+            ),
+            Some(code) => format!(
+                "the bundle proves neither the complete prefix nor account {code}'s entries over every effective day through {cutoff}"
+            ),
+        });
+        return out;
+    }
+    // A complete prefix carries the chart's declarations, so
+    // Chart_of_Accounts is judged against them. One account's run carries
+    // none: its chart is then not judged, and the report says so.
+    let declared = if matches!(manifest.scope, BundleScope::Prefix) {
+        match crate::report::declared_chart(
+            records.iter().map(|(_, e, _, p)| (e, p.as_slice())),
+            &manifest.book_id,
+            manifest.through_seq,
+        ) {
+            Ok(chart) => Some(chart),
+            Err(why) => {
+                out.failures.push(format!(
+                    "the proven chart declarations do not decode: {why}"
+                ));
+                return out;
+            }
+        }
+    } else {
+        None
+    };
     // The proven entries the export selects, by recorded sequence.
     let mut proven: BTreeMap<u64, Vec<Proven>> = BTreeMap::new();
-    for (envelope, legs) in records {
+    for (leaf, envelope, legs, _) in records {
         let Some(day) = envelope.effective_day else {
             continue;
         };
@@ -375,15 +592,37 @@ pub fn verify_ads(
             || envelope.class == CLASS_PENDING
             || legs.is_empty()
             || date > cutoff
+            || account.is_some_and(|vid| legs.iter().all(|leg| leg.account != vid))
         {
             continue;
         }
         if envelope.class == CLASS_MIGRATION {
-            out.failures.push(format!(
-                "a migration chunk recorded at {} is in scope; its visibility is not proven offline",
-                envelope.commit_seq
-            ));
-            continue;
+            let read = balances
+                .iter()
+                .map(|balance| (&balance.claim, balance.contributing.as_slice()));
+            match chunk_visibility(leaf, day, &legs, read) {
+                Some(true) => {}
+                // Its run hides it: the export selects it no more than the
+                // fold does.
+                Some(false) => continue,
+                // An account's scope-index run holds that account's entries
+                // only: never the run's lifecycle controls, and the export
+                // asks it for no balance, so nothing in it decides the run.
+                None if account.is_some() && !matches!(manifest.scope, BundleScope::Prefix) => {
+                    out.failures.push(format!(
+                        "a migration chunk recorded at {} is in this account's scope, and an account bundle carries neither its run's lifecycle controls nor a migration-aware balance over its cells, so whether its run makes it visible is not proven offline; verify the whole-chart {} extract (no --account), whose balances decide it",
+                        envelope.commit_seq, parts.format
+                    ));
+                    continue;
+                }
+                None => {
+                    out.failures.push(format!(
+                        "a migration chunk recorded at {} is in scope, and no verified balance over its cells proves whether its run makes it visible",
+                        envelope.commit_seq
+                    ));
+                    continue;
+                }
+            }
         }
         proven.entry(envelope.commit_seq).or_default().push(Proven {
             class: envelope.class,
@@ -391,11 +630,11 @@ pub fn verify_ads(
             legs,
         });
     }
-    let extract = match extracted(gl_detail, escaped) {
+    let extract = match stated.entries {
         Ok(extract) => extract,
         Err(why) => {
             out.failures.push(why);
-            return Ok(out);
+            return out;
         }
     };
     let mut units = Units::default();
@@ -418,97 +657,314 @@ pub fn verify_ads(
                     .saturating_add(u64::try_from(entry.rows.len()).unwrap_or(u64::MAX));
             }
             _ => out.failures.push(format!(
-                "GL_Detail entry {} (recorded at {}) is no proven entry selected through {cutoff}",
-                entry.journal_id, entry.seq
+                "{} {} (recorded at {}) is no proven entry selected through {cutoff}",
+                parts.entry, entry.journal_id, entry.seq
             )),
         }
     }
     for (seq, list) in &proven {
         for p in list {
             out.failures.push(format!(
-                "a proven entry recorded at {seq} (effective {}, {} legs) is missing from GL_Detail",
+                "a proven entry recorded at {seq} (effective {}, {} legs) is missing from {}",
                 p.date,
-                p.legs.len()
+                p.legs.len(),
+                parts.entries
             ));
         }
     }
-    let stated = field(certificate, "entry_count").and_then(|v| v.parse::<u64>().ok());
-    if out.failures.is_empty() && stated != Some(out.entries) {
+    if out.failures.is_empty() && stated.entry_count != Some(out.entries) {
         out.failures.push(format!(
-            "the certificate's entry_count ({}) is not the {} entries GL_Detail holds",
-            stated.map_or_else(|| "absent".to_string(), |c| c.to_string()),
-            out.entries
+            "{}'s entry_count ({}) is not the {} entries {} holds",
+            parts.coordinate,
+            stated
+                .entry_count
+                .map_or_else(|| "absent".to_string(), |c| c.to_string()),
+            out.entries,
+            parts.entries
         ));
     }
     if out.failures.is_empty() {
-        match trial_balance_rows(trial_balance, &extract, &cutoff, escaped) {
+        match stated.balances.and_then(|balances| {
+            balance_rows(&balances, &extract, &cutoff, scoped.as_deref(), parts)
+        }) {
             Ok(rows) => out.tb_rows = rows,
             Err(why) => out.failures.push(why),
         }
     }
+    if out.failures.is_empty()
+        && let Some(declared) = &declared
+    {
+        match stated
+            .chart
+            .and_then(|chart| chart_matches(&chart, declared, &extract, scoped.as_deref(), parts))
+        {
+            Ok(rows) => out.chart_rows = Some(rows),
+            Err(why) => out.failures.push(why),
+        }
+    }
     out.units = units.by_code.into_iter().collect();
-    Ok(out)
+    out
 }
 
-/// Check `trial_balance` is exactly the refold of the extract's rows: one
-/// row per (account, currency) in that order, as of `cutoff`, the signed
-/// sum of its legs (debits positive) stated as D (zero or more) or C with
-/// its magnitude at the currency's one scale. Returns the row count.
+/// Whether the migration chunk at `leaf`, effective on `day`, with `legs`
+/// counts (fa-mv0f). A verified balance over one of its cells, cut off on or
+/// after its day, decides that from the run bodies it carries, and only the
+/// migration-aware format verifies such a cell: its fold reads the chunk
+/// exactly when the chunk's run makes it visible. So the answer is
+/// `Some(true)` when such a balance read it, `Some(false)` when such
+/// balances exist and none read it (its run hides it), and `None` when none
+/// covers it, so that its visibility is not proven.
+fn chunk_visibility<'a>(
+    leaf: u64,
+    day: i32,
+    legs: &[Leg],
+    balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, &'a [u64])>,
+) -> Option<bool> {
+    let mut covered = false;
+    for (claim, contributing) in balances {
+        let covers = legs
+            .iter()
+            .any(|leg| (leg.account, leg.unit) == (claim.account, claim.unit))
+            && claim.effective_through.is_none_or(|through| through >= day);
+        if covers {
+            if contributing.contains(&leaf) {
+                return Some(true);
+            }
+            covered = true;
+        }
+    }
+    covered.then_some(false)
+}
+
+/// The registered account type names (`account_types.toml`, tags 1..=8),
+/// as the ADS writer prints them; a test cross-checks the registry.
+const ACCOUNT_TYPE_NAMES: [&str; 8] = [
+    "Asset",
+    "Liability",
+    "Equity",
+    "Revenue",
+    "Expense",
+    "Memo",
+    "Statistical",
+    "OffBalance",
+];
+/// The Chart_of_Accounts header `fa export ads` writes.
+pub const CHART_HEADER: &str = "GL_Account_Number|GL_Account_Name|Account_Type|Normal_Balance";
+
+/// The ADS Chart_of_Accounts rows as stated.
+fn ads_chart(chart: &str, escaped: bool) -> Result<Vec<StatedAccount>, String> {
+    let mut lines = chart.split('\n');
+    if lines.next() != Some(CHART_HEADER) {
+        return Err("Chart_of_Accounts does not start with the ADS chart header".into());
+    }
+    lines
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let decoded = fields(line, escaped, false)?;
+            let [code, name, account_type, side] = <[String; 4]>::try_from(decoded)
+                .map_err(|_| format!("Chart_of_Accounts row `{line}` has not four fields"))?;
+            Ok(StatedAccount {
+                line: line.to_string(),
+                code,
+                name,
+                account_type,
+                side,
+            })
+        })
+        .collect()
+}
+
+/// ADS's [`chart_matches`] over Chart_of_Accounts text.
+#[cfg(test)]
+fn chart_rows(
+    chart: &str,
+    declared: &BTreeMap<u128, crate::report::DeclaredAccount>,
+    extract: &[Extracted],
+    scope: Option<&str>,
+    escaped: bool,
+) -> Result<u64, String> {
+    chart_matches(
+        &ads_chart(chart, escaped)?,
+        declared,
+        extract,
+        scope,
+        &ADS_PARTS,
+    )
+}
+
+/// Check `stated` is exactly the declared chart's rows, in code order: the
+/// whole chart, or for one account's extract the accounts its rows and its
+/// scope name. Each row states the declared code, name, registered type
+/// name and normal balance (D or C). Returns the row count.
+pub(crate) fn chart_matches(
+    stated: &[StatedAccount],
+    declared: &BTreeMap<u128, crate::report::DeclaredAccount>,
+    extract: &[Extracted],
+    scope: Option<&str>,
+    parts: &Parts,
+) -> Result<u64, String> {
+    let mut expected: Vec<&crate::report::DeclaredAccount> = match scope {
+        None => declared.values().collect(),
+        Some(code) => {
+            let named: std::collections::BTreeSet<&str> = extract
+                .iter()
+                .flat_map(|entry| entry.rows.iter().map(|row| row.account.as_str()))
+                .chain([code])
+                .collect();
+            declared
+                .values()
+                .filter(|account| named.contains(account.code.as_str()))
+                .collect()
+        }
+    };
+    expected.sort_by(|a, b| a.code.cmp(&b.code));
+    if stated.len() != expected.len() {
+        return Err(format!(
+            "{} has {} rows; the proven chart declares {} for this extract",
+            parts.chart,
+            stated.len(),
+            expected.len()
+        ));
+    }
+    for (row, account) in stated.iter().zip(&expected) {
+        let type_name = usize::from(account.account_type)
+            .checked_sub(1)
+            .and_then(|i| ACCOUNT_TYPE_NAMES.get(i))
+            .copied();
+        let side = if account.normal_balance == 1 {
+            "C"
+        } else {
+            "D"
+        };
+        let agrees = row.code == account.code
+            && row.name == account.name
+            && type_name.is_some_and(|name| row.account_type == name)
+            && row.side == side;
+        if !agrees {
+            return Err(format!(
+                "{} row `{}` is not the proven declaration of account {} ({}, {}, {side})",
+                parts.chart,
+                row.line,
+                account.code,
+                account.name,
+                type_name.unwrap_or("an unregistered type")
+            ));
+        }
+    }
+    u64::try_from(stated.len()).map_err(|_| format!("{} row count", parts.chart))
+}
+
+/// The ADS Trial_Balance rows as stated.
+fn ads_balances(trial_balance: &str, escaped: bool) -> Result<Vec<StatedBalance>, String> {
+    let mut lines = trial_balance.split('\n');
+    if lines.next() != Some(TB_HEADER) {
+        return Err("Trial_Balance does not start with the ADS trial balance header".into());
+    }
+    lines
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let decoded = fields(line, escaped, false)?;
+            let [account, as_of, side, amount, unit, scale] = <[String; 6]>::try_from(decoded)
+                .map_err(|_| format!("Trial_Balance row `{line}` has not six fields"))?;
+            Ok(StatedBalance {
+                line: line.to_string(),
+                account,
+                as_of,
+                side,
+                amount,
+                unit,
+                scale: Some(
+                    scale
+                        .parse()
+                        .map_err(|_| format!("Trial_Balance row `{line}`: Unit_Scale"))?,
+                ),
+            })
+        })
+        .collect()
+}
+
+/// ADS's [`balance_rows`] over Trial_Balance text.
+#[cfg(test)]
 fn trial_balance_rows(
     trial_balance: &str,
     extract: &[Extracted],
     cutoff: &str,
     escaped: bool,
+    scope: Option<&str>,
+) -> Result<u64, String> {
+    balance_rows(
+        &ads_balances(trial_balance, escaped)?,
+        extract,
+        cutoff,
+        scope,
+        &ADS_PARTS,
+    )
+}
+
+/// Check `stated` is exactly the refold of the extract's rows: one row per
+/// (account, currency) in that order, as of `cutoff`, the signed sum of its
+/// legs (debits positive) stated as D (zero or more) or C with its
+/// magnitude at the currency's one scale. A scoped extract folds its
+/// account's rows only: the other legs of its entries are context. Returns
+/// the row count.
+pub(crate) fn balance_rows(
+    stated: &[StatedBalance],
+    extract: &[Extracted],
+    cutoff: &str,
+    scope: Option<&str>,
+    parts: &Parts,
 ) -> Result<u64, String> {
     let mut folded: BTreeMap<(&str, &str), (i128, u32)> = BTreeMap::new();
-    for row in extract.iter().flat_map(|entry| &entry.rows) {
+    for row in extract
+        .iter()
+        .flat_map(|entry| &entry.rows)
+        .filter(|row| scope.is_none_or(|code| row.account == code))
+    {
         let cell = folded
             .entry((row.account.as_str(), row.unit.as_str()))
             .or_insert((0, row.scale));
         if cell.1 != row.scale {
-            return Err(format!("GL_Detail states two scales for {}", row.unit));
+            return Err(format!(
+                "{} states two scales for {}",
+                parts.entries, row.unit
+            ));
         }
         let moved = if row.debit {
             cell.0.checked_add(row.mantissa)
         } else {
             cell.0.checked_sub(row.mantissa)
         };
-        cell.0 =
-            moved.ok_or_else(|| "a GL_Detail balance exceeds the exact fold range".to_string())?;
+        cell.0 = moved
+            .ok_or_else(|| format!("a {} balance exceeds the exact fold range", parts.entries))?;
     }
-    let mut lines = trial_balance.split('\n');
-    if lines.next() != Some(TB_HEADER) {
-        return Err("Trial_Balance does not start with the ADS trial balance header".into());
-    }
-    let stated: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
     if stated.len() != folded.len() {
         return Err(format!(
-            "Trial_Balance has {} rows; the proven GL_Detail folds to {} (account, currency) balances",
+            "{} has {} rows; the proven {} folds to {} (account, currency) balances",
+            parts.balances,
             stated.len(),
+            parts.entries,
             folded.len()
         ));
     }
-    for (line, ((account, unit), (balance, scale))) in stated.iter().zip(&folded) {
-        let decoded = fields(line, escaped, false)?;
-        let fields: Vec<&str> = decoded.iter().map(String::as_str).collect();
+    for (row, ((account, unit), (balance, scale))) in stated.iter().zip(&folded) {
         let magnitude = balance
             .checked_abs()
-            .ok_or_else(|| "a GL_Detail balance exceeds the exact fold range".to_string())?;
+            .ok_or_else(|| format!("a {} balance exceeds the exact fold range", parts.entries))?;
         let side = if *balance < 0 { "C" } else { "D" };
-        let agrees = fields.len() == 6
-            && fields[0] == *account
-            && fields[1] == cutoff
-            && fields[2] == side
-            && fields[5].parse::<u32>().ok() == Some(*scale)
-            && exact(fields[3], *scale) == Some(magnitude)
-            && fields[4] == *unit;
+        let agrees = row.account == *account
+            && row.as_of == cutoff
+            && row.side == side
+            && row.scale.is_none_or(|stated| stated == *scale)
+            && exact(&row.amount, *scale) == Some(magnitude)
+            && row.unit == *unit;
         if !agrees {
             return Err(format!(
-                "Trial_Balance row `{line}` is not the refold of the proven GL_Detail ({account} {unit}: {side} {magnitude} at scale {scale}, as of {cutoff})"
+                "{} row `{}` is not the refold of the proven {} ({account} {unit}: {side} {magnitude} at scale {scale}, as of {cutoff})",
+                parts.balances, row.line, parts.entries
             ));
         }
     }
-    u64::try_from(stated.len()).map_err(|_| "Trial_Balance row count".to_string())
+    u64::try_from(stated.len()).map_err(|_| format!("{} row count", parts.balances))
 }
 
 #[cfg(test)]
@@ -531,10 +987,19 @@ mod tests {
         assert_eq!(entries[0].journal_id, "entry|id");
         assert_eq!(entries[0].rows[0].account, "60|00");
         let tb = format!("{TB_HEADER}\n60\\p00|2026-03-31|D|15.00|USD|2\n");
-        assert_eq!(trial_balance_rows(&tb, &entries, "2026-03-31", true), Ok(1));
+        assert_eq!(
+            trial_balance_rows(&tb, &entries, "2026-03-31", true, None),
+            Ok(1)
+        );
         assert!(
-            trial_balance_rows(&tb.replace("15.00", "15.01"), &entries, "2026-03-31", true)
-                .is_err()
+            trial_balance_rows(
+                &tb.replace("15.00", "15.01"),
+                &entries,
+                "2026-03-31",
+                true,
+                None
+            )
+            .is_err()
         );
         // A literal backslash in the existing v2 profile keeps its meaning.
         let legacy = extracted(&gl, false).unwrap();
@@ -598,8 +1063,19 @@ mod tests {
              6000|2026-03-31|D|15.00|USD|2\n"
         );
         assert_eq!(
-            trial_balance_rows(&tb, &extract, "2026-03-31", false),
+            trial_balance_rows(&tb, &extract, "2026-03-31", false, None),
             Ok(3)
+        );
+        // One account's extract folds that account's rows only: the other
+        // legs of its entries are context, and no balance of theirs belongs.
+        let cash = format!("{TB_HEADER}\n1000|2026-03-31|C|14.00|USD|2\n");
+        assert_eq!(
+            trial_balance_rows(&cash, &extract, "2026-03-31", false, Some("1000")),
+            Ok(1)
+        );
+        assert!(
+            trial_balance_rows(&tb, &extract, "2026-03-31", false, Some("1000")).is_err(),
+            "a contra account's balance is not the scoped account's"
         );
         for bad in [
             tb.replace("C|14.00", "C|14.01"),
@@ -612,10 +1088,151 @@ mod tests {
             tb.replace(TB_HEADER, "GL_Account_Number|As_Of_Date"),
         ] {
             assert!(
-                trial_balance_rows(&bad, &extract, "2026-03-31", false).is_err(),
+                trial_balance_rows(&bad, &extract, "2026-03-31", false, None).is_err(),
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn migration_chunks_follow_their_runs_visibility() {
+        let (cash, revenue, usd, day) = (7u128, 9u128, 1u32, 100);
+        let legs = [
+            Leg {
+                debit: true,
+                account: cash,
+                unit: usd,
+                mantissa: 5,
+            },
+            Leg {
+                debit: false,
+                account: revenue,
+                unit: usd,
+                mantissa: 5,
+            },
+        ];
+        let claim = |account, effective_through| crate::BalanceClaim {
+            account,
+            unit: usd,
+            effective_through,
+            debits: 0,
+            credits: 0,
+        };
+        let cash_after = claim(cash, Some(120));
+        // A covering balance read the chunk: its run makes it visible.
+        assert_eq!(
+            chunk_visibility(3, day, &legs, [(&cash_after, &[1u64, 3][..])]),
+            Some(true)
+        );
+        // Covering, but not read: its run hides it.
+        assert_eq!(
+            chunk_visibility(3, day, &legs, [(&cash_after, &[1u64][..])]),
+            Some(false)
+        );
+        // A balance over its other cell decides it as well.
+        let revenue_all = claim(revenue, None);
+        assert_eq!(
+            chunk_visibility(
+                3,
+                day,
+                &legs,
+                [(&cash_after, &[][..]), (&revenue_all, &[3u64][..])]
+            ),
+            Some(true)
+        );
+        // Planted: a balance over another account, another unit, or cut off
+        // before the chunk's day proves nothing about it.
+        let other = claim(11, None);
+        let euro = crate::BalanceClaim {
+            unit: 2,
+            ..claim(cash, None)
+        };
+        let early = claim(cash, Some(day - 1));
+        for (balance, why) in [
+            (&other, "another account"),
+            (&euro, "another unit"),
+            (&early, "cut off before its day"),
+        ] {
+            assert_eq!(
+                chunk_visibility(3, day, &legs, [(balance, &[3u64][..])]),
+                None,
+                "{why}"
+            );
+        }
+        assert_eq!(chunk_visibility(3, day, &legs, std::iter::empty()), None);
+    }
+
+    #[test]
+    fn the_chart_is_exactly_the_declared_accounts() {
+        let declared: BTreeMap<u128, crate::report::DeclaredAccount> = [
+            ("1000", "Cash", 1, 0),
+            ("4000", "Revenue", 4, 1),
+            ("6000", "Rent", 5, 0),
+        ]
+        .into_iter()
+        .zip(0u128..)
+        .map(|((code, name, account_type, normal_balance), vid)| {
+            (
+                vid,
+                crate::report::DeclaredAccount {
+                    code: code.into(),
+                    name: name.into(),
+                    account_type,
+                    normal_balance,
+                },
+            )
+        })
+        .collect();
+        let chart = format!(
+            "{CHART_HEADER}\n1000|Cash|Asset|D\n4000|Revenue|Revenue|C\n6000|Rent|Expense|D\n"
+        );
+        assert_eq!(chart_rows(&chart, &declared, &[], None, false), Ok(3));
+        for bad in [
+            chart.replace("|Cash|", "|Petty cash|"),
+            chart.replace("Revenue|C", "Revenue|D"),
+            chart.replace("Rent|Expense", "Rent|Asset"),
+            chart.replace("6000|Rent|Expense|D\n", ""),
+            format!("{chart}9999|Extra|Asset|D\n"),
+            chart.replace(CHART_HEADER, "GL_Account_Number|GL_Account_Name"),
+        ] {
+            assert!(
+                chart_rows(&bad, &declared, &[], None, false).is_err(),
+                "{bad}"
+            );
+        }
+        // One account's extract: the accounts its rows and its scope name.
+        let gl = format!(
+            "{GL_HEADER}\n\
+             aa|1|2026-03-10|7|1|1000|D|1.00|USD|2|x||\n\
+             aa|2|2026-03-10|7|1|4000|C|1.00|USD|2|x||\n"
+        );
+        let extract = extracted(&gl, false).unwrap();
+        let cash = format!("{CHART_HEADER}\n1000|Cash|Asset|D\n4000|Revenue|Revenue|C\n");
+        assert_eq!(
+            chart_rows(&cash, &declared, &extract, Some("1000"), false),
+            Ok(2)
+        );
+        assert!(
+            chart_rows(&chart, &declared, &extract, Some("1000"), false).is_err(),
+            "an account the extract never names is not its chart"
+        );
+    }
+
+    #[test]
+    fn account_type_names_are_the_registered_ones() {
+        let registry = include_str!("../../../registries/account_types.toml");
+        let mut tags = Vec::new();
+        let mut names = Vec::new();
+        for line in registry.lines() {
+            if let Some(tag) = line.strip_prefix("tag = ") {
+                tags.push(tag.trim().parse::<usize>().unwrap());
+            }
+            if let Some(name) = line.strip_prefix("name = ") {
+                names.push(name.trim().trim_matches('"').to_string());
+            }
+        }
+        assert_eq!(tags, (1..=8).collect::<Vec<_>>());
+        assert_eq!(names, ACCOUNT_TYPE_NAMES);
     }
 
     #[test]
@@ -624,6 +1241,11 @@ mod tests {
         assert_eq!(field(cert, "effective_through"), Some("2026-03-31"));
         assert_eq!(field(cert, "known_at_seq"), Some("42"));
         assert_eq!(field(cert, "entry_count"), None);
+        // A v3 certificate's account_scope_utf8_hex.
+        assert_eq!(utf8_hex("31307c30").as_deref(), Some("10|0"));
+        for bad in ["313", "3G", "31AB", "ff"] {
+            assert_eq!(utf8_hex(bad), None, "{bad}");
+        }
     }
 
     #[test]

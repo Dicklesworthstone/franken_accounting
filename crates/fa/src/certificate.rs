@@ -66,6 +66,16 @@ pub const FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT: &str = "fa:functional-consolid
 /// decide which values it folds.
 pub const DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v8";
 pub const DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT: &str = "fa:dimension-trial-balance:v1";
+/// A regulatory schedule (plan §12.6, fa-doa9): the complete schedule (form,
+/// schedule code, instruction version, its definition, which maps the chart
+/// by account code, and its declared Instrument inputs) and its period
+/// columns, with the statement it evaluates to. Native units only.
+pub const REGULATORY_SCHEDULE_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v9";
+pub const REGULATORY_SCHEDULE_OUTPUT_FORMAT: &str = "fa:regulatory-schedule:v1";
+/// Functional trial balances retain entity cells, the historical display chart,
+/// and the same independently replayed Rate/law closure as functional statements.
+pub const FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v10";
+pub const FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT: &str = "fa:functional-trial-balance:v1";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -128,7 +138,7 @@ impl TrialBalanceSelection {
         self
     }
 
-    fn write(&self, w: &mut Writer) {
+    pub(crate) fn write(&self, w: &mut Writer) {
         match self {
             Self::Periods(periods) | Self::Activity(periods) => {
                 w.u8(if matches!(self, Self::Periods(_)) {
@@ -190,6 +200,9 @@ impl TrialBalanceSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportSelection {
     TrialBalance(TrialBalanceSelection),
+    /// Functional stock through one period or date, or one period's activity.
+    /// Committed base valuations are replayed against their retained Rate laws.
+    FunctionalTrialBalance(TrialBalanceSelection),
     ExplainBalance {
         account: VId,
         period: String,
@@ -218,6 +231,9 @@ pub enum ReportSelection {
         dimension: String,
         value: String,
     },
+    /// A regulatory schedule over the same exact folds a statement of its
+    /// kind uses, mapped by account code (`fa statement regulatory`).
+    RegulatorySchedule(Box<crate::statements::RegulatorySelection>),
 }
 
 impl From<TrialBalanceSelection> for ReportSelection {
@@ -236,6 +252,10 @@ impl ReportSelection {
     fn is_canonical(&self) -> bool {
         match self {
             Self::TrialBalance(selection) => selection.is_canonical(),
+            Self::FunctionalTrialBalance(selection) => {
+                selection.is_canonical()
+                    && crate::functional_trial_balance::supported_selection(selection)
+            }
             Self::ExplainBalance { period, .. } => !period.is_empty() && period.len() <= 128,
             Self::OpenItems { .. } => true,
             Self::Statement(selection) | Self::FunctionalStatement(selection) => {
@@ -254,12 +274,37 @@ impl ReportSelection {
                     && !value.is_empty()
                     && value.len() <= fa_model::rea::MAX_REA_CODE_BYTES
             }
+            Self::RegulatorySchedule(selection) => selection.is_canonical(),
+        }
+    }
+
+    /// The statement kind, period columns and comparative columns of a
+    /// statement-shaped report: a native or functional statement, or a
+    /// regulatory schedule. Each column folds the same way for all three.
+    pub(crate) fn statement_columns(
+        &self,
+    ) -> Option<(fa_statements::StatementKind, &[String], &[String])> {
+        match self {
+            Self::Statement(selection) | Self::FunctionalStatement(selection) => Some((
+                selection.definition.kind(),
+                selection.periods.as_slice(),
+                selection.comparative.as_slice(),
+            )),
+            Self::RegulatorySchedule(selection) => Some((
+                selection.schedule.statement_definition.kind,
+                selection.periods.as_slice(),
+                selection.comparative.as_slice(),
+            )),
+            _ => None,
         }
     }
 
     fn normalize(self) -> Self {
         match self {
             Self::TrialBalance(selection) => Self::TrialBalance(selection.normalize()),
+            Self::FunctionalTrialBalance(selection) => {
+                Self::FunctionalTrialBalance(selection.normalize())
+            }
             Self::DimensionTrialBalance {
                 selection,
                 dimension,
@@ -273,6 +318,9 @@ impl ReportSelection {
             Self::FunctionalStatement(selection) => {
                 Self::FunctionalStatement(Box::new((*selection).normalize()))
             }
+            Self::RegulatorySchedule(selection) => {
+                Self::RegulatorySchedule(Box::new((*selection).normalize()))
+            }
             selection => selection,
         }
     }
@@ -283,7 +331,9 @@ impl ReportSelection {
     pub const fn uses_functional_valuations(&self) -> bool {
         matches!(
             self,
-            Self::FunctionalStatement(_) | Self::FunctionalConsolidation { .. }
+            Self::FunctionalStatement(_)
+                | Self::FunctionalConsolidation { .. }
+                | Self::FunctionalTrialBalance(_)
         )
     }
 
@@ -291,6 +341,7 @@ impl ReportSelection {
     pub const fn output_format(&self) -> &'static str {
         match self {
             Self::TrialBalance(_) => OUTPUT_FORMAT,
+            Self::FunctionalTrialBalance(_) => FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT,
             Self::ExplainBalance { .. } => "fa:balance-explanation:v1",
             Self::OpenItems { .. } => "fa:open-items:v1",
             Self::Statement(_) => "fa:statement:v1",
@@ -298,6 +349,7 @@ impl ReportSelection {
             Self::Consolidation { .. } => CONSOLIDATION_OUTPUT_FORMAT,
             Self::FunctionalConsolidation { .. } => FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT,
             Self::DimensionTrialBalance { .. } => DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT,
+            Self::RegulatorySchedule(_) => REGULATORY_SCHEDULE_OUTPUT_FORMAT,
         }
     }
 
@@ -314,6 +366,10 @@ impl ReportSelection {
         match self {
             // V1 and V2 retain the original selector bytes without a new tag.
             Self::TrialBalance(selection) => selection.write(w),
+            Self::FunctionalTrialBalance(selection) => {
+                w.u8(8);
+                selection.write(w);
+            }
             Self::ExplainBalance { account, period } => {
                 w.u8(0).u128(account.0).str(period);
             }
@@ -344,6 +400,10 @@ impl ReportSelection {
                 w.u8(6);
                 selection.write(w);
                 w.str(dimension).str(value);
+            }
+            Self::RegulatorySchedule(selection) => {
+                w.u8(7);
+                selection.write(w)?;
             }
         }
         Ok(())
@@ -382,6 +442,12 @@ impl ReportSelection {
                     .str(fa_model::rea::MAX_REA_CODE_BYTES, "report dimension value")?
                     .to_string(),
             }),
+            7 if version == 9 => Ok(Self::RegulatorySchedule(Box::new(
+                crate::statements::RegulatorySelection::read(r)?,
+            ))),
+            8 if version == 10 => Ok(Self::FunctionalTrialBalance(TrialBalanceSelection::read(
+                r,
+            )?)),
             tag => Err(r.bad_tag("report selector", tag)),
         }
     }
@@ -396,6 +462,10 @@ impl ReportSelection {
             Self::TrialBalance(selection) => Ok(Ok(ReportOutput::TrialBalance(
                 selection.report(db, book, at)?,
             ))),
+            Self::FunctionalTrialBalance(selection) => Ok(
+                crate::functional_trial_balance::report_at(db, book, selection, at)?
+                    .map(|report| ReportOutput::FunctionalTrialBalance(Box::new(report))),
+            ),
             Self::ExplainBalance { account, period } => {
                 Ok(Ok(ReportOutput::ExplainBalance(Box::new(
                     fa_registers::explain_balance(db, book, *account, period, Some(at))?,
@@ -431,6 +501,10 @@ impl ReportSelection {
                 crate::dimension::trial_balance_at(db, book, selection, dimension, value, at)?
                     .map(|report| ReportOutput::DimensionTrialBalance(Box::new(report))),
             ),
+            Self::RegulatorySchedule(selection) => {
+                Ok(crate::statements::regulatory_at(db, book, selection, at)?
+                    .map(|statement| ReportOutput::RegulatorySchedule(Box::new(statement))))
+            }
         }
     }
 }
@@ -440,6 +514,7 @@ impl ReportSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportOutput {
     TrialBalance(TrialBalance),
+    FunctionalTrialBalance(Box<crate::functional_trial_balance::FunctionalTrialBalance>),
     ExplainBalance(Box<BalanceExplanation>),
     OpenItems(OpenItemsReport),
     Statement(Box<fa_statements::Statement>),
@@ -447,6 +522,8 @@ pub enum ReportOutput {
     Consolidation(Box<crate::consolidation::Consolidation>),
     FunctionalConsolidation(Box<crate::consolidation::FunctionalConsolidation>),
     DimensionTrialBalance(Box<crate::dimension::DimensionTrialBalance>),
+    /// The statement a regulatory schedule evaluates to.
+    RegulatorySchedule(Box<fa_statements::Statement>),
 }
 
 impl ReportOutput {
@@ -454,12 +531,13 @@ impl ReportOutput {
     pub fn known_at(&self) -> CommitSeq {
         match self {
             Self::TrialBalance(report) => report.known_at,
+            Self::FunctionalTrialBalance(report) => report.known_at,
             Self::DimensionTrialBalance(report) => report.trial_balance.known_at,
             Self::ExplainBalance(report) => report.known_at,
             Self::OpenItems(report) => report.known_at,
-            Self::Statement(report) | Self::FunctionalStatement(report) => {
-                CommitSeq(report.known_at)
-            }
+            Self::Statement(report)
+            | Self::FunctionalStatement(report)
+            | Self::RegulatorySchedule(report) => CommitSeq(report.known_at),
             Self::Consolidation(report) => report.known_at,
             Self::FunctionalConsolidation(report) => report.group.known_at,
         }
@@ -471,10 +549,13 @@ impl ReportOutput {
     fn normalize_known_at(&mut self, known_at: CommitSeq) {
         match self {
             Self::TrialBalance(report) => report.known_at = known_at,
+            Self::FunctionalTrialBalance(report) => report.known_at = known_at,
             Self::DimensionTrialBalance(report) => report.trial_balance.known_at = known_at,
             Self::ExplainBalance(report) => report.known_at = known_at,
             Self::OpenItems(report) => report.known_at = known_at,
-            Self::Statement(report) | Self::FunctionalStatement(report) => {
+            Self::Statement(report)
+            | Self::FunctionalStatement(report)
+            | Self::RegulatorySchedule(report) => {
                 report.known_at = known_at.0;
             }
             Self::Consolidation(report) => report.set_known_at(known_at),
@@ -485,6 +566,7 @@ impl ReportOutput {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
         match self {
             Self::TrialBalance(report) => report.canonical_bytes(),
+            Self::FunctionalTrialBalance(report) => report.canonical_bytes(),
             Self::ExplainBalance(report) => report.canonical_bytes(),
             Self::OpenItems(report) => report.canonical_bytes(),
             Self::Statement(report) => report.canonical_bytes(),
@@ -498,6 +580,14 @@ impl ReportOutput {
             Self::Consolidation(report) => report.canonical_bytes(),
             Self::FunctionalConsolidation(report) => report.canonical_bytes(),
             Self::DimensionTrialBalance(report) => report.canonical_bytes(),
+            // Domain-separated, so a schedule's bytes never read as a
+            // native statement's.
+            Self::RegulatorySchedule(report) => {
+                let mut w = Writer::new();
+                w.fixed(REGULATORY_SCHEDULE_OUTPUT_FORMAT.as_bytes())
+                    .bytes(&report.canonical_bytes()?);
+                w.finish()
+            }
         }
     }
 }
@@ -648,7 +738,10 @@ fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static
     if matches!(selection, ReportSelection::ExplainBalance { .. }) {
         sources.push(REASON_CODES);
     }
-    if matches!(selection, ReportSelection::FunctionalStatement(_)) {
+    if matches!(
+        selection,
+        ReportSelection::FunctionalStatement(_) | ReportSelection::FunctionalTrialBalance(_)
+    ) {
         sources.extend([
             ("fx_laws", include_str!("../../../registries/fx_laws.toml")),
             (
@@ -1045,6 +1138,9 @@ impl ReportCertificate {
                 INSTANT_CERTIFICATE_FORMAT
             }
             ReportSelection::TrialBalance(_) => CERTIFICATE_FORMAT,
+            ReportSelection::FunctionalTrialBalance(_) => {
+                FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT
+            }
             ReportSelection::Statement(_) => STATEMENT_CERTIFICATE_FORMAT,
             ReportSelection::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT,
             ReportSelection::Consolidation { .. } => CONSOLIDATION_CERTIFICATE_FORMAT,
@@ -1054,6 +1150,7 @@ impl ReportCertificate {
             ReportSelection::DimensionTrialBalance { .. } => {
                 DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
             }
+            ReportSelection::RegulatorySchedule(_) => REGULATORY_SCHEDULE_CERTIFICATE_FORMAT,
             _ => REPORT_CERTIFICATE_FORMAT,
         }
     }
@@ -1087,6 +1184,8 @@ impl ReportCertificate {
             || self.format() == CONSOLIDATION_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
             || self.format() == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
+            || self.format() == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT
+            || self.format() == FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -1109,25 +1208,36 @@ impl ReportCertificate {
         }
         let decode = || -> Result<Self, fa_model::DecodeError> {
             let mut r = Reader::new(bytes);
-            let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
-            let version = if format == CERTIFICATE_FORMAT {
-                1
-            } else if format == INSTANT_CERTIFICATE_FORMAT {
-                2
-            } else if format == REPORT_CERTIFICATE_FORMAT {
-                3
-            } else if format == STATEMENT_CERTIFICATE_FORMAT {
-                4
-            } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
-                5
-            } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
-                6
-            } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
-                7
-            } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
-                8
+            // V10 is the first two-digit version. Preserve every earlier wire
+            // header and consume its exact length before reading framed fields.
+            let version = if bytes.starts_with(FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
+                r.fixed::<{ FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
+                    "certificate format",
+                )?;
+                10
             } else {
-                return Err(r.invalid("report certificate format"));
+                let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
+                if format == CERTIFICATE_FORMAT {
+                    1
+                } else if format == INSTANT_CERTIFICATE_FORMAT {
+                    2
+                } else if format == REPORT_CERTIFICATE_FORMAT {
+                    3
+                } else if format == STATEMENT_CERTIFICATE_FORMAT {
+                    4
+                } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
+                    5
+                } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
+                    6
+                } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
+                    7
+                } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
+                    8
+                } else if format == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT {
+                    9
+                } else {
+                    return Err(r.invalid("report certificate format"));
+                }
             };
             for (name, expected) in [("replay scope", REPLAY_SCOPE), ("authority", AUTHORITY)] {
                 if r.str(64, name)? != expected {
@@ -1479,10 +1589,7 @@ fn certify_selected<V: Vfs + Clone>(
     let head = db.frontier().map_err(fa_journal::KernelError::from)?;
     let at = known_at.unwrap_or(head);
     if at > head {
-        if matches!(
-            &selection,
-            ReportSelection::Statement(_) | ReportSelection::FunctionalStatement(_)
-        ) {
+        if selection.statement_columns().is_some() {
             return Ok(Err(crate::statements::invalid(format!(
                 "statement known-at {} is beyond book head {}",
                 at.0, head.0
@@ -1495,10 +1602,7 @@ fn certify_selected<V: Vfs + Clone>(
         .into());
     }
     if !selection.is_canonical() {
-        if matches!(
-            &selection,
-            ReportSelection::Statement(_) | ReportSelection::FunctionalStatement(_)
-        ) {
+        if selection.statement_columns().is_some() {
             return Ok(Err(crate::statements::invalid(
                 "select nonempty, bounded statement periods",
             )));
@@ -1676,9 +1780,11 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         && (matches!(
             &certificate.selection,
             ReportSelection::FunctionalStatement(_)
+                | ReportSelection::FunctionalTrialBalance(_)
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
                 | ReportSelection::DimensionTrialBalance { .. }
+                | ReportSelection::RegulatorySchedule(_)
         ) || (certificate.registry_digest != legacy_v2
             && certificate.registry_digest != legacy_registry_digest(&certificate.selection)))
     {
@@ -1976,16 +2082,32 @@ fn statement_chart_additions<V: Vfs + Clone>(
     journal: &Journal,
     entries: &BTreeMap<VId, Entry>,
 ) -> Outcome<(Option<ReportOutput>, BTreeSet<VId>)> {
-    let (selection, statement, functional) = match (&certificate.selection, report) {
-        (ReportSelection::Statement(selection), ReportOutput::Statement(statement)) => {
-            (selection, statement, false)
-        }
-        (
-            ReportSelection::FunctionalStatement(selection),
-            ReportOutput::FunctionalStatement(statement),
-        ) => (selection, statement, true),
-        _ => return Ok(Ok((None, BTreeSet::new()))),
-    };
+    type Wrap = fn(Box<fa_statements::Statement>) -> ReportOutput;
+    let (partition, statement, wrap): (StatementPartition<'_>, _, Wrap) =
+        match (&certificate.selection, report) {
+            (ReportSelection::Statement(selection), ReportOutput::Statement(statement)) => (
+                StatementPartition::ByType(&selection.definition),
+                statement,
+                ReportOutput::Statement,
+            ),
+            (
+                ReportSelection::FunctionalStatement(selection),
+                ReportOutput::FunctionalStatement(statement),
+            ) => (
+                StatementPartition::ByType(&selection.definition),
+                statement,
+                ReportOutput::FunctionalStatement,
+            ),
+            (
+                ReportSelection::RegulatorySchedule(selection),
+                ReportOutput::RegulatorySchedule(statement),
+            ) => (
+                StatementPartition::ByCode(&selection.schedule.statement_definition),
+                statement,
+                ReportOutput::RegulatorySchedule,
+            ),
+            _ => return Ok(Ok((None, BTreeSet::new()))),
+        };
     let mut additions = Vec::new();
     let mut chart_entries = BTreeSet::new();
     let mut mapped_ids: BTreeSet<_> = statement
@@ -2078,7 +2200,15 @@ fn statement_chart_additions<V: Vfs + Clone>(
                 is_leaf: account.is_leaf,
             });
         }
-        let mappings = match fa_statements::map_accounts(&selection.definition, &accounts) {
+        let mapped = match partition {
+            StatementPartition::ByType(definition) => {
+                fa_statements::map_accounts(definition, &accounts)
+            }
+            StatementPartition::ByCode(definition) => {
+                fa_statements::custom::map_custom_accounts(definition, &accounts)
+            }
+        };
+        let mappings = match mapped {
             Ok(mappings) => mappings,
             Err(error) => {
                 return Ok(Err(invalid(format!(
@@ -2109,14 +2239,15 @@ fn statement_chart_additions<V: Vfs + Clone>(
             .cmp(&b.account.code)
             .then(a.account.id.cmp(&b.account.id))
     });
-    Ok(Ok((
-        Some(if functional {
-            ReportOutput::FunctionalStatement(Box::new(augmented))
-        } else {
-            ReportOutput::Statement(Box::new(augmented))
-        }),
-        chart_entries,
-    )))
+    Ok(Ok((Some(wrap(Box::new(augmented))), chart_entries)))
+}
+
+/// How a statement-shaped report assigns covered leaves to lines: a
+/// registered definition by account type, a regulatory schedule by code.
+#[derive(Clone, Copy)]
+enum StatementPartition<'a> {
+    ByType(&'a fa_statements::StatementDefinition),
+    ByCode(&'a fa_statements::custom::CustomStatementDefinition),
 }
 
 /// Read the existing `genesis::install_chart` body, including its additive
@@ -2402,6 +2533,11 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
     };
     let accounts: BTreeMap<VId, AccountMetadata> = match report {
         ReportOutput::TrialBalance(report) => trial_balance_metadata(report),
+        ReportOutput::FunctionalTrialBalance(report) => report
+            .accounts
+            .iter()
+            .map(|(vid, row)| (*vid, AccountMetadata::Complete(row.clone())))
+            .collect(),
         ReportOutput::DimensionTrialBalance(report) => {
             trial_balance_metadata(&report.trial_balance)
         }
@@ -2414,9 +2550,9 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
             .iter()
             .map(|(vid, row)| (*vid, AccountMetadata::Complete(row.clone())))
             .collect(),
-        ReportOutput::Statement(report) | ReportOutput::FunctionalStatement(report) => {
-            statement_account_metadata([report.as_ref()])
-        }
+        ReportOutput::Statement(report)
+        | ReportOutput::FunctionalStatement(report)
+        | ReportOutput::RegulatorySchedule(report) => statement_account_metadata([report.as_ref()]),
         ReportOutput::Consolidation(report) => {
             statement_account_metadata([&report.run.balance_sheet, &report.run.income_statement])
         }
@@ -2622,6 +2758,14 @@ pub(crate) fn selected(
             }
         }
         (
+            ReportSelection::FunctionalTrialBalance(_),
+            ReportOutput::FunctionalTrialBalance(report),
+        ) => {
+            if let Some(through) = report.effective_through {
+                return Ok(entry.proposal.effective_date <= through);
+            }
+        }
+        (
             ReportSelection::DimensionTrialBalance { .. },
             ReportOutput::DimensionTrialBalance(report),
         ) => {
@@ -2638,11 +2782,15 @@ pub(crate) fn selected(
             }
         }
         (ReportSelection::ExplainBalance { .. }, ReportOutput::ExplainBalance(_)) => {}
-        (ReportSelection::Statement(selection), ReportOutput::Statement(report))
-        | (
-            ReportSelection::FunctionalStatement(selection),
-            ReportOutput::FunctionalStatement(report),
-        ) => {
+        (ReportSelection::Statement(_), ReportOutput::Statement(report))
+        | (ReportSelection::FunctionalStatement(_), ReportOutput::FunctionalStatement(report))
+        | (ReportSelection::RegulatorySchedule(_), ReportOutput::RegulatorySchedule(report)) => {
+            let Some((kind, _, _)) = selection.statement_columns() else {
+                return Err(fa_journal::KernelError::Corrupt(
+                    "a statement certificate lacks its statement columns".into(),
+                )
+                .into());
+            };
             if entry.proposal.class == EntryClass::PENDING {
                 return Ok(false);
             }
@@ -2654,7 +2802,7 @@ pub(crate) fn selected(
             }) {
                 return Ok(false);
             }
-            if selection.definition.basis() == fa_statements::Basis::Stock {
+            if kind.basis() == fa_statements::Basis::Stock {
                 return Ok(report
                     .columns
                     .iter()
@@ -2663,11 +2811,7 @@ pub(crate) fn selected(
             let mut original = entry;
             let mut seen = BTreeSet::new();
             loop {
-                if selection
-                    .definition
-                    .excluded_classes()
-                    .contains(&original.proposal.class)
-                {
+                if kind.excluded_classes().contains(&original.proposal.class) {
                     return Ok(false);
                 }
                 if original.proposal.class != EntryClass::REVERSAL {
@@ -2733,6 +2877,7 @@ pub(crate) fn selected(
     })?;
     Ok(match selection {
         ReportSelection::TrialBalance(TrialBalanceSelection::Activity(periods))
+        | ReportSelection::FunctionalTrialBalance(TrialBalanceSelection::Activity(periods))
         | ReportSelection::DimensionTrialBalance {
             selection: TrialBalanceSelection::Activity(periods),
             ..
@@ -2742,9 +2887,15 @@ pub(crate) fn selected(
         ReportSelection::ExplainBalance {
             period: selected, ..
         } => *selected == period.code,
-        ReportSelection::Statement(selection) | ReportSelection::FunctionalStatement(selection) => {
-            selection.periods.binary_search(&period.code).is_ok()
-                || selection.comparative.binary_search(&period.code).is_ok()
+        ReportSelection::Statement(_)
+        | ReportSelection::FunctionalStatement(_)
+        | ReportSelection::RegulatorySchedule(_) => {
+            selection
+                .statement_columns()
+                .is_some_and(|(_, periods, comparative)| {
+                    periods.binary_search(&period.code).is_ok()
+                        || comparative.binary_search(&period.code).is_ok()
+                })
         }
         _ => false,
     })
@@ -3531,6 +3682,77 @@ mod tests {
                 "{dimension}={value}"
             );
         }
+    }
+
+    /// fa-doa9: a regulatory schedule is selector tag 7, read only by v9. The
+    /// selector binds the complete schedule (form, schedule code,
+    /// instruction version, code-mapped definition, declared inputs), so a
+    /// changed instruction version is a different certificate question.
+    #[test]
+    fn regulatory_schedule_v9_binds_its_complete_schedule_and_reserves_its_tag() {
+        use fa_statements::regulatory::RegulatoryScheduleDefinition;
+        let normalized = crate::statements::RegulatorySelection {
+            schedule: RegulatoryScheduleDefinition::ffiec_041_schedule_ri_2026q1(),
+            periods: vec![
+                "FY2026-P03".into(),
+                "FY2026-P01".into(),
+                "FY2026-P02".into(),
+            ],
+            comparative: vec![],
+        }
+        .normalize();
+        let selection = ReportSelection::RegulatorySchedule(Box::new(normalized.clone()));
+        assert_eq!(selection.clone().normalize(), selection);
+        assert_eq!(
+            normalized.periods,
+            ["FY2026-P01", "FY2026-P02", "FY2026-P03"],
+            "a year-to-date RI selects its periods in canonical order"
+        );
+        let mut writer = Writer::new();
+        selection.write(&mut writer).unwrap();
+        let bytes = writer.finish().unwrap();
+        assert_eq!(bytes[0], 7);
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(ReportSelection::read(&mut reader, 9).unwrap(), selection);
+        reader.finish().unwrap();
+        // No earlier format reads the tag, and v9 reads no other selector.
+        for version in 3..=8 {
+            assert!(ReportSelection::read(&mut Reader::new(&bytes), version).is_err());
+        }
+        let mut statement = Writer::new();
+        ReportSelection::from(crate::StatementSelection {
+            definition: crate::StatementDefinition::embedded("balance-sheet").unwrap(),
+            periods: vec!["FY2026-P03".into()],
+            comparative: vec![],
+        })
+        .write(&mut statement)
+        .unwrap();
+        assert!(ReportSelection::read(&mut Reader::new(&statement.finish().unwrap()), 9).is_err());
+        let certificate = wire_fixture(selection.clone(), None);
+        assert_eq!(certificate.format(), REGULATORY_SCHEDULE_CERTIFICATE_FORMAT);
+        assert_eq!(
+            certificate.output_format(),
+            REGULATORY_SCHEDULE_OUTPUT_FORMAT
+        );
+        // No bound input beyond the native closure every report carries.
+        assert_eq!(statements(CommitSeq(7), &selection).len(), INPUTS.len());
+        // The selector is the whole schedule: another instruction version
+        // encodes differently.
+        let mut revised = normalized.clone();
+        revised.schedule.instruction_version = "FFIEC-041-2026Q2".into();
+        let mut other = Writer::new();
+        ReportSelection::RegulatorySchedule(Box::new(revised))
+            .write(&mut other)
+            .unwrap();
+        assert_ne!(other.finish().unwrap(), bytes);
+        // No period, and a schedule that does not validate, are not
+        // canonical selectors.
+        let mut empty = normalized.clone();
+        empty.periods.clear();
+        assert!(!ReportSelection::RegulatorySchedule(Box::new(empty)).is_canonical());
+        let mut invalid = normalized.clone();
+        invalid.schedule.schedule_code.clear();
+        assert!(!ReportSelection::RegulatorySchedule(Box::new(invalid)).is_canonical());
     }
 
     #[test]

@@ -73,6 +73,12 @@ pub const DATE_BASIS_EXTENSION: u16 = 3;
 /// document and party recorded at or before `through`; fa-k07b). On a
 /// Release: `1u8 ‖ u128 hold`, the Place it releases.
 pub const LEGAL_HOLD_SCOPE_EXTENSION: u16 = 4;
+/// Extension tag 5, `fa:allocation-posting:v1` (plan §6.3; fa-joq): an
+/// `Allocation` entry's computation binding — the driver basis's canonical
+/// bytes, law digest and basis digest
+/// (`registries/object_schemas/allocation.toml`). fa-journal `allocation`
+/// interprets it in full.
+pub const ALLOCATION_EXTENSION: u16 = 5;
 /// Extension tag 6, `fa:event-ref:v1` (plan §4.1 `Event`, §4.5, FA-INV-05,
 /// bead `fa-f3bo`): binds an `EntryProposal` to a committed REA `Event`
 /// vertex — `event_vid: u128 LE ‖ event_digest: [u8; 32]` (48 bytes).
@@ -215,6 +221,11 @@ pub const RULE_INPUTS_EXTENSION: u16 = 32;
 /// ([`crate::obligation::InlineObligationTerms`]); validated against the
 /// legs by [`crate::obligation::validate_terms`].
 pub const OBLIGATION_MATURITY_EXTENSION: u16 = 33;
+/// Extension tag 34, `fa:valuation-adjustment:v1` (plan §11.6, bead fa-8j3g):
+/// explicit dated valuation inputs this entry carries
+/// ([`crate::valuation::InlineValuationTerms`]); validated by
+/// [`crate::valuation::validate_terms`].
+pub const VALUATION_ADJUSTMENT_EXTENSION: u16 = 34;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -223,6 +234,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     AUTO_REVERSE_EXTENSION,
     DATE_BASIS_EXTENSION,
     LEGAL_HOLD_SCOPE_EXTENSION,
+    ALLOCATION_EXTENSION,
     EVENT_REF_EXTENSION,
     CAPABILITY_BODY_EXTENSION,
     DRAFT_BODY_EXTENSION,
@@ -251,6 +263,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     RECURRING_OCCURRENCE_EXTENSION,
     RULE_INPUTS_EXTENSION,
     OBLIGATION_MATURITY_EXTENSION,
+    VALUATION_ADJUSTMENT_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1621,6 +1634,26 @@ impl EntryPayload {
         Ok(totals)
     }
 
+    /// [`Self::validate`] for a payload this build is about to write: it also
+    /// refuses a `schema_minor` above [`SCHEMA_MINOR`] (fa-hoi5). Reading
+    /// still accepts a newer writer's minor and preserves its unknown
+    /// extensions (the additive-minor law); writing one would journal
+    /// extensions this build never validated.
+    pub fn validate_for_write(&self) -> Result<(), EntryError> {
+        self.validate()?;
+        self.check_writer_minor()
+    }
+
+    fn check_writer_minor(&self) -> Result<(), EntryError> {
+        if self.schema_minor > SCHEMA_MINOR {
+            return Err(invalid(
+                "schema_minor",
+                "a writer seals only the schema minors it knows; register a new extension instead of claiming a newer minor",
+            ));
+        }
+        Ok(())
+    }
+
     /// Structural validation (not the accounting laws).
     pub fn validate(&self) -> Result<(), EntryError> {
         if !self.class.is_registered() {
@@ -1799,6 +1832,13 @@ impl EntryPayload {
         {
             crate::obligation::validate_terms(bytes, &self.legs)
                 .map_err(|(what, why)| invalid(what, why))?;
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(t, _)| *t == VALUATION_ADJUSTMENT_EXTENSION)
+        {
+            crate::valuation::validate_terms(bytes).map_err(|(what, why)| invalid(what, why))?;
         }
         if let (Some((_, bytes)), EntryOrigin::Rule { event_ref, .. }) = (
             self.extensions
@@ -2227,8 +2267,21 @@ impl EntryPayload {
     }
 
     /// Bind the envelope — the dry-run plan certificate (if any) and the
-    /// approval transcript — and produce the committed entry.
+    /// approval transcript — and produce the committed entry. Every new
+    /// entry is sealed here, so a schema minor this build does not know is
+    /// refused here as well as at admission (fa-hoi5).
     pub fn seal(
+        self,
+        approvals: Vec<ApprovalRef>,
+        plan_certificate: Option<Oid>,
+    ) -> Result<Entry, EntryError> {
+        self.check_writer_minor()?;
+        self.seal_unchecked(approvals, plan_certificate)
+    }
+
+    /// [`Self::seal`] without the writer-minor check: how a newer writer's
+    /// entry is built for this module's own decode tests.
+    fn seal_unchecked(
         self,
         approvals: Vec<ApprovalRef>,
         plan_certificate: Option<Oid>,
@@ -3239,7 +3292,26 @@ mod tests {
             }
         ));
         p.schema_minor = SCHEMA_MINOR + 1;
-        let e = p.clone().seal(vec![], None).unwrap();
+        // This build reads a newer writer's entry (it validates, preserving
+        // the unknown tag), but never writes one (fa-hoi5): validate_for_write
+        // and seal refuse the minor it does not know.
+        assert!(p.validate().is_ok());
+        for refused in [
+            p.validate_for_write().unwrap_err(),
+            p.clone().seal(vec![], None).unwrap_err(),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    EntryError::Invalid {
+                        what: "schema_minor",
+                        ..
+                    }
+                ),
+                "{refused:?}"
+            );
+        }
+        let e = p.clone().seal_unchecked(vec![], None).unwrap();
         let back = Entry::decode(&e.encode().unwrap()).unwrap();
         assert_eq!(back.proposal.extensions, vec![(999, vec![1, 2, 3])]);
         let mut q = p.clone();

@@ -316,6 +316,7 @@ pub fn read_csv_gl(csv: &str, units: &UnitCatalog) -> Result<FormatJournal, Form
             entry_count: journal.entries.len() as u64,
             content_digest: exp_content,
             certificate_digest: exp_cert,
+            account_scope: None,
         };
         coord.verify(&journal.coordinate.content_digest)?;
     }

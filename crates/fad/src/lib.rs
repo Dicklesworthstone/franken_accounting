@@ -20,6 +20,11 @@
 //! reaches the book.
 
 #![forbid(unsafe_code)]
+// Proving a served connection's future `Send` walks the daemon's whole async
+// stack, through `TimedWork::run_observation` and the notary checkpoint. It
+// exceeds the default depth of 128 (rustc's recursion_depth_exceeding_limit,
+// an error under `-D warnings`).
+#![recursion_limit = "256"]
 
 pub mod clock;
 pub mod timed;
