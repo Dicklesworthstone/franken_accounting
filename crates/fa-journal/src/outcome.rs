@@ -3,8 +3,9 @@
 //! Entry identity still enforces target uniqueness. These immutable claims
 //! additionally reserve (book, principal, key), shared with atomic batches.
 //! Migration retains its declared run-scoped keys. Period, time and normal-key
-//! policy activation and account lifecycle controls also reserve the common
-//! key; their pre-protocol entries remain valid retry anchors. Other dedicated
+//! policy activation, account lifecycle, dimension creation and native
+//! subledger registration controls also reserve the common key; their
+//! pre-protocol entries remain valid retry anchors. Other dedicated
 //! writers, including target-derived capability issuance and revocation, have
 //! not migrated.
 //! Existing normal-key controls are checked before a posting takes their key.
@@ -634,7 +635,10 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
         || (proposal.class == EntryClass::SCHEMA_CONTROL
             && matches!(
                 &proposal.control,
-                Some(fa_model::ControlPayload::SchemaChange { kind: 2..=4, .. })
+                Some(fa_model::ControlPayload::SchemaChange {
+                    kind: 2..=4 | 15 | 17,
+                    ..
+                })
             ));
     admitted
         && vid

@@ -53,6 +53,8 @@ mod policy_outcome_keys;
 mod recurring_tests;
 #[path = "genesis/register_capacity.rs"]
 mod register_capacity;
+#[path = "genesis/registration_outcome_keys.rs"]
+mod registration_outcome_keys;
 #[path = "genesis/scheduled_admission.rs"]
 mod scheduled_admission_tests;
 #[path = "genesis/subledger.rs"]

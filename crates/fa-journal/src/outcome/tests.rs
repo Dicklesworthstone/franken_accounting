@@ -15,7 +15,7 @@ use super::*;
 #[test]
 fn account_lifecycle_claims_do_not_admit_other_schema_controls_or_target_identities() {
     let mut h = Harness::source("schema control key identity");
-    for kind in [1_u16, 2, 3, 4, 13, 17, 18, 19] {
+    for kind in [1_u16, 2, 3, 4, 13, 15, 16, 17, 18, 19] {
         let key = kind.to_le_bytes();
         let proposal = crate::chart::schema_control_proposal(
             &h.book,
@@ -37,7 +37,7 @@ fn account_lifecycle_claims_do_not_admit_other_schema_controls_or_target_identit
         let mut claimed = WriteBatch::new(relation::IN_BOOK);
         assert_eq!(
             stage_control(&mut claimed, &entry, normal).is_ok(),
-            matches!(kind, 2..=4),
+            matches!(kind, 2..=4 | 15 | 17),
         );
         let target = crate::policy::revocation_vid(h.book.book_id, &[kind as u8; 32]);
         assert!(stage_control(&mut WriteBatch::new(relation::IN_BOOK), &entry, target).is_err());
@@ -54,7 +54,7 @@ fn account_lifecycle_claims_do_not_admit_other_schema_controls_or_target_identit
         h.write(legacy);
         assert_eq!(
             verify_control_recorded(&h.db, &h.db.vertex(normal).unwrap().unwrap(), &entry).unwrap(),
-            matches!(kind, 2..=4),
+            matches!(kind, 2..=4 | 15 | 17),
         );
         assert!(
             !verify_control_recorded(&h.db, &h.db.vertex(target).unwrap().unwrap(), &entry)
