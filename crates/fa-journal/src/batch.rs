@@ -464,14 +464,12 @@ impl TemplateByteTracker {
         let mut row_bytes = self.fixed_row_bytes;
         for (_, (relation, labels_len, props)) in &self.created_vertices {
             relations.insert(*relation);
-            row_bytes +=
-                38 + 8 * labels_len + props.values().map(|len| 12 + len).sum::<usize>();
+            row_bytes += 38 + 8 * labels_len + props.values().map(|len| 12 + len).sum::<usize>();
         }
         for (relation, before, after) in self.property_updates.values() {
             if before != after {
                 relations.insert(*relation);
-                row_bytes +=
-                    30 + opt_scalar_len(before.as_ref()) + opt_scalar_len(after.as_ref());
+                row_bytes += 30 + opt_scalar_len(before.as_ref()) + opt_scalar_len(after.as_ref());
             }
         }
         if relations.is_empty() && row_bytes == 0 {
@@ -985,7 +983,14 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         entries: members.iter().map(|m| m.entry_ref).collect(),
     };
     let mut stage = WriteBatch::new(relation::IN_BATCH);
-    stage_outcome_tracked(&ctx.query(), &mut stage, &mut tracker, book.book_id, ovid, &body)?;
+    stage_outcome_tracked(
+        &ctx.query(),
+        &mut stage,
+        &mut tracker,
+        book.book_id,
+        ovid,
+        &body,
+    )?;
     for m in &members {
         let evid = m.entry_ref.vid;
         tracker.add_edge(relation::IN_BATCH, &[]);
@@ -2117,7 +2122,8 @@ mod tests {
                 )
             })
             .collect();
-        let over_batch = PostBatch::new(b"over-capsule-batch".to_vec(), over_entries).expect("batch");
+        let over_batch =
+            PostBatch::new(b"over-capsule-batch".to_vec(), over_entries).expect("batch");
         let basis = db.frontier().expect("frontier");
 
         let plan_refusal = plan_batch(&mut db, &ctx, &book, cap.clone(), over_batch.clone())
