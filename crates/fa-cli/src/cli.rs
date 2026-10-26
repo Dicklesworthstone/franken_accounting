@@ -3581,8 +3581,8 @@ const GUIDE: &str = "fa robot-docs guide\n\
 11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
 12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n\
 13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json`, `fa explain balance 1000 --period FY2026-P03 --certify --json`, and `fa open-items --account 1000 --certify --json` retain the report's certificate in the book. Each emits its original report event followed by report_certificate, binding the selector, known-at, historical account metadata and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n\
-14. Rehearse an entry before writing: add --dry-run to post, reverse, reserve or resolve. The actual posting laws run, their staged transaction is aborted, and one plan event returns the exact sealed proposal, native effects digest, snapshot and complete canonical bytes. --plan-out <new-file> saves a private binary copy without replacing a file. Review it, then `fa commit --plan <file|-> --json` with the same owner --as and --grant; stdin accepts the bytes hex string. MCP uses fa_post_commit_plan with plan set to that string and keeps its launch-bound capability unchanged: ordinary Preparer plans can commit, Agent trunk posting still refuses, and dangerous void commits remain unavailable until separate confirmation exists. A first commit atomically retains its graph Certificate and CITES edge; an exact retry returns plan_committed with already_recorded=true. Any intervening book publication invalidates this first same-snapshot plan and requires another dry run. --balancing works with --dry-run and --scenario: the request is retained and the plan previews its exact admitted amount. Draft balancing remains refused until promotion binds the reviewed amount. Planning collects no new approvals. A dry-run void releases nothing; the owner explicitly confirms its exact artifact, while MCP must ask the operator to separately prepare and confirm a release. Public plan digests are data fields, never native object-store OIDs in the envelope.\n\
-15. An Agent (or anyone) works on a draft (plan §15.2): `fa draft new <name>`, then the same post, reverse, reserve or resolve command with --draft <name> (or `fa draft plan <name> --intent <file|->`). Each intent is rehearsed under every posting law and journaled into the draft; nothing reaches trunk. `fa draft show <name> --json` lists the planned intents and the entries a promotion will create. A principal holding approve who is not the draft's owner runs `fa draft promote <name> --yes`: every intent is admitted again against current trunk (period law, ceilings, revocation, evidence) and all post in one batch, or none do; the planner stays each entry's principal. `fa draft discard <name>` closes a draft without posting. Over MCP the fa.draft cluster is on demand (`fa-mcp --cluster fa.draft`); promotion is host-only.\n\
+14. Rehearse an entry before writing: add --dry-run to post, reverse, reserve or resolve. The actual posting laws run, their staged transaction is aborted, and one plan event returns the exact sealed proposal, native effects digest, snapshot and complete canonical bytes. --plan-out <new-file> saves a private binary copy without replacing a file. Review it, then `fa commit --plan <file|-> --json` with the same owner --as and --grant; stdin accepts the bytes hex string. MCP uses fa_post_commit_plan with plan set to that string and keeps its launch-bound capability unchanged: ordinary Preparer plans can commit, Agent trunk posting still refuses, and dangerous void commits remain unavailable until separate confirmation exists. A first commit atomically retains its graph Certificate and CITES edge; an exact retry returns plan_committed with already_recorded=true. Any intervening book publication invalidates this first same-snapshot plan and requires another dry run. --balancing works with --dry-run, --draft and --scenario: the request is retained and the preview shows its exact admitted amount; drafts retain the reviewed effects and refuse changed amounts on promotion. Planning collects no new approvals. A dry-run void releases nothing; the owner explicitly confirms its exact artifact, while MCP must ask the operator to separately prepare and confirm a release. Public plan digests are data fields, never native object-store OIDs in the envelope.\n\
+15. An Agent (or anyone) works on a draft (plan §15.2): `fa draft new <name>`, then the same post, reverse, reserve or resolve command with --draft <name> (or `fa draft plan <name> --intent <file|->`). Every append rehearses the whole ordered draft, so later intents can use earlier members' effects. The exact reviewed entries are retained; later members and --balancing requests see the staged availability. Nothing reaches trunk. `fa draft show <name> --json` lists the planned intents and the entries a promotion will create. A principal holding approve who is not the draft's owner runs `fa draft promote <name> --yes`: every intent is admitted again against current trunk (period law, ceilings, revocation, evidence) and its resolved entry must still match the retained review. All post in one batch, or none do; the planner stays each entry's principal. `fa draft discard <name>` closes a draft without posting. Over MCP the fa.draft cluster is on demand (`fa-mcp --cluster fa.draft`); promotion is host-only.\n\
 16. Correct an entry in one step: `fa reverse <vid> --reason WrongAmount --replace-with corrected.json --json` posts the exact reversal and the corrected entry together, both or neither, citing the target under one reason (event corrected). corrected.json is an ordinary entry intent (legs, optional effective_date and description); its date and period default to the target's.\n\
 17. Export for an auditor or another ledger: `fa export ads|saft|csv-gl|beancount|hledger|ndjson --period FY2026-P03 [--out <new path>] --json` writes what the trial balance folds (pending holds excluded) with its export coordinate certificate; ads writes four tables into a new directory. It needs read and produce. Over MCP the fa.io cluster is on demand.\n\
 18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`, `fa party identifiers <code> --identifier bank_account=<value>... --key <change-id>` (replaces the party's identifier set under a named change; values sealed, never echoed; host-only over MCP). Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
@@ -6347,12 +6347,6 @@ fn plan_document_into_draft(
             "drop --dry-run/--plan-out to plan into the draft, or drop --draft to rehearse only",
         ));
     }
-    if args.flag("--balancing").is_some() {
-        return Err(usage(
-            "a draft cannot yet bind a saturating amount across promotion",
-            "use --balancing with --dry-run to review and commit an exact plan, or plan explicit amounts into the draft",
-        ));
-    }
     if doc.get("intents").is_some() {
         return Err(usage(
             "a batch document cannot be planned into a draft; the draft is its own batch",
@@ -6367,6 +6361,7 @@ fn plan_document_into_draft(
     })?;
     let BuiltPost { request: req, .. } =
         build_post_request(out, &mut book, args, forced, doc, who, capability)?;
+    let req = prepare_balancing_request(args, req)?;
     let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
         usage(
             format!("cannot plan this entry: {e}"),
@@ -6381,25 +6376,64 @@ fn plan_document_into_draft(
     );
     let planned = book.plan_into_draft(req.capability, name, intent)??;
     out.at_book(&book)?;
-    let (plan_digest, proposal_digest) = match &planned.plan {
-        Some(plan) => (
-            s(hex(&plan.digest().map_err(|e| {
-                Fail::Internal(format!("encode the draft plan: {e}"))
-            })?)),
-            s(hex(&plan.certificate().proposal_digest)),
-        ),
-        None => (Json::Null, Json::Null),
+    let (plan_digest, proposal_digest, balancing) = match &planned.plan {
+        Some(preview) => {
+            let member = preview.members().last().ok_or_else(|| {
+                Fail::Internal("an admitted draft preview has no appended member".into())
+            })?;
+            let balancing = fa_journal::limit::balancing_request(member.intent.proposal())
+                .map_err(|error| Fail::Internal(format!("draft balancing request: {error}")))?
+                .map(|(ordinal, requested)| {
+                    let leg = member
+                        .entry
+                        .proposal
+                        .legs
+                        .get(usize::from(ordinal))
+                        .ok_or_else(|| {
+                            Fail::Internal("an admitted draft lost its balancing leg".into())
+                        })?;
+                    Ok::<_, Fail>((
+                        render_amount(
+                            Amount::new(leg.amount.unit, requested),
+                            &book.context().units,
+                        )?,
+                        render_amount(leg.amount, &book.context().units)?,
+                    ))
+                })
+                .transpose()?;
+            (
+                s(hex(&preview.digest().map_err(|error| {
+                    Fail::Internal(format!("encode the ordered draft preview: {error}"))
+                })?)),
+                s(hex(&member.entry.proposal_digest)),
+                balancing,
+            )
+        }
+        None => (Json::Null, Json::Null, None),
     };
     let recorded = &planned.recorded;
     let mut fields = draft_record_fields(name, recorded);
     fields.push(("entry", s(format!("{:032x}", entry.0))));
     fields.push(("plan_digest", plan_digest));
     fields.push(("proposal_digest", proposal_digest));
+    fields.push((
+        "requested",
+        balancing
+            .as_ref()
+            .map_or(Json::Null, |(requested, _)| s(requested)),
+    ));
+    fields.push((
+        "moved",
+        balancing.as_ref().map_or(Json::Null, |(_, moved)| s(moved)),
+    ));
+    let balancing_detail = balancing.map_or(String::new(), |(requested, moved)| {
+        format!("; requested {requested}, reviewed {moved}")
+    });
     out.event(
         "draft_planned",
         fields,
         &format!(
-            "planned into draft {name} (entry {:032x} on promotion){}",
+            "planned into draft {name} (entry {:032x} on promotion){balancing_detail}{}",
             entry.0,
             if recorded.already_recorded {
                 "; already planned"

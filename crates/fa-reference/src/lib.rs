@@ -1806,8 +1806,9 @@ impl Oracle {
     /// Plan `intent` into the open draft `name` as `planner`: only its owner
     /// plans; one intent per key (the identical one is its record, even
     /// after the draft is promoted or discarded: FA-INV-09); and the intent
-    /// must post on a copy of this book as it stands, which is then thrown
-    /// away (the rehearsal writes nothing).
+    /// must join all earlier intents as one ordered batch on a copy of this
+    /// book as it stands, which is then thrown away (the rehearsal writes
+    /// nothing). Each member sees every predecessor's effects.
     pub fn plan_into_draft(&mut self, name: &str, planner: &str, intent: &Intent) -> DraftVerdict {
         let refused = |code| DraftVerdict::Refused { member: None, code };
         let Some(d) = self.drafts.get(name) else {
@@ -1827,10 +1828,15 @@ impl Oracle {
             return refused(code::DRAFT_NOT_OPEN);
         }
         let mut rehearsal = self.clone();
-        match rehearsal.post(intent) {
-            Verdict::Posted { .. } => {}
-            Verdict::Recorded { .. } => return refused(code::PLAN_INVALIDATED),
-            Verdict::Refused { code } => return refused(code),
+        let mut members = d.intents.clone();
+        members.push(intent.clone());
+        let key = [b"fa:draft-promotion:".as_slice(), name.as_bytes()].concat();
+        match rehearsal.post_batch(&key, &members) {
+            BatchVerdict::Posted { .. } => {}
+            BatchVerdict::Recorded { .. } => return refused(code::PLAN_INVALIDATED),
+            BatchVerdict::Refused { member, code } => {
+                return DraftVerdict::Refused { member, code };
+            }
         }
         if let Some(d) = self.drafts.get_mut(name) {
             d.intents.push(intent.clone());

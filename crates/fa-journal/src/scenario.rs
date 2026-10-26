@@ -1315,6 +1315,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                     recorded_at,
                     intent,
                     capability,
+                    resolved_entry_digest: None,
                 });
             }
             (f, t) if f == open && t == ScenarioState::Discarded.tag() => {

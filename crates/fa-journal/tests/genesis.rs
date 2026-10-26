@@ -10534,6 +10534,45 @@ impl Harness {
     }
 }
 
+#[test]
+fn ordered_draft_plans_allow_later_members_to_settle_earlier_members() {
+    let mut h = harness();
+    let agent = h.agent_capability();
+    h.open_draft(agent.clone(), "invoice-and-receipt").unwrap();
+    let mut invoice = h.invoice(1_000, b"draft-invoice");
+    invoice.principal_ref = AGENT;
+    let invoice_vid = fa_model::entry_vid(
+        h.book.book_id,
+        &AGENT.0.to_le_bytes(),
+        &invoice.idempotency_key,
+    );
+    let planned = h
+        .plan_draft(agent.clone(), "invoice-and-receipt", invoice)
+        .unwrap();
+    let invoice = EntryRef {
+        vid: invoice_vid,
+        entry_digest: planned.plan.unwrap().members()[0].entry.entry_digest,
+    };
+    let mut receipt = h.receipt(600, vec![settle(invoice, 0, h.usd, 600)], b"draft-receipt");
+    receipt.principal_ref = AGENT;
+    let planned = h.plan_draft(agent, "invoice-and-receipt", receipt).unwrap();
+    assert_eq!(planned.plan.unwrap().members().len(), 2);
+    assert!(h.db.vertex(invoice.vid).unwrap().is_none());
+    let basis = h.db.frontier().unwrap();
+    let promoted = h
+        .promote(h.approver_capability(), "invoice-and-receipt")
+        .unwrap();
+    assert_eq!(promoted.recorded_at, fgdb_types::CommitSeq(basis.0 + 1));
+    assert_eq!(promoted.entries.len(), 2);
+    assert_eq!(promoted.entries[0], invoice);
+    assert_eq!(h.applied_to(invoice.vid, 0), 600);
+    for member in promoted.entries {
+        let (entry, recorded_at) = read_entry(&h.db, member.vid).unwrap().unwrap();
+        assert_eq!(recorded_at, promoted.recorded_at);
+        assert_eq!(entry.proposal.principal_ref, AGENT);
+    }
+}
+
 /// fa-s7x: an Agent opens a draft and plans two intents into it; each is
 /// rehearsed under every posting law and journaled, and nothing reaches
 /// trunk. The Agent cannot promote its own work; a Human holding `approve`
@@ -10560,7 +10599,7 @@ fn an_agent_drafts_and_a_human_promotes_the_intents_to_trunk_in_one_commit() {
         .plan_draft(agent.clone(), "close-03", first.clone())
         .expect("the first intent is rehearsed and journaled");
     let plan = planned.plan.expect("a fresh Plan carries its rehearsal");
-    assert_eq!(plan.certificate().principal, AGENT);
+    assert_eq!(plan.principal(), AGENT);
     h.plan_draft(agent.clone(), "close-03", second.clone())
         .expect("the second intent");
     let retry = h

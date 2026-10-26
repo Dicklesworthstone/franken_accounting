@@ -179,11 +179,9 @@ fn individually_valid_plans_share_one_limit_and_cannot_publish_a_partial_batch()
         let proposal = h.proposal(600, key, EntryClass::ORIGINAL, AGENT);
         let intent = PostIntent::new(proposal, Vec::new()).unwrap();
         members.push(member_ref(&intent));
-        let planned = h.plan("overdraft", planner.clone(), intent);
-        assert!(
-            planned.plan.is_some(),
-            "each intent passes against unchanged trunk"
-        );
+        // The historical writer admitted each request against unchanged
+        // trunk. Current writers reject the second append earlier, below.
+        h.legacy_plan("overdraft", planner.clone(), intent);
     }
     let basis = h.head();
     let before = h.db.vertices().unwrap();
@@ -224,6 +222,300 @@ fn individually_valid_plans_share_one_limit_and_cannot_publish_a_partial_batch()
         outcome_rows(before),
         "only source outcomes were copied; no member or batch claim survived the refusal"
     );
+}
+
+#[test]
+fn ordered_draft_resolves_balancing_after_earlier_members_and_promotes_exactly() {
+    let mut h = Harness::new(Some(BalanceLimit {
+        lower: Some(-1_000),
+        upper: None,
+        scope: LimitScope::Lifetime,
+    }));
+    h.open("ordered-cap", agent());
+    let first = PostIntent::new(
+        h.proposal(600, b"first", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    h.plan("ordered-cap", agent(), first.clone());
+    let capped = PostIntent::new(
+        balancing_proposal(h.proposal(1_000, b"capped", EntryClass::ORIGINAL, AGENT), 1).unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    let planned = h.plan("ordered-cap", agent(), capped.clone());
+    let preview = planned.plan.unwrap();
+    assert_eq!(preview.members().len(), 2);
+    assert_eq!(
+        preview.members()[0].entry.proposal.legs[1].amount.mantissa,
+        600
+    );
+    assert_eq!(
+        preview.members()[1].intent.proposal().legs[1]
+            .amount
+            .mantissa,
+        1_000
+    );
+    assert_eq!(
+        preview.members()[1].entry.proposal.legs[1].amount.mantissa,
+        400
+    );
+    let expected = vec![
+        member_ref(&first),
+        EntryRef {
+            vid: member_ref(&capped).vid,
+            entry_digest: preview.members()[1].entry.entry_digest,
+        },
+    ];
+    let view = h.draft("ordered-cap");
+    for (planned, resolved) in view.intents.iter().zip(&expected) {
+        assert_eq!(planned.resolved_entry_digest, Some(resolved.entry_digest));
+        assert!(read_entry(&h.db, resolved.vid).unwrap().is_none());
+    }
+    let basis = h.head();
+    assert_eq!(cash_balance(&h.db, h.cash), 0);
+    let retry = h.plan("ordered-cap", agent(), capped);
+    assert!(retry.recorded.already_recorded);
+    assert!(retry.plan.is_none());
+    let changed = PostIntent::new(
+        balancing_proposal(h.proposal(999, b"capped", EntryClass::ORIGINAL, AGENT), 1).unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        h.try_plan("ordered-cap", agent(), changed)
+            .unwrap_err()
+            .code,
+        code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(h.head(), basis);
+
+    let (target, _) = h.target();
+    let (scratch, review) = h
+        .rehearse(target, &reader(), "ordered-cap", basis)
+        .unwrap()
+        .unwrap();
+    assert_eq!(review.batch.entries, expected);
+    assert_eq!(cash_balance(&scratch, h.cash), -1_000);
+    assert_eq!(h.head(), basis);
+    let promoted = h.promote("ordered-cap");
+    assert_eq!(promoted.entries, expected);
+    assert_eq!(promoted.recorded_at, CommitSeq(basis.0 + 1));
+    assert_eq!(cash_balance(&h.db, h.cash), -1_000);
+    for entry in &promoted.entries {
+        assert_eq!(
+            read_entry(&h.db, entry.vid).unwrap(),
+            read_entry(&scratch, entry.vid).unwrap()
+        );
+    }
+}
+
+#[test]
+fn ordered_append_refuses_cumulative_overdraft_without_recording_the_candidate() {
+    let mut h = Harness::new(Some(BalanceLimit {
+        lower: Some(-1_000),
+        upper: None,
+        scope: LimitScope::Lifetime,
+    }));
+    h.open("early-refusal", agent());
+    let first = PostIntent::new(
+        h.proposal(600, b"first", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    h.plan("early-refusal", agent(), first);
+    let before = h.head();
+    let rows = h.db.vertices().unwrap();
+    let second = PostIntent::new(
+        h.proposal(600, b"second", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    let refusal = h.try_plan("early-refusal", agent(), second).unwrap_err();
+    assert_eq!(refusal.code, code::AVAILABILITY_LOWER, "{refusal}");
+    assert!(refusal.message.starts_with("batch member 1:"), "{refusal}");
+    assert_eq!(h.head(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert_eq!(h.draft("early-refusal").intents.len(), 1);
+    assert_eq!(cash_balance(&h.db, h.cash), 0);
+    let corrected = PostIntent::new(
+        h.proposal(400, b"second", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    h.plan("early-refusal", agent(), corrected);
+    h.promote("early-refusal");
+    assert_eq!(cash_balance(&h.db, h.cash), -1_000);
+}
+
+#[test]
+fn reviewed_draft_amount_drift_refuses_append_review_and_promotion_atomically() {
+    let mut h = Harness::new(Some(BalanceLimit {
+        lower: Some(-1_000),
+        upper: None,
+        scope: LimitScope::Lifetime,
+    }));
+    h.open("drift", agent());
+    let first = PostIntent::new(
+        h.proposal(200, b"first", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    h.plan("drift", agent(), first);
+    let capped = PostIntent::new(
+        balancing_proposal(h.proposal(1_000, b"capped", EntryClass::ORIGINAL, AGENT), 1).unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    let planned = h.plan("drift", agent(), capped);
+    assert_eq!(
+        planned.plan.unwrap().members()[1].entry.proposal.legs[1]
+            .amount
+            .mantissa,
+        800
+    );
+    let captured = h.head();
+    h.post(h.proposal(100, b"outside-spend", EntryClass::ORIGINAL, OWNER));
+    let basis = h.head();
+    let rows = h.db.vertices().unwrap();
+    let view = h.draft("drift");
+    let refusal = h.try_promote("drift").unwrap_err();
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED, "{refusal}");
+
+    let (target, storage) = h.target();
+    let refusal = lawful_refusal(h.rehearse(target, &reader(), "drift", basis));
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED, "{refusal}");
+    let scratch = h.reopen(&storage);
+    assert_eq!(scratch.frontier().unwrap(), basis);
+    assert_eq!(cash_balance(&scratch, h.cash), -100);
+
+    // A non-competing new inflow lets every member pass its current law,
+    // so the append must still reject the older member's changed amount.
+    let mut inflow = h.proposal(1, b"new-inflow", EntryClass::ORIGINAL, AGENT);
+    inflow.legs[0].side = Side::Credit;
+    inflow.legs[1].side = Side::Debit;
+    inflow.unit_totals = EntryPayload::fold_unit_totals(&inflow.legs).unwrap();
+    let refusal = h
+        .try_plan(
+            "drift",
+            agent(),
+            PostIntent::new(inflow, Vec::new()).unwrap(),
+        )
+        .unwrap_err();
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED, "{refusal}");
+    assert_eq!(h.head(), basis);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert_eq!(h.draft("drift"), view);
+
+    let (target, _) = h.target();
+    let (historical, review) = h
+        .rehearse(target, &reader(), "drift", captured)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cash_balance(&historical, h.cash), -1_000);
+    let (entry, _) = read_entry(&historical, review.batch.entries[1].vid)
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.proposal.legs[1].amount.mantissa, 800);
+    assert_eq!(h.head(), basis);
+}
+
+#[test]
+fn historical_fixed_intents_keep_their_bytes_and_join_reviewed_drafts() {
+    let mut h = Harness::new(Some(BalanceLimit {
+        lower: Some(-1_000),
+        upper: None,
+        scope: LimitScope::Lifetime,
+    }));
+    h.open("mixed-versions", agent());
+    let first = PostIntent::new(
+        h.proposal(200, b"v1", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    let legacy = h.legacy_plan("mixed-versions", agent(), first);
+    let old_bytes = read_entry(&h.db, legacy.control_entry)
+        .unwrap()
+        .unwrap()
+        .0
+        .encode()
+        .unwrap();
+    assert_eq!(
+        h.draft("mixed-versions").intents[0].resolved_entry_digest,
+        None
+    );
+    let capped = PostIntent::new(
+        balancing_proposal(h.proposal(1_000, b"v2", EntryClass::ORIGINAL, AGENT), 1).unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    let planned = h.plan("mixed-versions", agent(), capped);
+    assert_eq!(
+        planned.plan.unwrap().members()[1].entry.proposal.legs[1]
+            .amount
+            .mantissa,
+        800
+    );
+    let basis = h.head();
+    let (target, _) = h.target();
+    let (scratch, review) = h
+        .rehearse(target, &reader(), "mixed-versions", basis)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        read_entry(&scratch, legacy.control_entry)
+            .unwrap()
+            .unwrap()
+            .0
+            .encode()
+            .unwrap(),
+        old_bytes
+    );
+    assert_eq!(h.promote("mixed-versions").entries, review.batch.entries);
+    assert_eq!(
+        read_entry(&h.db, legacy.control_entry)
+            .unwrap()
+            .unwrap()
+            .0
+            .encode()
+            .unwrap(),
+        old_bytes
+    );
+    assert_eq!(cash_balance(&h.db, h.cash), -1_000);
+}
+
+#[test]
+fn historical_balancing_intents_without_reviewed_effects_cannot_be_published() {
+    let mut h = Harness::new(Some(BalanceLimit {
+        lower: Some(-1_000),
+        upper: None,
+        scope: LimitScope::Lifetime,
+    }));
+    h.open("unbound", agent());
+    let capped = PostIntent::new(
+        balancing_proposal(
+            h.proposal(1_000, b"legacy-cap", EntryClass::ORIGINAL, AGENT),
+            1,
+        )
+        .unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    h.legacy_plan("unbound", agent(), capped);
+    let basis = h.head();
+    let rows = h.db.vertices().unwrap();
+    assert_eq!(
+        h.try_promote("unbound").unwrap_err().code,
+        code::PLAN_INVALIDATED
+    );
+    let (target, storage) = h.target();
+    let refusal = lawful_refusal(h.rehearse(target, &reader(), "unbound", basis));
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED, "{refusal}");
+    assert_eq!(h.reopen(&storage).frontier().unwrap(), basis);
+    assert_eq!(h.head(), basis);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert_eq!(h.draft("unbound").state, DraftState::Open);
+    assert_eq!(cash_balance(&h.db, h.cash), 0);
 }
 
 #[test]

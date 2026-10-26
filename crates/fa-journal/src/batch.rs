@@ -488,6 +488,12 @@ pub(crate) struct StagedBatch {
     planning: bool,
 }
 
+impl StagedBatch {
+    pub(crate) fn prepared_entries(&self) -> &[Entry] {
+        &self.prepared
+    }
+}
+
 pub(crate) enum BatchStage {
     Staged(Box<StagedBatch>),
     /// The identical batch's recorded outcome (FA-INV-09): nothing staged.

@@ -87,10 +87,12 @@ pub const CAPABILITY_BODY_EXTENSION: u16 = 7;
 /// bead fa-s7x): a draft's immutable body on its `DraftControl` Open
 /// record — `u16 version ‖ book_id[16] ‖ str name ‖ u128 owner_principal`.
 pub const DRAFT_BODY_EXTENSION: u16 = 8;
-/// Extension tag 9, `fa:draft-intent:v1` (bead fa-s7x): one planned intent
+/// Extension tag 9, `fa:draft-intent` (bead fa-s7x): one planned intent
 /// on a draft's `DraftControl` Plan record — `u16 version ‖ bytes
 /// post_intent ‖ bytes capability`: the intent's canonical bytes and the
-/// planner's capability, which its promotion replays.
+/// planner's capability, which its promotion replays. Version 2 appends the
+/// exact resolved Entry digest `[32]` reviewed in ordered draft rehearsal;
+/// version 1 has no such binding and keeps its original encoding.
 pub const DRAFT_INTENT_EXTENSION: u16 = 9;
 /// Extension tag 10, `fa:scenario-body:v1` (plan §15.2, Appendix B
 /// `ForkScenario`, bead fa-k07b): a scenario's immutable body on its
