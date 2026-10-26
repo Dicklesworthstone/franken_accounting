@@ -16201,9 +16201,11 @@ fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
     ok(&["book", "create", "--name", "Triage Co", "--json"]);
     let (health, next) = next_of(&ok(&["triage", "--json"]));
     assert_eq!(health, "ok");
+    // Triage names runnable commands only, never a placeholder (fa-yugf.96,
+    // H16): with no accounts, the templates a chart can be installed from.
     assert_eq!(
         next.first().map(String::as_str),
-        Some("fa chart import <chart.json> --json")
+        Some("fa chart templates --json")
     );
     let chart = write(
         &dir,
@@ -16214,7 +16216,7 @@ fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
     let (_, next) = next_of(&ok(&["triage", "--json"]));
     assert_eq!(
         next.first().map(String::as_str),
-        Some("fa period create --fiscal-year <N> --json")
+        Some("fa period create --fiscal-year 2026 --json")
     );
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
     let (_, next) = next_of(&ok(&["triage", "--json"]));
@@ -18620,7 +18622,7 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
         assert_eq!(text(&error, "class"), "usage");
         assert_eq!(
             text(&error, "message"),
-            "--as-known-at is supported only by verify periods, verify close, verify usage and verify fx-conversion"
+            "--as-known-at is supported only by verify periods, verify close, verify usage, verify fx-conversion and verify search"
         );
     }
     Ok(())
