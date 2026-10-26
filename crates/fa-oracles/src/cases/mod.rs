@@ -6,8 +6,9 @@
 //! [`embedded`], or an edited copy in a test), refuses every malformed or
 //! inconsistent row with a [`LoadError`] naming its file and line, and
 //! returns the [`Case`] only when nothing is wrong. Book variants
-//! (`books/<stem>.toml`, A1b) load against the case's other files; the
-//! expectations are A1c's.
+//! (`books/<stem>.toml`, A1b) load against the case's other files, and the
+//! expectations (`expectations.toml`, A1c) against the books too; the keys
+//! between books and expectations resolve once both are loaded.
 //!
 //! The data format is the registries' TOML subset (`fa_registry::toml`):
 //! one-line arrays, basic strings, no floats and no dates (amounts are
@@ -51,6 +52,7 @@ pub mod amount;
 pub mod book;
 pub mod embedded;
 pub mod error;
+pub mod expect;
 pub mod fact;
 mod fields;
 pub mod header;
@@ -58,6 +60,7 @@ pub mod receipt;
 pub mod roles;
 pub mod rows;
 pub mod source;
+pub mod templates;
 #[cfg(test)]
 mod tests;
 
@@ -67,6 +70,7 @@ use fa_registry::toml::Document;
 
 pub use book::{BookVariant, VariantKind};
 pub use error::{LoadError, LoadErrorKind};
+pub use expect::{Expectation, ExpectationType, Expectations};
 pub use fact::{Fact, Provenance, Value};
 pub use header::{CASE_EXTENSIONS, CaseExtension, CaseHeader, CaseKind};
 pub use receipt::{Alignment, Receipt};
@@ -79,6 +83,7 @@ pub const SOURCES_FILE: &str = "sources.toml";
 pub const FACTS_FILE: &str = "facts.toml";
 pub const RECEIPTS_FILE: &str = "receipts.toml";
 pub const ROLES_FILE: &str = "roles.toml";
+pub const EXPECTATIONS_FILE: &str = "expectations.toml";
 
 /// A case's files as (relative path, text) pairs, under the id it is loaded
 /// as (the directory name for a committed case).
@@ -108,6 +113,8 @@ pub struct Case {
     pub books: BTreeMap<String, BookVariant>,
     /// Every path among the case's files.
     pub files: Vec<String>,
+    /// `expectations.toml`, when the case has one (A1c).
+    pub expectations: Option<Expectations>,
 }
 
 /// Loads a case under the committed [`CASE_EXTENSIONS`].
@@ -152,6 +159,7 @@ pub fn load_with(
         FACTS_FILE,
         RECEIPTS_FILE,
         ROLES_FILE,
+        EXPECTATIONS_FILE,
     ];
     let rows_files: Vec<&str> = files
         .files
@@ -237,6 +245,12 @@ pub fn load_with(
         },
         &mut errs,
     );
+    let expectations = files.text(EXPECTATIONS_FILE).map(|text| {
+        let view = expect::View::new(header.as_ref(), &sources, &facts, &books, &paths, &mut errs);
+        let set = expect::parse(&view, EXPECTATIONS_FILE, text, &mut errs);
+        expect::check_book_refs(&books, &set, &mut errs);
+        set
+    });
 
     match header {
         Some(header) if errs.is_empty() => Ok(Case {
@@ -248,6 +262,7 @@ pub fn load_with(
             roles,
             books,
             files: paths.iter().map(|p| (*p).to_string()).collect(),
+            expectations,
         }),
         _ => {
             error::sort(&mut errs);

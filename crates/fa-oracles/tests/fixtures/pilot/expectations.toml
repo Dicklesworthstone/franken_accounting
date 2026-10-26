@@ -1,0 +1,157 @@
+# Pilot fixture (A1a-A1c): the claims of plan §6.4 and §15 A8 over the native book's F2, F4 and F9.
+# Written by hand for the loader tests; expected values are the plan's, not a run's. Never copied to cases/.
+
+[[expectation]]
+id = "W-D-01"
+type = "D"
+book_variant = "native"
+statement_template = "D.detection"
+basis = ["F4", "F4-p26", "F9"]
+granularity = "journal_entry"
+capabilities = ["procedure:expense.capitalization@2"]
+procedure = "expense.capitalization"
+version = 2
+
+[[expectation]]
+id = "W-D-03"
+type = "D"
+book_variant = "native"
+statement_template = "D.detection"
+basis = ["F4", "F4-p26"]
+granularity = "journal_entry"
+capabilities = ["procedure:jet.round_amounts@1"]
+procedure = "jet.round_amounts"
+version = 1
+
+[[expectation]]
+id = "W-N-01"
+type = "N"
+book_variant = "native"
+statement_template = "N.no_finding"
+basis = ["F2"]
+kind = "no_finding"
+target = "F2"
+procedure = "expense.capitalization"
+version = 2
+mechanism = "crates/fa-lantern/src/cutoff.rs:1066-1124"
+twin_kind = "mutation"
+twin_attribute = "chart_role_mapping"
+twin_value = "OLTA mapped to an Expense account"
+twin_expect = "reports"
+
+[[expectation]]
+id = "W-P-02"
+type = "P"
+book_variant = "native"
+statement_template = "P.first_refusal"
+basis = ["F4"]
+intent = "F4"
+refusal = "FA-REF-080"
+law_row = "evidence_policy.toml#Original"
+attribute = "evidence_attached"
+reference_verdict = "not_modelled"
+
+[[expectation]]
+id = "W-P-03"
+type = "P"
+book_variant = "native"
+statement_template = "P.first_refusal"
+basis = ["F4"]
+intent = "F4"
+refusal = "FA-REF-010"
+law_row = "admissibility.toml#Original/Closed"
+attribute = "period_state_at_commit"
+reference_verdict = "FA-REF-010"
+
+[[target]]
+expectation = "W-D-01"
+fact = "F4"
+basis = ["F4", "F4-p26"]
+cite = ["F4#0"]
+cite_status = "Sd"
+severity = "High"
+severity_status = "S"
+statistic_name = "capitalized_amount"
+statistic_value = "56000000000"
+statistic_scale = 2
+statistic_status = "Sd"
+
+[[target]]
+expectation = "W-D-01"
+fact = "F9"
+basis = ["F9"]
+branch_attrs = ["leg_split"]
+cite = ["F9#0"]
+cite_status = "Rel(account_vid_order)"
+severity = "High"
+severity_status = "S"
+statistic_name = "capitalized_amount"
+statistic_scale = 2
+statistic_status = "B(leg_split)"
+
+[[target]]
+expectation = "W-D-03"
+fact = "F4"
+basis = ["F4", "F4-p26"]
+branch_attrs = ["leg_split"]
+cite = ["F4#0"]
+cite_status = "Sd"
+severity_status = "B(leg_split)"
+statistic_status = "B(leg_split)"
+
+[[target]]
+expectation = "W-P-02"
+fact = "F4"
+branch_attrs = ["evidence_attached"]
+
+[[target]]
+expectation = "W-P-03"
+fact = "F4"
+branch_attrs = ["entry_class", "period_state_at_commit"]
+
+[[branch_cell]]
+expectation = "W-D-01"
+target = "F9"
+cell = ["one_debit_leg"]
+expect = "finding"
+statistic_value = "74272500000"
+record_consistent = true
+default = true
+
+[[branch_cell]]
+expectation = "W-D-01"
+target = "F9"
+cell = ["two_debit_legs"]
+expect = "finding"
+statistic_value = "30000000000"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "W-D-03"
+target = "F4"
+cell = ["one_credit_leg"]
+expect = "finding"
+severity = "Low"
+statistic_value = "1"
+record_consistent = true
+default = true
+
+[[branch_cell]]
+expectation = "W-P-02"
+target = "F4"
+cell = ["none"]
+expect = "FA-REF-080"
+record_consistent = true
+
+[[branch_cell]]
+expectation = "W-P-03"
+target = "F4"
+cell = ["Original", "Closed"]
+expect = "FA-REF-010"
+record_consistent = true
+
+[[note]]
+id = "W-NOTE-01"
+case = "worldcom"
+basis = ["W406-TA-2000"]
+template = "NOTE.observation"

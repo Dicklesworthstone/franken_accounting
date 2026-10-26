@@ -48,6 +48,25 @@ pub enum LoadErrorKind {
     BadStem,
     /// An intent id that breaks the naming rules of plan §3.2b.
     BadId,
+    /// An authored id of a form the runner generates (`<case>-SELF-<variant>`,
+    /// `<case>-CASE-<case id>`, `<case>-N-90`; A1c).
+    ReservedId,
+    /// An expected value on a field the verdict projection always excludes
+    /// (plan §5.4).
+    ExcludedField,
+    /// A `[[note]]` that names a verdict field (plan §5.1: a note has no
+    /// verdict).
+    NoteWithVerdict,
+    /// A P row that states its exit: the exit is the refusal catalog's
+    /// (plan §5.2).
+    ExitIsCatalogs,
+    /// A D or P row every component of which is X: it can neither pass nor
+    /// fail, so it is a `[[note]]`.
+    AllComponentsX,
+    /// A claimed expectation with a pending cell (plan §5.1).
+    PendingClaimed,
+    /// T or R read fields on both the expectation and its targets.
+    ReadFieldsTwice,
 }
 
 impl fmt::Display for LoadErrorKind {
