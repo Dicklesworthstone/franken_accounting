@@ -122,6 +122,7 @@ fn historical_explanations_recompute_whole_period_digest_released_holds_lineage_
         resolution_of: Some(hold.entry_ref()),
         disposition: Some(Disposition::Voids),
     });
+    release.control = Some(fa_model::ControlPayload::ReservationRelease);
     let release = fixture.commit(release);
     let released_at = release.recorded_at();
     let reversed = reverse(&mut fixture, original.entry_ref());
