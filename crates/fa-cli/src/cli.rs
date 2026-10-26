@@ -8301,7 +8301,9 @@ fn apply_solvency_extensions(
                 })?;
             let ordinal = u16::try_from(ordinal_raw).map_err(|_| {
                 usage(
-                    format!("obligation_maturity[{i}]: `ordinal` {ordinal_raw} is out of u16 range"),
+                    format!(
+                        "obligation_maturity[{i}]: `ordinal` {ordinal_raw} is out of u16 range"
+                    ),
                     "\"ordinal\": 0..65535",
                 )
             })?;
@@ -8356,7 +8358,9 @@ fn apply_solvency_extensions(
                     )?;
                     let amt = Amount::parse(amt_s, &ctx.units).map_err(|e| {
                         usage(
-                            format!("obligation_maturity[{i}].installments[{j}].amount `{amt_s}`: {e:?}"),
+                            format!(
+                                "obligation_maturity[{i}].installments[{j}].amount `{amt_s}`: {e:?}"
+                            ),
                             "amount: \"1000.00 USD\"",
                         )
                     })?;
@@ -8382,8 +8386,12 @@ fn apply_solvency_extensions(
                 installments,
             });
         }
-        let ext = InlineObligationTerms::to_extension(&terms)
-            .map_err(|e| usage(format!("obligation_maturity: {e}"), "check obligation_maturity fields"))?;
+        let ext = InlineObligationTerms::to_extension(&terms).map_err(|e| {
+            usage(
+                format!("obligation_maturity: {e}"),
+                "check obligation_maturity fields",
+            )
+        })?;
         proposal.schema_minor = proposal.schema_minor.max(2);
         proposal.extensions.retain(|(t, _)| *t != ext.0);
         proposal.extensions.push(ext);
@@ -8403,11 +8411,12 @@ fn apply_solvency_extensions(
             let valuation_id = req_str(item, "valuation_id", &where_s)?.to_string();
             let subject = if let Some(inst_s) = item.get("instrument").and_then(Json::as_str) {
                 let carrying_code = req_str(item, "carrying_account", &where_s)?;
-                let inst_vid = if inst_s.len() == 32 && inst_s.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    parse_vid(inst_s, "instrument")?
-                } else {
-                    fa_model::instrument_vid(ctx.book_id, inst_s)
-                };
+                let inst_vid =
+                    if inst_s.len() == 32 && inst_s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        parse_vid(inst_s, "instrument")?
+                    } else {
+                        fa_model::instrument_vid(ctx.book_id, inst_s)
+                    };
                 ValuationSubject::Instrument {
                     instrument: inst_vid,
                     carrying_account: account_vid(ctx.book_id, carrying_code),
@@ -8417,11 +8426,13 @@ fn apply_solvency_extensions(
                 ValuationSubject::Account(account_vid(ctx.book_id, acct_code))
             };
             let entity = match item.get("entity").and_then(Json::as_str) {
-                Some(e_code) => Some(if e_code.len() == 32 && e_code.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    parse_vid(e_code, "entity")?
-                } else {
-                    fa_model::legal_entity_vid(ctx.book_id, e_code)
-                }),
+                Some(e_code) => Some(
+                    if e_code.len() == 32 && e_code.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        parse_vid(e_code, "entity")?
+                    } else {
+                        fa_model::legal_entity_vid(ctx.book_id, e_code)
+                    },
+                ),
                 None => None,
             };
             let basis_s = item

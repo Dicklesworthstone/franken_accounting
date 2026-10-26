@@ -424,9 +424,15 @@ fn atomic_pending_resolutions_export_and_replay_as_one_accounting_frontier() {
                 .unwrap();
             let fulfilled = if at == before { 0 } else { 300 };
             if name == "balance-sheet" {
-                assert_eq!(amounts(&certified.statement, "assets", usd), [1_000 + fulfilled, 1_000]);
+                assert_eq!(
+                    amounts(&certified.statement, "assets", usd),
+                    [1_000 + fulfilled, 1_000]
+                );
             } else {
-                assert_eq!(amounts(&certified.statement, "net_income", usd), [fulfilled, 0]);
+                assert_eq!(
+                    amounts(&certified.statement, "net_income", usd),
+                    [fulfilled, 0]
+                );
             }
             let produced = produce(&mut fixture.book, &certified.certificate);
             verify(&fixture.book, &produced, &certified.certificate);

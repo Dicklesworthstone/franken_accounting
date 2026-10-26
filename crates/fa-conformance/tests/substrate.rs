@@ -2115,10 +2115,7 @@ mod forensic_semantics {
         // long-term debt (1000 due Dec 31), and short-term debt (125 due May 20).
         let post_cap = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
         let mut post_entry =
-            |eff: DateDay,
-             key: &[u8],
-             legs: Vec<LegPayload>,
-             extensions: Vec<(u16, Vec<u8>)>| {
+            |eff: DateDay, key: &[u8], legs: Vec<LegPayload>, extensions: Vec<(u16, Vec<u8>)>| {
                 let mut prop = h.rent_proposal_on(eff, 1, key);
                 prop.schema_minor = if extensions.is_empty() { 0 } else { 2 };
                 prop.unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
@@ -2243,9 +2240,14 @@ mod forensic_semantics {
         //    - solvency.cash_flow_test (version 2, 30 days): shortfall = 12_500 - 10_000 = 2_500
         //    - solvency.balance_sheet_test (version 2): valued_assets = 10_000 + 2_000 = 12_000 vs liabilities 112_500 -> deficit = 100_500
         let retained_seq = h.db.frontier().unwrap();
-        let retained_snap =
-            fa_lantern::Snapshot::read(&h.db, &ctx.query(), &h.book, Some(retained_seq), Some(apr30))
-                .unwrap();
+        let retained_snap = fa_lantern::Snapshot::read(
+            &h.db,
+            &ctx.query(),
+            &h.book,
+            Some(retained_seq),
+            Some(apr30),
+        )
+        .unwrap();
 
         let pref_run = fa_lantern::run_over(
             &retained_snap,
@@ -2254,7 +2256,11 @@ mod forensic_semantics {
         )
         .unwrap();
         assert_eq!(pref_run.version, 3);
-        let mut pref_vals: Vec<i128> = pref_run.findings.iter().map(|f| f.statistic.value).collect();
+        let mut pref_vals: Vec<i128> = pref_run
+            .findings
+            .iter()
+            .map(|f| f.statistic.value)
+            .collect();
         pref_vals.sort();
         assert_eq!(pref_vals, vec![10_000, 20_000]);
 
@@ -2262,8 +2268,11 @@ mod forensic_semantics {
             fa_lantern::run_over(&retained_snap, &h.book, &PonziNetInvestment::new().unwrap())
                 .unwrap();
         assert_eq!(ponzi_run.version, 3);
-        let mut ponzi_vals: Vec<i128> =
-            ponzi_run.findings.iter().map(|f| f.statistic.value).collect();
+        let mut ponzi_vals: Vec<i128> = ponzi_run
+            .findings
+            .iter()
+            .map(|f| f.statistic.value)
+            .collect();
         ponzi_vals.sort();
         assert_eq!(ponzi_vals, vec![10_000, 20_000]);
 
@@ -2275,7 +2284,11 @@ mod forensic_semantics {
         );
         let dist_run = fa_lantern::run_over(&retained_snap, &h.book, &dist_proc).unwrap();
         assert_eq!(dist_run.version, 3);
-        let mut dist_vals: Vec<i128> = dist_run.findings.iter().map(|f| f.statistic.value).collect();
+        let mut dist_vals: Vec<i128> = dist_run
+            .findings
+            .iter()
+            .map(|f| f.statistic.value)
+            .collect();
         dist_vals.sort();
         assert_eq!(dist_vals, vec![3_000, 6_000]);
 
@@ -2310,9 +2323,14 @@ mod forensic_semantics {
             ],
             Vec::new(),
         );
-        let replayed_snap =
-            fa_lantern::Snapshot::read(&h.db, &ctx.query(), &h.book, Some(retained_seq), Some(apr30))
-                .unwrap();
+        let replayed_snap = fa_lantern::Snapshot::read(
+            &h.db,
+            &ctx.query(),
+            &h.book,
+            Some(retained_seq),
+            Some(apr30),
+        )
+        .unwrap();
         assert_eq!(replayed_snap.inputs_digest, retained_snap.inputs_digest);
         assert_eq!(
             fa_lantern::run_over(

@@ -2146,7 +2146,10 @@ pub fn evaluate_balance_sheet_solvency(
             chain_docs.extend(pdocs.iter().copied());
             walk = schedule.valuations[pidx].supersedes.as_deref();
         }
-        active_by_target.insert(target_key, (idx, chain_ids, chain_docs.into_iter().collect()));
+        active_by_target.insert(
+            target_key,
+            (idx, chain_ids, chain_docs.into_iter().collect()),
+        );
     }
 
     // 3. Fold posted book balances through `as_of` (ignoring any `RegisterEquals`
@@ -2201,7 +2204,9 @@ pub fn evaluate_balance_sheet_solvency(
             *cell = cell
                 .checked_add(signed)
                 .ok_or(LanternError::Overflow("solvency balance sheet fold"))?;
-            let inputs = scope_entries.entry((leg.amount.unit.0, entity)).or_default();
+            let inputs = scope_entries
+                .entry((leg.amount.unit.0, entity))
+                .or_default();
             inputs.0.insert(e.vid);
             inputs.1 = inputs.1.saturating_add(1);
         }
@@ -2320,21 +2325,13 @@ pub fn evaluate_balance_sheet_solvency(
         };
         let (deficit, surplus) = if row.valued_liabilities > adjusted_assets {
             (
-                amount_difference(
-                    row.valued_liabilities,
-                    adjusted_assets,
-                    "solvency deficit",
-                )?,
+                amount_difference(row.valued_liabilities, adjusted_assets, "solvency deficit")?,
                 0,
             )
         } else {
             (
                 0,
-                amount_difference(
-                    adjusted_assets,
-                    row.valued_liabilities,
-                    "solvency surplus",
-                )?,
+                amount_difference(adjusted_assets, row.valued_liabilities, "solvency surplus")?,
             )
         };
 
@@ -3166,7 +3163,11 @@ fn contra_assets_reduce_the_declared_asset_basis() {
     assert_eq!(run_res.findings.len(), 1);
     assert_eq!(run_res.findings[0].statistic.name, "insolvency_deficit");
     assert_eq!(run_res.findings[0].statistic.value, 3_000);
-    assert!(run_res.findings[0].cites.contains(&Cite::Account(equip_vid)));
+    assert!(
+        run_res.findings[0]
+            .cites
+            .contains(&Cite::Account(equip_vid))
+    );
     assert!(
         run_res.findings[0]
             .cites
@@ -3265,8 +3266,17 @@ fn historical_register_assertion_is_not_current_fair_value() {
     use fa_policy::Profile;
 
     let apr30 = day(2026, 4, 30);
-    let (mut snapshot, book, cash_vid, _equip_vid, _accum_dep_vid, ap_vid, eq_vid, exp_vid, doc_oid) =
-        balance_sheet_fixture(apr30);
+    let (
+        mut snapshot,
+        book,
+        cash_vid,
+        _equip_vid,
+        _accum_dep_vid,
+        ap_vid,
+        eq_vid,
+        exp_vid,
+        doc_oid,
+    ) = balance_sheet_fixture(apr30);
     let usd = book.units.lookup("USD").unwrap();
 
     // At CommitSeq(10) on Apr 1: Cash 1000 = 100.00 (10,000), Debt 2000 = 50.00 (5,000), Equity 3000 = 50.00 (5,000).
