@@ -833,10 +833,9 @@ criterion = "supersession netting and restatement cases with diff certificates"
 evidence_class = "cli"
 probe_kind = "cli"
 argv = ["g2_restatement_cases_with_diff_certificates"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-75j4"
+expected = "works"
+expected_exit = 0
+expected_event = "restatement_cases_ok"
 
 [[gate_criterion]]
 id = "G2-04"
