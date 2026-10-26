@@ -5371,3 +5371,103 @@ fn error_shape_matches_appendix_d() {
     );
     log("Appendix D: MCP error data carries the CLI's refusal object and the detector's options");
 }
+
+#[test]
+fn fa_orient_next_offers_audit_program_matching_cli_next() {
+    let dir = temp_dir("orient-next-eng");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Orient Eng Co",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P01", "--book", &b, "--json"]);
+    cli_data(&[
+        "engagement",
+        "open",
+        "FY2026-inv",
+        "--kind",
+        "investigation",
+        "--period",
+        "FY2026-P01",
+        "--overall",
+        "50000.00 USD",
+        "--performance",
+        "37500.00 USD",
+        "--clearly-trivial",
+        "2500.00 USD",
+        "--book",
+        &b,
+        "--json",
+    ]);
+
+    let (code, cli_stdout) = cli(&["next", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{cli_stdout}");
+    let cli_line: JsonValue =
+        fastmcp_rust::serde_json::from_str(cli_stdout.lines().last().unwrap()).unwrap();
+    let mut cli_steps = vec![(
+        cli_line["data"]["command"].as_str().unwrap().to_string(),
+        cli_line["data"]["why"].as_str().unwrap().to_string(),
+    )];
+    for action in cli_line["next_actions"].as_array().unwrap() {
+        cli_steps.push((
+            action["command"].as_str().unwrap().to_string(),
+            action["why"].as_str().unwrap().to_string(),
+        ));
+    }
+
+    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.orient", "--grant", "read"]);
+    mcp.discover();
+    let (is_error, text, result) = call_tool(&mut mcp, "fa_orient_next", json!({}));
+    assert!(!is_error, "{text}");
+    let mcp_data: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let mcp_env: JsonValue = fastmcp_rust::serde_json::from_str(
+        result["content"][1]["text"].as_str().expect("envelope"),
+    )
+    .unwrap();
+    let mut mcp_steps = vec![(
+        mcp_data["command"].as_str().unwrap().to_string(),
+        mcp_data["why"].as_str().unwrap().to_string(),
+    )];
+    for action in mcp_env["next_actions"].as_array().unwrap() {
+        mcp_steps.push((
+            action["command"].as_str().unwrap().to_string(),
+            action["why"].as_str().unwrap().to_string(),
+        ));
+    }
+    assert_eq!(mcp_steps, cli_steps, "fa_orient_next != fa next");
+    assert!(
+        mcp_steps.iter().any(|(c, _)| c == "fa jet --json"),
+        "{mcp_steps:?}"
+    );
+    assert!(
+        mcp_steps
+            .iter()
+            .any(|(c, _)| c == "fa procedure list --json"),
+        "{mcp_steps:?}"
+    );
+    assert_eq!(mcp.finish(), 0);
+}
+
