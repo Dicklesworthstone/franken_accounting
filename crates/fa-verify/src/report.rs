@@ -15,14 +15,19 @@
 //! receipt to authenticate that definition and registry closure. Native v2 trial
 //! balances and v4 statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
-//! histories and functional-currency statements remain unsupported. The scope is accounting
+//! histories and functional-currency statements remain unsupported. Native v8
+//! dimension trial balances reconstruct declarations and closes from the signed
+//! journal, then fold only legs tagged with the authenticated value hierarchy.
+//! A filtered view need not balance across the selected legs. The scope is accounting
 //! recomputation, not economic truth, source-document authenticity, journaled
 //! registry activation, or database read attestations.
 
+mod dimension;
 mod metadata;
 mod registry;
 mod statement;
 mod temporal;
+pub use dimension::VerifiedDimensionSelection;
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
@@ -44,6 +49,8 @@ pub const MAX_REPORT_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v1";
 const INSTANT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v2";
 const STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v4";
+const DIMENSION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v8";
+const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:dimension-trial-balance:v1";
 const OUTPUT_FORMAT: &[u8; 19] = b"fa:trial-balance:v1";
 const MAX_ROWS: usize = 1 << 20;
 
@@ -107,6 +114,8 @@ pub struct VerifiedReport {
     pub rows: Vec<ReportRow>,
     /// Present for independently reconstructed native financial statements.
     pub statement: Option<VerifiedStatement>,
+    /// Authenticated dimension hierarchy and exact values included in the fold.
+    pub dimension: Option<VerifiedDimensionSelection>,
     /// Whether statement units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
@@ -129,6 +138,7 @@ struct Certificate<'a> {
     known_at: u64,
     time_selection: Option<VerifiedInstantSelection>,
     selection: Selection,
+    dimension: Option<dimension::Selection>,
     registry_digest: [u8; 32],
     journal_root: [u8; 32],
     leaves: u64,
@@ -159,10 +169,11 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let format = r.fixed::<24>("certificate.format")?;
     let statement = format == *STATEMENT_CERTIFICATE_FORMAT;
     let instant = format == *INSTANT_CERTIFICATE_FORMAT;
-    if format != *CERTIFICATE_FORMAT && !statement && !instant {
+    let dimension = format == *DIMENSION_CERTIFICATE_FORMAT;
+    if format != *CERTIFICATE_FORMAT && !statement && !instant && !dimension {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance or v4 statement",
+            "expected a native v1/v2 trial balance, v4 statement, or v8 dimension trial balance",
         ));
     }
     for (field, expected) in [
@@ -172,6 +183,8 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "certificate.output_format",
             if statement {
                 "fa:statement:v1"
+            } else if dimension {
+                "fa:dimension-trial-balance:v1"
             } else {
                 "fa:trial-balance:v1"
             },
@@ -185,6 +198,17 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let branch = r.fixed("certificate.branch")?;
     let known_at = r.u64("certificate.known_at")?;
     let selector = r.u8("certificate.selector")?;
+    let selector = if dimension {
+        if selector != 6 {
+            return Err(failed(
+                "supported_report",
+                "native v8 requires a dimension selector",
+            ));
+        }
+        r.u8("certificate.dimension.selection")?
+    } else {
+        selector
+    };
     let selection = if statement {
         if selector != 2 {
             return Err(failed(
@@ -207,14 +231,23 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     if matches!(&selection, Selection::Periods(p) | Selection::Activity(p) if p.is_empty()) {
         return Err(failed("report_selector", "period selection is empty"));
     }
+    let dimension_selection = if dimension {
+        Some(dimension::Selection {
+            dimension: text(&mut r, 128, "certificate.dimension")?.to_string(),
+            value: text(&mut r, 128, "certificate.dimension_value")?.to_string(),
+        })
+    } else {
+        None
+    };
     let registry_digest = r.fixed("certificate.registry_digest")?;
     let journal_root = r.fixed("certificate.journal_root")?;
     let leaves = r.u64("certificate.leaves")?;
-    let inputs = r.count(7, 4, "certificate.native_inputs")?;
-    if inputs != 7 {
+    let expected_inputs = if dimension { 8 } else { 7 };
+    let inputs = r.count(expected_inputs, 4, "certificate.native_inputs")?;
+    if inputs != expected_inputs {
         return Err(failed(
             "certificate_closure",
-            "certificate must retain all seven native input attestations",
+            "certificate must retain every native input attestation for its report family",
         ));
     }
     for _ in 0..inputs {
@@ -222,11 +255,12 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
-    let time_selection = if instant || statement && r.present("certificate.time_selection")? {
-        Some(VerifiedInstantSelection::read(&mut r)?)
-    } else {
-        None
-    };
+    let time_selection =
+        if instant || (statement || dimension) && r.present("certificate.time_selection")? {
+            Some(VerifiedInstantSelection::read(&mut r)?)
+        } else {
+            None
+        };
     let digest = r.fixed("certificate.digest")?;
     r.finish("report certificate")?;
     if hash_parts(b"fa:report-output:v1", &[output]) != output_digest {
@@ -247,6 +281,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         known_at,
         time_selection,
         selection,
+        dimension: dimension_selection,
         registry_digest,
         journal_root,
         leaves,
@@ -550,6 +585,7 @@ fn verify_report_with_inputs(
         crate::migration_balance::report_visibility(envelopes, &records, &bodies, cert.known_at)
             .map_err(|e| failed("migration_visibility", e.to_string()))?;
     let mut schema = metadata::Schema::default();
+    let mut dimension_history = dimension::History::default();
     let mut infos = BTreeMap::new();
     let mut by_digest = BTreeMap::new();
     for (index, (envelope, (len, payload))) in envelopes.iter().zip(&records).enumerate() {
@@ -559,6 +595,9 @@ fn verify_report_with_inputs(
         let info = metadata::entry_info(&payload[..*len], envelope)?;
         if let Some((kind, body)) = info.schema {
             schema.apply(kind, body, &cert.book)?;
+            if cert.dimension.is_some() {
+                dimension_history.apply(kind, body, &cert.book)?;
+            }
         }
         if by_digest.insert(envelope.record_digest, index).is_some() {
             return Err(failed(
@@ -596,6 +635,11 @@ fn verify_report_with_inputs(
             ));
         }
     }
+    let dimension = cert
+        .dimension
+        .as_ref()
+        .map(|selection| dimension_history.select(selection))
+        .transpose()?;
     if let Selection::Statement(selection) = &cert.selection {
         let (statement, output) = statement::replay(
             selection,
@@ -636,6 +680,7 @@ fn verify_report_with_inputs(
             periods: selection.periods.clone(),
             rows: Vec::new(),
             statement: Some(statement),
+            dimension: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -647,6 +692,10 @@ fn verify_report_with_inputs(
         });
     }
     let (periods, through, activity) = schema.selection(&cert.selection)?;
+    let dimension_filter = dimension
+        .as_ref()
+        .map(|selection| dimension::LegFilter::new(&cert.book, selection))
+        .transpose()?;
     let mut sums: BTreeMap<(u128, u32), [i128; 4]> = BTreeMap::new();
     for (index, info) in &infos {
         let e = &envelopes[*index];
@@ -668,7 +717,23 @@ fn verify_report_with_inputs(
         if !selected {
             continue;
         }
-        for leg in &legs[*index] {
+        let selected_legs = dimension_filter
+            .as_ref()
+            .map(|filter| dimension::selected_legs(&records[*index].1[..records[*index].0], filter))
+            .transpose()?;
+        if selected_legs
+            .as_ref()
+            .is_some_and(|mask| mask.len() != legs[*index].len())
+        {
+            return Err(failed(
+                "dimension_tags",
+                "dimension and monetary leg counts disagree",
+            ));
+        }
+        for (leg_index, leg) in legs[*index].iter().enumerate() {
+            if selected_legs.as_ref().is_some_and(|mask| !mask[leg_index]) {
+                continue;
+            }
             if leg.mantissa < 0 {
                 return Err(failed("exact_arithmetic", "a leg has a negative mantissa"));
             }
@@ -709,17 +774,38 @@ fn verify_report_with_inputs(
         });
     }
     rows.sort_by(|a, b| a.code.cmp(&b.code).then(a.unit.cmp(&b.unit)));
-    if totals.values().any(|t| t[0] != t[1] || t[2] != t[3]) {
+    // A dimension view selects individual legs. Its counterpart can be
+    // untagged or belong to another value, so its own totals need not balance.
+    if dimension.is_none() && totals.values().any(|t| t[0] != t[1] || t[2] != t[3]) {
         return Err(failed(
             "monetary_footing",
             "posted or pending monetary totals do not balance",
         ));
     }
-    let output = output(&periods, cert.known_at, through, activity, &rows, &totals);
+    let trial_balance = output(&periods, cert.known_at, through, activity, &rows, &totals);
+    let output = match &dimension {
+        None => trial_balance,
+        Some(filter) => {
+            let mut w = Writer::default();
+            w.fixed(DIMENSION_OUTPUT_FORMAT)
+                .bytes(filter.dimension.as_bytes())
+                .bytes(filter.value.as_bytes())
+                .count(filter.values.len());
+            for value in &filter.values {
+                w.bytes(value.as_bytes());
+            }
+            w.bytes(&trial_balance);
+            w.buf
+        }
+    };
     if output != cert.output {
         return Err(failed(
             "report_recomputation",
-            mismatch(&rows, cert.output)?,
+            if dimension.is_some() {
+                "dimension filter, authenticated descendants, tagged balances or canonical bytes differ from independent replay".to_string()
+            } else {
+                mismatch(&rows, cert.output)?
+            },
         ));
     }
     Ok(VerifiedReport {
@@ -735,6 +821,7 @@ fn verify_report_with_inputs(
         periods,
         rows,
         statement: None,
+        dimension,
         unit_universe_source: "not-applicable",
         output,
         checked_records: records.len(),

@@ -4248,7 +4248,8 @@ impl Book {
         ))
     }
 
-    /// Produce a portable native trial balance or statement for `fa-verify report`.
+    /// Produce a portable native or dimension-filtered trial balance, or a
+    /// statement, for `fa-verify report`.
     /// Replays the certificate under current whole-book read/produce authority,
     /// then exports every payload in a signed checkpoint covering its prefix.
     /// Returns `None` if the selected recorded checkpoint is unavailable.

@@ -650,3 +650,6 @@ fn recipient_statement_unit_lists_are_validated_before_untrusted_bytes() {
         "supported_report"
     );
 }
+
+#[path = "tests/dimension.rs"]
+mod dimension_tests;

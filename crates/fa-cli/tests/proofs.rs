@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "proofs/dimension_report.rs"]
+mod dimension_report;
 #[path = "proofs/prefix.rs"]
 mod prefix;
 #[path = "proofs/report.rs"]

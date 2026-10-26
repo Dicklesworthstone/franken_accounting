@@ -103,8 +103,8 @@ commands:
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
-               [--units N,N,...]               independently recompute native trial-balance rows
-                                                or statement lines. V1 statements require --units;
+               [--units N,N,...]               independently recompute native or dimension-filtered
+                                                trial-balance rows, or statement lines. V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
@@ -1417,6 +1417,27 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 ("physical_commit_time", s("not_judged")),
                                 ("external_utc_accuracy", s("not_judged")),
                                 ("book_genesis_policy_admission", s("not_judged")),
+                            ],
+                        ));
+                    }
+                    if let Some(dimension) = &report.dimension {
+                        checks.push(Check::pass(
+                            "dimension_filter",
+                            "authenticated_journal",
+                            vec![
+                                ("dimension", s(&dimension.dimension)),
+                                ("value", s(&dimension.value)),
+                                (
+                                    "included_values",
+                                    Json::List(
+                                        dimension.values.iter().map(|value| s(value)).collect(),
+                                    ),
+                                ),
+                                (
+                                    "selection",
+                                    s("tagged legs, including declared descendants"),
+                                ),
+                                ("monetary_footing", s("not required for a filtered view")),
                             ],
                         ));
                     }
