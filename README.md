@@ -497,6 +497,79 @@ MCP passes the policy object inline to `fa_proof_gl` with `view: "cash-flow"` an
 the complete four-document historical registry closure under whole-book read
 and produce authority.
 
+Indirect cash-flow reports accept the same three native cash bases: explicit
+`assignments`, `account_rules` with optional whole-leg `overrides`, or exact
+`splits`. Choose one classification family, add `cash_policy` for the underlying
+cash definition's name, and retain `name` and `adjustments` for the indirect
+workpaper. For example, this February policy separates one loan payment into
+principal and interest, and cites a depreciation expense leg for its non-cash
+addback:
+
+```json
+{
+  "name": "february-indirect",
+  "cash_policy": "loan-cash-v1",
+  "cash_accounts": ["1000"],
+  "splits": [
+    {
+      "entry_digest": "<64-hex receipt entry digest>",
+      "leg_index": 0,
+      "reason": "Customer cash receipt",
+      "portions": [{"activity": "operating", "amount": "200.00 USD"}]
+    },
+    {
+      "entry_digest": "<64-hex repayment entry digest>",
+      "leg_index": 2,
+      "reason": "Loan principal and interest in one bank payment",
+      "portions": [
+        {"activity": "financing", "amount": "100.00 USD"},
+        {"activity": "operating", "amount": "10.00 USD"}
+      ]
+    }
+  ],
+  "adjustments": [{
+    "entry_digest": "<64-hex depreciation entry digest>",
+    "leg_index": 0,
+    "category": "non_cash",
+    "sign": "debit_minus_credit",
+    "reason": "Depreciation expense addback"
+  }]
+}
+```
+
+Replace the example citations with the actual entry digests and original leg
+indices from `fa gl detail`. Every selected cash leg must be covered, all split
+portions must use that leg's native currency, and their positive exact amounts
+must sum to the original leg. Non-cash adjustments still cite whole original
+non-cash legs with an explicit category, sign and reason.
+
+```bash
+fa gl cash-flow --indirect --income-period FY2026-P02 \
+  --account 1000 --unit USD --from 2026-02-01 --to 2026-02-28 \
+  --policy february-indirect.json --certify \
+  --certificate-out february-indirect.cert --book ./books/acme --json
+```
+
+With opening cash 1,000.00 USD, revenue 200.00 USD, the single 110.00 USD loan
+payment above, and depreciation expense 20.00 USD, net income is 170.00 USD.
+Adding back depreciation gives operating cash 190.00 USD; financing cash is
+-100.00 USD, net cash change is 90.00 USD, and closing cash is 1,090.00 USD.
+The original payment remains one journal leg with two classified portions.
+
+The income periods must cover the complete cash interval, including overlapping
+special periods. Cash, income and adjustments use one fixed recorded prefix.
+An explicit basis preserves the existing v1 report and certificate bytes;
+policy and split bases use v2, retaining their complete native source certificate
+and classification provenance. Replay still takes `kind: "indirect-cash-flow"`
+with independently retained account/date/unit selectors, numeric `known_at`,
+`income_periods`, and the full original policy. Changing a split reason, an
+unused account rule, an override or the classification family is a different
+request even when section totals agree. The retained artifact supports native
+replay and freshness checks after reopening the book. MCP uses `fa_proof_gl`
+with `view: "cash-flow"`, `indirect: true`, `income_period`, the inline policy,
+and `certify: true`; `fa_read_replay` takes its retained ID and the independent
+expectation. These indirect artifacts remain outside the portable bundle profile.
+
 An aging-to-control reconciliation can be exported as one independently verifiable
 workpaper. Choose the account, effective cutoff, recorded sequence and bucket bounds
 before receiving the artifact, then supply that same request when exporting it:

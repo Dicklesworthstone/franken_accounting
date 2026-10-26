@@ -11,6 +11,8 @@ mod cash_flow;
 mod dimension_report;
 #[path = "proofs/explanation_report.rs"]
 mod explanation_report;
+#[path = "proofs/indirect_cash_flow_basis.rs"]
+mod indirect_cash_flow_basis;
 #[path = "proofs/prefix.rs"]
 mod prefix;
 #[path = "proofs/report.rs"]

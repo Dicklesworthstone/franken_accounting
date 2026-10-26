@@ -28,6 +28,8 @@ mod cash_flow_bundle;
 mod draft_review;
 #[path = "e2e_stdio/explanation_bundle.rs"]
 mod explanation_bundle;
+#[path = "e2e_stdio/indirect_cash_flow_basis.rs"]
+mod indirect_cash_flow_basis;
 #[path = "e2e_stdio/open_items_bundle.rs"]
 mod open_items_bundle;
 #[path = "e2e_stdio/roll_forward_bundle.rs"]
