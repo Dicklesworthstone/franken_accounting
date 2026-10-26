@@ -31,7 +31,7 @@ use run::{PlantedEdit, RunOutcome, fa, outcome, run_case, run_files, run_planted
 
 const SELFTEST: &str = "_selftest";
 
-const SELFTEST_D: &str = "UNRUN _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 reason=filler_invariance";
+const SELFTEST_D: &str = "UNRUN _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree reason=filler_invariance";
 
 fn selftest_files() -> fa_oracles::cases::CaseFiles<'static> {
     fa_oracles::cases::embedded::SELFTEST.case_files()
@@ -341,7 +341,7 @@ fn _selftest_neg_cite_of_the_wrong_fact() {
     assert_eq!(
         o.row("_selftest-D-01"),
         Some(
-            "FAIL _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 reason=expected cite=S-1#0,S-2#1 observed cite=S-1#0,S-1#1"
+            "FAIL _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree reason=expected cite=S-1#0,S-2#1 observed cite=S-1#0,S-1#1"
         ),
         "{}",
         o.text()

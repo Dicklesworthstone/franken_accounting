@@ -78,7 +78,7 @@ fn invariance_d_row_agrees_across_filler_variants_and_book_ids() {
     let row = o.row("invariance-D-01").expect("the D row");
     assert!(
         row.starts_with(
-            "PASS invariance-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 invariance=agree(variants="
+            "PASS invariance-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 ref=agree invariance=agree(variants="
         ),
         "{text}"
     );

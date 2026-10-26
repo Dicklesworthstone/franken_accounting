@@ -16,7 +16,7 @@ use fa_oracles::cases::book::StepKind;
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
-use fa_oracles::cases::reference::{CellSetting, RefVerdict, ReferenceAdapter};
+use fa_oracles::cases::reference::{CellSetting, LiveEntry, RefVerdict, ReferenceAdapter};
 use fa_oracles::cases::rel;
 use fa_oracles::cases::remedy::{self, Cells, Check};
 use fa_oracles::cases::selfrow;
@@ -566,7 +566,7 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
             best = Some((diff, proj));
         }
     }
-    let witnesses = vec![
+    let mut witnesses = vec![
         ("findings".to_string(), found.findings.len().to_string()),
         ("candidates".to_string(), candidates.to_string()),
     ];
@@ -583,6 +583,17 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
     if let Some(token) = &token {
         row.projection.push(("rel".into(), token.clone()));
     }
+    // A4r: the reference's naive procedure over the run's admitted entries
+    // flags the same case entries with the same statistic.
+    let (reference, mut seen) = d_reference(run, &p.procedure, found);
+    row.projection
+        .push(("ref".into(), reference.token().to_string()));
+    witnesses.append(&mut seen);
+    if let RefVerdict::Disagree { reference, kernel } = &reference {
+        fails.push(format!(
+            "expected ref=agree observed ref=disagree (reference {reference}; kernel {kernel})"
+        ));
+    }
     if fails.is_empty() {
         row.verdict = RowVerdict::Unrun;
         row.reason = Some(FILLER.into());
@@ -591,6 +602,82 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
         row.reason = Some(fails.join("; "));
     }
     (row, witnesses, None)
+}
+
+/// A D row's reference verdict (A4r) and its record witnesses: the
+/// reference's naive procedure over the run's admitted entries (the case's
+/// entries compared; a filler variant's entries only populate) against the
+/// kernel's findings on the case's entries, under the run's procedure
+/// parameters (the `finding_record` step's, else the registered defaults).
+fn d_reference(
+    run: &BookRun<'_>,
+    procedure: &str,
+    found: &FindingRun,
+) -> (RefVerdict, Vec<(String, String)>) {
+    let case_ids: BTreeSet<&str> = run.book.intents.iter().map(|i| i.id.as_str()).collect();
+    let mut live: Vec<LiveEntry<'_>> = run
+        .book
+        .intents
+        .iter()
+        .filter(|i| run.vids.contains_key(&i.id))
+        .map(|i| LiveEntry {
+            intent: i,
+            legs: run.book.legs.iter().filter(|l| l.intent == i.id).collect(),
+            compared: true,
+        })
+        .collect();
+    if let Some(f) = &run.filler {
+        live.extend(f.intents.iter().map(|i| LiveEntry {
+            intent: i,
+            legs: f.legs.iter().filter(|l| l.intent == i.id).collect(),
+            compared: false,
+        }));
+    }
+    let kernel: BTreeMap<String, String> = found
+        .findings
+        .iter()
+        .filter_map(|f| {
+            let pr = project(run, f);
+            let entry = pr.entries.iter().find(|e| case_ids.contains(e.as_str()))?;
+            let value = f
+                .get("statistic")
+                .and_then(|s| s.get("value"))
+                .and_then(Json::as_int)?;
+            Some((entry.clone(), value.to_string()))
+        })
+        .collect();
+    let params: BTreeMap<String, i128> = run
+        .book
+        .steps
+        .iter()
+        .filter(|s| {
+            s.step_kind() == Some(StepKind::FindingRecord)
+                && s.reference.split_once('@').map(|(p, _)| p) == Some(procedure)
+        })
+        .flat_map(|s| s.params.iter().flatten())
+        .filter_map(|p| {
+            let (name, value) = p.split_once('=')?;
+            Some((name.to_string(), value.parse().ok()?))
+        })
+        .collect();
+    let verdict = match ReferenceAdapter::new(run.case, run.book) {
+        Ok(a) => a.d_cites(procedure, &params, &live, &kernel),
+        Err(why) => RefVerdict::Disagree {
+            reference: format!("unmapped ({why})"),
+            kernel: "-".into(),
+        },
+    };
+    let mut witnesses = vec![("reference".to_string(), verdict.token().to_string())];
+    match &verdict {
+        RefVerdict::NotModelled { reason } => {
+            witnesses.push(("reference_reason".into(), (*reason).into()));
+        }
+        RefVerdict::Disagree { reference, .. } => {
+            witnesses.push(("reference_refusal".into(), reference.clone()));
+        }
+        RefVerdict::Agree => {}
+    }
+    (verdict, witnesses)
 }
 
 /// Whether a refusal's `fix.argv` (after `fa`) parses against the verb it

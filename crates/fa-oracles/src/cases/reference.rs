@@ -20,10 +20,17 @@
 //! identity on a fresh key, period law, SoD, evidence) do not read it. The
 //! history replay that reversal and reclassification targets need is a
 //! later slice.
+//!
+//! D cite sets (slice 3) are compared through `fa_reference::lantern`'s
+//! naive procedures over rows built from the entries the run admitted: the
+//! entries a procedure flags and their statistic must be the kernel's. A
+//! procedure with no naive counterpart is `not_modelled`
+//! (`no_lantern_function`).
 
 use std::collections::BTreeMap;
 
 use fa_reference::evidence::{self, Attestations, Citation, Custody, Doc, Law};
+use fa_reference::lantern;
 use fa_reference::sod::{self, Approval};
 use fa_reference::{Account, Intent, Leg, Oracle, Side, Verdict};
 use fa_registry::sod_policy::{SodKey, SodPolicy};
@@ -32,7 +39,7 @@ use fa_time::{CustomYear, DateDay, FiscalCalendar, PeriodState, PeriodTransition
 
 use super::Case;
 use super::amount::parse_amount;
-use super::book::{BookVariant, IntentDef, StepKind};
+use super::book::{BookVariant, IntentDef, LegDef, StepKind};
 
 /// The citation role `fa post --evidence <oid>` records (`Source`, tag 1).
 const SOURCE_ROLE: u8 = 1;
@@ -608,6 +615,147 @@ impl<'c> ReferenceAdapter<'c> {
     }
 }
 
+/// One entry the run admitted, as the reference's Lantern rows read it: the
+/// intent and its legs (a case intent's, or a filler variant's). Filler
+/// entries are rows of the population but not `compared`: the runner maps
+/// only the case's entries back from the kernel's findings.
+#[derive(Clone, Debug)]
+pub struct LiveEntry<'a> {
+    pub intent: &'a IntentDef,
+    pub legs: Vec<&'a LegDef>,
+    pub compared: bool,
+}
+
+impl ReferenceAdapter<'_> {
+    /// The naive procedure's rows over `live`, in their given order: dates,
+    /// periods (exclusive ends), legs at their unit's scale, the preparer,
+    /// and a Reversal's target index.
+    fn rows(&self, live: &[LiveEntry<'_>]) -> Result<Vec<lantern::Row>, String> {
+        let mut rows = Vec::with_capacity(live.len());
+        for (index, e) in live.iter().enumerate() {
+            let date = day(&e.intent.effective_date)?;
+            let period = self
+                .book
+                .periods
+                .iter()
+                .find(|p| p.start <= e.intent.effective_date && e.intent.effective_date <= p.end)
+                .ok_or_else(|| format!("{}: no declared period holds its date", e.intent.id))?;
+            let mut legs = Vec::new();
+            for l in &e.legs {
+                let (unit, scale) = *self
+                    .units
+                    .get(&l.unit)
+                    .ok_or_else(|| format!("leg {}#{}: unit `{}`", l.intent, l.ordinal, l.unit))?;
+                legs.push(lantern::Leg {
+                    account: l.account.clone(),
+                    debit: l.side == "Dr",
+                    unit,
+                    scale: u32::from(scale),
+                    mantissa: parse_amount(&l.amount_literal, scale)
+                        .map_err(|err| format!("leg {}#{}: {err:?}", l.intent, l.ordinal))?,
+                });
+            }
+            let reverses = (e.intent.target_kind.as_deref() == Some("reverses"))
+                .then(|| {
+                    let target = e.intent.target.as_deref()?;
+                    live.iter().position(|x| x.intent.id == target)
+                })
+                .flatten();
+            rows.push(lantern::Row {
+                index,
+                date,
+                document_date: e.intent.document_date.as_deref().map(day).transpose()?,
+                period: self.codes.get(&period.code).cloned().unwrap_or_default(),
+                period_start: None,
+                period_end: day(&period.end)?
+                    .add_days(1)
+                    .map_err(|err| format!("period {}: {err:?}", period.code))?,
+                legs,
+                preparer: e.intent.principal.clone(),
+                approvers: Vec::new(),
+                description_chars: e.intent.memo.as_ref().map(|m| m.chars().count()),
+                external_ids: Vec::new(),
+                recorded_after_close: false,
+                reverses,
+                replaces: None,
+            });
+        }
+        Ok(rows)
+    }
+
+    /// The reference verdict on a D procedure's findings: the entries the
+    /// reference's naive procedure flags over `live`, each with its
+    /// statistic, against the kernel's (`kernel`: intent id → statistic
+    /// value). `params` are the run's procedure parameters (`name` → value);
+    /// one it does not set takes the registered default.
+    #[must_use]
+    pub fn d_cites(
+        &self,
+        procedure: &str,
+        params: &BTreeMap<String, i128>,
+        live: &[LiveEntry<'_>],
+        kernel: &BTreeMap<String, String>,
+    ) -> RefVerdict {
+        let param = |name: &str| -> Option<i128> {
+            params.get(name).copied().or_else(|| {
+                fa_registry::procedures::Procedures::embedded()
+                    .ok()?
+                    .get(procedure)?
+                    .parameter(name)
+                    .map(|p| p.default)
+            })
+        };
+        let rows = match self.rows(live) {
+            Ok(rows) => rows,
+            Err(why) => {
+                return RefVerdict::Disagree {
+                    reference: format!("unmapped ({why})"),
+                    kernel: render(kernel),
+                };
+            }
+        };
+        let reference: BTreeMap<String, String> = match procedure {
+            "jet.round_amounts" => {
+                let Some(power) = param("round_power").and_then(|p| u32::try_from(p).ok()) else {
+                    return RefVerdict::Disagree {
+                        reference: "unmapped (no round_power)".into(),
+                        kernel: render(kernel),
+                    };
+                };
+                lantern::round_amounts(&rows, power)
+                    .into_iter()
+                    .filter(|(i, _)| live[*i].compared)
+                    .map(|(i, round)| (live[i].intent.id.clone(), round.to_string()))
+                    .collect()
+            }
+            _ => {
+                return RefVerdict::NotModelled {
+                    reason: "no_lantern_function",
+                };
+            }
+        };
+        if reference == *kernel {
+            RefVerdict::Agree
+        } else {
+            RefVerdict::Disagree {
+                reference: render(&reference),
+                kernel: render(kernel),
+            }
+        }
+    }
+}
+
+/// A finding map as a disagreement names it: `<intent>:<statistic>,...`.
+fn render(map: &BTreeMap<String, String>) -> String {
+    if map.is_empty() {
+        return "none".into();
+    }
+    map.iter()
+        .map(|(k, v)| format!("{k}:{v}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// A period state by its name (`Future`, `Open`, `SoftClosed`, `Closed`,
 /// `Locked`), as the sweep and the branch classes spell it.
 #[must_use]
@@ -716,6 +864,86 @@ mod tests {
             }
             other => panic!("expected disagree, observed {other:?}"),
         }
+    }
+
+    fn live<'a>(case: &'a Case, ids: &[&str]) -> Vec<LiveEntry<'a>> {
+        let book = &case.books["native"];
+        ids.iter()
+            .map(|id| LiveEntry {
+                intent: book
+                    .intents
+                    .iter()
+                    .find(|i| i.id == *id)
+                    .expect("an intent"),
+                legs: book.legs.iter().filter(|l| l.intent == *id).collect(),
+                compared: true,
+            })
+            .collect()
+    }
+
+    fn found(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// A D on jet.round_amounts compares through
+    /// fa_reference::lantern::round_amounts: F4's debit (560,000,000.00) is a
+    /// multiple of 10^3, so the reference flags F4. The kernel's findings
+    /// agree only when they are exactly the reference's entries and counts.
+    #[test]
+    fn d_on_round_amounts_compares_cite_sets_through_the_reference() {
+        let case = pilot_planted(&[]);
+        let a = ReferenceAdapter::new(&case, &case.books["native"]).expect("the adapter");
+        let entries = live(&case, &["F2", "F4"]);
+        let none = BTreeMap::new();
+        let reference = match a.d_cites("jet.round_amounts", &none, &entries, &BTreeMap::new()) {
+            RefVerdict::Disagree { reference, .. } => reference,
+            other => panic!("an empty kernel side disagrees, observed {other:?}"),
+        };
+        let flagged: BTreeMap<String, String> = reference
+            .split(',')
+            .filter_map(|p| p.split_once(':'))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert!(flagged.contains_key("F4"), "{reference}");
+        assert_eq!(
+            a.d_cites("jet.round_amounts", &none, &entries, &flagged),
+            RefVerdict::Agree
+        );
+        // One entry more, or a different count, disagrees.
+        let mut extra = flagged.clone();
+        extra.insert("F2".into(), "1".into());
+        assert!(matches!(
+            a.d_cites("jet.round_amounts", &none, &entries, &extra),
+            RefVerdict::Disagree { .. }
+        ));
+        let mut count = flagged;
+        count.insert("F4".into(), "99".into());
+        assert!(matches!(
+            a.d_cites("jet.round_amounts", &none, &entries, &count),
+            RefVerdict::Disagree { .. }
+        ));
+    }
+
+    /// expense.capitalization has no naive Lantern function: not_modelled,
+    /// with its reason, never an agreement.
+    #[test]
+    fn d_without_a_lantern_function_is_not_modelled() {
+        let case = pilot_planted(&[]);
+        let a = ReferenceAdapter::new(&case, &case.books["native"]).expect("the adapter");
+        assert_eq!(
+            a.d_cites(
+                "expense.capitalization",
+                &BTreeMap::new(),
+                &live(&case, &["F4"]),
+                &found(&[("F4", "56000000000")])
+            ),
+            RefVerdict::NotModelled {
+                reason: "no_lantern_function"
+            }
+        );
     }
 
     /// A case Δ and an allocation are never modelled, and say why.
