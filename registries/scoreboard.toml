@@ -654,11 +654,11 @@ gate = "Genesis"
 criterion = "crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover"
 evidence_class = "lab-campaign"
 probe_kind = "lab-campaign"
+artifact = "FA-ART-LAB-02"
 argv = ["genesis_all_barriers_crash_recover"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-0fl"
+expected = "works"
+expected_exit = 0
+expected_event = "lab_campaign_ok"
 
 [[gate_criterion]]
 id = "GEN-07"

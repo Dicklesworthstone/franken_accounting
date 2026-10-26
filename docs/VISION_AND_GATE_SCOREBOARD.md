@@ -58,12 +58,12 @@
 
 > **Gate rule:** Gate met only when every row is `works`.
 
-- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **30**, `refused`: **2**, `absent`: **23**)
+- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **31**, `refused`: **2**, `absent`: **22**)
 
 | Gate | Works | Lawful Refusal | Absent | Total | Gate Status |
 |---|---:|---:|---:|---:|---|
 | `G0` | 13 | 0 | 0 | 13 | **MET** |
-| `Genesis` | 8 | 2 | 1 | 11 | **UNMET** |
+| `Genesis` | 9 | 2 | 0 | 11 | **UNMET** |
 | `G1` | 3 | 0 | 4 | 7 | **UNMET** |
 | `G2` | 4 | 0 | 6 | 10 | **UNMET** |
 | `G3` | 2 | 0 | 6 | 8 | **UNMET** |
@@ -91,7 +91,7 @@
 | `GEN-03` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `entry` | `—` | post a balanced two-leg entry via `PostEntry` through admit/resolve/laws/plan/commit |
 | `GEN-04` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `projections_verified` | `—` | the derived legs exist and equal the payload |
 | `GEN-05` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `balance_explained` | `—` | the register maintainer advances and `balance = fold` |
-| `GEN-06` | `Genesis` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-0fl` | crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover |
+| `GEN-06` | `Genesis` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-02` | `works` | `0` | `lab_campaign_ok` | `—` | crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover |
 | `GEN-07` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | `fa tb --json` returns the certified trial balance |
 | `GEN-08` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `registers_verified` | `—` | `fa verify registers` is green |
 | `GEN-09` | `Genesis` | `cli` | `cli` | `—` | `refused` | `3` | `error` (`FA-REF-001`) | `fa-lm7` | an unbalanced proposal is refused with exit `3` and the per-unit imbalance |
