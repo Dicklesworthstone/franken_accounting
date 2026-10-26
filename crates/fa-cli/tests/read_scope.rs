@@ -552,7 +552,9 @@ fn exports_enforce_the_same_scope_as_stock_reads_before_disclosing_or_writing() 
 /// March's effective dates exports March's stock but not its proofs (the
 /// bundle holds April's entry); a pinned auditor (plan §15.6) is served the
 /// state recorded at its pin, never a later one, and the extract verifies
-/// offline against it.
+/// offline against it. One account's month (`--account`) is proven within
+/// the same effective bound by its scope index, and a pinned auditor's
+/// account month is served the state at its pin.
 #[test]
 fn ads_proofs_disclose_only_what_the_token_reaches() {
     let f = Fixture::new();
@@ -609,6 +611,7 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
         .unwrap();
     let report = fa_verify::ads::verify_ads(
         &String::from_utf8(read("ADS_Coordinate_Certificate.toml")).unwrap(),
+        &String::from_utf8(read("Chart_of_Accounts.txt")).unwrap(),
         &String::from_utf8(read("GL_Detail.txt")).unwrap(),
         &String::from_utf8(read("Trial_Balance.txt")).unwrap(),
         &read("ADS_Proof.fab"),
@@ -618,6 +621,8 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
     .unwrap();
     assert!(report.verified(), "{:?}", report.failures);
     assert_eq!(report.entries, 2);
+    // The pinned state's chart, judged against its own declarations.
+    assert_eq!(report.chart_rows, Some(2));
 
     // A state named beyond the pin is out of scope, and writes nothing.
     f.out_of_scope(
@@ -659,6 +664,59 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
         "`effective`",
     );
     assert!(!f.dir.join("march-proofs").exists());
+
+    // One account's month is within the same bound: its scope-index bundle
+    // ends on March 31 (plan §13.1), so that auditor's extract is proven.
+    let verify_dir = |name: &str, proof: &Json| {
+        let dir = f.dir.join(name);
+        let read = |file: &str| std::fs::read(dir.join(file)).expect(file);
+        let hex = text(proof, "checkpoint_public_key");
+        let key: [u8; 32] = (0..32)
+            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        fa_verify::ads::verify_ads(
+            &String::from_utf8(read("ADS_Coordinate_Certificate.toml")).unwrap(),
+            &String::from_utf8(read("Chart_of_Accounts.txt")).unwrap(),
+            &String::from_utf8(read("GL_Detail.txt")).unwrap(),
+            &String::from_utf8(read("Trial_Balance.txt")).unwrap(),
+            &read("ADS_Proof.fab"),
+            &[key],
+            Some(&read("ADS_Proof.receipt")),
+        )
+        .unwrap()
+    };
+    let cash = f.ok(&[
+        &march[..],
+        &["march-cash", "--account", "1000", "--with-proofs"],
+    ]
+    .concat());
+    let proof = data(&cash).get("proof").expect("proof");
+    assert_eq!(text(proof, "completeness"), "scope_index_complete");
+    let report = verify_dir("march-cash", proof);
+    assert!(report.verified(), "{:?}", report.failures);
+    assert_eq!(report.account_scope.as_deref(), Some("1000"));
+    assert_eq!(report.effective_through, "2026-03-31");
+
+    // A pinned auditor's account month is served the state at its pin too.
+    let pinned_cash = f.ok(&[
+        "--token",
+        &pinned,
+        "export",
+        "ads",
+        "--account",
+        "1000",
+        "--period",
+        "FY2026-P03",
+        "--out",
+        "pinned-cash",
+        "--with-proofs",
+    ]);
+    let proof = data(&pinned_cash).get("proof").expect("proof");
+    assert_eq!(text(proof, "state"), text(data(&first), "oid"));
+    let report = verify_dir("pinned-cash", proof);
+    assert!(report.verified(), "{:?}", report.failures);
 }
 
 #[test]

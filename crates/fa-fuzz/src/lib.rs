@@ -467,20 +467,29 @@ pub fn fuzz_fa_verify_inputs(bytes: &[u8]) {
 }
 
 /// fa-verify ads over untrusted text: the bundle and receipt are the golden,
-/// authentic ones, so the GL_Detail, Trial_Balance and certificate readers
-/// and the proven-selection matcher are reached, not only the bundle check.
+/// authentic ones, so the Chart_of_Accounts, GL_Detail, Trial_Balance and
+/// certificate readers and the proven-selection matcher are reached, not
+/// only the bundle check.
 pub fn fuzz_ads_extract(bytes: &[u8]) {
     let g = golden_seeds();
     let text = String::from_utf8_lossy(bytes);
     let keys = [g.public_key];
     let receipt = Some(g.receipt_bytes.as_slice());
-    let judge = |certificate: &str, gl: &str, tb: &str| {
-        let _ = fa_verify::ads::verify_ads(certificate, gl, tb, &g.bundle_bytes, &keys, receipt);
+    let judge = |certificate: &str, chart: &str, gl: &str, tb: &str| {
+        let _ =
+            fa_verify::ads::verify_ads(certificate, chart, gl, tb, &g.bundle_bytes, &keys, receipt);
     };
     let ads = &g.ads_package;
-    judge(&ads.certificate_toml, &text, &ads.trial_balance);
-    judge(&ads.certificate_toml, &ads.gl_detail, &text);
-    judge(&text, &ads.gl_detail, &ads.trial_balance);
+    let chart = ads.chart_of_accounts.as_str();
+    judge(&ads.certificate_toml, chart, &text, &ads.trial_balance);
+    judge(&ads.certificate_toml, chart, &ads.gl_detail, &text);
+    judge(&text, chart, &ads.gl_detail, &ads.trial_balance);
+    judge(
+        &ads.certificate_toml,
+        &text,
+        &ads.gl_detail,
+        &ads.trial_balance,
+    );
 }
 
 /// fa-yrhb: the interop readers an importer or an export's recipient feeds
@@ -1589,6 +1598,7 @@ mod tests {
         let ads = &g.ads_package;
         let report = fa_verify::ads::verify_ads(
             &ads.certificate_toml,
+            &ads.chart_of_accounts,
             &ads.gl_detail,
             &ads.trial_balance,
             &g.bundle_bytes,
@@ -1598,6 +1608,10 @@ mod tests {
         .expect("a well-formed bundle");
         assert!(report.verified(), "{:?}", report.failures);
         assert!(report.entries >= 1 && report.tb_rows >= 1, "{report:?}");
+        assert!(
+            report.chart_rows.is_some_and(|rows| rows >= 1),
+            "{report:?}"
+        );
         assert!(seeds_for_target("ads_extract").contains(&ads.gl_detail.clone().into_bytes()));
         // Every interop seed is the golden journal itself, read back.
         let units = fa_formats::UnitCatalog::embedded().expect("units");

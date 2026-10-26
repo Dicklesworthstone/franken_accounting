@@ -371,6 +371,7 @@ pub fn read_saft_xml(xml: &str, units: &UnitCatalog) -> Result<FormatJournal, Fo
         entry_count: journal.entries.len() as u64,
         content_digest: expected_content,
         certificate_digest: expected_cert,
+        account_scope: None,
     };
     expected_coord.verify(&journal.coordinate.content_digest)?;
     if journal.coordinate.certificate_digest != expected_cert {
