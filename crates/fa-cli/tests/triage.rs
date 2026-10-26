@@ -750,7 +750,7 @@ fn all_closed_book_offers_period_list_and_names_the_next_fiscal_year() {
     for period in rows(data(&listed), "periods") {
         let code = text(period, "code");
         let state = text(period, "state");
-        if state == "future" {
+        if state.eq_ignore_ascii_case("future") {
             f.ok(&["period", "open", code]);
         }
         f.ok(&["period", "close", code, "--reason", "Scheduled", "--yes"]);
