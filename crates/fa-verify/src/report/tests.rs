@@ -312,6 +312,74 @@ fn pending_is_separate_and_resolution_releases_it_at_known_at() {
     let (bytes, anchor) = bundle(&records, 4, Selection::AsOf(20), &[]);
     assert!(verify_fixture(&bytes, anchor).unwrap().rows.is_empty());
 }
+
+#[test]
+fn atomic_pending_resolution_replays_in_either_journal_identity_order() {
+    for resolution_first in [false, true] {
+        let mut records = schema();
+        let hold = record(2, 3, 10, b"atomic-hold", 75, None, None, None);
+        let info = metadata::entry_info(&hold.bytes[..hold.len], &hold.envelope).unwrap();
+        let target = (info.identity, hold.envelope.record_digest);
+        let resolution = record(3, 3, 40, b"atomic-void", 0, None, Some(target), None);
+        // Journal ordinals follow entry identity, not batch execution order.
+        // Both payloads are authenticated at the same atomic frontier.
+        if resolution_first {
+            records.extend([resolution, hold]);
+        } else {
+            records.extend([hold, resolution]);
+        }
+        records[3].envelope.within_commit_ordinal = 1;
+        for known_at in [2, 3] {
+            let (bytes, anchor) = bundle(&records, known_at, Selection::AsOf(20), &[]);
+            assert!(verify_fixture(&bytes, anchor).unwrap().rows.is_empty());
+        }
+    }
+}
+
+#[test]
+fn atomic_resolution_still_requires_one_authentic_nonfuture_pending_target() {
+    for corruption in ["class", "future", "identity", "digest", "duplicate"] {
+        let mut records = schema();
+        let hold = record(
+            if corruption == "class" { 1 } else { 2 },
+            if corruption == "future" { 4 } else { 3 },
+            10,
+            b"target",
+            75,
+            None,
+            None,
+            None,
+        );
+        let info = metadata::entry_info(&hold.bytes[..hold.len], &hold.envelope).unwrap();
+        let mut target = (info.identity, hold.envelope.record_digest);
+        if corruption == "identity" {
+            target.0 ^= 1;
+        }
+        if corruption == "digest" {
+            target.1[0] ^= 1;
+        }
+        let resolution = record(3, 3, 40, b"release", 0, None, Some(target), None);
+        if corruption == "future" {
+            records.extend([resolution, hold]);
+        } else {
+            records.extend([hold, resolution]);
+            records[3].envelope.within_commit_ordinal = 1;
+        }
+        if corruption == "duplicate" {
+            let mut duplicate = record(3, 3, 40, b"duplicate", 0, None, Some(target), None);
+            duplicate.envelope.within_commit_ordinal = 2;
+            records.push(duplicate);
+        }
+        let known_at = records.last().unwrap().envelope.commit_seq;
+        let (bytes, anchor) = bundle(&records, known_at, Selection::AsOf(20), &[]);
+        assert_eq!(
+            verify_fixture(&bytes, anchor).unwrap_err().predicate,
+            "pending_resolution",
+            "{corruption}"
+        );
+    }
+}
+
 #[test]
 fn resealed_false_amount_or_account_label_does_not_verify() {
     let mut records = schema();

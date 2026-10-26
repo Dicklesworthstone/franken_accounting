@@ -730,6 +730,71 @@ fn incremental_pending_overflow_can_resolve_before_the_consumed_frontier() {
     }
 }
 
+#[test]
+fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
+    for resolution_first_in_journal in [false, true] {
+        let (mut k, mut oracle, periods) = setup();
+        let (march, april) = (&periods[2], &periods[3]);
+        open_period(&mut k, &mut oracle, march, 1);
+        open_period(&mut k, &mut oracle, april, 2);
+        let usd = k.book.units.lookup("USD").unwrap();
+        let held_on = DateDay::from_ymd(2026, 3, 15).unwrap();
+        let resolved_on = DateDay::from_ymd(2026, 4, 10).unwrap();
+        let mut refs = Vec::new();
+        maintain(&mut k, march);
+        maintain(&mut k, april);
+        for amount in [0, 60] {
+            let mut hold = maintenance_intent("Pending", held_on, 150, "atomic-hold");
+            for nonce in 0u64.. {
+                hold.key = format!("atomic-hold-{amount}-{nonce}").into_bytes();
+                let vid = fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &hold.key);
+                if (fa_journal::rows::resolution_vid(vid).0 < vid.0)
+                    == resolution_first_in_journal
+                {
+                    break;
+                }
+            }
+            let mut release = maintenance_intent(
+                "Resolution",
+                resolved_on,
+                amount,
+                &format!("atomic-resolution-{amount}"),
+            );
+            release.resolves = Some(Resolve {
+                target: refs.len(),
+                posts: (amount != 0).then(|| vec![0, 1]),
+            });
+            let mut extended = refs.clone();
+            extended.push(predicted_ref(&k, &hold, usd, &refs));
+            let members = [hold, release];
+            let batch_key = format!("atomic-hold-and-release-{amount}");
+            let before = k.db.frontier().unwrap();
+            let historical = fa_registers::fold_period_at(&k.db, &k.book, march, Some(before))
+                .unwrap();
+            let posted = kernel_batch(&mut k, &batch_key, &members, usd, &extended).unwrap();
+            assert_eq!(posted.recorded_at.0, before.0 + 1);
+            assert!(matches!(
+                oracle.post_batch(batch_key.as_bytes(), &members),
+                fa_reference::BatchVerdict::Posted { .. }
+            ));
+            refs.extend(posted.entries);
+            assert_eq!(
+                fa_registers::fold_period_at(&k.db, &k.book, march, Some(before)).unwrap(),
+                historical,
+                "atomic publication cannot expose an intermediate reservation"
+            );
+            for period in [march, april] {
+                let advance = maintain(&mut k, period);
+                assert!(!advance.rebuilt, "same-commit ordering is handled in the delta fold");
+                assert!(advance.fold.pending.is_empty());
+                assert!(advance.fold.pending_holds.is_empty());
+                maintained_matches_oracle(&advance, &oracle, k.book.book_id);
+                assert!(!maintain(&mut k, period).wrote);
+            }
+        }
+    }
+}
+
 /// fa-715: a trial balance and a period activity at the head served from
 /// maintained cells plus the exact tail equal the literal fold at every
 /// step of a history of postings, holds and releases in four periods whose
