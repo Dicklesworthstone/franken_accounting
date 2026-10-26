@@ -4522,6 +4522,7 @@ fn report_replay_keeps_historical_account_metadata_and_status_refuses_rebinding(
             ReportOutput::ExplainBalance(report) => assert_eq!(report.account_row.name, "Cash"),
             ReportOutput::OpenItems(report) => assert_eq!(report.accounts[&cash].name, "Cash"),
             ReportOutput::TrialBalance(_)
+            | ReportOutput::FunctionalTrialBalance(_)
             | ReportOutput::Statement(_)
             | ReportOutput::FunctionalStatement(_)
             | ReportOutput::Consolidation(_)
