@@ -824,3 +824,62 @@ fn a_carried_capacity_summary_never_crosses_to_another_database() {
     let refusal = post_carried(&mut full, req, &mut carried).unwrap_err();
     assert_eq!(refusal.code, "FA-REF-198", "{refusal}");
 }
+
+#[test]
+fn a_rewritten_committed_entry_ends_the_capacity_summary() {
+    let mut h = harness();
+    let mut carried = fa_journal::CarriedHistory::default();
+    let req = h.request(
+        h.proposal(
+            h.rent_legs(i128::MAX - 10),
+            b"tamper-base",
+            EntryClass::ORIGINAL,
+        ),
+        &["post"],
+    );
+    let base = post_carried(&mut h, req, &mut carried).unwrap();
+    let req = h.request(
+        h.proposal(h.rent_legs(1), b"tamper-next", EntryClass::ORIGINAL),
+        &["post"],
+    );
+    post_carried(&mut h, req, &mut carried).unwrap();
+    assert!(carried.capacity().is_some_and(|s| s.summarized()));
+
+    // Behind the summary's back, the first entry's legs grow to MAX - 2.
+    let vid = base.entry_ref().vid;
+    let row = h.db.vertex(vid).unwrap().unwrap();
+    let stored = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "entry").unwrap();
+    let mut entry = fa_model::Entry::decode(&stored).unwrap();
+    assert_eq!(entry.encode().unwrap(), stored, "the payload round-trips");
+    for leg in &mut entry.proposal.legs {
+        leg.amount = Amount::new(h.usd, i128::MAX - 2);
+    }
+    let mut damage = fgdb::WriteBatch::new(relation::IN_PERIOD);
+    damage.set_vertex_property(
+        vid,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(entry.encode().unwrap()).unwrap()),
+    );
+    let ctx = h.ctx();
+    h.runtime
+        .block_on(h.db.write(&ctx.commit(), damage))
+        .unwrap();
+
+    // The scan reads the rewritten legs: MAX - 2 + 1 + 5 overflows. The
+    // summary no longer stands for the book, so the carried path refuses
+    // exactly as the scan does instead of answering from stale columns.
+    let over = h.proposal(h.rent_legs(5), b"tamper-over", EntryClass::ORIGINAL);
+    let scanned = h.post(h.request(over.clone(), &["post"])).unwrap_err();
+    let req = h.request(over, &["post"]);
+    let refusal = post_carried(&mut h, req, &mut carried).unwrap_err();
+    assert_eq!(
+        (refusal.code, &refusal.message),
+        (scanned.code, &scanned.message),
+        "{refusal}"
+    );
+    assert_eq!(refusal.code, "FA-REF-198");
+    assert!(
+        carried.capacity().is_some_and(|s| !s.summarized()),
+        "a changed committed entry ends the summary"
+    );
+}

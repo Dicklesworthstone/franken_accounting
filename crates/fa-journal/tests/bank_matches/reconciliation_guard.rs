@@ -76,6 +76,20 @@ fn locks(
     locks
 }
 
+/// The account's locks at the head, or the witness's refusal.
+fn locks_outcome(
+    h: &mut Harness,
+    account: VId,
+    history: &mut Option<ReconciliationHistory>,
+) -> Result<Vec<BankReconciliationLock>, Refusal> {
+    let cx = h.cx();
+    let txn = h.db.begin(&cx.txn()).unwrap();
+    let outcome =
+        witness_reconciliation_locks(&h.db, &cx, &h.book, &txn, &[account], history).unwrap();
+    txn.abort();
+    outcome
+}
+
 /// A posting dated after the statement, so it never moves the closed cash.
 fn after_statement(h: &Harness, key: &[u8]) -> PostRequest {
     let mut later = request(
@@ -495,6 +509,66 @@ fn posting_with_a_carried_history_still_meets_a_new_close() {
         post_through(&mut h, again, &mut carried).unwrap_err().code,
         code::CAPABILITY
     );
+}
+
+#[test]
+fn a_carried_history_meets_every_planted_tamper_as_a_fresh_one_does() {
+    // Delete, relabel, rewrite, rewrite then restore the attestation, or
+    // delete its protected account edge: after a carried history was verified.
+    for attack in 0..5 {
+        let mut h = Harness::new();
+        let (import, _, _) = confirmed_source(&mut h);
+        let recorded = close(&mut h, import);
+        let cash = account_vid(h.book.book_id, "1000");
+        let mut history = None;
+        assert_eq!(locks(&mut h, cash, &mut history).len(), 1);
+        let carried = history.clone().expect("verified after the close");
+        let plain = after_statement(&h, b"tamper-plain");
+        post_request(&mut h, plain).unwrap();
+
+        let attested = recorded.attestation_vid;
+        let original = h.db.vertex(attested).unwrap().unwrap();
+        let mut damage = WriteBatch::new(relation::ATTESTS);
+        match attack {
+            0 => damage.delete_vertex(attested),
+            1 => damage.set_vertex_label(attested, label::ATTESTATION, false),
+            2 | 3 => damage.set_vertex_property(
+                attested,
+                property::CODE,
+                Some(CanonicalScalar::ucs_basic_text("Changed").unwrap()),
+            ),
+            _ => damage.delete_edge(edge_id(
+                relation::ATTESTS,
+                attested,
+                recorded.claim.manifest.account,
+            )),
+        };
+        h.write(damage);
+        if attack == 3 {
+            let mut restore = WriteBatch::new(relation::ATTESTS);
+            for (key, value) in original.props {
+                restore.set_vertex_property(attested, key, Some(value));
+            }
+            h.write(restore);
+        }
+
+        let cx = h.cx();
+        assert!(
+            extend_reconciliation_history(&h.db, &cx, &carried, h.head())
+                .unwrap()
+                .is_none(),
+            "attack {attack}: a tamper never rides the carried history"
+        );
+        let mut carried = Some(carried);
+        let through_carried = locks_outcome(&mut h, cash, &mut carried).unwrap_err();
+        let fresh = locks_outcome(&mut h, cash, &mut None).unwrap_err();
+        assert_eq!(
+            (through_carried.code, &through_carried.message),
+            (fresh.code, &fresh.message),
+            "attack {attack}"
+        );
+        assert_eq!(fresh.code, code::ATTESTATION_DRIFT, "attack {attack}");
+    }
 }
 
 #[test]
