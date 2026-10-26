@@ -83,7 +83,8 @@ pub use attestation::{
 };
 pub use batch::{
     BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
-    post_batch, post_batch_with_crash, read_outcome, request_digest,
+    post_batch, post_batch_with_crash, post_batch_with_reconciliation, read_outcome,
+    request_digest,
 };
 pub use blob::BlobStore;
 pub use carrying::{
@@ -186,7 +187,8 @@ pub use policy::{
 };
 pub use post::{
     Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
-    explain_entry_lineage, post, post_replacement_pair, prepare_post, superseded_by,
+    explain_entry_lineage, post, post_replacement_pair, post_with_reconciliation, prepare_post,
+    superseded_by,
 };
 pub use production::{
     BatesRange, ExhibitMarkedOutcome, Produced, ProducedDocument, ProducedRange, ProductionOpened,

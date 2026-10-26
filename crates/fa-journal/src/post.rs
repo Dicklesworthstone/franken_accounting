@@ -1059,7 +1059,21 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<Posted> {
-    post_admitted(db, ctx, book, req, Admission::Commit).await
+    post_admitted(db, ctx, book, req, Admission::Commit, &mut None).await
+}
+
+/// [`post`] for the long-lived owner of `db`, which keeps the verified
+/// reconciliation history between posts so each one checks only the commits
+/// since the last (fa-rcw1). `reconciliation` must only ever travel with
+/// this `db`: it is a fact about one database's own committed prefix.
+pub async fn post_with_reconciliation<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: PostRequest,
+    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+) -> Outcome<Posted> {
+    post_admitted(db, ctx, book, req, Admission::Commit, reconciliation).await
 }
 
 /// [`post`] under `admission`; only fa-journal makes the tokens other
@@ -1070,6 +1084,7 @@ pub(crate) async fn post_admitted<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
     admission: Admission,
+    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<Posted> {
     if let Err(refusal) = authorize_request(db, book, &req, admission)? {
         return Ok(Err(refusal));
@@ -1082,7 +1097,17 @@ pub(crate) async fn post_admitted<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    match prepare_post_in(db, ctx, book, req, None, admission, None, None, &mut None)? {
+    match prepare_post_in(
+        db,
+        ctx,
+        book,
+        req,
+        None,
+        admission,
+        None,
+        None,
+        reconciliation,
+    )? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Ok(posted)),
         Ok(PostPreparation::Ready(prepared)) => prepared.commit(db, ctx).await,

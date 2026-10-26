@@ -3,12 +3,14 @@
 
 use super::*;
 use fa_journal::bank::{
-    BankReconciliationPreparation, BankReconciliationRecorded, BankReconciliationRequest,
-    bank_reconciliation_status, prepare_bank_reconciliation, reconcile_bank_statement,
+    BankReconciliationLock, BankReconciliationPreparation, BankReconciliationRecorded,
+    BankReconciliationRequest, ReconciliationHistory, bank_reconciliation_status,
+    extend_reconciliation_history, prepare_bank_reconciliation, reconcile_bank_statement,
     witness_reconciliation_locks,
 };
 use fa_journal::migration::read_run;
 use fa_journal::post::{PostPreparation, prepare_post};
+use fa_journal::post_with_reconciliation;
 use fa_journal::refusal::{code, exit};
 use fa_journal::rows::{edge_id, reversal_vid};
 
@@ -56,6 +58,44 @@ fn close(h: &mut Harness, import: BankImportWitness) -> BankReconciliationRecord
             request,
         ))
         .unwrap()
+        .unwrap()
+}
+
+/// The account's locks at the head, through a carried `history`.
+fn locks(
+    h: &mut Harness,
+    account: VId,
+    history: &mut Option<ReconciliationHistory>,
+) -> Vec<BankReconciliationLock> {
+    let cx = h.cx();
+    let txn = h.db.begin(&cx.txn()).unwrap();
+    let locks = witness_reconciliation_locks(&h.db, &cx, &h.book, &txn, &[account], history)
+        .unwrap()
+        .unwrap();
+    txn.abort();
+    locks
+}
+
+/// A posting dated after the statement, so it never moves the closed cash.
+fn after_statement(h: &Harness, key: &[u8]) -> PostRequest {
+    let mut later = request(
+        h.entry_payload(&[300], "after the statement", key),
+        Capability::embedded(OWNER, &["post"]).unwrap(),
+    );
+    later.proposal.effective_date = DateDay::from_ymd(2026, 3, 16).unwrap();
+    later
+}
+
+fn post_carrying(
+    h: &mut Harness,
+    request: PostRequest,
+    history: &mut Option<ReconciliationHistory>,
+) -> Result<Posted, Refusal> {
+    let cx = h.cx();
+    h.runtime
+        .block_on(post_with_reconciliation(
+            &mut h.db, &cx, &h.book, request, history,
+        ))
         .unwrap()
 }
 
@@ -321,6 +361,139 @@ fn a_reconciliation_history_is_reused_only_at_the_basis_it_was_verified_at() {
     assert_eq!(carried[0].attestation.vid, recorded.attestation_vid);
     assert_eq!(carried, fresh);
     assert_eq!(reused, fresh);
+}
+
+#[test]
+fn a_reconciliation_history_carries_forward_over_postings_and_not_over_a_close() {
+    let mut h = Harness::new();
+    let (import, _, _) = confirmed_source(&mut h);
+    let cash = account_vid(h.book.book_id, "1000");
+    let cx = h.cx();
+    let mut history = None;
+    assert!(locks(&mut h, cash, &mut history).is_empty());
+    let before_post = history.clone().expect("verified at the head");
+
+    // An ordinary posting cannot change the verdict, so it carries forward,
+    // and the carried history answers exactly as a fresh verification.
+    let plain = after_statement(&h, b"carry-plain");
+    post_request(&mut h, plain).unwrap();
+    let carried = extend_reconciliation_history(&h.db, &cx, &before_post, h.head())
+        .unwrap()
+        .expect("a plain posting carries the history forward");
+    assert_eq!(carried.verified_at(), h.head());
+    assert_eq!(
+        locks(&mut h, cash, &mut history),
+        locks(&mut h, cash, &mut None)
+    );
+
+    // A statement close is an attestation birth: never carried, verified in
+    // full, and its lock appears.
+    let before_close = history.clone().expect("verified");
+    let recorded = close(&mut h, import);
+    assert!(
+        extend_reconciliation_history(&h.db, &cx, &before_close, h.head())
+            .unwrap()
+            .is_none(),
+        "a close never rides a carried history"
+    );
+    let after = locks(&mut h, cash, &mut history);
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert_eq!(after[0].attestation.vid, recorded.attestation_vid);
+    assert_eq!(after, locks(&mut h, cash, &mut None));
+
+    // Later ordinary postings carry the lock forward with them.
+    let after_close = history.clone().expect("verified");
+    let plain = after_statement(&h, b"carry-later");
+    post_request(&mut h, plain).unwrap();
+    let carried = extend_reconciliation_history(&h.db, &cx, &after_close, h.head())
+        .unwrap()
+        .expect("carried past the close");
+    assert_eq!(carried.verified_at(), h.head());
+    assert_eq!(locks(&mut h, cash, &mut history), after);
+    assert_eq!(locks(&mut h, cash, &mut None), after);
+}
+
+#[test]
+fn a_carried_reconciliation_history_never_crosses_to_another_database() {
+    // Two books at one frontier: one closed its statement, the other did not.
+    let mut closed = Harness::new();
+    let (import, _, _) = confirmed_source(&mut closed);
+    close(&mut closed, import);
+    let mut open = Harness::new();
+    let _ = confirmed_source(&mut open);
+    let mut n = 0u32;
+    while open.head() < closed.head() {
+        n += 1;
+        let plain = after_statement(&open, format!("pad-{n}").as_bytes());
+        post_request(&mut open, plain).unwrap();
+    }
+    assert_eq!(
+        open.head(),
+        closed.head(),
+        "both books stand at one frontier"
+    );
+    let cash = account_vid(closed.book.book_id, "1000");
+    let mut history = None;
+    assert_eq!(locks(&mut closed, cash, &mut history).len(), 1);
+    let verified = history.clone().expect("verified on the closed book");
+
+    // The closed book's history names a commit the open book does not have.
+    let cx = open.cx();
+    assert!(
+        extend_reconciliation_history(&open.db, &cx, &verified, open.head())
+            .unwrap()
+            .is_none(),
+        "another database's commit at that prefix has another marker"
+    );
+    // Handed to the open book anyway, the witness verifies afresh: no lock.
+    assert!(locks(&mut open, cash, &mut history).is_empty());
+}
+
+#[test]
+fn posting_with_a_carried_history_still_meets_a_new_close() {
+    let mut h = Harness::new();
+    let (import, _, _) = confirmed_source(&mut h);
+    let mut history = None;
+    let plain = after_statement(&h, b"carried-before");
+    post_carrying(&mut h, plain, &mut history).unwrap();
+    assert!(history.is_some(), "a post leaves its verified history");
+
+    let recorded = close(&mut h, import);
+    let head = h.head();
+    let late = request(
+        h.entry_payload(&[500], "late receipt", b"carried-late"),
+        Capability::embedded(OWNER, &["post"]).unwrap(),
+    );
+    let refusal = post_carrying(&mut h, late.clone(), &mut history).unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (code::CAPABILITY, exit::SAFETY)
+    );
+    assert_eq!(h.head(), head, "the refused post changes no native rows");
+    let admitted = post_carrying(
+        &mut h,
+        PostRequest {
+            capability: cap(OWNER),
+            ..late
+        },
+        &mut history,
+    )
+    .unwrap();
+    assert!(cites(
+        &h,
+        admitted.entry_ref().vid,
+        recorded.attestation_vid
+    ));
+
+    // The history carried past the close keeps the cutoff for the next post.
+    let again = request(
+        h.entry_payload(&[1], "again", b"carried-again"),
+        Capability::embedded(OWNER, &["post"]).unwrap(),
+    );
+    assert_eq!(
+        post_carrying(&mut h, again, &mut history).unwrap_err().code,
+        code::CAPABILITY
+    );
 }
 
 #[test]

@@ -17,7 +17,7 @@ use fa_time::DateDay;
 use fgdb::{Database, WriteBatch, WriteTxn, WriteTxnError};
 use fgdb_delta_types::{DeltaRow, ElementId, PropertyKeyId, RelationId};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, EId, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, EId, MarkerRef, VId};
 
 use super::{
     BankDecisionRef, BankMatchRecorded, admit_confirmation, checkpoint, lifecycle, verify,
@@ -1047,7 +1047,127 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
 #[derive(Clone, Debug)]
 pub struct ReconciliationHistory {
     at: CommitSeq,
+    /// The Chronicle marker of the commit at `at`. Markers chain to their
+    /// predecessor, so an equal marker means the same committed prefix: a
+    /// history is only carried forward on the database it was verified on.
+    marker: Option<MarkerRef>,
     recorded: Vec<BankReconciliationRecorded>,
+}
+
+impl ReconciliationHistory {
+    /// The committed prefix this history was verified at.
+    #[must_use]
+    pub fn verified_at(&self) -> CommitSeq {
+        self.at
+    }
+}
+
+/// The Chronicle marker of the commit at `at`, when its batch is retained.
+fn marker_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    at: CommitSeq,
+) -> Result<Option<MarkerRef>, KernelError> {
+    let Some(before) = at.0.checked_sub(1) else {
+        return Ok(None);
+    };
+    Ok(db
+        .delta_since(CommitSeq(before))?
+        .next()
+        .filter(|batch| batch.commit_seq() == at)
+        .map(|batch| batch.commit_marker_identity()))
+}
+
+/// `history` carried forward to `at` without a replay from sequence zero, or
+/// `None` when a commit after its prefix could change any part of the
+/// verdict [`history_at`] would reach at `at`; the caller then verifies the
+/// full history there (fa-rcw1).
+///
+/// Every check in `history_at` is either over attestation births, over the
+/// rows of born attestations and their strong edges, over the label and
+/// payload of every vertex, or at a claim's own immutable
+/// `evaluated_known_at`. A commit can change the first three only through an
+/// attestation birth, a delta naming a born attestation or one of its strong
+/// edges, a vertex retirement (whose cascade retires edges), an ATTESTATION
+/// label flip, or a payload write on a vertex labelled ATTESTATION at `at`.
+/// Any such delta, any delta kind not listed here, a gap in the sequence, or
+/// a prefix behind `history`, or a database whose commit at the history's
+/// prefix is not the one it was verified on (another Chronicle marker)
+/// refuses the shortcut; the full verification then decides, exactly as
+/// before. The substrate's delta rows are the complete net effect of each
+/// commit, as the register maintainer relies on.
+#[doc(hidden)]
+pub fn extend_reconciliation_history<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    history: &ReconciliationHistory,
+    at: CommitSeq,
+) -> Result<Option<ReconciliationHistory>, KernelError> {
+    if history.at > at || history.marker.is_none() || marker_at(db, history.at)? != history.marker {
+        return Ok(None);
+    }
+    let born: BTreeSet<VId> = history.recorded.iter().map(|r| r.attestation_vid).collect();
+    let protected: BTreeSet<EId> = history
+        .recorded
+        .iter()
+        .flat_map(|recorded| {
+            strong_edges(recorded)
+                .into_iter()
+                .map(|(relation, target)| edge_id(relation, recorded.attestation_vid, target))
+        })
+        .collect();
+    let mut through = history.at.0;
+    for batch in db.delta_since(history.at)? {
+        let seq = batch.commit_seq();
+        if seq > at {
+            break;
+        }
+        if through.checked_add(1) != Some(seq.0) {
+            return Ok(None);
+        }
+        for coordinate in batch.coordinate_entries() {
+            for delta in &coordinate.rows {
+                checkpoint(cx)?;
+                let unchanged = match delta {
+                    DeltaRow::CreateVertex { labels, .. } => !labels.contains(&label::ATTESTATION),
+                    DeltaRow::CreateEdge { .. } => true,
+                    DeltaRow::LabelMembership {
+                        vid,
+                        label: flipped,
+                        ..
+                    } => *flipped != label::ATTESTATION && !born.contains(vid),
+                    DeltaRow::Property {
+                        elem: ElementId::Vertex(vid),
+                        property: key,
+                        ..
+                    } => {
+                        !born.contains(vid)
+                            && (*key != property::FA_PAYLOAD
+                                || !db
+                                    .vertex_at(*vid, at)?
+                                    .is_some_and(|row| row.labels.contains(&label::ATTESTATION)))
+                    }
+                    DeltaRow::Property {
+                        elem: ElementId::Edge(eid),
+                        ..
+                    }
+                    | DeltaRow::DeleteEdge { eid, .. } => !protected.contains(eid),
+                    _ => false,
+                };
+                if !unchanged {
+                    return Ok(None);
+                }
+            }
+        }
+        through = seq.0;
+    }
+    if through != at.0 {
+        return Ok(None);
+    }
+    Ok(Some(ReconciliationHistory {
+        at,
+        marker: marker_at(db, at)?,
+        recorded: history.recorded.clone(),
+    }))
 }
 
 /// Witness each affected account even when there is no close. New close
@@ -1055,9 +1175,10 @@ pub struct ReconciliationHistory {
 /// conflict check invalidates a prepared post without serializing disjoint
 /// accounts through a global vertex-population scan.
 ///
-/// `history` is reused when it was verified at this transaction's basis and
-/// verified there otherwise; the account and attestation witnesses are still
-/// read through `txn` on every call.
+/// `history` is reused when it was verified at this transaction's basis,
+/// carried forward when [`extend_reconciliation_history`] proves no later
+/// commit can change it, and verified in full otherwise; the account and
+/// attestation witnesses are still read through `txn` on every call.
 pub fn witness_reconciliation_locks<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
@@ -1074,15 +1195,23 @@ pub fn witness_reconciliation_locks<V: Vfs + Clone>(
         txn.vertex(db, *account)?;
     }
     let at = txn.basis();
-    let recorded = match history.take() {
-        Some(verified) if verified.at == at => verified.recorded,
-        _ => match history_at(db, cx, book, at)? {
-            Ok(recorded) => recorded,
+    let carried = match history.take() {
+        Some(verified) => extend_reconciliation_history(db, cx, &verified, at)?,
+        None => None,
+    };
+    let verified = match carried {
+        Some(verified) => verified,
+        None => match history_at(db, cx, book, at)? {
+            Ok(recorded) => ReconciliationHistory {
+                at,
+                marker: marker_at(db, at)?,
+                recorded,
+            },
             Err(refusal) => return Ok(Err(refusal)),
         },
     };
-    let locks = locks_for(db, txn, &accounts, &recorded);
-    *history = Some(ReconciliationHistory { at, recorded });
+    let locks = locks_for(db, txn, &accounts, &verified.recorded);
+    *history = Some(verified);
     locks
 }
 
