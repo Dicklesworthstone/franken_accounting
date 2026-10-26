@@ -135,6 +135,10 @@ enum ReportBundleCertificate<'a> {
     Native(&'a crate::ReportCertificate),
     Aging(&'a crate::AgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
+    AgingReconciliation {
+        certificate: &'a crate::AgingReconciliationCertificate,
+        expected: &'a crate::AgingReconciliationRequest,
+    },
 }
 
 impl<'a> ReportBundleCertificate<'a> {
@@ -143,6 +147,9 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::Native(certificate) => certificate,
             Self::Aging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
+            Self::AgingReconciliation { certificate, .. } => {
+                certificate.aging_source().source()
+            }
         }
     }
 }
@@ -3693,6 +3700,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export the original aging/control reconciliation and both native
+    /// sources over one signed complete prefix. The recipient must independently
+    /// select the account, cutoff, fixed sequence and age bands in `expected`.
+    /// Both sources are replayed before export; current whole-book read and
+    /// produce authority are required before observing retained history.
+    pub async fn produce_aging_reconciliation_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::AgingReconciliation {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
     async fn produce_report_bundle_inner(
         &mut self,
         cx: &PurposeContexts,
@@ -3773,6 +3807,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 None
             }
+            ReportBundleCertificate::AgingReconciliation {
+                certificate: reconciliation,
+                expected,
+            } => {
+                if let Err(refusal) = self.replay_effective_date_aging_reconciliation(
+                    cx,
+                    principal,
+                    capability,
+                    reconciliation,
+                    expected,
+                )? {
+                    return Ok(Err(refusal));
+                }
+                if reconciliation.control_source().registry_digest
+                    != certificate.registry_digest
+                {
+                    return Ok(Err(fa_journal::Refusal::new(
+                        fa_notary::code::SCOPE_UNSUPPORTED,
+                        fa_journal::exit::REFUSAL,
+                        "portable aging/control reconciliation requires one original registry closure for both sources",
+                        "plan §5.7 / §13.3 (independent reconstruction from the authenticated inputs)",
+                        "retain and export aging and AsOf control sources certified against the same historical registry epoch",
+                    )));
+                }
+                None
+            }
         };
         let closure_frontier = certificate
             .time_selection
@@ -3796,8 +3856,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "certify the report at its resolved recorded sequence before producing an offline report bundle",
             )));
         }
-        let requires_registry_closure = matches!(report, ReportBundleCertificate::RollForward(_))
-            || matches!(
+        let requires_registry_closure = matches!(
+            report,
+            ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::AgingReconciliation { .. }
+        ) || matches!(
                 &certificate.selection,
                 crate::ReportSelection::OpenItems { .. }
                     | crate::ReportSelection::ExplainBalance { .. }
@@ -3916,9 +3979,34 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     Err(refusal) => return Ok(Err(refusal)),
                 }
             }
+            ReportBundleCertificate::AgingReconciliation { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
         };
-        let assembled = match registries.as_deref() {
-            Some(registries) => fa_notary::report::assemble_with_registries(
+        let assembled = match (report, registries.as_deref()) {
+            (ReportBundleCertificate::AgingReconciliation { .. }, Some(registries)) => {
+                fa_notary::report::assemble_reconciliation_with_registries(
+                    &journal,
+                    &checkpoint,
+                    &bytes,
+                    closure_frontier,
+                    &bodies,
+                    registries,
+                )
+            }
+            (ReportBundleCertificate::AgingReconciliation { .. }, None) => {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    fa_journal::exit::REFUSAL,
+                    "portable aging/control reconciliation requires the complete original registry closure",
+                    "plan §5.7 / §13.3 (independent reconstruction from the authenticated inputs)",
+                    "retain the source certificates' original account, entry-class, unit and foundation registries",
+                )));
+            }
+            (_, Some(registries)) => fa_notary::report::assemble_with_registries(
                 &journal,
                 &checkpoint,
                 &bytes,
@@ -3926,7 +4014,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &bodies,
                 registries,
             ),
-            None => fa_notary::report::assemble(
+            (_, None) => fa_notary::report::assemble(
                 &journal,
                 &checkpoint,
                 &bytes,

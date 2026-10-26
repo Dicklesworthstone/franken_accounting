@@ -216,6 +216,41 @@ fn policy_shape(policy: &Json, indirect: bool) -> Result<(), Fail> {
     Ok(())
 }
 
+/// A portable reconciliation keeps the recipient's original account, cutoff,
+/// sequence and bands independent of the certificate being exported.
+pub(crate) fn reconciliation_bundle_expectation(
+    args: &Args,
+    book: &Book,
+) -> Result<AgingReconciliationRequest, Fail> {
+    if args.flag_all("--expect").len() != 1 {
+        return Err(invalid(
+            "aging reconciliation export requires exactly one --expect JSON request",
+        ));
+    }
+    let text = args.flag("--expect").ok_or_else(|| {
+        invalid("aging reconciliation export requires the recipient's --expect JSON")
+    })?;
+    check_size(text)?;
+    let doc = crate::json::parse(text)
+        .map_err(|error| invalid(format!("invalid replay expectation JSON: {error}")))?;
+    if string(&doc, "kind")? != "aging-reconciliation" {
+        return Err(invalid(
+            "aging reconciliation export requires kind aging-reconciliation",
+        ));
+    }
+    reconciliation_request(&doc, book)
+}
+
+fn reconciliation_request(doc: &Json, book: &Book) -> Result<AgingReconciliationRequest, Fail> {
+    exact_fields(doc, &["kind", "account", "through", "known_at", "buckets"])?;
+    Ok(AgingReconciliationRequest {
+        account: account(string(doc, "account")?, book)?,
+        effective_through: day(doc, "through")?,
+        known_at: Some(fixed_prefix(doc)?),
+        buckets: aging_buckets(doc)?,
+    })
+}
+
 pub(super) fn parse(
     args: &Args,
     book: &Book,
@@ -386,15 +421,9 @@ pub(super) fn parse(
                 .map_err(|refusal| certificate_invalid(refusal.message))?;
             Ok(Expected::SplitCashFlow(request, definition))
         }
-        "aging-reconciliation" => {
-            exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
-            Ok(Expected::Reconciliation(AgingReconciliationRequest {
-                account: account(string(&doc, "account")?, book)?,
-                effective_through: day(&doc, "through")?,
-                known_at: Some(fixed_prefix(&doc)?),
-                buckets: aging_buckets(&doc)?,
-            }))
-        }
+        "aging-reconciliation" => Ok(Expected::Reconciliation(reconciliation_request(
+            &doc, book,
+        )?)),
         "aging" => {
             exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
             // An omitted account is the whole-book aging the producer chose by

@@ -4486,6 +4486,32 @@ impl Book {
         )))
     }
 
+    /// Export an aging-to-control reconciliation under current whole-book
+    /// read and produce authority. The original aging and AsOf trial-balance
+    /// certificates share one signed, complete journal prefix and original
+    /// registry closure. Recipients can recompute every open, posted, pending
+    /// and difference cell without the source book.
+    ///
+    /// `expected` is the recipient's independently selected account, civil
+    /// cutoff, fixed recorded sequence and age bands; HEAD is not an expectation.
+    /// The outer reconciliation digest identifies the delivered claim. Export
+    /// appends nothing and returns `None` when the selected checkpoint is absent.
+    pub fn produce_aging_reconciliation_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_aging_reconciliation_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the

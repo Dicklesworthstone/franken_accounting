@@ -408,6 +408,40 @@ exportable; its portable result is the lead schedule with all movement citations
 MCP uses `fa_proof_gl` with `view: "roll-forward"`, then `fa_notary_bundle` with
 the retained `C:<oid>` or complete certificate bytes.
 
+An aging-to-control reconciliation can be exported as one independently verifiable
+workpaper. Choose the account, effective cutoff, recorded sequence and bucket bounds
+before receiving the artifact, then supply that same request when exporting it:
+
+```bash
+fa gl aging --reconcile --account 1200 --as-of 2026-03-31 --as-known-at 42 \
+  --bucket 0 --bucket 30 --bucket 60 --bucket 90 \
+  --certificate-out march-reconciliation.cert --book ./books/acme --json
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate march-reconciliation.cert \
+  --expect '{"kind":"aging-reconciliation","account":"1200","through":"2026-03-31","known_at":42,"buckets":[0,30,60,90]}' \
+  --book ./books/acme --out march-reconciliation.fab \
+  --receipt-out march-reconciliation.receipt --json
+fa-verify report march-reconciliation.fab --key <trusted-checkpoint-public-key> \
+  --receipt march-reconciliation.receipt --json
+```
+
+The bundle keeps the original outer certificate and both source certificates. The
+independent verifier reconstructs the effective-date aging and the control account's
+as-of trial balance from the same authenticated journal prefix and canonical registry
+documents. It then checks each native unit's posted net, open net and difference;
+pending debits and credits remain separate. The result includes the item drilldown,
+control-account cells, historical account metadata and both source digests. A valid
+proof can report a nonzero difference: `reconciled: false` is an accounting result.
+
+Export's `--expect` is the independent JSON request, with a fixed integer
+`known_at`; it is required for this family. The recipient's
+`fa-verify report --expect <digest>` instead pins the **outer reconciliation
+certificate**. A nested aging or trial-balance digest does not authenticate the
+complete workpaper. A valid signed production receipt can supply the recipient
+binding instead. MCP exposes the same request as a separate `expect` string on
+`fa_notary_bundle`, alongside a retained `C:<oid>` or full certificate hex.
+Export remains read-only and requires whole-book read and produce authority.
+
 Instant-selected certificates also retain their requested instant, observed frontier,
 and tick identities. Replay uses those saved brackets even after later ticks or
 postings arrive. An open upper bracket is explicit; this is a clock-observation

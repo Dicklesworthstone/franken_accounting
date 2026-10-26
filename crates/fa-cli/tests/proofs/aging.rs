@@ -233,3 +233,261 @@ fn other_composed_report_families_do_not_inherit_aging_bundle_support() {
     );
     assert_eq!(fixture.head(), before);
 }
+
+fn reconciliation_expectation(known_at: u64) -> String {
+    format!(
+        r#"{{"kind":"aging-reconciliation","account":"1000","through":"2026-03-31","known_at":{known_at},"buckets":[0,30]}}"#
+    )
+}
+
+#[test]
+fn retained_aging_reconciliation_exports_both_sources_and_the_outer_recipient_pin() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let first = fixture.post("portable-reconciliation", "2026-03-10", "12.34", &evidence);
+    let known_at = fixture.head();
+    let at = known_at.to_string();
+    let expected = reconciliation_expectation(known_at);
+    let certificate_path = fixture.dir.join("aging-reconciliation.certificate");
+    let metadata = certify(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--reconcile",
+            "--account",
+            "1000",
+            "--as-of",
+            "2026-03-31",
+            "--as-known-at",
+            &at,
+            "--bucket",
+            "0",
+            "--bucket",
+            "30",
+            "--certificate-out",
+            certificate_path.to_str().unwrap(),
+        ],
+    );
+    let encoded = unhex(text(&metadata, "bytes"));
+    assert_eq!(std::fs::read(&certificate_path).unwrap(), encoded);
+    let certificate = fa::AgingReconciliationCertificate::decode(&encoded).unwrap();
+    assert_eq!(
+        text(&metadata, "output_format"),
+        "fa:aging-control-reconciliation:v1"
+    );
+    assert_eq!(
+        text(&metadata, "oid"),
+        fa_verify::blake3::hex(certificate.digest())
+    );
+    assert_ne!(certificate.digest(), certificate.aging_source().digest());
+    assert_ne!(certificate.digest(), &certificate.control_source().digest);
+    let locator = format!("C:{}", text(&metadata, "oid"));
+    fixture.post("reconciliation-later", "2026-03-15", "2.00", &evidence);
+    ok(
+        &fixture.book,
+        &["reverse", text(&first, "vid"), "--reason", "WrongAccount"],
+    );
+    let state = fixture.checkpoint();
+    let signed = exported(
+        &fixture.book,
+        &["signed-checkpoint", "--state", text(&state, "oid")],
+    );
+    let key: [u8; 32] = unhex(text(&signed, "checkpoint_public_key"))
+        .try_into()
+        .unwrap();
+    let checkpoint = fa_verify::verify_checkpoint(&bytes(&signed), &[key]).unwrap();
+    let before = fixture.head();
+    let mut original_bundle = None;
+    for source in [locator.as_str(), certificate_path.to_str().unwrap()] {
+        let produced = ok(
+            &fixture.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                source,
+                "--expect",
+                &expected,
+                "--state",
+                text(&state, "oid"),
+            ],
+        );
+        assert_eq!(text(&produced, "scope"), "report");
+        assert!(text(&produced, "verify").contains(&format!(
+            "--expect {}",
+            fa_verify::blake3::hex(certificate.digest())
+        )));
+        let bundle = bytes(&produced);
+        let receipt = unhex(text(&produced, "receipt"));
+        let verified = fa_verify::report::verify_report_expected(
+            &bundle,
+            &[key],
+            Some(&checkpoint.checkpoint),
+            Some(&receipt),
+            Some(certificate.digest()),
+        )
+        .expect("both original reconciliation sources independently recompute");
+        assert_eq!(verified.certificate_digest, *certificate.digest());
+        assert_eq!(verified.output, certificate.output());
+        assert_eq!(verified.known_at, known_at);
+        assert_eq!(verified.unit_universe_source, "authenticated-registry");
+        let reconciliation = verified.aging_reconciliation.unwrap();
+        assert!(reconciliation.is_reconciled());
+        assert_eq!(reconciliation.rows.len(), 1);
+        assert_eq!(reconciliation.rows[0].posted_net, 1234);
+        assert_eq!(reconciliation.rows[0].open_net, 1234);
+        assert_eq!(reconciliation.rows[0].difference, 0);
+        assert_eq!(reconciliation.aging.items.len(), 1);
+        assert_eq!(reconciliation.control_rows.len(), 1);
+        assert_eq!(
+            reconciliation.aging_certificate_digest,
+            *certificate.aging_source().digest()
+        );
+        assert_eq!(
+            reconciliation.control_certificate_digest,
+            certificate.control_source().digest
+        );
+        for wrong_pin in [
+            certificate.aging_source().digest(),
+            &certificate.control_source().digest,
+        ] {
+            assert!(
+                fa_verify::report::verify_report_expected(
+                    &bundle,
+                    &[key],
+                    None,
+                    None,
+                    Some(wrong_pin),
+                )
+                .is_err(),
+                "neither embedded source independently pins the complete workpaper"
+            );
+        }
+        if let Some(original) = &original_bundle {
+            assert_eq!(&bundle, original);
+        } else {
+            original_bundle = Some(bundle);
+        }
+    }
+    let authority = LaunchAuthority::new(
+        fixture.book.clone(),
+        None,
+        "reconciliation-reader",
+        LaunchProfile::Agent,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let argv = [
+        "bundle",
+        "produce",
+        "--certificate",
+        "-",
+        "--expect",
+        &expected,
+        "--state",
+        text(&state, "oid"),
+        "--json",
+    ]
+    .map(str::to_string);
+    let (exit, output) = fa_with_authority(
+        &argv,
+        Files {
+            cwd: None,
+            stdin: Stdin::Forwarded(encoded),
+        },
+        &authority,
+        true,
+    );
+    assert_eq!(exit, 0, "{}{}", output.stdout, output.stderr);
+    let produced = parse_line(&output.stdout, &output.stderr);
+    assert_eq!(bytes(&produced), original_bundle.unwrap());
+    assert_eq!(
+        fixture.head(),
+        before,
+        "all exports preserve the retained book"
+    );
+}
+
+#[test]
+fn reconciliation_export_requires_an_independent_exact_request_before_success() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    fixture.post("reconciliation-request", "2026-03-10", "5.00", &evidence);
+    let known_at = fixture.head();
+    let metadata = certify(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--reconcile",
+            "--account",
+            "1000",
+            "--as-of",
+            "2026-03-31",
+            "--as-known-at",
+            &known_at.to_string(),
+            "--bucket",
+            "0",
+            "--bucket",
+            "30",
+        ],
+    );
+    fixture.checkpoint();
+    let locator = format!("C:{}", text(&metadata, "oid"));
+    let before = fixture.head();
+    let missing = run(
+        &fixture.book,
+        &["bundle", "produce", "--certificate", &locator],
+    );
+    assert_eq!(missing.0, 2, "{}", missing.1.render());
+    for expected in [
+        format!(r#"{{"kind":"aging-reconciliation","account":"4000","through":"2026-03-31","known_at":{known_at},"buckets":[0,30]}}"#),
+        format!(r#"{{"kind":"aging-reconciliation","account":"1000","through":"2026-03-30","known_at":{known_at},"buckets":[0,30]}}"#),
+        format!(r#"{{"kind":"aging-reconciliation","account":"1000","through":"2026-03-31","known_at":{known_at},"buckets":[0,60]}}"#),
+        reconciliation_expectation(known_at - 1),
+    ] {
+        let (exit, refused) = run(
+            &fixture.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--expect",
+                &expected,
+            ],
+        );
+        assert_eq!(exit, 8, "{}", refused.render());
+        assert_eq!(text(&refused, "event"), "error");
+    }
+    for malformed in [
+        r#"{"kind":"aging-reconciliation","account":"1000","through":"2026-03-31","known_at":"HEAD","buckets":[0,30]}"#,
+        r#"{"kind":"aging","account":"1000","through":"2026-03-31","known_at":1,"buckets":[0,30]}"#,
+        r#"{"kind":"aging-reconciliation","account":"1000","through":"2026-03-31","known_at":1,"buckets":[0,30],"extra":true}"#,
+    ] {
+        let (exit, refused) = run(
+            &fixture.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--expect",
+                malformed,
+            ],
+        );
+        assert_eq!(exit, 2, "{}", refused.render());
+    }
+    let stray = run(
+        &fixture.book,
+        &[
+            "bundle",
+            "produce",
+            "--expect",
+            &reconciliation_expectation(known_at),
+        ],
+    );
+    assert_eq!(stray.0, 2, "{}", stray.1.render());
+    assert_eq!(fixture.head(), before, "refused exports do not publish");
+}
