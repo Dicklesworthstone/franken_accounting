@@ -53,7 +53,7 @@ pub struct Rebuilt {
 /// Post `legs` legs (a positive even count) across FY2026's twelve periods
 /// and maintain every period's registers. Amounts come from `seed`.
 pub fn build(legs: u64, seed: u64) -> Result<RebuildBook, BenchError> {
-    if legs == 0 || legs % 2 != 0 {
+    if legs == 0 || !legs.is_multiple_of(2) {
         return Err(BenchError::Execution(format!(
             "the rebuild workload posts two legs per entry; {legs} legs is not a positive even count"
         )));
@@ -175,7 +175,7 @@ pub fn build(legs: u64, seed: u64) -> Result<RebuildBook, BenchError> {
                 idempotency_key: key,
                 principal_ref: operator,
                 session_ref: None,
-                evidence: vec![evidence.clone()],
+                evidence: vec![evidence],
                 supersession: Vec::new(),
                 pending: None,
                 external_ids: Vec::new(),
