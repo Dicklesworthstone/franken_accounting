@@ -125,7 +125,7 @@ fn pilot_native_book_loads_and_every_intent_balances() {
     let book = &case.books["native"];
     assert_eq!(book.kind, VariantKind::Native);
     assert_eq!(book.intents.len(), 7);
-    assert_eq!(book.legs.len(), 14);
+    assert_eq!(book.legs.len(), 18);
     assert_eq!(book.periods.len(), 6);
     assert_eq!(book.cases.len(), 1);
     // Every declared intent balances per unit, recomputed here from the legs
@@ -167,8 +167,8 @@ fn load_book_reloads_a_book_against_a_loaded_case() {
         &case,
         "books/native.toml",
         &native(
-            "account = \"6100\"\nside = \"Cr\"\namount_literal = \"560000000.00\"",
-            "account = \"6199\"\nside = \"Cr\"\namount_literal = \"560000000.00\"",
+            "account = \"6100\"\nside = \"Cr\"\namount_literal = \"186666666.67\"",
+            "account = \"6199\"\nside = \"Cr\"\namount_literal = \"186666666.67\"",
         ),
     )
     .expect_err("a dangling account");
@@ -370,8 +370,8 @@ fn manual_assertion_with_unregistered_reason_is_refused() {
 #[test]
 fn role_that_does_not_admit_the_account_type_is_refused() {
     let book = native(
-        "type = \"Expense\"\nrole = \"\"",
-        "type = \"Expense\"\nrole = \"fixed_asset\"",
+        "code = \"6100\"\nname_fact = \"F4\"\ntype = \"Expense\"\nrole = \"\"",
+        "code = \"6100\"\nname_fact = \"F4\"\ntype = \"Expense\"\nrole = \"fixed_asset\"",
     );
     let errs = refused_native(&book);
     native_err(

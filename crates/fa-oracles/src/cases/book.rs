@@ -2648,6 +2648,7 @@ impl<'a> Check<'a, '_> {
 
     fn branch_classes_and_defaults(&mut self) {
         let mut seen = BTreeSet::new();
+        let rules = super::branch::rules();
         for b in &self.book.branch_classes {
             if !seen.insert(b.id.as_str()) {
                 self.push(
@@ -2656,6 +2657,19 @@ impl<'a> Check<'a, '_> {
                     LoadErrorKind::DuplicateId,
                     format!("branch class `{}` is declared twice", b.id),
                 );
+            }
+            // Its rule is a registered class rule of the same attribute,
+            // whose classes admit every value (A5a).
+            let problem = match &rules {
+                // An empty list is refused where the row is read.
+                Ok(_) if b.values.is_empty() => None,
+                Ok(rules) => super::branch::class_problem(rules, b),
+                Err(errs) => errs
+                    .first()
+                    .map(|e| format!("{}: {e}", super::branch::FILE)),
+            };
+            if let Some(detail) = problem {
+                self.push(b.line, Some(&b.id), LoadErrorKind::UnknownValue, detail);
             }
         }
         for d in &self.book.defaults {
