@@ -605,6 +605,16 @@ pub(crate) fn judge(
                 // Its run hides it: the export selects it no more than the
                 // fold does.
                 Some(false) => continue,
+                // An account's scope-index run holds that account's entries
+                // only: never the run's lifecycle controls, and the export
+                // asks it for no balance, so nothing in it decides the run.
+                None if account.is_some() && !matches!(manifest.scope, BundleScope::Prefix) => {
+                    out.failures.push(format!(
+                        "a migration chunk recorded at {} is in this account's scope, and an account bundle carries neither its run's lifecycle controls nor a migration-aware balance over its cells, so whether its run makes it visible is not proven offline; verify the whole-chart {} extract (no --account), whose balances decide it",
+                        envelope.commit_seq, parts.format
+                    ));
+                    continue;
+                }
                 None => {
                     out.failures.push(format!(
                         "a migration chunk recorded at {} is in scope, and no verified balance over its cells proves whether its run makes it visible",
