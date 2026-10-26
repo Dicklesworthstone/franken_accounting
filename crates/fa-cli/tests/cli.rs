@@ -4661,11 +4661,10 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         args.extend(["approve", "--proposal", digest.as_str(), "--json"]);
         text(&doc(&ok(&args)), "approval_vid").to_string()
     };
-    // An issued token cannot approve on the CLI: a token-bound session stays
-    // within the Preparer ceiling, which holds no `approve` (FA-REF-011). So
-    // a CLI approval is never under an issued capability, and the
-    // session_lineage refusals over issued tokens live in the library test
-    // (fa restatement_case).
+    // An issued Human token holding `approve` approves on the CLI under its
+    // own journaled capability (ead3caec5). The controller issued it, so it
+    // shares a session lineage with the controller: the case refuses that
+    // pair as its dual control (FA-REF-008) and stays Rehearsed.
     let token = dir.join("delegate.token").display().to_string();
     ok(&[
         "capability",
@@ -4686,18 +4685,25 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         "approve",
         "--json",
     ]);
+    let delegate = approval(&["--token", &token]);
+    let controller = approval(&["--as", "controller"]);
+    let auditor = approval(&["--as", "auditor"]);
     let (code, out) = run(&[
-        "--token",
-        &token,
+        "case",
         "approve",
-        "--proposal",
-        &digest,
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &delegate,
         "--json",
     ]);
     assert_eq!(code, 7, "{out}");
-    assert!(out.contains("FA-REF-011"), "{out}");
-    let controller = approval(&["--as", "controller"]);
-    let auditor = approval(&["--as", "auditor"]);
+    assert!(out.contains("FA-REF-008"), "{out}");
+    assert!(out.contains("session lineage"), "{out}");
+    let case = doc(&ok(&["case", "show", "1", "--json"]));
+    let state = case.get("case").map(|c| text(c, "state").to_string());
+    assert_eq!(state.as_deref(), Some("Rehearsed"));
     // One approval is not dual control; the case stays Rehearsed.
     let (code, out) = run(&["case", "approve", "1", "--approval", &controller, "--json"]);
     assert_eq!(code, 7, "{out}");
@@ -14882,7 +14888,6 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     );
     ok(&["chart", "import", &chart, "--json"]);
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
-    ok(&["period", "open", "FY2026-P03", "--json"]);
     let evidence = source_doc(&dir, &book);
     let intent = write(
         &dir,
@@ -14897,12 +14902,20 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
         &evidence,
         "--json",
     ];
+    // A period transition reserves the book's shared outcome key as a post
+    // does (4df0d52c0), so the first write that needs coverage here is the
+    // open: it is refused before anything is written and names the recovery.
+    let open = ["period", "open", "FY2026-P03", "--json"];
     let before = head();
-    let (code, out, err) = fa(Some(&book), &post);
+    let (code, out, err) = fa(Some(&book), &open);
     assert_eq!(code, 6, "{out}\n{err}");
     assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034");
     assert!(text(&doc(&out), "fix").contains("fa recover outcomes"));
-    assert_eq!(head(), before, "posting must not silently rebuild coverage");
+    assert_eq!(
+        head(),
+        before,
+        "a transition must not silently rebuild coverage"
+    );
 
     let dry_run = ["recover", "outcomes", "--dry-run", "--json"];
     let preview = ok(&dry_run);
@@ -14915,7 +14928,7 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(int(&planned, "basis"), Some(i128::from(before.0)));
     assert_eq!(ok(&dry_run), preview, "legacy preview is deterministic");
     assert_eq!(head(), before, "legacy preview publishes nothing");
-    assert_eq!(fa(Some(&book), &post).0, 6, "preview grants no coverage");
+    assert_eq!(fa(Some(&book), &open).0, 6, "preview grants no coverage");
     assert_eq!(head(), before);
 
     let basis = before.0.to_string();
@@ -14934,12 +14947,15 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(covered.get("already_covered"), Some(&Json::Bool(true)));
     assert_eq!(head(), recovered);
 
+    ok(&open);
+    let opened = head();
+    assert_eq!(opened.0, recovered.0 + 1);
     let posted = ok(&post);
     assert_eq!(field(&posted, "event"), Some("posted"));
     let entry_vid = field(&posted, "vid").unwrap();
     assert_eq!(entry_vid.len(), 32);
     let posted_at = head();
-    assert_eq!(posted_at.0, recovered.0 + 1);
+    assert_eq!(posted_at.0, opened.0 + 1);
     let retry = ok(&post);
     assert_eq!(field(&retry, "event"), Some("recorded"));
     assert_eq!(field(&retry, "vid"), Some(entry_vid));
@@ -18195,6 +18211,12 @@ fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::R
     assert_eq!(field(&period_ex, "kind"), Some("Normal"));
     let period_doc = doc(&period_ex);
     assert_eq!(arr(&period_doc, "transitions").len(), 1);
+    // No clock journaled a tick in this book, so the open names none.
+    assert_eq!(
+        arr(&period_doc, "transitions")[0].get("recorded_after"),
+        Some(&Json::Null),
+        "{period_ex}"
+    );
     assert!(!arr(&period_doc, "admissible_classes").is_empty());
 
     // 4. Add a document, post an entry, attach a supplement, and reverse the entry.
