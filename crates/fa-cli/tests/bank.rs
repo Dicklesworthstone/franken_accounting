@@ -4005,7 +4005,10 @@ fn warehouse_export_runs_the_hosts_fwc_and_verifies_its_receipt() {
             ],
         );
         assert_eq!(code, expected_exit, "{}", refused.render());
-        assert!(!refused_out.exists(), "refused export must not create --out");
+        assert!(
+            !refused_out.exists(),
+            "refused export must not create --out"
+        );
     }
 
     let receipt_path = f.dir.join("warehouse-receipt.toml");

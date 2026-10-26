@@ -420,10 +420,7 @@ fn export_warehouse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .map_err(|e| usage(format!("--connector: {e}"), WAREHOUSE_EXAMPLE))?;
     let destination = args.flag("--destination").unwrap_or(connector.as_str());
     if destination.trim().is_empty() {
-        return Err(usage(
-            "--destination must not be empty",
-            WAREHOUSE_EXAMPLE,
-        ));
+        return Err(usage("--destination must not be empty", WAREHOUSE_EXAMPLE));
     }
     let output = args.flag("--out");
     if let Some(path) = output {
@@ -442,8 +439,12 @@ fn export_warehouse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let capability = ctx.capability(args, &["read", "produce"])?;
     for op in [Op::Read, Op::Produce] {
-        fa_policy::require(&capability, op, "exporting a certified report to a warehouse")
-            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+        fa_policy::require(
+            &capability,
+            op,
+            "exporting a certified report to a warehouse",
+        )
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     }
     let report_arg = args.flag("--report");
     if report_arg.is_some()
@@ -609,7 +610,10 @@ fn export_warehouse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("entries", Json::Int(i128::from(coordinate.entry_count))),
             ("accounts", Json::Int(journal.accounts.len() as i128)),
             ("content_digest", s(hex(&control_oid.0))),
-            ("certificate_digest", s(hex(&receipt.report_certificate_digest))),
+            (
+                "certificate_digest",
+                s(hex(&receipt.report_certificate_digest)),
+            ),
             ("out", output.map_or(Json::Null, s)),
             ("files", Json::Arr(listed)),
             ("proof", Json::Null),
@@ -949,10 +953,9 @@ fn verify_warehouse_export(ctx: &mut Ctx<'_>, args: &Args, path: &str) -> Result
                 effective_through_raw = Some(v.trim_matches('"').to_string());
             }
             "known_at_seq" => {
-                known_at_raw = Some(
-                    v.parse::<u64>()
-                        .map_err(|_| failed("warehouse receipt known_at_seq is not a sequence".into()))?,
-                );
+                known_at_raw = Some(v.parse::<u64>().map_err(|_| {
+                    failed("warehouse receipt known_at_seq is not a sequence".into())
+                })?);
             }
             _ => {}
         }
@@ -977,7 +980,8 @@ fn verify_warehouse_export(ctx: &mut Ctx<'_>, args: &Args, path: &str) -> Result
             .ok_or_else(|| failed("warehouse receipt has no effective_through".into()))?,
     )
     .map_err(|e| failed(format!("warehouse receipt effective_through: {e}")))?;
-    let known_at = known_at_raw.ok_or_else(|| failed("warehouse receipt has no known_at_seq".into()))?;
+    let known_at =
+        known_at_raw.ok_or_else(|| failed("warehouse receipt has no known_at_seq".into()))?;
     let capability = ctx.capability(args, &["read", "verify"])?;
     for op in [Op::Read, Op::Verify] {
         fa_policy::require(&capability, op, "verifying a warehouse export receipt")
@@ -987,10 +991,8 @@ fn verify_warehouse_export(ctx: &mut Ctx<'_>, args: &Args, path: &str) -> Result
     let book = ctx.books.open_admitted(args, |book| {
         let scope = book.read_scope(capability.holder(), &capability)??;
         let selection = fa::TrialBalanceSelection::AsOf(effective_through);
-        let seq = scope.admit_report(
-            &selection.into(),
-            Some(fgdb_types::CommitSeq(known_at)),
-        )??;
+        let seq =
+            scope.admit_report(&selection.into(), Some(fgdb_types::CommitSeq(known_at)))??;
         let journal = book.format_journal(effective_through, Some(seq))?;
         if receipt.report_certificate_digest != journal.coordinate.certificate_digest {
             let cert_bytes = book
@@ -1062,7 +1064,10 @@ fn verify_warehouse_export(ctx: &mut Ctx<'_>, args: &Args, path: &str) -> Result
             ("entries", Json::Int(i128::from(coordinate.entry_count))),
             ("legs", Json::Int(legs as i128)),
             ("content_digest", s(hex(&control_oid.0))),
-            ("certificate_digest", s(hex(&receipt.report_certificate_digest))),
+            (
+                "certificate_digest",
+                s(hex(&receipt.report_certificate_digest)),
+            ),
             ("refold_digest", s(hex(&refold))),
             ("reread", s("receipt")),
             ("files", Json::Arr(files_json(&expected_files, false))),
