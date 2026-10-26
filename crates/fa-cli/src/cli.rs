@@ -10424,6 +10424,17 @@ fn admit_allocation(book: &Book, who: VId, capability: &Capability) -> Result<()
     Ok(())
 }
 
+/// Adds the allocation's driver evidence to the caller's, keeping the list
+/// strictly ascending as the entry codec requires (`EntryPayload::validate`,
+/// fa-model). The driver's oid depends on the book id, so appending it
+/// unsorted refused about half of all `fa allocate --evidence` calls.
+fn with_driver_evidence(evidence: &mut Vec<fa_model::EvidenceRef>, driver: fa_model::EvidenceRef) {
+    if !evidence.contains(&driver) {
+        evidence.push(driver);
+        evidence.sort_unstable();
+    }
+}
+
 /// The allocation basis is the entry's driver evidence. It is supplied under
 /// the caller's capability, so `post` authority on this book is checked
 /// before the document is observed or written, and its uploader and grade
@@ -10902,9 +10913,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ensure_allocation_driver_imported(&mut book, prepared.posting(), &capability)?
         };
         let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
-        if !evidence.contains(&driver_ev) {
-            evidence.push(driver_ev);
-        }
+        with_driver_evidence(&mut evidence, driver_ev);
         let template = EntryPayload {
             schema_minor: 0,
             book_id: book_ctx.book_id,
@@ -11027,9 +11036,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ensure_allocation_driver_imported(&mut book, &posting, &capability)?
         };
         let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
-        if !evidence.contains(&driver_ev) {
-            evidence.push(driver_ev);
-        }
+        with_driver_evidence(&mut evidence, driver_ev);
         let template = EntryPayload {
             schema_minor: 0,
             book_id: book_ctx.book_id,
@@ -23036,6 +23043,29 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The driver evidence joins the caller's in ascending order, whichever
+    /// side of it the driver's oid falls on, and is never cited twice.
+    #[test]
+    fn allocation_driver_evidence_keeps_the_evidence_ascending() {
+        let ev = |b: u8| fa_model::EvidenceRef {
+            document_oid: Oid([b; 32]),
+            doc_commit: [0; 32],
+            role: 0,
+        };
+        for (caller, driver) in [
+            (vec![ev(0x10), ev(0xf0)], ev(0x00)),
+            (vec![ev(0x10)], ev(0x80)),
+        ] {
+            let mut evidence = caller.clone();
+            with_driver_evidence(&mut evidence, driver);
+            assert!(evidence.windows(2).all(|w| w[0] < w[1]), "{evidence:?}");
+            assert_eq!(evidence.len(), caller.len() + 1);
+        }
+        let mut evidence = vec![ev(0x10), ev(0x20)];
+        with_driver_evidence(&mut evidence, ev(0x20));
+        assert_eq!(evidence, [ev(0x10), ev(0x20)]);
+    }
 
     /// The trial balance's net is checked arithmetic: an in-range difference
     /// is exact, including a full-range negative, and one outside `i128` is
