@@ -8,12 +8,18 @@
 //! holding process exits for any reason, so a crashed writer never leaves a
 //! lease behind and nothing has to be cleaned up. The file's text is only a
 //! note for messages ("who holds it"); the lock is the lease.
+//! Inspection and publication share the locked descriptor. Unix leases must
+//! have exactly one link and retain their path identity and mode 0600. The
+//! book directory must remain trusted: an advisory lock cannot stop an actor
+//! with directory-write authority from unlinking an active lease.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use fa_journal::{Refusal, exit};
+
+mod checked;
 
 /// The refusal catalog code for a held writer lease (plan Appendix D).
 pub const LEASE_HELD: &str = "FA-REF-018";
@@ -86,10 +92,10 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> LeaseError + '_ {
     target_os = "netbsd",
     target_os = "dragonfly"
 ))]
-const O_NOFOLLOW_FLAG: i32 = 0x0100;
+const O_NOFOLLOW_FLAG: i32 = 0x0100 | 0x0004; // O_NOFOLLOW | O_NONBLOCK
 
 #[cfg(target_os = "linux")]
-const O_NOFOLLOW_FLAG: i32 = 0x20000;
+const O_NOFOLLOW_FLAG: i32 = 0x20000 | 0x0800; // O_NOFOLLOW | O_NONBLOCK
 
 fn apply_no_follow(opts: &mut OpenOptions) -> &mut OpenOptions {
     #[cfg(any(
@@ -236,94 +242,26 @@ impl Lease {
             });
         }
 
-        let mut file = match vfs_symlink_metadata(&path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut opts = OpenOptions::new();
-                opts.read(true).write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    opts.mode(0o600);
-                }
-                apply_no_follow(&mut opts);
-                opts.open(&path).map_err(io_error(&path))?
-            }
-            Err(e) => return Err(LeaseError::Io { path, error: e }),
-            Ok(meta) => {
-                if meta.is_symlink() {
-                    return Err(LeaseError::Io {
-                        path,
-                        error: std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "refusing to follow symlink for writer lease",
-                        ),
-                    });
-                }
-                if !meta.is_file() {
-                    return Err(LeaseError::Io {
-                        path,
-                        error: std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "writer lease path is not a regular file",
-                        ),
-                    });
-                }
-                #[cfg(unix)]
-                if (meta.permissions().mode() & 0o7777) != 0o600 {
-                    return Err(LeaseError::Io {
-                        path,
-                        error: std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "existing file at lease path has mode 0{:03o} (expected 0600 lease file)",
-                                meta.permissions().mode() & 0o7777
-                            ),
-                        ),
-                    });
-                }
-                // Inspect read-only before opening for write so a non-lease file
-                // is never truncated and its mtime is untouched.
-                let mut ro_opts = OpenOptions::new();
-                ro_opts.read(true);
-                apply_no_follow(&mut ro_opts);
-                let ro_file = ro_opts.open(&path).map_err(io_error(&path))?;
-                let mut preview = Vec::new();
-                ro_file
-                    .take(257)
-                    .read_to_end(&mut preview)
-                    .map_err(io_error(&path))?;
-                if !is_existing_lease_note(&preview) {
-                    return Err(LeaseError::Io {
-                        path,
-                        error: std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "existing file at lease path is not a writer lease; refusing to truncate",
-                        ),
-                    });
-                }
-
-                let mut rw_opts = OpenOptions::new();
-                rw_opts.read(true).write(true).create(false).truncate(false);
-                apply_no_follow(&mut rw_opts);
-                rw_opts.open(&path).map_err(io_error(&path))?
-            }
-        };
+        let mut file = checked::open_writer(&path).map_err(io_error(&path))?;
 
         match file.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
+                checked::validate_file(&path, &file).map_err(io_error(&path))?;
                 return Err(LeaseError::Held {
-                    holder: read_note(&mut file),
+                    holder: checked::holder_note(&mut file),
                     path,
                 });
             }
             Err(TryLockError::Error(error)) => return Err(LeaseError::Io { path, error }),
         }
+        checked::inspect_locked(&path, &mut file).map_err(io_error(&path))?;
         file.set_len(0).map_err(io_error(&path))?;
         file.seek(SeekFrom::Start(0)).map_err(io_error(&path))?;
         file.write_all(format!("{note}\n").as_bytes())
             .map_err(io_error(&path))?;
         file.flush().map_err(io_error(&path))?;
+        checked::validate_file(&path, &file).map_err(io_error(&path))?;
         Ok(Self { file, path })
     }
 
@@ -337,33 +275,17 @@ impl Lease {
     pub fn holder(dir: &Path, lease_file: &str) -> Option<String> {
         let path = dir.join(lease_file);
         validate_lease_file_name(&path, lease_file).ok()?;
-        let meta = vfs_symlink_metadata(&path).ok()?;
-        if meta.is_symlink() || !meta.is_file() {
-            return None;
-        }
-        #[cfg(unix)]
-        if (meta.permissions().mode() & 0o7777) != 0o600 {
-            return None;
-        }
-        let mut opts = OpenOptions::new();
-        opts.read(true);
-        apply_no_follow(&mut opts);
-        let mut file = opts.open(&path).ok()?;
-        let mut preview = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(257)
-            .read_to_end(&mut preview)
-            .ok()?;
-        if !is_existing_lease_note(&preview) {
-            return None;
-        }
+        let mut file = checked::open_reader(&path).ok()?;
         match file.try_lock_shared() {
             Ok(()) => {
                 // Free: nobody holds it exclusively. Our shared lock ends here.
                 let _ = file.unlock();
                 None
             }
-            Err(TryLockError::WouldBlock) => Some(read_note(&mut file)),
+            Err(TryLockError::WouldBlock) => {
+                checked::validate_file(&path, &file).ok()?;
+                Some(checked::holder_note(&mut file))
+            }
             Err(TryLockError::Error(_)) => None,
         }
     }
@@ -375,13 +297,6 @@ impl Drop for Lease {
         // release immediate even if the descriptor were shared.
         let _ = self.file.unlock();
     }
-}
-
-fn read_note(file: &mut File) -> String {
-    let mut text = String::new();
-    let _ = file.seek(SeekFrom::Start(0));
-    let _ = file.take(4096).read_to_string(&mut text);
-    text.trim().to_string()
 }
 
 #[cfg(test)]
