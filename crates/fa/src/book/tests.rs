@@ -1628,9 +1628,6 @@ fn register_advance_crash_matrix() -> Vec<CrashObservation> {
 /// and its ledger row.
 #[test]
 fn every_barrier_crashed_at_every_commit_point_recovers_as_fa_art_lab_02() {
-    use fa_registry::evidence_artifacts::{ArtifactWitness, EvidenceArtifacts, LabCampaignWitness};
-    use std::collections::{BTreeMap, BTreeSet};
-
     let runs: Vec<CrashObservation> = [
         post_crash_matrix(),
         batch_crash_matrix(),
@@ -1640,25 +1637,51 @@ fn every_barrier_crashed_at_every_commit_point_recovers_as_fa_art_lab_02() {
     .into_iter()
     .flatten()
     .collect();
+    assert_lab_campaign(
+        "FA-ART-LAB-02",
+        b"fa:lab-seeds:all-barriers:v1",
+        b"fa:lab-witness:all-barriers:v1",
+        &runs,
+        &["batch", "post", "register_advance", "soft_close"],
+    );
+}
+
+/// An fa-0fl crash campaign's coverage and its ledger row. Every run is a
+/// distinct (barrier, case) cell, and each of `barriers` is seen with both
+/// outcomes. The witness is computed from the runs: the SHA-256 of
+/// `seed_domain` ‖ the run count ‖ each run's barrier, case and seed; the run
+/// and cell counts; and one BLAKE3 digest under `witness_domain` per run of
+/// its barrier, case, seed, outcome, head and March fold. It is printed,
+/// then asserted equal to `id`'s ledger row.
+fn assert_lab_campaign(
+    id: &str,
+    seed_domain: &[u8],
+    witness_domain: &[u8],
+    runs: &[CrashObservation],
+    barriers: &[&'static str],
+) {
+    use fa_registry::evidence_artifacts::{ArtifactWitness, EvidenceArtifacts, LabCampaignWitness};
+    use std::collections::{BTreeMap, BTreeSet};
+
     let cells: BTreeSet<_> = runs.iter().map(|r| (r.barrier, r.case)).collect();
     assert_eq!(cells.len(), runs.len(), "a (barrier, case) cell ran twice");
     let mut outcomes = BTreeMap::<&str, BTreeSet<bool>>::new();
-    for r in &runs {
+    for r in runs {
         outcomes.entry(r.barrier).or_default().insert(r.kept);
     }
     assert_eq!(
         outcomes,
-        ["batch", "post", "register_advance", "soft_close"]
-            .into_iter()
-            .map(|barrier| (barrier, BTreeSet::from([false, true])))
+        barriers
+            .iter()
+            .map(|barrier| (*barrier, BTreeSet::from([false, true])))
             .collect(),
-        "every barrier must both lose and keep a crashed publication"
+        "every barrier must be seen with both outcomes"
     );
 
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let mut seeds = b"fa:lab-seeds:all-barriers:v1".to_vec();
+    let mut seeds = seed_domain.to_vec();
     seeds.extend_from_slice(&u32::try_from(runs.len()).unwrap().to_le_bytes());
-    for r in &runs {
+    for r in runs {
         seeds.push(u8::try_from(r.barrier.len()).unwrap());
         seeds.extend_from_slice(r.barrier.as_bytes());
         seeds.push(r.case);
@@ -1672,7 +1695,7 @@ fn every_barrier_crashed_at_every_commit_point_recovers_as_fa_art_lab_02() {
             .iter()
             .map(|r| {
                 hex(&fa_model::domain_digest(
-                    b"fa:lab-witness:all-barriers:v1",
+                    witness_domain,
                     &[
                         r.barrier.as_bytes(),
                         &[r.case],
@@ -1686,7 +1709,7 @@ fn every_barrier_crashed_at_every_commit_point_recovers_as_fa_art_lab_02() {
             .collect(),
     };
     println!(
-        "FA-ART-LAB-02 witness:\nseed_manifest_sha256 = \"{}\"\nschedule_count = {}\nexplored_interleavings = {}\ncertificate_hashes_blake3 = [{}]",
+        "{id} witness:\nseed_manifest_sha256 = \"{}\"\nschedule_count = {}\nexplored_interleavings = {}\ncertificate_hashes_blake3 = [{}]",
         witness.seed_manifest_sha256,
         witness.schedule_count,
         witness.explored_interleavings,
@@ -1698,11 +1721,359 @@ fn every_barrier_crashed_at_every_commit_point_recovers_as_fa_art_lab_02() {
             .join(", ")
     );
     let ledger = EvidenceArtifacts::embedded().expect("evidence_artifacts.toml");
-    let row = ledger.get("FA-ART-LAB-02").expect("FA-ART-LAB-02 row");
+    let row = ledger
+        .get(id)
+        .unwrap_or_else(|| panic!("{id}: no ledger row"));
     assert_eq!(
         row.witness,
         ArtifactWitness::LabCampaign(witness),
-        "FA-ART-LAB-02 is not what this campaign observed"
+        "{id} is not what this campaign observed"
+    );
+}
+
+/// Three timed holds in March, due: the anchor tick, three `Pending` posts
+/// with a 5 ns timeout, then a corroborated tick 10 ns later, under which a
+/// sweep may expire them as the book's `System` principal.
+struct TimedHolds {
+    fixture: PreparedFixture,
+    holds: Vec<fa_model::EntryRef>,
+    sweeper: Capability,
+}
+
+async fn timed_holds(root: &Cx, seed: u64) -> TimedHolds {
+    let cx = PurposeContexts::narrow_runtime_root(root);
+    let mut fixture = prepared_fixture(root, seed).await;
+    let witness = Capability::embedded(VId(1), &["witness"]).unwrap();
+    let system = fa_journal::rows::system_principal(fixture.book.context().book_id);
+    let sweeper = Capability::new(
+        system,
+        fa_policy::Profile::System,
+        &[fa_policy::Op::Post],
+        system,
+    )
+    .unwrap();
+    let march_ns =
+        u64::try_from(DateDay::from_ymd(2026, 3, 15).unwrap().0).unwrap() * 86_400_000_000_000;
+    fixture
+        .book
+        .record_tick(&cx, march_ns, true, &witness)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut holds = Vec::new();
+    for i in 0..3 {
+        let mut hold = fixture.request.clone();
+        hold.proposal.class = EntryClass::PENDING;
+        hold.proposal.idempotency_key = format!("timed-hold-{i}").into_bytes();
+        hold.proposal.pending = Some(fa_model::Pending {
+            timeout_ns: Some(5),
+            resolution_of: None,
+            disposition: None,
+        });
+        let posted = fixture.book.post(&cx, hold).await.unwrap().unwrap();
+        holds.push(posted.entry_ref());
+    }
+    fixture
+        .book
+        .record_tick(&cx, march_ns + 10, true, &witness)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.book.due_holds(&cx).unwrap().len(), 3);
+    TimedHolds {
+        fixture,
+        holds,
+        sweeper,
+    }
+}
+
+/// How many of `holds` have their one resolution (plan §5.4: a pending
+/// entry's resolution identity is derived from it).
+fn resolved(book: &LabBook, holds: &[fa_model::EntryRef]) -> usize {
+    holds
+        .iter()
+        .filter(|hold| {
+            book.db
+                .vertex(fa_journal::rows::resolution_vid(hold.vid))
+                .unwrap()
+                .is_some()
+        })
+        .count()
+}
+
+/// fa-0fl, the crash-point matrix for the expiry sweep (plan §5.4,
+/// scoreboard G2-04): three timed holds are due, and the sweep's one batch
+/// publication crashes at each of the substrate's seven commit crash points;
+/// the fault VFS then loses every unsynced byte and the book reopens. All
+/// three holds are expired (three `Expires` resolutions and the batch's
+/// `SweepControl` entry) or none is, never a partial batch; registers,
+/// projections and periods verify either way; a completed publication
+/// survives; and a rerun of the sweep expires exactly what the crash left
+/// due, so every hold ends resolved exactly once. A crash before the commit
+/// marker expires nothing; the control expires all three.
+#[test]
+fn an_expiry_sweep_crashed_at_every_commit_point_expires_all_or_none_after_reopen() {
+    expiry_sweep_crash_matrix();
+}
+
+/// The runs of the expiry sweep's crash-point matrix above, one per
+/// `commit_crash_cases` case; FA-ART-LAB-03 reuses them.
+fn expiry_sweep_crash_matrix() -> Vec<CrashObservation> {
+    use fgdb::CrashPoint;
+    let mut runs = Vec::new();
+    for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
+        let seed = 1100 + u64::from(case);
+        runs.push(under_lab(seed, move |root| async move {
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            let TimedHolds {
+                fixture:
+                    PreparedFixture {
+                        mut book,
+                        vfs,
+                        march,
+                        ..
+                    },
+                holds,
+                sweeper,
+            } = timed_holds(&root, seed).await;
+            let before = journal_entries(&book, &cx);
+            let outcome = book.sweep_expiry_with_crash(&cx, &sweeper, 3, point).await;
+            // A crash point this publication's write path never passes leaves
+            // an ordinary commit; one it passes fails the publication. Either
+            // way, a completed publication must survive the crash below.
+            let published = matches!(outcome, Ok(Ok(Some(_))));
+            if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
+                assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
+            }
+            drop(book);
+            cx.commit()
+                .with_restriction_async(vfs.crash())
+                .await
+                .unwrap();
+            let mut book = AsyncBook::open_with_vfs(
+                &cx,
+                vfs.clone(),
+                Path::new("./prepared-book"),
+                BookKeys::for_development(0x69),
+                Entropy::deterministic(seed),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{point:?}: reopen after the crash: {e:?}"));
+            let after = journal_entries(&book, &cx);
+            assert!(
+                before.iter().all(|e| after.contains(e)),
+                "{point:?}: the earlier journal changed"
+            );
+            let expired = match (resolved(&book, &holds), book.due_holds(&cx).unwrap().len()) {
+                (0, 3) => false,
+                (3, 0) => true,
+                other => {
+                    panic!("{point:?}: {other:?} (resolved, still due) of the batch's 3 holds")
+                }
+            };
+            if published {
+                assert!(expired, "{point:?}: a completed publication was lost");
+            } else if let Some(expected) = expected {
+                assert_eq!(expired, expected, "{point:?}");
+            }
+            assert_eq!(
+                after.len() - before.len(),
+                if expired { 4 } else { 0 },
+                "{point:?}: three resolutions and the SweepControl entry, or nothing"
+            );
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert_eq!(
+                fold.pending.is_empty(),
+                expired,
+                "{point:?}: March's reservations are released exactly when its holds expired: {fold:?}"
+            );
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            let rerun = book.sweep_expiry(&cx, &sweeper, 3).await.unwrap().unwrap();
+            assert_eq!(
+                rerun.map(|batch| batch.expired.len()),
+                if expired { None } else { Some(3) },
+                "{point:?}: the rerun expires exactly what the crash left due"
+            );
+            assert!(book.due_holds(&cx).unwrap().is_empty(), "{point:?}");
+            assert_eq!(resolved(&book, &holds), 3, "{point:?}");
+            assert_eq!(journal_entries(&book, &cx).len(), before.len() + 4);
+            let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+            assert!(fold.pending.is_empty(), "{point:?}: {fold:?}");
+            assert!(
+                book.verify_registers(&cx, &march).unwrap().is_green(),
+                "{point:?}"
+            );
+            assert_journal_verifies(&book, &cx, point);
+            CrashObservation {
+                barrier: "expiry_sweep",
+                case,
+                seed,
+                kept: expired,
+                head: book.head(&cx).unwrap(),
+                fold_digest: fold.fold_digest,
+            }
+        }));
+    }
+    runs
+}
+
+/// fa-0fl, a manual void racing the expiry sweep (plan §5.4, FA-INV-08: a
+/// pending entry is resolved at most once). The void of the first of three
+/// due holds is prepared while the hold is live, and the two commits land
+/// in both orders. When the void commits first, the sweep expires only the
+/// other two, and the void's retry is its recorded outcome. When the sweep
+/// commits first it expires all three; the prepared void's witness of the
+/// hold has moved, so its commit is a conflict that writes nothing
+/// (FA-REF-030, exit 6), and the re-plan its fix names finds the hold
+/// already resolved (FA-REF-062, exit 6). Either way every hold has exactly
+/// one resolution, the winner's, and registers, projections and periods
+/// verify.
+#[test]
+fn a_manual_void_and_the_expiry_sweep_resolve_each_hold_exactly_once_in_both_orders() {
+    void_and_sweep_orders();
+}
+
+/// The runs of the void-vs-sweep orders above (case 0: the void commits
+/// first; case 1: the sweep does); FA-ART-LAB-03 reuses them.
+fn void_and_sweep_orders() -> Vec<CrashObservation> {
+    (0u8..2)
+        .map(|case| {
+            let seed = 1200 + u64::from(case);
+            under_lab(seed, move |root| async move {
+                let cx = PurposeContexts::narrow_runtime_root(&root);
+                let TimedHolds {
+                    fixture:
+                        PreparedFixture {
+                            mut book,
+                            request,
+                            march,
+                            ..
+                        },
+                    holds,
+                    sweeper,
+                } = timed_holds(&root, seed).await;
+                let mut void = request.clone();
+                void.proposal.class = EntryClass::RESOLUTION;
+                void.proposal.idempotency_key = b"manual-void".to_vec();
+                void.proposal.description = book
+                    .seal_text(&cx, "manual void of the first timed hold")
+                    .unwrap();
+                void.proposal.legs = Vec::new();
+                void.proposal.unit_totals = Vec::new();
+                void.proposal.control = Some(fa_model::ControlPayload::ReservationRelease);
+                void.proposal.pending = Some(fa_model::Pending {
+                    timeout_ns: None,
+                    resolution_of: Some(holds[0]),
+                    disposition: Some(fa_model::Disposition::Voids),
+                });
+                let prepared = prepare_fixture_post(&mut book, &cx, void.clone());
+                let void_first = case == 0;
+                let before = journal_entries(&book, &cx);
+                let (voided, swept) = if void_first {
+                    let voided = prepared.commit(&mut book.db, &cx).await.unwrap();
+                    let swept = book.sweep_expiry(&cx, &sweeper, 3).await.unwrap().unwrap();
+                    (voided, swept)
+                } else {
+                    let swept = book.sweep_expiry(&cx, &sweeper, 3).await.unwrap().unwrap();
+                    let voided = prepared.commit(&mut book.db, &cx).await.unwrap();
+                    (voided, swept)
+                };
+                let swept = swept.expect("due holds remain for the sweep");
+                let expired: Vec<_> = swept.expired.iter().map(|(hold, _)| *hold).collect();
+                if void_first {
+                    assert!(matches!(voided, Ok(Posted::Committed { .. })), "{voided:?}");
+                    assert_eq!(expired, holds[1..], "the sweep skips the voided hold");
+                } else {
+                    // The void's plan read the hold before the sweep resolved
+                    // it, so its witness moved: a conflict that writes nothing.
+                    let refusal = voided.unwrap_err();
+                    assert_eq!(
+                        (refusal.code, refusal.exit),
+                        ("FA-REF-030", 6),
+                        "{refusal:?}"
+                    );
+                    assert_eq!(expired, holds, "the sweep expires all three");
+                }
+                // The retry its refusal names: the recorded void, or a re-plan
+                // that finds the hold already resolved by the sweep.
+                let retried = book.post(&cx, void).await.unwrap();
+                if void_first {
+                    assert!(
+                        matches!(retried, Ok(Posted::AlreadyRecorded { .. })),
+                        "{retried:?}"
+                    );
+                } else {
+                    let refusal = retried.unwrap_err();
+                    assert_eq!(
+                        (refusal.code, refusal.exit),
+                        ("FA-REF-062", 6),
+                        "{refusal:?}"
+                    );
+                }
+                assert_eq!(
+                    journal_entries(&book, &cx).len(),
+                    before.len() + 4,
+                    "three resolutions and the SweepControl entry, whoever won"
+                );
+                let first = book
+                    .read_entry(&cx, fa_journal::rows::resolution_vid(holds[0].vid))
+                    .unwrap()
+                    .expect("the first hold's one resolution")
+                    .0;
+                let disposition = first.proposal.pending.and_then(|p| p.disposition);
+                assert_eq!(
+                    matches!(disposition, Some(fa_model::Disposition::Voids)),
+                    void_first,
+                    "{disposition:?}"
+                );
+                assert_eq!(resolved(&book, &holds), 3);
+                assert!(book.due_holds(&cx).unwrap().is_empty());
+                let fold = book.advance_registers(&cx, &march).await.unwrap().fold;
+                assert!(fold.pending.is_empty(), "{fold:?}");
+                assert!(book.verify_registers(&cx, &march).unwrap().is_green());
+                assert_journal_verifies(&book, &cx, None);
+                CrashObservation {
+                    barrier: "void_vs_sweep",
+                    case,
+                    seed,
+                    kept: void_first,
+                    head: book.head(&cx).unwrap(),
+                    fold_digest: fold.fold_digest,
+                }
+            })
+        })
+        .collect()
+}
+
+/// fa-0fl, scoreboard G2-04 ("two-phase entries with expiry sweeps under
+/// lab"): the expiry sweep's crash-point matrix and the void-vs-sweep
+/// orders, run as one campaign under the lab runtime and its fault VFS.
+/// Every run ends with each timed hold resolved exactly once, and both
+/// barriers are seen with each outcome: a crashed sweep that kept its batch
+/// and one that lost it, a void that won and one that lost.
+///
+/// It also produces FA-ART-LAB-03: the run count, the distinct (barrier,
+/// case) cells run, the SHA-256 of the seeds, and one BLAKE3 digest per run
+/// of its barrier, case, seed, outcome, head and March fold. The witness is
+/// recomputed on every run and must equal the ledger row; after a
+/// deliberate change, rerun with `--nocapture` and copy the printed fields
+/// into the manifest and its ledger row.
+#[test]
+fn two_phase_holds_expire_exactly_once_under_lab_as_fa_art_lab_03() {
+    let runs: Vec<CrashObservation> = [expiry_sweep_crash_matrix(), void_and_sweep_orders()]
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_lab_campaign(
+        "FA-ART-LAB-03",
+        b"fa:lab-seeds:two-phase-expiry:v1",
+        b"fa:lab-witness:two-phase-expiry:v1",
+        &runs,
+        &["expiry_sweep", "void_vs_sweep"],
     );
 }
 

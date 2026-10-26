@@ -1,0 +1,13 @@
+# Work-witness manifest for FA-ART-LAB-03: two-phase holds under the expiry
+# sweep, in the lab runtime and fault VFS (fa-0fl, scoreboard G2-04). Every
+# witness field is what the producing test computes, and it checks them against
+# the ledger on every run.
+schema_version = 1
+artifact_id = "FA-ART-LAB-03"
+kind = "lab-campaign"
+produced_by = "cargo test -p fa --lib book::tests::two_phase_holds_expire_exactly_once_under_lab_as_fa_art_lab_03"
+git_commit = "0dd21cb3b940da70e87a7a7ffce5ab5e998f36ef"
+seed_manifest_sha256 = "c061741713793df541d93d3c1d3cc0ab55493f88c1acd24797349ce3f5c1f8be"
+schedule_count = 10
+explored_interleavings = 10
+certificate_hashes_blake3 = ["d86cd8fc79cbd55738511b4885f321358435d7df4dc6085b47063e68eeea12c7", "d647e83628af2d3afb04c75e28636e8e42310c1b06e58a1df3bdf3e115aeca01", "4277f63ae2e52a4186f8310d3f46d6032df1b439086daaff5c1e1c285a9d3129", "e3b74397d1776aab163881ed442464e62251bc6cb62eb3853399a86130f656f9", "f53a80ffc5a18068d98b5ec935571df0cf0f192c8146d913a6f18a78542be45d", "df1b2e4f0bacedbada4cb4fb3825e25d7b21b5d37c6983bd1b1c26662612c482", "37d2a8c982ebf5ca85cd4ad2463343c5abb43e94376f3c6dde8885c93d46a3ea", "83353ca69eea330c689b19e9a91f529101d8b92ca44b8be8a5cc7cebefc25075", "905f253481d50b2d72ed36689cb341e642a17b430c2741be377babbb4c8fbdb9", "d38b83f5bbca103b251f87db2560510f4f1fea2ff0362f53515b75963a7b1313"]

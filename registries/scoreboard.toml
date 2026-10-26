@@ -845,11 +845,11 @@ gate = "G2"
 criterion = "two-phase entries with expiry sweeps under lab"
 evidence_class = "lab-campaign"
 probe_kind = "lab-campaign"
+artifact = "FA-ART-LAB-03"
 argv = ["g2_two_phase_expiry_sweeps_lab"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-0fl"
+expected = "works"
+expected_exit = 0
+expected_event = "lab_campaign_ok"
 
 [[gate_criterion]]
 id = "G2-05"

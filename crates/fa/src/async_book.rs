@@ -2452,12 +2452,35 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
         max_batch: usize,
     ) -> Outcome<Option<fa_journal::SweepBatch>> {
+        self.sweep_expiry_with_crash(cx, capability, max_batch, None)
+            .await
+    }
+
+    /// [`Self::sweep_expiry`] through the substrate's commit crash-point
+    /// seam, for the lab campaign that crashes an expiry batch's
+    /// publication and reopens the book (fa-0fl). `None` is `sweep_expiry`.
+    #[doc(hidden)]
+    pub async fn sweep_expiry_with_crash(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<Option<fa_journal::SweepBatch>> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let req = sweep_request(capability, max_batch);
         let book = &self.context;
         let entropy = &self.entropy;
         let mut describe = |text: &str| seal(cx, entropy, &book.seal_key, text);
-        Ok(fa_journal::sweep_batch(&mut self.db, cx, book, &req, &mut describe).await?)
+        Ok(fa_journal::sweep::sweep_batch_with_crash(
+            &mut self.db,
+            cx,
+            book,
+            &req,
+            &mut describe,
+            crash_at,
+        )
+        .await?)
     }
 
     /// Examine at most `max_batch` reached schedules in one transaction,
