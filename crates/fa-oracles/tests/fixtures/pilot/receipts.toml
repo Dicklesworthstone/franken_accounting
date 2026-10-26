@@ -1,0 +1,49 @@
+# FIXTURE: written by hand for the loader tests, not by case_fetch.py; never copied to cases/.
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F4"
+anchor = "p108:l20-21"
+verified_utc = "2026-10-24T17:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "b5a0b39702ad5d9d1a59945b2d1574f9ef7325b6a2e13dba8f3a2571f2dfb163"
+quote_sha256 = "7f61ad3dada1a0f9ff4c59b8c23965cac4822f3d323df550dbefe8bf9c15966b"
+values_sha256 = "28d5c28f4562b0e79d2cef73a3f2199391a7d07667cbe9306a0d7bb43cb0a9e8"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-001"
+fact = "F4-p26"
+anchor = "p26:l5-6"
+verified_utc = "2026-10-24T17:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "b5a0b39702ad5d9d1a59945b2d1574f9ef7325b6a2e13dba8f3a2571f2dfb163"
+quote_sha256 = "cfae689f15f58f84c60d29b3a65695f39dd7ba264a4d887dcf5b3ddedb553739"
+values_sha256 = "8d9e2e83c9e087058422f7fc176dd0c4d6b126110f839f8f310c13d4c5130109"
+alignment = "sentence"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-WC-406"
+fact = "W406-TA-2000"
+anchor = "Selected Financial Data|Total assets|2000"
+verified_utc = "2026-10-24T17:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "9cfc8fad51726664ffd4fae83567a2accb75701fdff09d363ba1e26608efabe9"
+quote_sha256 = "fd1e5c3f9aeac09381943132ad825c789b72d3ee6fb804b3a102d772f5e885f8"
+values_sha256 = "f429ec70e9fd8892338eea716e1573fe9c4ff9fac5d6016dce83bec5e742b9b0"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false

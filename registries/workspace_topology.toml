@@ -203,7 +203,8 @@ planned = true
 name = "fa-oracles"
 layer = "verification"
 path = "crates/fa-oracles"
-planned = true
+planned = false
+allowlist = ["fa-registry", "fa-reference", "fa-time"]
 
 [[crate]]
 name = "fa-gen"

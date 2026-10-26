@@ -1,0 +1,14 @@
+[package]
+name = "fa-oracles"
+version = "0.0.1"
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "The public-record forensic case studies' harness model (docs/FORENSIC_CASE_STUDIES_PLAN.md §3.1): provenance-typed sources, facts and receipts, book variants and expectations, with its own exact arithmetic and its own SHA-256 so no engine bug can make a tie-out agree. Compiled for tests only; never shipped. Epic fa-yugf."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fa-registry = { path = "../fa-registry", version = "=0.0.1" }

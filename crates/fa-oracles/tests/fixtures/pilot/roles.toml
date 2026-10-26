@@ -1,0 +1,25 @@
+# Pilot fixture roles: labels stand in for real people (plan §2.8); the deny list holds hashes only.
+
+[[role]]
+label = "gen-acct-manager-1"
+kind = "report"
+description = "the general accounting manager who booked the 2Q01 line-cost transfer"
+described_by = "F4"
+
+[[role]]
+label = "property-accounting-director-1"
+kind = "report"
+description = "the property accounting director"
+
+[[role]]
+label = "case-author-1"
+kind = "harness"
+description = "authors the case's interpretations"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "independently reads every interpretation and reviews placeholders"
+
+[deny]
+hashes = ["9936228e243e1ba6060617f1fc1cdf574887f045b8b5e873e66d45a476492759"]

@@ -1,0 +1,42 @@
+# =============================================================================
+# crates/fa-oracles/data/binding_fixtures.toml: shared binding fixtures
+# (docs/FORENSIC_CASE_STUDIES_PLAN.md §4.4; bead fa-yugf.3, A1a)
+#
+# Consumer: fa-oracles' values_canonical test (Rust) and case_fetch.py's tests
+# (Python, A9): both implementations must produce these exact bytes.
+# Gate: `cargo test -p fa-oracles` (values_canonical_matches_the_shared_fixture_rows).
+# Retire: never while receipts carry values_sha256.
+# Each [[values]] row: the fact's about_scope, its value lines (TAB-joined
+# ordinal, literal, rule, param, value, unit, precision, in ordinal order),
+# the canonical bytes in lower-case hex, and their SHA-256.
+# =============================================================================
+
+schema_version = 1
+
+[[values]]
+id = "F4"
+about_scope = "the 2Q01 line-cost transfer to CIP"
+value_lines = ["1\t$560 million\tscale\t6\t56000000000\tUSD\t6", "2\tJuly 17, 2001\tdate_literal\t\t2001-07-17\t\t"]
+canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d7468652032513031206c696e652d636f7374207472616e7366657220746f204349500a310924353630206d696c6c696f6e097363616c6509360935363030303030303030300955534409360a32094a756c792031372c203230303109646174655f6c69746572616c0909323030312d30372d313709090a"
+values_sha256 = "28d5c28f4562b0e79d2cef73a3f2199391a7d07667cbe9306a0d7bb43cb0a9e8"
+
+[[values]]
+id = "F4-p26"
+about_scope = "the unsupported journal entries the Committee lists"
+value_lines = ["1\t$560,000,000\tscale\t0\t56000000000\tUSD\t0"]
+canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d74686520756e737570706f72746564206a6f75726e616c20656e74726965732074686520436f6d6d6974746565206c697374730a3109243536302c3030302c303030097363616c6509300935363030303030303030300955534409300a"
+values_sha256 = "8d9e2e83c9e087058422f7fc176dd0c4d6b126110f839f8f310c13d4c5130109"
+
+[[values]]
+id = "W406-TA-2000"
+about_scope = "total assets at 2000-12-31 as previously reported"
+value_lines = ["1\t98,727\tscale\t0\t98727\t\t0"]
+canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d746f74616c2061737365747320617420323030302d31322d33312061732070726576696f75736c79207265706f727465640a310939382c373237097363616c6509300939383732370909300a"
+values_sha256 = "f429ec70e9fd8892338eea716e1573fe9c4ff9fac5d6016dce83bec5e742b9b0"
+
+[[values]]
+id = "no-values"
+about_scope = "a fact with no values"
+value_lines = []
+canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d6120666163742077697468206e6f2076616c7565730a"
+values_sha256 = "cb71d70797ba356b20301794b5b9bc7d6c594a112b20216212db93ceb2200d92"
