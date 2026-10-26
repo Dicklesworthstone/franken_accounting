@@ -287,9 +287,17 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
         if r.present("leg.base_amount")? {
             amount(r, "leg.base_amount")?;
         }
-        let dims = r.count(MAX_ENVELOPE_LIST, 20, "leg.dimension_set")?;
+        // Native leg dimensions have their own smaller bound and canonical
+        // order. Check every authenticated record before any report selection
+        // can hide an out-of-period or already-resolved malformed entry.
+        let dims = r.count(64, 20, "leg.dimension_set")?;
+        let mut previous = None;
         for _ in 0..dims {
-            r.u32("dimension.id")?;
+            let id = r.u32("dimension.id")?;
+            if previous.is_some_and(|before| before >= id) {
+                return Err(r.error("leg.dimension_set", Reason::Unsorted));
+            }
+            previous = Some(id);
             r.u128("dimension.value")?;
         }
         if r.present("leg.memo")? {

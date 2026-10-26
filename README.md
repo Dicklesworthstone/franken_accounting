@@ -342,6 +342,23 @@ The verifier explicitly leaves genesis-policy admission, physical commit time
 and external UTC accuracy unjudged; functional-currency reports remain outside
 this native report format.
 
+Certified dimension trial balances use the same portable workflow. For example,
+certify `fa tb --period FY2026-P03 --dimension cost_center=OPS --certify`, then
+produce its `C:<oid>` with `fa bundle produce --certificate C:<oid>` against a
+covering checkpoint. The standalone verifier reconstructs the selected value
+and its complete descendant hierarchy from authenticated schema controls at
+the report's original accounting sequence. It filters each leg's authenticated
+dimension tags and recomputes posted and unresolved pending amounts. Later
+descendants and later closures do not change an earlier report.
+
+A dimension trial balance can legitimately have unequal debit and credit
+totals: only selected tagged legs contribute. The verifier preserves this
+dimension-specific behavior while continuing to require ordinary trial
+balances to balance. Its JSON result identifies the selected dimension, root
+value and complete included value-code set. These bundles still disclose the
+complete covered journal prefix and require whole-book read and produce
+authority; the dimension filter is not a redaction boundary.
+
 The original call emits two robot lines: `trial_balance`, `balance_explained`,
 or `open_items`, followed by `report_certificate`, with the certificate digest
 in both envelopes. The certificate records the report's canonical output format
@@ -1036,7 +1053,7 @@ fa party bind V-17 --external-id qbo:55 --book acme.fabook --json
 fa party identifiers V-17 --identifier bank_routing=<routing> --identifier bank_account=<account> --key chg-2026-03-17 --book acme.fabook --json
 fa chart open office-supplies.json --opened 2026-03-01 --book acme.fabook --json
 
-# Dimensions beside the legal entity and the party: a cost center (also department, project, product, region, fund, grant, segment) with a parent and valid time, which a leg tags with "dimensions": {"cost_center": "CC10"}; the kernel refuses a value the book does not hold, or one outside its window (FA-REF-195). An account may require a dimension on every leg: a leg that names none is refused (FA-REF-005); reversals, closings and settlements carry the values their source dictates, and a cost center closes with its account at year end. fa tb --dimension folds only the legs tagged with a value or one under it (available today; certified reports by dimension are not yet, fa-ficc).
+# Dimensions beside the legal entity and the party: a cost center (also department, project, product, region, fund, grant, segment) with a parent and valid time, which a leg tags with "dimensions": {"cost_center": "CC10"}; the kernel refuses a value the book does not hold, or one outside its window (FA-REF-195). An account may require a dimension on every leg: a leg that names none is refused (FA-REF-005); reversals, closings and settlements carry the values their source dictates, and a cost center closes with its account at year end. fa tb --dimension folds only the legs tagged with a value or one under it; --certify retains a replayable v8 certificate, which fa bundle produce exports for independent fa-verify report recomputation (fa-ficc).
 fa dimension add cost_center CC --name "All operations" --book acme.fabook --json
 fa dimension add cost_center CC10 --name Warehouse --parent CC --from 2026-01-01 --book acme.fabook --json
 fa dimension require cost_center 6100 --book acme.fabook --json

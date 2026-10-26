@@ -694,7 +694,7 @@ fn verify_report_with_inputs(
     let (periods, through, activity) = schema.selection(&cert.selection)?;
     let dimension_filter = dimension
         .as_ref()
-        .map(|selection| dimension::LegFilter::new(&cert.book, selection))
+        .map(|selection| dimension::LegFilter::new(&cert.book, selection, &dimension_history))
         .transpose()?;
     let mut sums: BTreeMap<(u128, u32), [i128; 4]> = BTreeMap::new();
     for (index, info) in &infos {

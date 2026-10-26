@@ -107,7 +107,22 @@ fn tagged(
     let proposal_digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&w.buf]);
     let entry_digest = hash_parts(ENTRY_DIGEST_DOMAIN, &[&proposal_digest, &[]]);
     w.fixed(&proposal_digest).fixed(&entry_digest);
-    let envelope = envelope_of_entry(&w.buf, len, seq, 0).unwrap();
+    // Derive the fixture envelope independently so an authenticated malformed
+    // tag set reaches the verifier instead of being rejected by this builder.
+    let mut account_vids = vec![account_id("1000"), account_id("3000")];
+    account_vids.sort_unstable();
+    let envelope = LeafEnvelope {
+        kind: KIND_ENTRY,
+        book_id: BOOK,
+        branch_id: [0; 16],
+        commit_seq: seq,
+        within_commit_ordinal: 0,
+        record_digest: entry_digest,
+        class,
+        effective_day: Some(day),
+        account_vids,
+        unit_ids: vec![1],
+    };
     Record {
         bytes: w.buf,
         len,
@@ -445,6 +460,17 @@ fn dimension_tag_kind_and_book_namespace_are_both_bound() {
         &[(3, value_vid(&BOOK, "department", "child"))],
         &[],
     ));
+    let (bytes, anchor) = dimension_bundle(
+        &records,
+        7,
+        Selection::AsOf(30),
+        "root",
+        &["child", "root"],
+        &[],
+    );
+    // A real value of another dimension is outside the selected subtree.
+    assert!(verify_fixture(&bytes, anchor).unwrap().rows.is_empty());
+
     records.push(tagged(
         1,
         8,
@@ -461,7 +487,12 @@ fn dimension_tag_kind_and_book_namespace_are_both_bound() {
         &["child", "root"],
         &[],
     );
-    assert!(verify_fixture(&bytes, anchor).unwrap().rows.is_empty());
+    // A foreign-book identity has no authenticated declaration here. It
+    // cannot be silently excluded to manufacture a verified empty result.
+    assert_eq!(
+        verify_fixture(&bytes, anchor).unwrap_err().predicate,
+        "dimension_tags",
+    );
 }
 
 #[test]
@@ -520,4 +551,89 @@ fn altering_authenticated_dimension_control_bytes_is_detected() {
         verify_fixture(&bytes, anchor).unwrap_err().predicate,
         "record_derivation"
     );
+}
+
+#[test]
+fn registered_dimension_tags_require_their_authenticated_kind_and_value() {
+    for tag in [
+        (2, value_vid(&BOOK, "department", "child")),
+        (3, value_vid(&BOOK, "cost_center", "child")),
+        (2, value_vid(&BOOK, "cost_center", "unknown")),
+        (99, value_vid(&BOOK, "cost_center", "child")),
+    ] {
+        let mut records = dimensions();
+        records.push(declaration(6, "department", "child", None));
+        records.push(tagged(1, 7, 10, 100, &[tag], &[]));
+        let (bytes, anchor) = dimension_bundle(
+            &records,
+            7,
+            Selection::AsOf(30),
+            "root",
+            &["child", "root"],
+            &[],
+        );
+        assert_eq!(
+            verify_fixture(&bytes, anchor).unwrap_err().predicate,
+            "dimension_tags",
+            "forged tag {tag:?}",
+        );
+    }
+}
+
+#[test]
+fn malformed_tag_sets_are_rejected_before_effective_or_pending_selection() {
+    let child = value_vid(&BOOK, "cost_center", "child");
+    for tags in [
+        vec![(2, child), (2, child)],
+        vec![(3, child), (2, child)],
+        (1_u32..=65).map(|id| (id, child)).collect(),
+    ] {
+        for retired in [false, true] {
+            let mut records = dimensions();
+            records.push(tagged(if retired { 2 } else { 1 }, 6, 40, 100, &tags, &[]));
+            if retired {
+                let mut framed = Writer::default();
+                framed
+                    .bytes(&BOOK)
+                    .bytes(&PRINCIPAL.to_le_bytes())
+                    .bytes(b"tagged-6");
+                let id = hash_parts(b"fa:vid:entry:v1", &[&framed.buf]);
+                let target = (
+                    u128::from_le_bytes(id[..16].try_into().unwrap()),
+                    records.last().unwrap().envelope.record_digest,
+                );
+                records.push(record(
+                    3,
+                    7,
+                    40,
+                    b"retire-malformed-tags",
+                    0,
+                    None,
+                    Some(target),
+                    None,
+                ));
+            }
+            let known_at = if retired { 7 } else { 6 };
+            let (bytes, anchor) = dimension_bundle(
+                &records,
+                known_at,
+                Selection::AsOf(20),
+                "root",
+                &["child", "root"],
+                &[],
+            );
+            assert_eq!(
+                verify_fixture(&bytes, anchor).unwrap_err().predicate,
+                "record_derivation",
+                "retired={retired}, tag_count={}",
+                tags.len(),
+            );
+            // The same native canonical bound protects ordinary reports too.
+            let (bytes, anchor) = bundle(&records, known_at, Selection::AsOf(20), &[]);
+            assert_eq!(
+                verify_fixture(&bytes, anchor).unwrap_err().predicate,
+                "record_derivation",
+            );
+        }
+    }
 }

@@ -49,6 +49,7 @@ struct Value {
 pub(super) struct History {
     book: Option<[u8; 16]>,
     values: BTreeMap<String, BTreeMap<String, Value>>,
+    identities: BTreeMap<u128, u32>,
 }
 
 /// The registered dimension identifiers, independently encoded from the model
@@ -156,6 +157,15 @@ impl History {
                     "a parent must already be declared in the same dimension",
                 ));
             }
+            let id = dimension_id(&dimension)
+                .ok_or_else(|| failed("dimension_history", "unknown declared dimension"))?;
+            let identity = value_vid(book, &dimension, &value);
+            if self.identities.insert(identity, id).is_some() {
+                return Err(failed(
+                    "dimension_history",
+                    "dimension declarations share a derived identity",
+                ));
+            }
             self.values.entry(dimension).or_default().insert(
                 value,
                 Value {
@@ -250,16 +260,18 @@ fn value_vid(book: &[u8; 16], dimension: &str, value: &str) -> u128 {
 
 /// Resolve the authenticated value hierarchy once per report. Reusing these
 /// identities avoids deriving every descendant again for every journal entry.
-pub(super) struct LegFilter {
+pub(super) struct LegFilter<'a> {
     book: [u8; 16],
     dimension: u32,
     values: BTreeSet<u128>,
+    declared: &'a BTreeMap<u128, u32>,
 }
 
-impl LegFilter {
+impl<'a> LegFilter<'a> {
     pub(super) fn new(
         book: &[u8; 16],
         selection: &VerifiedDimensionSelection,
+        history: &'a History,
     ) -> Result<Self, ReportError> {
         let dimension = dimension_id(&selection.dimension)
             .ok_or_else(|| failed("dimension_history", "unknown selected dimension"))?;
@@ -272,6 +284,7 @@ impl LegFilter {
             book: *book,
             dimension,
             values,
+            declared: &history.identities,
         })
     }
 }
@@ -279,7 +292,10 @@ impl LegFilter {
 /// A mask in canonical payload leg order. The caller has authenticated the
 /// complete proposal and independently decoded its monetary legs; neither
 /// projection mirrors nor the report's claimed output supplies these tags.
-pub(super) fn selected_legs(proposal: &[u8], filter: &LegFilter) -> Result<Vec<bool>, ReportError> {
+pub(super) fn selected_legs(
+    proposal: &[u8],
+    filter: &LegFilter<'_>,
+) -> Result<Vec<bool>, ReportError> {
     let mut r = Reader::new(proposal);
     let major = r.u16("entry.schema_major")?;
     if major != 1 {
@@ -325,6 +341,21 @@ pub(super) fn selected_legs(proposal: &[u8], filter: &LegFilter) -> Result<Vec<b
                 return Err(r.error("leg.dimension_set", Reason::Unsorted).into());
             }
             previous = Some(kind);
+            // A registered-kind tag must name a value declared in this
+            // authenticated book and dimension, even when it is outside the
+            // selected subtree. Otherwise a forged tag could disappear into
+            // an apparently empty filtered report. Entity and party tags
+            // belong to their separate metadata profiles.
+            if (2..=9).contains(&kind) {
+                if filter.declared.get(&value) != Some(&kind) {
+                    return Err(failed(
+                        "dimension_tags",
+                        "a dimension tag lacks a matching authenticated declaration",
+                    ));
+                }
+            } else if !matches!(kind, 1 | 12) {
+                return Err(failed("dimension_tags", "unsupported dimension identifier"));
+            }
             matches |= kind == filter.dimension && filter.values.contains(&value);
         }
         mask.push(matches);
