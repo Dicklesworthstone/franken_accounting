@@ -1070,7 +1070,10 @@ const MORE_CASES: &[Case] = &[
         trigger: |g| Request::Post {
             intent: Json::Obj(vec![
                 ("class".into(), Json::Str("Resolution".into())),
-                ("resolves".into(), Json::Str(g.vid.clone().expect("rent vid"))),
+                (
+                    "resolves".into(),
+                    Json::Str(g.vid.clone().expect("rent vid")),
+                ),
                 ("disposition".into(), Json::Str("voids".into())),
                 ("effective_date".into(), Json::Str("2026-03-10".into())),
                 ("idempotency_key".into(), Json::Str("void-posted".into())),
@@ -1089,7 +1092,10 @@ const MORE_CASES: &[Case] = &[
         trigger: |g| {
             post(Json::Obj(vec![
                 ("class".into(), Json::Str("Resolution".into())),
-                ("resolves".into(), Json::Str(g.vid.clone().expect("hold vid"))),
+                (
+                    "resolves".into(),
+                    Json::Str(g.vid.clone().expect("hold vid")),
+                ),
                 ("disposition".into(), Json::Str("posts".into())),
                 ("amount".into(), Json::Str("10.00 USD".into())),
                 ("effective_date".into(), Json::Str("2026-03-10".into())),
@@ -1107,7 +1113,10 @@ const MORE_CASES: &[Case] = &[
         prepare: Some(|g| Request::Post {
             intent: Json::Obj(vec![
                 ("class".into(), Json::Str("Resolution".into())),
-                ("resolves".into(), Json::Str(g.vid.clone().expect("hold vid"))),
+                (
+                    "resolves".into(),
+                    Json::Str(g.vid.clone().expect("hold vid")),
+                ),
                 ("disposition".into(), Json::Str("voids".into())),
                 ("effective_date".into(), Json::Str("2026-03-10".into())),
                 ("idempotency_key".into(), Json::Str("first-void".into())),
@@ -1118,7 +1127,10 @@ const MORE_CASES: &[Case] = &[
         trigger: |g| Request::Post {
             intent: Json::Obj(vec![
                 ("class".into(), Json::Str("Resolution".into())),
-                ("resolves".into(), Json::Str(g.vid.clone().expect("hold vid"))),
+                (
+                    "resolves".into(),
+                    Json::Str(g.vid.clone().expect("hold vid")),
+                ),
                 ("disposition".into(), Json::Str("voids".into())),
                 ("effective_date".into(), Json::Str("2026-03-11".into())),
                 ("idempotency_key".into(), Json::Str("second-void".into())),
@@ -1274,7 +1286,14 @@ const MORE_CASES: &[Case] = &[
         setup: &[],
         base: None,
         prepare: None,
-        trigger: |_| Request::Argv(argv(&["engagement", "show", "no-such-engagement", "--json"])),
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "engagement",
+                "show",
+                "no-such-engagement",
+                "--json",
+            ]))
+        },
         steps: &[("FA-REF-180", Apply::Inform)],
     },
     Case {
@@ -1424,114 +1443,357 @@ const MORE_CASES: &[Case] = &[
 /// Catalog codes not triggered by the single-command CLI harness, with the
 /// exact reason each belongs outside the single-step CLI fixture loop.
 const UNTRIGGERED_WITH_REASON: &[(&str, &str)] = &[
-    ("FA-REF-008", "multi-principal SoD workflow (preparer vs approver)"),
-    ("FA-REF-012", "multi-principal approval collection over proposal digest"),
-    ("FA-REF-013", "Agent-profile token / MCP session confinement"),
-    ("FA-REF-014", "issued capability token past CommitSeq expiry"),
-    ("FA-REF-015", "issued capability token per-leg amount ceiling"),
-    ("FA-REF-016", "approval digest mismatch against modified proposal"),
+    (
+        "FA-REF-008",
+        "multi-principal SoD workflow (preparer vs approver)",
+    ),
+    (
+        "FA-REF-012",
+        "multi-principal approval collection over proposal digest",
+    ),
+    (
+        "FA-REF-013",
+        "Agent-profile token / MCP session confinement",
+    ),
+    (
+        "FA-REF-014",
+        "issued capability token past CommitSeq expiry",
+    ),
+    (
+        "FA-REF-015",
+        "issued capability token per-leg amount ceiling",
+    ),
+    (
+        "FA-REF-016",
+        "approval digest mismatch against modified proposal",
+    ),
     ("FA-REF-017", "unknown approval vertex citation"),
-    ("FA-REF-018", "concurrent writer lease held by another process / fad"),
+    (
+        "FA-REF-018",
+        "concurrent writer lease held by another process / fad",
+    ),
     ("FA-REF-019", "library-level unregistered policy activation"),
-    ("FA-REF-020", "ambiguous civil date shared with opening/adjustment/closing period"),
-    ("FA-REF-022", "approval recorded under an older security policy epoch"),
+    (
+        "FA-REF-020",
+        "ambiguous civil date shared with opening/adjustment/closing period",
+    ),
+    (
+        "FA-REF-022",
+        "approval recorded under an older security policy epoch",
+    ),
     ("FA-REF-023", "revoked capability token"),
-    ("FA-REF-030", "concurrent first-committer-wins transaction race"),
+    (
+        "FA-REF-030",
+        "concurrent first-committer-wins transaction race",
+    ),
     ("FA-REF-031", "concurrent period transition race"),
     ("FA-REF-033", "sealed field opened with non-matching key"),
-    ("FA-REF-034", "dry-run plan committed after intervening book advancement"),
-    ("FA-REF-041", "CLI preflight validates period transition reason before kernel"),
-    ("FA-REF-051", "CLI reverse derives exact side-swap legs from target"),
-    ("FA-REF-080", "CLI post requires --evidence flag or event citation at preflight"),
-    ("FA-REF-082", "CLI resolves document commitment directly from book store"),
+    (
+        "FA-REF-034",
+        "dry-run plan committed after intervening book advancement",
+    ),
+    (
+        "FA-REF-041",
+        "CLI preflight validates period transition reason before kernel",
+    ),
+    (
+        "FA-REF-051",
+        "CLI reverse derives exact side-swap legs from target",
+    ),
+    (
+        "FA-REF-080",
+        "CLI post requires --evidence flag or event citation at preflight",
+    ),
+    (
+        "FA-REF-082",
+        "CLI resolves document commitment directly from book store",
+    ),
     ("FA-REF-083", "document intake bounds / MIME preflight"),
-    ("FA-REF-084", "CLI preflight restricts --grade to HumanUpload|AgentUpload"),
-    ("FA-REF-085", "store corruption / document commitment drift (exit 8)"),
-    ("FA-REF-086", "multi-principal Reviewed attestation over AgentUpload evidence"),
-    ("FA-REF-087", "CLI document attach resolves target EntryRef from book"),
-    ("FA-REF-088", "Appendix H R-ERASE interim posture (erasure tombstones absent)"),
+    (
+        "FA-REF-084",
+        "CLI preflight restricts --grade to HumanUpload|AgentUpload",
+    ),
+    (
+        "FA-REF-085",
+        "store corruption / document commitment drift (exit 8)",
+    ),
+    (
+        "FA-REF-086",
+        "multi-principal Reviewed attestation over AgentUpload evidence",
+    ),
+    (
+        "FA-REF-087",
+        "CLI document attach resolves target EntryRef from book",
+    ),
+    (
+        "FA-REF-088",
+        "Appendix H R-ERASE interim posture (erasure tombstones absent)",
+    ),
     ("FA-REF-090", "account lower_bound availability breach"),
     ("FA-REF-091", "account upper_bound availability breach"),
     ("FA-REF-092", "i128 register capacity ceiling"),
-    ("FA-REF-093", "CLI preflight validates --balancing leg index and shape"),
-    ("FA-REF-094", "daemon / library TimeEvidence monotonic clock rollback"),
-    ("FA-REF-095", "timed Pending hold without prior TimeEvidence tick"),
+    (
+        "FA-REF-093",
+        "CLI preflight validates --balancing leg index and shape",
+    ),
+    (
+        "FA-REF-094",
+        "daemon / library TimeEvidence monotonic clock rollback",
+    ),
+    (
+        "FA-REF-095",
+        "timed Pending hold without prior TimeEvidence tick",
+    ),
     ("FA-REF-096", "timed Pending hold deadline u64 overflow"),
-    ("FA-REF-097", "manual Posts resolution after committed tick passed deadline"),
-    ("FA-REF-098", "library-only Expires disposition (CLI restricts disposition to posts|voids)"),
+    (
+        "FA-REF-097",
+        "manual Posts resolution after committed tick passed deadline",
+    ),
+    (
+        "FA-REF-098",
+        "library-only Expires disposition (CLI restricts disposition to posts|voids)",
+    ),
     ("FA-REF-099", "library-only ScheduleCancel control entry"),
-    ("FA-REF-100", "library-only EntryPayload structural invariant check"),
-    ("FA-REF-101", "library-only control payload submitted to post"),
+    (
+        "FA-REF-100",
+        "library-only EntryPayload structural invariant check",
+    ),
+    (
+        "FA-REF-101",
+        "library-only control payload submitted to post",
+    ),
     ("FA-REF-102", "class not yet admitted by direct post"),
     ("FA-REF-103", "library-only EntryPayload book_id mismatch"),
-    ("FA-REF-110", "attestation subject unknown or class disallows ManualAssertion"),
-    ("FA-REF-111", "multi-principal self-review SoD check on AgentUpload"),
-    ("FA-REF-112", "CLI preflight validates manual assertion reason code"),
-    ("FA-REF-113", "store corruption / attestation payload drift (exit 8)"),
+    (
+        "FA-REF-110",
+        "attestation subject unknown or class disallows ManualAssertion",
+    ),
+    (
+        "FA-REF-111",
+        "multi-principal self-review SoD check on AgentUpload",
+    ),
+    (
+        "FA-REF-112",
+        "CLI preflight validates manual assertion reason code",
+    ),
+    (
+        "FA-REF-113",
+        "store corruption / attestation payload drift (exit 8)",
+    ),
     ("FA-REF-114", "broken document custody chain"),
-    ("FA-REF-115", "import run receipt OID list mismatch (exit 8)"),
+    (
+        "FA-REF-115",
+        "import run receipt OID list mismatch (exit 8)",
+    ),
     ("FA-REF-116", "missing document blob in store (exit 5)"),
     ("FA-REF-117", "erasure blocked by active legal hold"),
-    ("FA-REF-118", "release of unknown or already-released legal hold"),
+    (
+        "FA-REF-118",
+        "release of unknown or already-released legal hold",
+    ),
     ("FA-REF-119", "custody transfer by non-custodian principal"),
-    ("FA-REF-120", "inclusion proof requested for entry after checkpoint frontier"),
-    ("FA-REF-121", "store corruption / accumulator chain drift (exit 8)"),
+    (
+        "FA-REF-120",
+        "inclusion proof requested for entry after checkpoint frontier",
+    ),
+    (
+        "FA-REF-121",
+        "store corruption / accumulator chain drift (exit 8)",
+    ),
     ("FA-REF-122", "concurrent checkpoint compare-and-set race"),
-    ("FA-REF-123", "concurrent aggregate basis race during checkpoint"),
-    ("FA-REF-124", "consistency proof over non-extending accumulator states (exit 8)"),
+    (
+        "FA-REF-123",
+        "concurrent aggregate basis race during checkpoint",
+    ),
+    (
+        "FA-REF-124",
+        "consistency proof over non-extending accumulator states (exit 8)",
+    ),
     ("FA-REF-125", "proof requested at sequence beyond book head"),
-    ("FA-REF-126", "library-only unsupported ScopeIndexComplete predicate"),
-    ("FA-REF-127", "corrupt checkpoint state recomputation failure (exit 8)"),
-    ("FA-REF-128", "bundle inline documents requested without privileged capability"),
-    ("FA-REF-129", "bundle exceeds standalone verifier size / balance count limit"),
-    ("FA-REF-130", "migration chunk staged into finalized or abandoned MigrationRun"),
-    ("FA-REF-131", "migration finalize trial-balance tie-out mismatch"),
-    ("FA-REF-132", "migration chunk dated outside declared run periods"),
-    ("FA-REF-133", "balance proof over unfinalized staged migration history"),
-    ("FA-REF-134", "scratch replay over unsupported non-accounting commit history"),
-    ("FA-REF-135", "scratch replay SeqMap verification failure (exit 8)"),
-    ("FA-REF-140", "assert-balance value disagrees with journal fold"),
+    (
+        "FA-REF-126",
+        "library-only unsupported ScopeIndexComplete predicate",
+    ),
+    (
+        "FA-REF-127",
+        "corrupt checkpoint state recomputation failure (exit 8)",
+    ),
+    (
+        "FA-REF-128",
+        "bundle inline documents requested without privileged capability",
+    ),
+    (
+        "FA-REF-129",
+        "bundle exceeds standalone verifier size / balance count limit",
+    ),
+    (
+        "FA-REF-130",
+        "migration chunk staged into finalized or abandoned MigrationRun",
+    ),
+    (
+        "FA-REF-131",
+        "migration finalize trial-balance tie-out mismatch",
+    ),
+    (
+        "FA-REF-132",
+        "migration chunk dated outside declared run periods",
+    ),
+    (
+        "FA-REF-133",
+        "balance proof over unfinalized staged migration history",
+    ),
+    (
+        "FA-REF-134",
+        "scratch replay over unsupported non-accounting commit history",
+    ),
+    (
+        "FA-REF-135",
+        "scratch replay SeqMap verification failure (exit 8)",
+    ),
+    (
+        "FA-REF-140",
+        "assert-balance value disagrees with journal fold",
+    ),
     ("FA-REF-141", "legal hold cites unknown subject vertex"),
-    ("FA-REF-142", "unprivileged read of governed document without derived redacted view"),
-    ("FA-REF-143", "corrupt redacted view commitment proof (exit 8)"),
-    ("FA-REF-144", "sweep under uncorroborated TimeEvidence tick (monotonic_ok = false)"),
+    (
+        "FA-REF-142",
+        "unprivileged read of governed document without derived redacted view",
+    ),
+    (
+        "FA-REF-143",
+        "corrupt redacted view commitment proof (exit 8)",
+    ),
+    (
+        "FA-REF-144",
+        "sweep under uncorroborated TimeEvidence tick (monotonic_ok = false)",
+    ),
     ("FA-REF-146", "proof export exceeds inline transport limit"),
-    ("FA-REF-150", "corrupt or tampered report certificate replay (exit 8)"),
-    ("FA-REF-152", "statement definition mapping partition / period check"),
+    (
+        "FA-REF-150",
+        "corrupt or tampered report certificate replay (exit 8)",
+    ),
+    (
+        "FA-REF-152",
+        "statement definition mapping partition / period check",
+    ),
     ("FA-REF-153", "internal unwinding panic handler (exit 5)"),
     ("FA-REF-154", "library-only unregistered raw UnitId"),
     ("FA-REF-155", "key file permissions not 0600 (exit 4)"),
     ("FA-REF-156", "unissued capability token file"),
-    ("FA-REF-159", "certificate replay under mismatched embedded registry digest (exit 4)"),
+    (
+        "FA-REF-159",
+        "certificate replay under mismatched embedded registry digest (exit 4)",
+    ),
     ("FA-REF-160", "library-only unpaired Replacement entry"),
-    ("FA-REF-161", "AS ORIGINALLY REPORTED on period with neither issuance nor lock"),
-    ("FA-REF-165", "bank statement import predecessor continuity mismatch"),
-    ("FA-REF-166", "shared daily capability gross-debit ceiling exceeded"),
-    ("FA-REF-167", "store corruption / daily usage cell refold mismatch (exit 8)"),
-    ("FA-REF-168", "bank match confirmation ambiguity or occupied line/leg"),
-    ("FA-REF-169", "store corruption / bank match confirmation drift (exit 8)"),
-    ("FA-REF-171", "production reassigns Bates range of already-produced document"),
-    ("FA-REF-172", "statement issuance cites uncertified or mismatched period certificate"),
-    ("FA-REF-174", "AS REPORTED IN cites certificate that does not report the period"),
-    ("FA-REF-176", "out-of-order RestatementCase lifecycle transition"),
-    ("FA-REF-177", "case rehearsal diff certificate missing affected period or closed scenario"),
-    ("FA-REF-178", "case-bound entry posted outside Approved RestatementCase"),
-    ("FA-REF-179", "case disclosure document lacks independent Reviewed attestation"),
+    (
+        "FA-REF-161",
+        "AS ORIGINALLY REPORTED on period with neither issuance nor lock",
+    ),
+    (
+        "FA-REF-165",
+        "bank statement import predecessor continuity mismatch",
+    ),
+    (
+        "FA-REF-166",
+        "shared daily capability gross-debit ceiling exceeded",
+    ),
+    (
+        "FA-REF-167",
+        "store corruption / daily usage cell refold mismatch (exit 8)",
+    ),
+    (
+        "FA-REF-168",
+        "bank match confirmation ambiguity or occupied line/leg",
+    ),
+    (
+        "FA-REF-169",
+        "store corruption / bank match confirmation drift (exit 8)",
+    ),
+    (
+        "FA-REF-171",
+        "production reassigns Bates range of already-produced document",
+    ),
+    (
+        "FA-REF-172",
+        "statement issuance cites uncertified or mismatched period certificate",
+    ),
+    (
+        "FA-REF-174",
+        "AS REPORTED IN cites certificate that does not report the period",
+    ),
+    (
+        "FA-REF-176",
+        "out-of-order RestatementCase lifecycle transition",
+    ),
+    (
+        "FA-REF-177",
+        "case rehearsal diff certificate missing affected period or closed scenario",
+    ),
+    (
+        "FA-REF-178",
+        "case-bound entry posted outside Approved RestatementCase",
+    ),
+    (
+        "FA-REF-179",
+        "case disclosure document lacks independent Reviewed attestation",
+    ),
     ("FA-REF-181", "adjustment proposal already booked or passed"),
-    ("FA-REF-182", "booked adjustment entry legs or period differ from proposal"),
-    ("FA-REF-183", "proposed adjustment dated outside engagement scope_periods"),
-    ("FA-REF-186", "concurrent period state change during post (FCW witness)"),
-    ("FA-REF-187", "Revision entry in case scenario fails Revises delta shape"),
-    ("FA-REF-189", "GQL query aggregates or compares amounts across mixed units"),
-    ("FA-REF-192", "external subledger feed lacks independently reviewed detail workpaper"),
-    ("FA-REF-193", "PDF text extraction on image/scan without text layer"),
-    ("FA-REF-194", "consolidation missing ownership stake, role, or intercompany counterpart"),
-    ("FA-REF-195", "dimension value outside valid_from..valid_to window"),
-    ("FA-REF-196", "Canon rule static type/unit/balance check failure"),
-    ("FA-REF-197", "Restatement entry in case scenario fails Restates delta shape"),
-    ("FA-REF-198", "gross native/functional activity exceeds register_capacity"),
-    ("FA-REF-199", "retention cut inside active RetentionPolicy floor"),
-    ("FA-REF-200", "register checkpoint cadence exceeds active RetentionPolicy floor"),
+    (
+        "FA-REF-182",
+        "booked adjustment entry legs or period differ from proposal",
+    ),
+    (
+        "FA-REF-183",
+        "proposed adjustment dated outside engagement scope_periods",
+    ),
+    (
+        "FA-REF-186",
+        "concurrent period state change during post (FCW witness)",
+    ),
+    (
+        "FA-REF-187",
+        "Revision entry in case scenario fails Revises delta shape",
+    ),
+    (
+        "FA-REF-189",
+        "GQL query aggregates or compares amounts across mixed units",
+    ),
+    (
+        "FA-REF-192",
+        "external subledger feed lacks independently reviewed detail workpaper",
+    ),
+    (
+        "FA-REF-193",
+        "PDF text extraction on image/scan without text layer",
+    ),
+    (
+        "FA-REF-194",
+        "consolidation missing ownership stake, role, or intercompany counterpart",
+    ),
+    (
+        "FA-REF-195",
+        "dimension value outside valid_from..valid_to window",
+    ),
+    (
+        "FA-REF-196",
+        "Canon rule static type/unit/balance check failure",
+    ),
+    (
+        "FA-REF-197",
+        "Restatement entry in case scenario fails Restates delta shape",
+    ),
+    (
+        "FA-REF-198",
+        "gross native/functional activity exceeds register_capacity",
+    ),
+    (
+        "FA-REF-199",
+        "retention cut inside active RetentionPolicy floor",
+    ),
+    (
+        "FA-REF-200",
+        "register checkpoint cadence exceeds active RetentionPolicy floor",
+    ),
 ];
 
 #[test]
