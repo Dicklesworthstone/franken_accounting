@@ -1412,6 +1412,7 @@ fn statement_presented_in_units_foots_with_an_explicit_residual_line() {
 /// - common stock (3200) and surplus (3300) land on their lines;
 /// - interest on balances due (4140) and realized AFS gains (4620) have
 ///   their own RI lines.
+///
 /// Planted negative: a revenue leaf the RI schedule has no line for (4630) is
 /// reported unmapped, and the lint is not clean.
 #[test]
