@@ -44,7 +44,7 @@ The request contains three goals. They need different evidence, so the plan keep
 1. **A demonstration** to forensic accountants, examiners and expert witnesses (the product's users,
    AGENTS.md "Project Mission"). It shows what franken_accounting detects, what it refuses, and what
    it does *not* catch on documented real events.
-2. **An external oracle**: published restated and as-reported numbers that franken_accounting's
+2. **A published-figures tie-out**: published restated and as-reported numbers that franken_accounting's
    certified folds must reproduce exactly. Every target carries its own assurance status. Several of
    the best targets were never audited: Enron's November-2001 figures are marked "UNAUDITED", and its
    Q3-2001 10-Q was "not been reviewed". So the honest phrase is "reproduces the published bridge",
