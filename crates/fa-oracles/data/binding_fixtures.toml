@@ -2,13 +2,20 @@
 # crates/fa-oracles/data/binding_fixtures.toml: shared binding fixtures
 # (docs/FORENSIC_CASE_STUDIES_PLAN.md §4.4; bead fa-yugf.3, A1a)
 #
-# Consumer: fa-oracles' values_canonical test (Rust) and case_fetch.py's tests
-# (Python, A9): both implementations must produce these exact bytes.
-# Gate: `cargo test -p fa-oracles` (values_canonical_matches_the_shared_fixture_rows).
-# Retire: never while receipts carry values_sha256.
+# Consumer: fa-oracles' values_canonical test (Rust; A3a adds the other
+# sections) and tools/case-fetch/test_case_fetch.py (Python, A9): both
+# implementations must produce these exact results.
+# Gate: `cargo test -p fa-oracles` (values_canonical_matches_the_shared_fixture_rows,
+# and case_fetch_unittests_pass, which runs the Python suite over every section).
+# Retire: never while receipts carry values_sha256 or verify binds quotes.
 # Each [[values]] row: the fact's about_scope, its value lines (TAB-joined
 # ordinal, literal, rule, param, value, unit, precision, in ordinal order),
 # the canonical bytes in lower-case hex, and their SHA-256.
+# Each [[normalize]] row: an input and its normalized form, both UTF-8 in hex.
+# Each [[sentence]] row: a raw text, a quote occurring in it once after
+# normalization, and whether that occurrence is sentence-aligned.
+# Each [[scope]] row: a quote, a fact's about_scope and granularity, and the
+# case-fetch-scope-v1 verdict.
 # =============================================================================
 
 schema_version = 1
@@ -40,3 +47,168 @@ about_scope = "a fact with no values"
 value_lines = []
 canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d6120666163742077697468206e6f2076616c7565730a"
 values_sha256 = "cb71d70797ba356b20301794b5b9bc7d6c594a112b20216212db93ceb2200d92"
+
+[[normalize]]
+id = "runs"
+input_hex = "0920610d0a0b0c62c2a0c2a06320"
+normalized_hex = "6120622063"
+
+[[normalize]]
+id = "file-separator-kept"
+input_hex = "611c62201f2063"
+normalized_hex = "611c62201f2063"
+
+[[normalize]]
+id = "typographic-quotes-kept"
+input_hex = "e2809c51756f746564e2809d20e2809874657874e28099"
+normalized_hex = "e2809c51756f746564e2809d20e2809874657874e28099"
+
+[[normalize]]
+id = "nbsp-only"
+input_hex = "c2a0c2a0"
+normalized_hex = ""
+
+[[normalize]]
+id = "em-space-kept"
+input_hex = "61e2808362"
+normalized_hex = "61e2808362"
+
+[[normalize]]
+id = "form-feed-is-a-space"
+input_hex = "70616765206f6e652e0c706167652074776f2e"
+normalized_hex = "70616765206f6e652e20706167652074776f2e"
+
+[[sentence]]
+id = "fragment"
+text = "The director rarely entered and approved entries himself, so his involvement was unusual."
+quote = "entered and approved"
+aligned = false
+
+[[sentence]]
+id = "whole-sentence"
+text = "The director rarely entered and approved entries himself, so his involvement was unusual."
+quote = "The director rarely entered and approved entries himself, so his involvement was unusual."
+aligned = true
+
+[[sentence]]
+id = "abbreviation-p"
+text = "See p. 26 of the report. It said so."
+quote = "See p. 26 of the report."
+aligned = true
+
+[[sentence]]
+id = "abbreviation-p-is-no-end"
+text = "See p. 26 of the report. It said so."
+quote = "See p."
+aligned = false
+
+[[sentence]]
+id = "closing-quote"
+text = "He said \"stop.\" Then he left."
+quote = "He said \"stop.\""
+aligned = true
+
+[[sentence]]
+id = "us-abbreviation"
+text = "The U.S. office closed. It reopened."
+quote = "The U.S. office closed."
+aligned = true
+
+[[sentence]]
+id = "us-abbreviation-is-no-end"
+text = "The U.S. office closed. It reopened."
+quote = "The U.S."
+aligned = false
+
+[[sentence]]
+id = "question"
+text = "Was it known? Yes."
+quote = "Was it known?"
+aligned = true
+
+[[sentence]]
+id = "second-sentence"
+text = "One. Two words here. Three."
+quote = "Two words here."
+aligned = true
+
+[[sentence]]
+id = "block-after-heading"
+text = "SUMMARY OF FINDINGS\n\nThe ledger was reviewed. It balanced."
+quote = "The ledger was reviewed."
+aligned = true
+
+[[sentence]]
+id = "heading-without-blank-line-joins"
+text = "SUMMARY OF FINDINGS\nThe ledger was reviewed. It balanced."
+quote = "The ledger was reviewed."
+aligned = false
+
+[[sentence]]
+id = "wrapped-line-is-no-start"
+text = "The transfer of line\ncosts was recorded. It was late."
+quote = "costs was recorded."
+aligned = false
+
+[[scope]]
+id = "sec-paragraph-29"
+quote = "These entries for the first quarter of 2001 were made without any supporting documentation or proper business rationale."
+about_scope = "the 1Q02 line-cost transfer to capital"
+granularity = "journal_entry"
+scope_ok = false
+
+[[scope]]
+id = "same-quarter"
+quote = "During the second quarter of 2001, the company transferred $560 million."
+about_scope = "the 2Q01 line-cost transfer to CIP"
+granularity = "journal_entry"
+scope_ok = true
+
+[[scope]]
+id = "fiscal-year-covers-quarter"
+quote = "In fiscal 2001 the company capitalized line costs."
+about_scope = "period:2001Q3"
+granularity = "period_total"
+scope_ok = true
+
+[[scope]]
+id = "fiscal-year-disjoint"
+quote = "In fiscal 2000 the company capitalized line costs."
+about_scope = "period:2001Q3"
+granularity = "period_total"
+scope_ok = false
+
+[[scope]]
+id = "no-period-words"
+quote = "98,727"
+about_scope = "total assets at 2000-12-31 as previously reported"
+granularity = "statement_line"
+scope_ok = true
+
+[[scope]]
+id = "account-conflict"
+quote = "Transfers out of account 1ZR176 totaled $5,000."
+about_scope = "account:1FN025"
+granularity = "ledger_row"
+scope_ok = false
+
+[[scope]]
+id = "account-match"
+quote = "Transfers out of account 1ZR176 totaled $5,000."
+about_scope = "account:1ZR176"
+granularity = "ledger_row"
+scope_ok = true
+
+[[scope]]
+id = "scheme-backs-no-entry"
+quote = "The scheme ran from the first quarter of 2001 to the first quarter of 2002."
+about_scope = "scheme:capitalization-2001Q1-2002Q1"
+granularity = "journal_entry"
+scope_ok = false
+
+[[scope]]
+id = "scheme-backs-a-period-total"
+quote = "The scheme ran from the first quarter of 2001 to the first quarter of 2002."
+about_scope = "scheme:capitalization-2001Q1-2002Q1"
+granularity = "period_total"
+scope_ok = true
