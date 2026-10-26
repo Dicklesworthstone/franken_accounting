@@ -1092,7 +1092,7 @@ fn law_refusals_and_artifact_output_failures_do_not_emit_a_plan_or_write() {
         vec!["--plan-out", existing.as_str()],
         vec!["--dry-run", "--plan-out", existing.as_str()],
         vec!["--dry-run", "--plan-out", "-"],
-        vec!["--dry-run", "--balancing", "0"],
+        vec!["--dry-run", "--balancing", "2"],
     ] {
         let mut args = vec!["post", "--intent", &good, "--evidence", &f.evidence];
         args.extend(extra);
@@ -1113,6 +1113,215 @@ fn law_refusals_and_artifact_output_failures_do_not_emit_a_plan_or_write() {
         assert_eq!(code, 2, "{}", error.render());
         assert_eq!(head(&f.book), before);
     }
+}
+
+#[test]
+fn balancing_plans_bind_requested_and_resolved_amounts_across_processes() {
+    let f = Fixture::with_chart(
+        r#"{"accounts":[{"code":"1000","name":"Capped cash","type":"Asset","unit":"USD","upper_bound":"100.00"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("seed-balancing", "80.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let intent = f.intent("planned-balancing", "50.00");
+    let output = f.dir.join("balancing.plan");
+    let before = head(&f.book);
+    let planned = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &f.evidence,
+            "--balancing",
+            "0",
+            "--dry-run",
+            "--plan-out",
+            &output.display().to_string(),
+        ],
+    );
+    assert_eq!(text(&planned, "event"), "plan");
+    assert_eq!(text(&planned, "requested"), "50.00 USD");
+    assert_eq!(text(&planned, "moved"), "20.00 USD");
+    assert_eq!(head(&f.book), before);
+    for leg in get(&planned, "legs").as_arr().unwrap() {
+        assert_eq!(text(leg, "amount"), "20.00 USD");
+    }
+    let plan = fa::PostPlan::decode(&std::fs::read(&output).unwrap()).unwrap();
+    for leg in &plan.intent().proposal().legs {
+        assert_eq!(leg.amount.mantissa, 5000);
+    }
+    for leg in &plan.proposal().legs {
+        assert_eq!(leg.amount.mantissa, 2000);
+    }
+    let committed = ok(
+        &f.book,
+        &["commit", "--plan", &output.display().to_string()],
+    );
+    assert_eq!(text(&committed, "event"), "plan_committed");
+    assert_eq!(get(&committed, "already_recorded"), &Json::Bool(false));
+    let entry = ok(&f.book, &["entry", "show", text(&committed, "vid")]);
+    assert_eq!(
+        text(&entry, "proposal_digest"),
+        text(&planned, "proposal_digest")
+    );
+    let committed_head = head(&f.book);
+    assert_eq!(committed_head, before + 1);
+    let (code, retried) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&planned, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", retried.render());
+    assert_eq!(get(&retried, "already_recorded"), &Json::Bool(true));
+    assert_eq!(text(&retried, "vid"), text(&committed, "vid"));
+    assert_eq!(head(&f.book), committed_head);
+    ok(&f.book, &["verify", "availability"]);
+    // The cap is exhausted. Planning must refuse, not invent a zero entry.
+    let full = f.intent("no-room", "1.00");
+    let (code, refused) = run(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &full,
+            "--evidence",
+            &f.evidence,
+            "--balancing",
+            "0",
+            "--dry-run",
+        ],
+        None,
+    );
+    assert_eq!(code, 3, "{}", refused.render());
+    assert_eq!(head(&f.book), committed_head);
+}
+
+#[test]
+fn balancing_plan_refuses_availability_drift_and_replans_the_original_request() {
+    let f = Fixture::with_chart(
+        r#"{"accounts":[{"code":"1000","name":"Capped cash","type":"Asset","unit":"USD","upper_bound":"100.00"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("seed-drift", "80.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let intent = f.intent("drifting-balancing", "50.00");
+    let planned = ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &intent,
+            "--evidence",
+            &f.evidence,
+            "--balancing",
+            "0",
+            "--dry-run",
+        ],
+    );
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("consume-room", "5.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let before = head(&f.book);
+    let (code, refused) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(&planned, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 6, "{}", refused.render());
+    assert_eq!(head(&f.book), before);
+    let fresh = get(get(&refused, "detail"), "fresh_plan");
+    assert_ne!(fresh, &Json::Null, "{}", refused.render());
+    let (code, committed) = run(
+        &f.book,
+        &["commit", "--plan", "-"],
+        Some(text(fresh, "bytes").as_bytes()),
+    );
+    assert_eq!(code, 0, "{}", committed.render());
+    let shown = ok(&f.book, &["entry", "show", text(&committed, "vid")]);
+    for leg in get(&shown, "legs").as_arr().unwrap() {
+        assert_eq!(text(leg, "amount"), "15.00 USD");
+    }
+    ok(&f.book, &["verify", "availability"]);
+}
+
+#[test]
+fn balancing_scenario_uses_fork_availability_and_keeps_trunk_unchanged() {
+    let f = Fixture::with_chart(
+        r#"{"accounts":[{"code":"1000","name":"Capped cash","type":"Asset","unit":"USD","upper_bound":"100.00"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("seed-scenario", "80.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    ok(&f.book, &["scenario", "fork", "capped"]);
+    ok(
+        &f.book,
+        &[
+            "post",
+            "--intent",
+            &f.intent("trunk-room", "5.00"),
+            "--evidence",
+            &f.evidence,
+        ],
+    );
+    let before = get(&ok(&f.book, &["tb", "--period", "FY2026-P03"]), "rows").clone();
+    let intent = f.intent("scenario-balancing", "50.00");
+    let argv = [
+        "post",
+        "--intent",
+        &intent,
+        "--evidence",
+        &f.evidence,
+        "--balancing",
+        "0",
+        "--scenario",
+        "capped",
+    ];
+    let planned = ok(&f.book, &argv);
+    assert_eq!(text(&planned, "event"), "scenario_run");
+    let repeated = ok(&f.book, &argv);
+    assert_eq!(get(&repeated, "already_recorded"), &Json::Bool(true));
+    let diff = ok(
+        &f.book,
+        &["scenario", "diff", "capped", "--period", "FY2026-P03"],
+    );
+    let rows = get(&diff, "rows").as_arr().unwrap();
+    let cash = rows.iter().find(|row| text(row, "code") == "1000").unwrap();
+    assert_eq!(text(cash, "delta"), "20.00 USD");
+    assert_eq!(
+        get(&ok(&f.book, &["tb", "--period", "FY2026-P03"]), "rows"),
+        &before
+    );
+    ok(&f.book, &["verify", "availability"]);
 }
 
 #[test]

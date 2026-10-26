@@ -39,7 +39,7 @@
 //! limited accounts), so an absent cell is still corruption.
 //!
 //! **Balancing legs (plan §5.5, TigerBeetle `balancing_debit/credit`).**
-//! [`post_balancing`] records the request — which leg balances and the
+//! [`balancing_proposal`] records the request — which leg balances and the
 //! requested amount `R` — as entry extension `fa:balancing:v1`, and the
 //! posting transaction itself ([`judge`], step 7d) resolves the two legs to
 //! `min(R, admissible)` from the balancing leg's witnessed cell, so the
@@ -867,6 +867,36 @@ fn balancing_shape(p: &EntryPayload, leg: u16) -> Option<String> {
     None
 }
 
+/// Preserve a two-leg request for saturating execution by the posting kernel
+/// (plan §5.5). This pure constructor validates the request shape and records
+/// its original amount and balancing leg without reading availability or
+/// changing either amount. Direct posts, portable plans, and fixed-fork
+/// scenarios can therefore use the same request identity; the real posting
+/// transaction resolves `min(requested, admissible)` and judges every law.
+/// Approvals must bind that resolved proposal, including this request
+/// extension, rather than approving an amount that may never move.
+pub fn balancing_proposal(mut proposal: EntryPayload, leg: u16) -> Result<EntryPayload, Refusal> {
+    if let Some(why) = balancing_shape(&proposal, leg) {
+        return Err(shape_refusal(why));
+    }
+    if proposal
+        .extensions
+        .iter()
+        .any(|(tag, _)| *tag == BALANCING_EXTENSION)
+    {
+        return Err(shape_refusal(
+            "the request already carries a fa:balancing:v1 extension".into(),
+        ));
+    }
+    let requested = proposal.legs[0].amount.mantissa;
+    proposal.schema_minor = proposal.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
+    proposal
+        .extensions
+        .push((BALANCING_EXTENSION, balancing_bytes(leg, requested)));
+    proposal.extensions.sort_by_key(|(tag, _)| *tag);
+    Ok(proposal)
+}
+
 /// Post a two-leg single-unit entry with leg `leg` balancing (plan §5.5,
 /// TigerBeetle's `balancing_debit/credit`). The request — `leg` and the
 /// requested amount `R` the two legs carry — is recorded as the entry's
@@ -886,20 +916,11 @@ pub async fn post_balancing<V: asupersync::fs::Vfs + Clone>(
     mut req: PostRequest,
     leg: u16,
 ) -> Outcome<Balanced> {
-    if let Some(why) = balancing_shape(&req.proposal, leg) {
-        return Ok(Err(shape_refusal(why)));
-    }
-    let p = &mut req.proposal;
-    if p.extensions.iter().any(|(t, _)| *t == BALANCING_EXTENSION) {
-        return Ok(Err(shape_refusal(
-            "the request already carries a fa:balancing:v1 extension".into(),
-        )));
-    }
-    let requested = p.legs[0].amount.mantissa;
-    p.schema_minor = p.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
-    p.extensions
-        .push((BALANCING_EXTENSION, balancing_bytes(leg, requested)));
-    p.extensions.sort_by_key(|(t, _)| *t);
+    req.proposal = match balancing_proposal(req.proposal, leg) {
+        Ok(proposal) => proposal,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let requested = req.proposal.legs[0].amount.mantissa;
     let posted = match post(db, ctx, book, req).await? {
         Ok(posted) => posted,
         Err(refusal) => return Ok(Err(refusal)),

@@ -3457,7 +3457,7 @@ const GUIDE: &str = "fa robot-docs guide\n\
 11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
 12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n\
 13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json`, `fa explain balance 1000 --period FY2026-P03 --certify --json`, and `fa open-items --account 1000 --certify --json` retain the report's certificate in the book. Each emits its original report event followed by report_certificate, binding the selector, known-at, historical account metadata and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n\
-14. Rehearse an entry before writing: add --dry-run to post, reverse, reserve or resolve. The actual posting laws run, their staged transaction is aborted, and one plan event returns the exact sealed proposal, native effects digest, snapshot and complete canonical bytes. --plan-out <new-file> saves a private binary copy without replacing a file. Review it, then `fa commit --plan <file|-> --json` with the same owner --as and --grant; stdin accepts the bytes hex string. MCP uses fa_post_commit_plan with plan set to that string and keeps its launch-bound capability unchanged: ordinary Preparer plans can commit, Agent trunk posting still refuses, and dangerous void commits remain unavailable until separate confirmation exists. A first commit atomically retains its graph Certificate and CITES edge; an exact retry returns plan_committed with already_recorded=true. Any intervening book publication invalidates this first same-snapshot plan and requires another dry run. Planning collects no new approvals and provides no draft or --balancing support. A dry-run void releases nothing; the owner explicitly confirms its exact artifact, while MCP must ask the operator to separately prepare and confirm a release. Public plan digests are data fields, never native object-store OIDs in the envelope.\n\
+14. Rehearse an entry before writing: add --dry-run to post, reverse, reserve or resolve. The actual posting laws run, their staged transaction is aborted, and one plan event returns the exact sealed proposal, native effects digest, snapshot and complete canonical bytes. --plan-out <new-file> saves a private binary copy without replacing a file. Review it, then `fa commit --plan <file|-> --json` with the same owner --as and --grant; stdin accepts the bytes hex string. MCP uses fa_post_commit_plan with plan set to that string and keeps its launch-bound capability unchanged: ordinary Preparer plans can commit, Agent trunk posting still refuses, and dangerous void commits remain unavailable until separate confirmation exists. A first commit atomically retains its graph Certificate and CITES edge; an exact retry returns plan_committed with already_recorded=true. Any intervening book publication invalidates this first same-snapshot plan and requires another dry run. --balancing works with --dry-run and --scenario: the request is retained and the plan previews its exact admitted amount. Draft balancing remains refused until promotion binds the reviewed amount. Planning collects no new approvals. A dry-run void releases nothing; the owner explicitly confirms its exact artifact, while MCP must ask the operator to separately prepare and confirm a release. Public plan digests are data fields, never native object-store OIDs in the envelope.\n\
 15. An Agent (or anyone) works on a draft (plan §15.2): `fa draft new <name>`, then the same post, reverse, reserve or resolve command with --draft <name> (or `fa draft plan <name> --intent <file|->`). Each intent is rehearsed under every posting law and journaled into the draft; nothing reaches trunk. `fa draft show <name> --json` lists the planned intents and the entries a promotion will create. A principal holding approve who is not the draft's owner runs `fa draft promote <name> --yes`: every intent is admitted again against current trunk (period law, ceilings, revocation, evidence) and all post in one batch, or none do; the planner stays each entry's principal. `fa draft discard <name>` closes a draft without posting. Over MCP the fa.draft cluster is on demand (`fa-mcp --cluster fa.draft`); promotion is host-only.\n\
 16. Correct an entry in one step: `fa reverse <vid> --reason WrongAmount --replace-with corrected.json --json` posts the exact reversal and the corrected entry together, both or neither, citing the target under one reason (event corrected). corrected.json is an ordinary entry intent (legs, optional effective_date and description); its date and period default to the target's.\n\
 17. Export for an auditor or another ledger: `fa export ads|saft|csv-gl|beancount|hledger|ndjson --period FY2026-P03 [--out <new path>] --json` writes what the trial balance folds (pending holds excluded) with its export coordinate certificate; ads writes four tables into a new directory. It needs read and produce. Over MCP the fa.io cluster is on demand.\n\
@@ -6225,8 +6225,8 @@ fn plan_document_into_draft(
     }
     if args.flag("--balancing").is_some() {
         return Err(usage(
-            "a draft does not yet plan saturating --balancing requests",
-            "plan an intent with explicit amounts",
+            "a draft cannot yet bind a saturating amount across promotion",
+            "use --balancing with --dry-run to review and commit an exact plan, or plan explicit amounts into the draft",
         ));
     }
     if doc.get("intents").is_some() {
@@ -6311,12 +6311,6 @@ pub(crate) fn plan_document_into_scenario(
             "drop --dry-run/--plan-out to run the intent in the scenario, or drop --scenario to rehearse it on trunk",
         ));
     }
-    if args.flag("--balancing").is_some() {
-        return Err(usage(
-            "a scenario does not yet run saturating --balancing requests",
-            "run an intent with explicit amounts",
-        ));
-    }
     if doc.get("intents").is_some() {
         return Err(usage(
             "a batch document cannot run in a scenario yet; nothing was planned",
@@ -6335,6 +6329,7 @@ pub(crate) fn plan_document_into_scenario(
     })?;
     let BuiltPost { request: req, .. } =
         build_post_request(out, &mut book, args, forced, doc, who, capability)?;
+    let req = prepare_balancing_request(args, req)?;
     let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
         usage(
             format!("cannot run this entry in a scenario: {e}"),
@@ -7327,13 +7322,29 @@ pub(crate) fn check_post_planning_options(args: &Args) -> Result<(), Fail> {
             ));
         }
     }
-    if args.switch("--dry-run") && args.flag("--balancing").is_some() {
-        return Err(usage(
-            "--dry-run does not yet rehearse saturating --balancing requests",
-            "plan an intent with explicit amounts and no --balancing; the normal posting laws still apply",
-        ));
-    }
     Ok(())
+}
+
+fn balancing_leg(args: &Args) -> Result<Option<u16>, Fail> {
+    args.flag("--balancing")
+        .map(|value| {
+            value.parse::<u16>().map_err(|_| {
+                usage(
+                    format!("--balancing `{value}` is not a leg ordinal"),
+                    "--balancing 0 or --balancing 1 (the leg whose account's limit decides the amount)",
+                )
+            })
+        })
+        .transpose()
+}
+
+/// Preserve the requested amount in the intent. Availability is resolved by
+/// the posting kernel against its witnessed state, including scratch replays.
+fn prepare_balancing_request(args: &Args, mut req: PostRequest) -> Result<PostRequest, Fail> {
+    if let Some(leg) = balancing_leg(args)? {
+        req.proposal = fa_journal::balancing_proposal(req.proposal, leg)?;
+    }
+    Ok(req)
 }
 
 struct BuiltPost {
@@ -8558,6 +8569,7 @@ pub(crate) fn post_document(
         return emit_post_review(out, &ctx.files, args, &intent, &class_name);
     }
     if args.switch("--dry-run") {
+        let req = prepare_balancing_request(args, req)?;
         let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
             usage(
                 format!("cannot plan this entry: {e}"),
@@ -8570,15 +8582,7 @@ pub(crate) fn post_document(
     // `--balancing <leg>` (post and reserve): the leg moves at most what its
     // account's limit admits, decided inside the posting transaction; the
     // event names what was asked and what moved.
-    let balancing = match args.flag("--balancing") {
-        None => None,
-        Some(v) => Some(v.parse::<u16>().map_err(|_| {
-            usage(
-                format!("--balancing `{v}` is not a leg ordinal"),
-                "--balancing 0 or --balancing 1 (the leg whose account's limit decides the amount)",
-            )
-        })?),
-    };
+    let balancing = balancing_leg(args)?;
     let (posted, amounts) = match balancing {
         None => (book.post(req)??, None),
         Some(leg) => {
@@ -9073,6 +9077,22 @@ pub(crate) fn emit_post_plan(
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let balancing = fa_journal::limit::balancing_request(plan.intent().proposal())
+        .map_err(|error| Fail::Internal(format!("admitted plan balancing request: {error}")))?
+        .map(|(ordinal, requested)| {
+            let leg = proposal.legs.get(usize::from(ordinal)).ok_or_else(|| {
+                Fail::Internal("admitted balancing plan lost its selected leg".into())
+            })?;
+            Ok::<_, Fail>((
+                ordinal,
+                render_amount(
+                    Amount::new(leg.amount.unit, requested),
+                    &book.context().units,
+                )?,
+                render_amount(leg.amount, &book.context().units)?,
+            ))
+        })
+        .transpose()?;
     let valuation = if let Some(totals) = &proposal.base_totals {
         let unit = fa_money::UnitId(totals.unit_id);
         let law = fa::FxLawId::from_oid(&totals.fx_law_oid)
@@ -9263,6 +9283,11 @@ pub(crate) fn emit_post_plan(
         certificate_digest,
         human_legs.join("\n"),
     );
+    if let Some((ordinal, requested, moved)) = &balancing {
+        human.push_str(&format!(
+            "\nBalancing leg {ordinal}: requested {requested}, planned {moved}"
+        ));
+    }
     if let Some(disposition) = disposition {
         human.push_str(&format!("\nResolution disposition: {disposition}"));
     }
@@ -9339,6 +9364,18 @@ pub(crate) fn emit_post_plan(
             ("certificate_digest", s(certificate_digest)),
             ("plan_digest", s(plan_digest)),
             ("legs", Json::Arr(legs)),
+            (
+                "requested",
+                balancing
+                    .as_ref()
+                    .map_or(Json::Null, |(_, requested, _)| s(requested)),
+            ),
+            (
+                "moved",
+                balancing
+                    .as_ref()
+                    .map_or(Json::Null, |(_, _, moved)| s(moved)),
+            ),
             ("valuation", valuation),
             (
                 "resolves",
