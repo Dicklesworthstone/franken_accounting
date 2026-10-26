@@ -78,6 +78,9 @@ pub const FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certi
 pub const FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT: &str = "fa:functional-trial-balance:v1";
 /// Approved company layouts, including explicit presentation rounding.
 pub const CUSTOM_STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v11";
+/// The same approved custom layout evaluated from retained base valuations.
+/// Native custom v11 bytes and meanings remain unchanged.
+pub const FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v12";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -344,12 +347,13 @@ impl ReportSelection {
     /// Entry creation history used to verify each immutable base valuation.
     #[must_use]
     pub const fn uses_functional_valuations(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::FunctionalStatement(_)
-                | Self::FunctionalConsolidation { .. }
-                | Self::FunctionalTrialBalance(_)
-        )
+            | Self::FunctionalConsolidation { .. }
+            | Self::FunctionalTrialBalance(_) => true,
+            Self::CustomStatement(selection) => selection.functional,
+            _ => false,
+        }
     }
 
     #[must_use]
@@ -365,6 +369,9 @@ impl ReportSelection {
             Self::FunctionalConsolidation { .. } => FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT,
             Self::DimensionTrialBalance { .. } => DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT,
             Self::RegulatorySchedule(_) => REGULATORY_SCHEDULE_OUTPUT_FORMAT,
+            Self::CustomStatement(selection) if selection.functional => {
+                crate::custom_statement::FUNCTIONAL_OUTPUT_FORMAT
+            }
             Self::CustomStatement(_) => crate::custom_statement::OUTPUT_FORMAT,
         }
     }
@@ -422,7 +429,7 @@ impl ReportSelection {
                 selection.write(w)?;
             }
             Self::CustomStatement(selection) => {
-                w.u8(9);
+                w.u8(if selection.functional { 10 } else { 9 });
                 selection.write(w)?;
             }
         }
@@ -469,7 +476,10 @@ impl ReportSelection {
                 r,
             )?)),
             9 if version == 11 => Ok(Self::CustomStatement(Box::new(
-                crate::custom_statement::CustomStatementSelection::read(r)?,
+                crate::custom_statement::CustomStatementSelection::read(r, false)?,
+            ))),
+            10 if version == 12 => Ok(Self::CustomStatement(Box::new(
+                crate::custom_statement::CustomStatementSelection::read(r, true)?,
             ))),
             tag => Err(r.bad_tag("report selector", tag)),
         }
@@ -767,7 +777,10 @@ const REASON_CODES: (&str, &str) = (
 
 fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static str)> {
     let mut sources = REPORT_REGISTRIES.to_vec();
-    if matches!(selection, ReportSelection::CustomStatement(_)) {
+    if let ReportSelection::CustomStatement(selected) = selection {
+        if selected.functional {
+            sources.push(("fx_laws", include_str!("../../../registries/fx_laws.toml")));
+        }
         sources.push((
             "rounding_laws",
             include_str!("../../../registries/rounding_laws.toml"),
@@ -1142,10 +1155,13 @@ fn statements(at: CommitSeq, selection: &ReportSelection) -> Vec<String> {
 
 fn input_snapshot(at: CommitSeq, selection: &ReportSelection, index: usize) -> CommitSeq {
     if let ReportSelection::CustomStatement(selected) = selection {
-        if index == INPUTS.len() + 1 || index == INPUTS.len() + 2 {
+        let custom_offset = INPUTS.len()
+            + usize::from(selection.uses_functional_valuations())
+            + usize::from(selection.bound_dimension().is_some());
+        if index == custom_offset + 1 || index == custom_offset + 2 {
             return selected.activated_at;
         }
-        if index == INPUTS.len() + 3 || index == INPUTS.len() + 4 {
+        if index == custom_offset + 3 || index == custom_offset + 4 {
             return CommitSeq(selected.activated_at.0.saturating_sub(1));
         }
     }
@@ -1230,6 +1246,9 @@ impl ReportCertificate {
                 DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
             }
             ReportSelection::RegulatorySchedule(_) => REGULATORY_SCHEDULE_CERTIFICATE_FORMAT,
+            ReportSelection::CustomStatement(selected) if selected.functional => {
+                FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT
+            }
             ReportSelection::CustomStatement(_) => CUSTOM_STATEMENT_CERTIFICATE_FORMAT,
             _ => REPORT_CERTIFICATE_FORMAT,
         }
@@ -1267,6 +1286,7 @@ impl ReportCertificate {
             || self.format() == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT
             || self.format() == CUSTOM_STATEMENT_CERTIFICATE_FORMAT
+            || self.format() == FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -1291,7 +1311,12 @@ impl ReportCertificate {
             let mut r = Reader::new(bytes);
             // V10 is the first two-digit version. Preserve every earlier wire
             // header and consume its exact length before reading framed fields.
-            let version = if bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
+            let version = if bytes.starts_with(FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
+                r.fixed::<{ FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>(
+                    "certificate format",
+                )?;
+                12
+            } else if bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
                 r.fixed::<{ CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>("certificate format")?;
                 11
             } else if bytes.starts_with(FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
@@ -3950,6 +3975,7 @@ mod tests {
                 definition,
                 activation: VId(77),
                 activated_at: CommitSeq(5),
+                functional: false,
                 periods: vec!["FY2026-P03".into()],
                 comparative: vec!["FY2025-P03".into()],
                 presentation: Some(fa_statements::custom::PresentationRoundingSpec {
@@ -4026,6 +4052,180 @@ mod tests {
                 "every reviewed/output input is bound"
             );
         }
+    }
+
+    #[test]
+    fn functional_custom_statement_v12_separates_basis_and_binds_original_rate_and_approval_sources()
+     {
+        let definition = fa_statements::custom::CustomStatementDefinition::from_builtin(
+            &crate::StatementDefinition::embedded("income-statement").unwrap(),
+        );
+        let native = ReportSelection::CustomStatement(Box::new(crate::CustomStatementSelection {
+            definition: definition.clone(),
+            activation: VId(77),
+            activated_at: CommitSeq(5),
+            functional: false,
+            periods: vec!["FY2026-P03".into()],
+            comparative: vec!["FY2026-P02".into()],
+            presentation: None,
+        }));
+        let mut functional = native.clone();
+        let ReportSelection::CustomStatement(selected) = &mut functional else {
+            unreachable!()
+        };
+        selected.functional = true;
+        let encode = |selection: &ReportSelection| {
+            let mut writer = Writer::new();
+            selection.write(&mut writer).unwrap();
+            writer.finish().unwrap()
+        };
+        let native_bytes = encode(&native);
+        let functional_bytes = encode(&functional);
+        assert_eq!(native_bytes[0], 9);
+        assert_eq!(functional_bytes[0], 10);
+        assert_eq!(
+            native_bytes[1..],
+            functional_bytes[1..],
+            "the new basis tag does not insert a field into the v11 selector payload",
+        );
+        let mut reader = Reader::new(&functional_bytes);
+        assert_eq!(ReportSelection::read(&mut reader, 12).unwrap(), functional);
+        reader.finish().unwrap();
+        for version in 1..=11 {
+            assert!(ReportSelection::read(&mut Reader::new(&functional_bytes), version).is_err());
+        }
+        assert!(ReportSelection::read(&mut Reader::new(&native_bytes), 12).is_err());
+        assert_eq!(
+            ReportSelection::read(&mut Reader::new(&native_bytes), 11).unwrap(),
+            native
+        );
+        assert!(!native.uses_functional_valuations());
+        assert!(functional.uses_functional_valuations());
+
+        let native_certificate = wire_fixture(native.clone(), None);
+        let functional_certificate = wire_fixture(functional.clone(), None);
+        assert_eq!(
+            native_certificate.format(),
+            CUSTOM_STATEMENT_CERTIFICATE_FORMAT
+        );
+        assert_eq!(
+            functional_certificate.format(),
+            FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT
+        );
+        assert_eq!(
+            native_certificate.output_format(),
+            crate::custom_statement::OUTPUT_FORMAT
+        );
+        assert_eq!(
+            functional_certificate.output_format(),
+            crate::custom_statement::FUNCTIONAL_OUTPUT_FORMAT
+        );
+        assert_eq!(
+            functional_certificate.body_bytes().unwrap().last(),
+            Some(&0)
+        );
+        assert_ne!(
+            native_certificate.body_bytes().unwrap(),
+            functional_certificate.body_bytes().unwrap()
+        );
+
+        let inputs = statements(CommitSeq(7), &functional);
+        assert_eq!(inputs.len(), 13);
+        let rate = &inputs[INPUTS.len()];
+        assert!(
+            rate.starts_with(
+                "MATCH (n:Document) FOR SYSTEM_TIME AS OF SEQ 7 WHERE n.code = 'Rate' "
+            )
+        );
+        assert_eq!(
+            input_snapshot(CommitSeq(7), &functional, INPUTS.len()),
+            CommitSeq(7)
+        );
+        for (offset, kind, sequence) in [
+            (0, "StatementDefinition", 7),
+            (1, "Approval", 5),
+            (2, "Book", 5),
+            (3, "Account", 4),
+            (4, "Book", 4),
+        ] {
+            let index = INPUTS.len() + 1 + offset;
+            assert!(inputs[index].starts_with(&format!(
+                "MATCH (n:{kind}) FOR SYSTEM_TIME AS OF SEQ {sequence} "
+            )));
+            assert_eq!(
+                input_snapshot(CommitSeq(7), &functional, index),
+                CommitSeq(sequence)
+            );
+        }
+        assert_eq!(statements(CommitSeq(7), &native).len(), 12);
+        assert_eq!(
+            report_registries(&functional)
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            [
+                "account_types",
+                "entry_classes",
+                "units",
+                "foundations",
+                "fx_laws",
+                "rounding_laws"
+            ],
+            "functional valuation and presentation use one exact copy of each law registry",
+        );
+        assert_ne!(
+            registry_digest(&native).unwrap(),
+            registry_digest(&functional).unwrap()
+        );
+
+        // Even when all amounts are zero, the report must identify which basis
+        // was asked. Functional evidence cannot be presented as a native report.
+        let statement = fa_statements::custom::evaluate_custom(
+            &definition,
+            &fa_statements::StatementInput {
+                book_id: Id128([1; 16]),
+                branch_id: Id128::TRUNK,
+                known_at: 7,
+                accounts: Vec::new(),
+                units: vec![1],
+                columns: vec![fa_statements::ColumnInput {
+                    label: "current".into(),
+                    periods: vec!["FY2026-P03".into()],
+                    effective_from: Some(DateDay(0)),
+                    effective_through: DateDay(30),
+                    balances: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+        let native_output = crate::CustomStatementReport {
+            activation: VId(77),
+            functional_unit: None,
+            statement,
+            presented: None,
+        };
+        let mut functional_output = native_output.clone();
+        functional_output.functional_unit = Some(fa_money::UnitId(1));
+        let bytes = functional_output.canonical_bytes().unwrap();
+        assert_ne!(native_output.canonical_bytes().unwrap(), bytes);
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(
+            reader
+                .fixed::<{ crate::custom_statement::FUNCTIONAL_OUTPUT_FORMAT.len() }>("format")
+                .unwrap(),
+            crate::custom_statement::FUNCTIONAL_OUTPUT_FORMAT.as_bytes()
+        );
+        assert_eq!(reader.str(64, "basis").unwrap(), "retained-base-amounts");
+        assert_eq!(reader.u32("functional unit").unwrap(), 1);
+        assert_eq!(reader.u128("approved activation").unwrap(), 77);
+        assert_eq!(
+            reader
+                .bytes(MAX_CERTIFICATE_BYTES, "exact statement")
+                .unwrap(),
+            native_output.statement.canonical_bytes().unwrap()
+        );
+        assert_eq!(reader.u8("presentation").unwrap(), 0);
+        reader.finish().unwrap();
     }
 
     #[test]

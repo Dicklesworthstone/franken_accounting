@@ -313,6 +313,7 @@ fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         definition: active.definition,
         activation: active.activation,
         activated_at: active.recorded_at,
+        functional: false,
         periods: vec![period.into()],
         comparative: args
             .flag("--compare")
@@ -396,7 +397,11 @@ type Rendered = (
 );
 
 fn presentation(book: &Book, report: &CustomStatementReport) -> Result<Rendered, Fail> {
-    let exact = crate::cli::statement_presentation(&report.statement, &book.context().units)?;
+    let exact = crate::cli::statement_presentation_basis(
+        &report.statement,
+        &book.context().units,
+        report.functional_unit.is_some(),
+    )?;
     let mut fields = vec![
         ("definition", s(&report.statement.definition_name)),
         (
@@ -489,17 +494,39 @@ fn presentation(book: &Book, report: &CustomStatementReport) -> Result<Rendered,
             ("lines", Json::Arr(Vec::new())),
         ]);
     }
+    if let Some(unit) = report.functional_unit {
+        fields.extend([
+            ("functional", Json::Bool(true)),
+            (
+                "base_unit",
+                s(crate::cli::registered_unit_code(
+                    unit,
+                    &book.context().units,
+                )?),
+            ),
+            ("valuation_basis", s("retained-base-amounts")),
+        ]);
+    }
     Ok((exact, fields, human))
 }
 
 fn emit(
     out: &crate::cli::Out,
-    _report: &CustomStatementReport,
+    report: &CustomStatementReport,
     (exact, fields, human): Rendered,
     certificate: Option<&str>,
 ) {
     out.event_with_certificate("statement", exact.0, &exact.1, certificate);
-    out.event_with_certificate("custom_statement", fields, &human, certificate);
+    out.event_with_certificate(
+        if report.functional_unit.is_some() {
+            "functional_custom_statement"
+        } else {
+            "custom_statement"
+        },
+        fields,
+        &human,
+        certificate,
+    );
 }
 
 pub(crate) fn render(

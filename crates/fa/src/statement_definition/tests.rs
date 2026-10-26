@@ -15,6 +15,9 @@ use fgdb::MemVfs;
 
 use crate::{BookKeys, Entropy};
 
+#[path = "functional_tests.rs"]
+mod functional;
+
 const PREPARER: VId = VId(1);
 
 fn day(value: u8) -> DateDay {
@@ -592,6 +595,7 @@ fn approved_custom_certificate_replays_after_later_posts_and_layout_activation()
         definition: first.definition.clone(),
         activation: first.activation,
         activated_at: first.recorded_at,
+        functional: false,
         periods: vec!["FY2026-P01".into()],
         comparative: Vec::new(),
         presentation: None,

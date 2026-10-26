@@ -3910,6 +3910,34 @@ impl Book {
         ))
     }
 
+    /// Evaluate an approved company layout using retained functional amounts,
+    /// with current authority and the complete historical source available.
+    pub fn functional_custom_statement(
+        &mut self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CustomStatementReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_custom_statement(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Retain the approved layout, original valuations and optional presented
+    /// view in a functional custom report certificate.
+    pub fn certify_functional_custom_statement(
+        &mut self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_custom_statement(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
     /// Evaluate a statement in the historical book's functional currency.
     /// The admitted whole-book reader receives exact retained valuations;
     /// this hydrates history without publishing or revaluing any entry.
