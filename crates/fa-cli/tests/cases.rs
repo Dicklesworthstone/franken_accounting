@@ -11,6 +11,8 @@
 //! A4r); what the self-test proves today is that every implemented stage
 //! ran and every evaluated component agreed.
 
+#[path = "cases/budget.rs"]
+mod budget;
 #[path = "cases/cells.rs"]
 mod cells;
 #[path = "cases/evaluate.rs"]
@@ -1203,6 +1205,136 @@ fn planted_dry_run_commit_divergence_fails_naming_the_cell() {
         planted.reproduce.as_deref().is_some_and(
             |r| r.starts_with("REPRODUCE fa --book ") && r.contains("--grant post_softclosed")
         ),
+        "{text}"
+    );
+}
+
+/// A7c (§16): each book logs its invocation count and wall time, and the
+/// case its total wall time, the warm cost of one invocation and its budget.
+#[test]
+fn budget_log_records_invocations_wall_time_and_warm_cost() {
+    let o = sweep_run();
+    let text = o.text();
+    let field = |line: &str, key: &str| -> Option<u64> {
+        line.split(' ')
+            .find_map(|t| t.strip_prefix(&format!("{key}=")))
+            .and_then(|v| v.parse().ok())
+    };
+    let book = o
+        .lines
+        .iter()
+        .find(|l| l.starts_with("BUDGET sweep native book=1 "))
+        .expect("the book's BUDGET line");
+    assert!(field(book, "invocations").is_some_and(|n| n > 0), "{text}");
+    assert!(field(book, "wall_ms").is_some(), "{text}");
+    let case = o
+        .lines
+        .iter()
+        .find(|l| l.starts_with("BUDGET sweep total_ms="))
+        .expect("the case's BUDGET line");
+    assert!(field(case, "warm_invocation_ms").is_some(), "{text}");
+    assert_eq!(field(case, "budget_ms"), Some(60_000), "{text}");
+    assert!(case.ends_with(" PASS"), "{text}");
+}
+
+/// Over budget, the case fails, naming its wall time, budget and
+/// invocations; every expectation is still evaluated (nothing is skipped to
+/// fit).
+#[test]
+fn over_budget_case_fails_and_is_not_capped() {
+    let full = sweep_run();
+    let o = run::run_case_with(
+        &fa_oracles::cases::CaseFiles {
+            id: "sweep",
+            files: &SWEEP,
+        },
+        HARNESS_VERBS,
+        Some(1),
+    );
+    let text = o.text();
+    assert!(!o.ok, "{text}");
+    assert!(
+        o.lines
+            .iter()
+            .any(|l| l.starts_with("FAIL budget sweep wall=")
+                && l.contains(" budget=1 invocations=")),
+        "{text}"
+    );
+    assert!(
+        o.lines
+            .iter()
+            .any(|l| l.starts_with("BUDGET sweep total_ms=") && l.ends_with(" budget_ms=1 FAIL")),
+        "{text}"
+    );
+    // The same rows as the run within budget.
+    let rows = |o: &RunOutcome| -> Vec<String> {
+        o.lines
+            .iter()
+            .filter(|l| l.contains(" sweep-P-01 ") || l.contains(" sweep-SELF-"))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(rows(&o), rows(full), "{text}");
+}
+
+/// A filler variant above the chunk size posts as several `PostBatch`
+/// chunks, each its own logged step under the variant's label. The real
+/// limit (8,190) is A6's `extremal_variant_above_8190_entries_is_chunked`;
+/// here the chunk size is lowered to 3 so the posting path runs quickly.
+#[test]
+fn filler_variant_above_the_batch_limit_posts_as_several_chunks() {
+    use fa_oracles::cases::filler::{FillerKind, FillerSpec, generate};
+    use fa_oracles::cases::tiers::Tier;
+    const FILLER: [(&str, &str); 4] = [
+        (
+            "case.toml",
+            include_str!("../../fa-oracles/tests/fixtures/filler/case.toml"),
+        ),
+        (
+            "roles.toml",
+            include_str!("../../fa-oracles/tests/fixtures/filler/roles.toml"),
+        ),
+        (
+            "facts.toml",
+            include_str!("../../fa-oracles/tests/fixtures/filler/facts.toml"),
+        ),
+        (
+            "books/native.toml",
+            include_str!("../../fa-oracles/tests/fixtures/filler/books/native.toml"),
+        ),
+    ];
+    let case = fa_oracles::cases::load(&fa_oracles::cases::CaseFiles {
+        id: "filler",
+        files: &FILLER,
+    })
+    .expect("the filler fixture loads");
+    let book = &case.books["native"];
+    let spec = FillerSpec {
+        case: "filler".into(),
+        variant: "fv1".into(),
+        kind: FillerKind::Seeded(1),
+        tier: Tier::L,
+    };
+    let variant = generate(&case, book, &spec).expect("a seeded variant");
+    let members = variant.intents.len();
+    assert!(members > 3, "{members} members");
+    let mut r = run::BookRun::new(&case, book, run::tmp("filler-chunks"), &FILLER);
+    r.filler = Some(variant);
+    r.chunk_max = 3;
+    r.build();
+    r.replay();
+    let text = r.lines.join("\n");
+    assert_eq!(r.failure, None, "{text}");
+    let chunks: Vec<_> = r
+        .steps
+        .iter()
+        .filter(|s| s.verb == "batch" && s.filler_variant.as_deref() == Some("fv1@1"))
+        .collect();
+    assert_eq!(chunks.len(), members.div_ceil(3), "{text}");
+    assert!(chunks.iter().all(|s| s.exit == 0), "{text}");
+    // The documented entries still post after the filler.
+    assert!(
+        r.vids.contains_key("S-1") && r.vids.contains_key("S-2"),
         "{text}"
     );
 }
