@@ -29,6 +29,7 @@ pub mod erasable;
 pub mod ids;
 pub mod limits;
 pub mod mirrors;
+pub mod obligation;
 pub mod rea;
 pub mod revaluation;
 pub mod symbols;

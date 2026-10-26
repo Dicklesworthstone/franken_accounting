@@ -145,6 +145,19 @@ impl Fixture {
 
     /// Posts `legs` (each `(side, account, amount, party)`) on `date`.
     fn post(&self, key: &str, date: &str, legs: &[(&str, &str, &str, Option<&str>)]) {
+        let (code, out) = self.try_post(key, date, legs, "");
+        assert_eq!(code, 0, "{key}: {}", out.render());
+    }
+
+    /// Posts `legs` on `date` with `extra` (more intent fields, as JSON
+    /// members without braces) and returns the exit code and envelope.
+    fn try_post(
+        &self,
+        key: &str,
+        date: &str,
+        legs: &[(&str, &str, &str, Option<&str>)],
+        extra: &str,
+    ) -> (i32, Json) {
         let legs: Vec<String> = legs
             .iter()
             .map(|(side, account, amount, party)| {
@@ -154,18 +167,30 @@ impl Fixture {
                 )
             })
             .collect();
+        let extra = if extra.is_empty() {
+            String::new()
+        } else {
+            format!(",{extra}")
+        };
         let intent = self.file(
             &format!("{key}.json"),
             &format!(
-                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{}]}}"#,
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{}]{extra}}}"#,
                 legs.join(",")
             ),
         );
-        ok(
+        run(
             &self.book,
             &["post", "--intent", &intent, "--evidence", &self.evidence],
-        );
+        )
     }
+}
+
+/// `"obligations"` declaring one contractual installment on leg 1.
+fn due(on: &str, amount: &str) -> String {
+    format!(
+        r#""obligations":[{{"leg":1,"status":"contractual","installments":[{{"due":"{on}","amount":"{amount} USD"}}]}}]"#
+    )
 }
 
 /// `(second word of the narrative, statistic value)` of each finding, sorted:
@@ -502,5 +527,149 @@ fn creditor_and_investor_margins_survive_public_workflow() {
     assert!(
         text(bs_val_finding, "narrative")
             .contains("VAL-EQUIP-2026Q2:signed_delta:exact_as_of(2026-04-30)")
+    );
+}
+
+/// fa-5dpd through the public workflow (fa-v0m2's solvency companion). An
+/// obligation's maturity, declared with the entry that books it by `fa post`
+/// (extension 33), decides whether `solvency.cash_flow_test` counts it; its
+/// booking date does not. Cash is 100.00 at Apr 30. A 1,000.00 debt booked
+/// Jan 15 is due Dec 31 and a 150.00 debt booked Apr 1 is due May 15, so
+/// over the default 30-day horizon only the 150.00 matures: 50.00 short.
+/// The same history with the 1,000.00 due May 20 is 1,050.00 short. Planted
+/// negatives: a debt booked without terms leaves the schedule incomplete and
+/// the test refuses; terms on a debit leg, or installments that do not total
+/// the leg, are refused at `fa post`.
+#[test]
+fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
+    let book_with = |long_due: &str, short_terms: bool| {
+        let f = Fixture::new();
+        f.post(
+            "capital",
+            "2026-01-10",
+            &[
+                ("debit", "1000", "100.00", None),
+                ("credit", "3000", "100.00", None),
+            ],
+        );
+        let (code, out) = f.try_post(
+            "long-debt",
+            "2026-01-15",
+            &[
+                ("debit", "6000", "1000.00", None),
+                ("credit", "2000", "1000.00", None),
+            ],
+            &due(long_due, "1000.00"),
+        );
+        assert_eq!(code, 0, "{}", out.render());
+        let short = if short_terms {
+            due("2026-05-15", "150.00")
+        } else {
+            String::new()
+        };
+        let (code, out) = f.try_post(
+            "short-debt",
+            "2026-04-01",
+            &[
+                ("debit", "7000", "150.00", None),
+                ("credit", "2000", "150.00", None),
+            ],
+            &short,
+        );
+        assert_eq!(code, 0, "{}", out.render());
+        f
+    };
+    let solvency = |f: &Fixture| {
+        run(
+            &f.book,
+            &[
+                "procedure",
+                "run",
+                "solvency.cash_flow_test",
+                "--effective-through",
+                "2026-04-30",
+            ],
+        )
+    };
+    let shortfall = |out: &Json| {
+        let findings = rows(data(out), "findings");
+        assert_eq!(findings.len(), 1, "{}", out.render());
+        let statistic = findings[0].get("statistic").expect("statistic");
+        assert_eq!(text(statistic, "name"), "cash_flow_shortfall");
+        (
+            integer(statistic, "value"),
+            text(&findings[0], "narrative").to_string(),
+        )
+    };
+
+    let (code, dec31) = solvency(&book_with("2026-12-31", true));
+    assert_eq!(code, 0, "{}", dec31.render());
+    let (value, narrative) = shortfall(&dec31);
+    assert_eq!(value, 5_000, "{narrative}");
+    for part in [
+        "liquid_cash=10000",
+        "maturing_obligations=15000",
+        "deferred_obligations=100000",
+        "maturity_basis=authenticated_schedule",
+    ] {
+        assert!(narrative.contains(part), "{part}: {narrative}");
+    }
+
+    // Only the long debt's due date changes, and with it the verdict.
+    let (code, may20) = solvency(&book_with("2026-05-20", true));
+    assert_eq!(code, 0, "{}", may20.render());
+    let (value, narrative) = shortfall(&may20);
+    assert_eq!(value, 105_000, "{narrative}");
+    assert!(
+        narrative.contains("maturing_obligations=115000")
+            && narrative.contains("deferred_obligations=0"),
+        "{narrative}"
+    );
+
+    // Planted: the 150.00 debt booked without terms is an open obligation
+    // the schedule omits, so no maturity-based verdict is given.
+    let (code, incomplete) = solvency(&book_with("2026-12-31", false));
+    assert_eq!(code, 2, "{}", incomplete.render());
+    assert!(
+        incomplete
+            .render()
+            .contains("incomplete obligation schedule"),
+        "{}",
+        incomplete.render()
+    );
+
+    // Planted: terms the kernel's law refuses never reach the journal.
+    let f = Fixture::new();
+    let (code, debit) = f.try_post(
+        "debit-terms",
+        "2026-01-15",
+        &[
+            ("debit", "6000", "40.00", None),
+            ("credit", "2000", "40.00", None),
+        ],
+        r#""obligations":[{"leg":0,"status":"contractual","installments":[{"due":"2026-05-15","amount":"40.00 USD"}]}]"#,
+    );
+    assert_eq!(code, 2, "{}", debit.render());
+    assert!(
+        debit.render().contains("names a debit leg"),
+        "{}",
+        debit.render()
+    );
+    let (code, short) = f.try_post(
+        "short-terms",
+        "2026-01-15",
+        &[
+            ("debit", "6000", "40.00", None),
+            ("credit", "2000", "40.00", None),
+        ],
+        &due("2026-05-15", "30.00"),
+    );
+    assert_eq!(code, 2, "{}", short.render());
+    assert!(
+        short
+            .render()
+            .contains("installments must total exactly the leg's amount"),
+        "{}",
+        short.render()
     );
 }
