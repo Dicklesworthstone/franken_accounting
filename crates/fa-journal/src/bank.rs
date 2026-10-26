@@ -46,8 +46,8 @@ pub use reconciliation::{
     BankReconciliationLock, BankReconciliationPreparation, BankReconciliationRecorded,
     BankReconciliationRequest, BankReconciliationState, BankReconciliationStatus,
     PreparedBankReconciliation, ReconciliationHistory, bank_reconciliation_status,
-    prepare_bank_reconciliation, read_bank_reconciliation_states, reconcile_bank_statement,
-    verify_bank_reconciliation_history, witness_reconciliation_locks,
+    extend_reconciliation_history, prepare_bank_reconciliation, read_bank_reconciliation_states,
+    reconcile_bank_statement, verify_bank_reconciliation_history, witness_reconciliation_locks,
 };
 pub use wire::BankMatchConfirmation;
 use wire::{BankLine, claim_props, match_props};

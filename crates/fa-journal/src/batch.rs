@@ -756,7 +756,22 @@ pub async fn post_batch<V: Vfs + Clone>(
     capability: Capability,
     batch: PostBatch,
 ) -> Outcome<BatchPosted> {
-    post_batch_with_crash(db, ctx, book, capability, batch, None).await
+    post_batch_in(db, ctx, book, capability, batch, None, &mut None).await
+}
+
+/// [`post_batch`] for the long-lived owner of `db`, which keeps the verified
+/// reconciliation history between writes so the batch checks only the
+/// commits since the last (fa-rcw1). `reconciliation` must only ever travel
+/// with this `db`.
+pub async fn post_batch_with_reconciliation<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    batch: PostBatch,
+    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+) -> Outcome<BatchPosted> {
+    post_batch_in(db, ctx, book, capability, batch, None, reconciliation).await
 }
 
 /// [`post_batch`] through the substrate's production crash-point seam
@@ -772,6 +787,18 @@ pub async fn post_batch_with_crash<V: Vfs + Clone>(
     batch: PostBatch,
     crash_at: Option<fgdb::CrashPoint>,
 ) -> Outcome<BatchPosted> {
+    post_batch_in(db, ctx, book, capability, batch, crash_at, &mut None).await
+}
+
+async fn post_batch_in<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: Capability,
+    batch: PostBatch,
+    crash_at: Option<fgdb::CrashPoint>,
+    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+) -> Outcome<BatchPosted> {
     if let Err(refusal) = authorize_members(db, book, &capability, &batch, Admission::Commit)? {
         return Ok(Err(refusal));
     }
@@ -782,7 +809,15 @@ pub async fn post_batch_with_crash<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let capabilities = vec![capability; batch.members().len()];
-    let staged = match stage_batch(db, ctx, book, &capabilities, &batch, Admission::Commit)? {
+    let staged = match stage_batch_with(
+        db,
+        ctx,
+        book,
+        &capabilities,
+        &batch,
+        Admission::Commit,
+        reconciliation,
+    )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(BatchStage::Recorded(posted)) => return Ok(Ok(posted)),
         Ok(BatchStage::Staged(staged)) => staged,
@@ -839,6 +874,20 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
     batch: &PostBatch,
     admission: Admission,
 ) -> Outcome<BatchStage> {
+    stage_batch_with(db, ctx, book, capabilities, batch, admission, &mut None)
+}
+
+/// [`stage_batch`] with the owner's verified reconciliation history, which
+/// every member shares and which is left verified at the batch's basis.
+fn stage_batch_with<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capabilities: &[Capability],
+    batch: &PostBatch,
+    admission: Admission,
+    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+) -> Outcome<BatchStage> {
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if capabilities.len() != batch.members().len() {
         return Err(KernelError::Corrupt(
@@ -874,8 +923,8 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
     let mut txn: Option<WriteTxn> = None;
     let mut tracker = TemplateByteTracker::default();
     // Every member stages into one transaction, so the reconciliation
-    // history is verified once at its basis and shared (fa-rcw1).
-    let mut reconciliation = None;
+    // history is verified (or carried forward) once at its basis and shared
+    // by every member (fa-rcw1).
     let mut members: Vec<BatchMember> = Vec::with_capacity(batch.members().len());
     let mut resolved = Vec::with_capacity(batch.members().len());
     let mut security_policy_epoch = None;
@@ -890,7 +939,7 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
             admission,
             txn.take(),
             Some(std::mem::take(&mut tracker)),
-            &mut reconciliation,
+            reconciliation,
         )? {
             Err(refusal) => return Ok(Err(member_refusal(i, refusal))),
             // The member's identity is taken. Admission already ran for it,
