@@ -260,6 +260,10 @@ pub struct ExportCoordinate {
     pub entry_count: u64,
     pub content_digest: [u8; 32],
     pub certificate_digest: [u8; 32],
+    /// The one account an extract is scoped to (`fa export ads --account`,
+    /// plan §13.1): every entry with a leg on it and that account's balance.
+    /// `None` is the whole chart, whose certificate bytes are unchanged.
+    pub account_scope: Option<String>,
 }
 
 impl ExportCoordinate {
@@ -280,6 +284,7 @@ impl ExportCoordinate {
             known_at_seq,
             entry_count,
             &content_digest,
+            None,
         );
         Self {
             book_name: book_name.to_owned(),
@@ -290,9 +295,14 @@ impl ExportCoordinate {
             entry_count,
             content_digest,
             certificate_digest,
+            account_scope: None,
         }
     }
 
+    /// The certificate digest. An account-scoped coordinate hashes under its
+    /// own domain and binds the account code last, so a scoped extract's
+    /// certificate never reads as a whole-chart one.
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_digest(
         book_name: &str,
         base_unit_code: &str,
@@ -301,9 +311,13 @@ impl ExportCoordinate {
         known_at_seq: u64,
         entry_count: u64,
         content_digest: &[u8; 32],
+        account_scope: Option<&str>,
     ) -> [u8; 32] {
         let mut h = Hasher::new();
-        h.update(b"fa:formats:coordinate:v1");
+        h.update(match account_scope {
+            None => b"fa:formats:coordinate:v1",
+            Some(_) => b"fa:formats:coordinate:v2",
+        });
         h.update(&(book_name.len() as u64).to_le_bytes());
         h.update(book_name.as_bytes());
         h.update(&(base_unit_code.len() as u64).to_le_bytes());
@@ -313,6 +327,10 @@ impl ExportCoordinate {
         h.update(&known_at_seq.to_le_bytes());
         h.update(&entry_count.to_le_bytes());
         h.update(content_digest);
+        if let Some(code) = account_scope {
+            h.update(&(code.len() as u64).to_le_bytes());
+            h.update(code.as_bytes());
+        }
         h.finalize().0
     }
 
@@ -332,6 +350,7 @@ impl ExportCoordinate {
             self.known_at_seq,
             self.entry_count,
             &self.content_digest,
+            self.account_scope.as_deref(),
         );
         if self.certificate_digest != expected_cert {
             return Err(FormatError::CertificateMismatch {
@@ -444,6 +463,66 @@ impl FormatJournal {
         };
         let _ = journal.fold_balances()?;
         Ok(journal)
+    }
+
+    /// The extract of one account (plan §13.1, `fa export ads --account`):
+    /// every entry with a leg on `code`, each with all of its legs so it
+    /// still balances, the chart rows those entries name, and that account's
+    /// assertions. Its certificate binds the account (`account_scope`).
+    pub fn scoped_to_account(self, code: &str) -> Result<Self, FormatError> {
+        if !self.accounts.iter().any(|a| a.code == code) {
+            return Err(FormatError::UnknownAccount {
+                format: "export",
+                account_code: code.to_owned(),
+            });
+        }
+        let entries: Vec<FormatEntry> = self
+            .entries
+            .into_iter()
+            .filter(|e| e.legs.iter().any(|l| l.account_code == code))
+            .collect();
+        let named: std::collections::BTreeSet<&str> = entries
+            .iter()
+            .flat_map(|e| e.legs.iter().map(|l| l.account_code.as_str()))
+            .chain([code])
+            .collect();
+        let accounts: Vec<FormatAccount> = self
+            .accounts
+            .iter()
+            .filter(|a| named.contains(a.code.as_str()))
+            .cloned()
+            .collect();
+        let assertions: Vec<FormatAssertion> = self
+            .assertions
+            .into_iter()
+            .filter(|a| a.account_code == code)
+            .collect();
+        let coordinate = &self.coordinate;
+        let content_digest = Self::compute_content_digest(&accounts, &entries, &assertions);
+        let entry_count = entries.len() as u64;
+        let certificate_digest = ExportCoordinate::compute_digest(
+            &coordinate.book_name,
+            &coordinate.base_unit_code,
+            coordinate.base_unit_scale,
+            coordinate.effective_through,
+            coordinate.known_at_seq,
+            entry_count,
+            &content_digest,
+            Some(code),
+        );
+        let coordinate = ExportCoordinate {
+            entry_count,
+            content_digest,
+            certificate_digest,
+            account_scope: Some(code.to_owned()),
+            ..self.coordinate
+        };
+        Ok(Self {
+            coordinate,
+            accounts,
+            entries,
+            assertions,
+        })
     }
 
     /// Canonical BLAKE3 digest of `(accounts, entries, assertions)`.

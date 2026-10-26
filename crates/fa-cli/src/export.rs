@@ -14,7 +14,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_read_flag, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json, fa export ads (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json, or fa export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
+const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json, fa export ads [--account <code>] (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json, or fa export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
 const WAREHOUSE_EXAMPLE: &str = "fa export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
 /// The complete-prefix bundle and its receipt an ADS extract is proved with.
 const PROOF_BUNDLE: &str = "ADS_Proof.fab";
@@ -54,6 +54,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--known-at",
         "--out",
         "--state",
+        "--account",
     ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(format!("export takes only one {flag}"), EXAMPLE));
@@ -91,6 +92,16 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None | Some("latest") => None,
         Some(text) => Some(fa_model::Oid(crate::proof::fixed_hex(text, "--state")?)),
     };
+    // One account's extract (plan §13.1): every entry with a leg on it, and
+    // its balance. With --with-proofs the bundle proves that account's
+    // entries complete through the cutoff (ScopeIndexComplete).
+    let account = args.flag("--account");
+    if account.is_some() && format != "ads" {
+        return Err(usage(
+            "--account scopes an ADS extract to one account; other formats export the whole chart",
+            "fa export ads --account <code> --period <code> --out <new dir> [--with-proofs] --json",
+        ));
+    }
     // An export discloses the journal to an outsider, as a proof or a
     // bundle does: authority is checked before the book is read.
     let capability = ctx.capability(args, &["read", "produce"])?;
@@ -116,9 +127,33 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let book = ctx.books.open_admitted(args, |book| {
         // The bundle is produced first (its own admission precedes every
         // read of the journal); the read scope borrows the book after it.
+        // An account's bundle ends at the cutoff, so a --period cutoff is
+        // read first under the admitted read scope (at a pinned capability's
+        // own pin), and checked again at the proof's own sequence below.
+        let planned_cutoff = match (with_proofs, account, &selection) {
+            (true, Some(_), fa::TrialBalanceSelection::Periods(_)) => {
+                let at = match capability.known_at_pin() {
+                    Some(pin) => Some(pin.min(book.head()?)),
+                    None => None,
+                };
+                let scope = book.read_scope(capability.holder(), &capability)??;
+                let seq = scope.admit_report(&selection.clone().into(), at)??;
+                Some(cutoff_at(&scope, &selection, seq)?)
+            }
+            (true, Some(_), fa::TrialBalanceSelection::AsOf(day)) => Some(*day),
+            _ => None,
+        };
         let proved_at = if with_proofs {
+            let scope = match (account, planned_cutoff) {
+                (Some(code), Some(cutoff)) => fa::BundleScope::Index(fa::ScopeRequest::Account {
+                    account: fa_model::account_vid(book.context().book_id, code),
+                    from: i32::MIN,
+                    to: cutoff.0,
+                }),
+                _ => fa::BundleScope::Prefix,
+            };
             let request = fa::BundleRequest {
-                scope: fa::BundleScope::Prefix,
+                scope,
                 balances: Vec::new(),
                 inline_documents: false,
             };
@@ -154,25 +189,23 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         // An export is cumulative stock, even when --period names its
         // boundary. Admit that reach before reading any period or entry.
         let seq = scope.admit_report(&selection.clone().into(), known_at)??;
-        let through = match &selection {
-            fa::TrialBalanceSelection::Periods(periods) => {
-                let code = &periods[0];
-                let period = scope.period_at(code, Some(seq))??.ok_or_else(|| {
-                    usage(
-                        format!("no period `{code}` in this book at {}", seq.0),
-                        "select a period recorded at the requested known-at sequence",
-                    )
-                })?;
-                DateDay(period.end.0 - 1)
-            }
-            fa::TrialBalanceSelection::AsOf(day) => *day,
-            fa::TrialBalanceSelection::Activity(_) => {
-                return Err(Fail::Internal(
-                    "an export cannot select period activity".into(),
-                ));
-            }
-        };
-        selected = Some(book.format_journal(through, Some(seq))?);
+        let through = cutoff_at(&scope, &selection, seq)?;
+        if planned_cutoff.is_some_and(|planned| planned != through) {
+            return Err(Fail::Internal(format!(
+                "the account bundle's cutoff is not the period's end at the proof state's sequence {}",
+                seq.0
+            )));
+        }
+        let journal = book.format_journal(through, Some(seq))?;
+        selected = Some(match account {
+            None => journal,
+            Some(code) => journal.scoped_to_account(code).map_err(|_| {
+                usage(
+                    format!("no account `{code}` in this book's chart at {}", seq.0),
+                    "name a chart account (fa chart show --json)",
+                )
+            })?,
+        });
         Ok(())
     })?;
     let journal = selected.ok_or_else(|| Fail::Internal("export selection is missing".into()))?;
@@ -251,6 +284,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("content_digest", s(hex(&coordinate.content_digest))),
             ("certificate_digest", s(hex(&coordinate.certificate_digest))),
             ("out", output.map_or(Json::Null, s)),
+            ("account_scope", account.map_or(Json::Null, s)),
             ("files", Json::Arr(listed)),
             (
                 "proof",
@@ -268,7 +302,14 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             "through_seq",
                             Json::Int(i128::from(statement.through_seq.0)),
                         ),
-                        ("completeness", s("seq_range_complete")),
+                        (
+                            "completeness",
+                            s(if account.is_some() {
+                                "scope_index_complete"
+                            } else {
+                                "seq_range_complete"
+                            }),
+                        ),
                         ("checkpoint_public_key", s(key.as_str())),
                     ])
                 }),
@@ -287,6 +328,31 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ),
     );
     Ok(())
+}
+
+/// The inclusive effective cutoff an export selects at `seq`: the last day
+/// of the --period named, or the --as-of day.
+fn cutoff_at(
+    scope: &fa::ReadScope<'_>,
+    selection: &fa::TrialBalanceSelection,
+    seq: fgdb_types::CommitSeq,
+) -> Result<DateDay, Fail> {
+    match selection {
+        fa::TrialBalanceSelection::Periods(periods) => {
+            let code = &periods[0];
+            let period = scope.period_at(code, Some(seq))??.ok_or_else(|| {
+                usage(
+                    format!("no period `{code}` in this book at {}", seq.0),
+                    "select a period recorded at the requested known-at sequence",
+                )
+            })?;
+            Ok(DateDay(period.end.0 - 1))
+        }
+        fa::TrialBalanceSelection::AsOf(day) => Ok(*day),
+        fa::TrialBalanceSelection::Activity(_) => Err(Fail::Internal(
+            "an export cannot select period activity".into(),
+        )),
+    }
 }
 
 /// The four tables of an ADS package, in the order `fa export ads` writes
@@ -615,6 +681,7 @@ fn export_warehouse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 s(hex(&receipt.report_certificate_digest)),
             ),
             ("out", output.map_or(Json::Null, s)),
+            ("account_scope", Json::Null),
             ("files", Json::Arr(listed)),
             ("proof", Json::Null),
         ],

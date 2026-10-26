@@ -1883,6 +1883,10 @@ fn ads_checks(report: &AdsReport) -> Vec<Check> {
     let detail = vec![
         ("effective_through", s(report.effective_through.as_str())),
         ("known_at_seq", report.known_at_seq.map_or(Json::Null, n)),
+        (
+            "account_scope",
+            report.account_scope.as_deref().map_or(Json::Null, s),
+        ),
         ("entries", n(report.entries)),
         ("rows", n(report.rows)),
         ("tb_rows", n(report.tb_rows)),

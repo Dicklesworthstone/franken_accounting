@@ -40,6 +40,9 @@ pub struct AdsReport {
     /// The cutoff and sequence the coordinate certificate states.
     pub effective_through: String,
     pub known_at_seq: Option<u64>,
+    /// The one account the extract is scoped to (`fa export ads --account`),
+    /// else the whole chart.
+    pub account_scope: Option<String>,
     /// GL_Detail entries and rows matched to proven entries.
     pub entries: u64,
     pub rows: u64,
@@ -260,6 +263,27 @@ fn extracted(gl_detail: &str, escaped: bool) -> Result<Vec<Extracted>, String> {
         .collect())
 }
 
+/// Lowercase hex of UTF-8 bytes (the v3 certificate's `*_utf8_hex` values).
+fn utf8_hex(hex: &str) -> Option<String> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            let pair = hex.get(i..i + 2)?;
+            if !pair
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return None;
+            }
+            u8::from_str_radix(pair, 16).ok()
+        })
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
 /// Read `key = value` (a TOML string or integer) from the certificate.
 fn field<'a>(certificate: &'a str, key: &str) -> Option<&'a str> {
     certificate.lines().find_map(|line| {
@@ -321,6 +345,7 @@ pub fn verify_ads(
             .unwrap_or_default()
             .to_string(),
         known_at_seq: field(certificate, "known_at_seq").and_then(|v| v.parse().ok()),
+        account_scope: None,
         entries: 0,
         rows: 0,
         tb_rows: 0,
@@ -341,14 +366,23 @@ pub fn verify_ads(
             return Ok(out);
         }
     };
+    // One account's extract names its account; the whole chart names none.
+    let stated = if escaped {
+        field(certificate, "account_scope_utf8_hex").map(|hex| utf8_hex(hex).ok_or(()))
+    } else {
+        field(certificate, "account_scope").map(|code| Ok(code.to_string()))
+    };
+    let scoped = match stated {
+        None => None,
+        Some(Ok(code)) => Some(code),
+        Some(Err(())) => {
+            out.failures
+                .push("the certificate's account_scope is not hex UTF-8".into());
+            return Ok(out);
+        }
+    };
+    out.account_scope.clone_from(&scoped);
     let manifest = out.bundle.manifest.clone();
-    if !matches!(manifest.scope, BundleScope::Prefix) {
-        out.failures.push(
-            "the bundle proves a narrower scope; an ADS extract is judged against a complete-prefix bundle"
-                .into(),
-        );
-        return Ok(out);
-    }
     if out.known_at_seq != Some(manifest.through_seq) {
         out.failures.push(format!(
             "the certificate's known_at_seq ({}) is not the checkpoint's through_seq ({})",
@@ -364,6 +398,28 @@ pub fn verify_ads(
             .push("the certificate states no effective_through date".into());
         return Ok(out);
     }
+    // The whole chart needs a complete prefix. One account's extract needs
+    // the prefix or that account's scope-index run over every effective
+    // day through the cutoff (ScopeIndexComplete).
+    let account = scoped
+        .as_deref()
+        .map(|code| account_vid(&manifest.book_id, code));
+    let complete = match (&manifest.scope, account) {
+        (BundleScope::Prefix, _) => true,
+        (BundleScope::Account(claim), Some(vid)) => {
+            claim.account == vid && claim.from == i32::MIN && civil(claim.to) == cutoff
+        }
+        _ => false,
+    };
+    if !complete {
+        out.failures.push(match &scoped {
+            None => "the bundle proves a narrower scope; a whole-chart ADS extract is judged against a complete-prefix bundle".into(),
+            Some(code) => format!(
+                "the bundle proves neither the complete prefix nor account {code}'s entries over every effective day through {cutoff}"
+            ),
+        });
+        return Ok(out);
+    }
     // The proven entries the export selects, by recorded sequence.
     let mut proven: BTreeMap<u64, Vec<Proven>> = BTreeMap::new();
     for (envelope, legs) in records {
@@ -375,6 +431,7 @@ pub fn verify_ads(
             || envelope.class == CLASS_PENDING
             || legs.is_empty()
             || date > cutoff
+            || account.is_some_and(|vid| legs.iter().all(|leg| leg.account != vid))
         {
             continue;
         }
@@ -441,7 +498,7 @@ pub fn verify_ads(
         ));
     }
     if out.failures.is_empty() {
-        match trial_balance_rows(trial_balance, &extract, &cutoff, escaped) {
+        match trial_balance_rows(trial_balance, &extract, &cutoff, escaped, scoped.as_deref()) {
             Ok(rows) => out.tb_rows = rows,
             Err(why) => out.failures.push(why),
         }
@@ -453,15 +510,22 @@ pub fn verify_ads(
 /// Check `trial_balance` is exactly the refold of the extract's rows: one
 /// row per (account, currency) in that order, as of `cutoff`, the signed
 /// sum of its legs (debits positive) stated as D (zero or more) or C with
-/// its magnitude at the currency's one scale. Returns the row count.
+/// its magnitude at the currency's one scale. A scoped extract folds its
+/// account's rows only: the other legs of its entries are context. Returns
+/// the row count.
 fn trial_balance_rows(
     trial_balance: &str,
     extract: &[Extracted],
     cutoff: &str,
     escaped: bool,
+    scope: Option<&str>,
 ) -> Result<u64, String> {
     let mut folded: BTreeMap<(&str, &str), (i128, u32)> = BTreeMap::new();
-    for row in extract.iter().flat_map(|entry| &entry.rows) {
+    for row in extract
+        .iter()
+        .flat_map(|entry| &entry.rows)
+        .filter(|row| scope.is_none_or(|code| row.account == code))
+    {
         let cell = folded
             .entry((row.account.as_str(), row.unit.as_str()))
             .or_insert((0, row.scale));
@@ -531,10 +595,19 @@ mod tests {
         assert_eq!(entries[0].journal_id, "entry|id");
         assert_eq!(entries[0].rows[0].account, "60|00");
         let tb = format!("{TB_HEADER}\n60\\p00|2026-03-31|D|15.00|USD|2\n");
-        assert_eq!(trial_balance_rows(&tb, &entries, "2026-03-31", true), Ok(1));
+        assert_eq!(
+            trial_balance_rows(&tb, &entries, "2026-03-31", true, None),
+            Ok(1)
+        );
         assert!(
-            trial_balance_rows(&tb.replace("15.00", "15.01"), &entries, "2026-03-31", true)
-                .is_err()
+            trial_balance_rows(
+                &tb.replace("15.00", "15.01"),
+                &entries,
+                "2026-03-31",
+                true,
+                None
+            )
+            .is_err()
         );
         // A literal backslash in the existing v2 profile keeps its meaning.
         let legacy = extracted(&gl, false).unwrap();
@@ -598,8 +671,19 @@ mod tests {
              6000|2026-03-31|D|15.00|USD|2\n"
         );
         assert_eq!(
-            trial_balance_rows(&tb, &extract, "2026-03-31", false),
+            trial_balance_rows(&tb, &extract, "2026-03-31", false, None),
             Ok(3)
+        );
+        // One account's extract folds that account's rows only: the other
+        // legs of its entries are context, and no balance of theirs belongs.
+        let cash = format!("{TB_HEADER}\n1000|2026-03-31|C|14.00|USD|2\n");
+        assert_eq!(
+            trial_balance_rows(&cash, &extract, "2026-03-31", false, Some("1000")),
+            Ok(1)
+        );
+        assert!(
+            trial_balance_rows(&tb, &extract, "2026-03-31", false, Some("1000")).is_err(),
+            "a contra account's balance is not the scoped account's"
         );
         for bad in [
             tb.replace("C|14.00", "C|14.01"),
@@ -612,7 +696,7 @@ mod tests {
             tb.replace(TB_HEADER, "GL_Account_Number|As_Of_Date"),
         ] {
             assert!(
-                trial_balance_rows(&bad, &extract, "2026-03-31", false).is_err(),
+                trial_balance_rows(&bad, &extract, "2026-03-31", false, None).is_err(),
                 "{bad}"
             );
         }
@@ -624,6 +708,11 @@ mod tests {
         assert_eq!(field(cert, "effective_through"), Some("2026-03-31"));
         assert_eq!(field(cert, "known_at_seq"), Some("42"));
         assert_eq!(field(cert, "entry_count"), None);
+        // A v3 certificate's account_scope_utf8_hex.
+        assert_eq!(utf8_hex("31307c30").as_deref(), Some("10|0"));
+        for bad in ["313", "3G", "31AB", "ff"] {
+            assert_eq!(utf8_hex(bad), None, "{bad}");
+        }
     }
 
     #[test]
