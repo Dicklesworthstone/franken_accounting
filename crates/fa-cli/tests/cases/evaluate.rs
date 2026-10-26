@@ -16,8 +16,10 @@ use fa_oracles::cases::book::StepKind;
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
+use fa_oracles::cases::rel;
 use fa_oracles::cases::remedy::{self, Cells, Check};
 use fa_oracles::cases::selfrow;
+use fa_oracles::cases::status::{ComponentVerdict, ObservedD, evaluate_d};
 use fa_oracles::cases::verdict::{RowLine, RowVerdict, cell_label};
 use fa_oracles::cases::{Case, Expectations};
 use fa_oracles::json::Json;
@@ -241,10 +243,54 @@ pub fn rows(
                 };
                 out.push(finish(case, eval));
             }
+            if e.kind == ExpectationType::D && fa_oracles::cases::status::closed_cites(e) {
+                out.extend(unexpected_cite_rows(run, e));
+            }
         }
     }
     out.push(self_row(run));
     out
+}
+
+/// A5b's row-level rule (§5.2): a `closed_cites` D states that its targets
+/// are every documented or Δ entry its run's findings cite, so each other
+/// such entry a finding cites is a FAIL line of its own, the entry in the
+/// target slot.
+fn unexpected_cite_rows(run: &BookRun<'_>, e: &Expectation) -> Vec<Evaluated> {
+    let (Some(procedure), Some(version)) = (e.fields.str("procedure"), e.fields.int("version"))
+    else {
+        return Vec::new();
+    };
+    // Without a recorded run the targets' own rows already fail.
+    let Some(found) = run.runs.get(procedure) else {
+        return Vec::new();
+    };
+    let mut by_intent: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for f in &found.findings {
+        let pr = project(run, f);
+        for entry in &pr.entries {
+            by_intent
+                .entry(entry.clone())
+                .or_default()
+                .extend(pr.cites.iter().cloned());
+        }
+    }
+    let cited: BTreeSet<String> = by_intent.keys().cloned().collect();
+    fa_oracles::cases::status::unexpected_cites(run.case, e, &cited)
+        .into_iter()
+        .map(|intent| {
+            let mut row = blank(&e.id, "D", run.book.stem.as_str(), Some(&intent));
+            row.verdict = RowVerdict::Fail;
+            row.projection
+                .push(("procedure".into(), format!("{procedure}@{version}")));
+            row.projection.push((
+                "cite".into(),
+                by_intent.get(&intent).map_or_else(|| "-".into(), joined),
+            ));
+            row.reason = Some(format!("unexpected finding cites {intent}"));
+            finish(run.case, (row, Vec::new(), None))
+        })
+        .collect()
 }
 
 /// Whether a target branches attributes (A5a's table), which a P row's
@@ -346,10 +392,6 @@ fn joined(set: &BTreeSet<String>) -> String {
     }
 }
 
-const fn single(status: &Status) -> bool {
-    matches!(status, Status::S | Status::Sd | Status::Si)
-}
-
 fn int_text(v: Option<i128>) -> String {
     v.map_or_else(|| "-".into(), |v| v.to_string())
 }
@@ -359,58 +401,92 @@ fn int_text(v: Option<i128>) -> String {
 type Compared = (Vec<String>, Vec<(String, String)>);
 
 /// One candidate finding's projection and its disagreements with the
-/// target.
+/// target: §5.2's pass rule per component (`evaluate_d`), a Rel component
+/// judged by `rel` on this run.
 fn compare(
     p: &fa_oracles::cases::expect::Projection,
     want_cites: &BTreeSet<String>,
     pr: &Projected,
     f: &Json,
+    rel: &dyn Fn(&str, &ObservedD) -> Option<bool>,
 ) -> Compared {
-    let mut diff = Vec::new();
-    let mut proj = Vec::new();
-    let cites = joined(&pr.cites);
-    if single(&p.cite.status) && pr.cites != *want_cites {
-        diff.push(mismatch("cite", joined(want_cites), &cites));
-    }
-    proj.push(("cite".into(), cites));
-    let severity = f
-        .get("severity")
-        .and_then(Json::as_str)
-        .unwrap_or("-")
-        .to_string();
-    let want_severity = p.severity.value.as_deref().unwrap_or("-");
-    if single(&p.severity.status) && severity != want_severity {
-        diff.push(mismatch("severity", want_severity, &severity));
-    }
-    proj.push(("severity".into(), severity));
     let stat = f.get("statistic");
     let field = |k: &str| stat.and_then(|s| s.get(k));
-    let name = field("name")
-        .and_then(Json::as_str)
-        .unwrap_or("-")
-        .to_string();
-    let value = int_text(field("value").and_then(Json::as_int));
-    let scale = int_text(field("scale").and_then(Json::as_int));
-    if single(&p.statistic.status) {
-        if let Some(want) = &p.statistic_name
-            && *want != name
-        {
-            diff.push(mismatch("statistic_name", want, &name));
-        }
-        let want_value = p.statistic.value.as_deref().unwrap_or("-");
-        if value != want_value {
-            diff.push(mismatch("statistic", want_value, &value));
-        }
-        if let Some(want) = p.statistic_scale
-            && scale != want.to_string()
-        {
-            diff.push(mismatch("scale", want, &scale));
-        }
-    }
-    proj.push(("statistic_name".into(), name));
-    proj.push(("statistic".into(), value));
-    proj.push(("scale".into(), scale));
+    let observed = ObservedD {
+        cites: pr.cites.clone(),
+        severity: f
+            .get("severity")
+            .and_then(Json::as_str)
+            .unwrap_or("-")
+            .to_string(),
+        statistic_name: field("name")
+            .and_then(Json::as_str)
+            .unwrap_or("-")
+            .to_string(),
+        statistic: int_text(field("value").and_then(Json::as_int)),
+        scale: int_text(field("scale").and_then(Json::as_int)),
+    };
+    let diff = evaluate_d(p, want_cites, &observed, None, &|c| rel(c, &observed))
+        .into_iter()
+        .filter_map(|v| match v {
+            ComponentVerdict::Fail(what, want, got) => Some(mismatch(what, want, got)),
+            ComponentVerdict::Unjudged(what) => Some(format!(
+                "expected {what} judged by its relational rule observed no account VIds to judge it"
+            )),
+            _ => None,
+        })
+        .collect();
+    let proj = vec![
+        ("cite".into(), joined(&observed.cites)),
+        ("severity".into(), observed.severity),
+        ("statistic_name".into(), observed.statistic_name),
+        ("statistic".into(), observed.statistic),
+        ("scale".into(), observed.scale),
+    ];
     (diff, proj)
+}
+
+/// A Rel target's rule under this run's account VIds (§2.6 rule 9), read
+/// from the binary's own legs (`account` is the VId's 32-hex `u128`, the
+/// order Lantern sorts by): the leg the rule selects. `None` when the
+/// target names no `rel_rule`.
+fn rel_expected(run: &BookRun<'_>, t: &Target) -> Option<Result<rel::Expected, String>> {
+    let rule = match rel::rule_of(t)? {
+        Ok(r) => r,
+        Err(e) => return Some(Err(e)),
+    };
+    let legs = match rel::legs_of(run.book, &t.fact) {
+        Ok(l) => l,
+        Err(e) => return Some(Err(e)),
+    };
+    let vids: BTreeMap<String, u128> = run
+        .accounts
+        .iter()
+        .filter_map(|(vid, code)| Some((code.clone(), u128::from_str_radix(vid, 16).ok()?)))
+        .collect();
+    Some(rel::expect_rel(&rule, &legs, &vids).ok_or_else(|| {
+        format!(
+            "no leg of {} qualifies for {rule}, or its account was not posted",
+            t.fact
+        )
+    }))
+}
+
+/// The `rel=<account>/<magnitude>` token a Rel row carries, and the rule
+/// judged against an observation: the cite names the selected account, the
+/// statistic is its leg's magnitude. A11a re-judges every run from it.
+pub(crate) fn rel_holds(
+    token: Option<&str>,
+    component: &str,
+    cites: &str,
+    statistic: &str,
+) -> Option<bool> {
+    let (account, magnitude) = token?.split_once('/')?;
+    match component {
+        "cite" => Some(cites.split(',').any(|c| c == account)),
+        "statistic" => Some(statistic == magnitude),
+        _ => None,
+    }
 }
 
 /// A D row (§5.4): the run of the row's procedure@version, the finding
@@ -430,7 +506,6 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
     ] {
         let needs = match status {
             Status::B(_) => Some(format!("needs:A7c ({what} branch cells)")),
-            Status::Rel(cov) => Some(format!("needs:A7b ({what} relative to {cov})")),
             _ => None,
         };
         if let Some(needs) = needs {
@@ -462,6 +537,20 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
         .filter(|c| !c.is_empty())
         .map(|c| expected_cite(run, c))
         .collect();
+    // A Rel component's rule, judged on this run's account VIds.
+    let expected = rel_expected(run, t);
+    let token = match &expected {
+        Some(Ok(e)) => Some(format!("{}/{}", e.account, e.magnitude)),
+        Some(Err(why)) => {
+            fails.push(format!(
+                "expected a relational rule to judge observed {why}"
+            ));
+            None
+        }
+        None => None,
+    };
+    let judge =
+        |c: &str, o: &ObservedD| rel_holds(token.as_deref(), c, &joined(&o.cites), &o.statistic);
     // The candidate citing the target's entry with the fewest
     // disagreements is the one compared.
     let mut candidates = 0usize;
@@ -472,7 +561,7 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
             continue;
         }
         candidates += 1;
-        let (diff, proj) = compare(&p, &want_cites, &pr, f);
+        let (diff, proj) = compare(&p, &want_cites, &pr, f, &judge);
         if best.as_ref().is_none_or(|(d, _)| diff.len() < d.len()) {
             best = Some((diff, proj));
         }
@@ -490,6 +579,9 @@ fn d_row(run: &BookRun<'_>, e: &Expectation, t: &Target, mut row: RowLine) -> Ev
             row.projection.extend(proj);
             fails.extend(diff);
         }
+    }
+    if let Some(token) = &token {
+        row.projection.push(("rel".into(), token.clone()));
     }
     if fails.is_empty() {
         row.verdict = RowVerdict::Unrun;

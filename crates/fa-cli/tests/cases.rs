@@ -1638,3 +1638,95 @@ fn tier_l_row_disagrees_on_a_seeded_variant_naming_the_tier_row() {
         "{text}"
     );
 }
+
+/// The Rel fixture (`crates/fa-oracles/tests/fixtures/rel/`, A5b): one entry
+/// debiting two fixed-asset accounts, read by expense.capitalization@2.
+const REL: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/rel/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/rel/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/rel/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/rel/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/rel/expectations.toml"),
+    ),
+];
+
+/// A5b (§2.6 rule 9): a Rel component is judged on the run by its rule,
+/// from the account VIds the binary reported. Which account the finding
+/// cites follows the random book id, so the test accepts either, but the
+/// cite and the capitalized amount must be the rule's selection on this run.
+#[test]
+fn rel_component_is_judged_by_its_rule_on_the_run() {
+    let o = match run_files("rel", &REL, &[], HARNESS_VERBS) {
+        Ok(o) => o,
+        Err(o) => panic!("{}", o.text()),
+    };
+    let row = o.row("rel-D-01").expect("the D row");
+    assert!(
+        row.starts_with(
+            "UNRUN rel-D-01 D native R-1/default procedure=expense.capitalization@2 entry=R-1 "
+        ) && row.ends_with(" reason=filler_invariance"),
+        "{}",
+        o.text()
+    );
+    let token = |name: &str| {
+        row.split(' ')
+            .find_map(|t| t.strip_prefix(&format!("{name}=")))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let rel = token("rel");
+    let (account, magnitude) = rel.split_once('/').expect("rel=<account>/<magnitude>");
+    assert!(
+        [("1500", "30000"), ("1510", "20000")].contains(&(account, magnitude)),
+        "{}",
+        o.text()
+    );
+    assert!(
+        token("cite").split(',').any(|c| c == account),
+        "{}",
+        o.text()
+    );
+    assert_eq!(token("statistic"), magnitude, "{}", o.text());
+}
+
+/// A5b: W4's misreading plant on the runner. A `max_vid_debit_leg` rule
+/// selects the other fixed-asset account than expense.capitalization does,
+/// so the row fails on every run, naming the rule's components.
+#[test]
+fn rel_rule_that_misreads_the_code_fails_on_the_run() {
+    let o = match run_files(
+        "rel",
+        &REL,
+        &[PlantedEdit {
+            file: "expectations.toml",
+            old: "rel_rule = \"min_vid_debit_leg{fixed_asset}\"",
+            new: "rel_rule = \"max_vid_debit_leg{fixed_asset}\"",
+        }],
+        HARNESS_VERBS,
+    ) {
+        Ok(o) => o,
+        Err(o) => *o,
+    };
+    let row = o.row("rel-D-01").expect("the D row");
+    assert!(
+        row.starts_with("FAIL rel-D-01 D native R-1/default ")
+            && row.contains(" reason=expected cite=its relational rule observed cite=")
+            && row.contains("; expected statistic=its relational rule observed statistic="),
+        "{}",
+        o.text()
+    );
+}

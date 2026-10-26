@@ -1793,6 +1793,11 @@ pub fn run_case_with(
         out.lines
             .extend(r.render(Some(files.id)).lines().map(str::to_string));
     }
+    // Each target's component statuses (A5b).
+    if let Ok(rules) = fa_oracles::cases::branch::rules() {
+        out.lines
+            .extend(fa_oracles::cases::status::status_lines(&case, &rules));
+    }
     let failed: Vec<&str> = reports
         .iter()
         .filter(|r| r.verdict == Verdict::Fail)

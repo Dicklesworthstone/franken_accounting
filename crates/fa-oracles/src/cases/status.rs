@@ -474,6 +474,46 @@ pub fn component_statuses(
     out
 }
 
+/// One `STATUS` log line per D and P target (A5b, §16 logging): each
+/// component's status, the authored one for a D component that states one,
+/// else the derived one (`none` when an input is unanchored, which K-BRANCH
+/// refuses). A `harness_selftest` case has none: its synthetic stand-ins
+/// anchor nothing (K-BRANCH is exempt there).
+#[must_use]
+pub fn status_lines(case: &Case, rules: &BranchRules) -> Vec<String> {
+    if case.header.kind == super::header::CaseKind::HarnessSelftest {
+        return Vec::new();
+    }
+    let Some(set) = case.expectations.as_ref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in set
+        .expectations
+        .iter()
+        .filter(|e| matches!(e.kind, ExpectationType::D | ExpectationType::P))
+    {
+        for t in set.targets_of(&e.id) {
+            let parts: Vec<String> = component_statuses(case, rules, e, t)
+                .iter()
+                .map(|d| {
+                    let authored = t
+                        .fields
+                        .str(&format!("{}_status", d.component))
+                        .and_then(Status::parse);
+                    let shown = authored
+                        .as_ref()
+                        .or(d.status.as_ref())
+                        .map_or_else(|| "none".to_string(), spell);
+                    format!("{}={shown}", d.component)
+                })
+                .collect();
+            out.push(format!("STATUS {} {} {}", e.id, t.fact, parts.join(" ")));
+        }
+    }
+    out
+}
+
 /// One run's finding for a D target, projected as §5.2 compares it (the
 /// runner projects cites to `<intent>#<ordinal>` and account codes).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -532,8 +572,13 @@ pub fn row_verdict(verdicts: &[ComponentVerdict]) -> super::verdict::RowVerdict 
     }
 }
 
+/// A cite set as a projection renders it (`-` when empty).
 fn joined(set: &BTreeSet<String>) -> String {
-    set.iter().cloned().collect::<Vec<_>>().join(",")
+    if set.is_empty() {
+        "-".into()
+    } else {
+        set.iter().cloned().collect::<Vec<_>>().join(",")
+    }
 }
 
 /// §5.2's D pass rule on one cell of one run: every S, Sd and Si component
@@ -599,7 +644,8 @@ pub fn evaluate_d(
         cell.and_then(|c| c.statistic.clone()),
         observed.statistic.clone(),
     );
-    // A single statistic also names its statistic and scale.
+    // A single statistic also names its statistic and scale, which fail as
+    // `statistic_name` and `scale`.
     if matches!(
         projection.statistic.status,
         Status::S | Status::Sd | Status::Si
@@ -608,16 +654,15 @@ pub fn evaluate_d(
         if let Some(name) = &projection.statistic_name
             && *name != observed.statistic_name
         {
-            statistic =
-                ComponentVerdict::Fail("statistic", name.clone(), observed.statistic_name.clone());
+            statistic = ComponentVerdict::Fail(
+                "statistic_name",
+                name.clone(),
+                observed.statistic_name.clone(),
+            );
         } else if let Some(scale) = projection.statistic_scale
             && scale.to_string() != observed.scale
         {
-            statistic = ComponentVerdict::Fail(
-                "statistic",
-                format!("scale {scale}"),
-                format!("scale {}", observed.scale),
-            );
+            statistic = ComponentVerdict::Fail("scale", scale.to_string(), observed.scale.clone());
         }
     }
     out.push(statistic);
@@ -717,16 +762,37 @@ mod tests {
         );
         o.severity = "High".into();
         o.scale = "0".into();
-        assert!(matches!(
+        assert_eq!(
             evaluate_d(&single, &want, &o, None, &none)[2],
-            ComponentVerdict::Fail("statistic", ..)
-        ));
+            ComponentVerdict::Fail("scale", "2".into(), "0".into())
+        );
         single.severity = component("X", None);
         o.scale = "2".into();
         o.severity = "anything".into();
         let v = evaluate_d(&single, &want, &o, None, &none);
         assert_eq!(v[1], ComponentVerdict::NotAsserted("severity"));
         assert_eq!(row_verdict(&v), RowVerdict::Pass);
+    }
+
+    /// The STATUS lines of the pilot (A5b's logging).
+    #[test]
+    fn status_lines_name_each_targets_component_statuses() {
+        let case = pilot_planted(&[]);
+        let rules = crate::cases::branch::rules().expect("rules");
+        let lines = status_lines(&case, &rules);
+        for want in [
+            "STATUS W-D-01 F4 cite=Sd severity=S statistic=Sd",
+            "STATUS W-D-01 F9 cite=Rel(account_vid_order) severity=S statistic=B(leg_split)",
+            "STATUS W-D-03 F4 cite=Sd severity=B(leg_split) statistic=B(leg_split)",
+            "STATUS W-P-02 F4 refusal=B(evidence_attached) law_row=B(evidence_attached)",
+            "STATUS W-P-03 F4 refusal=B(entry_class,period_state_at_commit) law_row=B(entry_class,period_state_at_commit)",
+        ] {
+            assert!(
+                lines.iter().any(|l| l == want),
+                "{want}\n{}",
+                lines.join("\n")
+            );
+        }
     }
 
     fn cited(ids: &[&str]) -> BTreeSet<String> {

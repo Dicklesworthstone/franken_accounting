@@ -1,0 +1,11 @@
+# Rel fixture (fa-yugf.13, A5b): a relational D on a micro-book, for fa-cli's tests/cases.rs. Never
+# copied to cases/; claims nothing.
+id = "rel"
+title = "Rel fixture: a capitalization whose cited account follows account-VId order"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's Rel components: the rule judged from each run's account VIds"
+claims = []
+capabilities = ["verb:post", "procedure:expense.capitalization@2"]
+pinned_commit = "8af46bde3"
+variants = ["native"]

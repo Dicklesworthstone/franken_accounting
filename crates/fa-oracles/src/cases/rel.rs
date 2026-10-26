@@ -209,6 +209,62 @@ pub fn possible(rule: &RelRule, legs: &[RelLeg]) -> Vec<Expected> {
     out.into_iter().collect()
 }
 
+/// A target's `rel_rule`, parsed against the registry's roles; `None`
+/// when it names none.
+#[must_use]
+pub fn rule_of(target: &super::expect::Target) -> Option<Result<RelRule, String>> {
+    let raw = target.fields.str("rel_rule")?;
+    let roles = fa_registry::account_roles::AccountRoles::embedded()
+        .map(|r| r.rows.into_iter().map(|row| row.name).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let names: Vec<&str> = roles.iter().map(String::as_str).collect();
+    Some(RelRule::parse(raw, &names))
+}
+
+/// The legs of the intents `subject` names (an intent id, else a fact's
+/// intents), as a rule reads them: each account's role from the book's
+/// chart, magnitudes in minor units at the unit's registered scale.
+///
+/// # Errors
+///
+/// A leg whose unit is not registered or whose amount does not parse.
+pub fn legs_of(book: &super::book::BookVariant, subject: &str) -> Result<Vec<RelLeg>, String> {
+    let scales: BTreeMap<String, u8> = fa_registry::units_embedded()
+        .map(|units| units.into_iter().map(|u| (u.code, u.scale)).collect())
+        .unwrap_or_default();
+    let ids: Vec<&str> = super::status::intents_named(book, subject)
+        .iter()
+        .map(|i| i.id.as_str())
+        .collect();
+    book.legs
+        .iter()
+        .filter(|l| ids.contains(&l.intent.as_str()))
+        .map(|l| {
+            let scale = *scales.get(&l.unit).ok_or_else(|| {
+                format!(
+                    "leg {}#{}: unit `{}` is not registered",
+                    l.intent, l.ordinal, l.unit
+                )
+            })?;
+            let minor = super::amount::parse_amount(&l.amount_literal, scale)
+                .map_err(|e| format!("leg {}#{}: {e:?}", l.intent, l.ordinal))?;
+            Ok(RelLeg {
+                ordinal: l.ordinal,
+                account: l.account.clone(),
+                role: book
+                    .accounts
+                    .iter()
+                    .find(|a| a.code == l.account)
+                    .and_then(|a| a.role.clone())
+                    .filter(|r| !r.is_empty()),
+                debit: l.side == "Dr",
+                unit: l.unit.clone(),
+                magnitude: minor.abs(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
