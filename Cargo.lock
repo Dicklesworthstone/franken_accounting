@@ -881,7 +881,9 @@ name = "fa-conformance"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa",
  "fa-journal",
+ "fa-lantern",
  "fa-model",
  "fa-money",
  "fa-policy",

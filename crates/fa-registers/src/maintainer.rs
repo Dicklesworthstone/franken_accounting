@@ -8,7 +8,8 @@
 //!
 //! RegisterState is mutable, disposable maintenance metadata, not a certified
 //! RegisterCheckpoint. This module does not yet maintain entity, open-item or
-//! availability projections. Reports still use the independent literal fold.
+//! availability projections. Native reports may use retained register snapshots
+//! and their exact tails, with the independent literal fold as the fallback.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -327,7 +328,10 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
         .collect();
     let mut entries_decoded = 0usize;
     let mut migration_runs = BTreeMap::new();
-    for batch in db.delta_since(from)? {
+    for batch in db
+        .delta_since(from)?
+        .take_while(|batch| batch.commit_seq() <= basis)
+    {
         let seq = batch.commit_seq();
         let mut batch_entries = Vec::new();
         for coordinate in batch.coordinate_entries() {
@@ -543,7 +547,7 @@ fn release<V: asupersync::fs::Vfs + Clone>(
         .as_ref()
         .and_then(|p| p.resolution_of)
         .ok_or_else(|| KernelError::Corrupt("delta resolution has no target".into()))?;
-    let (hold, hold_seq) = fa_journal::post::read_entry(db, target.vid)?
+    let (hold, hold_seq) = fa_journal::post::read_entry_at(db, target.vid, seq)?
         .ok_or_else(|| KernelError::Corrupt("delta resolution target missing".into()))?;
     if hold.proposal.class != EntryClass::PENDING
         || hold.entry_digest != target.entry_digest
@@ -615,7 +619,7 @@ fn servable_state<V: asupersync::fs::Vfs + Clone>(
     period: &str,
     basis: CommitSeq,
 ) -> Result<Option<(CommitSeq, Fold)>, RegisterError> {
-    let Some(state) = db.vertex(state_vid(book.book_id, period))? else {
+    let Some(state) = db.vertex_at(state_vid(book.book_id, period), basis)? else {
         return Ok(None);
     };
     let payload = match (
@@ -654,8 +658,8 @@ pub fn cursor<V: asupersync::fs::Vfs + Clone>(
     Ok(servable_state(db, book, period, db.frontier()?)?.map(|(through, _)| through))
 }
 
-/// A period's fold at the frontier, served from its maintained cells and the
-/// exact tail after their cursor, without writing (plan §5.3, fa-715).
+/// A period's fold at a fixed snapshot, served from its maintained cells and
+/// the exact tail after their cursor, without writing (plan §5.3, fa-715).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeadFold {
     pub fold: Fold,
@@ -682,7 +686,22 @@ pub fn head_fold<V: asupersync::fs::Vfs + Clone>(
     period: &str,
     accounts: &[AccountRow],
 ) -> Result<Option<HeadFold>, RegisterError> {
-    let basis = db.frontier()?;
+    fold_at(db, book, period, accounts, db.frontier()?)
+}
+
+/// Read the register state and every cell from the same retained snapshot,
+/// then apply only contributions through `known_at`. Later maintenance and
+/// postings never enter the answer. This uses the substrate's retained MVCC
+/// history, not a journaled RegisterCheckpoint; absent or unservable history
+/// still returns `None` so the caller can use the authoritative literal fold.
+pub fn fold_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    accounts: &[AccountRow],
+    known_at: CommitSeq,
+) -> Result<Option<HeadFold>, RegisterError> {
+    let basis = crate::resolve_known_at(db, Some(known_at))?;
     let Some((through, mut fold)) = servable_state(db, book, period, basis)? else {
         return Ok(None);
     };
@@ -699,7 +718,7 @@ pub fn head_fold<V: asupersync::fs::Vfs + Clone>(
                 unit_id,
                 period: period.into(),
             };
-            let Some(row) = db.vertex(crate::register_vid(book.book_id, &key))? else {
+            let Some(row) = db.vertex_at(crate::register_vid(book.book_id, &key), basis)? else {
                 continue;
             };
             // A retired cell keeps its identity for reuse and holds nothing;

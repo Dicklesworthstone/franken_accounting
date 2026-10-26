@@ -4493,21 +4493,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await
     }
 
-    /// A head read (`known_at` absent) is answered from maintained registers
-    /// plus the exact tail when they can serve it, else by the literal fold;
-    /// both give the same report (fa-715). A historical read folds literally.
+    /// A read is answered from the selected snapshot's maintained registers
+    /// plus its exact bounded tail when available, else by the literal fold.
+    /// Both give the same report, including historical reads (fa-715).
     pub fn trial_balance_at(
         &self,
         cx: &PurposeContexts,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        match known_at {
-            None => Ok(self.trial_balance_served(cx, periods)?.0),
-            Some(_) => self.query(cx, |db, book| {
-                Ok(fa_registers::trial_balance_at(db, book, periods, known_at)?)
-            }),
-        }
+        self.query(cx, |db, book| {
+            Ok(fa_registers::trial_balance_served_at(db, book, periods, known_at)?.0)
+        })
     }
 
     /// Load the committed delta window back to the oldest maintained
@@ -4590,18 +4587,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
-    /// A head read (`known_at` absent) is answered from maintained registers
-    /// plus the exact tail when they can serve it, else by the literal fold;
-    /// both give the same report (fa-715). A historical read folds literally.
+    /// A read is answered from the selected snapshot's maintained registers
+    /// plus its exact bounded tail when available, else by the literal fold.
+    /// Both give the same report, including historical reads (fa-715).
     pub fn period_activity(
         &self,
         cx: &PurposeContexts,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        self.query(cx, |db, book| match known_at {
-            None => Ok(fa_registers::period_activity_served(db, book, periods)?.0),
-            Some(_) => Ok(fa_registers::period_activity(db, book, periods, known_at)?),
+        self.query(cx, |db, book| {
+            Ok(fa_registers::period_activity_served_at(db, book, periods, known_at)?.0)
         })
     }
 }
