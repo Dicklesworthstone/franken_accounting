@@ -800,8 +800,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let at = self.db.frontier().map_err(KernelError::from)?;
         if let Some(last) = history(&self.db, &cx.query(), &self.context, at)?
             .into_iter()
-            .filter(|activation| activation.definition.name == definition.name)
-            .last()
+            .rfind(|activation| activation.definition.name == definition.name)
             && (definition.version <= last.definition.version
                 || effective_from <= last.effective_from)
         {
@@ -957,8 +956,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         if let Some(last) = history(&self.db, &cx.query(), &self.context, basis)?
             .into_iter()
-            .filter(|activation| activation.definition.name == plan.definition.name)
-            .last()
+            .rfind(|activation| activation.definition.name == plan.definition.name)
             && (plan.definition.version <= last.definition.version
                 || plan.effective_from <= last.effective_from)
         {
