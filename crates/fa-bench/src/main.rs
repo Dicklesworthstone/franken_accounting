@@ -2,14 +2,15 @@
 //! counted kernel operation witnesses against `registries/operation_costs.toml`
 //! (beads `fa-tu58`, `fa-i5s`), and reports each §17 benchmark as measured or
 //! unmeasured. No §17 benchmark is reported measured yet (fa-e75k, fa-ykbp):
-//! `fa-bench sample register_rebuild` times the first real workload's raw
-//! samples, with no incumbent and so no §17 verdict.
+//! `fa-bench sample <workload>` times the real workloads' raw samples
+//! (register rebuild, single-entry post, batched post), with no incumbent
+//! and so no §17 verdict; `--incumbent` drives one bench against one.
 
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;
 
-use fa_bench::driver::{Drive, drive};
+use fa_bench::driver::{Drive, SampleArgs, drive, run_sample, samples_line};
 use fa_bench::{
     BenchOutcome, load_embedded_manifests, run_all_benchmarks, run_benchmark,
     verify_all_kernel_op_witnesses,
@@ -17,91 +18,71 @@ use fa_bench::{
 
 fn usage() {
     eprintln!(
-        "usage: fa-bench [--smoke] [--bench <name>] [--verify-manifests] [--verify-op-costs] [--json]\n       fa-bench --bench <name> --incumbent <previous fa-bench> [--worker-class <class>] [--legs <n>] [--rounds <n>] [--json]\n       fa-bench sample register_rebuild --legs <even count> [--rounds <n>] [--seed <n>]"
+        "usage: fa-bench [--smoke] [--bench <name>] [--verify-manifests] [--verify-op-costs] [--json]\n       fa-bench --bench <name> --incumbent <previous fa-bench> [--worker-class <class>] [--legs <n>] [--dir <new dir>] [--rounds <n>] [--json]\n       fa-bench sample register_rebuild --legs <even count> [--rounds <n>] [--seed <n>]\n       fa-bench sample single_entry_post|batched_post --dir <new dir> [--rounds <n>] [--seed <n>]"
     );
 }
 
-/// `fa-bench sample register_rebuild --legs N [--rounds R] [--seed S]`: post
-/// a book of N legs, then time R full register rebuilds, each digest-equal
-/// to the maintained registers. One JSON line carries the raw samples and
-/// the engine's legs-folded witness (fa-ykbp); no §17 verdict is drawn here.
+/// `fa-bench sample <workload> [--legs N] [--dir D] [--rounds R] [--seed S]`:
+/// run one workload's timed rounds in this process. `register_rebuild`
+/// posts a book of N legs and times R full register rebuilds, each
+/// digest-equal to the maintained registers; `single_entry_post` and
+/// `batched_post` create a directory book at D and time R posts or batches
+/// of 100. One JSON line carries the raw samples and the engine's witness
+/// (fa-ykbp); no §17 verdict is drawn here.
 fn sample(args: &[String]) -> ExitCode {
-    let flag = |name: &str, default: Option<u64>| -> Result<u64, String> {
-        match args.iter().position(|a| a == name) {
-            Some(i) => args
-                .get(i + 1)
-                .and_then(|v| v.parse().ok())
-                .ok_or_else(|| format!("{name} takes a non-negative integer")),
-            None => default.ok_or_else(|| format!("{name} is required")),
-        }
-    };
-    if args.first().map(String::as_str) != Some("register_rebuild") {
-        eprintln!("fa-bench: sample runs one workload: register_rebuild");
+    let Some(workload) = args.first() else {
+        eprintln!("fa-bench: sample needs a workload");
         usage();
         return ExitCode::from(2);
-    }
-    let known = ["--legs", "--rounds", "--seed"];
-    if let Some(odd) = args[1..]
-        .iter()
-        .step_by(2)
-        .find(|a| !known.contains(&a.as_str()))
-    {
-        eprintln!(
-            "fa-bench: sample register_rebuild takes --legs, --rounds and --seed, not `{odd}`"
-        );
-        return ExitCode::from(2);
-    }
-    let (legs, rounds, seed) = match (
-        flag("--legs", None),
-        flag("--rounds", Some(10)),
-        flag("--seed", Some(42)),
-    ) {
-        (Ok(legs), Ok(rounds), Ok(seed)) if rounds > 0 => (legs, rounds, seed),
-        (Err(why), ..) | (_, Err(why), _) | (.., Err(why)) => {
+    };
+    let mut legs = None;
+    let mut dir = None;
+    let mut rounds = 10;
+    let mut seed = 42;
+    let mut rest = args[1..].iter();
+    while let Some(flag) = rest.next() {
+        let Some(value) = rest.next() else {
+            eprintln!("fa-bench: {flag} requires a value");
+            return ExitCode::from(2);
+        };
+        let number = || {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("{flag} takes a non-negative integer, not `{value}`"))
+        };
+        let parsed = match flag.as_str() {
+            "--legs" => number().map(|n| legs = Some(n)),
+            "--rounds" => number().map(|n| rounds = n),
+            "--seed" => number().map(|n| seed = n),
+            "--dir" => {
+                dir = Some(std::path::PathBuf::from(value));
+                Ok(())
+            }
+            other => Err(format!(
+                "sample takes --legs, --dir, --rounds and --seed, not `{other}`"
+            )),
+        };
+        if let Err(why) = parsed {
             eprintln!("fa-bench: {why}");
             return ExitCode::from(2);
         }
-        _ => {
-            eprintln!("fa-bench: --rounds must be at least 1");
-            return ExitCode::from(2);
-        }
+    }
+    let request = SampleArgs {
+        legs,
+        dir: dir.as_deref(),
+        rounds,
+        seed,
     };
-    let mut book = match fa_bench::rebuild::build(legs, seed) {
-        Ok(book) => book,
-        Err(e) => {
-            eprintln!("fa-bench: {e}");
-            return ExitCode::from(3);
+    match run_sample(workload, &request) {
+        Ok((run, stated, counter)) => {
+            println!("{}", samples_line(workload, seed, stated, counter, &run));
+            ExitCode::SUCCESS
         }
-    };
-    let mut samples = Vec::new();
-    let mut counted = 0;
-    for _ in 0..rounds {
-        match book.rebuild() {
-            Ok(run) if run.legs_folded == book.legs_posted => {
-                counted = run.legs_folded;
-                samples.push(run.elapsed_us);
-            }
-            Ok(run) => {
-                eprintln!(
-                    "fa-bench: a rebuild folded {} legs of the {} posted; no sample is drawn from it",
-                    run.legs_folded, book.legs_posted
-                );
-                return ExitCode::from(3);
-            }
-            Err(e) => {
-                eprintln!("fa-bench: {e}");
-                return ExitCode::from(3);
-            }
+        Err(why) => {
+            eprintln!("fa-bench: {why}");
+            ExitCode::from(3)
         }
     }
-    let list: Vec<String> = samples.iter().map(u64::to_string).collect();
-    println!(
-        "{{\"event\":\"bench_samples\",\"workload\":\"register_rebuild\",\"seed\":{seed},\"legs_posted\":{},\"witness\":{{\"counter\":\"legs_folded\",\"counted\":{}}},\"samples_us\":[{}]}}",
-        book.legs_posted,
-        counted,
-        list.join(",")
-    );
-    ExitCode::SUCCESS
 }
 
 fn main() -> ExitCode {
@@ -117,6 +98,7 @@ fn main() -> ExitCode {
     let mut incumbent: Option<String> = None;
     let mut worker_class: Option<String> = None;
     let mut scale: Option<u64> = None;
+    let mut dir: Option<std::path::PathBuf> = None;
     let mut rounds: u64 = 10;
 
     let mut args = std::env::args().skip(1);
@@ -126,7 +108,7 @@ fn main() -> ExitCode {
             "--json" => json = true,
             "--verify-manifests" => verify_manifests_only = true,
             "--verify-op-costs" => verify_op_costs_only = true,
-            "--bench" | "--incumbent" | "--worker-class" | "--legs" | "--rounds" => {
+            "--bench" | "--incumbent" | "--worker-class" | "--legs" | "--rounds" | "--dir" => {
                 let Some(val) = args.next() else {
                     eprintln!("fa-bench: {arg} requires a value");
                     usage();
@@ -142,6 +124,7 @@ fn main() -> ExitCode {
                     "--bench" => target_bench = Some(val.clone()),
                     "--incumbent" => incumbent = Some(val.clone()),
                     "--worker-class" => worker_class = Some(val.clone()),
+                    "--dir" => dir = Some(std::path::PathBuf::from(&val)),
                     "--legs" => match number() {
                         Ok(n) => scale = Some(n),
                         Err(why) => {
@@ -180,7 +163,7 @@ fn main() -> ExitCode {
 
     // A driven run judges one bench against its incumbent; it does not
     // re-verify the operation-cost witnesses, and its summary says 0.
-    let driving = incumbent.is_some() || worker_class.is_some() || scale.is_some();
+    let driving = incumbent.is_some() || worker_class.is_some() || scale.is_some() || dir.is_some();
     if driving && (verify_manifests_only || verify_op_costs_only) {
         eprintln!("fa-bench: --verify-manifests and --verify-op-costs do not drive a bench");
         return ExitCode::from(2);
@@ -246,6 +229,7 @@ fn main() -> ExitCode {
                 incumbent: incumbent.as_deref().map(std::path::Path::new),
                 worker_class: &class,
                 scale,
+                dir: dir.as_deref(),
                 rounds,
             }) {
                 Ok(o) => vec![o],
@@ -257,7 +241,7 @@ fn main() -> ExitCode {
         }
         None if driving => {
             eprintln!(
-                "fa-bench: --incumbent, --worker-class and --legs drive one bench; name it with --bench"
+                "fa-bench: --incumbent, --worker-class, --legs and --dir drive one bench; name it with --bench"
             );
             return ExitCode::from(2);
         }

@@ -6,30 +6,58 @@
 //!
 //! It refuses to measure, saying why, when there is no incumbent, when the
 //! host is not the manifest's worker class (the baseline is pinned to it),
-//! when the incumbent cannot run the workload, or when the two binaries did
-//! not count the same work. A failure of the candidate itself is an error.
+//! when a disk workload has no directory to write on, when the incumbent
+//! cannot run the workload, or when the two binaries did not count the same
+//! work. A failure of the candidate itself is an error.
 
 use std::path::Path;
 use std::process::Command;
 
 use crate::{BenchError, BenchOutcome, WorkWitness, judge_run, load_embedded_manifests};
 
+/// The work a sampled bench states.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scale {
+    /// A fixed amount for the whole run, e.g. 10M legs in the book.
+    Fixed(u64),
+    /// An amount every round must do, e.g. one entry per single post.
+    PerRound(u64),
+}
+
 /// A §17 bench `fa-bench sample` runs: its workload, the engine counter that
-/// witnesses it, and the scale the bench states.
+/// witnesses it, the work it states, and whether it writes to a directory.
 pub struct Sampled {
     pub bench_name: &'static str,
     pub workload: &'static str,
     pub counter: &'static str,
-    pub stated: u64,
+    pub scale: Scale,
+    pub disk: bool,
 }
 
 /// Every §17 bench with a real workload.
-pub const SAMPLED: &[Sampled] = &[Sampled {
-    bench_name: "register_rebuild_10m",
-    workload: "register_rebuild",
-    counter: "legs_folded",
-    stated: 10_000_000,
-}];
+pub const SAMPLED: &[Sampled] = &[
+    Sampled {
+        bench_name: "single_entry_post",
+        workload: "single_entry_post",
+        counter: "entries_committed",
+        scale: Scale::PerRound(1),
+        disk: true,
+    },
+    Sampled {
+        bench_name: "batched_post",
+        workload: "batched_post",
+        counter: "entries_committed",
+        scale: Scale::PerRound(crate::post::BATCH_ENTRIES),
+        disk: true,
+    },
+    Sampled {
+        bench_name: "register_rebuild_10m",
+        workload: "register_rebuild",
+        counter: "legs_folded",
+        scale: Scale::Fixed(10_000_000),
+        disk: false,
+    },
+];
 
 /// The sampled workload behind `bench` (a bench name or SLO id).
 #[must_use]
@@ -47,6 +75,105 @@ pub fn sampled(bench: &str) -> Option<&'static Sampled> {
 pub struct SampleRun {
     pub counted: u64,
     pub samples_us: Vec<u64>,
+}
+
+/// What `fa-bench sample <workload>` was asked to do.
+pub struct SampleArgs<'a> {
+    /// Legs in the book (register_rebuild).
+    pub legs: Option<u64>,
+    /// The new directory a disk workload creates its book in.
+    pub dir: Option<&'a Path>,
+    pub rounds: u64,
+    pub seed: u64,
+}
+
+/// Run `workload` in this process: every round must do exactly the work it
+/// states, or no sample is drawn. Returns the run, the work stated, and the
+/// counter that witnesses it.
+pub fn run_sample(
+    workload: &str,
+    args: &SampleArgs<'_>,
+) -> Result<(SampleRun, u64, &'static str), String> {
+    let Some(sampled) = SAMPLED.iter().find(|s| s.workload == workload) else {
+        let names: Vec<&str> = SAMPLED.iter().map(|s| s.workload).collect();
+        return Err(format!(
+            "no workload `{workload}`; sample runs {}",
+            names.join(", ")
+        ));
+    };
+    if args.rounds == 0 {
+        return Err("--rounds must be at least 1".into());
+    }
+    let mut samples_us = Vec::new();
+    let mut counted = 0u64;
+    let stated = match sampled.scale {
+        Scale::Fixed(_) => {
+            let legs = args
+                .legs
+                .ok_or("register_rebuild needs --legs <even count>")?;
+            let mut book = crate::rebuild::build(legs, args.seed).map_err(|e| e.to_string())?;
+            for _ in 0..args.rounds {
+                let run = book.rebuild().map_err(|e| e.to_string())?;
+                if run.legs_folded != legs {
+                    return Err(format!(
+                        "a rebuild folded {} legs of the {legs} posted; no sample is drawn from it",
+                        run.legs_folded
+                    ));
+                }
+                counted = run.legs_folded;
+                samples_us.push(run.elapsed_us);
+            }
+            legs
+        }
+        Scale::PerRound(per_round) => {
+            let dir = args.dir.ok_or_else(|| {
+                format!("{workload} writes a directory book: --dir <new directory>")
+            })?;
+            let mut book = crate::post::build(dir, args.seed).map_err(|e| e.to_string())?;
+            for _ in 0..args.rounds {
+                let written = if workload == "batched_post" {
+                    book.post_batch()
+                } else {
+                    book.post_one()
+                }
+                .map_err(|e| e.to_string())?;
+                if written.committed != per_round {
+                    return Err(format!(
+                        "a write committed {} entries where it states {per_round}; no sample is drawn from it",
+                        written.committed
+                    ));
+                }
+                counted += written.committed;
+                samples_us.push(written.elapsed_us);
+            }
+            per_round * args.rounds
+        }
+    };
+    Ok((
+        SampleRun {
+            counted,
+            samples_us,
+        },
+        stated,
+        sampled.counter,
+    ))
+}
+
+/// `fa-bench sample`'s one output line.
+#[must_use]
+pub fn samples_line(
+    workload: &str,
+    seed: u64,
+    stated: u64,
+    counter: &str,
+    run: &SampleRun,
+) -> String {
+    let list: Vec<String> = run.samples_us.iter().map(u64::to_string).collect();
+    format!(
+        "{{\"event\":\"bench_samples\",\"workload\":\"{workload}\",\"seed\":{seed},\"stated\":{stated},\"witness\":{{\"counter\":\"{counter}\",\"counted\":{}}},\"samples_us\":[{}]}}",
+        run.counted,
+        list.join(",")
+    )
 }
 
 fn after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -97,23 +224,13 @@ fn fa_bench_binary(binary: &Path) -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 
-/// Run `binary sample <workload> --legs <scale> --rounds <rounds> --seed <seed>`.
-fn sample(
-    binary: &Path,
-    workload: &str,
-    scale: u64,
-    rounds: u64,
-    seed: u64,
-) -> Result<SampleRun, String> {
+/// Run `binary sample <workload> <args...>` and read its samples line.
+fn sample(binary: &Path, workload: &str, args: &[String]) -> Result<SampleRun, String> {
     let binary = fa_bench_binary(binary)?;
     let binary = binary.as_path();
     let output = Command::new(binary)
-        .args(["sample", workload, "--legs"])
-        .arg(scale.to_string())
-        .arg("--rounds")
-        .arg(rounds.to_string())
-        .arg("--seed")
-        .arg(seed.to_string())
+        .args(["sample", workload])
+        .args(args)
         .output()
         .map_err(|e| format!("could not start {}: {e}", binary.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -143,9 +260,13 @@ pub struct Drive<'a> {
     pub incumbent: Option<&'a Path>,
     /// The worker class of this host.
     pub worker_class: &'a str,
-    /// The scale to post; the bench's stated scale when absent. A smaller
-    /// one exercises the pipeline and is judged unmeasured.
+    /// The scale to post for a fixed-scale bench; its stated scale when
+    /// absent. A smaller one exercises the pipeline and is judged
+    /// unmeasured.
     pub scale: Option<u64>,
+    /// Where a disk workload's books are created: `<dir>/candidate` and
+    /// `<dir>/incumbent`, which must not exist yet.
+    pub dir: Option<&'a Path>,
     pub rounds: u64,
 }
 
@@ -174,17 +295,43 @@ pub fn drive(request: &Drive<'_>) -> Result<BenchOutcome, BenchError> {
             workload.workload
         )));
     }
-    let scale = request.scale.unwrap_or(workload.stated);
     let seed = manifest.fixture_seed;
-    let candidate = sample(
-        request.candidate,
-        workload.workload,
-        scale,
-        request.rounds,
-        seed,
-    )
-    .map_err(BenchError::Execution)?;
-    let incumbent_run = match sample(incumbent, workload.workload, scale, request.rounds, seed) {
+    let common = |extra: Vec<String>| -> Vec<String> {
+        let mut args = extra;
+        args.extend([
+            "--rounds".to_string(),
+            request.rounds.to_string(),
+            "--seed".to_string(),
+            seed.to_string(),
+        ]);
+        args
+    };
+    let (candidate_args, incumbent_args, stated) = match workload.scale {
+        Scale::Fixed(stated) => {
+            let legs = vec![
+                "--legs".to_string(),
+                request.scale.unwrap_or(stated).to_string(),
+            ];
+            (common(legs.clone()), common(legs), stated)
+        }
+        Scale::PerRound(per_round) => {
+            let Some(dir) = request.dir else {
+                return Ok(unmeasured(format!(
+                    "{} writes a directory book on the target filesystem: name a new directory with --dir",
+                    manifest.bench_name
+                )));
+            };
+            let at = |side: &str| vec!["--dir".to_string(), dir.join(side).display().to_string()];
+            (
+                common(at("candidate")),
+                common(at("incumbent")),
+                per_round * request.rounds,
+            )
+        }
+    };
+    let candidate = sample(request.candidate, workload.workload, &candidate_args)
+        .map_err(BenchError::Execution)?;
+    let incumbent_run = match sample(incumbent, workload.workload, &incumbent_args) {
         Ok(run) => run,
         Err(why) => {
             return Ok(unmeasured(format!(
@@ -208,7 +355,7 @@ pub fn drive(request: &Drive<'_>) -> Result<BenchOutcome, BenchError> {
         &candidate.samples_us,
         WorkWitness {
             counter: workload.counter.to_string(),
-            stated: workload.stated,
+            stated,
             counted: candidate.counted,
         },
     )?;
@@ -224,14 +371,12 @@ mod tests {
 
     #[test]
     fn a_samples_line_parses_and_a_foreign_line_does_not() {
-        let line = "{\"event\":\"bench_samples\",\"workload\":\"register_rebuild\",\"seed\":42,\"legs_posted\":600,\"witness\":{\"counter\":\"legs_folded\",\"counted\":600},\"samples_us\":[910,875,1002]}";
-        assert_eq!(
-            parse_samples_line(line),
-            Ok(SampleRun {
-                counted: 600,
-                samples_us: vec![910, 875, 1002],
-            })
-        );
+        let run = SampleRun {
+            counted: 600,
+            samples_us: vec![910, 875, 1002],
+        };
+        let line = samples_line("register_rebuild", 42, 600, "legs_folded", &run);
+        assert_eq!(parse_samples_line(&line), Ok(run));
         assert!(parse_samples_line("{\"event\":\"bench_result\"}").is_err());
         assert!(
             parse_samples_line(&line.replace("[910,875,1002]", "[910,x]"))
@@ -241,12 +386,54 @@ mod tests {
     }
 
     #[test]
-    fn only_the_rebuild_bench_has_a_workload() {
+    fn the_sampled_benches_are_the_write_path_and_the_rebuild() {
         assert_eq!(
             sampled("FA-BENCH-06").map(|s| s.workload),
             Some("register_rebuild")
         );
-        assert!(sampled("single_entry_post").is_none());
+        assert_eq!(
+            sampled("FA-BENCH-01").map(|s| (s.workload, s.scale)),
+            Some(("single_entry_post", Scale::PerRound(1)))
+        );
+        assert_eq!(
+            sampled("batched_post").map(|s| s.scale),
+            Some(Scale::PerRound(100))
+        );
+        assert!(sampled("trial_balance_100k").is_none());
         assert!(sampled("no_such_bench").is_none());
+        // Every sampled bench has a manifest.
+        let names: Vec<String> = load_embedded_manifests()
+            .expect("manifests")
+            .into_iter()
+            .map(|m| m.bench_name)
+            .collect();
+        for s in SAMPLED {
+            assert!(names.iter().any(|n| n == s.bench_name), "{}", s.bench_name);
+        }
+    }
+
+    #[test]
+    fn a_sample_refuses_what_it_cannot_run() {
+        let args = |legs, dir| SampleArgs {
+            legs,
+            dir,
+            rounds: 1,
+            seed: 1,
+        };
+        assert!(
+            run_sample("no_such", &args(None, None))
+                .unwrap_err()
+                .contains("no workload")
+        );
+        assert!(
+            run_sample("register_rebuild", &args(None, None))
+                .unwrap_err()
+                .contains("--legs")
+        );
+        assert!(
+            run_sample("single_entry_post", &args(None, None))
+                .unwrap_err()
+                .contains("--dir")
+        );
     }
 }
