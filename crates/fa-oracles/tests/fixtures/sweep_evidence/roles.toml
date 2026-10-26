@@ -1,0 +1,26 @@
+# Evidence sweep fixture roles: labels only (plan §2.8); no person stands behind them.
+
+[[role]]
+label = "selftest-preparer-1"
+kind = "harness"
+description = "prepares the fixture's synthetic entries"
+
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "runs the fixture book's period transitions"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "reviews the fixture's placeholder documents"
+
+[[role]]
+label = "examiner-1"
+kind = "harness"
+description = "records the fixture's audit procedure runs"
+
+[[role]]
+label = "case-approver-1"
+kind = "harness"
+description = "approves the fixture book's period lock"

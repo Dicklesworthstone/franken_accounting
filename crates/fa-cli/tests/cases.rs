@@ -1440,3 +1440,81 @@ fn d_cell_disagreeing_with_its_authored_row_fails_naming_the_cell() {
         o.text()
     );
 }
+
+/// The evidence sweep fixture
+/// (`crates/fa-oracles/tests/fixtures/sweep_evidence/`): S-1's
+/// evidence_attached table, a ManualAssertion cell included (A7c).
+const SWEEP_EVIDENCE: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep_evidence/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep_evidence/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep_evidence/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep_evidence/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep_evidence/expectations.toml"),
+    ),
+];
+
+/// A7c (§3.3): a ManualAssertion cell is planned by `fa document attest
+/// manual --plan-out` (never resealed by a second post) and its
+/// representative is committed from that plan; the other evidence cells are
+/// dry runs, each its evidence policy's outcome.
+#[test]
+fn manual_assertion_cell_is_planned_by_attest_manual_and_committed_from_that_plan() {
+    let o = match run_files("sweep_evidence", &SWEEP_EVIDENCE, &[], HARNESS_VERBS) {
+        Ok(o) => o,
+        Err(o) => panic!("{}", o.text()),
+    };
+    let text = o.text();
+    for (cell, outcome) in [
+        (
+            "none",
+            "refusal=FA-REF-080 exit=3 record_consistent=false commit_agrees=ok",
+        ),
+        (
+            "placeholder_unreviewed",
+            "refusal=FA-REF-086 exit=3 record_consistent=false commit_agrees=ok",
+        ),
+        (
+            "placeholder_reviewed",
+            "refusal=admitted exit=0 commit_agrees=ok",
+        ),
+        (
+            "manual_assertion(InternalTransfer)",
+            "refusal=admitted exit=0 record_consistent=false commit_agrees=ok",
+        ),
+    ] {
+        let line = format!(
+            "UNRUN sweep_evidence-P-01 P native S-1/evidence_attached={cell} state=Open {outcome} reason=reference"
+        );
+        assert!(o.lines.contains(&line), "{line}\n{text}");
+    }
+    // The asserted cell: one `attest manual --plan-out`, then a commit of
+    // that plan.
+    let at = o
+        .steps
+        .iter()
+        .position(|s| {
+            s.verb == "document"
+                && s.argv_redacted.iter().any(|a| a == "manual")
+                && s.argv_redacted.iter().any(|a| a == "--plan-out")
+        })
+        .expect("the attest step");
+    let commit = o.steps[at + 1..]
+        .iter()
+        .find(|s| s.verb == "commit")
+        .expect("its commit");
+    assert_eq!(commit.exit, 0, "{text}");
+}

@@ -28,7 +28,7 @@ use fa_oracles::cases::verdict::{RowLine, RowVerdict, cell_label};
 use fa_oracles::json::Json;
 
 use super::evaluate::project;
-use super::run::{BookRun, Call, reproduce, tmp};
+use super::run::{BookRun, Call, assertion_statement, reproduce, tmp};
 
 fn s(x: &str) -> String {
     x.to_string()
@@ -165,6 +165,9 @@ impl Sweeper<'_, '_> {
             .evidence
             .as_deref()
             .and_then(|e| self.run.documents.get(e).cloned());
+        // A ManualAssertion cell's reason code: the cell is planned by
+        // `fa document attest manual --plan-out` instead of a dry run.
+        let mut asserted: Option<String> = None;
         for (attr, value) in cell.attrs.iter().zip(&cell.key) {
             match attr {
                 BranchAttribute::EntryClass => intent.class.clone_from(value),
@@ -174,6 +177,11 @@ impl Sweeper<'_, '_> {
                     "placeholder_reviewed" => {}
                     "placeholder_unreviewed" => {
                         evidence = self.unreviewed_placeholder(&it.fact);
+                    }
+                    other if other.starts_with("manual_assertion(") && other.ends_with(')') => {
+                        evidence = None;
+                        asserted =
+                            Some(other["manual_assertion(".len()..other.len() - 1].to_string());
                     }
                     other => {
                         row.reason = Some(format!("needs:A7c (evidence_attached={other} cells)"));
@@ -231,9 +239,38 @@ impl Sweeper<'_, '_> {
             args.push(s("--json"));
             args
         };
+        // The asserted route records the assertion over the sealed proposal
+        // and plans it; a second `fa post` would reseal it, and the
+        // assertion would no longer cover it.
+        let attest_args = |code: &str, plan_out: bool| {
+            let mut args = vec![
+                s("document"),
+                s("attest"),
+                s("manual"),
+                s("--intent"),
+                file.clone(),
+                s("--reason"),
+                code.to_string(),
+                s("--statement"),
+                assertion_statement(&it.fact),
+            ];
+            if plan_out {
+                args.extend([s("--plan-out"), plan.display().to_string()]);
+            }
+            args.extend([s("--as"), intent.principal.clone(), s("--json")]);
+            args
+        };
         let reference = format!("{}/{}", cell.target, row.cell);
-        let dry = self.run.call(0, &reference, "post", post_args(&[], true));
+        let dry = match &asserted {
+            Some(code) => self
+                .run
+                .call(0, &reference, "document", attest_args(code, true)),
+            None => self.run.call(0, &reference, "post", post_args(&[], true)),
+        };
         let observed = outcome(&dry);
+        // Representatives per route: an asserted admit is committed from
+        // its own plan even when a plain post already showed an admit.
+        let route = if asserted.is_some() { "attest" } else { "post" };
         row.projection.push(("refusal".into(), observed.clone()));
         row.projection.push(("exit".into(), dry.exit.to_string()));
         if !cell.record_consistent {
@@ -242,7 +279,7 @@ impl Sweeper<'_, '_> {
         }
         let mut fails: Vec<String> = Vec::new();
         let mut repro: Vec<String> = Vec::new();
-        if self.represented.insert(observed.clone()) {
+        if self.represented.insert(format!("{route}:{observed}")) {
             let extra: Vec<String> = self
                 .plant
                 .filter(|p| p.cell == cell.key)
@@ -259,6 +296,10 @@ impl Sweeper<'_, '_> {
                 args.extend(extra);
                 args.push(s("--json"));
                 self.run.call(0, &reference, "commit", args)
+            } else if let Some(code) = &asserted {
+                let mut args = attest_args(code, false);
+                args.extend(extra);
+                self.run.call(0, &reference, "document", args)
             } else {
                 self.run
                     .call(0, &reference, "post", post_args(&extra, false))
