@@ -631,6 +631,10 @@ class RuleError(ValueError):
 
 
 def number_of(literal):
+    """scale's literal grammar (A2, crates/fa-oracles/src/cases/derive.rs):
+    a lone dash is 0; a leading - or U+2212, or parentheses, negate."""
+    if literal.strip() in ("-", "\u2013", "\u2014"):
+        return Fraction(0)
     m = NUMBER.search(literal)
     if m is None:
         raise RuleError(f"no number in `{literal}`")
@@ -668,6 +672,8 @@ MONTH_YEAR = re.compile(r"\b([A-Za-z]{3,9}\.?),? (\d{4})\b")
 def apply_rule(rule, literal, param, unit, precision, scales):
     """The canonical value a [[value]] row's literal yields under its rule."""
     if rule == "scale":
+        if unit and literal.rstrip().endswith(("x", "%")):
+            raise RuleError(f"`{literal}`: a trailing x or % belongs to a unitless value")
         value = number_of(literal) * Fraction(10) ** int(param or 0)
         if unit:
             if unit not in scales:

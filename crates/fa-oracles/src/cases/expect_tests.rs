@@ -357,7 +357,7 @@ fn t_rule_kind_without_its_rule_is_refused() {
     refused_exp(
         &appended(&format!("{T_RULE}rule = \"made_up_rule\"\n")),
         LoadErrorKind::DanglingKey,
-        "`rule = \"made_up_rule\"` is not a §2.4 derivation",
+        "`rule = \"made_up_rule\"` is not a rule of data/case_derivations.toml",
     );
 }
 

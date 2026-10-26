@@ -1,0 +1,409 @@
+# =============================================================================
+# crates/fa-oracles/data/case_derivations.toml: the derivation rules of the
+# forensic case studies (docs/FORENSIC_CASE_STUDIES_PLAN.md §2.4; bead
+# fa-yugf.6, A2). A harness table, not a registry: registries/*.toml enter
+# every crate's verdict digest and are durable formats; this table is
+# embedded by crates/fa-oracles/src/cases/derive.rs and moves only
+# fa-oracles' verdict.
+#
+# Consumer: K-DERIVE (A3a), K-TAUT (A3b), A1c's `rule` T kind, W2, E2d,
+#   M2a-M2c, M7, X2 (chart rules).
+# Gate: `cargo test -p fa-oracles` (every_rule_recomputes_its_example,
+#   planted_wrong_value_fails_for_every_rule).
+# Retire: with the case program.
+#
+# Each [[rule]]: id; arity (0 = one or more inputs); params (`name:type`,
+# type int | str | date | unit); semantics (integer arithmetic at the unit's
+# scale, no floats, no rounding unless rounding_law names a law of
+# registries/rounding_laws.toml); interpretive (a judgment, named in every
+# claim that uses it); registry_params (the registries/procedures.toml
+# parameters a predicate model reads); and one example (inputs, params,
+# output, basis: `plan §…` when the plan states it, `synthetic` otherwise).
+#
+# Encodings of inputs and outputs:
+# - an amount is an integer string of minor units at its unit's scale;
+# - a leg is `<Dr|Cr>:<account>:<amount>:<unit>`;
+# - an entry is `<date>@<leg>;<leg>…`;
+# - a rows input is the text of an M2t rows file (`[[row]]` with account,
+#   date, transaction_description, column, amount_literal, balance_literal).
+# =============================================================================
+
+schema_version = 1
+
+[[rule]]
+id = "scale"
+arity = 1
+params = ["k:int", "unit:unit", "precision:int", "multiplier:int"]
+semantics = "The literal's exact decimal number times 10^k, written as an integer at the target scale: the unit's registered scale, or -precision for a unitless value. Optional currency sign and , separators; negative for a leading - or U+2212 or parentheses; a lone dash is 0; a trailing x or % only on a unitless value; trailing words (million) are text, k carries the multiplier. A result finer than the target scale is refused, never rounded. With a `multiplier` param (a derived fact's from:<fact>), arity 2: the multiplier must be an exact power of ten."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["$742,725,000"]
+example_params = ["k=0", "unit=USD", "precision=0"]
+example_output = "74272500000"
+example_basis = "plan §2.1"
+
+[[rule]]
+id = "date_literal"
+arity = 1
+params = []
+semantics = "A written date (Month D, YYYY or D Month YYYY) to YYYY-MM-DD. The year is read from the literal itself; a year-less date is refused."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["July 17, 2001"]
+example_params = []
+example_output = "2001-07-17"
+example_basis = "plan §2.4"
+
+[[rule]]
+id = "number_word"
+arity = 1
+params = []
+semantics = "A number word (zero..twenty, the tens, hundred, thousand, million, billion) to its integer."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["three"]
+example_params = []
+example_output = "3"
+example_basis = "plan §2.4"
+
+[[rule]]
+id = "period_literal"
+arity = 1
+params = []
+semantics = "Exactly one quarter or fiscal-year phrase (after a leading the/in/for/during) to YYYYQn or FYYYYY. The year is read from the literal; the second quarter with no year is refused."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["the second quarter of 2001"]
+example_params = []
+example_output = "2001Q2"
+example_basis = "plan §2.4"
+
+[[rule]]
+id = "date_range_literal"
+arity = 1
+params = []
+semantics = "A written closed day range (Month D1 and|through|to D2, YYYY, or two full dates) to first..last, a branch over its days. Year-less or inverted ranges are refused."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["on or about and between July 17 and 19, 2000"]
+example_params = []
+example_output = "2000-07-17..2000-07-19"
+example_basis = "plan §2.4"
+
+[[rule]]
+id = "month_literal"
+arity = 1
+params = []
+semantics = "A written month with its year (In September 2001) to YYYY-MM, a branch over its days; an unknown month is refused."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["In September 2001"]
+example_params = []
+example_output = "2001-09"
+example_basis = "plan §2.4"
+
+[[rule]]
+id = "sum"
+arity = 0
+params = []
+semantics = "The exact integer sum of the inputs (checked; an overflow is refused). Over a rows input: the selected rows' amount_literal values in printed order, selected by account (required), column, token (transaction_description) and through (a date), read under scale's literal grammar at the unit param."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["1130", "6637", "1803"]
+example_params = []
+example_output = "9570"
+example_basis = "plan §2.4 (Enron EX-27 equity)"
+
+[[rule]]
+id = "difference"
+arity = 2
+params = []
+semantics = "The first input minus the second, exact. Over a rows input: the selection's sum minus the second input (a printed closing balance)."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["10000", "2500"]
+example_params = []
+example_output = "7500"
+example_basis = "synthetic"
+
+[[rule]]
+id = "negate"
+arity = 0
+params = []
+semantics = "The exact additive inverse of a sourced entry's legs: each leg with its side swapped, same account, amount and unit (a correction delta)."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["Dr:1500:56000000000:USD", "Cr:6100:56000000000:USD"]
+example_params = []
+example_output = "Cr:1500:56000000000:USD;Dr:6100:56000000000:USD"
+example_basis = "plan §2.4 (F4's delta)"
+
+[[rule]]
+id = "date_offset"
+arity = 1
+params = ["days:int"]
+semantics = "A date plus a whole number of days (civil arithmetic, fa-oracles' own); the weekday is recomputed and rendered beside it."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["2001-08-22"]
+example_params = ["days=3"]
+example_output = "2001-08-25"
+example_basis = "plan §6.2 (F7, a Saturday)"
+
+[[rule]]
+id = "remainder"
+arity = 0
+params = ["line:str", "of_total:str"]
+semantics = "The total (first input) minus every part (the rest), exact: one remainder account per account type so a statement partitions. Its A side is derived from A values and its delta from published delta values, never from a B value (K-TAUT checks)."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["98727", "41000", "20000"]
+example_params = ["line=other_assets", "of_total=total_assets"]
+example_output = "37727"
+example_basis = "synthetic"
+
+[[rule]]
+id = "last_balance_on_or_before"
+arity = 1
+params = ["account:str", "date:date", "unit:unit"]
+semantics = "The balance_literal of the selected account's last printed row dated on or before the date (several rows that day: the last printed). A date before the account's first row is infeasible, never 0."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["[[row]]\naccount = \"1ZA001\"\ndate = \"1995-01-03\"\ntransaction_description = \"CHECK\"\ncolumn = \"Cash Deposits\"\namount_literal = \"1,000\"\nbalance_literal = \"1,000\"\n\n[[row]]\naccount = \"1ZA001\"\ndate = \"1995-02-01\"\ntransaction_description = \"CHECK\"\ncolumn = \"Cash Withdrawals\"\namount_literal = \"(250)\"\nbalance_literal = \"750\"\n"]
+example_params = ["account=1ZA001", "date=1995-01-31", "unit=USD"]
+example_output = "100000"
+example_basis = "synthetic"
+
+[[rule]]
+id = "legacy_tb_from_chunks"
+arity = 0
+params = ["periods:str"]
+semantics = "Tautological; supports no claim. The legacy trial balance a migration book must declare: for each declared period (label@end date), the cumulative fold of every staged chunk leg dated through its end, zero lines omitted, in (account, unit) order. Inputs are `<date>|<account>|<unit>|<signed amount>`."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["2001-02-15|1500|USD|100", "2001-02-15|6100|USD|-100", "2001-05-10|1500|USD|50", "2001-05-10|6100|USD|-50"]
+example_params = ["periods=P1@2001-03-31,P2@2001-06-30"]
+example_output = "P1=1500:USD:100,6100:USD:-100;P2=1500:USD:150,6100:USD:-150"
+example_basis = "synthetic"
+
+[[rule]]
+id = "round_residue"
+arity = 1
+params = ["power:int", "unit:unit"]
+semantics = "The amount's residue modulo 10^power whole units of its unit (0 is round): jet.round_amounts and numbers.round_amount_density's predicate."
+rounding_law = ""
+interpretive = false
+registry_params = ["round_power"]
+example_inputs = ["56000000000"]
+example_params = ["power=3", "unit=USD"]
+example_output = "0"
+example_basis = "plan §6.4 (W-D-03, F4's CIP debit)"
+
+[[rule]]
+id = "weekday_of"
+arity = 1
+params = []
+semantics = "The weekday of a date (civil arithmetic, fa-oracles' own): jet.weekend's predicate."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["2001-08-25"]
+example_params = []
+example_output = "Saturday"
+example_basis = "plan §6.2 (F7)"
+
+[[rule]]
+id = "same_leg_multiset_same_day"
+arity = 2
+params = []
+semantics = "Whether two entries carry the same multiset of legs on the same date: duplicates.same_same_same's predicate."
+rounding_law = ""
+interpretive = false
+registry_params = []
+example_inputs = ["2001-06-30@Dr:1500:100:USD;Cr:6100:100:USD", "2001-06-30@Cr:6100:100:USD;Dr:1500:100:USD"]
+example_params = []
+example_output = "true"
+example_basis = "synthetic"
+
+[[rule]]
+id = "same_leg_multiset_within"
+arity = 2
+params = ["window_days:int"]
+semantics = "Whether two entries carry the same multiset of legs on different dates at most window_days apart: duplicates.same_same_different's predicate."
+rounding_law = ""
+interpretive = false
+registry_params = ["window_days"]
+example_inputs = ["2001-06-01@Dr:1500:100:USD;Cr:6100:100:USD", "2001-06-20@Dr:1500:100:USD;Cr:6100:100:USD"]
+example_params = ["window_days=30"]
+example_output = "true"
+example_basis = "synthetic"
+
+[[rule]]
+id = "rsf_ratio"
+arity = 0
+params = ["min_rsf_bps:int", "min_subset_size:int"]
+semantics = "The relative size factor of a subset in basis points: floor(largest * 10000 / second largest); flagged when the subset has at least min_subset_size amounts and the factor is at least min_rsf_bps: numbers.relative_size_factor's predicate."
+rounding_law = ""
+interpretive = false
+registry_params = ["min_rsf_bps", "min_subset_size"]
+example_inputs = ["100000", "20000", "10000"]
+example_params = ["min_rsf_bps=50000", "min_subset_size=3"]
+example_output = "rsf_bps=50000 flagged=true"
+example_basis = "synthetic"
+
+[[rule]]
+id = "first_digit_counts"
+arity = 0
+params = []
+semantics = "The counts of leading decimal digits 1..9 of positive amounts, as c1,...,c9: benford.first_digit's S counts (its currency, side and account-type filters select the inputs)."
+rounding_law = ""
+interpretive = false
+registry_params = ["currency_iso4217", "side", "account_type"]
+example_inputs = ["123", "45", "1", "999"]
+example_params = []
+example_output = "2,0,0,1,0,0,0,0,1"
+example_basis = "synthetic"
+
+[[rule]]
+id = "round_density_z2"
+arity = 4
+params = ["min_legs:int", "z_squared:int"]
+semantics = "numbers.round_amount_density's exact test for an account's x round legs of n against the book's X of N: untested below min_legs; flagged when x*N > n*X and (x*N - n*X)^2 >= z_squared*n*X*(N - X); High when z is at least twice the threshold ((x*N - n*X)^2 >= 4*z_squared*n*X*(N - X)), else Medium. Inputs x, n, X, N."
+rounding_law = ""
+interpretive = false
+registry_params = ["round_power", "min_legs", "z_squared"]
+example_inputs = ["12", "20", "30", "200"]
+example_params = ["min_legs=20", "z_squared=9"]
+example_output = "flagged:Medium"
+example_basis = "synthetic"
+
+[[rule]]
+id = "benford_mad"
+arity = 9
+params = ["min_population:int", "mad_close:int", "mad_acceptable:int", "mad_marginal:int"]
+semantics = "Nigrini's first-digit MAD at nine decimal places, floor(sum |c_d*10^9 - N*P_d| / 9N), over fa-oracles' own copy of the 10^9-scaled table: the nine rounded log10(1 + 1/d) values sum to 1,000,000,001 and the last is lowered by one unit to 45,757,490 so the table sums to exactly 10^9 (FA's convention). Band: close at or below mad_close thousandths, acceptable, marginal, else nonconformity; untested below min_population. Inputs c1..c9."
+rounding_law = ""
+interpretive = false
+registry_params = ["min_population", "mad_close", "mad_acceptable", "mad_marginal"]
+example_inputs = ["301", "176", "125", "97", "79", "67", "58", "51", "46"]
+example_params = ["min_population=500", "mad_close=6", "mad_acceptable=12", "mad_marginal=15"]
+example_output = "mad_1e9=101116 band=close"
+example_basis = "synthetic"
+
+[[rule]]
+id = "role_map"
+arity = 1
+params = ["chart_rule:str"]
+semantics = "Interpretive: a sourced account name (or XBRL concept) to its account type and optional role under a chart rule's [[chart_rule_row]] rows, as type|role."
+rounding_law = ""
+interpretive = true
+registry_params = []
+example_inputs = ["Construction in Progress"]
+example_params = ["chart_rule=worldcom-v1"]
+example_output = "Asset|fixed_asset"
+example_basis = "plan §6.3"
+
+[[rule]]
+id = "one_leg_per_named_account"
+arity = 2
+params = ["side:str", "unit:unit"]
+semantics = "Interpretive: the default leg encoding when the record names accounts but not legs: one leg per named account on the named side, carrying the stated amount."
+rounding_law = ""
+interpretive = true
+registry_params = []
+example_inputs = ["1500", "56000000000"]
+example_params = ["side=Dr", "unit=USD"]
+example_output = "Dr:1500:56000000000:USD"
+example_basis = "plan §6.4 (W-D-01, F4 names one CIP account)"
+
+[[rule]]
+id = "subledger_to_gl_legs"
+arity = 3
+params = ["decomposition:str"]
+semantics = "Interpretive: a sub-ledger transfer of count equal items mapped to GL entries, one allocation entry (one_allocation_entry) or count two-leg entries (ten_two_leg_entries). Inputs total, count, item amount; a nonzero residual (count * item != total) is infeasible."
+rounding_law = ""
+interpretive = true
+registry_params = []
+example_inputs = ["54400000000", "10", "5440000000"]
+example_params = ["decomposition=one_allocation_entry"]
+example_output = "one_allocation_entry:10x5440000000"
+example_basis = "plan §6.2 (F6, ten assets of $54.4 million)"
+
+[[rule]]
+id = "round_dollar_lower_bound"
+arity = 1
+params = ["unit:unit"]
+semantics = "Interpretive (R-QUAL, DEBATE-002): round-dollar maps to a whole multiple of 10^3 units, only within the characterization's stated scope."
+rounding_law = ""
+interpretive = true
+registry_params = []
+example_inputs = ["56000000000"]
+example_params = ["unit=USD"]
+example_output = "true"
+example_basis = "plan §2.4"
+
+[[rule]]
+id = "trustee_transfer_credit"
+arity = 2
+params = []
+semantics = "Interpretive: Exhibit B footnotes [1]/[2] read as credit = min(statement amount, max(0, originating principal)); tested on the two in-file pairs only."
+rounding_law = ""
+interpretive = true
+registry_params = []
+example_inputs = ["400000000", "485500000"]
+example_params = []
+example_output = "400000000"
+example_basis = "plan §2.4 (1993-10-20, 1ZA192 to 1ZB143)"
+
+[[rule]]
+id = "same_day_display_reorder"
+arity = 2
+params = []
+semantics = "Interpretive: a same-day CHECK and its STOP PAYMENT (Glantz 1ZB010) net to zero whatever their printed order; inputs `<token>:<signed amount>`, output the net and whether a reorder was needed."
+rounding_law = ""
+interpretive = true
+registry_params = []
+example_inputs = ["STOP PAYMENT:100000", "CHECK:-100000"]
+example_params = []
+example_output = "net=0 reordered=true"
+example_basis = "synthetic"
+
+[[chart_rule_row]]
+chart_rule = "worldcom-v1"
+concept = "Construction in Progress"
+type = "Asset"
+role = "fixed_asset"
+balance_side = "debit"
+read = ["account"]
+example = "F4's CIP debit (plan §6.3)"
+
+[[chart_rule_row]]
+chart_rule = "worldcom-v1"
+concept = "line costs"
+type = "Expense"
+role = ""
+balance_side = "debit"
+read = ["account", "is:operating_expenses"]
+example = "the line-cost credits of F2-F13 (plan §6.3)"
+
+[[chart_rule_row]]
+chart_rule = "worldcom-v1"
+concept = "Other Long Term Assets"
+type = "Asset"
+role = ""
+balance_side = "debit"
+read = ["account"]
+example = "OLTA, no role of the 15 fits (plan §6.3)"

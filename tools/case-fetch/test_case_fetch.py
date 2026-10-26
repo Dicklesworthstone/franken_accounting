@@ -427,6 +427,17 @@ class Rules(unittest.TestCase):
         self.assertEqual(self.rule("period_literal", "the second quarter of 2001"), "2001Q2")
         self.assertEqual(self.rule("period_literal", "1Q02"), "2002Q1")
 
+    def test_scale_reads_the_derivation_tables_literal_grammar(self):
+        # A2's scale grammar (fa-oracles derive.rs): dashes, U+2212, parentheses,
+        # and x/% only on a unitless value.
+        self.assertEqual(self.rule("scale", "\u2014", 6, "USD", 6), "0")
+        self.assertEqual(self.rule("scale", "-", 6, "USD", 6), "0")
+        self.assertEqual(self.rule("scale", "\u2212153", 6, "USD", 6), "-15300000000")
+        self.assertEqual(self.rule("scale", "(153)", 6, "USD", 6), "-15300000000")
+        self.assertEqual(self.rule("scale", "13.9x", 0, "", -1), "139")
+        with self.assertRaises(cf.RuleError):
+            self.rule("scale", "13.9x", 0, "USD", 0)
+
     def test_a_rule_that_does_not_fit_its_literal_is_refused(self):
         with self.assertRaises(cf.RuleError):
             self.rule("scale", "$1.45 million", 6, "", 6)

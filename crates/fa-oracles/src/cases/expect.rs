@@ -22,8 +22,8 @@
 //! - a D target's components are `cite`, `severity` and `statistic_*`, each
 //!   with a `*_status` of `S`, `Sd`, `Si`, `B(<attr>,…)`, `Rel(<covariate>)`
 //!   or `X`;
-//! - a `rule` T names a §2.4 derivation id ([`DERIVATION_IDS`]) until A2's
-//!   `case_derivations.toml` is the table it resolves against.
+//! - a `rule` T names a rule of A2's derivation table
+//!   (`data/case_derivations.toml`, [`super::derive`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -107,31 +107,6 @@ closed_set! {
         Source => "source",
     }
 }
-
-/// The derivation ids of plan §2.4 that a `rule` T may name, until A2's
-/// `case_derivations.toml` is the registered table.
-pub const DERIVATION_IDS: [&str; 20] = [
-    "scale",
-    "date_literal",
-    "number_word",
-    "period_literal",
-    "date_range_literal",
-    "month_literal",
-    "sum",
-    "difference",
-    "negate",
-    "date_offset",
-    "remainder",
-    "last_balance_on_or_before",
-    "legacy_tb_from_chunks",
-    "role_map",
-    "one_leg_per_named_account",
-    "subledger_to_gl_legs",
-    "round_dollar_lower_bound",
-    "trustee_transfer_credit",
-    "round_residue",
-    "weekday_of",
-];
 
 /// The observed covariates a `Rel(…)` status may name (§2.6 rule 9).
 pub const COVARIATES: [&str; 1] = ["account_vid_order"];
@@ -649,6 +624,8 @@ pub(crate) struct View<'a> {
     pub refusals: BTreeSet<String>,
     pub procedures: BTreeMap<String, (u16, Vec<String>)>,
     pub unit_scales: BTreeMap<String, u8>,
+    /// The ids of the derivation table (A2).
+    pub derivations: BTreeSet<String>,
 }
 
 impl View<'_> {
@@ -711,7 +688,15 @@ impl View<'_> {
                 BTreeMap::new()
             }
         };
+        let derivations = match super::derive::Rules::embedded() {
+            Ok(r) => r.rules.into_iter().map(|r| r.id).collect(),
+            Err(es) => {
+                errs.extend(es);
+                BTreeSet::new()
+            }
+        };
         View {
+            derivations,
             header,
             sources,
             facts,
@@ -1644,12 +1629,12 @@ impl<'a> Check<'a, '_> {
                 LoadErrorKind::MissingField,
                 "a `rule` T names its derivation (`rule`)".into(),
             ),
-            (Some(TKind::Rule), Some(r)) if !DERIVATION_IDS.contains(&r) => {
+            (Some(TKind::Rule), Some(r)) if !self.view.derivations.contains(r) => {
                 self.push(
                     f.line,
                     row,
                     LoadErrorKind::DanglingKey,
-                    format!("`rule = \"{r}\"` is not a §2.4 derivation"),
+                    format!("`rule = \"{r}\"` is not a rule of {}", super::derive::FILE),
                 );
             }
             (Some(k), Some(_)) if k != TKind::Rule => {
