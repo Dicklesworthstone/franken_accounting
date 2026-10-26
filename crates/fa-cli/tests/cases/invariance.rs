@@ -239,9 +239,25 @@ pub fn apply_with<'c>(
             .find(|(k, _)| k == "procedure")
             .map_or_else(|| ev.row.id.clone(), |(_, v)| v.clone());
         let statuses = statuses(case, ev);
-        // A Rel component's rule is A5b's (rel.rs); until it lands, a Rel
-        // row never reaches this witness (it waits on A7b).
-        let verdict = compare(&procedure, obs, &statuses, &|_, _| false);
+        // A Rel component holds on a run when its rule's selection under
+        // that run's account VIds (the `rel=<account>/<magnitude>` token the
+        // run's D row carries, A5b) is what the run cited and capitalized:
+        // the value may differ across book ids, the rule may not.
+        let verdict = compare(&procedure, obs, &statuses, &|component, o| {
+            let token = |k: &str| {
+                o.projection
+                    .iter()
+                    .find(|(n, _)| n == k)
+                    .map(|(_, v)| v.as_str())
+            };
+            evaluate::rel_holds(
+                token("rel"),
+                component,
+                token("cite").unwrap_or("-"),
+                token("statistic").unwrap_or("-"),
+            )
+            .unwrap_or(false)
+        });
         let token = verdict.token();
         match &verdict {
             InvarianceVerdict::Agree { .. } => {

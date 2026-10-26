@@ -55,8 +55,14 @@ pub struct RunOutcome {
     pub verdicts: Vec<VerdictRecord>,
     /// Each built variant's retained book directory.
     pub books: BTreeMap<String, PathBuf>,
-    /// The case passed: no FAIL row, and no claimed row short of PASS.
+    /// The case passed: no FAIL row, no claimed row short of PASS, and it
+    /// kept its wall-clock budget.
     pub ok: bool,
+    /// The same, its budget aside. A harness test of another behavior
+    /// asserts this: a contended worker can push a small case past 60 s
+    /// (fa-yugf.17), which is the budget's verdict, not that behavior's. The
+    /// budget's own tests assert `ok` and the BUDGET lines.
+    pub rows_ok: bool,
 }
 
 impl RunOutcome {
@@ -1776,6 +1782,7 @@ pub fn run_case_with(
         verdicts: Vec::new(),
         books: BTreeMap::new(),
         ok: true,
+        rows_ok: true,
     };
     // 1. Load and validate, purely.
     let case = match fa_oracles::cases::load(files) {
@@ -1785,6 +1792,7 @@ pub fn run_case_with(
                 out.lines.push(format!("FAIL {} load {e:?}", files.id));
             }
             out.ok = false;
+            out.rows_ok = false;
             return finish(out);
         }
     };
@@ -1820,6 +1828,7 @@ pub fn run_case_with(
             );
         }
         out.ok = false;
+        out.rows_ok = false;
         return finish(out);
     }
     // 2. The verb table, before any book exists.
@@ -1837,6 +1846,7 @@ pub fn run_case_with(
             unknown.join(", ")
         ));
         out.ok = false;
+        out.rows_ok = false;
         return finish(out);
     }
     // 3–10. Each book variant.
@@ -1962,14 +1972,14 @@ pub fn run_case_with(
     // The case passes when no row FAILs, it kept its budget, and every
     // claimed expectation's verdict, the worst of its rows, is PASS.
     let verdicts = evaluate::expectation_verdicts(&out.verdicts);
-    out.ok = !sweep_failed
-        && within_budget
+    out.rows_ok = !sweep_failed
         && verdicts.values().all(|v| *v != RowVerdict::Fail)
         && case
             .header
             .claims
             .iter()
             .all(|c| verdicts.get(c) == Some(&RowVerdict::Pass));
+    out.ok = out.rows_ok && within_budget;
     finish(out)
 }
 
