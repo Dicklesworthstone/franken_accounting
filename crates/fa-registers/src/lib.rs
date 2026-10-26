@@ -527,12 +527,25 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
     period_code: &str,
     known_at: Option<CommitSeq>,
 ) -> Result<Fold, RegisterError> {
+    fold_period_counted(db, book, period_code, known_at).map(|(fold, _)| fold)
+}
+
+/// [`fold_period_at`], with the number of legs it added to cells, posted
+/// and held: the fold's own count of the work it did, which a rebuild
+/// reports as its work witness (plan §17, fa-ykbp).
+pub(crate) fn fold_period_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    known_at: Option<CommitSeq>,
+) -> Result<(Fold, u64), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
     let mut cells: BTreeMap<CellKey, Cell> = BTreeMap::new();
     let mut pending = BTreeMap::new();
     let mut watermark: Option<CommitSeq> = None;
     let mut count = 0u64;
+    let mut legs = 0u64;
     let mut posted_legs_digest = [0u8; 32];
     let mut pending_holds = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
@@ -552,12 +565,18 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
             } else {
                 add_entry(&mut pending, &entry, period_code)?;
+                legs = legs
+                    .checked_add(entry.proposal.legs.len() as u64)
+                    .ok_or(RegisterError::Overflow)?;
                 let hold_digest = fold_entry_contributions([0u8; 32], created_at, vid, &entry)?;
                 pending_holds.insert((created_at, vid), hold_digest);
             }
         } else {
             count = count.checked_add(1).ok_or(RegisterError::Overflow)?;
             add_entry(&mut cells, &entry, period_code)?;
+            legs = legs
+                .checked_add(entry.proposal.legs.len() as u64)
+                .ok_or(RegisterError::Overflow)?;
             posted_legs_digest =
                 fold_entry_contributions(posted_legs_digest, created_at, vid, &entry)?;
         }
@@ -572,16 +591,19 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
         posted_legs_digest,
         &pending_holds,
     )?;
-    Ok(Fold {
-        period: period_code.to_string(),
-        cells,
-        pending,
-        watermark,
-        entries: count,
-        fold_digest,
-        posted_legs_digest,
-        pending_holds,
-    })
+    Ok((
+        Fold {
+            period: period_code.to_string(),
+            cells,
+            pending,
+            watermark,
+            entries: count,
+            fold_digest,
+            posted_legs_digest,
+            pending_holds,
+        },
+        legs,
+    ))
 }
 
 type CellValues = (i128, i128, u64);
@@ -610,7 +632,8 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<CommitSeq, RegisterError> {
     // The API accepts a Fold for inspection, not as a new source of truth.
     // Exclusive access to Database keeps this check and publication together.
-    if fold_period(db, book, &fold.period)? != *fold {
+    let (literal, legs) = fold_period_counted(db, book, &fold.period, None)?;
+    if literal != *fold {
         return Err(RegisterError::StaleFold);
     }
     // Preserve the existing empty-materialization no-op. Explicit advance
@@ -625,7 +648,7 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
     {
         return Ok(db.frontier()?);
     }
-    let prepared = maintainer::prepare_fold(db, book, fold.clone())?;
+    let prepared = maintainer::prepare_fold(db, book, literal, legs)?;
     Ok(maintainer::publish_advance(db, ctx, book, prepared)
         .await?
         .published_at)

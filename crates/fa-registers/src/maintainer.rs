@@ -36,6 +36,10 @@ pub struct Advance {
     pub through: CommitSeq,
     pub published_at: CommitSeq,
     pub entries_decoded: usize,
+    /// Legs this pass added to cells, posted and held: a full rebuild's
+    /// whole fold, an incremental pass's tail. The work witness a §17
+    /// rebuild bench reports (fa-ykbp); never persisted.
+    pub legs_folded: u64,
     pub rebuilt: bool,
     pub wrote: bool,
     pub fold: Fold,
@@ -295,8 +299,9 @@ pub(crate) fn verify_state<V: asupersync::fs::Vfs + Clone>(
 
 /// What folding the committed suffix after a cursor did.
 enum Tail {
-    /// Every new entry was folded; this many payloads were decoded.
-    Applied(usize),
+    /// Every new entry was folded; this many payloads were decoded, and
+    /// this many legs added to cells.
+    Applied(usize, u64),
     /// Only a literal fold is exact: a migration run was finalized (its
     /// chunks may precede the cursor), or a pending column overflowed before
     /// the releases later in the suffix.
@@ -327,6 +332,7 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
         .map(|c| (c.key.clone(), c))
         .collect();
     let mut entries_decoded = 0usize;
+    let mut legs_folded = 0u64;
     let mut migration_runs = BTreeMap::new();
     for batch in db
         .delta_since(from)?
@@ -425,6 +431,9 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
                     }
                     Err(error) => return Err(error),
                 }
+                legs_folded = legs_folded
+                    .checked_add(entry.proposal.legs.len() as u64)
+                    .ok_or(RegisterError::Overflow)?;
                 let hold_digest = crate::fold_entry_contributions([0u8; 32], seq, vid, &entry)?;
                 if fold.pending_holds.insert((seq, vid), hold_digest).is_some() {
                     return Err(
@@ -434,6 +443,9 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
             } else {
                 fold.entries = fold.entries.checked_add(1).ok_or(RegisterError::Overflow)?;
                 crate::add_entry(&mut cells, &entry, period)?;
+                legs_folded = legs_folded
+                    .checked_add(entry.proposal.legs.len() as u64)
+                    .ok_or(RegisterError::Overflow)?;
                 fold.posted_legs_digest =
                     crate::fold_entry_contributions(fold.posted_legs_digest, seq, vid, &entry)?;
             }
@@ -449,7 +461,7 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
         fold.posted_legs_digest,
         &fold.pending_holds,
     )?;
-    Ok(Tail::Applied(entries_decoded))
+    Ok(Tail::Applied(entries_decoded, legs_folded))
 }
 
 /// Compute a new projection without writing it. Rehydrate checkpoint-opened
@@ -475,8 +487,9 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
             other => Err(fgdb::WriteError::from(other).into()),
         };
     }
-    let entries_decoded = match apply_tail(db, book, period, basis, from, &mut fold)? {
-        Tail::Applied(decoded) => decoded,
+    let (entries_decoded, legs_folded) = match apply_tail(db, book, period, basis, from, &mut fold)?
+    {
+        Tail::Applied(decoded, legs) => (decoded, legs),
         Tail::Rebuild => return prepare_rebuild(db, book, period),
     };
     // Repeated calls after our own maintenance write must not manufacture
@@ -507,6 +520,7 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
             through,
             published_at: basis,
             entries_decoded,
+            legs_folded,
             rebuilt: false,
             wrote,
             fold,
@@ -773,7 +787,7 @@ pub fn fold_at<V: asupersync::fs::Vfs + Clone>(
         Err(error) => return Err(error.into()),
     }
     let tail_entries = match apply_tail(db, book, period, basis, through, &mut fold)? {
-        Tail::Applied(decoded) => decoded,
+        Tail::Applied(decoded, _) => decoded,
         Tail::Rebuild => return Ok(None),
     };
     Ok(Some(HeadFold {
@@ -788,15 +802,17 @@ fn prepare_rebuild<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period: &str,
 ) -> Result<PreparedAdvance, RegisterError> {
-    let fold = crate::fold_period_at(db, book, period, None)?;
-    prepare_fold(db, book, fold)
+    let (fold, legs_folded) = crate::fold_period_counted(db, book, period, None)?;
+    prepare_fold(db, book, fold, legs_folded)
 }
 
-/// Used only with a freshly computed or independently validated literal fold.
+/// Used only with a freshly computed or independently validated literal
+/// fold, and the legs that fold added to cells.
 pub(crate) fn prepare_fold<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     fold: Fold,
+    legs_folded: u64,
 ) -> Result<PreparedAdvance, RegisterError> {
     let basis = db.frontier()?;
     let state = db.vertex(state_vid(book.book_id, &fold.period))?;
@@ -835,6 +851,7 @@ pub(crate) fn prepare_fold<V: asupersync::fs::Vfs + Clone>(
             through: basis,
             published_at: basis,
             entries_decoded: 0,
+            legs_folded,
             rebuilt: true,
             wrote: true,
             fold,

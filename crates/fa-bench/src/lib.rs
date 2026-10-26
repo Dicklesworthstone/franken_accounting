@@ -30,6 +30,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod driver;
+pub mod rebuild;
+pub mod stats;
+
 use std::fmt;
 
 use fa::book::{Book, BookKeys, Entropy};
@@ -1000,6 +1004,19 @@ pub fn verify_all_kernel_op_witnesses() -> Result<Vec<(String, OpCount)>, BenchE
 // Benchmark Execution & Reporting (§17)
 // ---------------------------------------------------------------------------
 
+/// A count the engine itself reported while the workload ran (plan §17,
+/// fa-vtzt): the evidence that a run did the work its bench names, at the
+/// scale it states. A count the bench computed for itself is not one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkWitness {
+    /// What the engine counted, e.g. `legs_folded`.
+    pub counter: String,
+    /// The scale the bench states (its name and manifest).
+    pub stated: u64,
+    /// What the engine counted in the measured run.
+    pub counted: u64,
+}
+
 /// Result of running one §17 benchmark with incumbent + candidate in the same invocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BenchRunReport {
@@ -1008,6 +1025,13 @@ pub struct BenchRunReport {
     pub candidate: Distribution,
     pub watermark_disclosure: Option<WatermarkDisclosure>,
     pub memory_breakdown: Option<MemoryLegBreakdown>,
+    pub witness: WorkWitness,
+    /// The candidate's samples against the incumbent's.
+    pub comparison: stats::Comparison,
+    /// The 95% bootstrap interval of the candidate's p50.
+    pub candidate_p50_interval: (u64, u64),
+    /// BLAKE3 of the incumbent binary the driver ran, when it ran one.
+    pub incumbent_binary_blake3: Option<[u8; 32]>,
 }
 
 impl BenchRunReport {
@@ -1038,8 +1062,31 @@ impl BenchRunReport {
             Some(b) => b.p50_us.to_string(),
             None => "null".to_string(),
         };
+        let c = &self.comparison;
+        let incumbent_binary = match &self.incumbent_binary_blake3 {
+            Some(d) => format!(
+                "\"{}\"",
+                d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ),
+            None => "null".to_string(),
+        };
+        let judged = format!(
+            ",\"incumbent_binary_blake3\":{incumbent_binary},\"p50_interval_us\":[{},{}],\"witness\":{{\"counter\":\"{}\",\"stated\":{},\"counted\":{}}},\"comparison\":{{\"slower_pairs\":{},\"faster_pairs\":{},\"u_doubled\":{},\"significant\":{},\"cliffs_delta_milli\":{},\"magnitude\":\"{}\",\"verdict\":\"{}\"}}",
+            self.candidate_p50_interval.0,
+            self.candidate_p50_interval.1,
+            self.witness.counter,
+            self.witness.stated,
+            self.witness.counted,
+            c.slower_pairs,
+            c.faster_pairs,
+            c.u_doubled,
+            c.significant,
+            c.delta_milli(),
+            c.magnitude.as_str(),
+            c.verdict.as_str(),
+        );
         format!(
-            "{{\"event\":\"bench_result\",\"slo_id\":\"{}\",\"bench_name\":\"{}\",\"operation_class\":\"{}\",\"worker_class\":\"{}\",\"incumbent_in_same_invocation\":true,\"samples\":{},\"incumbent_p50_us\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"min_us\":{},\"max_us\":{},\"baseline_p50_us\":{}{}{}}}",
+            "{{\"event\":\"bench_result\",\"slo_id\":\"{}\",\"bench_name\":\"{}\",\"operation_class\":\"{}\",\"worker_class\":\"{}\",\"incumbent_in_same_invocation\":true,\"samples\":{},\"incumbent_p50_us\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"min_us\":{},\"max_us\":{},\"baseline_p50_us\":{}{}{}{}}}",
             self.manifest.slo_id,
             self.manifest.bench_name,
             self.manifest.operation_class,
@@ -1052,6 +1099,7 @@ impl BenchRunReport {
             self.candidate.min_us,
             self.candidate.max_us,
             baseline,
+            judged,
             wm,
             mem
         )
@@ -1083,22 +1131,88 @@ impl BenchOutcome {
                 bench_name,
                 reason,
             } => format!(
-                "{{\"event\":\"bench_unmeasured\",\"slo_id\":\"{slo_id}\",\"bench_name\":\"{bench_name}\",\"reason\":\"{reason}\"}}"
+                "{{\"event\":\"bench_unmeasured\",\"slo_id\":\"{slo_id}\",\"bench_name\":\"{bench_name}\",\"reason\":\"{}\"}}",
+                json_text(reason)
             ),
         }
     }
 }
 
-/// Why a §17 workload is unmeasured. No bench in this crate runs one yet.
+/// `text` as the inside of a JSON string: a reason may quote another
+/// binary's diagnostics.
+fn json_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Bootstrap resamples behind a candidate's p50 interval.
+const BOOTSTRAP_RESAMPLES: usize = 2000;
+
+/// Decide what one §17 run produced (plan §17, fa-ykbp). It is an artifact
+/// only when the engine's work witness reaches the bench's stated scale and
+/// both sides carry enough samples to compare; otherwise it is unmeasured,
+/// naming why, and no timing leaves the run. The p50 interval is
+/// resampled from the manifest's fixture seed, so it replays exactly.
+pub fn judge_run(
+    manifest: BenchManifest,
+    incumbent: &[u64],
+    candidate: &[u64],
+    witness: WorkWitness,
+) -> Result<BenchOutcome, BenchError> {
+    let unmeasured = |manifest: &BenchManifest, reason: String| BenchOutcome::Unmeasured {
+        slo_id: manifest.slo_id.clone(),
+        bench_name: manifest.bench_name.clone(),
+        reason,
+    };
+    if witness.counted < witness.stated {
+        return Ok(unmeasured(
+            &manifest,
+            format!(
+                "the engine counted {} {} where the bench states {}; a below-scale run is no measurement of it",
+                witness.counted, witness.counter, witness.stated
+            ),
+        ));
+    }
+    let comparison = match stats::compare(incumbent, candidate) {
+        Ok(comparison) => comparison,
+        Err(why) => return Ok(unmeasured(&manifest, why.to_string())),
+    };
+    let candidate_p50_interval =
+        stats::median_interval(candidate, manifest.fixture_seed, BOOTSTRAP_RESAMPLES)
+            .map_err(|e| BenchError::Execution(e.to_string()))?;
+    Ok(BenchOutcome::Measured(Box::new(BenchRunReport {
+        incumbent: Distribution::from_samples_us(incumbent)?,
+        candidate: Distribution::from_samples_us(candidate)?,
+        watermark_disclosure: manifest.watermark_disclosure,
+        memory_breakdown: None,
+        witness,
+        comparison,
+        candidate_p50_interval,
+        incumbent_binary_blake3: None,
+        manifest,
+    })))
+}
+
+/// Why a §17 workload with no bench is unmeasured.
 const UNMEASURED_REASON: &str =
     "no bench executes this workload at its stated scale yet; tracked by fa-ykbp";
+/// Why a §17 workload with a real bench is unmeasured when run alone.
+const NO_INCUMBENT_REASON: &str = "a real workload runs (`fa-bench sample`), but a §17 number needs the previous release's fa-bench in the same invocation on the manifest's worker class (`fa-bench --bench <name> --incumbent <binary> --worker-class <class>`); tracked by fa-ykbp";
 
 /// Run one §17 benchmark by `bench_name` or `slo_id`.
 ///
-/// No §17 workload is executed by this crate yet, so every known benchmark
-/// returns [`BenchOutcome::Unmeasured`]; an unknown name is an error. `smoke`
-/// is accepted for interface stability and has no effect until real workloads
-/// exist (fa-ykbp).
+/// Without an incumbent no §17 number is drawn, so every known benchmark
+/// returns [`BenchOutcome::Unmeasured`], naming whether a real workload
+/// exists ([`driver::drive`] runs one against an incumbent); an unknown
+/// name is an error. `smoke` is accepted for interface stability.
 pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchOutcome, BenchError> {
     let _ = smoke;
     let manifests = load_embedded_manifests()?;
@@ -1106,10 +1220,18 @@ pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchOutcome, Benc
         .into_iter()
         .find(|m| m.bench_name == bench_name || m.slo_id == bench_name)
         .ok_or_else(|| BenchError::UnknownBenchmark(bench_name.to_string()))?;
+    let sampled = driver::SAMPLED
+        .iter()
+        .any(|s| s.bench_name == manifest.bench_name);
     Ok(BenchOutcome::Unmeasured {
         slo_id: manifest.slo_id,
         bench_name: manifest.bench_name,
-        reason: UNMEASURED_REASON.to_string(),
+        reason: if sampled {
+            NO_INCUMBENT_REASON
+        } else {
+            UNMEASURED_REASON
+        }
+        .to_string(),
     })
 }
 
@@ -1278,5 +1400,124 @@ mod tests {
             run_benchmark("no_such_benchmark", true),
             Err(BenchError::UnknownBenchmark(_))
         ));
+    }
+
+    /// Latencies around `base` µs with a fixed, deterministic spread of ±25.
+    fn latencies(base: u64, count: u64) -> Vec<u64> {
+        (0..count).map(|i| base - 25 + (i * 37) % 50).collect()
+    }
+
+    fn rebuild_manifest() -> BenchManifest {
+        load_embedded_manifests()
+            .expect("manifests")
+            .into_iter()
+            .find(|m| m.bench_name == "register_rebuild_10m")
+            .expect("register_rebuild_10m")
+    }
+
+    fn legs(counted: u64) -> WorkWitness {
+        WorkWitness {
+            counter: "legs_folded".into(),
+            stated: 10_000_000,
+            counted,
+        }
+    }
+
+    #[test]
+    fn an_unmeasured_reason_quoting_diagnostics_stays_one_json_string() {
+        let o = BenchOutcome::Unmeasured {
+            slo_id: "FA-BENCH-06".into(),
+            bench_name: "register_rebuild_10m".into(),
+            reason: "incumbent said \"no\" at C:\\bin\n".into(),
+        };
+        assert!(
+            o.to_json_line()
+                .ends_with(r#""reason":"incumbent said \"no\" at C:\\bin\u000a"}"#),
+            "{}",
+            o.to_json_line()
+        );
+    }
+
+    #[test]
+    fn regression_detected_by_mann_whitney() {
+        // fa-ykbp: a candidate 20% slower, with a large Cliff's δ, is a
+        // regression; the same samples reordered are no change; 20% faster
+        // is an improvement.
+        let incumbent = latencies(1000, 40);
+        let judge = |candidate: &[u64]| {
+            let BenchOutcome::Measured(report) =
+                judge_run(rebuild_manifest(), &incumbent, candidate, legs(10_000_000))
+                    .expect("judged")
+            else {
+                panic!("an at-scale run with enough samples is measured");
+            };
+            report
+        };
+        let slower = judge(&latencies(1200, 40));
+        assert_eq!(slower.comparison.verdict, stats::Verdict::Regression);
+        assert_eq!(slower.comparison.magnitude, stats::Magnitude::Large);
+        assert!(slower.comparison.significant);
+        assert_eq!(slower.comparison.delta_milli(), 1000);
+        let line = slower.to_json_line();
+        assert!(line.contains("\"verdict\":\"regression\""), "{line}");
+        assert!(line.contains("\"magnitude\":\"large\""), "{line}");
+
+        let mut same = incumbent.clone();
+        same.reverse();
+        let unchanged = judge(&same);
+        assert_eq!(unchanged.comparison.verdict, stats::Verdict::NoChange);
+        assert!(!unchanged.comparison.significant);
+
+        let faster = judge(&latencies(800, 40));
+        assert_eq!(faster.comparison.verdict, stats::Verdict::Improvement);
+        assert_eq!(faster.comparison.delta_milli(), -1000);
+    }
+
+    #[test]
+    fn below_scale_counter_emits_no_artifact() {
+        // fa-ykbp: one leg short of the stated scale is no measurement of
+        // the bench, whatever its timings, and no timing leaves the run.
+        let incumbent = latencies(1000, 40);
+        let candidate = latencies(1200, 40);
+        let short =
+            judge_run(rebuild_manifest(), &incumbent, &candidate, legs(9_999_999)).expect("judged");
+        let BenchOutcome::Unmeasured { reason, .. } = &short else {
+            panic!("a below-scale run produced an artifact: {short:?}");
+        };
+        assert!(
+            reason.contains("9999999 legs_folded") && reason.contains("states 10000000"),
+            "{reason}"
+        );
+        let line = short.to_json_line();
+        for forbidden in ["\"p50_us\":", "\"samples\":", "\"comparison\":"] {
+            assert!(!line.contains(forbidden), "{forbidden} in {line}");
+        }
+        // At scale, the same samples are an artifact carrying the witness.
+        let at_scale = judge_run(rebuild_manifest(), &incumbent, &candidate, legs(10_000_000))
+            .expect("judged");
+        let BenchOutcome::Measured(report) = &at_scale else {
+            panic!("an at-scale run is measured: {at_scale:?}");
+        };
+        let line = report.to_json_line();
+        assert!(
+            line.contains(
+                "\"witness\":{\"counter\":\"legs_folded\",\"stated\":10000000,\"counted\":10000000}"
+            ),
+            "{line}"
+        );
+        let (lo, hi) = report.candidate_p50_interval;
+        assert!(lo <= report.candidate.p50_us && report.candidate.p50_us <= hi);
+        // Too few samples is unmeasured too, naming the side.
+        let thin = judge_run(
+            rebuild_manifest(),
+            &incumbent[..9],
+            &candidate,
+            legs(10_000_000),
+        )
+        .expect("judged");
+        assert!(
+            matches!(&thin, BenchOutcome::Unmeasured { reason, .. } if reason.contains("incumbent has 9 samples")),
+            "{thin:?}"
+        );
     }
 }
