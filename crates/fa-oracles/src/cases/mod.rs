@@ -76,6 +76,7 @@ pub mod stub;
 pub mod templates;
 #[cfg(test)]
 mod tests;
+pub mod tiers;
 pub mod trace;
 pub mod verdict;
 

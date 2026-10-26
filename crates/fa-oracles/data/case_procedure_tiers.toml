@@ -1,0 +1,351 @@
+# =============================================================================
+# crates/fa-oracles/data/case_procedure_tiers.toml: two-reader procedure tiers
+# (docs/FORENSIC_CASE_STUDIES_PLAN.md §2.5; bead fa-yugf.10, A4)
+#
+# Consumer: K-TIER (src/cases/check/tier.rs); K-EVID reads reads_evidence (A3c);
+# A5a's reader rows, A6's discipline, A11a's extremal variants.
+# Gate: `cargo test -p fa-oracles` (every_seeded_row_matches_procedures_toml, and
+# K-TIER over every case's claimed procedures).
+# Retire: with the case-study program.
+# One [[tier]] per claimed procedure. Each reader classified it independently from
+# code with §2.5's definitions in hand; the second reader classified before seeing
+# the first's answers. tier and reads_evidence are the conservative choice of the
+# two readings (tier order L < C < S-rel < S-acct < S-party < G < O < P < A);
+# disagreement records whether the tiers differ. row_digest is the SHA-256 of the
+# canonical bytes of the procedure's [[procedure]], [[parameter]] and [[input]] rows
+# in registries/procedures.toml, so any semantic edit there invalidates the row
+# until it is read again; comments and whitespace do not.
+# code_location is the run() at the commit the readers read.
+#
+# Run-level refusals are no tier (second reader's notes): a refusal of the whole
+# run lets filler anywhere remove a target's finding, so a case's filler avoids
+# them. live_postings refuses on an entry reversed twice; any run refuses on work
+# budget exhaustion; recon.assertion_drift refuses on an unknown entity or more
+# than MAX_CITES later entries in one cell; jet.round_amounts refuses on an
+# unregistered unit; jet.self_sourced_evidence refuses on a missing document.
+# =============================================================================
+
+schema_version = 1
+
+# StormyLion: digit distribution over the population
+# MaroonCat: one book-level finding with no cites: the MAD of first digits over every live leg of the chosen unit and side, plus a book-wide min_population gate (digits.rs:294-362); a digit test, P, over a book-wide population (A under the same caveat)
+[[tier]]
+procedure = "benford.first_digit"
+version = 2
+row_digest = "7165ac4166ffd370b359589f2983e1c45ad42ed37debf6db7ac1517ae8f9a358"
+tier = "P"
+code_location = "crates/fa-lantern/src/digits.rs:257"
+reader = "StormyLion"
+reader_tier = "P"
+second_reader = "MaroonCat"
+second_reader_tier = "P"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: target document date's period vs effective period (calendar)
+# MaroonCat: document_date resolved through the book calendar against the effective period; reads the proposal's document_date field, not the document store (cutoff.rs:54-78)
+[[tier]]
+procedure = "cutoff.period_boundary"
+version = 1
+row_digest = "b5390707f75ffe8f609bc7022c623b54347281de6adbaa61842a821c5c3dc34d"
+tier = "C"
+code_location = "crates/fa-lantern/src/cutoff.rs:44"
+reader = "StormyLion"
+reader_tier = "C"
+second_reader = "MaroonCat"
+second_reader_tier = "C"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: per (account, period, unit) cell: live fold vs RegisterEquals attestation or original fold
+# MaroonCat: the (account, period, unit) cell's live fold against its RegisterEquals attestation, or else the fold of the cell's original entries when one was superseded; cites are capped inside the cell (cutoff.rs:3372-3459)
+[[tier]]
+procedure = "damages.attested_baseline"
+version = 1
+row_digest = "821eeb8b6731d0df7d5f8417c6fe10ef8162b80e79d62cf6bf32536930c0c561"
+tier = "S-acct"
+code_location = "crates/fa-lantern/src/cutoff.rs:3360"
+reader = "StormyLion"
+reader_tier = "S-acct"
+second_reader = "MaroonCat"
+second_reader_tier = "S-acct"
+disagreement = false
+reads_evidence = true
+reader_reads_evidence = true
+second_reader_reads_evidence = true
+
+# StormyLion: entries sharing legs within window_days (key)
+# MaroonCat: same leg multiset, paired with the first later-dated group member inside window_days, skipping shared lineage; value = days apart (duplicates.rs:151-190)
+[[tier]]
+procedure = "duplicates.same_same_different"
+version = 1
+row_digest = "068672f31a11f0480433cd2254f27a19dc77f4053221fb2368ce8b07bf3e382a"
+tier = "S-rel"
+code_location = "crates/fa-lantern/src/duplicates.rs:137"
+reader = "StormyLion"
+reader_tier = "S-rel"
+second_reader = "MaroonCat"
+second_reader_tier = "S-rel"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: entries sharing legs and effective date (key)
+# MaroonCat: key group (sorted leg multiset + effective date) of size >= 2, minus shared-lineage members; value = group size, cites capped inside the group (duplicates.rs:79-108)
+[[tier]]
+procedure = "duplicates.same_same_same"
+version = 1
+row_digest = "f6250261b048e63a980ba0592dbd2410beaac7aff58247428b13e3548cbd6284"
+tier = "S-rel"
+code_location = "crates/fa-lantern/src/duplicates.rs:64"
+reader = "StormyLion"
+reader_tier = "S-rel"
+second_reader = "MaroonCat"
+second_reader_tier = "S-rel"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: the superseded original entry (by key), closed period states and ends (C), target legs' magnitude
+# MaroonCat: path 1: the superseded entry, found by the supersession key, supplies the days window and a cite; path 2: class plus period state (cutoff.rs:652-731). It iterates all postings, not live_postings, so a later reversal of the target does not remove its flag (cutoff.rs:665)
+[[tier]]
+procedure = "events.subsequent"
+version = 2
+row_digest = "d628858066de64f6632f3a2444eb70b13e1e935c0eab4055c0c1ba781f4c501f"
+tier = "S-rel"
+code_location = "crates/fa-lantern/src/cutoff.rs:617"
+reader = "StormyLion"
+reader_tier = "S-rel"
+second_reader = "MaroonCat"
+second_reader_tier = "S-rel"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: target legs + account roles (fixed_asset, accrued_expense) and types; statistic takes the first capex leg by account VId order (covariate account_vid_order)
+# MaroonCat: flag, statistic and cites come from the target's own legs plus account roles (fixed_asset, accrued_expense) and account types (cutoff.rs:1075-1106)
+[[tier]]
+procedure = "expense.capitalization"
+version = 2
+row_digest = "3a2e7327fabc2caddef7cc8e359d0fa31f0b25b2ae60e67597a118b3f30b3550"
+tier = "C"
+code_location = "crates/fa-lantern/src/cutoff.rs:1067"
+reader = "StormyLion"
+reader_tier = "C"
+second_reader = "MaroonCat"
+second_reader_tier = "C"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: cycle search over the party flow projection
+# MaroonCat: SCCs of each (legal entity, unit) partition's party-flow graph, then a first-fit cycle search in (effective, recorded) order with leg reuse barred (graph.rs:1087-1200). Caveat: legs with no party, or several, map to one BOOK_NODE (projection.rs:163-171), so a component touching it can absorb most of the book
+[[tier]]
+procedure = "graph.party_circular_flows"
+version = 1
+row_digest = "f85679972a9d8f60e64938685424851fb5aaaee2038f805ec4cf3866771b135a"
+tier = "G"
+code_location = "crates/fa-lantern/src/graph.rs:659"
+reader = "StormyLion"
+reader_tier = "G"
+second_reader = "MaroonCat"
+second_reader_tier = "G"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: BFS over OWNS/CONTROLS/RELATED_TO from REA, intersected with postings
+# MaroonCat: a leg's party or entity reached within max_depth by a valid-time BFS over OWNS/CONTROLS/RELATED_TO (rea.rs:180-240); value = the entry's own debit exposure (graph.rs:1742-1794)
+[[tier]]
+procedure = "graph.related_party_exposure"
+version = 2
+row_digest = "42a453ea07071a899ac86be0b8bb848d402b09eff95089c8f5ab576acdea0f06"
+tier = "G"
+code_location = "crates/fa-lantern/src/graph.rs:1685"
+reader = "StormyLion"
+reader_tier = "G"
+second_reader = "MaroonCat"
+second_reader_tier = "G"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: target effective date vs its period's end (calendar)
+# MaroonCat: effective date within window_days of its calendar period's end; days_to_end is the statistic (jet.rs:183-189)
+[[tier]]
+procedure = "jet.period_end_timing"
+version = 1
+row_digest = "0ca6595d11989ce059e0e8dae470d2ef2d9477f68edca1b5bb75b638b65c88bc"
+tier = "C"
+code_location = "crates/fa-lantern/src/jet.rs:171"
+reader = "StormyLion"
+reader_tier = "C"
+second_reader = "MaroonCat"
+second_reader_tier = "C"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: flag is commit-ordinal (O); statistic commits_after_close counts every commit between the close and the post, so it moves with unrelated commits
+# MaroonCat: flags recorded_at after the period's first SoftClosed/Closed/Locked transition, and the statistic is the CommitSeq gap e.recorded_at - t.recorded_at, so any commit in between changes the value (jet.rs:235-258)
+[[tier]]
+procedure = "jet.post_closing"
+version = 1
+row_digest = "6c4b94d20780e902ededb00223608697858befd070d432cd2ec46fffebb759f6"
+tier = "P"
+code_location = "crates/fa-lantern/src/jet.rs:228"
+reader = "StormyLion"
+reader_tier = "P"
+second_reader = "MaroonCat"
+second_reader_tier = "O"
+disagreement = true
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: target legs' magnitudes vs the registered unit's scale; population is excluded from the projection
+# MaroonCat: the target's own leg mantissas against unit.one()*10^power; the only outside input is the book's unit registry scale (jet.rs:108,118,134)
+[[tier]]
+procedure = "jet.round_amounts"
+version = 1
+row_digest = "7291dd0ac2338a68be254b88caaedcfe421997656e8f6527ffbfcc78d6de0436"
+tier = "C"
+code_location = "crates/fa-lantern/src/jet.rs:83"
+reader = "StormyLion"
+reader_tier = "L"
+second_reader = "MaroonCat"
+second_reader_tier = "C"
+disagreement = true
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: target approvals vs its principal; a migration's sealed legacy entered/approved pair
+# MaroonCat: the target's own approval principals and its own sealed migration entered_by/approved_by against its principal_ref (jet.rs:367-382; approvals via snapshot.rs:168-177, not the attestation store)
+[[tier]]
+procedure = "jet.self_approved"
+version = 1
+row_digest = "dab4238dd59a8b14b47999042fc5a10c6b73056307f5c75c01d33ed0ac1b0132"
+tier = "L"
+code_location = "crates/fa-lantern/src/jet.rs:352"
+reader = "StormyLion"
+reader_tier = "L"
+second_reader = "MaroonCat"
+second_reader_tier = "L"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: target's cited documents, supplements keyed to it, their grades, and Reviewed attestations on those documents (objects keyed to the target)
+# MaroonCat: the target's cited documents' grade and uploader, supplements keyed by the target's vid, and Reviewed attestations keyed by those document oids (jet.rs:446-505)
+[[tier]]
+procedure = "jet.self_sourced_evidence"
+version = 1
+row_digest = "0b551a6f1279444532d592f0bcdeaea99654e0836b1be67da315e6e0f86a335e"
+tier = "S-rel"
+code_location = "crates/fa-lantern/src/jet.rs:437"
+reader = "StormyLion"
+reader_tier = "S-rel"
+second_reader = "MaroonCat"
+second_reader_tier = "S-rel"
+disagreement = false
+reads_evidence = true
+reader_reads_evidence = true
+second_reader_reads_evidence = true
+
+# StormyLion: target document/effective date weekday
+# MaroonCat: the target's own document_date (else effective_date) weekday, pure civil arithmetic (jet.rs:312-314, fa-time date.rs:136)
+[[tier]]
+procedure = "jet.weekend"
+version = 1
+row_digest = "f1b49dc2468a1be89053c3ee0c220b2654dc317d5b7af43c267e1d5b7112cf72"
+tier = "L"
+code_location = "crates/fa-lantern/src/jet.rs:298"
+reader = "StormyLion"
+reader_tier = "L"
+second_reader = "MaroonCat"
+second_reader_tier = "L"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: largest vs second-largest debit per party dimension, else per account, per unit
+# MaroonCat: the (party or account, unit) cell's largest/second-largest debit ratio, gated by the cell's own size; the cell spans accounts, hence S-party over S-acct (numbers.rs:154-198)
+[[tier]]
+procedure = "numbers.relative_size_factor"
+version = 1
+row_digest = "a1906b186b9584ccc4323c65fcabcdcccc18f5c2a448ba332bbd9e8a8beba1ef"
+tier = "S-party"
+code_location = "crates/fa-lantern/src/numbers.rs:128"
+reader = "StormyLion"
+reader_tier = "S-party"
+second_reader = "MaroonCat"
+second_reader_tier = "S-party"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: account share of round legs vs the book's own share
+# MaroonCat: an account's round-leg share against the whole book's round share (z-test), so the book-wide X/N decide flag and severity (numbers.rs:454-505); P because it is a share test; A if a book-wide denominator counts as an aggregate
+[[tier]]
+procedure = "numbers.round_amount_density"
+version = 1
+row_digest = "af76036bf709f6ec1a37f44324f33655311b3e29df545a8296574eab39016412"
+tier = "P"
+code_location = "crates/fa-lantern/src/numbers.rs:426"
+reader = "StormyLion"
+reader_tier = "P"
+second_reader = "MaroonCat"
+second_reader_tier = "P"
+disagreement = false
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: each investor's own attributed cash and investor movement; cohort (earliest inflow over all parties) only in narrative
+# MaroonCat: each investor's (party, unit) finding is S-party (cutoff.rs:2555-2738), but the same run's per-unit unresolved_attribution finding sums unattributed cash book-wide and cuts its entry cites by count (cutoff.rs:1751-1754, 2775-2782); a lower-vid unresolved filler pushes target entries out of the cites. It is S-party if the projection is restricted to investor findings
+[[tier]]
+procedure = "ponzi.net_investment"
+version = 4
+row_digest = "0c63800dc17f0d397f08813dc2e9e754ca32d94bf52f70148657570f70add38e"
+tier = "A"
+code_location = "crates/fa-lantern/src/cutoff.rs:2683"
+reader = "StormyLion"
+reader_tier = "S-party"
+second_reader = "MaroonCat"
+second_reader_tier = "A"
+disagreement = true
+reads_evidence = false
+reader_reads_evidence = false
+second_reader_reads_evidence = false
+
+# StormyLion: RegisterEquals attestations vs the cell's fold (account, unit, entity, period)
+# MaroonCat: the fold of the attested cell (account, unit, optional entity, period, effective <= as_of) against the RegisterEquals attestation; drift and later-entry cites come from the cell only (assertion_drift.rs:56-115)
+[[tier]]
+procedure = "recon.assertion_drift"
+version = 1
+row_digest = "8af4d6fbc7ec1215481139e62b636226b98f4b9c5d22ba2e0269ed178dc45117"
+tier = "S-acct"
+code_location = "crates/fa-lantern/src/assertion_drift.rs:42"
+reader = "StormyLion"
+reader_tier = "S-acct"
+second_reader = "MaroonCat"
+second_reader_tier = "S-acct"
+disagreement = false
+reads_evidence = true
+reader_reads_evidence = true
+second_reader_reads_evidence = true

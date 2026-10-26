@@ -428,6 +428,8 @@ const EXP: &[(&str, Kind, &[ExpectationType])] = &[
     ("known_at", Kind::Str, ALL),
     ("procedure", Kind::Str, &[E::D, E::N]),
     ("version", Kind::Int, &[E::D, E::N]),
+    ("population", Kind::Str, &[E::D]),
+    ("population_basis", Kind::Strs, &[E::D]),
     ("intent", Kind::Str, &[E::P]),
     ("refusal", Kind::Str, &[E::P]),
     ("law_row", Kind::Str, &[E::P]),
@@ -1160,6 +1162,33 @@ impl<'a> Check<'a, '_> {
                     row,
                     LoadErrorKind::DanglingKey,
                     format!("basis `{b}` names no fact"),
+                );
+            }
+        }
+        // A4's §9.4 marker: a D over a sourced, complete comparison
+        // population names the facts that establish its completeness.
+        match (f.str("population"), f.strs("population_basis")) {
+            (Some(p), _) if p != "sourced_complete" => self.push(
+                f.line,
+                row,
+                LoadErrorKind::UnknownValue,
+                format!("`population = \"{p}\"` is \"sourced_complete\" or absent"),
+            ),
+            (Some(_), None) | (None, Some(_)) => self.push(
+                f.line,
+                row,
+                LoadErrorKind::MissingField,
+                "`population` and `population_basis` come together (§9.4)".into(),
+            ),
+            _ => {}
+        }
+        for b in f.strs("population_basis").unwrap_or(&[]) {
+            if self.view.fact(b).is_none() {
+                self.push(
+                    f.line,
+                    row,
+                    LoadErrorKind::DanglingKey,
+                    format!("population_basis `{b}` names no fact"),
                 );
             }
         }
