@@ -1,0 +1,1791 @@
+# Invariance negative fixture native book: 24 round revenue entries on account 4000 (E-1..E-24 at
+# 200.00) and 35 non-round background entries (157.43), so 4000's round share (24 of 24) stands
+# above the book's (48 of 118) at Medium, just under High; then a filler_batch step and one run of
+# numbers.round_amount_density. Filler on the filler accounts moves the book's share, and with it
+# the finding's severity: any seeded variant (at least 4 entries, 8 legs) makes it High.
+# Synthetic; amounts are fixture values.
+
+[book]
+variant = "native"
+opening_date = "2026-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2026Q1"
+start = "2026-01-01"
+end = "2026-03-31"
+fiscal_year = 2026
+kind = "Normal"
+
+[[principal]]
+label = "selftest-preparer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce"]
+
+[[account]]
+code = "1000"
+name_fact = "N-1"
+type = "Asset"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "4000"
+name_fact = "N-1"
+type = "Revenue"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1100"
+name_fact = "N-1"
+type = "Asset"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2100"
+name_fact = "N-1"
+type = "Liability"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "9001"
+name_fact = "N-1"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "9002"
+name_fact = "N-1"
+type = "Liability"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-PH-N-1"
+stub_of = "placeholder:N-1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-N-POP"
+stub_of = "placeholder:N-POP"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-FILL"
+stub_of = "filler:fv1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "E-1"
+fact = "N-1"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-02"
+memo = "entry E-1 (invariance negative fixture)"
+evidence = "DOC-PH-N-1"
+idempotency_key = "invneg-E-1"
+
+[[intent]]
+id = "E-2"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-03"
+memo = "entry E-2 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-2"
+
+[[intent]]
+id = "E-3"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-04"
+memo = "entry E-3 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-3"
+
+[[intent]]
+id = "E-4"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-05"
+memo = "entry E-4 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-4"
+
+[[intent]]
+id = "E-5"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-06"
+memo = "entry E-5 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-5"
+
+[[intent]]
+id = "E-6"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-07"
+memo = "entry E-6 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-6"
+
+[[intent]]
+id = "E-7"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-08"
+memo = "entry E-7 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-7"
+
+[[intent]]
+id = "E-8"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-09"
+memo = "entry E-8 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-8"
+
+[[intent]]
+id = "E-9"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-10"
+memo = "entry E-9 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-9"
+
+[[intent]]
+id = "E-10"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-11"
+memo = "entry E-10 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-10"
+
+[[intent]]
+id = "E-11"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-12"
+memo = "entry E-11 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-11"
+
+[[intent]]
+id = "E-12"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-13"
+memo = "entry E-12 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-12"
+
+[[intent]]
+id = "E-13"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-14"
+memo = "entry E-13 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-13"
+
+[[intent]]
+id = "E-14"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-15"
+memo = "entry E-14 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-14"
+
+[[intent]]
+id = "E-15"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-16"
+memo = "entry E-15 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-15"
+
+[[intent]]
+id = "E-16"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-17"
+memo = "entry E-16 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-16"
+
+[[intent]]
+id = "E-17"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-18"
+memo = "entry E-17 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-17"
+
+[[intent]]
+id = "E-18"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-19"
+memo = "entry E-18 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-18"
+
+[[intent]]
+id = "E-19"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-20"
+memo = "entry E-19 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-19"
+
+[[intent]]
+id = "E-20"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-21"
+memo = "entry E-20 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-20"
+
+[[intent]]
+id = "E-21"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-22"
+memo = "entry E-21 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-21"
+
+[[intent]]
+id = "E-22"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-23"
+memo = "entry E-22 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-22"
+
+[[intent]]
+id = "E-23"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-24"
+memo = "entry E-23 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-23"
+
+[[intent]]
+id = "E-24"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-25"
+memo = "entry E-24 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-E-24"
+
+[[intent]]
+id = "B-1"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-02"
+memo = "entry B-1 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-1"
+
+[[intent]]
+id = "B-2"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-03"
+memo = "entry B-2 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-2"
+
+[[intent]]
+id = "B-3"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-04"
+memo = "entry B-3 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-3"
+
+[[intent]]
+id = "B-4"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-05"
+memo = "entry B-4 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-4"
+
+[[intent]]
+id = "B-5"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-06"
+memo = "entry B-5 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-5"
+
+[[intent]]
+id = "B-6"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-07"
+memo = "entry B-6 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-6"
+
+[[intent]]
+id = "B-7"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-08"
+memo = "entry B-7 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-7"
+
+[[intent]]
+id = "B-8"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-09"
+memo = "entry B-8 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-8"
+
+[[intent]]
+id = "B-9"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-10"
+memo = "entry B-9 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-9"
+
+[[intent]]
+id = "B-10"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-11"
+memo = "entry B-10 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-10"
+
+[[intent]]
+id = "B-11"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-12"
+memo = "entry B-11 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-11"
+
+[[intent]]
+id = "B-12"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-13"
+memo = "entry B-12 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-12"
+
+[[intent]]
+id = "B-13"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-14"
+memo = "entry B-13 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-13"
+
+[[intent]]
+id = "B-14"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-15"
+memo = "entry B-14 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-14"
+
+[[intent]]
+id = "B-15"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-16"
+memo = "entry B-15 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-15"
+
+[[intent]]
+id = "B-16"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-17"
+memo = "entry B-16 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-16"
+
+[[intent]]
+id = "B-17"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-18"
+memo = "entry B-17 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-17"
+
+[[intent]]
+id = "B-18"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-19"
+memo = "entry B-18 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-18"
+
+[[intent]]
+id = "B-19"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-20"
+memo = "entry B-19 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-19"
+
+[[intent]]
+id = "B-20"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-21"
+memo = "entry B-20 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-20"
+
+[[intent]]
+id = "B-21"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-22"
+memo = "entry B-21 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-21"
+
+[[intent]]
+id = "B-22"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-23"
+memo = "entry B-22 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-22"
+
+[[intent]]
+id = "B-23"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-24"
+memo = "entry B-23 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-23"
+
+[[intent]]
+id = "B-24"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-25"
+memo = "entry B-24 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-24"
+
+[[intent]]
+id = "B-25"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-26"
+memo = "entry B-25 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-25"
+
+[[intent]]
+id = "B-26"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-27"
+memo = "entry B-26 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-26"
+
+[[intent]]
+id = "B-27"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-01"
+memo = "entry B-27 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-27"
+
+[[intent]]
+id = "B-28"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-02"
+memo = "entry B-28 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-28"
+
+[[intent]]
+id = "B-29"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-03"
+memo = "entry B-29 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-29"
+
+[[intent]]
+id = "B-30"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-04"
+memo = "entry B-30 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-30"
+
+[[intent]]
+id = "B-31"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-05"
+memo = "entry B-31 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-31"
+
+[[intent]]
+id = "B-32"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-06"
+memo = "entry B-32 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-32"
+
+[[intent]]
+id = "B-33"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-07"
+memo = "entry B-33 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-33"
+
+[[intent]]
+id = "B-34"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-08"
+memo = "entry B-34 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-34"
+
+[[intent]]
+id = "B-35"
+fact = "N-POP"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-09"
+memo = "entry B-35 (invariance negative fixture)"
+evidence = "DOC-PH-N-POP"
+idempotency_key = "invneg-B-35"
+
+[[leg]]
+intent = "E-1"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-1"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-2"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-2"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-3"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-3"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-4"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-4"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-5"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-5"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-6"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-6"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-7"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-7"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-8"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-8"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-9"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-9"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-10"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-10"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-11"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-11"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-12"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-12"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-13"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-13"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-14"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-14"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-15"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-15"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-16"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-16"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-17"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-17"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-18"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-18"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-19"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-19"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-20"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-20"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-21"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-21"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-22"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-22"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-23"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-23"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-24"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "E-24"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "200.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-1"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-1"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-2"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-3"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-4"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-5"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-6"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-7"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-8"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-9"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-9"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-10"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-10"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-11"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-11"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-12"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-12"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-13"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-13"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-14"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-14"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-15"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-15"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-16"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-16"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-17"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-17"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-18"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-18"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-19"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-19"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-20"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-20"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-21"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-21"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-22"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-22"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-23"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-23"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-24"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-24"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-25"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-25"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-26"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-26"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-27"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-27"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-28"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-28"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-29"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-29"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-30"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-30"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-31"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-31"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-32"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-32"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-33"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-33"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-34"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-34"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-35"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "B-35"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "157.43"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2026Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "filler_batch"
+ref = "fv1"
+principal = "selftest-preparer-1"
+
+[[step]]
+seq = 3
+kind = "batch"
+ref = "E-1..E-24"
+
+[[step]]
+seq = 4
+kind = "batch"
+ref = "B-1..B-35"
+
+[[step]]
+seq = 5
+kind = "finding_record"
+ref = "numbers.round_amount_density@1"
+principal = "examiner-1"
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the fixture's documents are placeholders reviewed by case-second-reader (plan §2.6)"

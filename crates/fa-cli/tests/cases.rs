@@ -17,6 +17,8 @@ mod budget;
 mod cells;
 #[path = "cases/evaluate.rs"]
 mod evaluate;
+#[path = "cases/invariance.rs"]
+mod invariance;
 #[path = "cases/property.rs"]
 mod property;
 #[path = "cases/run.rs"]
@@ -1517,4 +1519,122 @@ fn manual_assertion_cell_is_planned_by_attest_manual_and_committed_from_that_pla
         .find(|s| s.verb == "commit")
         .expect("its commit");
     assert_eq!(commit.exit, 0, "{text}");
+}
+
+/// The invariance fixture (`crates/fa-oracles/tests/fixtures/invariance/`):
+/// A6's filler fixture with a D row on jet.round_amounts (A11a).
+const INVARIANCE: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/invariance/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/invariance/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/invariance/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/invariance/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/invariance/expectations.toml"),
+    ),
+];
+
+/// A book with no filler_batch step cannot vary its filler: the row keeps
+/// waiting on the witness and never reads PASS.
+#[test]
+fn expectation_needing_invariance_with_one_book_id_is_unrun() {
+    let o = match run_files(
+        "invariance",
+        &INVARIANCE,
+        &[PlantedEdit {
+            file: "books/native.toml",
+            old: "[[step]]\nseq = 2\nkind = \"filler_batch\"\nref = \"fv1\"\nprincipal = \"selftest-preparer-1\"\n",
+            new: "",
+        }],
+        HARNESS_VERBS,
+    ) {
+        Ok(o) => o,
+        Err(o) => panic!("{}", o.text()),
+    };
+    let row = o.row("invariance-D-01").expect("the D row");
+    assert!(
+        row.starts_with("UNRUN ") && row.ends_with(" reason=filler_invariance"),
+        "{}",
+        o.text()
+    );
+}
+
+/// The witness at small volume: the seeded and the empty filler variants,
+/// no extremal one. The extremal variants (2,000 entries) run in the
+/// ignored tests of `--test cases_invariance` until fa-q7vt.
+fn no_extremal(s: &fa_oracles::cases::filler::FillerSpec) -> bool {
+    !matches!(s.kind, fa_oracles::cases::filler::FillerKind::Extremal(_))
+}
+
+/// A11a: the D row's single components agree on the five seeded variants
+/// and the empty one, run on its own book besides the main run: six
+/// variants, seven book ids, all through the binary.
+#[test]
+fn invariance_on_the_seeded_and_empty_variants_agrees_through_the_binary() {
+    let tiers = fa_oracles::cases::tiers::tiers().expect("the tier table");
+    let w = invariance::witness("invariance", &INVARIANCE, &tiers, &no_extremal);
+    let text = w.text();
+    let row = w.row("invariance-D-01").expect("the D row");
+    assert!(
+        row.starts_with(
+            "PASS invariance-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 "
+        ),
+        "{text}"
+    );
+    assert!(
+        row.ends_with(" invariance=agree(variants=6,book_ids=7)"),
+        "{text}"
+    );
+    assert!(
+        w.row("invariance-SELF-native")
+            .is_some_and(|l| l.starts_with("PASS ")
+                && l.ends_with(" invariance=agree(variants=6,book_ids=7)")),
+        "{text}"
+    );
+}
+
+/// A11a's negative at small volume: under a test tier table declaring
+/// numbers.round_amount_density tier L, four filler entries already move the
+/// finding from Medium to High (the fixture sits just under High), so the
+/// first seeded variant disagrees with the empty one and the row fails,
+/// naming the tier row.
+#[test]
+fn tier_l_row_disagrees_on_a_seeded_variant_naming_the_tier_row() {
+    let (tiers, line) = invariance::round_density_tier_l();
+    let w = invariance::witness(
+        "invariance_negative",
+        &invariance::NEGATIVE,
+        &tiers,
+        &no_extremal,
+    );
+    let text = w.text();
+    let row = w.row("invariance_negative-D-01").expect("the D row");
+    assert!(
+        row.starts_with("FAIL invariance_negative-D-01 D native N-1/default ")
+            && row.contains(" severity=Medium "),
+        "{text}"
+    );
+    assert!(
+        row.contains(" invariance=disagree(numbers.round_amount_density@1,severity,fv1@empty/")
+            && row.contains(",fv1@1/"),
+        "{text}"
+    );
+    assert!(
+        row.ends_with(&format!(
+            " reason=tier row case_procedure_tiers.toml:{line} declares L"
+        )),
+        "{text}"
+    );
 }

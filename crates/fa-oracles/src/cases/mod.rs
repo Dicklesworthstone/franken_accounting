@@ -63,6 +63,7 @@ pub mod filler;
 pub mod harness_verbs;
 pub mod header;
 pub mod intent_json;
+pub mod invariance;
 pub mod log;
 pub mod names;
 pub mod normalize;

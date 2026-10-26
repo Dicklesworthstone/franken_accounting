@@ -36,7 +36,7 @@ pub struct Evaluated {
 }
 
 /// The witness a D row still lacks when every component agrees.
-const FILLER: &str = "filler_invariance";
+pub(crate) const FILLER: &str = "filler_invariance";
 /// The witness a P row still lacks when every component agrees.
 const REFERENCE: &str = "reference";
 
@@ -317,6 +317,11 @@ pub fn project(run: &BookRun<'_>, finding: &Json) -> Projected {
                     .zip(ordinal)
                     .and_then(|(e, o)| run.legs.get(&(e.to_string(), o)).cloned());
                 p.cites.insert(leg.unwrap_or_else(|| "?leg".into()));
+                // A finding that cites a leg is a finding on its entry
+                // (an account-level procedure cites legs, never the entry).
+                if let Some(i) = entry.and_then(intent_of_vid) {
+                    p.entries.insert(i);
+                }
             }
             "account" => {
                 let code = c

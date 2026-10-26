@@ -33,6 +33,7 @@ use fa_oracles::json::Json;
 use super::budget::Budget;
 use super::cells;
 use super::evaluate;
+use super::invariance;
 
 /// A planted edit of a case file in a test copy: `old` must occur exactly
 /// once in the file as it then stands.
@@ -72,6 +73,13 @@ impl RunOutcome {
             .find(|l| l.split(' ').nth(1) == Some(id))
     }
 }
+
+/// The members one filler chunk posts by default: within the registered
+/// `max_batch_entries` (8,190), as the chunk rule allows ("at most"), and
+/// small because batch admission is superlinear in one batch's size. A
+/// 2,000-member `fa batch` did not finish in 30 min on a worker, where 100-member
+/// chunks posted the same entries at ~130 ms each (A11a's measurement).
+pub const FILLER_CHUNK: usize = 100;
 
 /// A fresh retained directory under the system temp dir; never deleted, so
 /// a printed `REPRODUCE` argv stays runnable.
@@ -322,7 +330,9 @@ impl<'c> BookRun<'c> {
             failure: None,
             map_batch_legs: true,
             filler: None,
-            chunk_max: filler::max_batch_entries().unwrap_or(8190),
+            chunk_max: filler::max_batch_entries()
+                .unwrap_or(8190)
+                .min(FILLER_CHUNK),
         }
     }
 
@@ -1704,7 +1714,7 @@ impl<'c> BookRun<'c> {
     }
 
     /// The SELF row's read: `fa procedure run jet.self_sourced_evidence`.
-    fn self_procedure(&mut self) {
+    pub(crate) fn self_procedure(&mut self) {
         if self.failure.is_some() || !self.unrun_steps.is_empty() {
             return;
         }
@@ -1875,7 +1885,23 @@ pub fn run_case_with(
                 twins.insert(id.clone(), t);
             }
         }
-        let rows = evaluate::rows(&run, &specs, &twins);
+        let mut rows = evaluate::rows(&run, &specs, &twins);
+        // A11a: the rows still waiting on filler invariance, compared
+        // across every filler spec and two book ids.
+        if let Ok(tiers) = fa_oracles::cases::tiers::tiers() {
+            let applied = invariance::apply(
+                &case,
+                book,
+                files.files,
+                &run,
+                &mut rows,
+                &specs,
+                &twins,
+                &tiers,
+            );
+            out.steps.extend(applied.steps);
+            out.lines.extend(applied.lines);
+        }
         out.lines.append(&mut run.lines);
         out.steps.append(&mut run.steps);
         for t in twins.values_mut() {
