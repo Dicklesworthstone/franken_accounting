@@ -256,6 +256,9 @@ pub struct BookRun<'c> {
     pub posts: BTreeMap<String, Call>,
     /// Procedure id → its recorded run.
     pub runs: BTreeMap<String, FindingRun>,
+    /// Procedure id → the call that was refused or errored instead of
+    /// recording or listing its run (an N row's FAIL names it, A11c).
+    pub failed_runs: BTreeMap<String, Call>,
     /// The case's files (a rule step's `rules/<name>.rule` source).
     pub texts: &'c [(&'c str, &'c str)],
     /// A `rule_propose` step's seq → the IR digest it reported.
@@ -296,6 +299,7 @@ impl<'c> BookRun<'c> {
             accounts: BTreeMap::new(),
             posts: BTreeMap::new(),
             runs: BTreeMap::new(),
+            failed_runs: BTreeMap::new(),
             texts,
             rule_digests: BTreeMap::new(),
             self_run: None,
@@ -1523,6 +1527,7 @@ impl<'c> BookRun<'c> {
         }
         let Some(cert) = call.str_field("findings_recorded", "certificate") else {
             self.lines.push(reproduce(&call));
+            self.failed_runs.insert(procedure.to_string(), call);
             return;
         };
         self.bind(
@@ -1550,6 +1555,7 @@ impl<'c> BookRun<'c> {
         );
         if listed.exit != 0 {
             self.lines.push(reproduce(&listed));
+            self.failed_runs.insert(procedure.to_string(), listed);
             return;
         }
         let rows = listed.array_field("finding_list", "findings");

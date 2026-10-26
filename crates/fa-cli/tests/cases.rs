@@ -689,3 +689,170 @@ fn n_whose_target_run_was_refused_reports_fail() {
         "{text}"
     );
 }
+
+/// An N whose target run errors (a parameter the procedure rejects at run
+/// time: `fa finding record` exits 2, no refusal) reads FAIL, never PASS,
+/// and prints the failed calls' argv. The twin carries the same step, so it
+/// errors too.
+#[test]
+fn n_whose_target_run_errored_reports_fail() {
+    let o = run_files(
+        "twins",
+        &TWINS,
+        &[PlantedEdit {
+            file: "books/native.toml",
+            old: "ref = \"jet.round_amounts@1\"",
+            new: "ref = \"jet.round_amounts@1\"\nparams = [\"round_power=31\"]",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("an errored target fails the N");
+    let text = o.text();
+    let at = o
+        .lines
+        .iter()
+        .position(|l| l.starts_with("FAIL twins-N-01 "))
+        .expect("the N row");
+    assert!(
+        o.lines[at].ends_with(
+            "twin=mutation:errored reason=expected a recorded run of jet.round_amounts observed exit=2; expected the twin's recorded run of jet.round_amounts observed exit=2"
+        ),
+        "{text}"
+    );
+    // Both failed `fa finding record` calls, the target's and the twin's.
+    let repro: Vec<&str> = o.lines[at - 1].lines().collect();
+    assert_eq!(repro.len(), 2, "{text}");
+    for line in &repro {
+        assert!(
+            line.starts_with("REPRODUCE fa --book ") && line.contains(" finding record "),
+            "{text}"
+        );
+    }
+    assert_ne!(repro[0], repro[1], "{text}");
+}
+
+/// The twin population fixture
+/// (`crates/fa-oracles/tests/fixtures/twins_population/`): a Benford N
+/// over 120 legs (A11c).
+const TWINS_POPULATION: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_population/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_population/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_population/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_population/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_population/expectations.toml"),
+    ),
+];
+
+/// Benford below its 500-leg minimum, used as an N: K-TIER admits it under
+/// the sourced-and-complete marker, but below `min_population` the finding
+/// cites nothing, so its digit-skew twin cannot report and the N fails.
+#[test]
+fn benford_below_its_minimum_as_an_n_fails_its_twin() {
+    let o = run_files("twins_population", &TWINS_POPULATION, &[], HARNESS_VERBS)
+        .expect_err("the N fails its twin");
+    let text = o.text();
+    assert!(
+        text.contains("CHECK twins_population K-TIER PASS"),
+        "{text}"
+    );
+    assert_eq!(
+        o.row("twins_population-N-01"),
+        Some(
+            "FAIL twins_population-N-01 N native B-1/default kind=no_finding twin=mutation:did_not_report reason=expected the twin to report observed did_not_report (population 120 < min_population 500)"
+        ),
+        "{text}"
+    );
+}
+
+/// The twin gap fixture (`crates/fa-oracles/tests/fixtures/twins_gap/`): an
+/// exact_gap N on ponzi.net_investment@4 (A11c; the shape of M-N-01).
+const TWINS_GAP: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_gap/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_gap/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_gap/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_gap/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins_gap/expectations.toml"),
+    ),
+];
+
+/// ponzi.net_investment@4 attributes cash-role legs only: A's value
+/// (1,000.00) misses the 300.00 of principal B moved to A without cash, so
+/// the gap from A's sourced 1,300.00 is exactly 300.00; C, with no
+/// transfer, shows gap 0.
+#[test]
+fn exact_gap_n_passes_when_the_gap_equals_the_mechanism_amount() {
+    let o = match run_files("twins_gap", &TWINS_GAP, &[], HARNESS_VERBS) {
+        Ok(o) => o,
+        Err(o) => panic!("{}", o.text()),
+    };
+    assert_eq!(
+        o.row("twins_gap-N-01"),
+        Some(
+            "UNRUN twins_gap-N-01 N native G-A/default kind=exact_gap gap=300.00 twin=mutation:gap:0.00 reason=filler_invariance"
+        ),
+        "{}",
+        o.text()
+    );
+    // The twin target is read from the target's own book: no twin book.
+    assert!(o.steps.iter().all(|s| s.book_variant == "native"));
+}
+
+/// A gap other than the declared amount, and a twin target whose gap is not
+/// 0, each fail the N.
+#[test]
+fn exact_gap_n_whose_gaps_disagree_reports_fail() {
+    let o = run_files(
+        "twins_gap",
+        &TWINS_GAP,
+        &[
+            PlantedEdit {
+                file: "expectations.toml",
+                old: "gap_amount = \"300.00\"",
+                new: "gap_amount = \"250.00\"",
+            },
+            PlantedEdit {
+                file: "expectations.toml",
+                old: "statistic_value = \"50000\"",
+                new: "statistic_value = \"60000\"",
+            },
+        ],
+        HARNESS_VERBS,
+    )
+    .expect_err("disagreeing gaps fail the N");
+    assert_eq!(
+        o.row("twins_gap-N-01"),
+        Some(
+            "FAIL twins_gap-N-01 N native G-A/default kind=exact_gap gap=300.00 twin=mutation:gap:100.00 reason=expected gap=250.00 observed gap=300.00; expected the twin target G-C gap=0 observed gap=100.00"
+        ),
+        "{}",
+        o.text()
+    );
+}

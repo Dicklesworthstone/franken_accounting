@@ -11,6 +11,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use fa_oracles::cases::amount::{format_amount, parse_amount};
+use fa_oracles::cases::book::StepKind;
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
@@ -19,11 +21,12 @@ use fa_oracles::cases::selfrow;
 use fa_oracles::cases::verdict::{RowLine, RowVerdict, cell_label};
 use fa_oracles::cases::{Case, Expectations};
 use fa_oracles::json::Json;
+use fa_registry::procedures::Procedures;
 use fa_registry::refusal_catalog::RefusalCatalog;
 
 use fa_oracles::cases::twin::{TwinExpect, TwinKind, TwinSpec};
 
-use super::run::{BookRun, reproduce};
+use super::run::{BookRun, FindingRun, reproduce};
 
 /// One evaluated row, with the `REPRODUCE` line a FAIL prints above it.
 pub struct Evaluated {
@@ -82,7 +85,12 @@ pub fn declared_rows(case: &Case) -> Vec<RowLine> {
     if let Some(set) = expectations(case) {
         for e in &set.expectations {
             let variant = variant_of(e).unwrap_or("-");
-            let targets: Vec<&Target> = set.targets_of(&e.id).collect();
+            // An N is one row whatever its sourced-value targets (A11c).
+            let targets: Vec<&Target> = if e.kind == ExpectationType::N {
+                Vec::new()
+            } else {
+                set.targets_of(&e.id).collect()
+            };
             if targets.is_empty() {
                 rows.push(blank(&e.id, e.kind.as_str(), variant, None));
             }
@@ -182,7 +190,13 @@ pub fn rows(
             .iter()
             .filter(|e| variant_of(e) == Some(variant))
         {
-            let targets: Vec<&Target> = set.targets_of(&e.id).collect();
+            // An N is one row: its `[[target]]` rows state an exact_gap N's
+            // sourced values, read by n_row (A11c).
+            let targets: Vec<&Target> = if e.kind == ExpectationType::N {
+                Vec::new()
+            } else {
+                set.targets_of(&e.id).collect()
+            };
             let mut slots: Vec<Option<&Target>> = targets.iter().copied().map(Some).collect();
             if slots.is_empty() {
                 slots.push(None);
@@ -664,10 +678,162 @@ fn self_row(run: &BookRun<'_>) -> Evaluated {
     finish(case, (row, Vec::new(), None))
 }
 
+/// Why an N cannot read a recorded run, and the failed call's `REPRODUCE`
+/// line when there was one.
+type RunMiss = (String, Option<String>);
+
+/// `procedure`'s recorded run in `r`, at the N's `version`. A run that was
+/// refused or errored names its exit (and refusal); `whose` is "a " for the
+/// target run and "the twin's " for the twin.
+fn recorded_run<'r>(
+    r: &'r BookRun<'_>,
+    procedure: &str,
+    version: Option<i128>,
+    whose: &str,
+) -> Result<&'r FindingRun, RunMiss> {
+    match r.runs.get(procedure) {
+        Some(found) if version.is_some() && found.version != version => Err((
+            format!(
+                "expected {whose}run of {procedure}@{} observed @{}",
+                int_text(version),
+                int_text(found.version)
+            ),
+            None,
+        )),
+        Some(found) => Ok(found),
+        None => Err(match r.failed_runs.get(procedure) {
+            Some(c) => (
+                format!(
+                    "expected {whose}recorded run of {procedure} observed exit={}{}",
+                    c.exit,
+                    c.refusal_id()
+                        .map_or_else(String::new, |id| format!(" refusal={id}"))
+                ),
+                Some(reproduce(c)),
+            ),
+            None => (
+                format!("expected {whose}recorded run of {procedure} observed none"),
+                None,
+            ),
+        }),
+    }
+}
+
+/// How many of a run's findings cite `intent`'s entry.
+fn findings_on(r: &BookRun<'_>, found: &FindingRun, intent: &str) -> usize {
+    found
+        .findings
+        .iter()
+        .filter(|f| project(r, f).entries.contains(intent))
+        .count()
+}
+
+/// An exact_gap N's gap on `subject` (its target or twin target): the
+/// sourced value of its `[[target]]` row less the procedure's value, read
+/// from the one finding that cites the subject's entry under the sourced
+/// statistic's name, at that statistic's scale.
+fn gap_on(
+    r: &BookRun<'_>,
+    n: &Expectation,
+    subject: &str,
+    found: &FindingRun,
+) -> Result<(i128, u8), String> {
+    let sourced = r
+        .case
+        .expectations
+        .as_ref()
+        .and_then(|set| set.targets_of(&n.id).find(|t| t.fact == subject))
+        .ok_or_else(|| format!("expected a sourced value of {subject} observed none"))?;
+    let name = sourced.fields.str("statistic_name").unwrap_or_default();
+    let want = sourced
+        .fields
+        .str("statistic_value")
+        .and_then(|v| v.parse::<i128>().ok())
+        .ok_or_else(|| format!("expected a sourced statistic_value of {subject} observed none"))?;
+    let intent = intent_of(r, subject);
+    let stat = |f: &Json, k: &str| f.get("statistic").and_then(|s| s.get(k)).cloned();
+    let hits: Vec<&Json> = found
+        .findings
+        .iter()
+        .filter(|f| {
+            project(r, f).entries.contains(&intent)
+                && stat(f, "name").as_ref().and_then(Json::as_str) == Some(name)
+        })
+        .collect();
+    let [hit] = hits.as_slice() else {
+        return Err(format!(
+            "expected one {name} finding citing {intent} observed {}",
+            hits.len()
+        ));
+    };
+    let value = stat(hit, "value").as_ref().and_then(Json::as_int);
+    let scale = stat(hit, "scale").as_ref().and_then(Json::as_int);
+    let (Some(value), Some(scale)) = (value, scale.and_then(|s| u8::try_from(s).ok())) else {
+        return Err(format!(
+            "expected the {name} finding citing {intent} to state its value and scale observed none"
+        ));
+    };
+    if let Some(s) = sourced.fields.int("statistic_scale")
+        && s != i128::from(scale)
+    {
+        return Err(mismatch("scale", s, scale));
+    }
+    want.checked_sub(value)
+        .map(|gap| (gap, scale))
+        .ok_or_else(|| format!("expected a gap within i128 observed {want} - {value}"))
+}
+
+/// A registered unit's scale.
+fn unit_scale(code: &str) -> Option<u8> {
+    fa_registry::units_embedded()
+        .ok()?
+        .into_iter()
+        .find(|u| u.code == code)
+        .map(|u| u.scale)
+}
+
+/// Why a population-gated procedure's twin reported nothing: its run states
+/// a population below the run's `min_population` (the step's param, else the
+/// registered default), where the procedure claims nothing and cites nothing.
+fn below_minimum(r: &BookRun<'_>, found: &FindingRun, procedure: &str) -> Option<String> {
+    let population = found.findings.iter().find_map(|f| {
+        let stat = f.get("statistic")?;
+        (stat.get("name")?.as_str()? == "population")
+            .then(|| stat.get("value")?.as_int())
+            .flatten()
+    })?;
+    let set = r
+        .book
+        .steps
+        .iter()
+        .find(|s| {
+            s.step_kind() == Some(StepKind::FindingRecord)
+                && s.reference.split_once('@').map(|(p, _)| p) == Some(procedure)
+        })
+        .and_then(|s| s.params.as_ref())
+        .and_then(|ps| {
+            ps.iter()
+                .find_map(|p| p.strip_prefix("min_population=")?.parse::<i128>().ok())
+        });
+    let min = match set {
+        Some(m) => m,
+        None => {
+            Procedures::embedded()
+                .ok()?
+                .get(procedure)?
+                .parameter("min_population")?
+                .default
+        }
+    };
+    (population < min).then(|| format!(" (population {population} < min_population {min})"))
+}
+
 /// An N row (§5.2, §3.7 item 3; A11c): the target run shows nothing (the
-/// intent admitted, or no finding on it), and the harness-only twin, on its
-/// own book, shows what the mechanism predicts (it reports, or is refused).
-/// A twin that errors is FAIL, never UNRUN. Like D and P, an N still lacks
+/// intent admitted, or no finding on it) or, for an exact_gap N, a gap of
+/// exactly `gap_amount` from its sourced value; and the harness-only twin
+/// shows what the mechanism predicts: it reports, is refused or, for an
+/// exact_gap N's twin target in the same book, shows a gap of 0. A run that
+/// is refused or errors is FAIL, never UNRUN. Like D and P, an N still lacks
 /// the filler-invariance witness, so agreement reads UNRUN.
 fn n_row(
     run: &BookRun<'_>,
@@ -684,14 +850,8 @@ fn n_row(
     let mut fails: Vec<String> = Vec::new();
     let mut needs: Option<String> = None;
     let mut repro: Vec<String> = Vec::new();
-    let finding_on = |r: &BookRun<'_>, procedure: &str, intent: &str| -> Option<usize> {
-        r.runs.get(procedure).map(|run| {
-            run.findings
-                .iter()
-                .filter(|f| project(r, f).entries.contains(intent))
-                .count()
-        })
-    };
+    let procedure = f.str("procedure").unwrap_or_default();
+    let version = f.int("version");
     // The target run.
     match kind {
         "no_refusal" => match run.posts.get(&intent) {
@@ -708,7 +868,6 @@ fn n_row(
             None => fails.push(format!("expected a post of {intent} observed none")),
         },
         "no_finding" => {
-            let procedure = f.str("procedure").unwrap_or_default();
             if let Some(c) = run.posts.get(&intent)
                 && (c.exit != 0 || !run.vids.contains_key(&intent))
             {
@@ -720,19 +879,50 @@ fn n_row(
                 ));
                 repro.push(reproduce(c));
             }
-            match finding_on(run, procedure, &intent) {
-                None => fails.push(format!(
-                    "expected a recorded run of {procedure} observed none"
-                )),
-                Some(0) => {}
-                Some(n) => fails.push(format!(
-                    "expected no {procedure} finding on {intent} observed {n}"
-                )),
+            match recorded_run(run, procedure, version, "a ") {
+                Ok(found) => match findings_on(run, found, &intent) {
+                    0 => {}
+                    n => fails.push(format!(
+                        "expected no {procedure} finding on {intent} observed {n}"
+                    )),
+                },
+                Err((why, call)) => {
+                    fails.push(why);
+                    repro.extend(call);
+                }
             }
         }
+        "exact_gap" => match recorded_run(run, procedure, version, "a ")
+            .and_then(|found| gap_on(run, e, target, found).map_err(|why| (why, None)))
+        {
+            Ok((gap, scale)) => {
+                let observed = format_amount(gap, scale);
+                let unit = f.str("gap_unit").unwrap_or_default();
+                let want = f.str("gap_amount").unwrap_or_default();
+                match unit_scale(unit) {
+                    Some(s) if s != scale => fails.push(mismatch("scale", s, scale)),
+                    Some(s) if parse_amount(want, s).ok() != Some(gap) => {
+                        fails.push(mismatch("gap", want, &observed));
+                    }
+                    Some(_) => {}
+                    None => {
+                        fails.push(format!("expected gap_unit {unit} registered observed none"))
+                    }
+                }
+                row.projection.push(("gap".into(), observed));
+            }
+            Err((why, call)) => {
+                fails.push(why);
+                repro.extend(call);
+            }
+        },
         _ => needs = Some(format!("needs:A11c ({kind} evaluation)")),
     }
-    // The twin.
+    // The twin. An exact_gap N's twin target is in the target's own book.
+    let twin = match spec {
+        Some(Ok(s)) if s.n_kind == "exact_gap" => Some(run),
+        _ => twin,
+    };
     let token = match spec {
         None => {
             fails.push("expected a twin observed none".into());
@@ -759,20 +949,20 @@ fn n_row(
                 } else {
                     match &spec.expect {
                         TwinExpect::Reports => {
-                            let procedure = spec.procedure.as_ref().map_or("", |(p, _)| p.as_str());
-                            match finding_on(t, procedure, &twin_intent) {
-                                Some(n) if n > 0 => format!("{}:reported", spec.kind.as_str()),
-                                Some(_) => {
-                                    fails.push(
-                                        "expected the twin to report observed did_not_report"
-                                            .into(),
-                                    );
+                            match recorded_run(t, procedure, version, "the twin's ") {
+                                Ok(found) if findings_on(t, found, &twin_intent) > 0 => {
+                                    format!("{}:reported", spec.kind.as_str())
+                                }
+                                Ok(found) => {
+                                    fails.push(format!(
+                                        "expected the twin to report observed did_not_report{}",
+                                        below_minimum(t, found, procedure).unwrap_or_default()
+                                    ));
                                     format!("{}:did_not_report", spec.kind.as_str())
                                 }
-                                None => {
-                                    fails.push(format!(
-                                        "expected the twin's recorded run of {procedure} observed none"
-                                    ));
+                                Err((why, call)) => {
+                                    fails.push(why);
+                                    repro.extend(call);
                                     format!("{}:errored", spec.kind.as_str())
                                 }
                             }
@@ -796,8 +986,28 @@ fn n_row(
                             )
                         }
                         TwinExpect::GapZero => {
-                            needs.get_or_insert_with(|| "needs:A11c (exact_gap twin)".into());
-                            format!("{}:unrun", spec.kind.as_str())
+                            match recorded_run(t, procedure, version, "the twin's ").and_then(
+                                |found| {
+                                    gap_on(t, e, &spec.twin_target, found)
+                                        .map_err(|why| (why, None))
+                                },
+                            ) {
+                                Ok((gap, scale)) => {
+                                    let observed = format_amount(gap, scale);
+                                    if gap != 0 {
+                                        fails.push(format!(
+                                        "expected the twin target {} gap=0 observed gap={observed}",
+                                        spec.twin_target
+                                    ));
+                                    }
+                                    format!("{}:gap:{observed}", spec.kind.as_str())
+                                }
+                                Err((why, call)) => {
+                                    fails.push(why);
+                                    repro.extend(call);
+                                    format!("{}:errored", spec.kind.as_str())
+                                }
+                            }
                         }
                     }
                 }
@@ -806,6 +1016,8 @@ fn n_row(
     };
     row.projection.push(("twin".into(), token));
     let witnesses = vec![("twin_target".to_string(), intent.clone())];
+    // An exact_gap target and its twin target can name the same failed call.
+    repro.dedup();
     let repro = (!repro.is_empty()).then(|| repro.join("\n"));
     if !fails.is_empty() {
         row.verdict = RowVerdict::Fail;
