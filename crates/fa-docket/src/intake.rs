@@ -563,7 +563,10 @@ const SHA256_K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-fn sha256(data: &[u8]) -> [u8; 32] {
+/// SHA-256 (FIPS 180-4) of `data`. Also the digest the work-witness ledger
+/// names `*_sha256` (fa-vtzt), so a manifest field means what it says.
+#[must_use]
+pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
@@ -1930,6 +1933,26 @@ pub fn run_fw_extraction(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sha256_matches_the_fips_180_known_answers() {
+        let hex = |d: [u8; 32]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(
+            hex(sha256(b"")),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            hex(sha256(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // Two blocks: the padding crosses the 56-byte boundary.
+        assert_eq!(
+            hex(sha256(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
     use asupersync::Budget;
     use asupersync::runtime::RuntimeBuilder;
     use fa_journal::{

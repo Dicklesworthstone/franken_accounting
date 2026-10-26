@@ -1,11 +1,12 @@
-# Work-witness manifest for FA-ART-CAL-01 (Lantern calibration corpus, fa-4psc).
-# Produced by: cargo test -p fa-lantern --test calibration labeled_procedures_measure_what_the_calibration_registry_pins
+# Work-witness manifest for FA-ART-CAL-01: the Lantern calibration measurement
+# (fa-4psc, fa-vtzt). Every witness field is what the producing test computes,
+# and it checks them against the ledger on every run.
 schema_version = 1
 artifact_id = "FA-ART-CAL-01"
 kind = "calibration"
-produced_by = "cargo test -p fa-lantern --test calibration labeled_procedures_measure_what_the_calibration_registry_pins"
-git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
-corpus_manifest_sha256 = "72f5f2e6ca0d1d46e1455b70e1a36b00478921f0e3fb66f699fb6981534c6c84"
+produced_by = "cargo test -p fa-lantern --test lantern calibration_tests::labeled_procedures_measure_what_the_calibration_registry_pins"
+git_commit = "e26c60dcd5e60ce833330b893bdc654e54069691"
+corpus_manifest_sha256 = "21d4863acf468d5092eb513ea04942adc6a23166a32a708a6e00e97e87381a17"
 case_count = 210
 
 [[per_procedure_confusion]]
