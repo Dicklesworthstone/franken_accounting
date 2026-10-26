@@ -3176,9 +3176,35 @@ impl<'a> Check<'a, '_> {
                                 self.book.kind.as_str()
                             ),
                         ))
+                    } else if r.is_empty() {
+                        Some((LoadErrorKind::MissingField, "a filler_batch names its filler variant".into()))
+                    } else if self.book.kind == VariantKind::Migration {
+                        // Migration filler is staged chunks, before finalize (A6).
+                        self.book.steps[..i]
+                            .iter()
+                            .any(|p| p.step_kind() == Some(StepKind::MigrateFinalize))
+                            .then(|| {
+                                (
+                                    LoadErrorKind::UnknownPeriod,
+                                    format!(
+                                        "filler_batch step {} comes after `migrate_finalize`; migration filler is staged before it (A6)",
+                                        s.seq
+                                    ),
+                                )
+                            })
                     } else {
-                        r.is_empty()
-                            .then(|| (LoadErrorKind::MissingField, "a filler_batch names its filler variant".into()))
+                        // Filler posts while its periods are Open: after
+                        // their period_open step and before their first
+                        // soft-close, close or lock (A6).
+                        super::filler::open_at(self.book, s.seq).is_empty().then(|| {
+                            (
+                                LoadErrorKind::UnknownPeriod,
+                                format!(
+                                    "filler_batch step {} posts while no period is Open: filler for a period comes after its period_open step and before its first soft-close, close or lock (A6)",
+                                    s.seq
+                                ),
+                            )
+                        })
                     }
                 }
                 StepKind::Issue => (!self.period(r))

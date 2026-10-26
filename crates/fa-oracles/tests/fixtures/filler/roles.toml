@@ -1,0 +1,31 @@
+# Filler fixture roles: labels only (plan §2.8); no person stands behind them.
+
+[[role]]
+label = "selftest-preparer-1"
+kind = "harness"
+description = "prepares the fixture's synthetic entries and its filler"
+
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "runs the fixture book's period transitions"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "reviews the fixture's placeholder and filler documents"
+
+[[role]]
+label = "examiner-1"
+kind = "harness"
+description = "records the fixture's audit procedure runs"
+
+[[role]]
+label = "fixture-vendor-1"
+kind = "harness"
+description = "the target entries' synthetic counterparty"
+
+[[role]]
+label = "fixture-filler-vendor"
+kind = "harness"
+description = "the filler's synthetic counterparty, related to no target"

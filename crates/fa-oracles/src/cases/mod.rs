@@ -58,6 +58,7 @@ pub mod error;
 pub mod expect;
 pub mod fact;
 mod fields;
+pub mod filler;
 pub mod harness_verbs;
 pub mod header;
 pub mod intent_json;
@@ -74,6 +75,7 @@ pub mod scope;
 pub mod selfrow;
 pub mod sentence;
 pub mod source;
+pub mod stream;
 pub mod stub;
 pub mod templates;
 #[cfg(test)]
