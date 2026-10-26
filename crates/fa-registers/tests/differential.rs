@@ -790,7 +790,7 @@ fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
                     "same-commit ordering is handled in the delta fold"
                 );
                 assert!(advance.fold.pending.is_empty());
-                assert!(advance.fold.pending_holds.is_empty());
+                assert!(advance.fold.pending_holds().is_empty());
                 maintained_matches_oracle(&advance, &oracle, k.book.book_id);
                 assert!(!maintain(&mut k, period).wrote);
             }

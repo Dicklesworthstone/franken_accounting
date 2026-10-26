@@ -191,6 +191,16 @@ pub struct Fold {
     pub(crate) pending_holds: BTreeMap<(CommitSeq, VId), [u8; 32]>,
 }
 
+impl Fold {
+    /// The unresolved `Pending` holds the fold digest commits to: each hold's
+    /// leg contribution digest, keyed by `(commit_seq, entry_vid)`. Read-only;
+    /// the fold alone maintains them.
+    #[must_use]
+    pub fn pending_holds(&self) -> &BTreeMap<(CommitSeq, VId), [u8; 32]> {
+        &self.pending_holds
+    }
+}
+
 /// `vid(Register) = H("fa:vid:register:v1" ‖ book ‖ account ‖ unit ‖ period)`.
 #[must_use]
 // The period code's length prefix: a period ref is at most
