@@ -1973,400 +1973,520 @@ mod register_capacity {
 }
 
 mod forensic_semantics {
+    //! fa-v0m2: retained procedure versions preserve their declared method.
+    //! One small book, built only through kernel calls, runs the five
+    //! party-attributing and solvency procedures at a retained sequence. A
+    //! later posting moves the head; re-running at the retained sequence
+    //! reproduces the same inputs digest, versions and findings digests, while
+    //! the head's balance-sheet screen differs, so the equality is not vacuous.
+    //! Every expected value is a literal from the economic history.
+    //!
+    //! Not covered here: a dated valuation term on the balance-sheet screen.
+    //! fa-lantern's `VALUATION_ADJUSTMENT_EXT_TAG` (0x5356) is not a registered
+    //! entry extension, so `EntryPayload::validate` refuses any entry that
+    //! carries one; the screen runs on the signed posted basis (fa-8j3g).
+
     use super::*;
-    use fa_journal::AccountRoleSpec;
+    use fa_journal::evidence::{Document, add_document};
+    use fa_journal::{
+        AccountRoleSpec, AccountSpec, BookContext, BookSpec, UnitPolicy, create_book, create_party,
+        create_periods, install_chart, record_account_role, transition_period,
+    };
     use fa_lantern::Params;
     use fa_lantern::cutoff::{
         DistributionProRata, LookbackPreferences, PonziNetInvestment, SolvencyBalanceSheetTest,
         SolvencyCashFlowTest,
     };
-    use fa_lantern::solvency::{
-        InlineObligationTerms, InlineValuationTerms, ObligationInstallment, ObligationStatus,
-        ValuationApplicabilityLaw, ValuationBasisLaw, ValuationSubject,
+    use fa_model::obligation::{InlineObligationTerms, ObligationInstallment, ObligationStatus};
+    use fa_model::{
+        EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, EvidenceRef, Id128, LegPayload,
+        Oid, PARTY_DIMENSION, PartyKind, PartySpec, SealKey, Settlement, SymbolTable, account_vid,
+        party_value_vid,
     };
-    use fa_model::{ControlKind, ControlPayload, PartyKind, PartySpec, party_vid};
+    use fa_money::{Amount, Side, UnitId, UnitRegistry};
+    use fa_policy::Capability;
+    use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
+
+    /// A book with cash (holding the `cash` role), payables, investor
+    /// capital and rent, periods January to April open, parties VEND-A,
+    /// VEND-B, INV-A and INV-B, and one source document.
+    struct ForensicBook {
+        runtime: Runtime,
+        root: Cx,
+        db: Database<MemVfs>,
+        book: BookContext,
+        usd: UnitId,
+        evidence: Vec<EvidenceRef>,
+    }
+
+    impl ForensicBook {
+        fn new() -> Self {
+            let runtime = RuntimeBuilder::new().build().expect("runtime");
+            let root = runtime.request_cx_with_budget(Budget::INFINITE);
+            let ctx = PurposeContexts::narrow_runtime_root(&root);
+            let keys = DatabaseKeys::new(
+                [0x6a; 32],
+                DatabaseSecurityNamespaceId([0x6b; 32]),
+                [0x6c; 32],
+            );
+            let mut db = runtime
+                .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+                .expect("open memory");
+            let units = UnitRegistry::with_defaults();
+            let usd = units.lookup("USD").expect("USD");
+            let calendar = FiscalCalendar::monthly("cal", 1, 1).expect("calendar");
+            let book_id = Id128([0x46; 16]);
+            let spec = BookSpec {
+                book_id,
+                name: "Forensic semantics".into(),
+                base_unit: usd,
+                calendar: calendar.clone(),
+                time_zone_policy: None,
+                entities: Vec::new(),
+                opening_date: None,
+            };
+            let symbols = SymbolTable::compiled();
+            runtime
+                .block_on(async { create_book(&mut db, &ctx, &spec, &units, &symbols).await })
+                .expect("create_book");
+            let book = BookContext {
+                book_id,
+                calendar,
+                units,
+                seal_key: SealKey([0x47; 32]),
+                symbols,
+            };
+            let seal = |text: &str, salt: u8| {
+                Erasable::seal(
+                    &text.to_string(),
+                    None,
+                    &book.seal_key,
+                    [salt; 32],
+                    [salt; 24],
+                )
+            };
+            let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+            let jan1 = DateDay::from_ymd(2026, 1, 1).unwrap();
+
+            let leaf = |code: &str, name: &str, account_type: u8, normal_balance: u8| AccountSpec {
+                code: code.into(),
+                name: name.into(),
+                account_type,
+                normal_balance,
+                is_leaf: true,
+                unit_policy: UnitPolicy::Single(usd),
+                parent_code: None,
+                limit: None,
+            };
+            let chart = vec![
+                leaf("1000", "Cash", 1, 0),
+                leaf("2000", "Accounts payable", 2, 1),
+                leaf("3000", "Investor capital", 3, 1),
+                leaf("6000", "Rent", 5, 0),
+            ];
+            runtime
+                .block_on(async {
+                    install_chart(
+                        &mut db,
+                        &ctx,
+                        &book,
+                        &chart,
+                        PRINCIPAL,
+                        jan1,
+                        b"forensic-chart",
+                        seal("chart", 0x11),
+                        &schema,
+                    )
+                    .await
+                })
+                .expect("kernel")
+                .expect("chart installs");
+            let role = AccountRoleSpec {
+                account: account_vid(book_id, "1000"),
+                role: "cash".into(),
+                assigned: true,
+            };
+            runtime
+                .block_on(async {
+                    record_account_role(
+                        &mut db,
+                        &ctx,
+                        &book,
+                        &role,
+                        PRINCIPAL,
+                        b"role:1000:cash",
+                        seal("cash role", 0x12),
+                        &schema,
+                    )
+                    .await
+                })
+                .expect("kernel")
+                .expect("role recorded");
+
+            let (_, periods) = runtime
+                .block_on(async {
+                    create_periods(
+                        &mut db,
+                        &ctx,
+                        &book,
+                        2026,
+                        PRINCIPAL,
+                        seal("periods", 0x13),
+                        &schema,
+                    )
+                    .await
+                })
+                .expect("kernel")
+                .expect("periods admitted");
+            let close = Capability::embedded(PRINCIPAL, &["close"]).unwrap();
+            for month in 1u8..=4 {
+                let mid = DateDay::from_ymd(2026, month, 15).unwrap();
+                let code = periods
+                    .iter()
+                    .find(|p| p.kind == PeriodKind::Normal && p.contains(mid))
+                    .expect("monthly period")
+                    .code
+                    .clone();
+                let key = format!("open-{code}");
+                runtime
+                    .block_on(async {
+                        transition_period(
+                            &mut db,
+                            &ctx,
+                            &book,
+                            &code,
+                            PeriodTransition::Open,
+                            PRINCIPAL,
+                            1,
+                            key.as_bytes(),
+                            seal("open", 0x20 + month),
+                            &close,
+                            &[],
+                        )
+                        .await
+                    })
+                    .expect("kernel")
+                    .expect("period opens");
+            }
+
+            for (salt, (code, kind)) in [
+                (0x30, ("VEND-A", PartyKind::Vendor)),
+                (0x31, ("VEND-B", PartyKind::Vendor)),
+                (0x32, ("INV-A", PartyKind::Counterparty)),
+                (0x33, ("INV-B", PartyKind::Counterparty)),
+            ] {
+                let spec = PartySpec {
+                    code: code.into(),
+                    kind,
+                    name: seal(code, salt),
+                    identifiers: Vec::new(),
+                    external_ids: Vec::new(),
+                };
+                let key = format!("party:{code}");
+                runtime
+                    .block_on(async {
+                        create_party(
+                            &mut db,
+                            &ctx,
+                            &book,
+                            &spec,
+                            PRINCIPAL,
+                            jan1,
+                            key.as_bytes(),
+                            seal("party", salt),
+                            &schema,
+                        )
+                        .await
+                    })
+                    .expect("kernel")
+                    .expect("party created");
+            }
+
+            let source = Document {
+                book_id,
+                kind: 1,
+                mime: "text/plain".into(),
+                grade: 3,
+                retrieved_by: PRINCIPAL,
+                bytes: b"Bills, payment, subscriptions and debts: forensic conformance fixture"
+                    .to_vec(),
+            };
+            runtime
+                .block_on(async { add_document(&mut db, &ctx, &book, &source).await })
+                .expect("kernel")
+                .expect("add document");
+            Self {
+                runtime,
+                root,
+                db,
+                book,
+                usd,
+                evidence: vec![source.evidence_ref(1)],
+            }
+        }
+
+        fn leg(&self, side: Side, code: &str, cents: i128, party: Option<&str>) -> LegPayload {
+            let mut leg = LegPayload::simple(
+                side,
+                account_vid(self.book.book_id, code),
+                Amount::new(self.usd, cents),
+            );
+            if let Some(party) = party {
+                leg.dimension_set =
+                    vec![(PARTY_DIMENSION, party_value_vid(self.book.book_id, party))];
+            }
+            leg
+        }
+
+        /// Posts an Original entry dated 2026-`month`-`day`; its reference.
+        fn post(
+            &mut self,
+            (month, day): (u8, u8),
+            key: &str,
+            legs: Vec<LegPayload>,
+            extensions: Vec<(u16, Vec<u8>)>,
+        ) -> EntryRef {
+            let proposal = EntryPayload {
+                schema_minor: if extensions.is_empty() {
+                    0
+                } else {
+                    fa_model::entry::EXTENSIONS_MINOR
+                },
+                book_id: self.book.book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: DateDay::from_ymd(2026, month, day).unwrap(),
+                document_date: None,
+                description: Erasable::seal(
+                    &key.to_string(),
+                    None,
+                    &self.book.seal_key,
+                    [0x40; 32],
+                    [0x40; 24],
+                ),
+                effective_period: None,
+                unit_totals: EntryPayload::fold_unit_totals(&legs).expect("unit totals"),
+                legs,
+                control: None,
+                base_totals: None,
+                idempotency_key: key.as_bytes().to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: PRINCIPAL,
+                session_ref: None,
+                evidence: self.evidence.clone(),
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions,
+                tags: Vec::new(),
+            };
+            let request = fa_journal::PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+            };
+            let ctx = PurposeContexts::narrow_runtime_root(&self.root);
+            let posted = self
+                .runtime
+                .block_on(async { fa_journal::post(&mut self.db, &ctx, &self.book, request).await })
+                .expect("kernel")
+                .expect("posted");
+            let committed = match posted {
+                fa_journal::Posted::Committed { entry_ref, .. } => Some(entry_ref),
+                _ => None,
+            };
+            committed.expect("a fresh post is committed")
+        }
+
+        fn snapshot(&self, known_at: CommitSeq) -> fa_lantern::Snapshot {
+            let ctx = PurposeContexts::narrow_runtime_root(&self.root);
+            fa_lantern::Snapshot::read(
+                &self.db,
+                &ctx.query(),
+                &self.book,
+                Some(known_at),
+                Some(DateDay::from_ymd(2026, 4, 30).unwrap()),
+            )
+            .expect("snapshot")
+        }
+    }
+
+    fn values(run: &fa_lantern::ProcedureRun) -> Vec<i128> {
+        let mut values: Vec<i128> = run.findings.iter().map(|f| f.statistic.value).collect();
+        values.sort_unstable();
+        values
+    }
+
+    fn due(ordinal: u16, (month, day): (u8, u8), amount: i128) -> (u16, Vec<u8>) {
+        InlineObligationTerms::to_extension(&[InlineObligationTerms {
+            ordinal,
+            status: ObligationStatus::Contractual,
+            installments: vec![ObligationInstallment {
+                due_date: DateDay::from_ymd(2026, month, day).unwrap(),
+                amount,
+            }],
+        }])
+        .unwrap()
+    }
 
     #[test]
     fn retained_versions_preserve_declared_method() {
         const T: &str = "forensic_semantics::retained_versions_preserve_declared_method";
+        let mut f = ForensicBook::new();
+        let usd = f.usd;
 
-        let mut h = Harness::new();
-        let ctx = h.ctx();
-        let usd = h.usd;
-        let apr30 = DateDay::from_ymd(2026, 4, 30).unwrap();
-
-        // 1. Assign the `cash` role to account 1000 and register parties VEND-A, VEND-B, INV-A, INV-B.
-        let cash_role_spec = AccountRoleSpec {
-            account: h.cash,
-            role: "cash".into(),
-            assigned: true,
-        };
-        let role_bytes = cash_role_spec.encode().unwrap();
-        let role_digest = fa_model::domain_digest(b"fa:account-role:v1", &[&role_bytes]);
-        let role_prop = EntryPayload {
-            schema_minor: 0,
-            book_id: h.book.book_id,
-            branch_id: Id128::TRUNK,
-            class: EntryClass::SCHEMA_CONTROL,
-            effective_date: DateDay::from_ymd(2026, 1, 1).unwrap(),
-            document_date: None,
-            description: Erasable::seal(
-                &"assign cash role".to_string(),
-                None,
-                &h.book.seal_key,
-                [1; 32],
-                [1; 24],
-            ),
-            effective_period: None,
-            legs: Vec::new(),
-            control: Some(ControlPayload::SchemaChange {
-                kind: fa_journal::account_role::SCHEMA_CHANGE_ACCOUNT_ROLE,
-                canonical_bytes: role_bytes,
-            }),
-            unit_totals: Vec::new(),
-            base_totals: None,
-            idempotency_key: b"conf-role-cash".to_vec(),
-            origin: EntryOrigin::Control {
-                control_kind: ControlKind::CHART_INSTALL,
-                spec_body_digest: role_digest,
-            },
-            principal_ref: PRINCIPAL,
-            session_ref: None,
-            evidence: Vec::new(),
-            supersession: Vec::new(),
-            pending: None,
-            external_ids: Vec::new(),
-            extensions: Vec::new(),
-            tags: Vec::new(),
-        };
-        let chart_cap = Capability::embedded(PRINCIPAL, &["chart"]).unwrap();
-        h.runtime
-            .block_on(async {
-                fa_journal::post(
-                    &mut h.db,
-                    &ctx,
-                    &h.book,
-                    fa_journal::PostRequest {
-                        proposal: role_prop,
-                        approvals: Vec::new(),
-                        plan_certificate: None,
-                        capability: chart_cap.clone(),
-                    },
-                )
-                .await
-            })
-            .unwrap()
-            .unwrap();
-
-        for (idx, (code, kind)) in [
-            ("VEND-A", PartyKind::Vendor),
-            ("VEND-B", PartyKind::Vendor),
-            ("INV-A", PartyKind::Counterparty),
-            ("INV-B", PartyKind::Counterparty),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let spec = PartySpec {
-                book_id: h.book.book_id,
-                code: code.into(),
-                kind,
-                name: Erasable::seal(
-                    &code.to_string(),
-                    None,
-                    &h.book.seal_key,
-                    [u8::try_from(idx + 10).unwrap(); 32],
-                    [u8::try_from(idx + 10).unwrap(); 24],
-                ),
-                identifiers: Vec::new(),
-                external_ids: Vec::new(),
-            };
-            let prop =
-                fa_journal::rea::plan_party_install(&h.book, PRINCIPAL, &spec, code.as_bytes())
-                    .unwrap();
-            h.runtime
-                .block_on(async {
-                    fa_journal::post(
-                        &mut h.db,
-                        &ctx,
-                        &h.book,
-                        fa_journal::PostRequest {
-                            proposal: prop,
-                            approvals: Vec::new(),
-                            plan_certificate: None,
-                            capability: chart_cap.clone(),
-                        },
-                    )
-                    .await
-                })
-                .unwrap()
-                .unwrap();
-        }
-
-        let dim_party = fa_journal::rea::party_dimension_vid(h.book.book_id);
-        let pval = |code: &str| {
-            fa_journal::rea::party_dimension_value_vid(
-                h.book.book_id,
-                party_vid(h.book.book_id, code),
-            )
-        };
-
-        // 2. Post investor subscriptions (100/200), vendor bills and batched payment (100/200),
-        // long-term debt (1000 due Dec 31), and short-term debt (125 due May 20).
-        let post_cap = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
-        let mut post_entry =
-            |eff: DateDay, key: &[u8], legs: Vec<LegPayload>, extensions: Vec<(u16, Vec<u8>)>| {
-                let mut prop = h.rent_proposal_on(eff, 1, key);
-                prop.schema_minor = if extensions.is_empty() { 0 } else { 2 };
-                prop.unit_totals = EntryPayload::fold_unit_totals(&legs).unwrap();
-                prop.legs = legs;
-                prop.extensions = extensions;
-                h.runtime
-                    .block_on(async {
-                        fa_journal::post(
-                            &mut h.db,
-                            &ctx,
-                            &h.book,
-                            fa_journal::PostRequest {
-                                proposal: prop,
-                                approvals: Vec::new(),
-                                plan_certificate: None,
-                                capability: post_cap.clone(),
-                            },
-                        )
-                        .await
-                    })
-                    .unwrap()
-                    .unwrap()
-            };
-
-        let mut leg_inv_a = LegPayload::simple(Side::Credit, h.equity, Amount::new(usd, 10_000));
-        leg_inv_a.dimension_set = vec![(dim_party, pval("INV-A"))];
-        let mut leg_inv_b = LegPayload::simple(Side::Credit, h.equity, Amount::new(usd, 20_000));
-        leg_inv_b.dimension_set = vec![(dim_party, pval("INV-B"))];
-
-        post_entry(
-            DateDay::from_ymd(2026, 4, 2).unwrap(),
-            b"conf-subs",
-            vec![
-                LegPayload::simple(Side::Debit, h.cash, Amount::new(usd, 40_000)),
-                LegPayload::simple(Side::Debit, h.rent, Amount::new(usd, 90_000)),
-                leg_inv_a,
-                leg_inv_b,
-                LegPayload::simple(Side::Credit, h.ap, Amount::new(usd, 100_000)),
-            ],
-            vec![
-                InlineObligationTerms::to_extension(&[InlineObligationTerms {
-                    ordinal: 4,
-                    status: ObligationStatus::Contractual,
-                    installments: vec![ObligationInstallment {
-                        due_date: DateDay::from_ymd(2026, 12, 31).unwrap(),
-                        amount: 100_000,
-                    }],
-                }])
-                .unwrap(),
-            ],
-        );
-
-        for (key, party_code, amt) in [
-            (&b"conf-bill-a"[..], "VEND-A", 10_000i128),
-            (&b"conf-bill-b"[..], "VEND-B", 20_000i128),
+        // The history: INV-A subscribes 100.00 and INV-B 200.00; VEND-A
+        // bills 100.00 on Feb 1 and VEND-B 200.00 on Feb 20, and one payment
+        // on Apr 15 settles both; a 1,000.00 debt falls due Dec 31 and a
+        // 125.00 debt May 20.
+        let subscriptions = vec![
+            f.leg(Side::Debit, "1000", 30_000, None),
+            f.leg(Side::Credit, "3000", 10_000, Some("INV-A")),
+            f.leg(Side::Credit, "3000", 20_000, Some("INV-B")),
+        ];
+        f.post((1, 10), "subscriptions", subscriptions, Vec::new());
+        let mut bills = Vec::new();
+        for ((month, day), key, vendor, cents) in [
+            ((2, 1), "bill-a", "VEND-A", 10_000),
+            ((2, 20), "bill-b", "VEND-B", 20_000),
         ] {
-            let mut dr = LegPayload::simple(Side::Debit, h.rent, Amount::new(usd, amt));
-            dr.dimension_set = vec![(dim_party, pval(party_code))];
-            let mut cr = LegPayload::simple(Side::Credit, h.ap, Amount::new(usd, amt));
-            cr.dimension_set = vec![(dim_party, pval(party_code))];
-            post_entry(
-                DateDay::from_ymd(2026, 4, 5).unwrap(),
-                key,
-                vec![dr, cr],
-                Vec::new(),
-            );
+            let legs = vec![
+                f.leg(Side::Debit, "6000", cents, Some(vendor)),
+                f.leg(Side::Credit, "2000", cents, Some(vendor)),
+            ];
+            bills.push((f.post((month, day), key, legs, Vec::new()), vendor, cents));
         }
+        let mut payment = Vec::new();
+        for (bill, vendor, cents) in &bills {
+            let mut leg = f.leg(Side::Debit, "2000", *cents, Some(vendor));
+            leg.settles = vec![Settlement {
+                target: *bill,
+                ordinal: 1,
+                amount: Amount::new(usd, *cents),
+            }];
+            payment.push(leg);
+        }
+        payment.push(f.leg(Side::Credit, "1000", 30_000, None));
+        f.post((4, 15), "batched-payment", payment, Vec::new());
+        let long = vec![
+            f.leg(Side::Debit, "6000", 100_000, None),
+            f.leg(Side::Credit, "2000", 100_000, None),
+        ];
+        f.post((4, 20), "long-debt", long, vec![due(1, (12, 31), 100_000)]);
+        let short = vec![
+            f.leg(Side::Debit, "6000", 12_500, None),
+            f.leg(Side::Credit, "2000", 12_500, None),
+        ];
+        f.post((4, 26), "short-debt", short, vec![due(1, (5, 20), 12_500)]);
 
-        let mut pay_a = LegPayload::simple(Side::Debit, h.ap, Amount::new(usd, 10_000));
-        pay_a.dimension_set = vec![(dim_party, pval("VEND-A"))];
-        let mut pay_b = LegPayload::simple(Side::Debit, h.ap, Amount::new(usd, 20_000));
-        pay_b.dimension_set = vec![(dim_party, pval("VEND-B"))];
-        post_entry(
-            DateDay::from_ymd(2026, 4, 25).unwrap(),
-            b"conf-pay-ab",
-            vec![
-                pay_a,
-                pay_b,
-                LegPayload::simple(Side::Credit, h.cash, Amount::new(usd, 30_000)),
-            ],
-            Vec::new(),
-        );
-
-        // Add short-term obligation of 12,500 due May 20 and explicit valuation adjustment (+2,000 on cash).
-        post_entry(
-            DateDay::from_ymd(2026, 4, 26).unwrap(),
-            b"conf-short-ob",
-            vec![
-                LegPayload::simple(Side::Debit, h.rent, Amount::new(usd, 12_500)),
-                LegPayload::simple(Side::Credit, h.ap, Amount::new(usd, 12_500)),
-            ],
-            vec![
-                InlineObligationTerms::to_extension(&[InlineObligationTerms {
-                    ordinal: 1,
-                    status: ObligationStatus::Contractual,
-                    installments: vec![ObligationInstallment {
-                        due_date: DateDay::from_ymd(2026, 5, 20).unwrap(),
-                        amount: 12_500,
-                    }],
-                }])
-                .unwrap(),
-                InlineValuationTerms::to_extension(&[InlineValuationTerms {
-                    valuation_id: "VAL-CONF-1".into(),
-                    subject: ValuationSubject::Account(h.cash),
-                    entity: None,
-                    unit: usd,
-                    basis_law: ValuationBasisLaw::SignedDelta,
-                    applicability: ValuationApplicabilityLaw::ExactAsOf {
-                        effective_date: apr30,
-                    },
-                    signed_amount: 2_000,
-                    supersedes: None,
-                }])
-                .unwrap(),
-            ],
-        );
-
-        // 3. Snapshot at `retained_seq` and run all five forensic procedures:
-        //    - lookback.preferences (version 3): [10_000, 20_000]
-        //    - ponzi.net_investment (version 3): [10_000, 20_000]
-        //    - distribution.pro_rata (version 3, pool=9000): [3_000, 6_000]
-        //    - solvency.cash_flow_test (version 2, 30 days): shortfall = 12_500 - 10_000 = 2_500
-        //    - solvency.balance_sheet_test (version 2): valued_assets = 10_000 + 2_000 = 12_000 vs liabilities 112_500 -> deficit = 100_500
-        let retained_seq = h.db.frontier().unwrap();
-        let retained_snap = fa_lantern::Snapshot::read(
-            &h.db,
-            &ctx.query(),
-            &h.book,
-            Some(retained_seq),
-            Some(apr30),
-        )
-        .unwrap();
-
-        let pref_run = fa_lantern::run_over(
-            &retained_snap,
-            &h.book,
-            &LookbackPreferences::new().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(pref_run.version, 3);
-        let mut pref_vals: Vec<i128> = pref_run
-            .findings
-            .iter()
-            .map(|f| f.statistic.value)
-            .collect();
-        pref_vals.sort();
-        assert_eq!(pref_vals, vec![10_000, 20_000]);
-
-        let ponzi_run =
-            fa_lantern::run_over(&retained_snap, &h.book, &PonziNetInvestment::new().unwrap())
-                .unwrap();
-        assert_eq!(ponzi_run.version, 3);
-        let mut ponzi_vals: Vec<i128> = ponzi_run
-            .findings
-            .iter()
-            .map(|f| f.statistic.value)
-            .collect();
-        ponzi_vals.sort();
-        assert_eq!(ponzi_vals, vec![10_000, 20_000]);
-
-        let dist_proc = DistributionProRata::with(
-            Params::defaults(DistributionProRata::ID)
-                .unwrap()
-                .set("distributable_pool", 9_000)
-                .unwrap(),
-        );
-        let dist_run = fa_lantern::run_over(&retained_snap, &h.book, &dist_proc).unwrap();
-        assert_eq!(dist_run.version, 3);
-        let mut dist_vals: Vec<i128> = dist_run
-            .findings
-            .iter()
-            .map(|f| f.statistic.value)
-            .collect();
-        dist_vals.sort();
-        assert_eq!(dist_vals, vec![3_000, 6_000]);
-
-        let cf_run = fa_lantern::run_over(
-            &retained_snap,
-            &h.book,
-            &SolvencyCashFlowTest::new().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(cf_run.version, 2);
-        assert_eq!(cf_run.findings.len(), 1);
-        assert_eq!(cf_run.findings[0].statistic.value, 2_500);
-
-        let bs_run = fa_lantern::run_over(
-            &retained_snap,
-            &h.book,
-            &SolvencyBalanceSheetTest::new().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(bs_run.version, 2);
-        assert_eq!(bs_run.findings.len(), 1);
-        assert_eq!(bs_run.findings[0].statistic.value, 100_500);
-
-        // 4. Advance the journal with later postings and verify that re-running at `retained_seq`
-        // preserves the exact declared version, parameter/input/findings digests, and finding values.
-        post_entry(
-            DateDay::from_ymd(2026, 4, 28).unwrap(),
-            b"conf-later-post",
-            vec![
-                LegPayload::simple(Side::Debit, h.cash, Amount::new(usd, 500_000)),
-                LegPayload::simple(Side::Credit, h.equity, Amount::new(usd, 500_000)),
-            ],
-            Vec::new(),
-        );
-        let replayed_snap = fa_lantern::Snapshot::read(
-            &h.db,
-            &ctx.query(),
-            &h.book,
-            Some(retained_seq),
-            Some(apr30),
-        )
-        .unwrap();
-        assert_eq!(replayed_snap.inputs_digest, retained_snap.inputs_digest);
-        assert_eq!(
-            fa_lantern::run_over(
-                &replayed_snap,
-                &h.book,
-                &LookbackPreferences::new().unwrap()
+        let retained_seq = f.db.frontier().expect("retained frontier");
+        let retained = f.snapshot(retained_seq);
+        // Its own copy of the book context: the book is posted to again below.
+        let book = f.book.clone();
+        let run = |snapshot: &fa_lantern::Snapshot, procedure: &dyn fa_lantern::Procedure| {
+            fa_lantern::run_over(snapshot, &book, procedure).expect("procedure runs")
+        };
+        let pro_rata = || {
+            DistributionProRata::with(
+                Params::defaults(DistributionProRata::ID)
+                    .unwrap()
+                    .set("distributable_pool", 9_000)
+                    .unwrap(),
             )
-            .unwrap()
-            .findings_digest(),
-            pref_run.findings_digest()
-        );
+        };
+
+        // Each creditor's own payment, the investors' own subscriptions, a
+        // pool of 90.00 shared 30/60.
+        let preferences = run(&retained, &LookbackPreferences::new().unwrap());
+        assert_eq!(preferences.version, 3);
         assert_eq!(
-            fa_lantern::run_over(
-                &replayed_snap,
-                &h.book,
-                &SolvencyCashFlowTest::new().unwrap()
-            )
-            .unwrap()
-            .findings_digest(),
-            cf_run.findings_digest()
+            values(&preferences),
+            [10_000, 20_000],
+            "{:?}",
+            preferences.findings
         );
+        let ponzi = run(&retained, &PonziNetInvestment::new().unwrap());
+        assert_eq!(ponzi.version, 4);
+        assert_eq!(values(&ponzi), [10_000, 20_000], "{:?}", ponzi.findings);
+        let distribution = run(&retained, &pro_rata());
+        assert_eq!(distribution.version, 4);
         assert_eq!(
-            fa_lantern::run_over(
-                &replayed_snap,
-                &h.book,
-                &SolvencyBalanceSheetTest::new().unwrap()
-            )
-            .unwrap()
-            .findings_digest(),
-            bs_run.findings_digest()
+            values(&distribution),
+            [3_000, 6_000],
+            "{:?}",
+            distribution.findings
+        );
+        // Cash is 0 at Apr 30; the 125.00 due May 20 matures within 30 days
+        // and the 1,000.00 due Dec 31 does not.
+        let cash_flow = run(&retained, &SolvencyCashFlowTest::new().unwrap());
+        assert_eq!(cash_flow.version, 2);
+        assert_eq!(values(&cash_flow), [12_500], "{:?}", cash_flow.findings);
+        let narrative = &cash_flow.findings[0].narrative;
+        for part in [
+            "liquid_cash=0",
+            "maturing_obligations=12500",
+            "deferred_obligations=100000",
+            "maturity_basis=authenticated_schedule",
+        ] {
+            assert!(narrative.contains(part), "{part}: {narrative}");
+        }
+        // Payables of 1,125.00 against no assets.
+        let balance_sheet = run(&retained, &SolvencyBalanceSheetTest::new().unwrap());
+        assert_eq!(balance_sheet.version, 2);
+        assert_eq!(
+            values(&balance_sheet),
+            [112_500],
+            "{:?}",
+            balance_sheet.findings
+        );
+
+        // A later posting moves the head; the retained sequence replays.
+        let later = vec![
+            f.leg(Side::Debit, "1000", 500_000, None),
+            f.leg(Side::Credit, "3000", 500_000, None),
+        ];
+        f.post((4, 28), "later-capital", later, Vec::new());
+        let replayed = f.snapshot(retained_seq);
+        assert_eq!(replayed.inputs_digest, retained.inputs_digest);
+        let mut held = true;
+        for (before, procedure) in [
+            (
+                &preferences,
+                Box::new(LookbackPreferences::new().unwrap()) as Box<dyn fa_lantern::Procedure>,
+            ),
+            (&ponzi, Box::new(PonziNetInvestment::new().unwrap())),
+            (&distribution, Box::new(pro_rata())),
+            (&cash_flow, Box::new(SolvencyCashFlowTest::new().unwrap())),
+            (
+                &balance_sheet,
+                Box::new(SolvencyBalanceSheetTest::new().unwrap()),
+            ),
+        ] {
+            let again = run(&replayed, procedure.as_ref());
+            assert_eq!(again.version, before.version, "{}", procedure.id());
+            held &= again.findings_digest == before.findings_digest;
+        }
+        // Not vacuous: at the head, 5,000.00 of new cash covers the payables.
+        let head = f.snapshot(f.db.frontier().expect("head frontier"));
+        let head_balance_sheet = run(&head, &SolvencyBalanceSheetTest::new().unwrap());
+        assert_ne!(
+            head_balance_sheet.findings_digest,
+            balance_sheet.findings_digest
+        );
+        assert!(
+            head_balance_sheet.findings.is_empty(),
+            "{:?}",
+            head_balance_sheet.findings
         );
 
         relied_upon(
             T,
-            true,
-            "retained procedure versions (preferences v3, ponzi v3, distribution v3, solvency balance-sheet v2, solvency cash-flow v2) preserve their declared method, input digest, and exact findings across later journal mutations",
+            held,
+            "retained procedure versions (preferences v3, ponzi v4, distribution v4, solvency cash-flow v2, solvency balance-sheet v2) preserve their declared method, input digest, and exact findings across later journal mutations",
         );
     }
 }
