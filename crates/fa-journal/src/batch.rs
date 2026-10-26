@@ -2108,7 +2108,7 @@ mod tests {
             + (fa_model::limits::MAX_BATCH_TEMPLATE_BYTES - one_entry_bytes) / per_additional_entry;
         let over_count = fit_count + 1;
         assert!(
-            over_count < 200 && over_count < fa_model::limits::MAX_BATCH_ENTRIES,
+            over_count < 200_usize.min(fa_model::limits::MAX_BATCH_ENTRIES),
             "over_count={over_count} must be well below MAX_BATCH_ENTRIES"
         );
 
