@@ -331,7 +331,25 @@ fn present_tense_lines(readme: &str) -> Vec<String> {
 
 /// What the registry says is wrong with the command `line`, if anything.
 fn unregistered(reg: &Registry, line: &str) -> Option<String> {
-    let argv: Vec<String> = words(line).into_iter().skip(1).collect();
+    let mut argv: Vec<String> = words(line).into_iter().skip(1).collect();
+    // Global options may precede the verb (`fa --token t --book b period
+    // close …`): a registered flag takes its value, a switch takes none, and
+    // any other leading option is refused.
+    while let Some(first) = argv.first().filter(|w| w.starts_with("--")).cloned() {
+        let (flag, inline_value) = first
+            .split_once('=')
+            .map_or((first.as_str(), false), |(f, _)| (f, true));
+        let takes = if reg.global.flags.iter().any(|g| g == flag) {
+            if inline_value { 1 } else { 2 }
+        } else if reg.global.switches.iter().any(|g| g == flag) {
+            1
+        } else {
+            return Some(format!(
+                "`{line}`: `{flag}` is not a registered global option"
+            ));
+        };
+        argv.drain(..takes.min(argv.len()));
+    }
     let rest = reg.expand_alias(&argv);
     let Some(verb) = reg.verb(rest.first()?) else {
         return Some(format!("`{line}`: `{}` is not a registered verb", rest[0]));
@@ -412,6 +430,21 @@ fn the_registry_check_names_an_invented_verb_subcommand_or_flag() {
             "{verdict:?} should name {names}"
         );
     }
+    // Global options may precede the verb, a flag with its value or inline;
+    // an unregistered leading option is still named.
+    for ok in [
+        "fa --token controller.token --book ./books/acme period close FY2026-P03 --reason Scheduled --yes --json",
+        "fa --book=./books/acme --json tb --period FY2026-P03",
+    ] {
+        assert_eq!(unregistered(reg, ok), None, "{ok}");
+    }
+    let verdict = unregistered(reg, "fa --frobnicate x tb --period FY2026-P03");
+    assert!(
+        verdict
+            .as_deref()
+            .is_some_and(|v| v.contains("`--frobnicate` is not a registered global option")),
+        "{verdict:?}"
+    );
 }
 
 /// Phrases the `case` docs carried while Restatement posting waited on
