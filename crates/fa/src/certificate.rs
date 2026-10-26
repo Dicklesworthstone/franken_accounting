@@ -710,7 +710,7 @@ fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
     )
 }
 
-/// Canonical registry inputs carried by native statement and open-item bundles.
+/// Canonical registry inputs carried by native statements, open items and explanations.
 /// The closure must be the one this certificate actually names. A historical
 /// or custom book unit table cannot be replaced by the executable's defaults:
 /// native statements render zero-valued lines for every book unit as well.
@@ -720,10 +720,12 @@ pub(crate) fn offline_report_registries(
 ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
     if !matches!(
         &certificate.selection,
-        ReportSelection::Statement(_) | ReportSelection::OpenItems { .. }
+        ReportSelection::Statement(_)
+            | ReportSelection::OpenItems { .. }
+            | ReportSelection::ExplainBalance { .. }
     ) {
         return Err(invalid(
-            "portable report registries require a native statement or open-item certificate",
+            "portable report registries require a native statement, open-item or balance-explanation certificate",
         ));
     }
     let sources = report_registries(&certificate.selection);
@@ -769,15 +771,54 @@ pub(crate) fn offline_report_registries_at<V: Vfs + Clone>(
 ) -> Outcome<Vec<(String, Vec<u8>)>> {
     if !matches!(
         &certificate.selection,
-        ReportSelection::Statement(_) | ReportSelection::OpenItems { .. }
+        ReportSelection::Statement(_)
+            | ReportSelection::OpenItems { .. }
+            | ReportSelection::ExplainBalance { .. }
     ) {
         return Ok(Err(invalid(
-            "portable report registries require a native statement or open-item certificate",
+            "portable report registries require a native statement, open-item or balance-explanation certificate",
         )));
     }
     match registry_epoch::resolve(db, cx, book, certificate)? {
         Ok(Some(epoch)) => Ok(epoch.offline_documents(&book.units)),
+        Ok(None)
+            if matches!(
+                &certificate.selection,
+                ReportSelection::ExplainBalance { .. }
+            ) =>
+        {
+            Ok(Err(Refusal::new(
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+                exit::ENVIRONMENT,
+                "portable balance explanations require their original retained reason-code registry epoch",
+                "plan §13.6 (every displayed reason is bound to its original source registry)",
+                "retain the certificate with its original registry sources before exporting it; never substitute a newer reason-code registry",
+            )))
+        }
         Ok(None) => Ok(offline_report_registries(certificate, &book.units)),
+        Err(refusal) => Ok(Err(refusal)),
+    }
+}
+
+/// A displayed supersession code must resolve in the same immutable reason
+/// source that travels with the explanation. Native replay proves the literal
+/// code, but older committed histories may contain codes outside this profile.
+pub(crate) fn check_explanation_reasons_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    certificate: &ReportCertificate,
+    explanation: &BalanceExplanation,
+) -> Outcome<()> {
+    match registry_epoch::resolve(db, cx, book, certificate)? {
+        Ok(Some(epoch)) => Ok(epoch.check_explanation_reasons(explanation)),
+        Ok(None) => Ok(Err(Refusal::new(
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+            exit::ENVIRONMENT,
+            "the explanation's original reason-code source is not retained",
+            "plan §13.6 (each displayed reason requires its authenticated original meaning)",
+            "retain the certificate with its original five-source registry epoch before export",
+        ))),
         Err(refusal) => Ok(Err(refusal)),
     }
 }

@@ -104,20 +104,20 @@ fn native_open_item_bundles_recompute_applications_and_reversal_parity_at_each_f
         4_500,
         &[(first, 3_000), (second, 1_000)],
     );
-    frontiers.push((receipt.recorded_at, Some(7_000), Some(true)));
+    frontiers.push((receipt.recorded_at(), Some(7_000), Some(true)));
     let reversed = reverse(&mut fixture, receipt.entry_ref(), b"undo-open-collection");
-    frontiers.push((reversed.recorded_at, Some(10_000), Some(false)));
+    frontiers.push((reversed.recorded_at(), Some(10_000), Some(false)));
     // The kernel refuses revival of a settlement-bearing payment by reversing
     // its reversal. Restore the settlement-free invoice instead, after the
     // payment is undone, and retain that undone application in its history.
     let reversed_invoice = reverse(&mut fixture, first, b"undo-open-invoice");
-    frontiers.push((reversed_invoice.recorded_at, None, Some(false)));
+    frontiers.push((reversed_invoice.recorded_at(), None, Some(false)));
     let restored = reverse(
         &mut fixture,
         reversed_invoice.entry_ref(),
         b"restore-open-invoice",
     );
-    frontiers.push((restored.recorded_at, Some(10_000), Some(false)));
+    frontiers.push((restored.recorded_at(), Some(10_000), Some(false)));
     let later = fixture.transfer(
         day(2026, 1, 1),
         b"later-backdated-open-item",
@@ -141,7 +141,12 @@ fn native_open_item_bundles_recompute_applications_and_reversal_parity_at_each_f
             let verified = verify(&fixture.book, &produced, &certified.certificate);
             let report = verified.open_items.unwrap();
             assert_eq!(report.account_filter, account.map(|vid| vid.0));
-            assert!(!report.items.iter().any(|item| item.entry == later.vid.0));
+            assert!(
+                !report
+                    .items
+                    .iter()
+                    .any(|item| item.entry == later.entry_ref().vid.0)
+            );
             if account == Some(unused) {
                 assert!(report.items.is_empty());
                 assert_eq!(report.accounts.len(), 1);
@@ -161,7 +166,7 @@ fn native_open_item_bundles_recompute_applications_and_reversal_parity_at_each_f
                     None => assert!(item.applications.is_empty()),
                     Some(live) => {
                         assert_eq!(item.applications.len(), 1);
-                        assert_eq!(item.applications[0].entry, receipt.vid.0);
+                        assert_eq!(item.applications[0].entry, receipt.entry_ref().vid.0);
                         assert_eq!(item.applications[0].amount, 3_000);
                         assert_eq!(item.applications[0].live, live);
                     }
@@ -180,13 +185,18 @@ fn native_open_item_bundles_recompute_applications_and_reversal_parity_at_each_f
                 let remainder = report
                     .items
                     .iter()
-                    .find(|item| item.entry == receipt.vid.0 && item.ordinal == 1)
+                    .find(|item| item.entry == receipt.entry_ref().vid.0 && item.ordinal == 1)
                     .unwrap();
                 assert_eq!(remainder.original, 4_500);
                 assert_eq!(remainder.applied_out, 4_000);
                 assert_eq!(remainder.open, 500);
             } else {
-                assert!(!report.items.iter().any(|item| item.entry == receipt.vid.0));
+                assert!(
+                    !report
+                        .items
+                        .iter()
+                        .any(|item| item.entry == receipt.entry_ref().vid.0)
+                );
             }
         }
     }

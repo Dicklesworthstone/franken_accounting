@@ -1,5 +1,5 @@
-//! Portable native and dimension-filtered trial balances, statements and open
-//! items over a payload-complete checkpoint.
+//! Portable native and dimension-filtered trial balances, statements, open
+//! items and balance explanations over a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
 //! independent verifier derives selectors from every record, reconstructs the
@@ -18,6 +18,9 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::{Bundle, Journal, StoredCheckpoint, code};
 
+mod explanation;
+pub use explanation::check_scope as check_explanation_scope;
+
 mod open_items;
 pub use open_items::check_scope as check_open_items_scope;
 
@@ -30,7 +33,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or v4 statement certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, or v4 statement certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -57,7 +60,7 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Package an already replayed native or dimension-filtered trial balance, or
-/// statement. Open-item reports require the authenticated registry closure in
+/// statement. Open-item reports and balance explanations require the authenticated registry closure in
 /// `assemble_with_registries`. For an instant-selected certificate, the facade
 /// supplies its observed time frontier
 /// as `known_at` so the complete upper-tick closure is retained as well.
@@ -81,10 +84,12 @@ pub fn assemble(
     assemble_inner(journal, checkpoint, certificate, known_at, bodies, &[])
 }
 
-/// Package a native statement or open-item report with the exact canonical
-/// registry documents bound by its source certificate. The facade verifies
-/// their closure and the book's complete unit table before calling this API;
-/// open-item reports also pass `check_open_items_scope` before assembly.
+/// Package a native statement, open-item report or balance explanation with
+/// the exact canonical registry documents bound by its source certificate.
+/// The facade verifies their closure and the book's complete unit table before
+/// calling this API. Open items pass `check_open_items_scope`; explanations
+/// pass `check_explanation_scope` and append their original reason-code
+/// registry as the fifth document. No v1 fallback serves either v3 selector.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -95,20 +100,31 @@ pub fn assemble_with_registries(
     bodies: &BTreeMap<VId, RunBody>,
     registries: &[(String, Vec<u8>)],
 ) -> Outcome<Bundle> {
-    if !(certificate.starts_with(b"fa:report-certificate:v4")
-        || open_items_certificate(certificate))
-        || registries.iter().map(|(name, _)| name.as_str()).ne([
+    let explanation = explanation_certificate(certificate);
+    let expected: &[&str] = if explanation {
+        &[
             "account_types",
             "entry_classes",
             "units",
             "foundations",
-        ])
+            "reason_codes",
+        ]
+    } else {
+        &["account_types", "entry_classes", "units", "foundations"]
+    };
+    if !(certificate.starts_with(b"fa:report-certificate:v4")
+        || open_items_certificate(certificate)
+        || explanation)
+        || registries
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .ne(expected.iter().copied())
         || registries
             .iter()
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native statement and open-item reports require all four canonical registry documents in closure order",
+            "native reports require their exact canonical registry profile in closure order: four documents for statements and open items, five including reason_codes for balance explanations",
         )));
     }
     assemble_inner(
@@ -121,10 +137,18 @@ pub fn assemble_with_registries(
     )
 }
 
-/// Recognize the supported v3 report family without accepting an explanation
-/// certificate under an open-item label. The facade and independent verifier
-/// still validate the entire certificate and recompute its accounting output.
+/// The v3 tag and literal output format must agree; neither v3 selector may
+/// borrow another family's registry obligations. The facade and independent
+/// verifier still validate the complete certificate and reproduce its output.
 fn open_items_certificate(certificate: &[u8]) -> bool {
+    v3_certificate(certificate, "fa:open-items:v1", 1)
+}
+
+fn explanation_certificate(certificate: &[u8]) -> bool {
+    v3_certificate(certificate, "fa:balance-explanation:v1", 0)
+}
+
+fn v3_certificate(certificate: &[u8], output: &str, selector: u8) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
         if reader.fixed::<{ b"fa:report-certificate:v3".len() }>("report format")?
@@ -134,13 +158,13 @@ fn open_items_certificate(certificate: &[u8]) -> bool {
         }
         reader.str(128, "report scope")?;
         reader.str(128, "report authority")?;
-        if reader.str(128, "report output format")? != "fa:open-items:v1" {
+        if reader.str(128, "report output format")? != output {
             return Ok(false);
         }
         reader.fixed::<16>("report book")?;
         reader.fixed::<16>("report branch")?;
         reader.u64("report known-at")?;
-        Ok(reader.u8("report selector")? == 1)
+        Ok(reader.u8("report selector")? == selector)
     };
     header().unwrap_or(false)
 }
@@ -161,10 +185,11 @@ fn assemble_inner(
             || certificate.starts_with(b"fa:report-certificate:v8"))
         || major == 2
             && (certificate.starts_with(b"fa:report-certificate:v4")
-                || open_items_certificate(certificate)))
+                || open_items_certificate(certificate)
+                || explanation_certificate(certificate)))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report or balance explanation with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()

@@ -1,5 +1,5 @@
 //! Immutable source registries for retained native trial balances, open items,
-//! and statements.
+//! statements and balance explanations.
 //!
 //! The epoch archives source text, not executable code or an authorization grant.
 //! Its semantic closure is the digest the original certificate already binds.
@@ -24,8 +24,15 @@ use fgdb_types::CanonicalScalar;
 
 const FORMAT: &[u8] = b"fa:report-registry-epoch:v1";
 const NAMES: [&str; 4] = ["account_types", "entry_classes", "units", "foundations"];
+const EXPLANATION_NAMES: [&str; 5] = [
+    "account_types",
+    "entry_classes",
+    "units",
+    "foundations",
+    "reason_codes",
+];
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
-const MAX_EPOCH_BYTES: usize = 4 * MAX_SOURCE_BYTES + 1024;
+const MAX_EPOCH_BYTES: usize = 5 * MAX_SOURCE_BYTES + 1024;
 // Source transcripts share the existing certificate-maintenance storage class,
 // like plan certificates. The epoch kind, body format and identity domain
 // distinguish them from report artifacts without changing genesis symbols.
@@ -54,6 +61,7 @@ pub(crate) fn supports(selection: &ReportSelection) -> bool {
         ReportSelection::TrialBalance(_)
             | ReportSelection::OpenItems { .. }
             | ReportSelection::Statement(_)
+            | ReportSelection::ExplainBalance { .. }
     )
 }
 
@@ -70,13 +78,17 @@ fn document(name: &str, text: &str) -> Result<Document, Refusal> {
 
 impl Epoch {
     fn new(book_id: Id128, sources: Vec<(String, String)>) -> Result<Self, Refusal> {
-        if sources.iter().map(|(name, _)| name.as_str()).ne(NAMES)
+        let names = sources
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        if names != NAMES && names != EXPLANATION_NAMES
             || sources
                 .iter()
                 .any(|(_, text)| text.len() > MAX_SOURCE_BYTES)
         {
             return Err(invalid(
-                "a native report epoch requires its four bounded registry sources in closure order",
+                "a native report epoch requires four bounded sources, or five for balance explanations, in exact closure order",
             ));
         }
         let sources_ref = sources
@@ -101,6 +113,39 @@ impl Epoch {
         )
     }
 
+    fn for_selection(book_id: Id128, selection: &ReportSelection) -> Result<Self, Refusal> {
+        if !matches!(selection, ReportSelection::ExplainBalance { .. }) {
+            return Self::current(book_id);
+        }
+        Self::new(
+            book_id,
+            report_registries(selection)
+                .into_iter()
+                .map(|(name, text)| (name.into(), text.into()))
+                .collect(),
+        )
+    }
+
+    /// A valid epoch for another report cannot erase this report's additional
+    /// registry obligation, even when a caller reseals the certificate.
+    fn admit_for(
+        &self,
+        selection: &ReportSelection,
+        units: &fa_money::UnitRegistry,
+    ) -> Result<(), Refusal> {
+        let expected = if matches!(selection, ReportSelection::ExplainBalance { .. }) {
+            EXPLANATION_NAMES.len()
+        } else {
+            NAMES.len()
+        };
+        if self.sources.len() != expected {
+            return Err(unavailable(
+                "the retained registry profile does not match this report's selector",
+            ));
+        }
+        self.admit(units)
+    }
+
     fn encode(&self) -> Result<Vec<u8>, Refusal> {
         let mut writer = Writer::new();
         writer
@@ -117,7 +162,7 @@ impl Epoch {
 
     fn decode(bytes: &[u8]) -> Result<Self, Refusal> {
         if bytes.len() > MAX_EPOCH_BYTES {
-            return Err(invalid("registry epoch exceeds its 4 MiB source budget"));
+            return Err(invalid("registry epoch exceeds its 5 MiB source budget"));
         }
         let mut reader = Reader::new(bytes);
         let bad = |error| invalid(format!("malformed registry epoch: {error}"));
@@ -130,7 +175,9 @@ impl Epoch {
         }
         let book_id = Id128(reader.fixed("registry epoch book").map_err(bad)?);
         let closure = reader.fixed("registry epoch closure").map_err(bad)?;
-        let count = reader.count(NAMES.len(), "registry sources").map_err(bad)?;
+        let count = reader
+            .count(EXPLANATION_NAMES.len(), "registry sources")
+            .map_err(bad)?;
         let mut sources = Vec::with_capacity(count);
         for _ in 0..count {
             let name = reader.str(64, "registry name").map_err(bad)?.to_string();
@@ -164,6 +211,30 @@ impl Epoch {
                         "registry epoch {name} differs from this interpreter's supported accounting semantics"
                     )));
                 }
+            }
+            if name == "reason_codes" {
+                let fields = ["code", "scope", "name", "meaning"];
+                if archived.root.len() != 1
+                    || !archived.tables.is_empty()
+                    || archived.arrays.keys().any(|name| name != "reason")
+                    || archived.arrays.get("reason").is_some_and(|rows| {
+                        rows.len() > 4096
+                            || rows.iter().any(|row| {
+                                row.len() != fields.len()
+                                    || row.keys().any(|key| !fields.contains(&key.as_str()))
+                            })
+                    })
+                {
+                    return Err(unavailable(
+                        "registry epoch reasons contain fields outside the supported reason schema",
+                    ));
+                }
+                // The archived labels describe committed preparer reasons.
+                // They do not select an arithmetic law or posting authority.
+                // Validate their schema and retain their original meanings;
+                // never replace them with labels from the current executable.
+                fa_registry::reason_codes::ReasonCodes::from_text(text)
+                    .map_err(|error| unavailable(format!("unsupported epoch reasons: {error}")))?;
             }
         }
         // Parse the pinned source as source metadata. It does not choose or
@@ -242,6 +313,39 @@ impl Epoch {
             }
         }
         Ok(true)
+    }
+
+    pub(crate) fn check_explanation_reasons(
+        &self,
+        explanation: &BalanceExplanation,
+    ) -> Result<(), Refusal> {
+        let Some((name, source)) = self.sources.get(4) else {
+            return Err(unavailable("the explanation epoch omits reason_codes"));
+        };
+        if name != "reason_codes" {
+            return Err(unavailable(
+                "the explanation epoch has another fifth source",
+            ));
+        }
+        let reasons = fa_registry::reason_codes::ReasonCodes::from_text(source)
+            .map_err(|error| unavailable(format!("unsupported epoch reasons: {error}")))?;
+        for contribution in &explanation.contributions {
+            for link in &contribution.supersedes {
+                if reasons.get("supersession", link.reason_code).is_none() {
+                    return Err(Refusal::new(
+                        fa_notary::code::SCOPE_UNSUPPORTED,
+                        exit::REFUSAL,
+                        format!(
+                            "explanation entry {:032x} cites supersession reason {} absent from its archived reason-code registry",
+                            contribution.entry.0, link.reason_code,
+                        ),
+                        "plan §8.2 / §13.6 (a portable explanation preserves the registered meaning of each displayed reason)",
+                        "replay this historical explanation in its source book; preserve the original certificate and reason sources until an independent interpreter supports its reason representation",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn offline_documents(
@@ -360,7 +464,7 @@ pub(crate) fn resolve<V: Vfs + Clone>(
         Ok(epoch) => epoch,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if let Err(refusal) = epoch.admit(&book.units) {
+    if let Err(refusal) = epoch.admit_for(&certificate.selection, &book.units) {
         return Ok(Err(refusal));
     }
     Ok(Ok(Some(epoch)))
@@ -394,9 +498,9 @@ pub(crate) fn stage<V: Vfs + Clone>(
             &row,
             txn.basis(),
         )?
-        .and_then(|epoch| epoch.admit(&book.units)));
+        .and_then(|epoch| epoch.admit_for(&certificate.selection, &book.units)));
     }
-    let epoch = match Epoch::current(book.book_id) {
+    let epoch = match Epoch::for_selection(book.book_id, &certificate.selection) {
         Ok(epoch) => epoch,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -950,5 +1054,305 @@ mod tests {
             code::CERTIFICATE_INVALID
         );
         assert_eq!(h.head(), before, "replay never repairs registry history");
+    }
+
+    fn explanation_certificate(h: &Harness) -> ReportCertificate {
+        h.book
+            .certify_report(
+                &h.cx(),
+                ReportSelection::ExplainBalance {
+                    account: fa_model::account_vid(h.book.context().book_id, "1000"),
+                    period: "FY2026-P01".into(),
+                },
+                None,
+            )
+            .unwrap()
+            .unwrap()
+            .certificate
+    }
+
+    #[test]
+    fn explanation_epochs_preserve_four_source_bytes_and_require_exact_five_source_profiles() {
+        let book = Id128([0x67; 16]);
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        let selection = ReportSelection::ExplainBalance {
+            account: VId(1),
+            period: "FY2026-P01".into(),
+        };
+        let old = Epoch::current(book).unwrap();
+        let old_bytes = old.encode().unwrap();
+        assert_eq!(old.sources.len(), 4);
+        assert_eq!(
+            Epoch::decode(&old_bytes).unwrap().encode().unwrap(),
+            old_bytes
+        );
+        let explanation = Epoch::for_selection(book, &selection).unwrap();
+        assert_eq!(
+            explanation
+                .sources
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            EXPLANATION_NAMES,
+        );
+        assert_eq!(&explanation.sources[..4], old.sources.as_slice());
+        assert_ne!(explanation.closure, old.closure);
+        explanation.admit_for(&selection, &units).unwrap();
+        assert_eq!(
+            Epoch::decode(&explanation.encode().unwrap()).unwrap(),
+            explanation
+        );
+        assert_eq!(
+            old.admit_for(&selection, &units).unwrap_err().code,
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+        );
+        assert_eq!(
+            explanation
+                .admit_for(
+                    &ReportSelection::TrialBalance(TrialBalanceSelection::Periods(vec![
+                        "FY2026-P01".into()
+                    ])),
+                    &units,
+                )
+                .unwrap_err()
+                .code,
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+        );
+        let mut reordered = explanation.sources.clone();
+        reordered.swap(3, 4);
+        assert!(Epoch::new(book, reordered).is_err());
+        for (from, to) in [
+            ("code = 1", "code = 0"),
+            ("scope = \"supersession\"", "scope = \"unregistered\""),
+            (
+                "name = \"DataEntryError\"",
+                "name = \"DataEntryError\"\nunknown_reason_law = 1",
+            ),
+        ] {
+            let mut sources = explanation.sources.clone();
+            assert!(sources[4].1.contains(from));
+            sources[4].1 = sources[4].1.replacen(from, to, 1);
+            let changed = Epoch::new(book, sources).unwrap();
+            assert_eq!(
+                changed.admit_for(&selection, &units).unwrap_err().code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+            );
+        }
+    }
+
+    #[test]
+    fn retained_explanations_export_original_reason_sources_after_reopen() {
+        let (mut h, _) = Harness::with_posts(1);
+        let original = explanation_certificate(&h);
+        let before = h.head();
+        assert_eq!(
+            offline_report_registries_at(&h.book.db, &h.cx().query(), h.book.context(), &original)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+            "a current executable cannot replace an unarchived original reason transcript",
+        );
+        assert_eq!(h.head(), before);
+
+        let mut sources = historical_epoch(h.book.context().book_id).sources;
+        sources.push((
+            REASON_CODES.0.into(),
+            REASON_CODES
+                .1
+                .replace(
+                    "name = \"DataEntryError\"",
+                    "name = \"HistoricalDataEntryError\"",
+                )
+                .replace(
+                    "the preparer states that the original fact was entered incorrectly",
+                    "the original producer recorded this historical correction meaning",
+                ),
+        ));
+        let epoch = Epoch::new(h.book.context().book_id, sources).unwrap();
+        let historical = original.resealed_under(epoch.closure);
+        publish_epoch(&mut h, &epoch);
+        let ack = h.retain(&historical).unwrap();
+        let mut h = h.reopen();
+        let stored = h.read(&historical.digest).unwrap();
+        let before = h.head();
+        let report = h.book.replay_report(&h.cx(), &stored).unwrap().unwrap();
+        assert_eq!(report.canonical_bytes().unwrap(), original.output);
+        let docs =
+            offline_report_registries_at(&h.book.db, &h.cx().query(), h.book.context(), &stored)
+                .unwrap()
+                .unwrap();
+        assert_eq!(docs.len(), 5);
+        assert_eq!(docs[4].0, "reason_codes");
+        assert_eq!(
+            docs[4].1,
+            document("reason_codes", &epoch.sources[4].1)
+                .unwrap()
+                .canonical_bytes()
+        );
+        assert_ne!(
+            docs[4].1,
+            document(REASON_CODES.0, REASON_CODES.1)
+                .unwrap()
+                .canonical_bytes()
+        );
+        assert_eq!(h.retain(&stored).unwrap(), ack);
+        assert_eq!(
+            h.head(),
+            before,
+            "replay, registry export and retention retry append nothing"
+        );
+
+        let cx = h.cx();
+        let principal = VId(1);
+        let authority =
+            fa_journal::Capability::embedded(principal, &["read", "produce", "witness"]).unwrap();
+        let checkpoint = h
+            .runtime
+            .block_on(h.book.checkpoint(&cx, principal, &authority))
+            .unwrap()
+            .unwrap();
+        let state = checkpoint.checkpoint.checkpoint.body.state_oid;
+        let before_export = h.head();
+        let produced = h
+            .runtime
+            .block_on(h.book.produce_report_bundle(
+                &cx,
+                principal,
+                &authority,
+                Some(state),
+                &stored,
+            ))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            h.head(),
+            before_export,
+            "portable export does not rewrite the archived epoch"
+        );
+        let key = h.book.checkpoint_public_key();
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            None,
+            Some(&produced.receipt),
+            Some(&stored.digest),
+        )
+        .expect("outsider explanation replay uses the original reason source text");
+        assert_eq!(verified.output, original.output);
+        assert!(verified.explanation.is_some());
+        assert_eq!(verified.unit_universe_source, "authenticated-registry");
+    }
+
+    #[test]
+    fn resealed_explanations_cannot_borrow_another_report_registry_profile() {
+        let (mut h, _) = Harness::with_posts(1);
+        let tb = certificate(&h, false);
+        let explanation = explanation_certificate(&h);
+        h.retain(&tb).unwrap();
+        h.retain(&explanation).unwrap();
+        for changed in [
+            explanation.resealed_under(tb.registry_digest),
+            tb.resealed_under(explanation.registry_digest),
+        ] {
+            let before = h.head();
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &changed)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+            );
+            assert_eq!(
+                h.retain(&changed).unwrap_err().code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE
+            );
+            assert_eq!(
+                h.head(),
+                before,
+                "cross-profile admission cannot publish any source or certificate"
+            );
+        }
+    }
+
+    #[test]
+    fn archived_reason_membership_is_checked_for_each_displayed_contribution() {
+        let (h, _) = Harness::with_posts(1);
+        let certificate = explanation_certificate(&h);
+        let ReportOutput::ExplainBalance(mut report) = h
+            .book
+            .replay_report(&h.cx(), &certificate)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("explanation selector");
+        };
+        let epoch = Epoch::for_selection(h.book.context().book_id, &certificate.selection).unwrap();
+        epoch.check_explanation_reasons(&report).unwrap();
+        let contribution = report.contributions.first_mut().unwrap();
+        contribution.supersedes = vec![fa_model::Supersession {
+            target: fa_model::EntryRef {
+                vid: contribution.entry,
+                entry_digest: contribution.entry_digest,
+            },
+            kind: fa_model::SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        epoch.check_explanation_reasons(&report).unwrap();
+        for reason in [0, u16::MAX] {
+            report.contributions[0].supersedes[0].reason_code = reason;
+            let refusal = epoch.check_explanation_reasons(&report).unwrap_err();
+            assert_eq!(refusal.code, fa_notary::code::SCOPE_UNSUPPORTED);
+            assert!(
+                refusal
+                    .message
+                    .contains("absent from its archived reason-code registry")
+            );
+        }
+    }
+
+    #[test]
+    fn explanation_reason_source_refuses_more_rows_than_the_independent_document_profile() {
+        let book = Id128([0x68; 16]);
+        let selection = ReportSelection::ExplainBalance {
+            account: VId(1),
+            period: "FY2026-P01".into(),
+        };
+        let mut sources = Epoch::for_selection(book, &selection).unwrap().sources;
+        let initial = fa_registry::reason_codes::ReasonCodes::from_text(&sources[4].1)
+            .unwrap()
+            .rows
+            .len();
+        for index in initial..=4096 {
+            sources[4].1.push_str(&format!(
+                "\n[[reason]]\ncode = {}\nscope = \"supersession\"\nname = \"PortableReason{}\"\nmeaning = \"retained registered reason\"\n",
+                index + 100, index,
+            ));
+        }
+        assert!(sources[4].1.len() < MAX_SOURCE_BYTES);
+        assert_eq!(
+            fa_registry::reason_codes::ReasonCodes::from_text(&sources[4].1)
+                .unwrap()
+                .rows
+                .len(),
+            4097,
+            "the source is valid for the native reason parser",
+        );
+        assert!(
+            document("reason_codes", &sources[4].1)
+                .unwrap()
+                .canonical_bytes()
+                .len()
+                < MAX_SOURCE_BYTES
+        );
+        let epoch = Epoch::new(book, sources).unwrap();
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        assert_eq!(
+            epoch.admit_for(&selection, &units).unwrap_err().code,
+            code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+            "a producer must not issue a source document the independent decoder necessarily refuses",
+        );
     }
 }

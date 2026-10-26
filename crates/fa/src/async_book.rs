@@ -3538,8 +3538,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.signer.public_key()
     }
 
-    /// Export a native or dimension-filtered trial balance, statement or open-item
-    /// certificate with a signed, payload-complete journal prefix. The complete
+    /// Export a native or dimension-filtered trial balance, statement, open-item
+    /// or balance-explanation certificate with a signed, payload-complete journal prefix. The complete
     /// prefix is disclosed, so account/effective scope caveats cannot be served
     /// by filtering its records. The certificate is replayed before production.
     pub async fn produce_report_bundle(
@@ -3576,14 +3576,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     | crate::ReportSelection::DimensionTrialBalance { .. }
                     | crate::ReportSelection::Statement(_)
                     | crate::ReportSelection::OpenItems { .. }
+                    | crate::ReportSelection::ExplainBalance { .. }
             )
         {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's native trial-balance, dimension-filtered trial-balance, statement or open-item certificate",
+                "offline report production requires this book's native trial-balance, dimension-filtered trial-balance, statement, open-item or balance-explanation certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify a native fa tb (optionally --dimension kind=value), fa statement or fa open-items report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
+                "certify a native fa tb (optionally --dimension kind=value), fa statement, fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
             )));
         }
         if let Err(refusal) = self
@@ -3592,9 +3593,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        if let Err(refusal) = self.replay_report(cx, certificate)? {
-            return Ok(Err(refusal));
-        }
+        let replayed = match self.replay_report(cx, certificate)? {
+            Ok(report) => report,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         let closure_frontier = certificate
             .time_selection
             .as_ref()
@@ -3617,11 +3619,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "certify the report at its resolved recorded sequence before producing an offline report bundle",
             )));
         }
-        let open_items = matches!(
+        let requires_registry_closure = matches!(
             &certificate.selection,
             crate::ReportSelection::OpenItems { .. }
+                | crate::ReportSelection::ExplainBalance { .. }
         );
-        let registries = if open_items
+        let registries = if requires_registry_closure
             || matches!(&certificate.selection, crate::ReportSelection::Statement(_))
         {
             match crate::certificate::offline_report_registries_at(
@@ -3632,7 +3635,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )? {
                 Ok(registries) => Some(registries),
                 Err(refusal)
-                    if !open_items
+                    if !requires_registry_closure
                         && (refusal.code == fa_notary::code::SCOPE_UNSUPPORTED
                             || refusal.code
                                 == crate::certificate::code::CERTIFICATE_REGISTRY_UNAVAILABLE) =>
@@ -3648,6 +3651,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         } else {
             None
         };
+        if let crate::ReportOutput::ExplainBalance(explanation) = &replayed
+            && let Err(refusal) = crate::certificate::check_explanation_reasons_at(
+                &self.db,
+                &cx.query(),
+                &self.context,
+                certificate,
+                explanation,
+            )?
+        {
+            return Ok(Err(refusal));
+        }
+        drop(replayed);
         let at = self.head(cx)?;
         let commitment = capability
             .commitment()
@@ -3670,6 +3685,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if let crate::ReportSelection::OpenItems { account } = &certificate.selection
             && let Err(refusal) =
                 fa_notary::report::check_open_items_scope(&journal, certificate.known_at, *account)?
+        {
+            return Ok(Err(refusal));
+        }
+        if matches!(
+            &certificate.selection,
+            crate::ReportSelection::ExplainBalance { .. }
+        ) && let Err(refusal) =
+            fa_notary::report::check_explanation_scope(&journal, certificate.known_at)?
         {
             return Ok(Err(refusal));
         }

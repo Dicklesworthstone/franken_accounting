@@ -5,6 +5,8 @@
 
 #[path = "proofs/dimension_report.rs"]
 mod dimension_report;
+#[path = "proofs/explanation_report.rs"]
+mod explanation_report;
 #[path = "proofs/prefix.rs"]
 mod prefix;
 #[path = "proofs/report.rs"]
