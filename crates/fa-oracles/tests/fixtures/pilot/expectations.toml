@@ -36,7 +36,7 @@ version = 2
 mechanism = "crates/fa-lantern/src/cutoff.rs:1066-1124"
 twin_kind = "mutation"
 twin_attribute = "chart_role_mapping"
-twin_value = "OLTA mapped to an Expense account"
+twin_value = "1400:Expense"
 twin_expect = "reports"
 
 [[expectation]]

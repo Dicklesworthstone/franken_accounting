@@ -1,0 +1,13 @@
+# Twin fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "T-1"
+provenance = "synthetic"
+reason = "a non-round entry jet.round_amounts must not flag"
+discipline = "never cited by a case; the no_finding N's target"
+
+[[fact]]
+id = "T-2"
+provenance = "synthetic"
+reason = "an Original entry the period law admits in an Open period"
+discipline = "never cited by a case; the no_refusal N's target"

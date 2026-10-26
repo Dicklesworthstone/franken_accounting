@@ -575,3 +575,117 @@ fn allocation_intent_without_its_law_is_refused_before_any_fa_invocation() {
         o.text()
     );
 }
+
+/// The twin fixture (`crates/fa-oracles/tests/fixtures/twins/`): a
+/// no_finding N and a no_refusal N on a micro-book (A11c).
+const TWINS: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/twins/expectations.toml"),
+    ),
+];
+
+fn twins_run() -> &'static RunOutcome {
+    static RUN: std::sync::OnceLock<RunOutcome> = std::sync::OnceLock::new();
+    RUN.get_or_init(|| match run_files("twins", &TWINS, &[], HARNESS_VERBS) {
+        Ok(o) => o,
+        Err(o) => *o,
+    })
+}
+
+/// jet.round_amounts reports nothing on T-1's 1,234.56 legs, and its
+/// mutation twin (1,000.00 legs, on its own book) reports T-1.
+#[test]
+fn n_with_a_reporting_twin_passes() {
+    let o = twins_run();
+    let text = o.text();
+    assert!(o.ok, "{text}");
+    assert_eq!(
+        o.row("twins-N-01"),
+        Some(
+            "UNRUN twins-N-01 N native T-1/default kind=no_finding twin=mutation:reported reason=filler_invariance"
+        ),
+        "{text}"
+    );
+    // The twin ran on its own book, logged under `<variant>~twin`.
+    assert!(
+        o.steps
+            .iter()
+            .any(|s| s.book_variant == "native~twin" && s.verb == "finding"),
+        "{text}"
+    );
+    assert!(
+        o.steps
+            .iter()
+            .filter(|s| s.book_variant == "native")
+            .all(|s| !s.argv_redacted.iter().any(|a| a == "1000.00"))
+    );
+}
+
+/// The same intent posted into a Closed period is refused FA-REF-010.
+#[test]
+fn harness_observability_twin_is_refused_fa_ref_010_in_a_closed_period() {
+    let o = twins_run();
+    assert_eq!(
+        o.row("twins-N-02"),
+        Some(
+            "UNRUN twins-N-02 N native T-2/default kind=no_refusal twin=harness_observability:refused:FA-REF-010 reason=filler_invariance"
+        ),
+        "{}",
+        o.text()
+    );
+}
+
+/// An N whose target is refused reads FAIL, never PASS, and prints the
+/// refused call's argv.
+#[test]
+fn n_whose_target_run_was_refused_reports_fail() {
+    let o = run_files(
+        "twins",
+        &TWINS,
+        &[
+            PlantedEdit {
+                file: "books/native.toml",
+                old: "[[principal]]\nlabel = \"selftest-preparer-1\"",
+                new: "[[period]]\ncode = \"2026Q2\"\nstart = \"2026-04-01\"\nend = \"2026-06-30\"\nfiscal_year = 2026\nkind = \"Normal\"\n\n[[principal]]\nlabel = \"selftest-preparer-1\"",
+            },
+            PlantedEdit {
+                file: "books/native.toml",
+                old: "effective_date = \"2026-02-20\"",
+                new: "effective_date = \"2026-05-20\"",
+            },
+        ],
+        HARNESS_VERBS,
+    )
+    .expect_err("a refused target fails the N");
+    let text = o.text();
+    let at = o
+        .lines
+        .iter()
+        .position(|l| l.starts_with("FAIL twins-N-02 "))
+        .expect("the N row");
+    assert!(
+        o.lines[at].ends_with("reason=expected T-2 admitted observed exit=7 refusal=FA-REF-010"),
+        "{text}"
+    );
+    assert!(
+        o.lines[at - 1].starts_with("REPRODUCE fa --book "),
+        "{text}"
+    );
+}

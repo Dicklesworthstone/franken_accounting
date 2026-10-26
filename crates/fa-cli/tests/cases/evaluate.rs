@@ -21,6 +21,8 @@ use fa_oracles::cases::{Case, Expectations};
 use fa_oracles::json::Json;
 use fa_registry::refusal_catalog::RefusalCatalog;
 
+use fa_oracles::cases::twin::{TwinExpect, TwinKind, TwinSpec};
+
 use super::run::{BookRun, reproduce};
 
 /// One evaluated row, with the `REPRODUCE` line a FAIL prints above it.
@@ -166,7 +168,11 @@ fn gate(run: &BookRun<'_>, row: &RowLine) -> Option<Eval> {
 }
 
 /// Every row of `run`'s variant, in declaration order, then its SELF row.
-pub fn rows(run: &BookRun<'_>) -> Vec<Evaluated> {
+pub fn rows(
+    run: &BookRun<'_>,
+    specs: &[(String, Result<TwinSpec, String>)],
+    twins: &BTreeMap<String, BookRun<'_>>,
+) -> Vec<Evaluated> {
     let case = run.case;
     let variant = run.book.stem.as_str();
     let mut out = Vec::new();
@@ -182,13 +188,22 @@ pub fn rows(run: &BookRun<'_>) -> Vec<Evaluated> {
                 slots.push(None);
             }
             for t in slots {
-                let fact = t.map(|t| t.fact.as_str());
+                // An N names its target in its own `target` field.
+                let fact = t.map(|t| t.fact.as_str()).or_else(|| {
+                    (e.kind == ExpectationType::N)
+                        .then(|| e.fields.str("target"))
+                        .flatten()
+                });
                 let row = blank(&e.id, &kind_of(case, e, fact), variant, fact);
                 let eval = match gate(run, &row) {
                     Some(gated) => gated,
                     None => match (e.kind, t) {
                         (ExpectationType::D, Some(t)) => d_row(run, e, t, row),
                         (ExpectationType::P, None) => p_row(run, e, row),
+                        (ExpectationType::N, None) => {
+                            let spec = specs.iter().find(|(id, _)| *id == e.id).map(|(_, s)| s);
+                            n_row(run, e, spec, twins.get(&e.id), row)
+                        }
                         (other, _) => {
                             let mut row = row;
                             row.verdict = RowVerdict::Unrun;
@@ -647,4 +662,160 @@ fn self_row(run: &BookRun<'_>) -> Evaluated {
         row.reason = Some(fails.join("; "));
     }
     finish(case, (row, Vec::new(), None))
+}
+
+/// An N row (§5.2, §3.7 item 3; A11c): the target run shows nothing (the
+/// intent admitted, or no finding on it), and the harness-only twin, on its
+/// own book, shows what the mechanism predicts (it reports, or is refused).
+/// A twin that errors is FAIL, never UNRUN. Like D and P, an N still lacks
+/// the filler-invariance witness, so agreement reads UNRUN.
+fn n_row(
+    run: &BookRun<'_>,
+    e: &Expectation,
+    spec: Option<&Result<TwinSpec, String>>,
+    twin: Option<&BookRun<'_>>,
+    mut row: RowLine,
+) -> Eval {
+    let f = &e.fields;
+    let kind = f.str("kind").unwrap_or_default();
+    let target = f.str("target").unwrap_or_default();
+    let intent = intent_of(run, target);
+    row.projection.push(("kind".into(), kind.to_string()));
+    let mut fails: Vec<String> = Vec::new();
+    let mut needs: Option<String> = None;
+    let mut repro: Vec<String> = Vec::new();
+    let finding_on = |r: &BookRun<'_>, procedure: &str, intent: &str| -> Option<usize> {
+        r.runs.get(procedure).map(|run| {
+            run.findings
+                .iter()
+                .filter(|f| project(r, f).entries.contains(intent))
+                .count()
+        })
+    };
+    // The target run.
+    match kind {
+        "no_refusal" => match run.posts.get(&intent) {
+            Some(c) if c.exit == 0 && run.vids.contains_key(&intent) => {}
+            Some(c) => {
+                fails.push(format!(
+                    "expected {intent} admitted observed exit={}{}",
+                    c.exit,
+                    c.refusal_id()
+                        .map_or_else(String::new, |r| format!(" refusal={r}"))
+                ));
+                repro.push(reproduce(c));
+            }
+            None => fails.push(format!("expected a post of {intent} observed none")),
+        },
+        "no_finding" => {
+            let procedure = f.str("procedure").unwrap_or_default();
+            if let Some(c) = run.posts.get(&intent)
+                && (c.exit != 0 || !run.vids.contains_key(&intent))
+            {
+                fails.push(format!(
+                    "expected {intent} posted observed exit={}{}",
+                    c.exit,
+                    c.refusal_id()
+                        .map_or_else(String::new, |r| format!(" refusal={r}"))
+                ));
+                repro.push(reproduce(c));
+            }
+            match finding_on(run, procedure, &intent) {
+                None => fails.push(format!(
+                    "expected a recorded run of {procedure} observed none"
+                )),
+                Some(0) => {}
+                Some(n) => fails.push(format!(
+                    "expected no {procedure} finding on {intent} observed {n}"
+                )),
+            }
+        }
+        _ => needs = Some(format!("needs:A11c ({kind} evaluation)")),
+    }
+    // The twin.
+    let token = match spec {
+        None => {
+            fails.push("expected a twin observed none".into());
+            "none".to_string()
+        }
+        Some(Err(why)) => {
+            fails.push(format!("expected a twin observed {why}"));
+            "invalid".to_string()
+        }
+        Some(Ok(spec)) if spec.kind == TwinKind::Matcher => {
+            needs.get_or_insert_with(|| "needs:A16 (matcher twin)".into());
+            "matcher:unrun".to_string()
+        }
+        Some(Ok(spec)) => match twin {
+            None => {
+                needs.get_or_insert_with(|| format!("needs:A11c ({} twin)", spec.n_kind));
+                format!("{}:unrun", spec.kind.as_str())
+            }
+            Some(t) => {
+                let twin_intent = intent_of(t, &spec.twin_target);
+                if let Some(why) = &t.failure {
+                    fails.push(format!("expected the twin to run observed {why}"));
+                    format!("{}:errored", spec.kind.as_str())
+                } else {
+                    match &spec.expect {
+                        TwinExpect::Reports => {
+                            let procedure = spec.procedure.as_ref().map_or("", |(p, _)| p.as_str());
+                            match finding_on(t, procedure, &twin_intent) {
+                                Some(n) if n > 0 => format!("{}:reported", spec.kind.as_str()),
+                                Some(_) => {
+                                    fails.push(
+                                        "expected the twin to report observed did_not_report"
+                                            .into(),
+                                    );
+                                    format!("{}:did_not_report", spec.kind.as_str())
+                                }
+                                None => {
+                                    fails.push(format!(
+                                        "expected the twin's recorded run of {procedure} observed none"
+                                    ));
+                                    format!("{}:errored", spec.kind.as_str())
+                                }
+                            }
+                        }
+                        TwinExpect::Refuses(want) => {
+                            let call = t.posts.get(&twin_intent);
+                            let got = call.and_then(super::run::Call::refusal_id);
+                            if got.as_deref() != Some(want.as_str()) {
+                                fails.push(format!(
+                                    "expected the twin refused refusal={want} observed {}",
+                                    got.clone().unwrap_or_else(|| "admitted".into())
+                                ));
+                                if let Some(c) = call {
+                                    repro.push(reproduce(c));
+                                }
+                            }
+                            format!(
+                                "{}:refused:{}",
+                                spec.kind.as_str(),
+                                got.unwrap_or_else(|| "none".into())
+                            )
+                        }
+                        TwinExpect::GapZero => {
+                            needs.get_or_insert_with(|| "needs:A11c (exact_gap twin)".into());
+                            format!("{}:unrun", spec.kind.as_str())
+                        }
+                    }
+                }
+            }
+        },
+    };
+    row.projection.push(("twin".into(), token));
+    let witnesses = vec![("twin_target".to_string(), intent.clone())];
+    let repro = (!repro.is_empty()).then(|| repro.join("\n"));
+    if !fails.is_empty() {
+        row.verdict = RowVerdict::Fail;
+        row.reason = Some(fails.join("; "));
+    } else if let Some(n) = needs {
+        row.verdict = RowVerdict::Unrun;
+        row.reason = Some(n);
+    } else {
+        row.verdict = RowVerdict::Unrun;
+        row.reason = Some(FILLER.into());
+    }
+    (row, witnesses, repro)
 }

@@ -47,6 +47,23 @@ pub fn check(cx: &Context<'_>) -> CheckReport {
             });
             r.fail(FILE, line, &row, p);
         }
+        // An N on a tier-P procedure is vacuous without a sourced, complete
+        // population: below Benford's minimum the finding cites nothing
+        // (§3.7, §9.4; A11c).
+        if let Some(row) = table.get(procedure)
+            && row.tier == tiers::Tier::P
+        {
+            for c in claims.iter().filter(|c| c.n && !c.sourced_complete) {
+                r.fail(
+                    EXPECTATIONS_FILE,
+                    c.line,
+                    &c.by,
+                    format!(
+                        "an N on {procedure} (tier P) needs population = \"sourced_complete\" and its population_basis (§3.7, §9.4)"
+                    ),
+                );
+            }
+        }
         // Tiers P and A carry no D without a sourced, complete population.
         if let Some(row) = table.get(procedure)
             && !row.tier.admissible_for_d()
@@ -76,6 +93,8 @@ pub struct Claim {
     pub by: String,
     pub version: Option<i128>,
     pub d: bool,
+    /// An N row (A11c: barred on tier P without the population marker).
+    pub n: bool,
     pub sourced_complete: bool,
     pub line: Option<usize>,
 }
@@ -99,6 +118,7 @@ pub fn claimed(case: &Case) -> BTreeMap<String, Vec<Claim>> {
                     by: e.id.clone(),
                     version: e.fields.int("version"),
                     d: e.kind == ExpectationType::D,
+                    n: e.kind == ExpectationType::N,
                     sourced_complete: e.fields.str("population") == Some("sourced_complete")
                         && basis_given,
                     line: e.fields.line,
@@ -121,6 +141,7 @@ pub fn claimed(case: &Case) -> BTreeMap<String, Vec<Claim>> {
                 by: format!("books/{}.toml step {}", book.stem, s.seq),
                 version,
                 d: false,
+                n: false,
                 sourced_complete: false,
                 line: s.line,
             });
@@ -133,6 +154,7 @@ pub fn claimed(case: &Case) -> BTreeMap<String, Vec<Claim>> {
                 by: format!("{}-SELF", case.header.id),
                 version: None,
                 d: false,
+                n: false,
                 sourced_complete: false,
                 line: None,
             });
@@ -314,6 +336,36 @@ mod tests {
             text.starts_with("CHECK K-TIER PASS examined=4/4\n"),
             "{text}"
         );
+    }
+
+    /// An N on `procedure@version` over the pilot's F2, twinned by
+    /// retyping OLTA (the pilot's W-N-01 shape).
+    fn n_row(id: &str, procedure: &str, version: i128, extra: &str) -> String {
+        format!(
+            "\n[[expectation]]\nid = \"{id}\"\ntype = \"N\"\nbook_variant = \"native\"\nstatement_template = \"N.no_finding\"\nbasis = [\"F2\"]\nkind = \"no_finding\"\ntarget = \"F2\"\nprocedure = \"{procedure}\"\nversion = {version}\nmechanism = \"crates/fa-lantern/src/digits.rs:294\"\ntwin_kind = \"mutation\"\ntwin_attribute = \"amount_precision\"\ntwin_value = \"1000.00\"\ntwin_expect = \"reports\"\n{extra}"
+        )
+    }
+
+    #[test]
+    fn n_on_a_tier_p_procedure_without_the_sourced_complete_marker_is_refused_at_load() {
+        let case = pilot_with(&n_row("W-N-80", "benford.first_digit", 2, ""));
+        let r = check(&Context::new(&case));
+        let text = r.render(None);
+        assert_eq!(r.verdict, Verdict::Fail, "{text}");
+        let want = format!(
+            "FAIL K-TIER expectations.toml:{} W-N-80: an N on benford.first_digit (tier P) needs population = \"sourced_complete\" and its population_basis (§3.7, §9.4)",
+            expectation_line(&case, "W-N-80")
+        );
+        assert!(text.lines().any(|l| l == want), "{want}\n{text}");
+        // The §9.4 marker admits it.
+        let case = pilot_with(&n_row(
+            "W-N-80",
+            "benford.first_digit",
+            2,
+            "population = \"sourced_complete\"\npopulation_basis = [\"F2\"]\n",
+        ));
+        let r = check(&Context::new(&case));
+        assert_eq!(r.verdict, Verdict::Pass, "{}", r.render(None));
     }
 
     #[test]
