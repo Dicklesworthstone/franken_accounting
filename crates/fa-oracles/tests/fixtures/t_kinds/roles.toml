@@ -1,0 +1,33 @@
+# FIXTURE (A3b t_kinds, bead fa-yugf.8): one T of each kind for the static T checks. Synthetic values;
+# digests computed by a one-off script independently of fa-oracles; edit by hand like any fixture.
+# Never copied to cases/; no figure here is a case's published value.
+
+[[role]]
+label = "tk-preparer-1"
+kind = "harness"
+description = "prepares the synthetic entries"
+
+[[role]]
+label = "tk-closer-1"
+kind = "harness"
+description = "issues the synthetic statements"
+
+[[role]]
+label = "tk-approver-1"
+kind = "harness"
+description = "approves the synthetic restatement and issuances"
+
+[[role]]
+label = "tk-approver-2"
+kind = "harness"
+description = "second approver of the synthetic restatement"
+
+[[role]]
+label = "tk-poster-1"
+kind = "harness"
+description = "posts the synthetic restatement"
+
+[[role]]
+label = "tk-second-reader"
+kind = "harness"
+description = "reviews the synthetic placeholders"

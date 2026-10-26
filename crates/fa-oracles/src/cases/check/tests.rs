@@ -799,7 +799,17 @@ fn case_scoped_check_runs_only_on_its_case() {
     };
     assert_eq!(
         ids(&case),
-        ["K-PROV", "K-BIND", "K-SCOPE", "K-ANCHOR", "K-DERIVE"]
+        [
+            "K-PROV",
+            "K-BIND",
+            "K-SCOPE",
+            "K-ANCHOR",
+            "K-DERIVE",
+            "K-BASIS",
+            "K-TAUT",
+            "K-ORACLE",
+            "K-VINTAGE"
+        ]
     );
     case.header.id = "xbrl".into();
     let reports = run_load_checks_with(&Context::new(&case), PROBE);

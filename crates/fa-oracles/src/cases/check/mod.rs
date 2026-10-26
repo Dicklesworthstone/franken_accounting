@@ -1,5 +1,6 @@
 //! The load-time checks K-PROV, K-BIND, K-SCOPE, K-ANCHOR and K-DERIVE
-//! (docs/FORENSIC_CASE_STUDIES_PLAN.md §3.6; bead fa-yugf.7, A3a): the
+//! (docs/FORENSIC_CASE_STUDIES_PLAN.md §3.6; bead fa-yugf.7, A3a), and
+//! K-BASIS, K-TAUT, K-ORACLE and K-VINTAGE (bead fa-yugf.8, A3b): the
 //! harness's refusals of its own research record, run offline over a loaded
 //! [`Case`] (tests never read the fetch cache, §4.3; a quote-less fact is
 //! bound by its receipt, §4.4).
@@ -11,23 +12,33 @@
 //! `examined + pending < inputs` (a skipped row), UNRUN when it examined
 //! nothing, and PASS otherwise. Its rendering is the gate vocabulary of
 //! `scripts/lib/gate_verdict.sh`: one `CHECK <K-ID> PASS|FAIL|UNRUN
-//! examined=<n>/<inputs>[ unrun=<k> (OD 2b)]` line, then one `FAIL <K-ID>
+//! examined=<n>/<inputs>[ unrun=<k> (OD 2b)][ reason=<why>]` line, one
+//! `RETYPE <id>[/<target>] <from>→<to> <K-ID> path=[…]` line per re-type
+//! (A3b: a re-type is a result, never a failure), then one `FAIL <K-ID>
 //! <file>:<line> <row>: <reason>` line per failure, all at column 0.
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::derive::Rules;
+use super::expect::ExpectationType;
 use super::fact::Provenance;
+use super::trace::Read;
 use super::{Case, FACTS_FILE, Receipt};
 
 pub mod anchor;
+pub mod basis;
 pub mod bind;
 pub mod derive;
+pub mod oracle;
 pub mod prov;
 pub mod scope;
 #[cfg(test)]
+mod t_tests;
+pub mod taut;
+#[cfg(test)]
 mod tests;
+pub mod vintage;
 
 /// A check's verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +68,50 @@ pub struct CheckFailure {
     pub reason: String,
 }
 
+/// A re-type (A3b): the row's claim type after a check, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Retype {
+    pub expectation: String,
+    /// The target fact, where the reads sit on targets.
+    pub target: Option<String>,
+    pub from: ExpectationType,
+    pub to: ExpectationType,
+    pub check: String,
+    /// The chain of fact ids and rules (and the leg) that caused it.
+    pub path: Vec<String>,
+}
+
+impl Retype {
+    #[must_use]
+    pub fn new(read: &Read<'_>, to: ExpectationType, check: &str, path: Vec<String>) -> Self {
+        Self {
+            expectation: read.expectation.id.clone(),
+            target: read.target.map(|t| t.fact.clone()),
+            from: read.expectation.kind,
+            to,
+            check: check.to_string(),
+            path,
+        }
+    }
+}
+
+impl fmt::Display for Retype {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RETYPE {}", self.expectation)?;
+        if let Some(t) = &self.target {
+            write!(f, "/{t}")?;
+        }
+        write!(
+            f,
+            " {}\u{2192}{} {} path=[{}]",
+            self.from.as_str(),
+            self.to.as_str(),
+            self.check,
+            self.path.join(", ")
+        )
+    }
+}
+
 /// One check's result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckReport {
@@ -68,6 +123,11 @@ pub struct CheckReport {
     pub failures: Vec<CheckFailure>,
     /// The examined rows, each with its note (`F12`, `LJM1 range=none`).
     pub rows: Vec<String>,
+    /// The re-types the check found (A3b).
+    pub retypes: Vec<Retype>,
+    /// Why the check examined nothing, when it is exempt (`exempt:
+    /// harness_selftest`).
+    pub reason: Option<String>,
 }
 
 impl CheckReport {
@@ -82,6 +142,8 @@ impl CheckReport {
             pending: 0,
             failures: Vec::new(),
             rows: Vec::new(),
+            retypes: Vec::new(),
+            reason: None,
         }
     }
 
@@ -141,9 +203,15 @@ impl CheckReport {
         if self.pending > 0 {
             out.push_str(&format!(" unrun={} (OD 2b)", self.pending));
         }
+        if let Some(reason) = &self.reason {
+            out.push_str(&format!(" reason={reason}"));
+        }
         out.push('\n');
         if !self.rows.is_empty() {
             out.push_str(&format!("  rows: {}\n", self.rows.join(", ")));
+        }
+        for r in &self.retypes {
+            out.push_str(&format!("{r}\n"));
         }
         for f in &self.failures {
             let line = f.line.map_or_else(|| "-".to_string(), |l| l.to_string());
@@ -267,6 +335,10 @@ pub fn run_load_checks_with(cx: &Context<'_>, case_checks: &[CaseCheck]) -> Vec<
         scope::check(cx),
         anchor::check(cx),
         derive::check(cx),
+        basis::check(cx),
+        taut::check(cx),
+        oracle::check(cx),
+        vintage::check(cx),
     ];
     for c in case_checks.iter().filter(|c| c.case == cx.case.header.id) {
         let mut report = (c.run)(cx.case);
@@ -274,6 +346,36 @@ pub fn run_load_checks_with(cx: &Context<'_>, case_checks: &[CaseCheck]) -> Vec<
         out.push(report);
     }
     out
+}
+
+impl Case {
+    /// An expectation's claim type after every re-type of K-TAUT and K-ORACLE
+    /// (A3b), for the whole row (`target = None`) or one target where the
+    /// reads sit on targets: a re-type on the row applies to every target. R
+    /// (read-back) wins over C. `None` when the case has no such expectation.
+    #[must_use]
+    pub fn effective_type(
+        &self,
+        expectation: &str,
+        target: Option<&str>,
+    ) -> Option<ExpectationType> {
+        let declared = self.expectations.as_ref()?.get(expectation)?.kind;
+        let cx = Context::new(self);
+        let mut out = declared;
+        for r in [taut::check(&cx), oracle::check(&cx)]
+            .iter()
+            .flat_map(|rep| rep.retypes.iter())
+            .filter(|r| {
+                r.expectation == expectation
+                    && (r.target.is_none() || r.target.as_deref() == target)
+            })
+        {
+            if out != ExpectationType::R {
+                out = r.to;
+            }
+        }
+        Some(out)
+    }
 }
 
 /// The facts file, as failures name it.

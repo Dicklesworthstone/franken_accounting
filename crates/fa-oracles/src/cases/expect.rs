@@ -271,7 +271,9 @@ impl Expectation {
             .unwrap_or(KnownAt::PreCase)
     }
 
-    fn reads_here(&self) -> bool {
+    /// Whether the read fields sit on this row (one read).
+    #[must_use]
+    pub fn reads_here(&self) -> bool {
         READ_FIELDS.iter().any(|k| self.fields.has(k))
     }
 }
@@ -285,7 +287,9 @@ pub struct Target {
 }
 
 impl Target {
-    fn reads_here(&self) -> bool {
+    /// Whether this target carries its own read (several reads per row).
+    #[must_use]
+    pub fn reads_here(&self) -> bool {
         READ_FIELDS.iter().any(|k| self.fields.has(k))
     }
 

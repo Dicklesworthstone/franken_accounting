@@ -1,0 +1,227 @@
+# FIXTURE (A3b t_kinds, bead fa-yugf.8): one T of each kind for the static T checks. Synthetic values;
+# digests computed by a one-off script independently of fa-oracles; edit by hand like any fixture.
+# Never copied to cases/; no figure here is a case's published value.
+
+[[receipt]]
+source = "SRC-TK-A"
+fact = "F-A"
+anchor = "Balance Sheet|Receivables|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "2d55a5ce841bc605875563e5e39e2f6ceb4fb8471369e12e1e873a763364b981"
+quote_sha256 = "66dbae68e4f498ba668b52b481891465277f250cd3cb3ced6c14144dbfae52fb"
+values_sha256 = "60247a9d9b9bcac9b0e3a4387ceec035b2570e9baef3cef038ee3bde1e449f3d"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-B"
+fact = "F-B"
+anchor = "Balance Sheet|Receivables|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "df77ba861401038d9e91b523d2b2578f58a79d07d703b98bdcd6418ad46edceb"
+quote_sha256 = "bdc5d8a48c23897906b09a9a3680bd2e9c8b3121edbda36f949800f0959c8d55"
+values_sha256 = "696cf75dda4dc6426eaa3deb06c816e07784e515d7d143e7d231f4dc674e65e0"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-B"
+fact = "F-D"
+anchor = "Restatement|Receivables adjustment|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "df77ba861401038d9e91b523d2b2578f58a79d07d703b98bdcd6418ad46edceb"
+quote_sha256 = "ad57366865126e55649ecb23ae1d48887544976efea46a48eb5d85a6eeb4d306"
+values_sha256 = "a746236bc009832f312dacb67cd82bf053a6ff40873f7615d9dc5f9710d1e265"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-B"
+fact = "F-DLINE"
+anchor = "Restatement|Revenue adjustment|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "df77ba861401038d9e91b523d2b2578f58a79d07d703b98bdcd6418ad46edceb"
+quote_sha256 = "ad57366865126e55649ecb23ae1d48887544976efea46a48eb5d85a6eeb4d306"
+values_sha256 = "a746236bc009832f312dacb67cd82bf053a6ff40873f7615d9dc5f9710d1e265"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-B"
+fact = "F-RT"
+anchor = "Income Statement|Revenue|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "df77ba861401038d9e91b523d2b2578f58a79d07d703b98bdcd6418ad46edceb"
+quote_sha256 = "bdc5d8a48c23897906b09a9a3680bd2e9c8b3121edbda36f949800f0959c8d55"
+values_sha256 = "696cf75dda4dc6426eaa3deb06c816e07784e515d7d143e7d231f4dc674e65e0"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-S"
+fact = "F-S1"
+anchor = "Schedule|Payable 1|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "ec315783e5c004c139fc386b6e02b1f79a48b5f440c4af61d7dc876035d398cb"
+quote_sha256 = "26d228663f13a88592a12d16cf9587caab0388b262d6d9f126ed62f9333aca94"
+values_sha256 = "81069fe15ce7e8dde33e7e78fb3c14f6be0fd29c7beb85d721a44412ba05beca"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-S"
+fact = "F-S2"
+anchor = "Schedule|Payable 2|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "ec315783e5c004c139fc386b6e02b1f79a48b5f440c4af61d7dc876035d398cb"
+quote_sha256 = "9ae2bdd7beedc2e766c6b76585530e16925115707dc7a06ab5ee4aa2776b2c7b"
+values_sha256 = "c2afb10773981b75bc708efec5ec9674fa4b5a7d6a8bfba3ea6bce486311d3ca"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-S"
+fact = "F-SE"
+anchor = "Schedule|Expense total|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "ec315783e5c004c139fc386b6e02b1f79a48b5f440c4af61d7dc876035d398cb"
+quote_sha256 = "f89f8d0e735a91c5269ab08d72fa27670d000e7561698d6e664e7b603f5c4e40"
+values_sha256 = "481a287d072c917da7add7464115cdfc66ffd31c0c9e340fbfe17d7a0ff9a968"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-S"
+fact = "F-SL"
+anchor = "Schedule|Liabilities total|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "ec315783e5c004c139fc386b6e02b1f79a48b5f440c4af61d7dc876035d398cb"
+quote_sha256 = "f89f8d0e735a91c5269ab08d72fa27670d000e7561698d6e664e7b603f5c4e40"
+values_sha256 = "481a287d072c917da7add7464115cdfc66ffd31c0c9e340fbfe17d7a0ff9a968"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-S"
+fact = "F-SP"
+anchor = "Schedule|Payables total|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "ec315783e5c004c139fc386b6e02b1f79a48b5f440c4af61d7dc876035d398cb"
+quote_sha256 = "26d228663f13a88592a12d16cf9587caab0388b262d6d9f126ed62f9333aca94"
+values_sha256 = "81069fe15ce7e8dde33e7e78fb3c14f6be0fd29c7beb85d721a44412ba05beca"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-S"
+fact = "F-SP2"
+anchor = "Schedule|Accrued total|2020"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "ec315783e5c004c139fc386b6e02b1f79a48b5f440c4af61d7dc876035d398cb"
+quote_sha256 = "9ae2bdd7beedc2e766c6b76585530e16925115707dc7a06ab5ee4aa2776b2c7b"
+values_sha256 = "c2afb10773981b75bc708efec5ec9674fa4b5a7d6a8bfba3ea6bce486311d3ca"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-X"
+fact = "F-X1"
+anchor = "Exhibit|Line 1|Amount"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "417849472126bf562f8cbbcd323c28bdfef1a945b364a86878c05929a865784d"
+quote_sha256 = "1e472b39b105d349bcd069c4a711b44a2fffb8e274714bb07ecfff69a9a7f67b"
+values_sha256 = "387341550423579663f44fbad653e222d39d62ef12ea455aead14aa5cce35d8b"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-X"
+fact = "F-X2"
+anchor = "Exhibit|Line 2|Amount"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "417849472126bf562f8cbbcd323c28bdfef1a945b364a86878c05929a865784d"
+quote_sha256 = "deeeb5df3f2cee6bf4e597a8a3a878a6ce49b932b9e90b416922d4499f54fae6"
+values_sha256 = "3d33e3fc924945893edef3da4af1937faed15b41952c7a78c007cd01ba03f59c"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false
+
+[[receipt]]
+source = "SRC-TK-X"
+fact = "F-XT"
+anchor = "Exhibit|Total|Amount"
+verified_utc = "2026-10-26T00:00:00Z"
+tool_version = "fixture"
+extraction_sha256 = "417849472126bf562f8cbbcd323c28bdfef1a945b364a86878c05929a865784d"
+quote_sha256 = "284b7e6d788f363f910f7beb1910473e23ce9d6c871f1ce0f31f22a982d48ad4"
+values_sha256 = "0ec03473fd8b97e44ebe8d82190b25d97290ae4feb520d3da29013b4abf73774"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = false

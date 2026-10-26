@@ -1,0 +1,71 @@
+# FIXTURE (A3b t_kinds, bead fa-yugf.8): one T of each kind for the static T checks. Synthetic values;
+# digests computed by a one-off script independently of fa-oracles; edit by hand like any fixture.
+# Never copied to cases/; no figure here is a case's published value.
+
+[[source]]
+id = "SRC-TK-A"
+title = "Synthetic Co. annual report FY2020 (as filed)"
+publisher = "Synthetic Co. (fixture)"
+original_url = "https://www.sec.gov/Archives/edgar/data/0/fixture-src-tk-a.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "1f9a1fa78a80d7167ecf6b7cb4c9678900dfd527d3a13fe0f46345f153fde2a7"
+format = "htm"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+assurance = "audited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2021-03-01"
+
+[[source]]
+id = "SRC-TK-B"
+title = "Synthetic Co. restated annual report FY2020"
+publisher = "Synthetic Co. (fixture)"
+original_url = "https://www.sec.gov/Archives/edgar/data/0/fixture-src-tk-b.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "51ddf77d41b4978be429ba9ba7708bae707c045687e0c0d22ea60bc8190009b9"
+format = "htm"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+assurance = "audited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2022-03-01"
+restates = ["SRC-TK-A"]
+
+[[source]]
+id = "SRC-TK-X"
+title = "Synthetic trustee exhibit"
+publisher = "Synthetic Co. (fixture)"
+original_url = "https://www.sec.gov/Archives/edgar/data/0/fixture-src-tk-x.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "3c8ceae5a9d20a166261242f3449920a5169de18a144762092e03425293eaed9"
+format = "htm"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "trustee_computation"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2021-06-01"
+
+[[source]]
+id = "SRC-TK-S"
+title = "Synthetic Co. supporting schedules FY2020"
+publisher = "Synthetic Co. (fixture)"
+original_url = "https://www.sec.gov/Archives/edgar/data/0/fixture-src-tk-s.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "949299b4390021abe5850b34e8b7841da53c73fa27fa99b8692cd9f20614ecd8"
+format = "htm"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+assurance = "audited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2021-03-01"

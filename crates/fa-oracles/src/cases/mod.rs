@@ -69,6 +69,7 @@ pub mod source;
 pub mod templates;
 #[cfg(test)]
 mod tests;
+pub mod trace;
 
 use std::collections::{BTreeMap, BTreeSet};
 
