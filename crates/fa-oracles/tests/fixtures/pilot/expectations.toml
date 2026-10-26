@@ -83,6 +83,7 @@ basis = ["F9"]
 branch_attrs = ["leg_split"]
 cite = ["F9#0"]
 cite_status = "Rel(account_vid_order)"
+rel_rule = "min_vid_debit_leg{fixed_asset}"
 severity = "High"
 severity_status = "S"
 statistic_name = "capitalized_amount"
