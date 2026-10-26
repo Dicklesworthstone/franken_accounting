@@ -718,7 +718,10 @@ impl Schema {
         &self,
         selection: &Selection,
     ) -> Result<(Vec<String>, Option<i32>, bool), ReportError> {
-        if self.periods.is_empty() {
+        // A complete authenticated prefix can establish that no periods have
+        // been declared yet. Native AsOf still folds by the explicit civil
+        // cutoff and returns an empty period-code list in that case.
+        if self.periods.is_empty() && !matches!(selection, Selection::AsOf(_)) {
             return Err(failed(
                 "period_metadata",
                 "report requires authenticated period-birth controls",

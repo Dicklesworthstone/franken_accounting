@@ -93,7 +93,9 @@ pub fn assemble(
 /// replaying the cutoff, buckets and output; its nested OpenItems source needs
 /// four documents. Roll-forwards retain their outer schedule and a sequence-
 /// selected native closing-stock source with the same exact four documents.
-/// No v1 fallback serves either v3 selector or composed schedule.
+/// Aging-to-control reconciliations retain both original sources and their
+/// shared four-document closure. No v1 fallback serves either v3 selector or
+/// composed schedule.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -119,6 +121,7 @@ pub fn assemble_with_registries(
     if !(certificate_format(certificate, b"fa:report-certificate:v4")
         || open_items_certificate(certificate)
         || aging_certificate(certificate)
+        || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
         || explanation)
         || registries
@@ -130,7 +133,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for statements, open items, aging and roll-forwards, five including reason_codes for balance explanations",
+            "native reports require their exact canonical registry profile in closure order: four documents for statements, open items, aging, reconciliation and roll-forwards, five including reason_codes for balance explanations",
         )));
     }
     assemble_inner(
@@ -141,6 +144,32 @@ pub fn assemble_with_registries(
         bodies,
         registries,
     )
+}
+
+/// Package an already replayed aging-to-control reconciliation with the exact
+/// original registry closure shared by both sources. The facade must verify
+/// the complete outer certificate, the recipient's explicit question, both
+/// native source outputs and their equal book/prefix/registry coordinates
+/// before calling. `check_open_items_scope` applies to the nested aging source.
+/// A comparison with nonzero differences is valid report data. This function
+/// only routes the supported format; it does not establish reconciliation.
+///
+/// The unchanged major-2 transport carries the original outer certificate and
+/// one payload-complete prefix. It never falls back to recipient-supplied units.
+pub fn assemble_reconciliation_with_registries(
+    journal: &Journal,
+    checkpoint: &StoredCheckpoint,
+    certificate: &[u8],
+    known_at: CommitSeq,
+    bodies: &BTreeMap<VId, RunBody>,
+    registries: &[(String, Vec<u8>)],
+) -> Outcome<Bundle> {
+    if !reconciliation_certificate(certificate) {
+        return Ok(Err(refused(
+            "portable reconciliation requires an aging source and a sequence-selected AsOf trial-balance control",
+        )));
+    }
+    assemble_with_registries(journal, checkpoint, certificate, known_at, bodies, registries)
 }
 
 /// The v3 tag and literal output format must agree; neither v3 selector may
@@ -256,6 +285,42 @@ fn roll_forward_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
+fn reconciliation_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "reconciliation format")?
+            != b"fa:aging-reconciliation-certificate:v1"
+        {
+            return Ok(false);
+        }
+        reader.u128("reconciliation producer")?;
+        reader.fixed::<32>("reconciliation capability")?;
+        let aging = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "reconciliation aging")?;
+        let control = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "reconciliation control")?;
+        if !aging_certificate(aging)
+            || !certificate_format(control, b"fa:report-certificate:v1")
+        {
+            return Ok(false);
+        }
+        let mut control = Reader::new(control);
+        control.fixed::<{ b"fa:report-certificate:v1".len() }>("control format")?;
+        control.str(128, "control scope")?;
+        control.str(128, "control authority")?;
+        if control.str(128, "control output format")? != "fa:trial-balance:v1" {
+            return Ok(false);
+        }
+        control.fixed::<16>("control book")?;
+        control.fixed::<16>("control branch")?;
+        control.u64("control known-at")?;
+        if control.u8("control selector")? != 1 {
+            return Ok(false);
+        }
+        control.i32("control cutoff")?;
+        Ok(true)
+    };
+    header().unwrap_or(false)
+}
+
 fn assemble_inner(
     journal: &Journal,
     checkpoint: &StoredCheckpoint,
@@ -275,6 +340,7 @@ fn assemble_inner(
                 || open_items_certificate(certificate)
                 || explanation_certificate(certificate)
                 || aging_certificate(certificate)
+                || reconciliation_certificate(certificate)
                 || roll_forward_certificate(certificate)))
     {
         return Ok(Err(refused(
@@ -378,6 +444,45 @@ fn assemble_inner(
 #[cfg(test)]
 mod format_tests {
     use super::*;
+    fn native_header(version: u8, output: &str, selector: u8) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.fixed(format!("fa:report-certificate:v{version}").as_bytes())
+            .str("fa-fold-over-prefix").str("embedded-owner").str(output)
+            .fixed(&[3; 16]).fixed(&[0; 16]).u64(9).u8(selector).i32(30);
+        w.finish().unwrap()
+    }
+
+    fn reconciliation_header(source: &[u8], control: &[u8]) -> Vec<u8> {
+        let mut aging = Writer::new();
+        aging.bytes(b"fa:aging-certificate:v1").u128(7).fixed(&[9; 32]).bytes(source);
+        let mut outer = Writer::new();
+        outer.bytes(b"fa:aging-reconciliation-certificate:v1")
+            .u128(7).fixed(&[8; 32]).bytes(&aging.finish().unwrap()).bytes(control);
+        outer.finish().unwrap()
+    }
+
+    #[test]
+    fn reconciliation_routing_requires_aging_and_exact_sequence_stock_control() {
+        let source = native_header(3, "fa:open-items:v1", 1);
+        let control = native_header(1, "fa:trial-balance:v1", 1);
+        let outer = reconciliation_header(&source, &control);
+        assert!(reconciliation_certificate(&outer));
+        assert!(!aging_certificate(&outer));
+        assert!(!certificate_format(&outer, b"fa:report-certificate:v1"));
+        for wrong in [
+            native_header(1, "fa:trial-balance:v1", 0),
+            native_header(1, "fa:trial-balance:v1", 2),
+            native_header(2, "fa:trial-balance:v1", 1),
+            native_header(10, "fa:functional-trial-balance:v1", 1),
+            native_header(1, "fa:open-items:v1", 1),
+        ] {
+            assert!(!reconciliation_certificate(&reconciliation_header(&source, &wrong)));
+        }
+        let explanation = native_header(3, "fa:balance-explanation:v1", 0);
+        assert!(!reconciliation_certificate(&reconciliation_header(&explanation, &control)));
+        assert!(!reconciliation_certificate(&outer[..outer.len() - 1]));
+    }
+
 
     #[test]
     fn roll_forward_routing_requires_its_exact_sequence_trunk_closing_source() {

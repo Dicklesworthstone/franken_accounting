@@ -18,7 +18,9 @@
 //! commitments and committed evidence/lineage under its fifth reason-code registry.
 //! Effective-date AgingCertificate v1 wraps a complete v3 OpenItems source;
 //! its cutoff is applied before settlement/reversal netting, and its outer
-//! digest binds every age band and output row.
+//! digest binds every age band and output row. AgingReconciliationCertificate v1
+//! additionally binds an independently recomputed stock trial balance at the
+//! same prefix and cutoff; nonzero per-unit differences are verified data.
 //! RollForwardCertificate v1 wraps a native as-of trial balance and recomputes
 //! opening, every classified posted movement, closing and exact leg citations.
 //! Native v2 trial balances, v3 reports and v4
@@ -37,6 +39,7 @@ mod explain;
 mod metadata;
 mod open_items;
 mod registry;
+mod reconciliation;
 mod roll_forward;
 mod statement;
 mod temporal;
@@ -56,6 +59,7 @@ pub use open_items::{
     VerifiedOpenItemAccount, VerifiedOpenItems,
 };
 pub use registry::Reason as ExplanationReason;
+pub use reconciliation::{VerifiedAgingReconciliation, VerifiedAgingReconciliationRow};
 pub use roll_forward::{
     RollForwardAccount, RollForwardBucket, RollForwardMovement, RollForwardRow, VerifiedRollForward,
 };
@@ -154,6 +158,8 @@ pub struct VerifiedReport {
     pub explanation: Option<VerifiedBalanceExplanation>,
     /// Present for independently reconstructed historical effective-date aging.
     pub aging: Option<VerifiedAging>,
+    /// Both source folds and their selected-account consistency comparison.
+    pub aging_reconciliation: Option<VerifiedAgingReconciliation>,
     /// Complete account/unit lead schedule with every classified posted leg.
     pub roll_forward: Option<VerifiedRollForward>,
     /// Whether report units are recipient parameters or come from a
@@ -524,7 +530,14 @@ fn verify_report_with_inputs(
         ));
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
-    let aging = if aging::recognizes(certificate_bytes) {
+    let reconciliation = if reconciliation::recognizes(certificate_bytes) {
+        Some(reconciliation::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    let aging = if let Some(value) = &reconciliation {
+        Some(aging::decode(value.aging)?)
+    } else if aging::recognizes(certificate_bytes) {
         Some(aging::decode(certificate_bytes)?)
     } else {
         None
@@ -558,9 +571,17 @@ fn verify_report_with_inputs(
             "roll-forward requires a sequence-selected native trial balance as of its closing day",
         ));
     }
-    let certificate_digest = aging
+    let control = reconciliation
+        .as_ref()
+        .map(|value| certificate(value.control))
+        .transpose()?;
+    if let (Some(aging), Some(control)) = (&aging, &control) {
+        reconciliation::bind(aging, &cert, control)?;
+    }
+    let certificate_digest = reconciliation
         .as_ref()
         .map(|value| value.digest)
+        .or_else(|| aging.as_ref().map(|value| value.digest))
         .or_else(|| roll_forward.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
     let is_statement = matches!(cert.selection, Selection::Statement(_));
@@ -815,6 +836,61 @@ fn verify_report_with_inputs(
                 cert.digest,
                 historical,
             )?;
+            if let (Some(reconciliation_certificate), Some(control_certificate)) =
+                (&reconciliation, &control)
+            {
+                let account = open_items::account(
+                    account_filter.ok_or_else(|| {
+                        failed("reconciliation_selection", "missing selected account")
+                    })?,
+                    &schema,
+                )?;
+                let control = replay_trial_balance(
+                    control_certificate,
+                    &schema,
+                    None,
+                    &dimension_history,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &infos,
+                    &resolved,
+                    &visible_migrations,
+                )?;
+                let (comparison, output) = reconciliation::replay(
+                    reconciliation_certificate,
+                    aging_certificate.digest,
+                    control_certificate.digest,
+                    account,
+                    aging,
+                    control.rows,
+                    &units,
+                )?;
+                return Ok(VerifiedReport {
+                    scope: "recomputation",
+                    bundle_digest: digest,
+                    certificate_digest,
+                    output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                    checkpoint: signed,
+                    known_at: cert.known_at,
+                    time_selection: None,
+                    effective_through: Some(comparison.effective_through),
+                    activity: false,
+                    periods: control.periods,
+                    rows: Vec::new(),
+                    statement: None,
+                    dimension: None,
+                    open_items: None,
+                    explanation: None,
+                    aging: None,
+                    aging_reconciliation: Some(comparison),
+                    roll_forward: None,
+                    unit_universe_source: "authenticated-registry",
+                    output,
+                    checked_records: records.len(),
+                    receipt,
+                });
+            }
             return Ok(VerifiedReport {
                 scope: "recomputation",
                 bundle_digest: digest,
@@ -832,6 +908,7 @@ fn verify_report_with_inputs(
                 open_items: None,
                 explanation: None,
                 aging: Some(aging),
+                aging_reconciliation: None,
                 roll_forward: None,
                 unit_universe_source: "authenticated-registry",
                 output,
@@ -856,6 +933,7 @@ fn verify_report_with_inputs(
             open_items: Some(open_items),
             explanation: None,
             aging: None,
+            aging_reconciliation: None,
             roll_forward: None,
             unit_universe_source: "authenticated-registry",
             output,
@@ -901,6 +979,7 @@ fn verify_report_with_inputs(
             open_items: None,
             explanation: Some(explanation),
             aging: None,
+            aging_reconciliation: None,
             roll_forward: None,
             unit_universe_source: "authenticated-registry",
             output,
@@ -952,6 +1031,7 @@ fn verify_report_with_inputs(
             open_items: None,
             explanation: None,
             aging: None,
+            aging_reconciliation: None,
             roll_forward: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
@@ -963,13 +1043,114 @@ fn verify_report_with_inputs(
             receipt,
         });
     }
+    let TrialBalanceReplay { effective_through: through, activity, periods, rows, output } =
+        replay_trial_balance(
+            &cert,
+            &schema,
+            dimension.as_ref(),
+            &dimension_history,
+            envelopes,
+            &records,
+            &legs,
+            &infos,
+            &resolved,
+            &visible_migrations,
+        )?;
+    if let Some(certificate) = &roll_forward {
+        let (roll_forward, output) = roll_forward::replay(
+            certificate,
+            cert.book,
+            cert.known_at,
+            cert.digest,
+            &units,
+            &schema,
+            envelopes,
+            &infos,
+            &legs,
+            &visible_migrations,
+            &rows,
+        )?;
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            bundle_digest: digest,
+            certificate_digest,
+            output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: None,
+            effective_through: Some(roll_forward.effective_through),
+            activity: false,
+            periods: Vec::new(),
+            rows: Vec::new(),
+            statement: None,
+            dimension: None,
+            open_items: None,
+            explanation: None,
+            aging: None,
+            aging_reconciliation: None,
+            roll_forward: Some(roll_forward),
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
+    Ok(VerifiedReport {
+        scope: "recomputation",
+        bundle_digest: digest,
+        certificate_digest: cert.digest,
+        output_digest: cert.output_digest,
+        checkpoint: signed,
+        known_at: cert.known_at,
+        time_selection: cert.time_selection,
+        effective_through: through,
+        activity,
+        periods,
+        rows,
+        statement: None,
+        dimension,
+        open_items: None,
+        explanation: None,
+        aging: None,
+        aging_reconciliation: None,
+        roll_forward: None,
+        unit_universe_source: "not-applicable",
+        output,
+        checked_records: records.len(),
+        receipt,
+    })
+}
+
+struct TrialBalanceReplay {
+    effective_through: Option<i32>,
+    activity: bool,
+    periods: Vec<String>,
+    rows: Vec<ReportRow>,
+    output: Vec<u8>,
+}
+
+/// The native standalone and reconciliation control reports share the same
+/// independent fold and exact output comparison.
+#[allow(clippy::too_many_arguments)]
+fn replay_trial_balance(
+    cert: &Certificate<'_>,
+    schema: &metadata::Schema,
+    dimension: Option<&VerifiedDimensionSelection>,
+    dimension_history: &dimension::History,
+    envelopes: &[crate::envelope::LeafEnvelope],
+    records: &[(usize, &[u8])],
+    legs: &[Vec<crate::envelope::Leg>],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    resolved: &BTreeSet<usize>,
+    visible_migrations: &BTreeSet<u64>,
+) -> Result<TrialBalanceReplay, ReportError> {
     let (periods, through, activity) = schema.selection(&cert.selection)?;
     let dimension_filter = dimension
         .as_ref()
-        .map(|selection| dimension::LegFilter::new(&cert.book, selection, &dimension_history))
+        .map(|selection| dimension::LegFilter::new(&cert.book, selection, dimension_history))
         .transpose()?;
     let mut sums: BTreeMap<(u128, u32), [i128; 4]> = BTreeMap::new();
-    for (index, info) in &infos {
+    for (index, info) in infos {
         let e = &envelopes[*index];
         if legs[*index].is_empty()
             || (e.class == 2 && resolved.contains(index))
@@ -1080,66 +1261,12 @@ fn verify_report_with_inputs(
             },
         ));
     }
-    if let Some(certificate) = &roll_forward {
-        let (roll_forward, output) = roll_forward::replay(
-            certificate,
-            cert.book,
-            cert.known_at,
-            cert.digest,
-            &units,
-            &schema,
-            envelopes,
-            &infos,
-            &legs,
-            &visible_migrations,
-            &rows,
-        )?;
-        return Ok(VerifiedReport {
-            scope: "recomputation",
-            bundle_digest: digest,
-            certificate_digest,
-            output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
-            checkpoint: signed,
-            known_at: cert.known_at,
-            time_selection: None,
-            effective_through: Some(roll_forward.effective_through),
-            activity: false,
-            periods: Vec::new(),
-            rows: Vec::new(),
-            statement: None,
-            dimension: None,
-            open_items: None,
-            explanation: None,
-            aging: None,
-            roll_forward: Some(roll_forward),
-            unit_universe_source: "authenticated-registry",
-            output,
-            checked_records: records.len(),
-            receipt,
-        });
-    }
-    Ok(VerifiedReport {
-        scope: "recomputation",
-        bundle_digest: digest,
-        certificate_digest: cert.digest,
-        output_digest: cert.output_digest,
-        checkpoint: signed,
-        known_at: cert.known_at,
-        time_selection: cert.time_selection,
+    Ok(TrialBalanceReplay {
         effective_through: through,
         activity,
         periods,
         rows,
-        statement: None,
-        dimension,
-        open_items: None,
-        explanation: None,
-        aging: None,
-        roll_forward: None,
-        unit_universe_source: "not-applicable",
         output,
-        checked_records: records.len(),
-        receipt,
     })
 }
 

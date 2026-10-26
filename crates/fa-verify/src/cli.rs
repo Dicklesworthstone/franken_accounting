@@ -105,7 +105,7 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,...]               independently recompute native or dimension-filtered
                                                 trial balances, statements, open items, balance explanations,
-                                                effective-date aging or account roll-forwards.
+                                                effective-date aging, reconciliation or account roll-forwards.
                                                 V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
@@ -1318,7 +1318,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         .ok_or_else(|| {
                             usage(
                                 format!("`--expect {raw}` is not 64 hex characters"),
-                                "pass the independently selected report certificate digest (the outer certificate for composed aging and roll-forward reports)",
+                                "pass the independently selected report certificate digest (the outer certificate for composed aging, reconciliation and roll-forward reports)",
                             )
                         })
                 })
@@ -1380,6 +1380,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 "report_mode",
                                 s(if report.explanation.is_some() {
                                     "balance_explanation"
+                                } else if report.aging_reconciliation.is_some() {
+                                    "aging_reconciliation"
                                 } else if report.aging.is_some() {
                                     "effective_date_aging"
                                 } else if report.roll_forward.is_some() {
@@ -1397,6 +1399,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 "rows",
                                 n(if let Some(explanation) = &report.explanation {
                                     explanation.contributions.len()
+                                } else if let Some(comparison) = &report.aging_reconciliation {
+                                    comparison.rows.len()
                                 } else if let Some(aging) = &report.aging {
                                     aging.items.len()
                                 } else if let Some(schedule) = &report.roll_forward {
@@ -1479,6 +1483,10 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(aging) = &report.aging {
                         checks.extend(aging_checks(aging));
+                    }
+                    if let Some(comparison) = &report.aging_reconciliation {
+                        checks.extend(reconciliation_checks(comparison));
+                        checks.extend(aging_checks(&comparison.aging));
                     }
                     if let Some(schedule) = &report.roll_forward {
                         checks.extend(roll_forward_checks(schedule));
@@ -1836,6 +1844,54 @@ fn open_items_checks(report: &crate::report::VerifiedOpenItems) -> Vec<Check> {
                 ],
             ));
         }
+    }
+    checks
+}
+
+fn reconciliation_checks(
+    report: &crate::report::VerifiedAgingReconciliation,
+) -> Vec<Check> {
+    let mut checks = vec![
+        Check::pass(
+            "aging_reconciliation",
+            "recomputation",
+            vec![
+                ("book", h(&report.book_id)),
+                ("known_at", n(report.known_at)),
+                ("effective_through", day(Some(report.effective_through))),
+                ("account", s(format!("{:032x}", report.account.account))),
+                ("reconciled", Json::Bool(report.is_reconciled())),
+                ("units", n(report.rows.len() as u64)),
+                ("aging_certificate_digest", h(&report.aging_certificate_digest)),
+                ("control_certificate_digest", h(&report.control_certificate_digest)),
+                ("scope", s("selected-account consistency at one recorded prefix and effective cutoff")),
+                ("comparison", s("posted debit net minus open debit net, separately per native unit")),
+                ("pending", s("reported separately; excluded from the comparison")),
+                ("external_subledger", s("not judged")),
+            ],
+        ),
+        account_check("aging_reconciliation_account", &report.account),
+    ];
+    for row in &report.rows {
+        checks.push(Check::pass(
+            "aging_reconciliation_row",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", report.account.account))),
+                ("unit", n(u64::from(row.unit_id))),
+                ("posted_debits", s(row.posted_debits.to_string())),
+                ("posted_credits", s(row.posted_credits.to_string())),
+                ("pending_debits", s(row.pending_debits.to_string())),
+                ("pending_credits", s(row.pending_credits.to_string())),
+                ("open_debits", s(row.open_debits.to_string())),
+                ("open_credits", s(row.open_credits.to_string())),
+                ("open_item_count", n(row.open_item_count)),
+                ("posted_net", s(row.posted_net.to_string())),
+                ("open_net", s(row.open_net.to_string())),
+                ("difference", s(row.difference.to_string())),
+                ("reconciled", Json::Bool(row.difference == 0)),
+            ],
+        ));
     }
     checks
 }
@@ -2326,6 +2382,65 @@ pub fn run(args: &[String], read: Read<'_>) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconciliation_renders_discrepancies_as_verified_data_with_exact_amounts() {
+        use crate::report::*;
+        let report = VerifiedAgingReconciliation {
+            book_id: [3; 16],
+            known_at: 9,
+            effective_through: 40,
+            account: VerifiedReportAccount {
+                account: 9, code: "ar".into(), name: "Receivable".into(),
+                account_type: 1, normal_balance: 0, is_leaf: true,
+                unit_policy: OpenItemUnitPolicy::AnyCurrency,
+                limit: None, created_at: 2,
+            },
+            aging: VerifiedAging {
+                book_id: [3; 16], known_at: 9, effective_through: 40,
+                account_filter: Some(9), source_certificate_digest: [4; 32],
+                bands: vec![], items: vec![], cells: vec![], totals: vec![],
+            },
+            control_rows: vec![],
+            rows: vec![VerifiedAgingReconciliationRow {
+                unit_id: 7,
+                posted_debits: i128::MAX,
+                posted_credits: 0,
+                pending_debits: 27,
+                pending_credits: 0,
+                open_debits: 10,
+                open_credits: 0,
+                open_item_count: 1,
+                posted_net: i128::MAX,
+                open_net: 10,
+                difference: i128::MAX - 10,
+            }],
+            aging_certificate_digest: [5; 32],
+            control_certificate_digest: [6; 32],
+        };
+        let checks = reconciliation_checks(&report);
+        assert_eq!(checks.iter().map(|check| check.name).collect::<Vec<_>>(), [
+            "aging_reconciliation", "aging_reconciliation_account", "aging_reconciliation_row",
+        ]);
+        assert!(checks.iter().all(|check| matches!(check.verdict, Verdict::Pass)));
+        let mut json = String::new();
+        for check in checks {
+            check.json().write(&mut json);
+        }
+        for expected in [
+            format!("\"posted_debits\":\"{}\"", i128::MAX),
+            format!("\"difference\":\"{}\"", i128::MAX - 10),
+            "\"pending_debits\":\"27\"".into(),
+            "\"reconciled\":false".into(),
+            "\"unit\":7".into(),
+            format!("\"aging_certificate_digest\":\"{}\"", "05".repeat(32)),
+            format!("\"control_certificate_digest\":\"{}\"", "06".repeat(32)),
+            "\"external_subledger\":\"not judged\"".into(),
+        ] {
+            assert!(json.contains(&expected), "{expected}: {json}");
+        }
+    }
+
 
     #[test]
     fn balance_explanation_renders_exact_history_and_authenticated_provenance() {
