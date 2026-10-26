@@ -5542,6 +5542,192 @@ fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> s
     Ok(())
 }
 
+/// `fa document attest manual --review <file> --digest <review_digest>`
+/// (fa-kokk): a ManualAssertion over the retained sealed proposal, the
+/// proposal_digest an approval binds, so one Adjusting entry in a Closed
+/// period carries both its second-principal approval and the assertion that
+/// meets its evidence minimum (registries/evidence_policy.toml: Adjusting
+/// admits a manual assertion). An assertion over another proposal of the same
+/// intent covers nothing.
+#[test]
+fn a_manual_assertion_over_a_sealed_review_meets_the_evidence_minimum_of_the_approved_post()
+-> std::io::Result<()> {
+    let dir = tmp("attest-review")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Assertion Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Bank fees","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    // A bank charge shown only on the statement: no document exists to cite.
+    let adjustment = write(
+        &dir,
+        "fee.json",
+        r#"{"class":"Adjusting","effective_date":"2026-03-12","idempotency_key":"uninvoiced-fee","description":"Uninvoiced bank charge","legs":[{"side":"debit","account":"6000","amount":"4.00 USD"},{"side":"credit","account":"1000","amount":"4.00 USD"}]}"#,
+    );
+    let seal = |name: &str| -> (String, String, String) {
+        let path = dir.join(name).display().to_string();
+        let reviewed = doc(&ok(&[
+            "post",
+            "--intent",
+            &adjustment,
+            "--review-out",
+            &path,
+            "--json",
+        ]));
+        (
+            path,
+            text(&reviewed, "review_digest").to_string(),
+            text(&reviewed, "proposal_digest").to_string(),
+        )
+    };
+    let (review, review_digest, proposal_digest) = seal("fee.review");
+    // Sealing the same intent again gives another proposal (its description
+    // is sealed afresh), so another digest.
+    let (other, other_digest, other_proposal) = seal("fee-other.review");
+    assert_ne!(other_proposal, proposal_digest);
+
+    let approval = doc(&ok(&[
+        "approve",
+        "--proposal",
+        &proposal_digest,
+        "--as",
+        "independent-reviewer",
+        "--json",
+    ]));
+    let approval = text(&approval, "approval_vid").to_string();
+    let post_review = || {
+        run(&[
+            "post",
+            "--review",
+            &review,
+            "--digest",
+            &review_digest,
+            "--approval",
+            &approval,
+            "--grant",
+            "post_closed",
+            "--yes",
+            "--json",
+        ])
+    };
+    let attest = |path: &str, digest: &str| {
+        run(&[
+            "document",
+            "attest",
+            "manual",
+            "--review",
+            path,
+            "--digest",
+            digest,
+            "--reason",
+            "NoDocumentIssued",
+            "--statement",
+            "bank fee shown only on statement; no separate invoice issued",
+            "--json",
+        ])
+    };
+
+    // Approved but with no evidence: the evidence minimum refuses it.
+    let (code, out) = post_review();
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-080"), "{out}");
+
+    // Planted: an assertion over the other proposal of the same intent does
+    // not cover this one.
+    let (code, out) = attest(&other, &other_digest);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        field(&out, "subject"),
+        Some(other_proposal.as_str()),
+        "{out}"
+    );
+    let (code, out) = post_review();
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-080"), "{out}");
+
+    // Usage errors: a review its digest does not name, a review beside an
+    // intent, and a digest with no review.
+    let (code, out) = attest(&review, &"00".repeat(32));
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = run(&[
+        "document",
+        "attest",
+        "manual",
+        "--review",
+        &review,
+        "--digest",
+        &review_digest,
+        "--intent",
+        &adjustment,
+        "--reason",
+        "NoDocumentIssued",
+        "--statement",
+        "x",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = run(&[
+        "document",
+        "attest",
+        "manual",
+        "--intent",
+        &adjustment,
+        "--digest",
+        &review_digest,
+        "--reason",
+        "NoDocumentIssued",
+        "--statement",
+        "x",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+
+    // The assertion over this review's proposal: the same digest the
+    // approval binds.
+    let (code, out) = attest(&review, &review_digest);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("attestation_recorded"), "{out}");
+    assert_eq!(field(&out, "claim"), Some("ManualAssertion"), "{out}");
+    assert_eq!(
+        field(&out, "subject"),
+        Some(proposal_digest.as_str()),
+        "{out}"
+    );
+
+    // One entry now carries both.
+    let (code, posted) = post_review();
+    assert_eq!(code, 0, "{posted}");
+    let vid = field(&posted, "vid").unwrap_or_default().to_string();
+    let shown = ok(&["entry", "show", &vid, "--json"]);
+    assert!(shown.contains("\"Adjusting\""), "{shown}");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(tb.contains("4.00 USD"), "{tb}");
+    Ok(())
+}
+
 /// `fa law list|show` and `fa unit list` (plan §6.2–§6.4, Appendix D): the
 /// registered laws and unit versions, without a book.
 #[test]
