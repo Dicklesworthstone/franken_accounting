@@ -223,6 +223,10 @@ impl fmt::Display for Refusal {
 pub mod code {
     /// A gross native or functional register column would exceed its bound.
     pub const REGISTER_CAPACITY: &str = "FA-REF-198";
+    /// A batch or multi-entry transaction's canonical `LogicalDeltaTemplate`
+    /// would exceed `limits.toml` `max_batch_template_bytes` (`14,439,152` B,
+    /// the `fgdb-chronicle` V1 capsule ceiling; bead fa-gbkc).
+    pub const BATCH_BYTE_BUDGET: &str = "FA-REF-201";
     /// An external source batch lacks its reviewed exact summary or was
     /// already summarized under its book/feed/batch identity.
     pub const EXTERNAL_SUBLEDGER: &str = "FA-REF-192";

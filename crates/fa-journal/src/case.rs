@@ -2097,8 +2097,19 @@ pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let entry = proposal.seal(Vec::new(), None)?;
+    let mirrors = entry_mirrors(&entry)?;
+    staged
+        .template_tracker
+        .create_vertex(relation::IN_CASE, evid, 1, &mirrors);
+    staged.template_tracker.set_vertex_property(
+        relation::IN_CASE,
+        vid,
+        property::STATE,
+        Some(CaseState::Approved.scalar()),
+        Some(CaseState::Posted.scalar()),
+    );
     let mut in_case = WriteBatch::new(relation::IN_CASE);
-    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.create_vertex(evid, vec![label::ENTRY], mirrors);
     in_case.compare_and_set_vertex_property(
         vid,
         property::STATE,
@@ -2106,8 +2117,10 @@ pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
         CaseState::Posted.scalar(),
         WriteMismatchPolicy::AbortWrite,
     );
+    staged.template_tracker.add_edge(relation::IN_CASE, &[]);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     for e in &entries {
+        staged.template_tracker.add_edge(relation::IN_CASE, &[]);
         in_case.add_edge(
             edge_id(relation::IN_CASE, e.entry, vid),
             e.entry,

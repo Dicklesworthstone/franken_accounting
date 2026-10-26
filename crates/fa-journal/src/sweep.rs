@@ -1276,7 +1276,7 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
         return Ok(Ok((None, witness)));
     }
     let take = due.len().min(req.max_batch);
-    let remaining_due = due.len() - take;
+    let mut remaining_due = due.len() - take;
     due.truncate(take);
 
     let txn_cx = ctx.txn();
@@ -1313,6 +1313,7 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
     let mut cells: BTreeMap<VId, CellRun> = BTreeMap::new();
     let mut entries = WriteBatch::new(relation::IN_PERIOD);
     let mut resolves = WriteBatch::new(relation::RESOLVES);
+    let mut tracker = crate::batch::TemplateByteTracker::default();
     let mut expired = Vec::with_capacity(due.len());
     for d in &due {
         let hold_vid = d.hold.vid;
@@ -1386,9 +1387,25 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
             txn.abort();
             return Ok(Err(refusal));
         }
-        release_hold(&txn, db, &mut accounts, &mut cells, &hold.proposal, &period)?;
         let entry = proposal.seal(Vec::new(), None)?;
-        entries.create_vertex(rvid, vec![label::ENTRY], entry_mirrors(&entry)?);
+        let mirrors = entry_mirrors(&entry)?;
+        let mut next_tracker = tracker.clone();
+        next_tracker.create_vertex(relation::IN_PERIOD, rvid, 1, &mirrors);
+        next_tracker.record_entry_outcome_claim(relation::IN_PERIOD, &entry.proposal);
+        next_tracker.add_edge(relation::IN_PERIOD, &[]);
+        next_tracker.add_edge(
+            relation::RESOLVES,
+            &[(property::DISPOSITION, CanonicalScalar::Int(2))],
+        );
+        let cell_reserve = (cells.len() + hold.proposal.legs.len()).saturating_mul(400) + 4096;
+        if !expired.is_empty()
+            && next_tracker.total_bytes().saturating_add(cell_reserve)
+                > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES
+        {
+            break;
+        }
+        release_hold(&txn, db, &mut accounts, &mut cells, &hold.proposal, &period)?;
+        entries.create_vertex(rvid, vec![label::ENTRY], mirrors);
         crate::outcome::stage_entry(&mut entries, &entry, rvid)?;
         entries.add_edge(edge_id(relation::IN_PERIOD, rvid, pvid), rvid, pvid, vec![]);
         resolves.add_edge(
@@ -1397,8 +1414,11 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
             hold_vid,
             vec![(property::DISPOSITION, CanonicalScalar::Int(2))],
         );
+        tracker = next_tracker;
         expired.push((d.hold, entry.entry_ref(rvid)));
     }
+    remaining_due += due.len() - expired.len();
+    due.truncate(expired.len());
     witness.substrate_rows_read += accounts.len() + cells.len();
 
     let last = due

@@ -1335,8 +1335,19 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
     }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let draft = view.vid;
+    let mirrors = entry_mirrors(&entry)?;
+    staged
+        .template_tracker
+        .create_vertex(relation::IN_CASE, evid, 1, &mirrors);
+    staged.template_tracker.set_vertex_property(
+        relation::IN_CASE,
+        draft,
+        property::STATE,
+        Some(DraftState::Open.scalar()),
+        Some(DraftState::Promoted.scalar()),
+    );
     let mut in_case = WriteBatch::new(relation::IN_CASE);
-    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.create_vertex(evid, vec![label::ENTRY], mirrors);
     in_case.compare_and_set_vertex_property(
         draft,
         property::STATE,
@@ -1344,9 +1355,11 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         DraftState::Promoted.scalar(),
         WriteMismatchPolicy::AbortWrite,
     );
+    staged.template_tracker.add_edge(relation::IN_CASE, &[]);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, draft), evid, draft, vec![]);
     for promoted in &staged.entries {
         let v = promoted.vid;
+        staged.template_tracker.add_edge(relation::IN_CASE, &[]);
         in_case.add_edge(edge_id(relation::IN_CASE, v, draft), v, draft, vec![]);
     }
     staged.txn.write(db, in_case)?;

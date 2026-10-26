@@ -323,16 +323,15 @@ fn schedule_props(
 /// step 8, the Adjusting's own commit).
 pub(crate) fn stage_schedule(
     batch: &mut WriteBatch,
+    tracker: &mut crate::batch::TemplateByteTracker,
     target: EntryRef,
     reverse_on: DateDay,
     period: &str,
 ) -> Result<VId, KernelError> {
     let svid = schedule_vid(target.vid);
-    batch.create_vertex(
-        svid,
-        vec![label::REVERSAL_SCHEDULE],
-        schedule_props(target, reverse_on, period)?,
-    );
+    let props = schedule_props(target, reverse_on, period)?;
+    tracker.create_vertex(relation::HAS_LEG, svid, 1, &props);
+    batch.create_vertex(svid, vec![label::REVERSAL_SCHEDULE], props);
     Ok(svid)
 }
 
@@ -645,6 +644,7 @@ pub(crate) struct Mints {
     has_leg: WriteBatch,
     cells: BTreeMap<VId, CellRun>,
     accounts: BTreeMap<VId, AccountRow>,
+    tracker: crate::batch::TemplateByteTracker,
     /// `(target, reversal)` in mint order.
     pub(crate) minted: Vec<(EntryRef, EntryRef)>,
     /// `(target, why)`.
@@ -657,6 +657,7 @@ impl Mints {
             has_leg: WriteBatch::new(relation::HAS_LEG),
             cells: BTreeMap::new(),
             accounts: BTreeMap::new(),
+            tracker: crate::batch::TemplateByteTracker::default(),
             minted: Vec::new(),
             blocked: Vec::new(),
         }
@@ -772,12 +773,12 @@ fn execution_refusal(
     schedule: &Schedule,
     trigger: ScheduleTrigger,
     refusal: Refusal,
-) -> Outcome<()> {
+) -> Outcome<bool> {
     if matches!(trigger, ScheduleTrigger::Sweep { .. }) {
         mints
             .blocked
             .push((schedule.target, refusal_reason(&refusal)));
-        Ok(Ok(()))
+        Ok(Ok(true))
     } else {
         // Open cannot silently record an authority-dependent block that its
         // exact historical retry cannot reproduce from immutable sources.
@@ -791,6 +792,8 @@ fn execution_refusal(
 /// authority and account admission, availability, reconciliation, daily usage,
 /// the Reversal row, live applications and SoD (default row, no approvals).
 /// `Ok(Err)` refuses the whole transaction; a block is recorded in `mints`.
+/// `Ok(Ok(false))` stops the batch before this schedule so the transaction
+/// stays within `MAX_BATCH_TEMPLATE_BYTES` (`fa-gbkc`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     txn: &mut WriteTxn,
@@ -807,7 +810,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     trigger: ScheduleTrigger,
     executor: Party,
     epoch: u64,
-) -> Outcome<()> {
+) -> Outcome<bool> {
     // A period-scoped opener must reach the accrual being undone before
     // its payload is observed, just as a manually posted Reversal must.
     if capability.is_scoped() {
@@ -862,11 +865,11 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
             mints
                 .blocked
                 .push((schedule.target, format!("waiting for period `{period}`")));
-            return Ok(Ok(()));
+            return Ok(Ok(true));
         }
         ReversalStatus::Blocked { row, .. } => {
             mints.blocked.push((schedule.target, row));
-            return Ok(Ok(()));
+            return Ok(Ok(true));
         }
     }
     for i in 0..target.proposal.legs.len() {
@@ -879,7 +882,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
             mints
                 .blocked
                 .push((schedule.target, LIVE_APPLICATIONS_ROW.into()));
-            return Ok(Ok(()));
+            return Ok(Ok(true));
         }
     }
     let legs = swapped(&target.proposal.legs);
@@ -958,7 +961,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
             mints
                 .blocked
                 .push((schedule.target, refusal_reason(&refusal)));
-            return Ok(Ok(()));
+            return Ok(Ok(true));
         }
     }
     let reconciliation = match crate::post::reconciliation_citations(
@@ -1009,6 +1012,26 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     )? {
         return execution_refusal(mints, schedule, trigger, refusal);
     }
+    let mirrors = entry_mirrors(&entry)?;
+    let mut next_tracker = mints.tracker.clone();
+    next_tracker.create_vertex(relation::HAS_LEG, rvid, 1, &mirrors);
+    next_tracker.record_entry_outcome_claim(relation::HAS_LEG, &entry.proposal);
+    next_tracker.record_legs(rvid, &entry, book)?;
+    next_tracker.add_edge(relation::IN_PERIOD, &[]);
+    next_tracker.add_edge(relation::SUPERSEDES, &[]);
+    if let Some(usage) = &usage {
+        usage.record_template_bytes(&mut next_tracker)?;
+    }
+    for _ in &reconciliation {
+        next_tracker.add_edge(relation::CITES, &[]);
+    }
+    let cell_and_cursor_reserve = (mints.cells.len() + entry.proposal.legs.len()) * 400 + 4096;
+    if !mints.minted.is_empty()
+        && next_tracker.total_bytes() + cell_and_cursor_reserve
+            > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES
+    {
+        return Ok(Ok(false));
+    }
     if let Some(why) = judge_limits(
         |vid| Ok(txn.vertex(db, vid)?),
         book,
@@ -1017,11 +1040,12 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         &schedule.period,
     )? {
         mints.blocked.push((schedule.target, why));
-        return Ok(Ok(()));
+        return Ok(Ok(true));
     }
+    mints.tracker = next_tracker;
     let pvid = period_vid(&book.calendar.id, &schedule.period);
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
-    has_leg.create_vertex(rvid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    has_leg.create_vertex(rvid, vec![label::ENTRY], mirrors);
     crate::outcome::stage_entry(&mut has_leg, &entry, rvid)?;
     let leg_edges = crate::projections::stage_legs(&mut has_leg, rvid, &entry, book)?;
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
@@ -1053,7 +1077,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     // same overlay. Publishing remains the caller's single atomic commit.
     txn.write_ordered(db, batches)?;
     mints.minted.push((schedule.target, entry.entry_ref(rvid)));
-    Ok(Ok(()))
+    Ok(Ok(true))
 }
 
 /// Inside the `Open` transition of `period` (plan §7.6 rule (b), R5): mint
@@ -1127,7 +1151,7 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
             .vertex(db, s.vid)?
             .ok_or_else(|| KernelError::Corrupt("a reversal schedule vanished".into()))?;
         let s = decode_schedule(&row)?;
-        if let Err(r) = mint(
+        match mint(
             txn,
             db,
             ctx,
@@ -1143,7 +1167,9 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
             executor,
             epoch,
         )? {
-            return Ok(Err(r));
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(r) => return Ok(Err(r)),
         }
     }
     Ok(Ok(mints))
@@ -1333,7 +1359,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
         return Ok(Ok(None));
     }
     let take = due.len().min(req.max_batch);
-    let remaining = due.len() - take;
+    let mut remaining = due.len() - take;
     due.truncate(take);
 
     let txn_cx = ctx.txn();
@@ -1361,6 +1387,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
         profile: req.capability.profile(),
     };
     let mut mints = Mints::new();
+    let mut processed = 0usize;
     for s in &due {
         let row = txn
             .vertex(db, s.vid)?
@@ -1375,7 +1402,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
         let pvid = period_vid(&book.calendar.id, &s.period);
         let state = state_from_scalar(txn.vertex_property(db, pvid, property::STATE)?.as_ref())
             .ok_or_else(|| KernelError::Corrupt(format!("period `{}` state mirror", s.period)))?;
-        if let Err(r) = mint(
+        match mint(
             &mut txn,
             db,
             ctx,
@@ -1393,10 +1420,16 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
             executor,
             epoch,
         )? {
-            txn.abort();
-            return Ok(Err(r));
+            Ok(true) => processed += 1,
+            Ok(false) => break,
+            Err(r) => {
+                txn.abort();
+                return Ok(Err(r));
+            }
         }
     }
+    remaining += due.len() - processed;
+    due.truncate(processed);
 
     let last = due
         .last()
@@ -1507,6 +1540,7 @@ pub(crate) fn cancellation<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     batch: &mut WriteBatch,
+    tracker: &mut crate::batch::TemplateByteTracker,
     target: VId,
     reversal: &EntryPayload,
     reversal_vid: VId,
@@ -1568,7 +1602,9 @@ pub(crate) fn cancellation<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let entry = proposal.seal(Vec::new(), None)?;
-    batch.create_vertex(cvid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    let mirrors = entry_mirrors(&entry)?;
+    tracker.create_vertex(relation::HAS_LEG, cvid, 1, &mirrors);
+    batch.create_vertex(cvid, vec![label::ENTRY], mirrors);
     Ok(Ok(Some(cvid)))
 }
 

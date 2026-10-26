@@ -209,6 +209,7 @@ pub struct PreparedPost {
     identity: Identity,
     seal_key: SealKey,
     paired_reversal: Option<PairMember>,
+    template_tracker: crate::batch::TemplateByteTracker,
     /// True when preparation staged only unconditional vertex/edge creations,
     /// so publication may use [`WriteTxn::commit_append_only_rebased`].
     append_only: bool,
@@ -347,7 +348,7 @@ impl PreparedPost {
     pub(crate) fn into_member(
         self,
         planning: bool,
-    ) -> Result<(WriteTxn, BatchMember), KernelError> {
+    ) -> Result<(WriteTxn, BatchMember, crate::batch::TemplateByteTracker), KernelError> {
         let aggregate = match requires_aggregate_basis(&self.request.proposal) {
             Ok(aggregate) => aggregate,
             Err(error) => {
@@ -367,6 +368,7 @@ impl PreparedPost {
                 entry_ref: self.entry_ref,
                 period: self.period,
             },
+            self.template_tracker,
         ))
     }
 
@@ -406,6 +408,7 @@ impl PreparedPost {
             identity,
             seal_key,
             paired_reversal,
+            template_tracker: _,
             append_only,
             planning,
         } = self;
@@ -1070,7 +1073,7 @@ pub(crate) async fn post_admitted<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    match prepare_post_in(db, ctx, book, req, None, admission, None)? {
+    match prepare_post_in(db, ctx, book, req, None, admission, None, None)? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Ok(posted)),
         Ok(PostPreparation::Ready(prepared)) => prepared.commit(db, ctx).await,
@@ -1110,7 +1113,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, Admission::Commit, None)
+    prepare_post_in(db, ctx, book, req, None, Admission::Commit, None, None)
 }
 
 /// [`prepare_post`] for a dry run (plan §15.3): the same pipeline and
@@ -1123,7 +1126,7 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    let prepared = prepare_post_in(db, ctx, book, req, None, Admission::Plan, None)?;
+    let prepared = prepare_post_in(db, ctx, book, req, None, Admission::Plan, None, None)?;
     if let Ok(PostPreparation::Ready(p)) = &prepared {
         let accounts = crate::register_capacity::accounts(
             std::iter::once(&p.entry.proposal)
@@ -1154,7 +1157,7 @@ pub(crate) fn prepare_recurring<V: asupersync::fs::Vfs + Clone>(
     req: PostRequest,
     token: crate::recurring::Executing,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, Admission::Recurring(token), None)
+    prepare_post_in(db, ctx, book, req, None, Admission::Recurring(token), None, None)
 }
 
 pub(crate) fn witness_recurring_executor<V: asupersync::fs::Vfs + Clone>(
@@ -1178,6 +1181,7 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     req: PostRequest,
     admission: Admission,
     carried: Option<WriteTxn>,
+    carried_tracker: Option<crate::batch::TemplateByteTracker>,
 ) -> Outcome<PostPreparation> {
     if crate::revaluation::is_source_bound(&req.proposal) {
         if let Some(txn) = carried {
@@ -1191,7 +1195,7 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
         }
         return Ok(Err(crate::carrying::unsupported_batch()));
     }
-    prepare_post_in(db, ctx, book, req, None, admission, carried)
+    prepare_post_in(db, ctx, book, req, None, admission, carried, carried_tracker)
 }
 
 /// An exact amount as the book renders it ("500.00 USD") for refusal text,
@@ -1609,6 +1613,7 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
 /// The second member reads the first member's native transaction overlay,
 /// including released applications and limit-cell moves. No rehearsal
 /// transaction or substitute entry class participates in publication.
+#[allow(clippy::too_many_arguments)]
 fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -1617,6 +1622,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     replacement_basis: Option<ReplacementBasis>,
     admission: Admission,
     carried: Option<WriteTxn>,
+    carried_tracker: Option<crate::batch::TemplateByteTracker>,
 ) -> Outcome<PostPreparation> {
     let planning = matches!(admission, Admission::Plan);
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -2215,7 +2221,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // From here every read is a witness of this transaction.
     let had_carried = carried.is_some();
     let txn_cx = ctx.txn();
-    let (mut txn, paired_reversal) = match (replacement_basis, carried) {
+    let (mut txn, paired_reversal, mut template_tracker) = match (replacement_basis, carried) {
         // A replacement pair is its own two-member transaction; a batch
         // never carries one (Replacement is not a batchable class).
         (Some(ReplacementBasis::Staged(_)), Some(_)) => {
@@ -2231,6 +2237,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 entry_ref,
                 period,
                 effects_digest,
+                template_tracker,
                 ..
             } = *prepared;
             (
@@ -2242,10 +2249,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     period,
                     effects_digest,
                 }),
+                template_tracker,
             )
         }
-        (_, Some(txn)) => (txn, None),
-        (Some(ReplacementBasis::Recorded { .. }) | None, None) => (db.begin(&txn_cx)?, None),
+        (_, Some(txn)) => (txn, None, carried_tracker.unwrap_or_default()),
+        (Some(ReplacementBasis::Recorded { .. }) | None, None) => (
+            db.begin(&txn_cx)?,
+            None,
+            carried_tracker.unwrap_or_default(),
+        ),
     };
     // The capability is not revoked (plan §14.2): the first read, so a
     // revoked token learns nothing about the book, not even a recorded outcome.
@@ -3962,15 +3974,25 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     };
     let mut has_leg = WriteBatch::new(relation::HAS_LEG);
     let mut in_period = WriteBatch::new(relation::IN_PERIOD);
-    has_leg.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    let mirrors = entry_mirrors(&entry)?;
+    template_tracker.create_vertex(relation::HAS_LEG, evid, 1, &mirrors);
+    has_leg.create_vertex(evid, vec![label::ENTRY], mirrors);
     if let Some(basis) = &external_subledger {
+        template_tracker.record_external_subledger(relation::HAS_LEG, basis);
         crate::external_subledger::stage(&mut has_leg, basis, entry.entry_ref(evid))?;
     }
+    template_tracker.record_entry_outcome_claim(relation::HAS_LEG, &entry.proposal);
     let outcome_digest = crate::outcome::stage_entry(&mut has_leg, &entry, evid)?;
+    template_tracker.record_legs(evid, &entry, book)?;
     let leg_edges = crate::projections::stage_legs(&mut has_leg, evid, &entry, book)?;
+    template_tracker.add_edge(relation::IN_PERIOD, &[]);
     in_period.add_edge(edge_id(relation::IN_PERIOD, evid, pvid), evid, pvid, vec![]);
     for m in &judged.moves {
+        template_tracker.record_limit_cell_move(relation::HAS_LEG, m.cell, &m.before, &m.after)?;
         m.before.stage(&m.after, m.cell, &mut has_leg)?;
+    }
+    if let Some(usage) = &usage {
+        usage.record_template_bytes(&mut template_tracker)?;
     }
     let usage_edges = usage
         .as_ref()
@@ -3983,6 +4005,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     if let Some((reverse_on, reverse_period)) = &scheduled {
         schedule::stage_schedule(
             &mut has_leg,
+            &mut template_tracker,
             entry.entry_ref(evid),
             *reverse_on,
             reverse_period,
@@ -3995,6 +4018,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             db,
             book,
             &mut has_leg,
+            &mut template_tracker,
             target.vid,
             &entry.proposal,
             evid,
@@ -4014,6 +4038,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         batches.extend(edges);
     }
     if let Some(run_vid) = migration_run {
+        template_tracker.add_edge(relation::IN_MIGRATION_RUN, &[]);
         let mut in_run = WriteBatch::new(relation::IN_MIGRATION_RUN);
         in_run.add_edge(
             edge_id(relation::IN_MIGRATION_RUN, evid, run_vid),
@@ -4028,6 +4053,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         .or(reclass_target)
         .or(revision_target)
     {
+        template_tracker.add_edge(relation::SUPERSEDES, &[]);
         let mut supersedes = WriteBatch::new(relation::SUPERSEDES);
         supersedes.add_edge(
             edge_id(relation::SUPERSEDES, evid, target.vid),
@@ -4043,12 +4069,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             Disposition::Voids => 1,
             Disposition::Expires { .. } => 2,
         };
+        let props = vec![(property::DISPOSITION, CanonicalScalar::Int(tag))];
+        template_tracker.add_edge(relation::RESOLVES, &props);
         let mut resolves = WriteBatch::new(relation::RESOLVES);
         resolves.add_edge(
             edge_id(relation::RESOLVES, evid, target.vid),
             evid,
             target.vid,
-            vec![(property::DISPOSITION, CanonicalScalar::Int(tag))],
+            props,
         );
         batches.push(resolves);
     }
@@ -4056,27 +4084,31 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         let mut settles = WriteBatch::new(relation::SETTLES);
         for (ordinal, target_leg, amount) in &applications {
             let src = leg_vid(evid, *ordinal);
+            let props = vec![(
+                property::AMOUNT_BYTES,
+                mantissa_scalar("settles.amount", *amount)?,
+            )];
+            template_tracker.add_edge(relation::SETTLES, &props);
             settles.add_edge(
                 edge_id(relation::SETTLES, src, *target_leg),
                 src,
                 *target_leg,
-                vec![(
-                    property::AMOUNT_BYTES,
-                    mantissa_scalar("settles.amount", *amount)?,
-                )],
+                props,
             );
         }
         let mut unsettles = WriteBatch::new(relation::UNSETTLES);
         for (ordinal, target_leg, amount) in &undo {
             let src = leg_vid(evid, *ordinal);
+            let props = vec![(
+                property::AMOUNT_BYTES,
+                mantissa_scalar("unsettles.amount", *amount)?,
+            )];
+            template_tracker.add_edge(relation::UNSETTLES, &props);
             unsettles.add_edge(
                 edge_id(relation::UNSETTLES, src, *target_leg),
                 src,
                 *target_leg,
-                vec![(
-                    property::AMOUNT_BYTES,
-                    mantissa_scalar("unsettles.amount", *amount)?,
-                )],
+                props,
             );
         }
         for (target_leg, (witnessed, delta)) in &applied_delta {
@@ -4084,11 +4116,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 .checked_add(*delta)
                 .filter(|n| *n >= 0)
                 .ok_or_else(|| KernelError::Corrupt("applied mirror out of range".into()))?;
+            let before_val = mantissa_scalar("applied", *witnessed)?;
+            let after_val = mantissa_scalar("applied", next)?;
+            template_tracker.set_vertex_property(
+                relation::SETTLES,
+                *target_leg,
+                property::APPLIED,
+                Some(before_val.clone()),
+                Some(after_val.clone()),
+            );
             settles.compare_and_set_vertex_property(
                 *target_leg,
                 property::APPLIED,
-                Some(mantissa_scalar("applied", *witnessed)?),
-                mantissa_scalar("applied", next)?,
+                Some(before_val),
+                after_val,
                 WriteMismatchPolicy::AbortWrite,
             );
         }
@@ -4096,6 +4137,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         batches.push(unsettles);
     }
     if let Some((ev_vid, _)) = cited_event {
+        template_tracker.add_edge(relation::DERIVED_FROM, &[]);
         let mut derived_from = WriteBatch::new(relation::DERIVED_FROM);
         derived_from.add_edge(
             edge_id(relation::DERIVED_FROM, evid, ev_vid),
@@ -4112,6 +4154,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     } = &entry.proposal.origin
     {
         let version = fa_model::rule_version_vid(book.book_id, &rule_version_oid.0);
+        template_tracker.add_edge(relation::GENERATED_BY, &[]);
         let mut generated_by = WriteBatch::new(relation::GENERATED_BY);
         generated_by.add_edge(
             edge_id(relation::GENERATED_BY, evid, version),
@@ -4121,9 +4164,19 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         );
         batches.push(generated_by);
     }
+    for _ in &evidence.documents {
+        template_tracker.add_edge(relation::EVIDENCED_BY, &[]);
+    }
+    if evidence.manual_assertion.is_some() {
+        template_tracker.add_edge(relation::ATTESTS, &[]);
+    }
     batches.extend(evidence_edges(evid, &evidence));
     if let Some(review) = external_review {
+        template_tracker.add_edge(relation::REVIEWED_BY, &[]);
         batches.push(crate::external_subledger::review_edge(evid, review));
+    }
+    for _ in &reconciliation {
+        template_tracker.add_edge(relation::CITES, &[]);
     }
     batches.extend(reconciliation_edges(evid, &reconciliation));
     batches.retain(|b| !b.is_empty());
@@ -4275,6 +4328,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         identity,
         seal_key: book.seal_key.clone(),
         paired_reversal,
+        template_tracker,
         append_only,
         planning,
     }))))
@@ -4982,8 +5036,16 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let retry_request = reversal_req.clone();
-    let (prior, basis) = match prepare_post_in(db, ctx, book, reversal_req, None, admission, None)?
-    {
+    let (prior, basis) = match prepare_post_in(
+        db,
+        ctx,
+        book,
+        reversal_req,
+        None,
+        admission,
+        None,
+        None,
+    )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => {
             // prepare_post has already proved proposal equivalence under
@@ -5011,7 +5073,16 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         }
         Ok(PostPreparation::Ready(prepared)) => (None, ReplacementBasis::Staged(prepared)),
     };
-    let prepared = prepare_post_in(db, ctx, book, replacement_req, Some(basis), admission, None)?;
+    let prepared = prepare_post_in(
+        db,
+        ctx,
+        book,
+        replacement_req,
+        Some(basis),
+        admission,
+        None,
+        None,
+    )?;
     if let Ok(PostPreparation::Ready(p)) = &prepared {
         let accounts = crate::register_capacity::accounts(
             std::iter::once(&p.entry.proposal)

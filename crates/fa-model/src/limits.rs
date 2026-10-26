@@ -38,6 +38,10 @@ pub const MAX_EXTENSION_BYTES: usize = 64 * 1024;
 /// Entries one batch commits in one transaction; an expiry-sweep batch is
 /// bounded by it (plan §5.4).
 pub const MAX_BATCH_ENTRIES: usize = 8190;
+/// Maximum canonical `LogicalDeltaTemplate` byte size of one substrate
+/// transaction (`fgdb-chronicle` V1 capsule ceiling `56,403 * 256 = 14,439,168`
+/// minus the 16-byte `XChaCha20Poly1305V1` tag at pinned rev `b323bd1`; fa-gbkc).
+pub const MAX_BATCH_TEMPLATE_BYTES: usize = 56_403 * 256 - 16;
 /// Text fields of an intake source (connector name and version, message id,
 /// scanning device).
 pub const MAX_INTAKE_TEXT_BYTES: usize = 256;
@@ -96,6 +100,7 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_extensions", MAX_EXTENSIONS as u64),
     ("max_extension_bytes", MAX_EXTENSION_BYTES as u64),
     ("max_batch_entries", MAX_BATCH_ENTRIES as u64),
+    ("max_batch_template_bytes", MAX_BATCH_TEMPLATE_BYTES as u64),
     ("max_intake_text_bytes", MAX_INTAKE_TEXT_BYTES as u64),
     ("max_import_documents", MAX_IMPORT_DOCUMENTS as u64),
     ("max_legal_hold_subjects", MAX_LEGAL_HOLD_SUBJECTS as u64),

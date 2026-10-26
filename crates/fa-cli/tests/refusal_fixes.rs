@@ -1794,6 +1794,10 @@ const UNTRIGGERED_WITH_REASON: &[(&str, &str)] = &[
         "FA-REF-200",
         "register checkpoint cadence exceeds active RetentionPolicy floor",
     ),
+    (
+        "FA-REF-201",
+        "batch canonical LogicalDeltaTemplate exceeds max_batch_template_bytes (14,439,152 B)",
+    ),
 ];
 
 #[test]

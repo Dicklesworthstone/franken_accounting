@@ -107,7 +107,7 @@ derived_objects = "N admitted Entry/Leg censuses with all native member effects 
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none; all evidence, approvals and rates are already in the book"
 complexity_witness = "Sum of N production member preparations over the carried overlay, plus O(native_delta_bytes + plan_bytes + outcome_bytes + N) hashing and retention per rehearsal/first commit; repeated prefix staging and member history/usage checks retain their native costs. Fresh outer and member keys each authenticate coverage: a bounded original genesis frame or O(log K) recovered-key proof, hence O((N+1)*log K) recovered-key reads. Exact retry checks O(N + fragment_count) original claims, rows and edges plus O(plan_bytes + outcome_bytes) reconstruction."
-notes = "Complete native LogicalDeltaTemplate digest binds the exact snapshot; any intervening publication before first commit requires re-planning. No per-member publication, additional shared cell or approval publication is introduced. Existing member reservation/usage cells retain their existing admission and costs. The 8190-member and 67440560-byte format ceilings are not capacity acceptance claims: IntentOutcome uses 52+48*N canonical bytes and at most 96 kind-4 fragments, while Entry rows and all native transaction limits still apply. Rehearsal stages retention before aborting; refusal writes nothing. Durable refusal outcomes and atomic batch drafts are not implemented by this operation."
+notes = "Complete native LogicalDeltaTemplate digest binds the exact snapshot; any intervening publication before first commit requires re-planning. No per-member publication, additional shared cell or approval publication is introduced. Existing member reservation/usage cells retain their existing admission and costs. The 8190-member and 67440560-byte format ceilings are not capacity acceptance claims: IntentOutcome uses 52+48*N canonical bytes and at most 96 kind-4 fragments, while Entry rows and the 14439152-byte max_batch_template_bytes ceiling (fgdb-chronicle V1 capsule MAX_PROTECTED_LEN_V1 = 56403 * 256 = 14439168 minus 16-byte XChaCha20Poly1305V1 tag at rev b323bd1; refused as FA-REF-201) apply. Rehearsal stages retention before aborting; refusal writes nothing. Durable refusal outcomes and atomic batch drafts are not implemented by this operation."
 
 [[operation_class]]
 id = "batch_post"
@@ -122,7 +122,7 @@ derived_objects = "N Entry/Leg censuses + N common-key IntentOutcome member clai
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
 complexity_witness = "Sum of N production member preparations, point witnesses and projection writes over one carried overlay; repeated prefix staging and history/usage checks retain their native costs. Key admission adds a bounded genesis-frame check per key or O((N+1)*log K) point reads for K recovered keys. Exact retry admits all requested members and compares the complete IN_BATCH metadata footprint before decoding the outcome, then verifies original co-birth and every member claim."
-notes = "The batch key must differ from every member key; cross-family collisions and repeated member keys refuse without publication. The 8190-member format ceiling does not guarantee native capacity acceptance: entries, claims, outcome fragments, witnesses and transaction limits all apply. Retained approved effects use the separate portable-plan operation; this direct-post row does not claim a persisted EffectManifest or durable refusal outcome."
+notes = "The batch key must differ from every member key; cross-family collisions and repeated member keys refuse without publication. The 8190-member format ceiling is paired with the 14439152-byte max_batch_template_bytes budget (fgdb-chronicle V1 capsule MAX_PROTECTED_LEN_V1 = 56403 * 256 = 14439168 minus 16-byte XChaCha20Poly1305V1 tag at rev b323bd1): any batch whose canonical LogicalDeltaTemplate exceeds 14439152 bytes refuses with FA-REF-201 (exit 3) naming the member boundary and split count. Retained approved effects use the separate portable-plan operation; this direct-post row does not claim a persisted EffectManifest or durable refusal outcome."
 
 [[operation_class]]
 id = "intent_outcome_coverage_rebuild"
@@ -197,7 +197,7 @@ derived_objects = "batch census + DraftSet transition"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
 complexity_witness = "O(N * legs) intent replay + 1 DraftSet LifecycleTransition + one final-overlay capacity fold O(snapshot vertices + journal legs), retaining conservative native row/insertion witnesses without extra writes"
-notes = "intent replay with revalidation"
+notes = "intent replay with revalidation; bounded by both max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201)"
 
 [[operation_class]]
 id = "period_transition"
@@ -287,7 +287,7 @@ derived_objects = "N case Entry/Leg censuses + N common-key IntentOutcome member
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
 complexity_witness = "Sum of N member preparations, each re-reading the Approved case state (a point witness), its manifest and the scenario Plan record and re-deriving its entry, + final-overlay capacity fold O(snapshot vertices + journal legs) with native row/insertion witnesses + 1 Post entry + 1 state compare-and-set in one transaction"
-notes = "dual-control approvals and the rehearsal's diff Certificate are prior transactions; the case state compare-and-set is on the case's own RestatementCase vertex, not a book-wide cell"
+notes = "dual-control approvals and the rehearsal's diff Certificate are prior transactions; the case state compare-and-set is on the case's own RestatementCase vertex, not a book-wide cell; bounded by max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201)"
 
 [[operation_class]]
 id = "register_maintenance_flush"
@@ -332,7 +332,7 @@ derived_objects = "Resolution(Expires) entries"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "time evidence (substrate's profiled observation)"
 complexity_witness = "O(expired_batch) Resolution(Expires) entries + SweepCursor under TimeEvidence"
-notes = "bounded batch per tick"
+notes = "bounded batch per tick (at most max_batch_entries = 8190 and max_batch_template_bytes = 14439152 B per tick)"
 
 [[operation_class]]
 id = "bundle_production"
@@ -392,7 +392,7 @@ derived_objects = "Migration entries; opening attestation"
 hot_object_exceptions = []
 external_authorities = "none"
 complexity_witness = "O(chunks * legs) staged migration entries + 1 finalizing MigrationControl(Finalize) with tie_out_digest + final-overlay capacity fold O(snapshot vertices + journal legs), including newly activated chunks, with native row/insertion witnesses and no extra writes"
-notes = "gap-free chunk manifests; today each chunk stages in its own publication before the 1 finalizing MigrationControl(Finalize) publication (see fa-zddh)"
+notes = "gap-free chunk manifests; today each chunk stages in its own publication before the 1 finalizing MigrationControl(Finalize) publication (see fa-zddh), with each publication bounded by max_batch_template_bytes (14439152 B, FA-REF-201)"
 
 # ---- Counted Kernel Operation Witnesses (bead fa-i5s) -----------------------
 # Checked against the deterministic operation counter in `fa-bench` / `fa-sim`

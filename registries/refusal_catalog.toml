@@ -1249,6 +1249,14 @@ exit = "refusal"
 cite = "plan §8.5 (register checkpoint cadence must not exceed any active RetentionPolicy floor; beads fa-v6di, fa-9xf9)"
 fix = "choose a register checkpoint cadence smaller than or equal to the active RetentionPolicy floor"
 
+[[refusal]]
+code = "FA-REF-201"
+name = "BATCH_BYTE_BUDGET"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.6, §5.8; limits.toml max_batch_template_bytes = 14439152 (fgdb-chronicle V1 capsule ceiling 56403 * 256 - 16 at rev b323bd1; bead fa-gbkc)"
+fix = "split the batch into smaller batches with `fa batch <batch.json>` so each batch's canonical LogicalDeltaTemplate stays at or below 14439152 bytes"
+
 # ---- Proof export (145–146) ---
 [[refusal]]
 code = "FA-REF-145"
