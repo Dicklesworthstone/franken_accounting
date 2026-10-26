@@ -1338,3 +1338,105 @@ fn filler_variant_above_the_batch_limit_posts_as_several_chunks() {
         "{text}"
     );
 }
+
+/// The D-cells fixture (`crates/fa-oracles/tests/fixtures/dcells/`): X-1's
+/// leg_split table under jet.round_amounts (A7c).
+const DCELLS: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/dcells/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/dcells/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/dcells/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/dcells/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/dcells/expectations.toml"),
+    ),
+];
+
+/// A7c (§3.3): the five feasible leg_split cells of X-1, a tier C reader's
+/// table, are copies of X-1 posted beside it on one book, read by one run of
+/// jet.round_amounts; each agrees with its authored row (UNRUN: the
+/// filler-invariance witness, A11a, is not built).
+#[test]
+fn co_resident_l_and_c_d_cells_share_one_book() {
+    let o = match run_files("dcells", &DCELLS, &[], HARNESS_VERBS) {
+        Ok(o) => o,
+        Err(o) => panic!("{}", o.text()),
+    };
+    let text = o.text();
+    let cells: Vec<&str> = o
+        .lines
+        .iter()
+        .map(String::as_str)
+        .filter(|l| l.contains(" dcells-D-01 D native X-1/"))
+        .collect();
+    assert_eq!(cells.len(), 5, "{text}");
+    for (cell, tail) in [
+        (
+            "mmm",
+            "cite=X-1#0,X-1#1,X-1#2,X-1#3 severity=Medium statistic=4",
+        ),
+        ("nnm", "cite=X-1#0,X-1#3 severity=Low statistic=2"),
+        ("nmn", "cite=X-1#0,X-1#2 severity=Low statistic=2"),
+        ("mnn", "cite=X-1#0,X-1#1 severity=Low statistic=2"),
+        ("nnn", "cite=X-1#0 severity=Low statistic=1"),
+    ] {
+        let line = format!(
+            "UNRUN dcells-D-01 D native X-1/leg_split={cell} procedure=jet.round_amounts@1 finding=yes {tail} record_consistent=false reason=filler_invariance"
+        );
+        assert!(cells.contains(&line.as_str()), "{line}\n{text}");
+    }
+    // One book holds all five copies, and one run of the procedure read them.
+    let copies: Vec<_> = o
+        .steps
+        .iter()
+        .filter(|s| s.verb == "post" && s.reference.starts_with("X-1~c"))
+        .collect();
+    assert_eq!(copies.len(), 5, "{text}");
+    let books: std::collections::BTreeSet<_> = copies.iter().map(|s| s.book_id.clone()).collect();
+    assert_eq!(books.len(), 1, "{text}");
+    assert_eq!(
+        o.steps
+            .iter()
+            .filter(|s| s.book_id == copies[0].book_id
+                && s.verb == "finding"
+                && s.finding_procedure.is_some())
+            .count(),
+        1,
+        "{text}"
+    );
+}
+
+/// A cell whose authored statistic disagrees with the run FAILs, naming the
+/// cell.
+#[test]
+fn d_cell_disagreeing_with_its_authored_row_fails_naming_the_cell() {
+    let o = run_files(
+        "dcells",
+        &DCELLS,
+        &[PlantedEdit {
+            file: "expectations.toml",
+            old: "cell = [\"nnm\"]\nexpect = \"finding\"\ncite = [\"X-1#0\", \"X-1#3\"]\nseverity = \"Low\"\nstatistic_value = \"2\"",
+            new: "cell = [\"nnm\"]\nexpect = \"finding\"\ncite = [\"X-1#0\", \"X-1#3\"]\nseverity = \"Low\"\nstatistic_value = \"3\"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("the planted cell fails");
+    assert!(
+        o.lines.iter().any(|l| l
+            == "FAIL dcells-D-01 D native X-1/leg_split=nnm procedure=jet.round_amounts@1 finding=yes cite=X-1#0,X-1#3 severity=Low statistic=2 record_consistent=false reason=expected statistic=3 observed statistic=2"),
+        "{}",
+        o.text()
+    );
+}

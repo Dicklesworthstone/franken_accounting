@@ -1893,26 +1893,28 @@ pub fn run_case_with(
         match sweep_groups(&case, &book.stem) {
             Ok(groups) => {
                 for g in &groups {
-                    let swept = cells::sweep(&case, g, files.files, None);
-                    out.lines.extend(
-                        swept
-                            .lines
-                            .into_iter()
-                            .filter(|l| !l.starts_with("PERIODS ")),
-                    );
-                    out.steps.extend(swept.steps);
-                    for c in swept.cells {
-                        let ev = evaluate::finish(&case, (c.row, Vec::new(), c.reproduce));
-                        out.lines.extend(ev.reproduce);
-                        out.lines.push(ev.row.to_string());
-                        out.verdicts.push(ev.record);
-                    }
+                    push_swept(&mut out, &case, cells::sweep(&case, g, files.files, None));
                 }
             }
             Err(e) => {
                 out.lines
                     .push(format!("FAIL {} sweep {} {e}", files.id, book.stem));
                 sweep_failed = true;
+            }
+        }
+        // Every D target with a branch table: its cells co-resident on one
+        // book (tier L, C) or on a book each (A7c).
+        if let Some(set) = &case.expectations {
+            for e in set.expectations.iter().filter(|e| {
+                e.kind == ExpectationType::D
+                    && e.fields.str("book_variant") == Some(book.stem.as_str())
+            }) {
+                for t in set
+                    .targets_of(&e.id)
+                    .filter(|t| evaluate::has_branch_table(t))
+                {
+                    push_swept(&mut out, &case, cells::d_cells(&case, e, t, files.files));
+                }
             }
         }
         let line = budget.book(
@@ -2086,4 +2088,21 @@ pub(crate) fn sweep_groups(
         return Ok(Vec::new());
     }
     Ok(fa_oracles::cases::sweep::sweep_plan(case, variant, &tables)?.groups)
+}
+
+/// A sweep's step records, log lines and cell rows, into the run's output.
+fn push_swept(out: &mut RunOutcome, case: &Case, swept: cells::Swept) {
+    out.lines.extend(
+        swept
+            .lines
+            .into_iter()
+            .filter(|l| !l.starts_with("PERIODS ")),
+    );
+    out.steps.extend(swept.steps);
+    for c in swept.cells {
+        let ev = evaluate::finish(case, (c.row, Vec::new(), c.reproduce));
+        out.lines.extend(ev.reproduce);
+        out.lines.push(ev.row.to_string());
+        out.verdicts.push(ev.record);
+    }
 }

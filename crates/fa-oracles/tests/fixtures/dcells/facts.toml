@@ -1,0 +1,7 @@
+# D-cells fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "X-1"
+provenance = "synthetic"
+reason = "a 3,000.00 entry whose split over three credit accounts the record does not state"
+discipline = "never cited by a case; the D table's target"

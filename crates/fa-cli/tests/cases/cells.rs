@@ -17,12 +17,17 @@ use std::collections::BTreeSet;
 
 use fa_oracles::cases::Case;
 use fa_oracles::cases::book::{BranchAttribute, StepDef, StepKind};
+use fa_oracles::cases::branch::{self, Enumeration};
+use fa_oracles::cases::expect::{Expectation, Target};
 use fa_oracles::cases::intent_json;
 use fa_oracles::cases::log::StepRecord;
 use fa_oracles::cases::stub;
-use fa_oracles::cases::sweep::{PeriodState, SweepCell, SweepGroup};
+use fa_oracles::cases::sweep::{PeriodState, SweepCell, SweepGroup, coresident as coresident_book};
+use fa_oracles::cases::tiers::{Tier, tiers};
 use fa_oracles::cases::verdict::{RowLine, RowVerdict, cell_label};
+use fa_oracles::json::Json;
 
+use super::evaluate::project;
 use super::run::{BookRun, Call, reproduce, tmp};
 
 fn s(x: &str) -> String {
@@ -446,5 +451,273 @@ pub fn sweep<'c>(
         cells: out,
         steps: std::mem::take(&mut run.steps),
         lines: std::mem::take(&mut run.lines),
+    }
+}
+
+/// One D target's branch cells (§3.3): for a tier L or C reader, every cell
+/// is a copy of the target posted beside it in one book (each the others'
+/// filler); for any other tier, each cell gets a book of its own. The
+/// history's own run of the procedure reads them, and each cell is compared
+/// with its authored `[[branch_cell]]` row: FAIL on any disagreement, else
+/// UNRUN filler_invariance (A11a), or needs:A5b with no authored row.
+pub fn d_cells<'c>(
+    case: &'c Case,
+    e: &Expectation,
+    t: &Target,
+    texts: &'c [(&'c str, &'c str)],
+) -> Swept {
+    let variant = e.fields.str("book_variant").unwrap_or_default().to_string();
+    let procedure = e.fields.str("procedure").unwrap_or_default().to_string();
+    let version = e.fields.int("version");
+    let fail = |why: String| Swept {
+        cells: vec![SweptCell {
+            row: RowLine {
+                verdict: RowVerdict::Fail,
+                id: e.id.clone(),
+                kind: "D".into(),
+                variant: variant.clone(),
+                target: Some(t.fact.clone()),
+                cell: "default".into(),
+                projection: Vec::new(),
+                reason: Some(why),
+            },
+            reproduce: None,
+        }],
+        steps: Vec::new(),
+        lines: Vec::new(),
+    };
+    let table = match branch::enumerate(case, e, t) {
+        Ok(table) => table,
+        Err(err) => return fail(format!("expected a branch table observed {err}")),
+    };
+    let coresident = tiers()
+        .ok()
+        .and_then(|tiers| {
+            tiers
+                .get(&procedure)
+                .map(|r| matches!(r.tier, Tier::L | Tier::C))
+        })
+        .unwrap_or(false);
+    // One table per book: all cells together, or one cell each.
+    let tables: Vec<Enumeration> = if coresident {
+        vec![table.clone()]
+    } else {
+        table
+            .cells
+            .iter()
+            .map(|c| Enumeration {
+                cells: vec![c.clone()],
+                ..table.clone()
+            })
+            .collect()
+    };
+    let authored = case
+        .expectations
+        .as_ref()
+        .map(|s| s.branch_cells.as_slice())
+        .unwrap_or_default();
+    let mut out = Swept {
+        cells: Vec::new(),
+        steps: Vec::new(),
+        lines: Vec::new(),
+    };
+    for one in &tables {
+        let (book, copies) = match coresident_book(case, &variant, one) {
+            Ok(x) => x,
+            Err(err) => return fail(err.to_string()),
+        };
+        let mut run = BookRun::new(
+            case,
+            &book,
+            tmp(&format!("{}-dcells-{}", case.header.id, t.fact)),
+            texts,
+        );
+        run.build();
+        run.replay();
+        for copy in &copies {
+            let pairs: Vec<(String, String)> = table
+                .attrs
+                .iter()
+                .zip(&copy.cell.key)
+                .map(|(a, v)| (a.as_str().to_string(), v.clone()))
+                .collect();
+            let mut row = RowLine {
+                verdict: RowVerdict::Unrun,
+                id: e.id.clone(),
+                kind: "D".into(),
+                variant: variant.clone(),
+                target: Some(t.fact.clone()),
+                cell: cell_label(&pairs),
+                projection: vec![(
+                    "procedure".into(),
+                    format!("{procedure}@{}", version.unwrap_or_default()),
+                )],
+                reason: None,
+            };
+            let observed = observe_copy(&run, &procedure, &copy.intent, &table.target);
+            row.projection.extend(observed.tokens());
+            let mut fails = Vec::new();
+            if let Some(why) = &run.failure {
+                fails.push(format!("expected the cells' book to build observed {why}"));
+            }
+            let want = authored
+                .iter()
+                .find(|a| a.expectation == e.id && a.target == t.fact && a.cell == copy.cell.key);
+            match want {
+                None if fails.is_empty() => {
+                    row.reason = Some("needs:A5b (the cell's authored outcome)".into());
+                }
+                None => {}
+                Some(a) => fails.extend(observed.disagreements(a)),
+            }
+            if !copy.cell.record_consistent {
+                row.projection
+                    .push(("record_consistent".into(), "false".into()));
+            }
+            if fails.is_empty() {
+                row.reason.get_or_insert_with(|| "filler_invariance".into());
+            } else {
+                row.verdict = RowVerdict::Fail;
+                row.reason = Some(fails.join("; "));
+            }
+            out.cells.push(SweptCell {
+                row,
+                reproduce: None,
+            });
+        }
+        out.steps.append(&mut run.steps);
+        out.lines
+            .extend(run.lines.drain(..).filter(|l| !l.starts_with("PERIODS ")));
+    }
+    out
+}
+
+/// What the procedure's run shows of one cell copy.
+struct Observed {
+    run: bool,
+    finding: bool,
+    severity: String,
+    statistic: String,
+    cites: Vec<String>,
+}
+
+impl Observed {
+    fn tokens(&self) -> Vec<(String, String)> {
+        if !self.run {
+            return vec![("finding".into(), "unrun".into())];
+        }
+        let mut t = vec![(
+            "finding".into(),
+            if self.finding { "yes" } else { "no" }.into(),
+        )];
+        if self.finding {
+            t.push(("cite".into(), self.cites.join(",")));
+            t.push(("severity".into(), self.severity.clone()));
+            t.push(("statistic".into(), self.statistic.clone()));
+        }
+        t
+    }
+
+    /// Disagreements with an authored cell (`expect`, `cite`, `severity`,
+    /// `statistic_value`).
+    fn disagreements(&self, a: &fa_oracles::cases::expect::BranchCell) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.run {
+            out.push("expected a recorded run observed none".into());
+            return out;
+        }
+        let expect = a.fields.str("expect").unwrap_or("finding");
+        let observed = if self.finding {
+            "finding"
+        } else {
+            "no_finding"
+        };
+        if expect != observed {
+            out.push(format!("expected {expect} observed {observed}"));
+            return out;
+        }
+        if !self.finding {
+            return out;
+        }
+        if let Some(want) = a.fields.str("severity")
+            && want != self.severity
+        {
+            out.push(format!(
+                "expected severity={want} observed severity={}",
+                self.severity
+            ));
+        }
+        if let Some(want) = a.fields.str("statistic_value")
+            && want != self.statistic
+        {
+            out.push(format!(
+                "expected statistic={want} observed statistic={}",
+                self.statistic
+            ));
+        }
+        if let Some(want) = a.fields.strs("cite") {
+            let mut want: Vec<String> = want.to_vec();
+            want.sort();
+            if want != self.cites {
+                out.push(format!(
+                    "expected cite={} observed cite={}",
+                    want.join(","),
+                    self.cites.join(",")
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// The findings of `procedure` that cite the copy's entry, its leg cites
+/// projected back to the target (`<target>#<ordinal>`).
+fn observe_copy(run: &BookRun<'_>, procedure: &str, copy: &str, target: &str) -> Observed {
+    let Some(found) = run.runs.get(procedure) else {
+        return Observed {
+            run: false,
+            finding: false,
+            severity: String::new(),
+            statistic: String::new(),
+            cites: Vec::new(),
+        };
+    };
+    let hit = found
+        .findings
+        .iter()
+        .map(|f| (f, project(run, f)))
+        .find(|(_, p)| p.entries.contains(copy));
+    let Some((f, p)) = hit else {
+        return Observed {
+            run: true,
+            finding: false,
+            severity: String::new(),
+            statistic: String::new(),
+            cites: Vec::new(),
+        };
+    };
+    let mut cites: Vec<String> = p
+        .cites
+        .iter()
+        .map(|c| match c.strip_prefix(copy) {
+            Some(rest) if rest.starts_with('#') => format!("{target}{rest}"),
+            _ => c.clone(),
+        })
+        .collect();
+    cites.sort();
+    Observed {
+        run: true,
+        finding: true,
+        severity: f
+            .get("severity")
+            .and_then(Json::as_str)
+            .unwrap_or("-")
+            .to_string(),
+        statistic: f
+            .get("statistic")
+            .and_then(|s| s.get("value"))
+            .and_then(Json::as_int)
+            .map_or_else(|| "-".into(), |v| v.to_string()),
+        cites,
     }
 }

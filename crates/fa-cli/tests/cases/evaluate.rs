@@ -200,8 +200,12 @@ pub fn rows(
             let mut slots: Vec<Option<&Target>> = targets
                 .iter()
                 .copied()
-                // A P target with a branch table is swept cell by cell (A7c).
-                .filter(|t| e.kind != ExpectationType::P || !has_branch_table(t))
+                // A P or D target with a branch table is evaluated cell by
+                // cell (A7c).
+                .filter(|t| {
+                    !matches!(e.kind, ExpectationType::P | ExpectationType::D)
+                        || !has_branch_table(t)
+                })
                 .map(Some)
                 .collect();
             if slots.is_empty() && !targets.is_empty() {

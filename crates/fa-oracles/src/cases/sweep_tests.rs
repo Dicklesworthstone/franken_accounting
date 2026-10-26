@@ -197,3 +197,53 @@ fn combination_rule_runs_filler_only_on_the_default_cell() {
         (FillerKind::Empty, Cells::All)
     );
 }
+
+#[test]
+fn coresident_copies_encode_each_cell_by_its_first_witness() {
+    let case = pilot_planted(&[]);
+    let set = case.expectations.as_ref().expect("expectations");
+    let e = set.get("W-D-03").expect("W-D-03");
+    let t = set
+        .targets_of("W-D-03")
+        .find(|t| t.fact == "F4")
+        .expect("F4");
+    let table = enumerate(&case, e, t).expect("F4's table");
+    let (book, copies) = coresident(&case, "native", &table).expect("copies");
+    let ids: Vec<&str> = copies.iter().map(|c| c.intent.as_str()).collect();
+    assert_eq!(ids, ["F4~c1", "F4~c2", "F4~c3", "F4~c4", "F4~c5"]);
+    // Each copy posts right after F4's own step, under its own cell key.
+    let at = book
+        .steps
+        .iter()
+        .position(|s| s.reference == "F4")
+        .expect("F4's step");
+    let next: Vec<&str> = book.steps[at + 1..at + 6]
+        .iter()
+        .map(|s| s.reference.as_str())
+        .collect();
+    assert_eq!(next, ids);
+    for copy in &copies {
+        let it = book
+            .intents
+            .iter()
+            .find(|i| i.id == copy.intent)
+            .expect("the copy");
+        assert_eq!(
+            it.idempotency_key.as_deref(),
+            Some(cell_key("wc-pilot-F4", &copy.cell.key).as_str())
+        );
+        // Its credit legs carry the cell's residues and keep the total.
+        let credits: Vec<i128> = book
+            .legs
+            .iter()
+            .filter(|l| l.intent == copy.intent && l.side == "Cr")
+            .map(|l| crate::cases::amount::parse_amount(&l.amount_literal, 2).expect("amount"))
+            .collect();
+        assert_eq!(credits.iter().sum::<i128>(), 56_000_000_000);
+        let letters: String = credits
+            .iter()
+            .map(|a| if a % 100_000 == 0 { 'm' } else { 'n' })
+            .collect();
+        assert_eq!(letters, copy.cell.key[0]);
+    }
+}

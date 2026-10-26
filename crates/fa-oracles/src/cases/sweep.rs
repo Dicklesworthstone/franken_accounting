@@ -17,8 +17,9 @@
 use std::collections::BTreeSet;
 
 use super::Case;
+use super::amount::format_amount;
 use super::book::{BookVariant, BranchAttribute, CELL_KEY_SUFFIX_BYTES, StepKind};
-use super::branch::Enumeration;
+use super::branch::{Cell, CellPart, Enumeration, WitnessValue, witnesses};
 use super::error::{LoadError, LoadErrorKind};
 use super::expect::ExpectationType;
 use super::filler::{self, FillerKind, FillerSpec};
@@ -314,6 +315,156 @@ pub fn sweep_plan(
     plan.check(book)
         .map_err(|d| err(variant, LoadErrorKind::DuplicateId, d))?;
     Ok(plan)
+}
+
+/// One co-resident D cell: the cell and the target copy that encodes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellCopy {
+    pub cell: Cell,
+    /// `<target intent>~c<n>`, n the cell's 1-based position in the table.
+    pub intent: String,
+}
+
+/// A D target's cells as co-resident entries (§3.3): the variant's book
+/// with, right after the target's step, one copy of the target per cell of
+/// `table`, each encoding its cell by the cell's first seeded witness (A5a)
+/// and posted under its own [`cell_key`]. The copies are each other's
+/// filler; the target itself stays, since later steps may name it.
+///
+/// # Errors
+///
+/// A target with no intent step or authored key, or a cell attribute with
+/// no co-resident encoding.
+pub fn coresident(
+    case: &Case,
+    variant: &str,
+    table: &Enumeration,
+) -> Result<(BookVariant, Vec<CellCopy>), LoadError> {
+    let err = |kind: LoadErrorKind, detail: String| LoadError {
+        file: "expectations.toml".into(),
+        line: None,
+        kind,
+        row: Some(table.expectation.clone()),
+        detail,
+    };
+    let mut book = case.books.get(variant).cloned().ok_or_else(|| {
+        err(
+            LoadErrorKind::DanglingKey,
+            format!("`{variant}` has no book"),
+        )
+    })?;
+    let target = book
+        .intents
+        .iter()
+        .find(|i| i.id == table.target)
+        .or_else(|| {
+            let mut by_fact = book.intents.iter().filter(|i| i.fact == table.target);
+            let one = by_fact.next()?;
+            by_fact.next().is_none().then_some(one)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            err(
+                LoadErrorKind::DanglingKey,
+                format!(
+                    "target `{}` names no one intent of `{variant}`",
+                    table.target
+                ),
+            )
+        })?;
+    let key = target.idempotency_key.clone().ok_or_else(|| {
+        err(
+            LoadErrorKind::MissingField,
+            format!("{} has no authored idempotency key", target.id),
+        )
+    })?;
+    let at = book
+        .steps
+        .iter()
+        .position(|s| s.step_kind() == Some(StepKind::Intent) && s.reference == target.id)
+        .ok_or_else(|| {
+            err(
+                LoadErrorKind::DanglingKey,
+                format!("{} has no intent step to post its cells beside", target.id),
+            )
+        })?;
+    let target_legs: Vec<_> = book
+        .legs
+        .iter()
+        .filter(|l| l.intent == target.id)
+        .cloned()
+        .collect();
+    let mut copies = Vec::new();
+    for (n, cell) in table.cells.iter().enumerate() {
+        let id = format!("{}~c{}", target.id, n + 1);
+        let mut it = target.clone();
+        it.id.clone_from(&id);
+        it.idempotency_key = Some(cell_key(&key, &cell.key));
+        let mut legs = target_legs.clone();
+        for l in &mut legs {
+            l.intent.clone_from(&id);
+        }
+        let witness = witnesses(&case.header.id, &table.expectation, cell, 1);
+        let values = witness
+            .first()
+            .map(|w| w.values.as_slice())
+            .unwrap_or_default();
+        for ((attr, part), value) in table.attrs.iter().zip(&cell.parts).zip(values) {
+            match (part, value) {
+                (CellPart::Legs { .. }, WitnessValue::Legs(amounts)) => {
+                    for (ordinal, minor) in amounts {
+                        if let Some(l) = legs.iter_mut().find(|l| l.ordinal == *ordinal) {
+                            l.amount_literal = format_amount(*minor, unit_scale(&l.unit));
+                        }
+                    }
+                }
+                (_, WitnessValue::Day(d)) if *attr == BranchAttribute::EffectiveDate => {
+                    it.effective_date = d.to_string();
+                }
+                (_, WitnessValue::Day(d)) if *attr == BranchAttribute::DocumentDate => {
+                    it.document_date = Some(d.to_string());
+                }
+                (_, WitnessValue::Class(v)) if *attr == BranchAttribute::EntryClass => {
+                    it.class.clone_from(v);
+                }
+                (_, WitnessValue::Class(v))
+                    if *attr == BranchAttribute::EvidenceAttached && v == "none" =>
+                {
+                    it.evidence = None;
+                }
+                (_, WitnessValue::Class(v))
+                    if *attr == BranchAttribute::EvidenceAttached
+                        && v == "placeholder_reviewed" => {}
+                _ => {
+                    return Err(err(
+                        LoadErrorKind::UnknownValue,
+                        format!(
+                            "a D cell of `{}` has no co-resident encoding yet",
+                            attr.as_str()
+                        ),
+                    ));
+                }
+            }
+        }
+        let mut step = book.steps[at].clone();
+        step.reference.clone_from(&id);
+        book.steps.insert(at + 1 + n, step);
+        book.intents.push(it);
+        book.legs.extend(legs);
+        copies.push(CellCopy {
+            cell: cell.clone(),
+            intent: id,
+        });
+    }
+    Ok((book, copies))
+}
+
+/// A registered unit's scale (2 when unknown, as A6 reads it).
+fn unit_scale(unit: &str) -> u8 {
+    fa_registry::units_embedded()
+        .ok()
+        .and_then(|units| units.into_iter().find(|u| u.code == unit))
+        .map_or(2, |u| u.scale)
 }
 
 /// Which cells a run evaluates.
