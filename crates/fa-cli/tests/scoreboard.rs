@@ -427,6 +427,88 @@ fn run_registry_probe(probe_name: &str) -> ProbeOutcome {
     }
 }
 
+/// Plan §19 G1: the robot-mode envelope and `fa triage`, `fa post`, `fa tb`,
+/// `fa explain balance`, `fa doctor` at the Polish Bar, judged on the
+/// scoreboard's own book (fa-nmk4; `tests/polish_bar.rs` holds the full suite
+/// on the real binary, with its env matrix and planted negatives). Each
+/// command exits 0 with its event, its stdout is envelopes only (every line
+/// one JSON object naming its `event`), and neither stream carries an ANSI
+/// escape. The four reads are run twice and must print byte-identical
+/// stdout. The post is a dry run, whose plan seals under a fresh nonce by
+/// design: it must print exactly one `plan` envelope and write nothing (the
+/// trial balance before and after it is byte-identical).
+fn polish_bar_suite(vars: &[String]) -> ProbeOutcome {
+    let [book, intent, doc] = vars else {
+        return ProbeOutcome::err("G1-06 names its book, a dry-run intent and its evidence");
+    };
+    let argv = |args: &[&str]| -> Vec<String> {
+        args.iter()
+            .copied()
+            .chain(["--book", book.as_str(), "--json"])
+            .map(String::from)
+            .collect()
+    };
+    let at_bar = |args: &[String], event: &str| -> Result<ProbeOutcome, String> {
+        let run = run_cli_probe(args);
+        if run.exit != 0 || run.event != event {
+            return Err(format!(
+                "{args:?}: exit {} event `{}`, expected 0 `{event}`\n{}{}",
+                run.exit, run.event, run.raw_stdout, run.raw_stderr
+            ));
+        }
+        for line in run.raw_stdout.lines() {
+            let enveloped = json::parse(line)
+                .ok()
+                .is_some_and(|j| j.get("event").and_then(Json::as_str).is_some());
+            if !enveloped {
+                return Err(format!(
+                    "{args:?}: a stdout line is not an envelope: {line}"
+                ));
+            }
+        }
+        if run.raw_stdout.contains('\u{1b}') || run.raw_stderr.contains('\u{1b}') {
+            return Err(format!("{args:?}: printed an ANSI escape"));
+        }
+        Ok(run)
+    };
+    let tb = argv(&["tb", "--period", "FY2026-P03"]);
+    let reads = [
+        (argv(&["triage"]), "book_triage"),
+        (tb.clone(), "trial_balance"),
+        (
+            argv(&["explain", "balance", "1200", "--period", "FY2026-P03"]),
+            "balance_explained",
+        ),
+        (argv(&["doctor"]), "doctor"),
+    ];
+    for (args, event) in &reads {
+        let first = match at_bar(args, event) {
+            Ok(run) => run,
+            Err(e) => return ProbeOutcome::err(e),
+        };
+        let second = run_cli_probe(args);
+        if second.raw_stdout != first.raw_stdout {
+            return ProbeOutcome::err(format!("{args:?} is not byte-deterministic"));
+        }
+    }
+    let before = run_cli_probe(&tb).raw_stdout;
+    let post = argv(&["post", "--intent", intent, "--evidence", doc, "--dry-run"]);
+    match at_bar(&post, "plan") {
+        Ok(run) if run.raw_stdout.lines().count() == 1 => {}
+        Ok(run) => {
+            return ProbeOutcome::err(format!(
+                "{post:?} printed {} envelopes, expected one plan",
+                run.raw_stdout.lines().count()
+            ));
+        }
+        Err(e) => return ProbeOutcome::err(e),
+    }
+    if run_cli_probe(&tb).raw_stdout != before {
+        return ProbeOutcome::err(format!("{post:?} changed the trial balance"));
+    }
+    ProbeOutcome::ok("polish_bar_ok")
+}
+
 fn run_typed_probe(
     probe_kind: EvidenceClass,
     argv: &[String],
@@ -435,6 +517,9 @@ fn run_typed_probe(
     let root = workspace_root();
     match probe_kind {
         EvidenceClass::Cli => {
+            if argv[0] == "g1_polish_bar_suite" {
+                return polish_bar_suite(&argv[1..]);
+            }
             if argv.len() == 1 && argv[0].starts_with('g') && argv[0].contains('_') {
                 return ProbeOutcome::err(format!("absent CLI gate suite `{}`", argv[0]));
             }
@@ -734,6 +819,12 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
         r#"{"effective_date":"2026-03-18","idempotency_key":"but-for-sale-1","legs":[{"side":"debit","account":"1200","amount":"300.00 USD"},{"side":"credit","account":"4000","amount":"300.00 USD"}]}"#,
     );
 
+    let polish_intent = write_file(
+        dir,
+        "polish_bar.json",
+        r#"{"effective_date":"2026-03-19","idempotency_key":"polish-bar-1","legs":[{"side":"debit","account":"1200","amount":"75.00 USD"},{"side":"credit","account":"4000","amount":"75.00 USD"}]}"#,
+    );
+
     let unbalanced_intent = write_file(
         dir,
         "unbalanced.json",
@@ -834,6 +925,7 @@ fn setup_fixture_book(dir: &Path) -> BTreeMap<String, String> {
     vars.insert("{rev_target_vid}".into(), rev_target_vid);
     vars.insert("{sale_intent_2}".into(), sale_2);
     vars.insert("{scenario_intent}".into(), scenario_intent);
+    vars.insert("{polish_intent}".into(), polish_intent);
     vars.insert("{plan_file_2}".into(), plan_file_2);
     vars.insert("{cert_file}".into(), cert_file);
     vars.insert("{stmt_file}".into(), stmt_file);

@@ -785,11 +785,10 @@ gate = "G1"
 criterion = "the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar"
 evidence_class = "cli"
 probe_kind = "cli"
-argv = ["g1_polish_bar_suite"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-nmk4"
+argv = ["g1_polish_bar_suite", "{book}", "{polish_intent}", "{doc_oid}"]
+expected = "works"
+expected_exit = 0
+expected_event = "polish_bar_ok"
 
 [[gate_criterion]]
 id = "G1-07"

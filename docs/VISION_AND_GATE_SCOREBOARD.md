@@ -58,13 +58,13 @@
 
 > **Gate rule:** Gate met only when every row is `works`.
 
-- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **32**, `refused`: **2**, `absent`: **21**)
+- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **33**, `refused`: **2**, `absent`: **20**)
 
 | Gate | Works | Lawful Refusal | Absent | Total | Gate Status |
 |---|---:|---:|---:|---:|---|
 | `G0` | 13 | 0 | 0 | 13 | **MET** |
 | `Genesis` | 9 | 2 | 0 | 11 | **UNMET** |
-| `G1` | 3 | 0 | 4 | 7 | **UNMET** |
+| `G1` | 4 | 0 | 3 | 7 | **UNMET** |
 | `G2` | 5 | 0 | 5 | 10 | **UNMET** |
 | `G3` | 2 | 0 | 6 | 8 | **UNMET** |
 | `G4` | 0 | 0 | 6 | 6 | **UNMET** |
@@ -102,7 +102,7 @@
 | `G1-03` | `G1` | `differential` | `differential` | `—` | `works` | `0` | `differential_ok` | `—` | registers verified by fold on every fixture |
 | `G1-04` | `G1` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-nl7` | idempotency and batches under crash |
 | `G1-05` | `G1` | `differential` | `differential` | `—` | `absent` | `2` | `error` | `fa-2ihd` | the reference differential over model-generated histories |
-| `G1-06` | `G1` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-nmk4` | the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar |
+| `G1-06` | `G1` | `cli` | `cli` | `—` | `works` | `0` | `polish_bar_ok` | `—` | the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar |
 | `G1-07` | `G1` | `cli` | `cli` | `—` | `works` | `0` | `bundle_produced` | `—` | `fa-verify` verifies a produced bundle of the Genesis book |
 | `G2-01` | `G2` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-01` | `works` | `0` | `lab_campaign_ok` | `—` | period state machine, admissibility matrix, and witness-resolved post-vs-close races proven in both orders |
 | `G2-02` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | selectors including `AS ORIGINALLY REPORTED` and `AS REPORTED IN` |
