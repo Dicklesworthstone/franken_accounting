@@ -989,10 +989,9 @@ criterion = "ADS/SAF-T exports with proofs"
 evidence_class = "cli"
 probe_kind = "cli"
 argv = ["g3_ads_saft_exports_with_proofs"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-2q91"
+expected = "works"
+expected_exit = 0
+expected_event = "exports_with_proofs_ok"
 
 [[gate_criterion]]
 id = "G3-07"

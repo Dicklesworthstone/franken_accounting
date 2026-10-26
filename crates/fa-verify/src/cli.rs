@@ -109,8 +109,12 @@ commands:
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
-                                                proves through the certificate's cutoff and
-                                                Trial_Balance exactly their refold
+                                                proves through the certificate's cutoff,
+                                                Trial_Balance exactly their refold and, against a
+                                                complete prefix, Chart_of_Accounts its declarations
+  saft         <dir> --key K... [--receipt R]   a SAF-T 2.00 extract (fa export saft --with-proofs),
+                                                judged as ads: transactions, balance assertions and
+                                                accounts, read without the producer's parser
 
 ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its own):
   --key K...             C is a signed TransparencyCheckpoint; its signature by one of
@@ -139,7 +143,7 @@ expectations) and the document and redacted-view commands: fa-verify --help.
 exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
 ";
 
-const COMMANDS: [&str; 11] = [
+const COMMANDS: [&str; 12] = [
     "state",
     "checkpoint",
     "inclusion",
@@ -151,6 +155,7 @@ const COMMANDS: [&str; 11] = [
     "bundle",
     "report",
     "ads",
+    "saft",
 ];
 
 /// Flags that take a value, and the switches.
@@ -204,7 +209,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--unsigned-checkpoint",
         ],
         "doc-commit" => &["--kind", "--expect"],
-        "bundle" | "ads" => &["--key", "--receipt"],
+        "bundle" | "ads" | "saft" => &["--key", "--receipt"],
         "report" => &["--key", "--receipt", "--checkpoint", "--expect", "--units"],
         _ => &[],
     }
@@ -1539,7 +1544,42 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         detail: Vec::new(),
                         reason: Some(e.to_string()),
                     }],
-                    Ok(report) => ads_checks(&report),
+                    Ok(report) => ads_checks(&report, "ads_extract"),
+                },
+            )
+        }
+        "saft" => {
+            let dir = subject(args, "a SAF-T package directory")?;
+            let keys = args.all("--key");
+            if keys.is_empty() {
+                return Err(usage(
+                    "no trusted key: a SAF-T extract is judged only against keys you name",
+                    "pass the book's checkpoint public key with `--key <64 hex>`",
+                ));
+            }
+            let keys: Vec<[u8; 32]> = keys.into_iter().map(key).collect::<Result<_, _>>()?;
+            let path = format!("{dir}/SAF-T.xml");
+            let xml = String::from_utf8(load(read, &path, false)?).map_err(|_| {
+                usage(
+                    format!("`{path}` is not UTF-8 text"),
+                    "name the directory `fa export saft --with-proofs --out <dir>` wrote",
+                )
+            })?;
+            let bundle = load(read, &format!("{dir}/SAFT_Proof.fab"), false)?;
+            let receipt = match args.one("--receipt") {
+                Some(p) => load(read, p, args.hex)?,
+                None => load(read, &format!("{dir}/SAFT_Proof.receipt"), false)?,
+            };
+            Ok(
+                match crate::saft::verify_saft(&xml, &bundle, &keys, Some(&receipt)) {
+                    Err(e) => vec![Check {
+                        name: "bundle",
+                        scope: "format",
+                        verdict: Verdict::Fail,
+                        detail: Vec::new(),
+                        reason: Some(e.to_string()),
+                    }],
+                    Ok(report) => ads_checks(&report, "saft_extract"),
                 },
             )
         }
@@ -1880,7 +1920,7 @@ fn statement_checks(
 }
 
 /// The bundle's checks, then the extract's: exactly the proven selection.
-fn ads_checks(report: &AdsReport) -> Vec<Check> {
+fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
     let mut checks = bundle_checks(&report.bundle);
     let detail = vec![
         ("effective_through", s(report.effective_through.as_str())),
@@ -1910,10 +1950,10 @@ fn ads_checks(report: &AdsReport) -> Vec<Check> {
         ),
     ];
     checks.push(if report.verified() {
-        Check::pass("ads_extract", "completeness", detail)
+        Check::pass(name, "completeness", detail)
     } else {
         Check {
-            name: "ads_extract",
+            name,
             scope: "completeness",
             verdict: if report.bundle.verified() {
                 Verdict::Fail

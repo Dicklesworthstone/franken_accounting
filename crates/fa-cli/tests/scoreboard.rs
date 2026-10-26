@@ -509,6 +509,148 @@ fn polish_bar_suite(vars: &[String]) -> ProbeOutcome {
     ProbeOutcome::ok("polish_bar_ok")
 }
 
+/// G3-06 (fa-2q91): an ADS and a SAF-T export with proofs, each verified
+/// offline by fa-verify against its own bundle. The probe builds and
+/// checkpoints its own book (no migration: a migration chunk in scope is not
+/// proven offline), so the shared scoreboard book is never written.
+fn exports_with_proofs_suite() -> ProbeOutcome {
+    let root = tmp_dir("g3-06");
+    let book = root.join("book").to_string_lossy().into_owned();
+    let run = |args: &[&str]| {
+        run_cli_probe(
+            &args
+                .iter()
+                .copied()
+                .chain(["--book", book.as_str(), "--json"])
+                .map(String::from)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let data = |outcome: &ProbeOutcome| {
+        json::parse(outcome.raw_stdout.lines().next().unwrap_or(""))
+            .ok()
+            .and_then(|line| line.get("data").cloned())
+            .unwrap_or(Json::Null)
+    };
+    let chart = write_file(
+        &root,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    let receipt = write_file(&root, "receipt.txt", "G3-06 probe receipts");
+    for args in [
+        &["book", "create", "--name", "G3-06 probe"][..],
+        &["chart", "import", &chart],
+        &["period", "create", "--fiscal-year", "2026"],
+        &["period", "open", "FY2026-P03"],
+    ] {
+        let made = run(args);
+        if made.exit != 0 {
+            return ProbeOutcome::err(format!("{args:?}: exit {} {}", made.exit, made.raw_stdout));
+        }
+    }
+    let document = run(&[
+        "document",
+        "add",
+        &receipt,
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let Some(evidence) = data(&document)
+        .get("oid")
+        .and_then(Json::as_str)
+        .map(str::to_string)
+    else {
+        return ProbeOutcome::err(format!("document add: {}", document.raw_stdout));
+    };
+    for (key, amount) in [("g3-06-a", "12.34"), ("g3-06-b", "2.00")] {
+        let intent = write_file(
+            &root,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-10","idempotency_key":"{key}","legs":[{{"side":"debit","account":"1000","amount":"{amount} USD"}},{{"side":"credit","account":"4000","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        let posted = run(&["post", "--intent", &intent, "--evidence", &evidence]);
+        if posted.exit != 0 {
+            return ProbeOutcome::err(format!("post {key}: {}", posted.raw_stdout));
+        }
+    }
+    let checkpoint = run(&["checkpoint", "create", "--grant", "witness"]);
+    if checkpoint.exit != 0 {
+        return ProbeOutcome::err(format!("checkpoint: {}", checkpoint.raw_stdout));
+    }
+    for format in ["ads", "saft"] {
+        let out = root.join(format);
+        let exported = run(&[
+            "export",
+            format,
+            "--period",
+            "FY2026-P03",
+            "--out",
+            out.to_str().unwrap_or_default(),
+            "--with-proofs",
+        ]);
+        if exported.exit != 0 || exported.event != "journal_exported" {
+            return ProbeOutcome::err(format!(
+                "export {format}: exit {} {}{}",
+                exported.exit, exported.raw_stdout, exported.raw_stderr
+            ));
+        }
+        let key_hex = data(&exported)
+            .get("proof")
+            .and_then(|proof| proof.get("checkpoint_public_key"))
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let key: Option<[u8; 32]> = (0..32)
+            .map(|i| {
+                key_hex
+                    .get(2 * i..2 * i + 2)
+                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            })
+            .collect::<Option<Vec<u8>>>()
+            .and_then(|bytes| bytes.try_into().ok());
+        let Some(key) = key else {
+            return ProbeOutcome::err(format!("export {format}: no checkpoint public key"));
+        };
+        let bytes = |name: &str| std::fs::read(out.join(name)).unwrap_or_default();
+        let text = |name: &str| String::from_utf8(bytes(name)).unwrap_or_default();
+        let judged = if format == "ads" {
+            fa_verify::ads::verify_ads(
+                &text("ADS_Coordinate_Certificate.toml"),
+                &text("Chart_of_Accounts.txt"),
+                &text("GL_Detail.txt"),
+                &text("Trial_Balance.txt"),
+                &bytes("ADS_Proof.fab"),
+                &[key],
+                Some(&bytes("ADS_Proof.receipt")),
+            )
+        } else {
+            fa_verify::saft::verify_saft(
+                &text("SAF-T.xml"),
+                &bytes("SAFT_Proof.fab"),
+                &[key],
+                Some(&bytes("SAFT_Proof.receipt")),
+            )
+        };
+        match judged {
+            Ok(report)
+                if report.verified() && report.entries == 2 && report.chart_rows == Some(2) => {}
+            Ok(report) => {
+                return ProbeOutcome::err(format!(
+                    "fa-verify {format}: {} entries, chart {:?}, {:?}",
+                    report.entries, report.chart_rows, report.failures
+                ));
+            }
+            Err(error) => return ProbeOutcome::err(format!("fa-verify {format}: {error}")),
+        }
+    }
+    ProbeOutcome::ok("exports_with_proofs_ok")
+}
+
 fn run_typed_probe(
     probe_kind: EvidenceClass,
     argv: &[String],
@@ -519,6 +661,9 @@ fn run_typed_probe(
         EvidenceClass::Cli => {
             if argv[0] == "g1_polish_bar_suite" {
                 return polish_bar_suite(&argv[1..]);
+            }
+            if argv[0] == "g3_ads_saft_exports_with_proofs" {
+                return exports_with_proofs_suite();
             }
             if argv.len() == 1 && argv[0].starts_with('g') && argv[0].contains('_') {
                 return ProbeOutcome::err(format!("absent CLI gate suite `{}`", argv[0]));

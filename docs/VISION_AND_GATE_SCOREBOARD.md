@@ -58,7 +58,7 @@
 
 > **Gate rule:** Gate met only when every row is `works`.
 
-- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **33**, `refused`: **2**, `absent`: **20**)
+- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **34**, `refused`: **2**, `absent`: **19**)
 
 | Gate | Works | Lawful Refusal | Absent | Total | Gate Status |
 |---|---:|---:|---:|---:|---|
@@ -66,7 +66,7 @@
 | `Genesis` | 9 | 2 | 0 | 11 | **UNMET** |
 | `G1` | 4 | 0 | 3 | 7 | **UNMET** |
 | `G2` | 5 | 0 | 5 | 10 | **UNMET** |
-| `G3` | 2 | 0 | 6 | 8 | **UNMET** |
+| `G3` | 3 | 0 | 5 | 8 | **UNMET** |
 | `G4` | 0 | 0 | 6 | 6 | **UNMET** |
 
 ### Gate Criteria Detail
@@ -119,7 +119,7 @@
 | `G3-03` | `G3` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-651f` | SoD and caveats enforced at commit (FA-INV-10 full) |
 | `G3-04` | `G3` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-bwri` | statements and consolidation certified |
 | `G3-05` | `G3` | `measurement` | `measurement` | `FA-ART-CAL-01` | `works` | `0` | `measurement_ok` | `—` | Lantern's procedures with evidence rows and measured precision/recall |
-| `G3-06` | `G3` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-2q91` | ADS/SAF-T exports with proofs |
+| `G3-06` | `G3` | `cli` | `cli` | `—` | `works` | `0` | `exports_with_proofs_ok` | `—` | ADS/SAF-T exports with proofs |
 | `G3-07` | `G3` | `cli` | `cli` | `—` | `works` | `0` | `demo_initialized` | `—` | `fa demo init` scenarios |
 | `G3-08` | `G3` | `agent-campaign` | `agent-campaign` | `—` | `absent` | `2` | `error` | `fa-nmk4` | the gauntlet's surface-parity and ergonomics scorecards published |
 | `G4-01` | `G4` | `measurement` | `measurement` | `—` | `absent` | `2` | `error` | `fa-ykbp` | all activated §17 manifests green and public |
