@@ -579,6 +579,7 @@ fn unused_unknown_rules_foreign_overrides_and_mismatched_cash_scope_are_refused(
 #[test]
 fn current_read_authority_is_required_and_mixed_cash_movements_are_not_netted_to_transfers() {
     use Side::{Credit as C, Debit as D};
+    use fa::CashFlowBasisDefinition;
     use fa::indirect_cash_flow::{IndirectCashFlowDefinition, IndirectCashFlowRequest};
     let mut h = Harness::new();
     h.post(
@@ -646,7 +647,9 @@ fn current_read_authority_is_required_and_mixed_cash_movements_are_not_netted_to
             &cap(&["read"]),
             &IndirectCashFlowRequest {
                 cash: request,
-                cash_definition: report.report().definition().clone(),
+                cash_definition: CashFlowBasisDefinition::Explicit(
+                    report.report().definition().clone(),
+                ),
                 income_periods: vec!["FY2026-OPEN".into(), "FY2026-P01".into()],
                 definition: IndirectCashFlowDefinition {
                     name: "mixed-cash-indirect".into(),

@@ -228,7 +228,9 @@ impl ReportArtifact {
             Artifact::ExternalFeed(Box::new(crate::ExternalFeedCertificate::decode(bytes)?))
         } else if format == crate::CASH_FLOW_CERTIFICATE_FORMAT {
             Artifact::CashFlow(Box::new(CashFlowCertificate::decode(bytes)?))
-        } else if format == crate::INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT {
+        } else if format == crate::INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT
+            || format == crate::INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2
+        {
             Artifact::IndirectCashFlow(Box::new(IndirectCashFlowCertificate::decode(bytes)?))
         } else if format == crate::aging::AGING_RECONCILIATION_CERTIFICATE_FORMAT {
             Artifact::AgingReconciliation(Box::new(AgingReconciliationCertificate::decode(bytes)?))
@@ -303,10 +305,7 @@ impl ReportArtifact {
             Artifact::EquityRollForward(c) => c.source_certificate().source_certificate(),
             Artifact::ExternalFeed(c) => c.source_certificate(),
             Artifact::CashFlow(c) => c.source_certificate().source_certificate(),
-            Artifact::IndirectCashFlow(c) => c
-                .source_certificate()
-                .source_certificate()
-                .source_certificate(),
+            Artifact::IndirectCashFlow(c) => c.source_certificate().native_source_certificate(),
             Artifact::AgingReconciliation(c) => c.aging_source().source(),
             Artifact::StatementDiff(c) => c.sources().1,
             // The bounded family decoder requires a nonempty contiguous chain.

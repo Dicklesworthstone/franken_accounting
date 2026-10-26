@@ -16281,6 +16281,131 @@ pub(crate) fn validate_cash_flow_policy_fields(doc: &Json, indirect: bool) -> Re
     Ok(())
 }
 
+/// Validate the non-cash side of every indirect classification family.
+fn validate_indirect_adjustment_fields(doc: &Json) -> Result<(), Fail> {
+    let Some(value) = doc.get("adjustments") else {
+        return Ok(());
+    };
+    let Json::Arr(items) = value else {
+        return Err(usage(
+            "cash-flow policy 'adjustments' must be an array",
+            "provide explicit journal-leg adjustments with category, sign and reason",
+        ));
+    };
+    for item in items {
+        let Json::Obj(fields) = item else {
+            return Err(usage(
+                "each indirect adjustment must be a JSON object",
+                "provide entry_digest, leg_index, category, sign and reason",
+            ));
+        };
+        for (field, _) in fields {
+            if !["entry_digest", "leg_index", "category", "sign", "reason"]
+                .contains(&field.as_str())
+            {
+                return Err(usage(
+                    format!("unknown indirect adjustment field '{field}'"),
+                    "provide entry_digest, leg_index, category, sign and reason",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod indirect_cash_flow_basis_input_tests {
+    use super::*;
+
+    fn policy(text: &str) -> Json {
+        crate::json::parse(text).expect("test policy JSON")
+    }
+
+    #[test]
+    fn indirect_rule_and_split_shapes_retain_adjustment_fields() {
+        let rules = policy(
+            r#"{"name":"indirect","cash_policy":"cash-rules","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"}],"overrides":[],"adjustments":[]}"#,
+        );
+        let splits = policy(
+            r#"{"name":"indirect","cash_policy":"cash-splits","cash_accounts":["1000"],"splits":[{"entry_digest":"entry","leg_index":2,"reason":"Principal and interest","portions":[{"activity":"financing","amount":"100.00 USD"},{"activity":"operating","amount":"10.00 USD"}]}],"adjustments":[]}"#,
+        );
+        assert!(validate_cash_flow_rules_policy_fields(&rules, true).is_ok());
+        assert!(validate_cash_flow_split_policy_fields(&splits, true).is_ok());
+        assert!(validate_cash_flow_rules_policy_fields(&rules, false).is_err());
+        assert!(validate_cash_flow_split_policy_fields(&splits, false).is_err());
+    }
+
+    #[test]
+    fn indirect_cash_classification_families_are_exclusive() {
+        for text in [
+            r#"{"splits":[],"assignments":[],"adjustments":[]}"#,
+            r#"{"splits":[],"account_rules":[],"adjustments":[]}"#,
+            r#"{"splits":[],"overrides":[],"adjustments":[]}"#,
+        ] {
+            assert!(validate_cash_flow_split_policy_fields(&policy(text), true).is_err());
+        }
+        for text in [
+            r#"{"account_rules":[],"assignments":[],"adjustments":[]}"#,
+            r#"{"account_rules":[],"splits":[],"adjustments":[]}"#,
+        ] {
+            assert!(validate_cash_flow_rules_policy_fields(&policy(text), true).is_err());
+        }
+        assert!(
+            validate_cash_flow_policy_fields(
+                &policy(r#"{"assignments":[],"overrides":[],"adjustments":[]}"#),
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn richer_indirect_bases_reject_malformed_adjustments() {
+        for adjustments in [
+            r#"[{"entry_digest":"entry","leg_index":0,"category":"non_cash","sign":"debit_minus_credit","reason":"Depreciation","amout":"20.00 USD"}]"#,
+            r#"[7]"#,
+            r#"{}"#,
+        ] {
+            let rules = policy(&format!(
+                r#"{{"account_rules":[],"adjustments":{adjustments}}}"#
+            ));
+            let splits = policy(&format!(r#"{{"splits":[],"adjustments":{adjustments}}}"#));
+            assert!(validate_cash_flow_rules_policy_fields(&rules, true).is_err());
+            assert!(validate_cash_flow_split_policy_fields(&splits, true).is_err());
+        }
+    }
+
+    #[test]
+    fn richer_indirect_bases_reject_unknown_nested_classification_fields() {
+        let rules = policy(
+            r#"{"account_rules":[{"account":"4000","activty":"operating"}],"adjustments":[]}"#,
+        );
+        let overrides = policy(
+            r#"{"account_rules":[],"overrides":[{"entry_digest":"entry","leg_index":0,"activity":"operating","amount":"10.00 USD"}],"adjustments":[]}"#,
+        );
+        let splits = policy(
+            r#"{"splits":[{"entry_digest":"entry","leg_index":0,"reason":"Receipt","portions":[{"activity":"operating","amout":"20.00 USD"}]}],"adjustments":[]}"#,
+        );
+        assert!(validate_cash_flow_rules_policy_fields(&rules, true).is_err());
+        assert!(validate_cash_flow_rules_policy_fields(&overrides, true).is_err());
+        assert!(validate_cash_flow_split_policy_fields(&splits, true).is_err());
+    }
+
+    #[test]
+    fn explicit_indirect_shape_and_object_requirement_remain_strict() {
+        let explicit = policy(
+            r#"{"name":"indirect","cash_policy":"cash","cash_accounts":["1000"],"assignments":[{"entry_digest":"entry","leg_index":0,"activity":"operating"}],"adjustments":[{"entry_digest":"depreciation","leg_index":0,"category":"non_cash","sign":"debit_minus_credit","reason":"Depreciation"}]}"#,
+        );
+        assert!(validate_cash_flow_policy_fields(&explicit, true).is_ok());
+        for text in ["null", "[]", "42"] {
+            let doc = policy(text);
+            assert!(validate_cash_flow_policy_fields(&doc, true).is_err());
+            assert!(validate_cash_flow_rules_policy_fields(&doc, true).is_err());
+            assert!(validate_cash_flow_split_policy_fields(&doc, true).is_err());
+        }
+    }
+}
+
 pub(crate) fn parse_cash_flow_definition(
     doc: &Json,
     book_id: Id128,
@@ -16504,12 +16629,6 @@ pub(crate) fn validate_cash_flow_split_policy_fields(
     doc: &Json,
     indirect: bool,
 ) -> Result<(), Fail> {
-    if indirect {
-        return Err(usage(
-            "splits policies partition direct cash flow and cannot combine with --indirect",
-            "drop --indirect, or use an indirect policy with assignments and adjustments",
-        ));
-    }
     let check = |value: &Json, allowed: &[&str], context: &str| -> Result<(), Fail> {
         let Json::Obj(fields) = value else {
             return Err(usage(
@@ -16527,11 +16646,21 @@ pub(crate) fn validate_cash_flow_split_policy_fields(
         }
         Ok(())
     };
-    check(
-        doc,
-        &["name", "cash_accounts", "splits"],
-        "cash split policy",
-    )?;
+    let allowed: &[&str] = if indirect {
+        &[
+            "name",
+            "cash_policy",
+            "cash_accounts",
+            "splits",
+            "adjustments",
+        ]
+    } else {
+        &["name", "cash_accounts", "splits"]
+    };
+    check(doc, allowed, "cash split policy")?;
+    if indirect {
+        validate_indirect_adjustment_fields(doc)?;
+    }
     let Some(Json::Arr(splits)) = doc.get("splits") else {
         return Err(usage(
             "cash split policy requires an array `splits`",
@@ -16712,18 +16841,12 @@ pub(crate) fn cash_flow_split_rows_json(
 const RULES_POLICY_EXAMPLE: &str = r#"{"name":"cash-rules-v1","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"}],"overrides":[]}"#;
 
 /// A rule policy (fa-i9yn) is its own format: `account_rules` classify non-cash
-/// counterpart accounts and `overrides` fix whole cash legs. The direct and
-/// indirect formats refuse `account_rules`; this one refuses their fields.
+/// counterpart accounts and `overrides` fix whole cash legs. An indirect
+/// report adds its adjustment inputs while retaining this complete policy.
 pub(crate) fn validate_cash_flow_rules_policy_fields(
     doc: &Json,
     indirect: bool,
 ) -> Result<(), Fail> {
-    if indirect {
-        return Err(usage(
-            "account_rules policies classify direct cash flow; --indirect takes explicit assignments and adjustments",
-            "drop --indirect, or pass an indirect policy with assignments and adjustments",
-        ));
-    }
     let check = |value: &Json, allowed: &[&str], context: &str| -> Result<(), Fail> {
         let Json::Obj(fields) = value else {
             return Err(usage(
@@ -16741,11 +16864,22 @@ pub(crate) fn validate_cash_flow_rules_policy_fields(
         }
         Ok(())
     };
-    check(
-        doc,
-        &["name", "cash_accounts", "account_rules", "overrides"],
-        "cash-flow rule policy",
-    )?;
+    let allowed: &[&str] = if indirect {
+        &[
+            "name",
+            "cash_policy",
+            "cash_accounts",
+            "account_rules",
+            "overrides",
+            "adjustments",
+        ]
+    } else {
+        &["name", "cash_accounts", "account_rules", "overrides"]
+    };
+    check(doc, allowed, "cash-flow rule policy")?;
+    if indirect {
+        validate_indirect_adjustment_fields(doc)?;
+    }
     for (field, allowed) in [
         ("account_rules", &["account", "activity"][..]),
         ("overrides", &["entry_digest", "leg_index", "activity"][..]),
@@ -16934,6 +17068,76 @@ pub(crate) fn parse_indirect_cash_flow_definition(
         cash_policy,
         IndirectCashFlowDefinition { name, adjustments },
     ))
+}
+
+/// Preserve the selected native classification family. Split amounts retain
+/// their supplied currency until checked against the actual historical leg;
+/// that read fixes HEAD before the indirect reader observes income or adjustments.
+pub(crate) fn parse_indirect_cash_flow_basis(
+    doc: &Json,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+    request: &mut RollForwardRequest,
+    cash_policy_name: &str,
+    source_mismatch: fn(Refusal) -> Fail,
+) -> Result<fa::CashFlowBasisDefinition, Fail> {
+    let split = doc.get("splits").is_some();
+    let rules = doc.get("account_rules").is_some();
+    if split {
+        validate_cash_flow_split_policy_fields(doc, true)?;
+    } else if rules {
+        validate_cash_flow_rules_policy_fields(doc, true)?;
+    } else {
+        validate_cash_flow_policy_fields(doc, true)?;
+    }
+    let Json::Obj(fields) = doc else {
+        return Err(usage(
+            "cash-flow policy must be an object",
+            "pass a JSON policy",
+        ));
+    };
+    // The full document has already passed its family's strict validator.
+    // Reuse the direct parser with only the independent cash-basis fields.
+    let mut fields: Vec<_> = fields
+        .iter()
+        .filter(|(name, _)| !["name", "cash_policy", "adjustments"].contains(&name.as_str()))
+        .cloned()
+        .collect();
+    fields.push(("name".to_string(), s(cash_policy_name)));
+    let cash_doc = Json::Obj(fields);
+    if split {
+        let parsed = parse_cash_flow_splits(
+            &cash_doc,
+            book.context().book_id,
+            &request.accounts,
+            cash_policy_name,
+            &book.context().units,
+        )?;
+        let source = book.general_ledger(principal, capability, request)??;
+        request.known_at = Some(source.known_at());
+        Ok(fa::CashFlowBasisDefinition::Split(
+            parsed.bind_to_source(&source).map_err(source_mismatch)?,
+        ))
+    } else if rules {
+        Ok(fa::CashFlowBasisDefinition::Policy(
+            parse_cash_flow_rules_policy(
+                &cash_doc,
+                book.context().book_id,
+                &request.accounts,
+                cash_policy_name,
+            )?,
+        ))
+    } else {
+        Ok(fa::CashFlowBasisDefinition::Explicit(
+            parse_cash_flow_definition(
+                &cash_doc,
+                book.context().book_id,
+                &request.accounts,
+                cash_policy_name,
+            )?,
+        ))
+    }
 }
 
 /// Admit certification before observing report inputs or an external output
@@ -18327,13 +18531,15 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 let (cash_policy_name, indirect_def) =
                     parse_indirect_cash_flow_definition(&policy_doc, "indirect-cash-flow")?;
-                let mut cash_def = parse_cash_flow_definition(
+                let cash_def = parse_indirect_cash_flow_basis(
                     &policy_doc,
-                    book.context().book_id,
-                    &req.accounts,
+                    &book,
+                    who,
+                    &capability,
+                    &mut req,
                     &cash_policy_name,
+                    Fail::Refusal,
                 )?;
-                cash_def.name = cash_policy_name;
                 let mut request = IndirectCashFlowRequest {
                     cash: req,
                     cash_definition: cash_def,
@@ -18421,6 +18627,12 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     report.units().len(),
                     report.contributions().len()
                 );
+                // Split replay transport needs the original leg units. Check
+                // every complete expectation before retaining or writing bytes.
+                let expected = artifact
+                    .as_ref()
+                    .map(|_| notary::indirect_expectation_json(&request, report.cash(), units))
+                    .transpose()?;
                 let retained = artifact
                     .as_ref()
                     .map(|artifact| {
@@ -18439,7 +18651,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "indirect_cash_flow",
                     vec![
                         ("policy", s(&report.definition().name)),
-                        ("cash_policy", s(&report.cash().definition().name)),
+                        ("cash_policy", s(report.cash().definition_name())),
                         ("label", s(source.label())),
                         ("known_at", Json::Int(i128::from(source.known_at().0))),
                         ("effective_from", s(source.effective_from().render())),
@@ -18455,15 +18667,17 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &human,
                     digest.as_deref(),
                 );
-                if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                if let (Some(artifact), Some((bytes, retained)), Some(expected)) =
+                    (artifact.as_ref(), retained, expected)
+                {
                     notary::emit_report_artifact_for(
                         out,
                         args,
                         artifact,
-                        fa::INDIRECT_CASH_FLOW_FORMAT,
+                        report.format(),
                         &bytes,
                         &retained,
-                        &notary::indirect_expectation_json(&request),
+                        &expected,
                     );
                 }
                 Ok(())
