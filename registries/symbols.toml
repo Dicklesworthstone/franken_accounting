@@ -545,3 +545,8 @@ name = "RuleName"
 [[label]]
 id = 58
 name = "RegisterCheckpoint"
+
+# Immutable custom statement layouts, atomically retained with activation.
+[[label]]
+id = 59
+name = "StatementDefinition"

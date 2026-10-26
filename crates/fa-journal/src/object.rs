@@ -27,6 +27,7 @@ pub enum ObjectKind {
     IntentOutcome = 4,
     RegistryEpoch = 5,
     RegisterCheckpoint = 6,
+    StatementDefinition = 7,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -240,6 +241,7 @@ mod tests {
             ObjectKind::IntentOutcome,
             ObjectKind::RegistryEpoch,
             ObjectKind::RegisterCheckpoint,
+            ObjectKind::StatementDefinition,
         ]
         .into_iter()
         .flat_map(|kind| {
@@ -315,7 +317,8 @@ mod tests {
                 | ObjectKind::BatchPlan
                 | ObjectKind::IntentOutcome
                 | ObjectKind::RegistryEpoch
-                | ObjectKind::RegisterCheckpoint => ObjectKind::PostPlan,
+                | ObjectKind::RegisterCheckpoint
+                | ObjectKind::StatementDefinition => ObjectKind::PostPlan,
             };
             assert!(
                 read(
@@ -494,6 +497,10 @@ mod tests {
             (
                 "register_checkpoint_kind",
                 ObjectKind::RegisterCheckpoint as i128,
+            ),
+            (
+                "statement_definition_kind",
+                ObjectKind::StatementDefinition as i128,
             ),
         ] {
             assert_eq!(schema.root.get(key).unwrap().as_int().unwrap(), expected);

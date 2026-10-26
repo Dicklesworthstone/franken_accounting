@@ -418,6 +418,19 @@ exclusions = ["preparer", "duplicate"]
 cite = "Appendix C PolicyControl: W(rule_change, 2 for activations); plan §10.6 (rules are activated under the rule_change capability with dual control)"
 
 # ---- Time evidence and the expiry sweep (book-scoped) ----------------------
+[[rule]]
+name = "statement-activate"
+class = "PolicyControl"
+transition = "ActivateStatement"
+preparer_op = "rule_change"
+approvers = 2
+approver_op = "approve"
+approver_profiles = ["Human"]
+agent_prepared_human_approvers = 2
+exclusions = ["preparer", "duplicate"]
+cite = "plan §12.1 (journaled statement definitions, mapping partition); fa-qh60 (dual-control activation)"
+
+# ---- Time evidence and the expiry sweep (book-scoped) ----------------------
 # A tick journals an observed instant (plan §7.1a); the preparer holds
 # `witness`. Ticks are strictly increasing; the kernel refuses any other.
 [[rule]]

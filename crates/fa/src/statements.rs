@@ -652,7 +652,7 @@ fn report_at_basis<V: Vfs + Clone>(
 /// the last selected period's end, or the selected periods' activity without
 /// the classes `kind` excludes. Every definition is evaluated over this one
 /// input, whether it maps accounts by type or by code.
-fn statement_input<V: Vfs + Clone>(
+pub(crate) fn statement_input<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     kind: StatementKind,

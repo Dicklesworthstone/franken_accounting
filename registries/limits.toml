@@ -147,3 +147,11 @@ value = 8388608
 [[limit]]
 name = "max_register_checkpoint_cells"
 value = 100000
+
+# A complete custom layout plus one bounded activation review envelope.
+[[limit]]
+name = "max_statement_definition_bytes"
+value = 65536
+[[limit]]
+name = "max_statement_definition_plan_bytes"
+value = 66880

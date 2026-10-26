@@ -84,6 +84,7 @@ symbols!(
         (RULE_VERSION, "RuleVersion", 56),
         (RULE_NAME, "RuleName", 57),
         (REGISTER_CHECKPOINT, "RegisterCheckpoint", 58),
+        (STATEMENT_DEFINITION, "StatementDefinition", 59),
     ]
 );
 

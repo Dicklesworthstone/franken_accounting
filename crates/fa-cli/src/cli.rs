@@ -12409,6 +12409,15 @@ fn statement_lint(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let report = book.lint_statement(definition, at, &cap)??;
     ctx.out.at_book(&book)?;
+    render_statement_lint(ctx, &report, at)
+}
+
+pub(crate) fn render_statement_lint(
+    ctx: &mut Ctx<'_>,
+    report: &fa::StatementLintReport,
+    at: CommitSeq,
+) -> Result<(), Fail> {
+    let definition = &report.definition_name;
     let strings = |items: &[String]| Json::Arr(items.iter().map(s).collect());
     let clean = report.is_clean();
     let human = if clean {
@@ -12489,6 +12498,24 @@ fn statement_lint(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() == 2
+        && (matches!(
+            args.positional[1].as_str(),
+            "template" | "define" | "activate" | "custom"
+        ) || (args.positional[1] == "lint" && args.flag("--file").is_some()))
+    {
+        return crate::custom_statement::command(ctx, args);
+    }
+    if args.flag("--file").is_some()
+        || args.flag("--scale-digits").is_some()
+        || args.flag("--residual-line").is_some()
+        || args.flag("--residual-label").is_some()
+    {
+        return Err(usage(
+            "custom-definition options require statement define, activate, lint --file, or custom",
+            "fa statement custom --definition <name> --for <period>",
+        ));
+    }
     if args.positional.len() != 2 {
         return Err(usage(
             "statement needs a registered definition name, diff|trace, or issue|issuances",

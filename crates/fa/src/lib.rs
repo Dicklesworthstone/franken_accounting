@@ -66,6 +66,7 @@ pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;
 pub mod consolidation;
+pub mod custom_statement;
 pub mod dimension;
 pub mod document_disclosure;
 pub mod draft_review;
@@ -98,6 +99,7 @@ pub mod settlement;
 pub mod settlement_group;
 pub mod settlement_group_review;
 pub mod settlement_review;
+pub mod statement_definition;
 pub mod statement_diff;
 pub mod statement_diff_workpaper;
 pub mod statement_trace;
@@ -143,6 +145,7 @@ pub use certificate::{
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use consolidation::FunctionalConsolidation;
+pub use custom_statement::{CustomStatementReport, CustomStatementSelection};
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use draft_review::{
     CertifiedDraftDiff, DRAFT_DIFF_CERTIFICATE_FORMAT, DRAFT_DIFF_OUTPUT_FORMAT, DraftDiff,
@@ -194,6 +197,7 @@ pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
 };
 pub use fa_notary::checkpoint::signer_key_id;
+pub use fa_notary::code as notary_code;
 pub use fa_notary::{
     AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, LeafKinds,
     ScopeRequest, SigningKey, Statement as AccumulatorStatement,
@@ -219,8 +223,9 @@ pub use fa_statements::cash_flow::{
     EquityActivityKind, EquityMovement, EquityRollForward, EquityRollForwardUnit,
 };
 pub use fa_statements::custom::{
-    CustomStatementDefinition, PresentationRoundingSpec, PresentedStatement,
-    PresentedStatementLine, StatementLintReport, apply_presentation_rounding,
+    AccountSetExpr, CustomLineDefinition, CustomLineSource, CustomStatementDefinition,
+    PresentationRoundingSpec, PresentedStatement, PresentedStatementLine, StatementLintReport,
+    apply_presentation_rounding,
 };
 pub use fa_statements::markdown::{
     StatementMarkdownIr, TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec,

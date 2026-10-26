@@ -636,3 +636,18 @@ hot_object_exceptions = []
 external_authorities = "none; independent approvals are retained native Approval records obtained by separate explicit operations"
 complexity_witness = "O(retained journal + chart + nominal groups + closing legs) checked-integer folds, complete contribution digest and route replay; the commit guards the observed publication frontier in addition to ordinary native witnesses"
 notes = "Prior Closing legs participate in the fold so reclose transfers only residual activity. Zero residual publishes nothing. Full-year base-unit and undimensioned/legal-entity-only scope is enforced. Review bytes use the existing PostIntent wire and publish nothing; approval-only commits preserve its source basis. Closing uses ordinary period, evidence, authority, approval, idempotency and balance laws. Atomic batch/draft promotion cannot bypass the required complete source basis. This is the intrinsic closing operation, not the full CloseTask DAG or Locked case-bound reclose."
+
+[[operation_class]]
+id = "statement_definition_activation"
+name = "Approved custom statement definition activation"
+substrate_class = "Read-only canonical review and one witnessed PolicyControl publication"
+substrate_transactions = "0 for preparation/read or an exact retry; 1 for a new activation"
+today_posture = "Complete immutable definition and chunk fragments, approving control and shared successful-intent key claim publish atomically"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 StatementDefinition root, bounded 4096-byte fragments above the inline threshold, 1 PolicyControl Entry and 1 IntentOutcome key claim; no mutable name head"
+hot_object_exceptions = []
+external_authorities = "none; two independent Human approvals are prior explicit native operations"
+complexity_witness = "Retained chart/schema and activation history scans, exact partition lint, and original-row/approval validation; historical checks may revisit source prefixes. Work depends on journal history and activated versions, not an indexed constant-time claim. Definition bytes are bounded at 65536 before chunk staging."
+notes = "The saved plan binds complete definition bytes, effective date, preparer, caller key and canonical accounting-schema basis. Approval commits do not alter this basis. Publication rechecks schema under the exclusive book borrow and witnesses authority, approvals, accounts and intent identity. Name/version/effective history remains immutable. Explicit older approved versions remain replayable after a newer default activates. Native regression witness: fa::statement_definition::tests::chunked_definition_activates_atomically_survives_approval_commits_and_retries."

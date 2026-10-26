@@ -1,0 +1,56 @@
+# Approved company-specific statement layouts (plan §12.1, fa-qh60).
+schema_version = 1
+name = "StatementDefinition"
+owner = "fa::statement_definition"
+major = 1
+minor = 0
+externally_verifiable = false
+format = "fa:custom-statement-def:v1"
+plan_format = "fa:statement-definition-plan:v1"
+identity_domain = "fa:vid:statement-definition:v1"
+chart_basis_domain = "fa:statement-chart-basis:v1"
+object_kind = 7
+storage_label = "StatementDefinition"
+max_definition_bytes = 65536
+max_plan_bytes = 66880
+activation_origin = "policy_activation"
+activation_payload = "LifecycleTransition"
+activation_reason = 21332
+activation_from = 0
+activation_to = 1
+sod_transition = "ActivateStatement"
+
+# The exact canonical custom definition (name, title, version, kind, account
+# expressions/formulas, check lines) is immutable content, addressed by its
+# existing definition digest and this book. Its root has BOOK_ID, FA_PAYLOAD
+# (object kind 7, chunked above 4096 bytes), and FA_DIGEST (definition oid).
+# Root and fragments retain the original birth of the approving activation.
+# This authoritative label is preserved by accounting scratch replay.
+#
+# The PolicyControl is book-scoped, origin policy_activation (kind 3), with
+# spec_body_digest = definition oid. LifecycleTransition has object_ref =
+# definition root, from=0, to=1, reason_code=21332, and exactly one proof_ref:
+# the complete reviewed accounting-schema digest. The definition oid commits
+# its name, version, canonical expressions and all presentation metadata.
+# The proposal separately binds effective_date, preparer and the caller key.
+# Its approvals use ActivateStatement: rule_change preparer, two distinct
+# Human approve principals, neither the preparer. The activation does not
+# change the book's security-policy epoch.
+#
+# The chart basis hashes book[16] and a canonical list of all original
+# SchemaControl (u64 commit_seq, u128 entry_vid, entry_digest[32]) in commit/VID
+# order after validating the journaled chart and its projections. Ordinary
+# approvals and monetary posts do not invalidate a plan; an accounting-schema
+# change does. Activation rechecks and lints the complete current chart while
+# holding the exclusive writer and takes native authority/approval witnesses.
+# Definition, activation, fragments and shared successful-intent key claim
+# publish in one WriteTxn. Retries require the unchanged plan and approvals.
+#
+# Names resolve from immutable activation controls, never a mutable name row.
+# Successive versions and effective dates for a name must strictly increase.
+# A fresh named report selects the latest effective activation visible at its
+# known-at. A pinned definition/activation remains a legitimate historical
+# question after later versions are activated. Replay checks the exact bytes,
+# original activation, preceding approvals and original reviewed chart basis;
+# report production separately lints every selected historical column chart.
+# These native records do not claim portable independent report verification.

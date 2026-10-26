@@ -4205,7 +4205,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Result<fa_journal::ProjectionVerification, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_journal::verify_projections(db, book, known_at)?)
+            let mut verification = fa_journal::verify_projections(db, book, known_at)?;
+            verification
+                .drift
+                .extend(crate::statement_definition::verify_at(
+                    db,
+                    &cx.query(),
+                    book,
+                    verification.known_at,
+                )?);
+            Ok(verification)
         })
     }
 

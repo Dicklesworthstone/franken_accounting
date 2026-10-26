@@ -223,7 +223,7 @@ pub(crate) fn witness_key<V: Vfs + Clone>(
 /// A dedicated control admits its named scope before observing this opaque
 /// key. Its normal Entry identity remains the legacy retry anchor; a batch or
 /// target-derived posting at the common key conflicts without payload reads.
-pub(crate) fn witness_named_key<V: Vfs + Clone>(
+pub fn witness_named_key<V: Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: Id128,
@@ -587,7 +587,7 @@ fn stage_coverage(batch: &mut WriteBatch, coverage: &Coverage) -> Result<(), Ker
     Ok(())
 }
 
-pub(crate) fn require_unused_legacy_key<V: Vfs + Clone>(
+pub fn require_unused_legacy_key<V: Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: &BookContext,
@@ -622,6 +622,33 @@ pub fn stage_entry(
 /// old immutable entries that predate these common-key claims. Do not broaden
 /// `covered_class`: historical coverage authenticates monetary posting keys,
 /// and an old control's absence of a claim must not invalidate its exact retry.
+/// Registered reason discriminator on a PolicyControl LifecycleTransition.
+/// Its object identity binds the canonical definition; its single proof binds
+/// the chart reviewed by the higher-layer statement activation operation.
+pub const STATEMENT_ACTIVATION_REASON: u16 = 0x5354;
+
+/// The precisely registered statement-definition control shape. Admission and
+/// semantic lint remain the facade's responsibility; this only identifies a
+/// dedicated writer allowed to reserve the common successful-intent key.
+#[must_use]
+pub fn is_statement_activation(entry: &Entry) -> bool {
+    let proposal = &entry.proposal;
+    let fa_model::EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::POLICY_ACTIVATION,
+        spec_body_digest,
+    } = &proposal.origin
+    else {
+        return false;
+    };
+    proposal.class == EntryClass::POLICY_CONTROL
+        && matches!(&proposal.control,
+            Some(fa_model::ControlPayload::LifecycleTransition {
+                object_ref, from: 0, to: 1, proof_refs, reason_code,
+            }) if *reason_code == STATEMENT_ACTIVATION_REASON
+                && matches!(proof_refs.as_slice(), [fa_model::TypedRef::Object(_)])
+                && *object_ref == fa_model::statement_definition_vid(proposal.book_id, spec_body_digest))
+}
+
 fn normal_key_control(entry: &Entry, vid: VId) -> bool {
     let proposal = &entry.proposal;
     let admitted = matches!(
@@ -640,7 +667,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
                     ..
                 })
             ));
-    admitted
+    (admitted || is_statement_activation(entry))
         && vid
             == fa_model::entry_vid(
                 proposal.book_id,
@@ -651,11 +678,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
 
 /// Stage only an admitted normal-key control. In particular, a target-derived
 /// capability event cannot use the legacy normal-identity retry exception.
-pub(crate) fn stage_control(
-    batch: &mut WriteBatch,
-    entry: &Entry,
-    vid: VId,
-) -> Result<(), KernelError> {
+pub fn stage_control(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<(), KernelError> {
     if !normal_key_control(entry, vid) {
         return Err(KernelError::Corrupt(
             "control outcome claim requires an admitted normal-key control entry".into(),
@@ -679,7 +702,7 @@ fn stage_claim(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<[u8; 3
 /// A legacy normal-key control is its own immutable key reservation. When a
 /// common claim exists, it must be the original claim published with that
 /// exact entry; neither an unrelated batch nor a copied claim can supply it.
-pub(crate) fn verify_control_recorded<V: Vfs + Clone>(
+pub fn verify_control_recorded<V: Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,
     entry: &Entry,

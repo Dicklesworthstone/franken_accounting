@@ -346,6 +346,18 @@ pub fn rule_version_vid(book: Id128, ir_digest: &[u8; 32]) -> VId {
     derive_vid(b"fa:vid:rule-version:v1", &[&book.0, ir_digest])
 }
 
+/// A company's exact canonical statement layout, independently of activation.
+#[must_use]
+pub fn statement_definition_vid(book: Id128, definition_digest: &[u8; 32]) -> VId {
+    let digest = domain_digest(
+        b"fa:vid:statement-definition:v1",
+        &[&book.0, definition_digest],
+    );
+    let mut low = [0; 16];
+    low.copy_from_slice(&digest[..16]);
+    VId(u128::from_le_bytes(low))
+}
+
 /// `vid(RuleName) = H("fa:vid:rule-name:v1" ‖ book_id ‖ name)`: where a
 /// rule's activations say which version is in force from which date.
 #[must_use]

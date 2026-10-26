@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fa_cli::json::{self, Json};
 
+#[path = "statements/custom.rs"]
+mod custom;
+
 fn temporary() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {

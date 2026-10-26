@@ -24,6 +24,7 @@ pub mod cli;
 pub mod client;
 mod closing;
 mod consolidate;
+mod custom_statement;
 mod diff;
 mod dimension;
 mod document;

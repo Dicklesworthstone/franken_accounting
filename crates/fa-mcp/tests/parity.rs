@@ -927,6 +927,68 @@ fn functional_statement_mcp_preserves_basis_comparatives_and_certificate_authori
 }
 
 #[test]
+fn company_statement_mcp_transports_inline_reviews_and_preserves_operation_authority() {
+    let (mcp, reg) = embedded();
+    let tool = mcp.tool_for("statement", None).unwrap();
+    assert_eq!(tool.wire_name(), "fa_read_statement");
+    let schema = tool.input_schema(&mcp, reg);
+    assert_eq!(schema["properties"]["source"]["type"], json!("string"));
+    for (args, operation) in [
+        (
+            json!({"name":"define", "source":"definition source", "from":"2026-01-01", "key":"layout-v1"}),
+            "rule_change",
+        ),
+        (
+            json!({"name":"activate", "source":"0123", "approval":["a","b"]}),
+            "rule_change",
+        ),
+        (
+            json!({"name":"lint", "source":"definition source", "as_known_at":"17"}),
+            "read",
+        ),
+    ] {
+        let invocation = tool.invocation(&mcp, reg, &args).unwrap();
+        assert_eq!(
+            invocation.stdin.as_deref(),
+            Some(args["source"].as_str().unwrap().as_bytes())
+        );
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.flag("--file"), Some("-"));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("statement", &parsed)
+                .unwrap()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>(),
+            vec![operation]
+        );
+    }
+    let args = json!({"name":"custom", "definition":"company-income", "for":"FY2026-P03",
+        "compare":"FY2026-P02", "as_known_at":"17", "certify":true,
+        "scale_digits":"3", "rounding":"HalfEven", "residual_line":"rounding", "residual_label":"Presentation rounding"});
+    let invocation = tool.invocation(&mcp, reg, &args).unwrap();
+    assert!(invocation.stdin.is_none());
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(parsed.flag("--definition"), Some("company-income"));
+    assert_eq!(parsed.flag("--scale-digits"), Some("3"));
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("statement", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read", "produce"]
+    );
+    for argument in ["as", "grant", "yes", "book", "plan_out", "certificate_out"] {
+        let mut rejected = args.clone();
+        rejected[argument] = json!("forbidden");
+        assert!(tool.invocation(&mcp, reg, &rejected).is_err(), "{argument}");
+    }
+}
+
+#[test]
 fn functional_trial_balance_mcp_preserves_scope_time_and_certificate_authority() {
     let (mcp, reg) = embedded();
     let tool = mcp.tool_for("tb", None).unwrap();

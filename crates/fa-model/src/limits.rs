@@ -72,6 +72,11 @@ pub const MAX_REGISTER_CHECKPOINT_BYTES: usize = 8 * 1024 * 1024;
 /// Distinct account/unit/period keys across a checkpoint's posted and pending
 /// columns. The byte bound is enforced independently before allocation.
 pub const MAX_REGISTER_CHECKPOINT_CELLS: usize = 100_000;
+/// One complete canonical company statement definition, before chunk storage.
+pub const MAX_STATEMENT_DEFINITION_BYTES: usize = 64 * 1024;
+/// Definition plus sealed description, caller key and fixed activation framing.
+pub const MAX_STATEMENT_DEFINITION_PLAN_BYTES: usize =
+    MAX_STATEMENT_DEFINITION_BYTES + MAX_DESCRIPTION_BYTES + MAX_IDEMPOTENCY_KEY_BYTES + 256;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -127,6 +132,14 @@ pub const ALL: &[(&str, u64)] = &[
     (
         "max_register_checkpoint_cells",
         MAX_REGISTER_CHECKPOINT_CELLS as u64,
+    ),
+    (
+        "max_statement_definition_bytes",
+        MAX_STATEMENT_DEFINITION_BYTES as u64,
+    ),
+    (
+        "max_statement_definition_plan_bytes",
+        MAX_STATEMENT_DEFINITION_PLAN_BYTES as u64,
     ),
 ];
 

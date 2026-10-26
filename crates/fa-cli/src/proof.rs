@@ -916,7 +916,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             _ => {
                 return Err(fa_journal::Refusal::new(
-                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    fa::notary_code::SCOPE_UNSUPPORTED,
                     fa_journal::exit::REFUSAL,
                     format!(
                         "{} certificates have no independent portable report producer",

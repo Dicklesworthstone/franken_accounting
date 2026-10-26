@@ -163,7 +163,7 @@ fn native_aging_bundles_refold_effective_settlements_and_reversals_at_historical
             false,
         ),
         (
-            full.recorded_at,
+            full.recorded_at(),
             day(2026, 2, 1),
             10_000,
             0,
@@ -172,7 +172,7 @@ fn native_aging_bundles_refold_effective_settlements_and_reversals_at_historical
             false,
         ),
         (
-            full.recorded_at,
+            full.recorded_at(),
             day(2026, 2, 10),
             6_000,
             1,
@@ -181,7 +181,7 @@ fn native_aging_bundles_refold_effective_settlements_and_reversals_at_historical
             true,
         ),
         (
-            reversed.recorded_at,
+            reversed.recorded_at(),
             day(2026, 2, 10),
             6_000,
             1,
@@ -190,7 +190,7 @@ fn native_aging_bundles_refold_effective_settlements_and_reversals_at_historical
             true,
         ),
         (
-            reversed.recorded_at,
+            reversed.recorded_at(),
             day(2026, 2, 20),
             10_000,
             1,
@@ -218,7 +218,12 @@ fn native_aging_bundles_refold_effective_settlements_and_reversals_at_historical
         let aging = verified.aging.unwrap();
         assert_eq!(aging.account_filter, Some(cash.0));
         assert!(aging.items.iter().all(|row| row.item.account == cash.0));
-        assert!(!aging.items.iter().any(|row| row.item.entry == later.vid.0));
+        assert!(
+            !aging
+                .items
+                .iter()
+                .any(|row| row.item.entry == later.entry_ref().vid.0)
+        );
         let item = &aging
             .items
             .iter()
@@ -229,7 +234,7 @@ fn native_aging_bundles_refold_effective_settlements_and_reversals_at_historical
         assert_eq!(item.applied, 10_000 - expected_open);
         assert_eq!(item.applications.len(), applications);
         if applications != 0 {
-            assert_eq!(item.applications[0].entry, receipt.vid.0);
+            assert_eq!(item.applications[0].entry, receipt.entry_ref().vid.0);
             assert_eq!(item.applications[0].live, live);
         }
         assert_eq!(
@@ -240,7 +245,7 @@ fn native_aging_bundles_refold_effective_settlements_and_reversals_at_historical
         let unapplied = aging
             .items
             .iter()
-            .find(|row| row.item.entry == receipt.vid.0);
+            .find(|row| row.item.entry == receipt.entry_ref().vid.0);
         assert_eq!(unapplied.is_some(), remainder);
         if let Some(unapplied) = unapplied {
             assert_eq!(unapplied.item.open, 500);
@@ -318,7 +323,11 @@ fn native_aging_bundles_preserve_bucket_edges_gross_sides_units_and_empty_filter
             assert!(aging.totals.is_empty());
             continue;
         }
-        for (entry, age, bucket) in [(today.vid, 0, 0), (edge.vid, 30, 1), (over_edge.vid, 31, 2)] {
+        for (entry, age, bucket) in [
+            (today.entry_ref().vid, 0, 0),
+            (edge.entry_ref().vid, 30, 1),
+            (over_edge.entry_ref().vid, 31, 2),
+        ] {
             let item = aging
                 .items
                 .iter()

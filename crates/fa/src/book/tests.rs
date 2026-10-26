@@ -4524,6 +4524,7 @@ fn report_replay_keeps_historical_account_metadata_and_status_refuses_rebinding(
             ReportOutput::TrialBalance(_)
             | ReportOutput::FunctionalTrialBalance(_)
             | ReportOutput::Statement(_)
+            | ReportOutput::CustomStatement(_)
             | ReportOutput::FunctionalStatement(_)
             | ReportOutput::Consolidation(_)
             | ReportOutput::FunctionalConsolidation(_)

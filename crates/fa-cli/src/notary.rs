@@ -1163,6 +1163,9 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 report,
                 Some(&digest),
             )?,
+            (ReportOutput::CustomStatement(report), ReportSelection::CustomStatement(_)) => {
+                crate::custom_statement::render(&ctx.out, &book, report, Some(&digest))?
+            }
             _ => {
                 return Err(certificate_invalid(
                     "replayed report kind differs from the retained certificate selector",
@@ -1432,6 +1435,9 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ctx.out.effective(periods_selector(&selection.periods));
         }
         ReportSelection::RegulatorySchedule(selection) => {
+            ctx.out.effective(periods_selector(&selection.periods));
+        }
+        ReportSelection::CustomStatement(selection) => {
             ctx.out.effective(periods_selector(&selection.periods));
         }
         ReportSelection::Consolidation { period }

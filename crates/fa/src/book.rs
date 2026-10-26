@@ -3836,6 +3836,80 @@ impl Book {
         with_store!(&self.store, core => core.statement(&self.purposes(), selection, known_at))
     }
 
+    /// Prepare a company layout for two independent approvers. The review
+    /// binds its exact bytes and the complete historical chart partition.
+    pub fn plan_statement_definition(
+        &self,
+        capability: &fa_policy::Capability,
+        definition: fa_statements::custom::CustomStatementDefinition,
+        effective_from: DateDay,
+        key: &[u8],
+    ) -> Outcome<crate::statement_definition::StatementDefinitionPlan> {
+        with_store!(&self.store, core => core.plan_statement_definition(
+            &self.purposes(), capability, definition, effective_from, key,
+        ))
+    }
+
+    /// Atomically retain a reviewed layout and its approved activation.
+    pub fn activate_statement_definition(
+        &mut self,
+        capability: &fa_policy::Capability,
+        plan: crate::statement_definition::StatementDefinitionPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<crate::statement_definition::ActivatedStatementDefinition> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.activate_statement_definition(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Lint an editable company layout against one admitted historical chart.
+    pub fn lint_statement_definition(
+        &self,
+        capability: &fa_policy::Capability,
+        definition: &fa_statements::custom::CustomStatementDefinition,
+        known_at: CommitSeq,
+    ) -> Outcome<fa_statements::custom::StatementLintReport> {
+        with_store!(&self.store, core => core.lint_statement_definition(
+            &self.purposes(), capability, definition, known_at,
+        ))
+    }
+
+    /// Resolve the layout activated for a name and effective reporting date.
+    pub fn active_statement_definition(
+        &self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        day: DateDay,
+        known_at: CommitSeq,
+    ) -> Outcome<Option<crate::statement_definition::ActivatedStatementDefinition>> {
+        with_store!(&self.store, core => core.active_statement_definition(
+            &self.purposes(), capability, name, day, known_at,
+        ))
+    }
+
+    pub fn custom_statement(
+        &self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CustomStatementReport> {
+        with_store!(&self.store, core => core.custom_statement(
+            &self.purposes(), capability, selection, known_at,
+        ))
+    }
+
+    pub fn certify_custom_statement(
+        &self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        with_store!(&self.store, core => core.certify_custom_statement(
+            &self.purposes(), capability, selection, known_at,
+        ))
+    }
+
     /// Evaluate a statement in the historical book's functional currency.
     /// The admitted whole-book reader receives exact retained valuations;
     /// this hydrates history without publishing or revaluing any entry.
@@ -6340,6 +6414,7 @@ impl ReadScope<'_> {
             // A dimension filter crosses accounts and periods: a scoped
             // capability is refused, never filtered.
             ReportSelection::OpenItems { .. }
+            | ReportSelection::CustomStatement(_)
             | ReportSelection::FunctionalStatement(_)
             | ReportSelection::FunctionalTrialBalance(_)
             | ReportSelection::Consolidation { .. }
