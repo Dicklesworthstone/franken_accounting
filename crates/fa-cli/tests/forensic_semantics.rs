@@ -393,7 +393,10 @@ fn creditor_and_investor_margins_survive_public_workflow() {
 ],"obligation_maturity":[{{"ordinal":1,"status":"contractual","installments":[{{"due_date":"{due}","amount":"{amt}"}}]}}]}}"#
             ),
         );
-        ok(&s.book, &["post", "--intent", &doc, "--evidence", &s.evidence]);
+        ok(
+            &s.book,
+            &["post", "--intent", &doc, "--evidence", &s.evidence],
+        );
     }
 
     // 30-day horizon (through May 30): 40.00 + 35.00 = 75.00 <= 100.00 cash -> 0 findings.

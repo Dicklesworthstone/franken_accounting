@@ -747,9 +747,9 @@ fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
             let mut hold = maintenance_intent("Pending", held_on, 150, "atomic-hold");
             for nonce in 0u64.. {
                 hold.key = format!("atomic-hold-{amount}-{nonce}").into_bytes();
-                let vid = fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &hold.key);
-                if (fa_journal::rows::resolution_vid(vid).0 < vid.0)
-                    == resolution_first_in_journal
+                let vid =
+                    fa_model::entry_vid(k.book.book_id, &PRINCIPAL.0.to_le_bytes(), &hold.key);
+                if (fa_journal::rows::resolution_vid(vid).0 < vid.0) == resolution_first_in_journal
                 {
                     break;
                 }
@@ -769,8 +769,8 @@ fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
             let members = [hold, release];
             let batch_key = format!("atomic-hold-and-release-{amount}");
             let before = k.db.frontier().unwrap();
-            let historical = fa_registers::fold_period_at(&k.db, &k.book, march, Some(before))
-                .unwrap();
+            let historical =
+                fa_registers::fold_period_at(&k.db, &k.book, march, Some(before)).unwrap();
             let posted = kernel_batch(&mut k, &batch_key, &members, usd, &extended).unwrap();
             assert_eq!(posted.recorded_at.0, before.0 + 1);
             assert!(matches!(
@@ -785,7 +785,10 @@ fn atomic_pending_resolutions_agree_with_oracle_and_maintained_registers() {
             );
             for period in [march, april] {
                 let advance = maintain(&mut k, period);
-                assert!(!advance.rebuilt, "same-commit ordering is handled in the delta fold");
+                assert!(
+                    !advance.rebuilt,
+                    "same-commit ordering is handled in the delta fold"
+                );
                 assert!(advance.fold.pending.is_empty());
                 assert!(advance.fold.pending_holds.is_empty());
                 maintained_matches_oracle(&advance, &oracle, k.book.book_id);

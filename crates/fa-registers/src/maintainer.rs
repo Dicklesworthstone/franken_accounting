@@ -387,9 +387,8 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
         // identities do not encode the batch's staging order, so install all
         // its holds before applying releases. Posted entries still retain VId
         // order, preserving the literal fold's contribution digest.
-        batch_entries.sort_by_key(|(vid, entry)| {
-            (entry.proposal.class != EntryClass::PENDING, vid.0)
-        });
+        batch_entries
+            .sort_by_key(|(vid, entry)| (entry.proposal.class != EntryClass::PENDING, vid.0));
         for (vid, entry) in batch_entries {
             if matches!(
                 entry.proposal.control,
