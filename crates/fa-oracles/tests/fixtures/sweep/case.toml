@@ -1,0 +1,12 @@
+# Sweep fixture (fa-yugf.17, A7c): one entry's period-law branch table, swept by dry run on one
+# book across Future → Open → SoftClosed → Closed → Locked, for fa-cli's tests/cases.rs. Never
+# copied to cases/; claims nothing.
+id = "sweep"
+title = "Sweep fixture: an entry class × period state table decided by dry run"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's P-cell sweep: dry runs, transitions, representatives and per-cell keys"
+claims = []
+capabilities = ["verb:post", "refusal:FA-REF-010", "refusal:FA-REF-011"]
+pinned_commit = "e046f583e"
+variants = ["native"]

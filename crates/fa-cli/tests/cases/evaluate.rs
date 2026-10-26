@@ -121,9 +121,9 @@ pub fn expectation_verdicts(records: &[VerdictRecord]) -> BTreeMap<String, RowVe
         .collect()
 }
 
-type Eval = (RowLine, Vec<(String, String)>, Option<String>);
+pub(crate) type Eval = (RowLine, Vec<(String, String)>, Option<String>);
 
-fn finish(case: &Case, (mut row, witnesses, reproduce): Eval) -> Evaluated {
+pub(crate) fn finish(case: &Case, (mut row, witnesses, reproduce): Eval) -> Evaluated {
     if row.verdict == RowVerdict::Pass {
         row.reason = None;
     }
@@ -197,7 +197,16 @@ pub fn rows(
             } else {
                 set.targets_of(&e.id).collect()
             };
-            let mut slots: Vec<Option<&Target>> = targets.iter().copied().map(Some).collect();
+            let mut slots: Vec<Option<&Target>> = targets
+                .iter()
+                .copied()
+                // A P target with a branch table is swept cell by cell (A7c).
+                .filter(|t| e.kind != ExpectationType::P || !has_branch_table(t))
+                .map(Some)
+                .collect();
+            if slots.is_empty() && !targets.is_empty() {
+                continue;
+            }
             if slots.is_empty() {
                 slots.push(None);
             }
@@ -232,6 +241,12 @@ pub fn rows(
     }
     out.push(self_row(run));
     out
+}
+
+/// Whether a target branches attributes (A5a's table), which a P row's
+/// sweep decides cell by cell (A7c).
+pub fn has_branch_table(t: &Target) -> bool {
+    t.fields.strs("branch_attrs").is_some_and(|a| !a.is_empty())
 }
 
 /// The fact or intent `subject` as the intent id it posted as, when that is

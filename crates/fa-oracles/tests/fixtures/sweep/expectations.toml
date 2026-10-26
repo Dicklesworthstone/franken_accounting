@@ -1,0 +1,91 @@
+# Sweep fixture expectations: one P row on S-1 whose table branches its class and the period's
+# state at commit. Each cell's outcome is registries/admissibility.toml's decision for it, for a
+# principal holding only `post`: admit, FA-REF-010 for a refused cell, FA-REF-011 for a cell that
+# needs an op the preparer lacks.
+
+[[expectation]]
+id = "sweep-P-01"
+type = "P"
+book_variant = "native"
+statement_template = "P.first_refusal"
+basis = ["S-1"]
+intent = "S-1"
+refusal = "FA-REF-010"
+law_row = "admissibility.toml#Original/Closed"
+attribute = "period_state_at_commit"
+reference_verdict = "FA-REF-010"
+
+[[target]]
+expectation = "sweep-P-01"
+fact = "S-1"
+branch_attrs = ["entry_class", "period_state_at_commit"]
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Original", "Future"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Original", "Open"]
+expect = "admit"
+record_consistent = true
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Original", "SoftClosed"]
+expect = "FA-REF-011"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Original", "Closed"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Original", "Locked"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Adjusting", "Future"]
+expect = "FA-REF-010"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Adjusting", "Open"]
+expect = "admit"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Adjusting", "SoftClosed"]
+expect = "admit"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Adjusting", "Closed"]
+expect = "FA-REF-011"
+record_consistent = false
+
+[[branch_cell]]
+expectation = "sweep-P-01"
+target = "S-1"
+cell = ["Adjusting", "Locked"]
+expect = "FA-REF-010"
+record_consistent = false
