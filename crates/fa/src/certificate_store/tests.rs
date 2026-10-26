@@ -17,10 +17,10 @@ const BOOK: Id128 = Id128([0xc1; 16]);
 const PRINCIPAL: VId = VId(1);
 const PERIOD: &str = "FY2026-P01";
 
-struct Harness {
-    runtime: Runtime,
+pub(crate) struct Harness {
+    pub(crate) runtime: Runtime,
     root: Cx,
-    book: AsyncBook<MemVfs>,
+    pub(crate) book: AsyncBook<MemVfs>,
     vfs: MemVfs,
 }
 
@@ -57,36 +57,39 @@ impl Harness {
         }
     }
 
-    fn cx(&self) -> PurposeContexts {
+    pub(crate) fn cx(&self) -> PurposeContexts {
         PurposeContexts::narrow_runtime_root(&self.root)
     }
 
-    fn write(&mut self, batch: WriteBatch) -> CommitSeq {
+    pub(crate) fn write(&mut self, batch: WriteBatch) -> CommitSeq {
         let cx = self.cx();
         self.runtime
             .block_on(self.book.db.write(&cx.commit(), batch))
             .unwrap()
     }
 
-    fn head(&self) -> CommitSeq {
+    pub(crate) fn head(&self) -> CommitSeq {
         self.book.head(&self.cx()).unwrap()
     }
 
-    fn retain(&mut self, certificate: &ReportCertificate) -> Result<RetainedCertificate, Refusal> {
+    pub(crate) fn retain(
+        &mut self,
+        certificate: &ReportCertificate,
+    ) -> Result<RetainedCertificate, Refusal> {
         let cx = self.cx();
         self.runtime
             .block_on(self.book.retain_certificate(&cx, certificate))
             .unwrap()
     }
 
-    fn read(&self, digest: &[u8; 32]) -> Result<ReportCertificate, Refusal> {
+    pub(crate) fn read(&self, digest: &[u8; 32]) -> Result<ReportCertificate, Refusal> {
         let cx = self.cx();
         self.runtime
             .block_on(self.book.read_certificate(&cx, digest))
             .unwrap()
     }
 
-    fn reopen(self) -> Self {
+    pub(crate) fn reopen(self) -> Self {
         let Self {
             runtime,
             root,
@@ -128,6 +131,15 @@ impl Harness {
     }
 
     fn populated() -> (Self, ReportCertificate) {
+        let (h, certificate) = Self::with_posts(64);
+        assert!(
+            certificate.output.len() > chunks::CHUNK_BYTES,
+            "fixture must exercise more than one native row, not an inline certificate"
+        );
+        (h, certificate)
+    }
+
+    pub(crate) fn with_posts(count: u32) -> (Self, ReportCertificate) {
         let mut h = Self::new();
         let cx = h.cx();
         let accounts: Vec<_> = [
@@ -178,14 +190,10 @@ impl Harness {
             ))
             .unwrap()
             .unwrap();
-        for n in 0..64 {
+        for n in 0..count {
             h.post(n);
         }
         let certificate = h.certificate();
-        assert!(
-            certificate.output.len() > chunks::CHUNK_BYTES,
-            "fixture must exercise more than one native row, not an inline certificate"
-        );
         (h, certificate)
     }
 

@@ -3615,8 +3615,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         let registries = if matches!(&certificate.selection, crate::ReportSelection::Statement(_)) {
-            match crate::certificate::offline_statement_registries(certificate, &self.context.units)
-            {
+            match crate::certificate::offline_statement_registries_at(
+                &self.db,
+                &cx.query(),
+                &self.context,
+                certificate,
+            )? {
                 Ok(registries) => Some(registries),
                 Err(refusal)
                     if refusal.code == fa_notary::code::SCOPE_UNSUPPORTED

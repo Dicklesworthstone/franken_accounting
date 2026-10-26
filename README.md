@@ -117,7 +117,7 @@ Reports show posted and pending amounts separately. A hold reserves its original
 
 Register verification compares both amount columns, counts, identity, period membership, watermark and fold checksum against the journal payloads. Rebuilding repairs derived rows and retires phantom cells without changing journal entries. Existing register caches from before the pending-column format must be rebuilt; their missing columns are reported as drift rather than assumed to be zero.
 
-The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Uncertified head trial balances and period activity can use checked native cells plus an exact tail; other selections retain literal folds.
+The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Uncertified head and historical trial balances and period activity can use checked native cells plus an exact tail bounded by the requested recorded sequence. Historical reads pin the chart, periods, maintenance state and cells to that same snapshot, so later postings and cache repairs cannot enter the result. Missing or damaged historical cells and unavailable delta windows fall back to the literal journal fold; these retained snapshots are not journaled RegisterCheckpoints. Other selections retain literal folds.
 
 `fad serve --book ./books/acme --register-period FY2026-P03` selects native
 register maintenance without granting System authority. It attempts one selected
@@ -361,6 +361,20 @@ the returned `oid` or `bytes` as `certificate`.
 Certification writes a metadata object and advances the book frontier; it posts
 no accounting entry and does not change balances. Uncertified reports, replay and
 status do not publish anything.
+
+First retention of a native trial-balance or statement certificate archives its
+producing registry sources when the executable holds that closure and its unit
+definitions cover the book's exact units. The immutable `RegistryEpoch` is written
+in the same transaction as the certificate. Replay can resolve that saved closure
+after a compatible foundation-pin or provenance change. It still verifies every
+native read certificate and recomputes the complete historical output byte for byte.
+Account-type and entry-class semantics must remain supported, every book unit
+must retain its exact meaning, and unknown schema majors refuse. Portable native
+statement bundles carry the archived canonical registry documents. An idempotent
+retry of an already retained certificate does not backfill a missing epoch.
+Reports with unmatched custom unit tables and historical FX/consolidation laws
+keep their existing replay requirements.
+
 The certificate fixes the original `--as-known-at` sequence, including a resolved
 HEAD, so later backdated entries can supersede its current status while its
 historical report still replays exactly. Before returning `Current`, status also

@@ -1,0 +1,41 @@
+# Native report registry source retention (plan §13.6; fa-vdc).
+# This archives a report's producing environment, never activates a policy.
+schema_version = 1
+name = "RegistryEpoch"
+owner = "fa::certificate::registry_epoch::Epoch"
+major = 1
+minor = 0
+externally_verifiable = false
+format = "fa:report-registry-epoch:v1"
+identity_domain = "fa:vid:report-registry-epoch:v1"
+closure_domain = "fa:report-registry-closure:v2"
+registry_digest_domain = "fa:registry-canonical-digest:v1"
+object_kind = 5
+storage_label = "Certificate"
+max_source_bytes = 1048576
+max_epoch_bytes = 4195328
+sources = ["account_types", "entry_classes", "units", "foundations"]
+
+# Body: fixed(format), book[16], canonical_closure[32], u32 count=4,
+# then four (u32-length UTF-8 name, u32-length exact UTF-8 source text) pairs.
+# The existing certificate registry_digest binds the ordered canonical source
+# closure. Root identity is low128(H(identity_domain || book || closure)).
+# Root properties: FA_PAYLOAD (object_storage kind 5), FA_DIGEST (H(format ||
+# exact body)), BOOK_ID. Root and fragments share the existing Certificate
+# maintenance label, like retained plan objects; the kind, body format and
+# identity domain distinguish them from report certificates. They publish in
+# the same native transaction as first certificate retention. Exact retention
+# retries do not write or retrofit an epoch. All records preserve original birth.
+# Epochs are excluded from accounting-object scratch replay like certificates.
+#
+# Interpreter v1: native TB/statement only. Schema majors must all equal 1;
+# account-type and entry-class documents must have identical canonical semantic
+# fields to the interpreter's vocabulary. Every book unit must have the same
+# id, code, version, scale, kind, ISO identity, default rounding and balance law
+# in the archived source; unknown unit fields or tables are unavailable.
+# Offline statement export additionally requires exact
+# unit enumeration. Foundation revisions are authenticated provenance, not
+# dynamic executable selection: Database::replay for every native input and
+# complete report-output recomputation remain mandatory after compatibility.
+# Unknown meanings/majors refuse FA-REF-159. Corrupt bytes/birth refuse FA-REF-150.
+# FX/consolidation and unarchived old closures retain their existing strict law.

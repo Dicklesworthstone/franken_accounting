@@ -35,6 +35,7 @@ use crate::{BookError, Outcome};
 
 mod functional;
 pub(crate) use functional::verify_sources as verify_functional_sources;
+pub(crate) mod registry_epoch;
 
 pub mod code {
     pub const CERTIFICATE_INVALID: &str = "FA-REF-150";
@@ -752,6 +753,27 @@ pub(crate) fn offline_statement_registries(
             Ok((name.to_string(), document.canonical_bytes()))
         })
         .collect()
+}
+
+/// Export the original archived closure after a compatible executable upgrade.
+/// The same interpreter checks used by replay apply before any registry bytes
+/// leave the book; a current registry is never substituted for a saved epoch.
+pub(crate) fn offline_statement_registries_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    certificate: &ReportCertificate,
+) -> Outcome<Vec<(String, Vec<u8>)>> {
+    if !matches!(&certificate.selection, ReportSelection::Statement(_)) {
+        return Ok(Err(invalid(
+            "portable statement registries require a native statement certificate",
+        )));
+    }
+    match registry_epoch::resolve(db, cx, book, certificate)? {
+        Ok(Some(epoch)) => Ok(epoch.offline_documents(&book.units)),
+        Ok(None) => Ok(offline_statement_registries(certificate, &book.units)),
+        Err(refusal) => Ok(Err(refusal)),
+    }
 }
 
 /// The v5 registry closure before the additive retained-carrying close law.
@@ -1581,6 +1603,10 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         Ok(closure) => closure,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    let archived_epoch = match registry_epoch::resolve(db, &query, book, certificate)? {
+        Ok(epoch) => epoch,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let legacy_v2 = match legacy_v2_registry_digest(&certificate.selection) {
         Ok(closure) => closure,
         Err(refusal) => return Ok(Err(refusal)),
@@ -1598,6 +1624,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         false
     };
     if certificate.registry_digest != current
+        && archived_epoch.is_none()
         && !pre_carrying
         && (matches!(
             &certificate.selection,

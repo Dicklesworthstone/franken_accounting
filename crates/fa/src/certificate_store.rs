@@ -511,13 +511,24 @@ async fn retain_inner<V: Vfs + Clone, W: Vfs + Clone>(
         }
     }
     query_cx.checkpoint().map_err(BookError::Context)?;
-    let batch = match chunks::stage(&query_cx, book, digest, vid, payload)? {
+    let mut batch = match chunks::stage(&query_cx, book, digest, vid, payload)? {
         Ok(batch) => batch,
         Err(refusal) => {
             txn.abort();
             return Ok(Err(refusal));
         }
     };
+    if let Err(refusal) = crate::certificate::registry_epoch::stage(
+        db,
+        &query_cx,
+        book,
+        certificate.source_certificate(),
+        &mut txn,
+        &mut batch,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Err(error) = txn.write(db, batch) {
         txn.abort();
         return refused_write(error);
@@ -559,4 +570,4 @@ mod external_record_codec {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

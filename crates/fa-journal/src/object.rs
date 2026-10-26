@@ -25,6 +25,7 @@ pub enum ObjectKind {
     ReplacementPlan = 2,
     BatchPlan = 3,
     IntentOutcome = 4,
+    RegistryEpoch = 5,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -83,7 +84,8 @@ fn fragment_vid(book: Id128, root: VId, object: ObjectRef, index: usize) -> VId 
 
 /// Add fragments to the SAME batch as their root; no root or commit is created.
 /// The caller supplies the storage label so fragments inherit its observation
-/// and scratch-replay policy. Plans use Certificate; outcomes use IntentOutcome.
+/// and scratch-replay policy. Plans and source epochs use Certificate;
+/// outcomes use IntentOutcome.
 pub fn stage(
     cx: &QueryCx,
     batch: &mut WriteBatch,
@@ -235,6 +237,7 @@ mod tests {
             ObjectKind::ReplacementPlan,
             ObjectKind::BatchPlan,
             ObjectKind::IntentOutcome,
+            ObjectKind::RegistryEpoch,
         ]
         .into_iter()
         .flat_map(|kind| {
@@ -306,9 +309,10 @@ mod tests {
             }
             let wrong_kind = match kind {
                 ObjectKind::PostPlan => ObjectKind::ReplacementPlan,
-                ObjectKind::ReplacementPlan | ObjectKind::BatchPlan | ObjectKind::IntentOutcome => {
-                    ObjectKind::PostPlan
-                }
+                ObjectKind::ReplacementPlan
+                | ObjectKind::BatchPlan
+                | ObjectKind::IntentOutcome
+                | ObjectKind::RegistryEpoch => ObjectKind::PostPlan,
             };
             assert!(
                 read(
@@ -483,6 +487,7 @@ mod tests {
             ("inline_bytes", CHUNK_BYTES as i128),
             ("post_plan_kind", ObjectKind::PostPlan as i128),
             ("replacement_plan_kind", ObjectKind::ReplacementPlan as i128),
+            ("registry_epoch_kind", ObjectKind::RegistryEpoch as i128),
         ] {
             assert_eq!(schema.root.get(key).unwrap().as_int().unwrap(), expected);
         }
