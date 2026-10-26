@@ -656,3 +656,90 @@ fn target_state_commands_below_tldr_are_registered_or_name_a_target_bead() {
         "expected >= 10 `fa` lines below ## TL;DR, found {checked}"
     );
 }
+
+fn has_evidence_minimum_phrase(text: &str) -> bool {
+    text.contains("presence and kind, not content")
+        || text.contains("presence and kind, not what a document says")
+}
+
+fn check_evidence_minimum_surfaces(
+    readme_above_tldr: &str,
+    catalog_cites: &[(&str, &str)],
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    if !has_evidence_minimum_phrase(readme_above_tldr) {
+        missing.push(
+            "README above `## TL;DR` lacks the evidence-minimum limit (`presence and kind, not content`)"
+                .to_string(),
+        );
+    }
+    for (code, cite) in catalog_cites {
+        if !has_evidence_minimum_phrase(cite) {
+            missing.push(format!(
+                "`{code}` lacks the evidence-minimum limit (`presence and kind, not content`); current cite: `{cite}`"
+            ));
+        }
+    }
+    missing
+}
+
+#[test]
+fn evidence_minimum_docs_state_presence_and_kind_not_content() {
+    let (above_tldr, _) = README
+        .split_once("\n## TL;DR\n")
+        .expect("README has a `## TL;DR` heading");
+    let mut cites = Vec::new();
+    for code in ["FA-REF-080", "FA-REF-086"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .args(["explain", "refusal", code, "--json", "--no-color"])
+            .env_remove("FA_BOOK")
+            .env_remove("FA_TOKEN")
+            .output()
+            .expect("run fa explain refusal");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{code}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        let last = stdout.lines().last().expect("one robot line");
+        let parsed = json::parse(last).expect("valid JSON");
+        let cite = parsed
+            .get("data")
+            .and_then(|d| d.get("cite"))
+            .and_then(json::Json::as_str)
+            .expect("data.cite string")
+            .to_string();
+        cites.push((code, cite));
+    }
+    let cite_refs: Vec<(&str, &str)> = cites.iter().map(|(c, s)| (*c, s.as_str())).collect();
+    let missing = check_evidence_minimum_surfaces(above_tldr, &cite_refs);
+    assert!(missing.is_empty(), "{missing:#?}");
+}
+
+#[test]
+fn evidence_minimum_phrase_check_fails_without_the_sentence() {
+    let (above_tldr, _) = README
+        .split_once("\n## TL;DR\n")
+        .expect("README has a `## TL;DR` heading");
+    let stripped_readme = above_tldr.replace("presence and kind, not content", "");
+    let stripped_cites = [
+        (
+            "FA-REF-080",
+            "registries/evidence_policy.toml [[minimum]] class = \"{class}\" (FA-INV-05 evidence-minimum)",
+        ),
+        (
+            "FA-REF-086",
+            "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation)",
+        ),
+    ];
+    let missing = check_evidence_minimum_surfaces(&stripped_readme, &stripped_cites);
+    assert_eq!(missing.len(), 3, "{missing:#?}");
+    assert!(
+        missing[0].contains("README above `## TL;DR`"),
+        "{missing:#?}"
+    );
+    assert!(missing[1].contains("`FA-REF-080`"), "{missing:#?}");
+    assert!(missing[2].contains("`FA-REF-086`"), "{missing:#?}");
+}
