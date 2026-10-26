@@ -13,7 +13,7 @@ use fa_model::{AccountType, ControlPayload, EntryClass, LegPayload, PartyIdentif
 
 use attribution::{Leg, Named, attribute, named, owners};
 use fa_money::Side;
-use fa_time::{DateDay, Weekday};
+use fa_time::{DateDay, PeriodState, Weekday};
 use fgdb_types::VId;
 
 use crate::amount::{
@@ -609,7 +609,7 @@ impl Procedure for SubsequentEvents {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -643,12 +643,20 @@ impl Procedure for SubsequentEvents {
             by_vid.insert(e.vid, e);
         }
 
-        // Identify closed/soft-closed periods and their end dates
+        // A period is a closed boundary when its latest recorded transition
+        // put it in SoftClosed, Closed or Locked. Every period is born Future
+        // and opened by a recorded transition, so "has a transition" would
+        // count a period that is still Open; a reopened period is no
+        // boundary either. Transitions are sorted by recorded_at.
         let mut closed_periods: Vec<(String, DateDay)> = Vec::new();
         for (pcode, trs) in &snapshot.transitions {
-            if !trs.is_empty()
-                && let Some(p) = snapshot.periods.get(pcode)
-            {
+            let closed = trs.last().is_some_and(|t| {
+                matches!(
+                    t.to,
+                    PeriodState::SoftClosed | PeriodState::Closed | PeriodState::Locked
+                )
+            });
+            if closed && let Some(p) = snapshot.periods.get(pcode) {
                 closed_periods.push((pcode.clone(), p.end));
             }
         }
