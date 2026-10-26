@@ -3693,8 +3693,8 @@ fields = ["action:string", "conflict_with:string", "min_distinct_principals:int"
 
 [[shape]]
 name = "period_transition_row"
-doc = "One journaled period-state transition control entry."
-fields = ["control_entry:hex", "from:string", "to:string", "reason_code:int?", "reason:string?", "principal:hex", "approvals:int", "effective_date:date", "recorded_at:seq"]
+doc = "One journaled period-state transition control entry. `recorded_after` is the latest corroborated TimeEvidence tick committed before it (plan §7.1a): the transition was recorded after that tick's observed UTC instant. fad journals one immediately before every close it performs; null when the prefix has no corroborated tick."
+fields = ["control_entry:hex", "from:string", "to:string", "reason_code:int?", "reason:string?", "principal:hex", "approvals:int", "effective_date:date", "recorded_at:seq", "recorded_after:time_tick?"]
 
 [[shape]]
 name = "coordinate"

@@ -19632,6 +19632,44 @@ fn explain_refusal_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// The latest corroborated TimeEvidence tick committed before `recorded_at`
+/// (plan §7.1a): the entry recorded at that sequence was recorded after the
+/// tick's observed UTC instant. fad journals one immediately before every
+/// close it performs; a prefix with no corroborated tick yields null, never
+/// a clock reading taken now.
+fn recorded_after_tick(book: &Book, recorded_at: CommitSeq) -> Result<Json, Fail> {
+    let Some(before) = recorded_at.0.checked_sub(1) else {
+        return Ok(Json::Null);
+    };
+    let Some(tick) = book.corroborated_tick_at(CommitSeq(before))? else {
+        return Ok(Json::Null);
+    };
+    let Some((entry, tick_seq)) = book.read_entry(tick.entry)? else {
+        return Err(Fail::Internal(format!(
+            "the corroborated tick {:032x} has no entry",
+            tick.entry.0
+        )));
+    };
+    let Some(fa_model::ControlPayload::TimeTick {
+        observed_utc_ns,
+        source,
+        monotonic_ok,
+    }) = entry.proposal.control
+    else {
+        return Err(Fail::Internal(format!(
+            "the corroborated tick {:032x} is not a TimeEvidence entry",
+            tick.entry.0
+        )));
+    };
+    Ok(obj(vec![
+        ("entry", s(format!("{:032x}", tick.entry.0))),
+        ("recorded_at", Json::Int(i128::from(tick_seq.0))),
+        ("observed_utc_ns", Json::Int(i128::from(observed_utc_ns))),
+        ("source", Json::Int(i128::from(source))),
+        ("monotonic_ok", Json::Bool(monotonic_ok)),
+    ]))
+}
+
 fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let example = "fa explain period FY2026-P01 --book <dir>";
@@ -19667,28 +19705,27 @@ fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     let transitions_raw = book.period_transitions(code)?;
-    let transitions: Vec<Json> = transitions_raw
-        .iter()
-        .map(|t| {
-            let reason_name = reasons
-                .get(
-                    fa_journal::period::reason_scope_of(t.from, t.to),
-                    t.reason_code,
-                )
-                .map(|r| r.name.as_str());
-            obj(vec![
-                ("control_entry", s(format!("{:032x}", t.entry_vid.0))),
-                ("from", s(t.from.name())),
-                ("to", s(t.to.name())),
-                ("reason_code", Json::Int(i128::from(t.reason_code))),
-                ("reason", reason_name.map_or(Json::Null, s)),
-                ("principal", s(format!("{:032x}", t.principal_ref.0))),
-                ("approvals", Json::Int(t.approvals.len() as i128)),
-                ("effective_date", s(t.effective_date.render())),
-                ("recorded_at", Json::Int(i128::from(t.recorded_at.0))),
-            ])
-        })
-        .collect();
+    let mut transitions = Vec::with_capacity(transitions_raw.len());
+    for t in &transitions_raw {
+        let reason_name = reasons
+            .get(
+                fa_journal::period::reason_scope_of(t.from, t.to),
+                t.reason_code,
+            )
+            .map(|r| r.name.as_str());
+        transitions.push(obj(vec![
+            ("control_entry", s(format!("{:032x}", t.entry_vid.0))),
+            ("from", s(t.from.name())),
+            ("to", s(t.to.name())),
+            ("reason_code", Json::Int(i128::from(t.reason_code))),
+            ("reason", reason_name.map_or(Json::Null, s)),
+            ("principal", s(format!("{:032x}", t.principal_ref.0))),
+            ("approvals", Json::Int(t.approvals.len() as i128)),
+            ("effective_date", s(t.effective_date.render())),
+            ("recorded_at", Json::Int(i128::from(t.recorded_at.0))),
+            ("recorded_after", recorded_after_tick(&book, t.recorded_at)?),
+        ]));
+    }
 
     let classes = fa_registry::EntryClasses::embedded()
         .map_err(|e| Fail::Internal(format!("entry_classes.toml: {e}")))?;
