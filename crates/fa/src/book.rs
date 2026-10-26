@@ -2423,6 +2423,19 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.commit_replacement_plan(&purposes, plan, capability)))
     }
 
+    /// Resolve a balancing request's available amount for a sealed approval
+    /// review. This publishes nothing and grants no posting permission. Restore
+    /// its request form, run `plan`, and require the reviewed proposal digest
+    /// before committing; a changed amount requires a new review and approvals.
+    pub fn review_balancing(
+        &mut self,
+        proposal: fa_model::EntryPayload,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.review_balancing(&purposes, proposal, capability))
+    }
+
     /// Rehearse an intent through the posting kernel without publishing.
     ///
     /// The portable plan retains the original sealed proposal and approvals,

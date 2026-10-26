@@ -2244,6 +2244,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Read the witnessed availability for a balancing approval review. The
+    /// result is a sealed-input candidate, never an executable posting plan.
+    pub fn review_balancing(
+        &mut self,
+        cx: &PurposeContexts,
+        proposal: fa_model::EntryPayload,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_model::EntryPayload> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::limit::review_balancing(
+            &mut self.db,
+            cx,
+            &self.context,
+            proposal,
+            capability.clone(),
+        )?)
+    }
+
     /// Run the real posting preparation under the caller's transaction
     /// context, then abort it. No runtime or authority is created here.
     pub fn plan(

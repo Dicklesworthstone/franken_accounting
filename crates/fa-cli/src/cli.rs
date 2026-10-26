@@ -8722,13 +8722,9 @@ pub(crate) fn post_document(
         return plan_document_into_draft(ctx, args, &name, forced, &doc);
     }
     let review_mode = args.switch("--review-only") || args.flag("--review-out").is_some();
-    if review_mode
-        && (args.switch("--dry-run")
-            || args.flag("--balancing").is_some()
-            || doc.get("intents").is_some())
-    {
+    if review_mode && (args.switch("--dry-run") || doc.get("intents").is_some()) {
         return Err(usage(
-            "a review seals one entry proposal for approval: no --dry-run, --balancing or batch; nothing was posted",
+            "a review seals one entry proposal for approval: no --dry-run or batch; nothing was posted",
             "fa post --intent entry.json --review-out review.bin (then fa approve --proposal <proposal_digest> --as <approver>)",
         ));
     }
@@ -8755,13 +8751,19 @@ pub(crate) fn post_document(
                 POST_REVIEW_EXAMPLE,
             ));
         }
-        let intent = PostIntent::new(req.proposal, Vec::new()).map_err(|e| {
+        let req = prepare_balancing_request(args, req)?;
+        let proposal = if balancing_leg(args)?.is_some() {
+            book.review_balancing(req.proposal, &req.capability)??
+        } else {
+            req.proposal
+        };
+        let intent = PostIntent::new(proposal, Vec::new()).map_err(|e| {
             usage(
                 format!("cannot seal this entry for review: {e}"),
                 "check the entry intent",
             )
         })?;
-        return emit_post_review(out, &ctx.files, args, &intent, &class_name);
+        return emit_post_review(out, &book, &ctx.files, args, &intent, &class_name);
     }
     if args.switch("--dry-run") {
         let req = prepare_balancing_request(args, req)?;
@@ -8824,6 +8826,7 @@ const POST_REVIEW_EXAMPLE: &str = "fa post --review <file|hex|-> --digest <revie
 /// Nothing is published.
 fn emit_post_review(
     out: &Out,
+    book: &Book,
     files: &Files,
     args: &Args,
     intent: &PostIntent,
@@ -8839,6 +8842,7 @@ fn emit_post_review(
         .proposal()
         .proposal_digest()
         .map_err(|e| Fail::Internal(format!("post proposal digest: {e}")))?;
+    let amounts = balancing_review_amounts(book, intent.proposal())?;
     if let Some(path) = args.flag("--review-out") {
         write_review_file(files, path, &bytes)?;
     }
@@ -8853,17 +8857,51 @@ fn emit_post_review(
             ("legs", Json::Int(intent.proposal().legs.len() as i128)),
             ("review_digest", s(hex(&review_digest))),
             ("proposal_digest", s(hex(&proposal_digest))),
+            ("requested", amounts.as_ref().map_or(Json::Null, |(requested, _)| s(requested))),
+            ("moved", amounts.as_ref().map_or(Json::Null, |(_, moved)| s(moved))),
             ("bytes", s(hex(&bytes))),
             ("file", args.flag("--review-out").map_or(Json::Null, s)),
         ],
         &format!(
-            "review {class_name} proposal {}; an approver records fa approve --proposal {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
+            "review {class_name} proposal {}{}; an approver records fa approve --proposal {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
             hex(&proposal_digest),
+            amounts.as_ref().map_or(String::new(), |(requested, moved)| format!(" (requested {requested}, reviewed movement {moved})")),
             hex(&proposal_digest),
             hex(&review_digest)
         ),
     );
     Ok(())
+}
+
+/// A balancing review carries the original request extension and the resolved
+/// legs the approver sees. No amount is recomputed in the surface.
+fn balancing_review_amounts(
+    book: &Book,
+    proposal: &EntryPayload,
+) -> Result<Option<(String, String)>, Fail> {
+    fa_journal::limit::balancing_request(proposal)
+        .map_err(|error| {
+            usage(
+                format!("invalid balancing review: {error}"),
+                POST_REVIEW_EXAMPLE,
+            )
+        })?
+        .map(|(ordinal, requested)| {
+            let leg = proposal.legs.get(usize::from(ordinal)).ok_or_else(|| {
+                usage(
+                    "balancing review lost its selected leg",
+                    POST_REVIEW_EXAMPLE,
+                )
+            })?;
+            Ok((
+                render_amount(
+                    Amount::new(leg.amount.unit, requested),
+                    &book.context().units,
+                )?,
+                render_amount(leg.amount, &book.context().units)?,
+            ))
+        })
+        .transpose()
 }
 
 /// `fa post --review <file|hex|-> --digest <review_digest> [--approval
@@ -8920,20 +8958,43 @@ fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .name()
         .unwrap_or("Entry")
         .to_string();
-    let intent = PostIntent::new(review.proposal().clone(), approvals)
-        .map_err(|e| usage(format!("post review approvals: {e}"), POST_REVIEW_EXAMPLE))?;
+    // The sealed review retains the admitted amount; the kernel always receives
+    // the original request so idempotency still binds R and the selected leg.
+    // Approval references above bind the retained resolved digest, never R.
+    let request = fa_journal::limit::request_form(review.proposal()).map_err(|error| {
+        usage(
+            format!("invalid balancing review request: {error}"),
+            POST_REVIEW_EXAMPLE,
+        )
+    })?;
+    let balancing = request.is_some();
+    let intent = PostIntent::new(
+        request.unwrap_or_else(|| review.proposal().clone()),
+        approvals,
+    )
+    .map_err(|e| usage(format!("post review approvals: {e}"), POST_REVIEW_EXAMPLE))?;
     // The capability `fa commit --plan` acts under, so a plan made here
     // commits unchanged.
     let capability = ctx.capability(args, &["post"])?;
     let out = &ctx.out;
     let mut book = ctx.books.open_admitted(args, |_| Ok(()))?;
     let plan = book.plan(intent, &capability)??;
+    if balancing && plan.certificate().proposal_digest != digest {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::PLAN_INVALIDATED,
+            fa_journal::refusal::exit::CONFLICT,
+            "available balance changed the movement retained in this review; nothing was posted",
+            "plan §5.5 / §4.6 (approval and review bind the resolved effects)",
+            "create a fresh --balancing review, inspect its requested and moved amounts, then obtain approvals for its new proposal_digest",
+        )));
+    }
     if args.switch("--dry-run") {
         return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
     }
     let posted = book.commit_plan(plan, &capability)??;
     out.at_book(&book)?;
-    emit_posted(out, posted, &class_name, false, None, None)
+    let amounts = balancing_review_amounts(&book, review.proposal())?;
+    emit_posted(out, posted, &class_name, false, None, amounts)
 }
 
 /// Restores an unchanged `fa post` review from `--review <file|hex|->` and

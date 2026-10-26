@@ -3051,14 +3051,21 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //     commitment, read as a witness of this transaction, as is the
     //     Reviewed attestation of each self-sourced one and, where the class
     //     admits one, the preparer's ManualAssertion; the class's registered
-    //     minimum holds. Nothing posts without a why.
+    //     minimum holds. A balancing request has not resolved its amounts yet:
+    //     defer its complete evidence check to step 8 so a ManualAssertion binds
+    //     the actual proposal, under the same transaction, before anything is
+    //     staged. Nothing posts without a why.
     let evidence_policy =
         EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let evidence = match resolve_evidence(&txn, db, &evidence_policy, proposal)? {
-        Ok(d) => d,
-        Err(r) => {
-            txn.abort();
-            return Ok(Err(r));
+    let evidence = if balancing {
+        None
+    } else {
+        match resolve_evidence(&txn, db, &evidence_policy, proposal)? {
+            Ok(evidence) => Some(evidence),
+            Err(refusal) => {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
         }
     };
 
@@ -3926,6 +3933,16 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
     }
+    let evidence = match evidence {
+        Some(evidence) => evidence,
+        None => match resolve_evidence(&txn, db, &evidence_policy, &sealed)? {
+            Ok(evidence) => evidence,
+            Err(refusal) => {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        },
+    };
     let entry: Entry = sealed.seal(req.approvals.clone(), req.plan_certificate)?;
     // Reservations and staged migration chunks do not change posted cash.
     // Resolution(Posts) is checked when it posts; Finalize checks the chunks
