@@ -443,7 +443,62 @@ fn run_typed_probe(
         EvidenceClass::Registry => run_registry_probe(&argv[0]),
         EvidenceClass::Differential => match argv[0].as_str() {
             "g1_registers_verified_every_fixture" => {
-                // Verify register fold and projection equality on the fixture book.
+                // Every fixture this binary builds, the scoreboard's own book
+                // (argv[1]) and each `fa demo init` scenario, has every
+                // FY2026 period's maintained register cells refolded from the
+                // journal by `fa verify registers`. A fixture that does not
+                // verify fails the row.
+                let Some(fixture) = argv.get(1) else {
+                    return ProbeOutcome::err("G1-03 names no fixture book");
+                };
+                let mut books = vec![fixture.clone()];
+                for scenario in fa_demo::SCENARIO_NAMES {
+                    let book = tmp_dir(&format!("g1-03-{scenario}"))
+                        .join("book")
+                        .to_string_lossy()
+                        .into_owned();
+                    let made = run_cli_probe(
+                        &[
+                            "demo",
+                            "init",
+                            "--scenario",
+                            *scenario,
+                            "--seed",
+                            "7",
+                            "--book",
+                            book.as_str(),
+                            "--json",
+                        ]
+                        .map(String::from),
+                    );
+                    if made.exit != 0 || made.event != "demo_initialized" {
+                        return ProbeOutcome::err(format!(
+                            "demo {scenario}: exit {} {}",
+                            made.exit, made.raw_stdout
+                        ));
+                    }
+                    books.push(book);
+                }
+                for book in &books {
+                    let verified = run_cli_probe(
+                        &[
+                            "verify",
+                            "registers",
+                            "--fiscal-year",
+                            "2026",
+                            "--book",
+                            book.as_str(),
+                            "--json",
+                        ]
+                        .map(String::from),
+                    );
+                    if verified.exit != 0 || verified.event != "registers_verified" {
+                        return ProbeOutcome::err(format!(
+                            "{book}: exit {} {}",
+                            verified.exit, verified.raw_stdout
+                        ));
+                    }
+                }
                 ProbeOutcome::ok("differential_ok")
             }
             other => ProbeOutcome::err(format!("unmet differential campaign `{other}`")),

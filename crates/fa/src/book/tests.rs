@@ -601,9 +601,19 @@ fn drive_prepared_lab(runtime: &mut LabRuntime) {
     assert!(report.lab_test_passed(), "prepared lab oracles: {report:?}");
 }
 
+/// One explored schedule of [`prepared_post_close_race`]: its seed, which
+/// side won, and the book it left (the head after the serial follow-ups and
+/// the March fold's digest).
+struct RaceObservation {
+    seed: u64,
+    post_won: bool,
+    head: CommitSeq,
+    fold_digest: [u8; 32],
+}
+
 /// Both original transactions survive the rendezvous. Only the database
 /// handle is serialized; neither witness set is refreshed before commit.
-fn prepared_post_close_race(runtime: &mut LabRuntime) -> bool {
+fn prepared_post_close_race(runtime: &mut LabRuntime) -> RaceObservation {
     use asupersync::sync::{Barrier, Mutex, OwnedMutexGuard};
     use std::sync::Arc;
 
@@ -843,12 +853,18 @@ fn prepared_post_close_race(runtime: &mut LabRuntime) -> bool {
             assert!(events[replay_events_start..].iter().any(|e| {
                 matches!(e.kind, FaultKind::Latency { .. }) && e.path.starts_with(&scratch_path)
             }));
+            (head, fold.fold_digest)
         })
         .unwrap();
     runtime.scheduler.lock().schedule(verify, 0);
     drive_prepared_lab(runtime);
-    verify_handle.try_join().unwrap().unwrap();
-    post_won
+    let (head, fold_digest) = verify_handle.try_join().unwrap().unwrap();
+    RaceObservation {
+        seed,
+        post_won,
+        head,
+        fold_digest,
+    }
 }
 
 #[test]
@@ -867,7 +883,7 @@ fn prepared_post_and_close_preserve_witnesses_under_16_lab_schedules() {
     let report = explorer.explore(|runtime| {
         winners
             .borrow_mut()
-            .insert(prepared_post_close_race(runtime));
+            .insert(prepared_post_close_race(runtime).post_won);
     });
     assert!(!report.has_violations(), "{report:?}");
     assert_eq!(report.total_runs, 16);
@@ -884,31 +900,89 @@ fn prepared_post_and_close_preserve_witnesses_under_16_lab_schedules() {
 /// guided coverage, not a certified-optimal DPOR proof, so this asserts
 /// what it observed: races detected, no violation in any explored run, and
 /// both outcomes (the post wins, the close wins) reached.
+///
+/// It also produces FA-ART-LAB-01, the work witness behind scoreboard row
+/// G2-01 (fa-vtzt): the run and class counts, the SHA-256 of the seeds run,
+/// and one BLAKE3 digest per run of its seed, winner, head and March fold.
+/// The witness is recomputed on every run and must equal the ledger row, so
+/// a manifest this exploration did not produce fails here. After a
+/// deliberate change, rerun with `--nocapture` and copy the printed fields
+/// into the manifest and its ledger row.
 #[test]
 fn prepared_post_and_close_preserve_witnesses_under_dpor_guided_exploration() {
     use asupersync::lab::{DporExplorer, ExplorerConfig};
+    use fa_registry::evidence_artifacts::{ArtifactWitness, EvidenceArtifacts, LabCampaignWitness};
     use std::cell::RefCell;
 
-    let winners = RefCell::new(std::collections::BTreeSet::new());
+    let observations = RefCell::new(Vec::new());
     let mut explorer = DporExplorer::new(
         ExplorerConfig::new(0, 32)
             .worker_count(2)
             .max_steps(100_000),
     );
     let report = explorer.explore(|runtime| {
-        winners
+        observations
             .borrow_mut()
-            .insert(prepared_post_close_race(runtime));
+            .push(prepared_post_close_race(runtime));
     });
     let coverage = explorer.dpor_coverage();
     assert!(!report.has_violations(), "{report:?}");
     assert!(coverage.total_races > 0, "{coverage:?}");
+    let observations = observations.into_inner();
     assert_eq!(
-        winners.into_inner(),
+        observations
+            .iter()
+            .map(|o| o.post_won)
+            .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from([false, true]),
         "runs {} classes {}",
         report.total_runs,
         report.unique_classes
+    );
+
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let mut seeds = b"fa:lab-seeds:post-vs-close:v1".to_vec();
+    seeds.extend_from_slice(&u32::try_from(observations.len()).unwrap().to_le_bytes());
+    for o in &observations {
+        seeds.extend_from_slice(&o.seed.to_le_bytes());
+    }
+    let witness = LabCampaignWitness {
+        seed_manifest_sha256: hex(&fa_docket::intake::sha256(&seeds)),
+        schedule_count: u64::try_from(report.total_runs).unwrap(),
+        explored_interleavings: u64::try_from(report.unique_classes).unwrap(),
+        certificate_hashes_blake3: observations
+            .iter()
+            .map(|o| {
+                hex(&fa_model::domain_digest(
+                    b"fa:lab-witness:post-vs-close:v1",
+                    &[
+                        &o.seed.to_le_bytes(),
+                        &[u8::from(o.post_won)],
+                        &o.head.0.to_le_bytes(),
+                        &o.fold_digest,
+                    ],
+                ))
+            })
+            .collect(),
+    };
+    println!(
+        "FA-ART-LAB-01 witness:\nseed_manifest_sha256 = \"{}\"\nschedule_count = {}\nexplored_interleavings = {}\ncertificate_hashes_blake3 = [{}]",
+        witness.seed_manifest_sha256,
+        witness.schedule_count,
+        witness.explored_interleavings,
+        witness
+            .certificate_hashes_blake3
+            .iter()
+            .map(|h| format!("\"{h}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let ledger = EvidenceArtifacts::embedded().expect("evidence_artifacts.toml");
+    let row = ledger.get("FA-ART-LAB-01").expect("FA-ART-LAB-01 row");
+    assert_eq!(
+        row.witness,
+        ArtifactWitness::LabCampaign(witness),
+        "FA-ART-LAB-01 is not what this exploration observed"
     );
 }
 
