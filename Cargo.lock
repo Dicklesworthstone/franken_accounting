@@ -1106,7 +1106,9 @@ dependencies = [
 name = "fa-oracles"
 version = "0.0.1"
 dependencies = [
+ "fa-reference",
  "fa-registry",
+ "fa-time",
 ]
 
 [[package]]

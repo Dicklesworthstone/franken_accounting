@@ -11,4 +11,6 @@ publish = false
 workspace = true
 
 [dependencies]
+fa-reference = { path = "../fa-reference", version = "=0.0.1" }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
+fa-time = { path = "../fa-time", version = "=0.0.1" }

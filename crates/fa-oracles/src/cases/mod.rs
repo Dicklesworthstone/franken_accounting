@@ -70,6 +70,7 @@ pub mod normalize;
 pub mod observe;
 pub mod phrases;
 pub mod receipt;
+pub mod reference;
 pub mod rel;
 pub mod remedy;
 pub mod roles;
