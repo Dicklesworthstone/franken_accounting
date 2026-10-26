@@ -1811,3 +1811,78 @@ fn call_report_rc_ri_certified() {
         "{events:?}"
     );
 }
+
+/// fa-doa9: the edits come from registries/regulatory_edits/, and `--edit`
+/// runs only the registered edits it names. Planted: an edit id the
+/// registry does not hold is refused (exit 3), naming the registered ids,
+/// and `--edit` with `--certify` is a usage error, because a certified
+/// schedule's replay runs every edit.
+#[test]
+fn call_report_edits_select_by_registered_id() {
+    let dir = temporary();
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Call report edits"]);
+    ok(
+        &book,
+        &["chart", "import", "--template", "us-bank-call-report"],
+    );
+    ok(&book, &["period", "create", "--fiscal-year", "2026"]);
+    let rc = |extra: &[&str]| {
+        let mut args = vec![
+            "statement",
+            "regulatory",
+            "--form",
+            "041",
+            "--schedule",
+            "RC",
+            "--quarter",
+            "2026Q1",
+            "--for",
+            "FY2026-P03",
+        ];
+        args.extend_from_slice(extra);
+        run(&book, &args)
+    };
+
+    let (exit, all, _) = rc(&[]);
+    assert_eq!(exit, 0, "{all:?}");
+    let every = data(&all[1]);
+    assert_eq!(text(every, "edit_selector"), "FFIEC041:RC@2026Q1");
+    assert_eq!(every.get("edit_ids_published"), Some(&Json::Bool(false)));
+    let ids = |schedule: &Json| -> Vec<String> {
+        let mut ids: Vec<String> = array(schedule, "edit_rows")
+            .iter()
+            .map(|row| text(row, "edit_id").to_string())
+            .collect();
+        ids.dedup();
+        ids
+    };
+    assert_eq!(
+        ids(every),
+        [
+            "FFIEC041-RC-V001",
+            "FFIEC041-RC-V002",
+            "FFIEC041-RC-V003",
+            "FFIEC041-RC-Q001"
+        ]
+    );
+
+    let (exit, one, _) = rc(&["--edit", "FFIEC041-RC-Q001"]);
+    assert_eq!(exit, 0, "{one:?}");
+    let selected = data(&one[1]);
+    assert_eq!(ids(selected), ["FFIEC041-RC-Q001"]);
+    assert_eq!(selected.get("validity_passed"), Some(&Json::Int(0)));
+
+    let (exit, refused, _) = rc(&["--edit", "FFIEC041-RC-V999"]);
+    assert_eq!(exit, 3, "{refused:?}");
+    let error = data(&refused[0]);
+    assert!(
+        text(error, "message")
+            .contains("edit `FFIEC041-RC-V999` is not registered for FFIEC041:RC@2026Q1"),
+        "{error:?}"
+    );
+    assert!(text(error, "fix").contains("FFIEC041-RC-Q001"), "{error:?}");
+
+    let (exit, usage, _) = rc(&["--edit", "FFIEC041-RC-Q001", "--certify"]);
+    assert_eq!(exit, 2, "{usage:?}");
+}
