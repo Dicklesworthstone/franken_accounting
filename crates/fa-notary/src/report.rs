@@ -1,5 +1,6 @@
 //! Portable native and dimension-filtered trial balances, statements, open
-//! items, balance explanations, aging and roll-forwards over a payload-complete checkpoint.
+//! items, balance explanations, aging, roll-forwards and direct cash flow over
+//! a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
 //! independent verifier derives selectors from every record, reconstructs the
@@ -33,7 +34,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, effective-date aging or roll-forward certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, effective-date aging, roll-forward, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -60,7 +61,8 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Package an already replayed native or dimension-filtered trial balance, or
-/// statement. Open items, balance explanations, aging and roll-forwards require the authenticated registry closure in
+/// statement. Open items, balance explanations, aging, roll-forwards and direct
+/// cash flow require the authenticated registry closure in
 /// `assemble_with_registries`. For an instant-selected certificate, the facade
 /// supplies its observed time frontier
 /// as `known_at` so the complete upper-tick closure is retained as well.
@@ -84,8 +86,9 @@ pub fn assemble(
     assemble_inner(journal, checkpoint, certificate, known_at, bodies, &[])
 }
 
-/// Package a native statement, open-item report, balance explanation, aging or roll-forward with
-/// the exact canonical registry documents bound by its source certificate.
+/// Package a native statement, open-item report, balance explanation, aging,
+/// roll-forward or direct cash flow with the exact canonical registry documents
+/// bound by its source certificate.
 /// The facade verifies their closure and the book's complete unit table before
 /// calling this API. Open items pass `check_open_items_scope`; explanations
 /// pass `check_explanation_scope` and append their original reason-code
@@ -93,6 +96,9 @@ pub fn assemble(
 /// replaying the cutoff, buckets and output; its nested OpenItems source needs
 /// four documents. Roll-forwards retain their outer schedule and a sequence-
 /// selected native closing-stock source with the same exact four documents.
+/// Direct cash flow adds its explicit classification over that complete source;
+/// policy cash flow also retains the complete counterpart-classification policy
+/// and its decision transcript. Both keep the same four-document profile.
 /// Aging-to-control reconciliations retain both original sources and their
 /// shared four-document closure. No v1 fallback serves either v3 selector or
 /// composed schedule.
@@ -123,6 +129,8 @@ pub fn assemble_with_registries(
         || aging_certificate(certificate)
         || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
+        || cash_flow_certificate(certificate)
+        || policy_cash_flow_certificate(certificate)
         || explanation)
         || registries
             .iter()
@@ -133,7 +141,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for statements, open items, aging, reconciliation and roll-forwards, five including reason_codes for balance explanations",
+            "native reports require their exact canonical registry profile in closure order: four documents for statements, open items, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations",
         )));
     }
     assemble_inner(
@@ -292,6 +300,37 @@ fn roll_forward_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
+/// These are bounded format routes, not independent replay. The facade checks
+/// the full outer report before assembly and the recipient verifies its digest,
+/// every original cash movement and the classification from authenticated data.
+/// Split and indirect wrappers are deliberately outside this profile.
+fn cash_flow_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "cash-flow format")? != b"fa:cash-flow-certificate:v1" {
+            return Ok(false);
+        }
+        Ok(roll_forward_certificate(
+            reader.bytes(MAX_REPORT_BUNDLE_BYTES, "cash-flow source")?,
+        ))
+    };
+    header().unwrap_or(false)
+}
+
+fn policy_cash_flow_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "cash-flow policy format")? != b"fa:cash-flow-policy-certificate:v1" {
+            return Ok(false);
+        }
+        Ok(cash_flow_certificate(reader.bytes(
+            MAX_REPORT_BUNDLE_BYTES,
+            "cash-flow policy source",
+        )?))
+    };
+    header().unwrap_or(false)
+}
+
 fn reconciliation_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -344,10 +383,12 @@ fn assemble_inner(
                 || explanation_certificate(certificate)
                 || aging_certificate(certificate)
                 || reconciliation_certificate(certificate)
-                || roll_forward_certificate(certificate)))
+                || roll_forward_certificate(certificate)
+                || cash_flow_certificate(certificate)
+                || policy_cash_flow_certificate(certificate)))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report, balance explanation, effective-date aging or roll-forward with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct cash-flow or policy cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -503,6 +544,87 @@ mod format_tests {
             &control
         )));
         assert!(!reconciliation_certificate(&outer[..outer.len() - 1]));
+    }
+
+    #[test]
+    fn cash_flow_routes_only_its_exact_bounded_roll_forward_source_chain() {
+        let wrap = |format: &[u8], source: &[u8]| {
+            let mut writer = Writer::new();
+            writer.bytes(format).bytes(source);
+            writer.finish().unwrap()
+        };
+        let source = |version: u8, branch: [u8; 16], selector: u8| {
+            let mut writer = Writer::new();
+            writer
+                .fixed(format!("fa:report-certificate:v{version}").as_bytes())
+                .str("fa-fold-over-prefix")
+                .str("native read certificate")
+                .str("fa:trial-balance:v1")
+                .fixed(&[1; 16])
+                .fixed(&branch)
+                .u64(7)
+                .u8(selector)
+                .i32(20_500);
+            writer.finish().unwrap()
+        };
+        let roll_forward = |source: &[u8]| {
+            let mut writer = Writer::new();
+            writer
+                .bytes(b"fa:roll-forward-certificate:v1")
+                .bytes(source)
+                .list(&[1_u128], |writer, account| {
+                    writer.u128(*account);
+                })
+                .list(&[0_u32], |writer, unit| {
+                    writer.u32(*unit);
+                })
+                .str("Cash")
+                .i32(20_000)
+                .i32(20_500);
+            writer.finish().unwrap()
+        };
+        let cash = b"fa:cash-flow-certificate:v1".as_slice();
+        let policy = b"fa:cash-flow-policy-certificate:v1".as_slice();
+        let native = source(1, [0; 16], 1);
+        let roll_forward_bytes = roll_forward(&native);
+        let direct = wrap(cash, &roll_forward_bytes);
+        let classified = wrap(policy, &direct);
+        assert!(cash_flow_certificate(&direct));
+        assert!(policy_cash_flow_certificate(&classified));
+        assert!(!cash_flow_certificate(&classified));
+        assert!(!policy_cash_flow_certificate(&direct));
+        assert!(!cash_flow_certificate(&wrap(cash, &native)));
+        assert!(!policy_cash_flow_certificate(&wrap(
+            policy,
+            &roll_forward_bytes
+        )));
+        for wrong in [
+            source(10, [0; 16], 1),
+            source(2, [0; 16], 1),
+            source(1, [1; 16], 1),
+            source(1, [0; 16], 0),
+        ] {
+            let direct = wrap(cash, &roll_forward(&wrong));
+            assert!(!cash_flow_certificate(&direct));
+            assert!(!policy_cash_flow_certificate(&wrap(policy, &direct)));
+        }
+        for format in [
+            b"fa:cash-flow-certificate:v2".as_slice(),
+            b"fa:cash-flow-split-certificate:v1".as_slice(),
+            b"fa:indirect-cash-flow-certificate:v1".as_slice(),
+        ] {
+            assert!(!cash_flow_certificate(&wrap(format, &roll_forward_bytes)));
+        }
+        assert!(!policy_cash_flow_certificate(&wrap(
+            b"fa:cash-flow-policy-certificate:v2",
+            &direct,
+        )));
+        let mut truncated = Writer::new();
+        truncated.bytes(cash).u32(u32::MAX);
+        assert!(!cash_flow_certificate(&truncated.finish().unwrap()));
+        for end in 0..classified.len() {
+            assert!(!policy_cash_flow_certificate(&classified[..end]));
+        }
     }
 
     #[test]

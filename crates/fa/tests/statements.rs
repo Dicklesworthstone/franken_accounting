@@ -5,6 +5,8 @@
 mod aging_bundle;
 #[path = "statements/aging_reconciliation_bundle.rs"]
 mod aging_reconciliation_bundle;
+#[path = "statements/cash_flow_bundle.rs"]
+mod cash_flow_bundle;
 #[path = "statements/explanation_bundle.rs"]
 mod explanation_bundle;
 #[path = "statements/open_items_bundle.rs"]

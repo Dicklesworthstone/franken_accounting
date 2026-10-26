@@ -135,6 +135,8 @@ enum ReportBundleCertificate<'a> {
     Native(&'a crate::ReportCertificate),
     Aging(&'a crate::AgingCertificate),
     RollForward(&'a crate::RollForwardCertificate),
+    CashFlow(&'a crate::CashFlowCertificate),
+    CashFlowPolicy(&'a crate::cash_flow_policy::CashFlowPolicyCertificate),
     AgingReconciliation {
         certificate: &'a crate::AgingReconciliationCertificate,
         expected: &'a crate::AgingReconciliationRequest,
@@ -147,6 +149,11 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::Native(certificate) => certificate,
             Self::Aging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
+            Self::CashFlow(certificate) => certificate.source_certificate().source_certificate(),
+            Self::CashFlowPolicy(certificate) => certificate
+                .source_certificate()
+                .source_certificate()
+                .source_certificate(),
             Self::AgingReconciliation { certificate, .. } => certificate.aging_source().source(),
         }
     }
@@ -3698,6 +3705,50 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export classified direct cash flow with its exact original movements,
+    /// opening and closing stock, and authenticated historical registry inputs.
+    /// The outer certificate binds the complete explicit classification; its
+    /// roll-forward source alone cannot authenticate those professional inputs.
+    pub async fn produce_cash_flow_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::CashFlowCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::CashFlow(certificate),
+        )
+        .await
+    }
+
+    /// Export policy-classified direct cash flow. Replay derives each decision
+    /// from the original complete counterpart entries before the exact policy,
+    /// including unused rules and explicit overrides, is signed in the bundle.
+    /// This does not journal, activate or approve the caller's policy.
+    pub async fn produce_cash_flow_policy_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::cash_flow_policy::CashFlowPolicyCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::CashFlowPolicy(certificate),
+        )
+        .await
+    }
+
     /// Export the original aging/control reconciliation and both native
     /// sources over one signed complete prefix. The recipient must independently
     /// select the account, cutoff, fixed sequence and age bands in `expected`.
@@ -3736,10 +3787,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let certificate = report.source();
         cx.query().checkpoint().map_err(BookError::Context)?;
         let reach = fa_policy::Reach {
-            // Roll-forward certificate replay requires unpinned head authority.
+            // Roll-forward and cash-flow replay require unpinned head authority.
             // Enforce that boundary before restoring any report history.
             observes: match report {
-                ReportBundleCertificate::RollForward(_) => fa_policy::Observes::Head,
+                ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::CashFlow(_)
+                | ReportBundleCertificate::CashFlowPolicy(_) => fa_policy::Observes::Head,
                 _ => capability
                     .known_at_pin()
                     .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
@@ -3805,6 +3858,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 None
             }
+            ReportBundleCertificate::CashFlow(certificate) => {
+                if let Err(refusal) = self.replay_cash_flow(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    certificate.request(),
+                    certificate.definition(),
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::CashFlowPolicy(certificate) => {
+                if let Err(refusal) = self.replay_cash_flow_with_policy(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    certificate.request(),
+                    certificate.policy(),
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
             ReportBundleCertificate::AgingReconciliation {
                 certificate: reconciliation,
                 expected,
@@ -3855,6 +3934,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let requires_registry_closure = matches!(
             report,
             ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::CashFlow(_)
+                | ReportBundleCertificate::CashFlowPolicy(_)
                 | ReportBundleCertificate::AgingReconciliation { .. }
         ) || matches!(
             &certificate.selection,
@@ -3970,6 +4051,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             },
             ReportBundleCertificate::RollForward(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::CashFlow(certificate) => match certificate.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            },
+            ReportBundleCertificate::CashFlowPolicy(certificate) => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

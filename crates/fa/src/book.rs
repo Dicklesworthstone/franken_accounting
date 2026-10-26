@@ -4514,6 +4514,45 @@ impl Book {
         )))
     }
 
+    /// Produce classified direct cash flow for independent `fa-verify report`
+    /// recomputation. The bundle carries every original selected cash movement
+    /// and the exact four-document historical registry closure. Current
+    /// whole-book read/produce authority is checked before observing history;
+    /// the receipt binds the outer classification certificate, not merely its
+    /// roll-forward source. Returns `None` when its checkpoint is unavailable.
+    pub fn produce_cash_flow_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::CashFlowCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_cash_flow_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce policy-classified direct cash flow for offline recomputation.
+    /// Native replay derives each classification from complete original
+    /// counterpart entries; the signed outer artifact preserves every policy
+    /// rule, override and decision basis. Current whole-book read/produce
+    /// authority and the exact historical registry closure are mandatory.
+    /// Policy choices are retained inputs, not journaled approval or activation.
+    /// Returns `None` when the selected checkpoint is unavailable.
+    pub fn produce_cash_flow_policy_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::cash_flow_policy::CashFlowPolicyCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_cash_flow_policy_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Export an aging-to-control reconciliation under current whole-book
     /// read and produce authority. The original aging and AsOf trial-balance
     /// certificates share one signed, complete journal prefix and original
