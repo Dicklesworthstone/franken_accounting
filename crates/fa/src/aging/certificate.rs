@@ -7,10 +7,13 @@
 //! item, application, nonempty cell and per-account/unit total.
 //!
 //! Decoding checks a bounded unsigned container, not its historical claim.
-//! Replay needs the original book, native history and current read authority.
-//! No signature, issuance, due date, case approval or outsider completeness
-//! is implied. Exported bytes contain accounting identities and amounts;
-//! they must be handled as confidential even though no protected text opens.
+//! Local replay needs the original book, native history and current read
+//! authority. A portable aging bundle adds a signed complete prefix and exact
+//! registry closure for independent recomputation by `fa-verify report`.
+//! The unsigned certificate alone implies no signature, issuance, due date,
+//! case approval or outsider completeness. Exported bytes contain accounting
+//! identities and amounts and must be handled as confidential even though no
+//! protected text opens.
 
 use asupersync::fs::Vfs;
 use fa_journal::{KernelError, Refusal, exit};
@@ -383,15 +386,26 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
     cx: &PurposeContexts,
     principal: VId,
     capability: &Capability,
+    known_at: Option<CommitSeq>,
     produce: bool,
 ) -> Outcome<CommitSeq> {
-    let admitted =
-        fa_policy::admit_read(capability, principal, book.context().book_id).and_then(|()| {
+    let admitted = fa_policy::admit_read(capability, principal, book.context().book_id)
+        .and_then(|()| {
             if produce {
                 fa_policy::require(capability, Op::Produce, "certifying historical aging")
             } else {
                 Ok(())
             }
+        })
+        .and_then(|()| {
+            fa_policy::reach(
+                capability,
+                &fa_policy::Reach {
+                    observes: known_at.map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+                    ..fa_policy::Reach::whole_book(true)
+                },
+                None,
+            )
         });
     if let Err(denial) = admitted {
         return Ok(Err(fa_journal::policy::refusal(&denial)));
@@ -477,7 +491,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &AgingRequest,
     ) -> Outcome<CertifiedAging> {
-        let head = match authorize(self, cx, principal, capability, true)? {
+        let head = match authorize(self, cx, principal, capability, request.known_at, true)? {
             Ok(head) => head,
             Err(r) => return Ok(Err(r)),
         };
@@ -529,7 +543,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         effective_through: DateDay,
         buckets: &AgingBuckets,
     ) -> Outcome<CertifiedAging> {
-        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+        if let Err(r) = authorize(self, cx, principal, capability, Some(source.known_at), true)? {
             return Ok(Err(r));
         }
         if let Err(r) = bounded_buckets(buckets) {
@@ -575,7 +589,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         certificate: &AgingCertificate,
     ) -> Outcome<EffectiveDateAging> {
-        if let Err(r) = authorize(self, cx, principal, capability, false)? {
+        if let Err(r) = authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            Some(certificate.source.known_at),
+            false,
+        )? {
             return Ok(Err(r));
         }
         if let Err(r) = certificate.canonical_bytes() {
