@@ -258,6 +258,9 @@ mod tests {
             ("fa-reference", "fa-money", "normal", false),
             ("fa-verify", "fa-time", "dev", false),
             ("fa-cli", "fa", "normal", true),
+            ("fa-mcp", "fa-verify", "dev", true),
+            ("fa-mcp", "fa-verify", "normal", false),
+            ("fa-mcp", "fa-verify", "build", false),
             ("fa-cli", "no-such-crate", "normal", false),
         ];
         for (from, to, kind, allowed) in cases {

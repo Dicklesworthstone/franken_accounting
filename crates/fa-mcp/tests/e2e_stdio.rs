@@ -22,6 +22,8 @@ use fastmcp_rust::{JsonValue, json};
 
 #[path = "e2e_stdio/draft_review.rs"]
 mod draft_review;
+#[path = "e2e_stdio/open_items_bundle.rs"]
+mod open_items_bundle;
 
 const PROTOCOL: &str = "2026-07-28";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);

@@ -1,5 +1,5 @@
-//! Portable native and dimension-filtered trial balances and statements over
-//! a payload-complete checkpoint.
+//! Portable native and dimension-filtered trial balances, statements and open
+//! items over a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
 //! independent verifier derives selectors from every record, reconstructs the
@@ -11,12 +11,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::migration::RunBody;
 use fa_journal::refusal::{Outcome, Refusal, exit};
-use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin, Writer};
+use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin, Reader, Writer};
 use fgdb::Database;
 use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{Bundle, Journal, StoredCheckpoint, code};
+
+mod open_items;
+pub use open_items::check_scope as check_open_items_scope;
 
 pub const REPORT_BUNDLE_FORMAT: &[u8] = b"fa:report-bundle:v1";
 pub const MAX_REPORT_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
@@ -27,7 +30,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance or v4 statement certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema and migration bodies",
+        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or v4 statement certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -54,7 +57,9 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Package an already replayed native or dimension-filtered trial balance, or
-/// statement. For an instant-selected certificate, the facade supplies its time frontier
+/// statement. Open-item reports require the authenticated registry closure in
+/// `assemble_with_registries`. For an instant-selected certificate, the facade
+/// supplies its observed time frontier
 /// as `known_at` so the complete upper-tick closure is retained as well.
 /// Legacy v1 statements require the recipient to supply the complete unit-ID
 /// universe; use `assemble_with_registries` for an authenticated registry closure.
@@ -76,9 +81,10 @@ pub fn assemble(
     assemble_inner(journal, checkpoint, certificate, known_at, bodies, &[])
 }
 
-/// Package a native statement with the exact canonical
+/// Package a native statement or open-item report with the exact canonical
 /// registry documents bound by its source certificate. The facade verifies
-/// their closure and the book's complete unit table before calling this API.
+/// their closure and the book's complete unit table before calling this API;
+/// open-item reports also pass `check_open_items_scope` before assembly.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -89,7 +95,8 @@ pub fn assemble_with_registries(
     bodies: &BTreeMap<VId, RunBody>,
     registries: &[(String, Vec<u8>)],
 ) -> Outcome<Bundle> {
-    if !certificate.starts_with(b"fa:report-certificate:v4")
+    if !(certificate.starts_with(b"fa:report-certificate:v4")
+        || open_items_certificate(certificate))
         || registries.iter().map(|(name, _)| name.as_str()).ne([
             "account_types",
             "entry_classes",
@@ -101,7 +108,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native statements require all four canonical registry documents in closure order",
+            "native statement and open-item reports require all four canonical registry documents in closure order",
         )));
     }
     assemble_inner(
@@ -112,6 +119,30 @@ pub fn assemble_with_registries(
         bodies,
         registries,
     )
+}
+
+/// Recognize the supported v3 report family without accepting an explanation
+/// certificate under an open-item label. The facade and independent verifier
+/// still validate the entire certificate and recompute its accounting output.
+fn open_items_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.fixed::<{ b"fa:report-certificate:v3".len() }>("report format")?
+            != *b"fa:report-certificate:v3"
+        {
+            return Ok(false);
+        }
+        reader.str(128, "report scope")?;
+        reader.str(128, "report authority")?;
+        if reader.str(128, "report output format")? != "fa:open-items:v1" {
+            return Ok(false);
+        }
+        reader.fixed::<16>("report book")?;
+        reader.fixed::<16>("report branch")?;
+        reader.u64("report known-at")?;
+        Ok(reader.u8("report selector")? == 1)
+    };
+    header().unwrap_or(false)
 }
 
 fn assemble_inner(
@@ -128,10 +159,12 @@ fn assemble_inner(
             || certificate.starts_with(b"fa:report-certificate:v2")
             || certificate.starts_with(b"fa:report-certificate:v4")
             || certificate.starts_with(b"fa:report-certificate:v8"))
-        || major == 2 && certificate.starts_with(b"fa:report-certificate:v4"))
+        || major == 2
+            && (certificate.starts_with(b"fa:report-certificate:v4")
+                || open_items_certificate(certificate)))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance or v4 statement",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()

@@ -1053,6 +1053,7 @@ dependencies = [
  "asupersync",
  "fa-cli",
  "fa-registry",
+ "fa-verify",
  "fastmcp-rust",
 ]
 

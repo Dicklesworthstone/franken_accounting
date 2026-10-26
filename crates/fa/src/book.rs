@@ -4248,14 +4248,16 @@ impl Book {
         ))
     }
 
-    /// Produce a portable native or dimension-filtered trial balance, or a
-    /// statement, for `fa-verify report`.
+    /// Produce a portable native or dimension-filtered trial balance, statement
+    /// or open-item report for `fa-verify report`.
     /// Replays the certificate under current whole-book read/produce authority,
     /// then exports every payload in a signed checkpoint covering its prefix.
     /// Returns `None` if the selected recorded checkpoint is unavailable.
     /// Native statements carry authenticated registry inputs when the exact
     /// closure is available. Legacy bundles retain recipient-supplied unit
     /// premises and require the complete unit-ID list for verification.
+    /// Open-item reports require the exact authenticated registry closure;
+    /// they never fall back to an unbound unit or accounting-rule premise.
     pub fn produce_report_bundle(
         &mut self,
         principal: VId,

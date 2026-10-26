@@ -128,3 +128,23 @@ param = 0
 value = "98727"
 unit = ""
 precision = 0
+
+[[value]]
+fact = "F2"
+ordinal = 1
+literal = "$402 million"
+rule = "scale"
+param = 6
+value = "40200000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "F9"
+ordinal = 1
+literal = "$742,725,000"
+rule = "scale"
+param = 0
+value = "74272500000"
+unit = "USD"
+precision = 0
