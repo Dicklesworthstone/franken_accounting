@@ -600,7 +600,7 @@ fn atomic_pending_resolutions_export_and_replay_as_one_accounting_frontier() {
         assert!(!maintained.rebuilt);
         assert_eq!(maintained.fold, literal);
         assert!(literal.pending.is_empty());
-        assert!(literal.pending_holds.is_empty());
+        assert!(literal.pending_holds().is_empty());
     }
     for at in [before, known_at] {
         let certified = fixture
