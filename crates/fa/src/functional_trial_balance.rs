@@ -20,7 +20,7 @@ use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::{BookError, Outcome, TrialBalanceSelection};
+use crate::{Outcome, TrialBalanceSelection};
 
 /// One exact functional cell, preserving the legal entity discriminator.
 #[derive(Clone, Debug, PartialEq, Eq)]

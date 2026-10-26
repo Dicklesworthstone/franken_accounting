@@ -1048,6 +1048,22 @@ pub async fn publish_advance<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     prepared: PreparedAdvance,
 ) -> Result<Advance, RegisterError> {
+    publish_advance_with_crash(db, ctx, book, prepared, None).await
+}
+
+/// [`publish_advance`] through the substrate's production crash-point seam,
+/// for the lab campaign that crashes the maintainer's one publication at each
+/// registered point (fa-0fl). `write_with_crash` with no point is its
+/// `write`. A crash point returns `Err`; drop the database and reopen to see
+/// what survived.
+#[doc(hidden)]
+pub async fn publish_advance_with_crash<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    prepared: PreparedAdvance,
+    crash_at: Option<fgdb::CrashPoint>,
+) -> Result<Advance, RegisterError> {
     if prepared.book_id != book.book_id
         || prepared.basis != db.frontier()?
         || prepared.basis_root != db.partition_root()?.0
@@ -1118,7 +1134,7 @@ pub async fn publish_advance<V: asupersync::fs::Vfs + Clone>(
             .reference(),
         );
     }
-    result.published_at = db.write(&ctx.commit(), batch).await?;
+    result.published_at = db.write_with_crash(&ctx.commit(), batch, crash_at).await?;
     Ok(result)
 }
 
@@ -1129,8 +1145,21 @@ pub async fn advance<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period: &str,
 ) -> Result<Advance, RegisterError> {
+    advance_with_crash(db, ctx, book, period, None).await
+}
+
+/// [`advance`] with its publication stopped at `crash_at` (fa-0fl); see
+/// [`publish_advance_with_crash`].
+#[doc(hidden)]
+pub async fn advance_with_crash<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    period: &str,
+    crash_at: Option<fgdb::CrashPoint>,
+) -> Result<Advance, RegisterError> {
     let prepared = prepare_advance(db, ctx, book, period).await?;
-    publish_advance(db, ctx, book, prepared).await
+    publish_advance_with_crash(db, ctx, book, prepared, crash_at).await
 }
 
 /// Discard the cached values and atomically replace them by a literal fold.
