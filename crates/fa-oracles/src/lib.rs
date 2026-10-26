@@ -21,4 +21,5 @@
 #![forbid(unsafe_code)]
 
 pub mod cases;
+pub mod json;
 pub mod sha256;

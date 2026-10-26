@@ -58,18 +58,26 @@ pub mod error;
 pub mod expect;
 pub mod fact;
 mod fields;
+pub mod harness_verbs;
 pub mod header;
+pub mod intent_json;
+pub mod log;
 pub mod normalize;
+pub mod observe;
 pub mod receipt;
+pub mod remedy;
 pub mod roles;
 pub mod rows;
 pub mod scope;
+pub mod selfrow;
 pub mod sentence;
 pub mod source;
+pub mod stub;
 pub mod templates;
 #[cfg(test)]
 mod tests;
 pub mod trace;
+pub mod verdict;
 
 use std::collections::{BTreeMap, BTreeSet};
 
