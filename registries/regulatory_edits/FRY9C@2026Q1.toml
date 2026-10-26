@@ -1,0 +1,38 @@
+# FR Y-9C edits for the 2026Q1 instructions (plan §12.6,
+# `regulatory.edits(FRY9C@2026Q1)`), run over the HC schedule by
+# `fa statement regulatory`.
+#
+# ILLUSTRATIVE. These are FrankenAccounting's own arithmetic identities over
+# the schedule lines, under FrankenAccounting ids. They are not the Federal
+# Reserve's published edit criteria, whose numbers and texts are not vendored
+# here. When a published source is vendored, `source` becomes "published",
+# `publication` names it and its terms of use, and each `id` becomes the
+# published edit number.
+#
+# A term is a schedule line code, prefixed with "-" when it is subtracted.
+# Every term must name a line of its schedule; the loader refuses one that
+# does not.
+schema_version = 1
+form = "FRY9C"
+quarter = "2026Q1"
+instruction_version = "FR-Y-9C-2026Q1"
+source = "illustrative"
+publication = ""
+
+[[edit]]
+id = "FRY9C-HC-V001"
+schedule = "HC"
+kind = "validity"
+description = "Consolidated total assets (BHCK2170) must equal Total liabilities and equity capital (BHCK3300)"
+lhs = ["BHCK2170"]
+operator = "=="
+rhs = ["BHCK3300"]
+
+[[edit]]
+id = "FRY9C-HC-V002"
+schedule = "HC"
+kind = "validity"
+description = "Net loans and leases (BHCKB529) must equal loans and leases (BHCK2122) minus allowance (BHCK3123)"
+lhs = ["BHCKB529"]
+operator = "=="
+rhs = ["BHCK2122", "-BHCK3123"]

@@ -507,44 +507,67 @@ pub fn regulatory_schedule(
     }
 }
 
+/// A schedule's edits run over the statement it evaluated to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegulatoryEdits {
+    /// `<form>:<schedule>@<quarter>`.
+    pub selector: String,
+    /// Whether the registry's ids are the regulator's published edit
+    /// numbers; the shipped registries are illustrative.
+    pub published: bool,
+    pub report: fa_statements::regulatory::RegulatoryEditReport,
+}
+
 /// The edits registered for `schedule` (plan §12.6,
-/// `regulatory.edits(<form>@<quarter>)`), run over the statement it evaluated
-/// to, with the selector they were read under. A failed edit is a row, never
-/// a refusal. The edit ids are FrankenAccounting's own illustrative
-/// identities, not FFIEC-published edit numbers, until the edits registry
-/// vendors a published source (fa-doa9).
+/// `regulatory.edits(<form>@<quarter>)`, registries/regulatory_edits/), run
+/// over the statement it evaluated to. A failed edit is a row, never a
+/// refusal. `only`, when not empty, selects edits by id; an id the registry
+/// does not hold is refused, naming those it does.
 pub fn regulatory_edits_of(
     schedule: &RegulatoryScheduleDefinition,
     statement: &Statement,
-) -> Result<
-    (
-        &'static str,
-        fa_statements::regulatory::RegulatoryEditReport,
-    ),
-    Refusal,
-> {
-    use fa_statements::regulatory::{RegulatoryForm, evaluate_regulatory_edits, regulatory_edits};
-    let selector = match (
-        schedule.form,
-        schedule.schedule_code.as_str(),
-        schedule.instruction_version.as_str(),
-    ) {
-        (RegulatoryForm::Ffiec041, "RC", "FFIEC-041-2026Q1") => "FFIEC041:RC@2026Q1",
-        (RegulatoryForm::Ffiec041, "RI", "FFIEC-041-2026Q1") => "FFIEC041:RI@2026Q1",
-        (RegulatoryForm::FrY9C, "HC", "FR-Y-9C-2026Q1") => "FRY9C:HC@2026Q1",
-        _ => {
-            return Err(schedule_refusal(format!(
-                "no edits are registered for {} schedule {} under {}",
-                schedule.form.as_str(),
-                schedule.schedule_code,
-                schedule.instruction_version
-            )));
-        }
-    };
-    let edits = regulatory_edits(selector).map_err(|error| invalid(error.to_string()))?;
-    let report = evaluate_regulatory_edits(statement, selector, &edits)
+    only: &[String],
+) -> Result<RegulatoryEdits, Refusal> {
+    use fa_statements::regulatory::{EditSource, edits_for_schedule, evaluate_regulatory_edits};
+    let set = edits_for_schedule(schedule).map_err(|error| schedule_refusal(error.to_string()))?;
+    let quarter = set
+        .form_at_quarter
+        .split_once('@')
+        .map_or("", |(_, quarter)| quarter);
+    let selector = format!(
+        "{}:{}@{quarter}",
+        schedule.form.as_str(),
+        schedule.schedule_code
+    );
+    if let Some(unknown) = only
+        .iter()
+        .find(|id| !set.edits.iter().any(|edit| edit.edit_id == **id))
+    {
+        let registered: Vec<&str> = set.edits.iter().map(|edit| edit.edit_id.as_str()).collect();
+        return Err(Refusal::new(
+            STATEMENT_INVALID,
+            exit::REFUSAL,
+            format!("edit `{unknown}` is not registered for {selector}"),
+            "plan §12.6 (regulatory.edits(<form>@<quarter>) is a versioned data registry)",
+            format!(
+                "select a registered edit with --edit: {}; or omit --edit to run them all",
+                registered.join(", ")
+            ),
+        ));
+    }
+    let edits: Vec<_> = set
+        .edits
+        .iter()
+        .filter(|edit| only.is_empty() || only.contains(&edit.edit_id))
+        .cloned()
+        .collect();
+    let report = evaluate_regulatory_edits(statement, &selector, &edits)
         .map_err(|error| invalid(error.to_string()))?;
-    Ok((selector, report))
+    Ok(RegulatoryEdits {
+        selector,
+        published: matches!(set.source, EditSource::Published { .. }),
+        report,
+    })
 }
 
 /// Evaluate a regulatory schedule from journal payloads at one snapshot,

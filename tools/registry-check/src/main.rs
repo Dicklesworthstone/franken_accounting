@@ -872,9 +872,15 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let markers_checked = check_claims_lint(&claims_config, &known_markers, &doc_refs)?;
     verify_prose_claims_lint(root, &evidence_artifacts, &invariants).map_err(|e| e.to_string())?;
 
-    // 4. Parse nested TOML schemas under object_schemas/, bundle_schema/, and statements/.
+    // 4. Parse nested TOML schemas under object_schemas/, bundle_schema/,
+    //    statements/ and regulatory_edits/.
     let mut extra_files = 0usize;
-    for sub in ["object_schemas", "bundle_schema", "statements"] {
+    for sub in [
+        "object_schemas",
+        "bundle_schema",
+        "statements",
+        "regulatory_edits",
+    ] {
         let sub_dir = reg_dir.join(sub);
         if sub_dir.is_dir() {
             let entries =

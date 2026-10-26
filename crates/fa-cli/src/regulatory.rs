@@ -94,6 +94,19 @@ pub(crate) fn statement_regulatory(ctx: &mut Ctx<'_>, args: &Args) -> Result<(),
         ));
     }
     let comparative = period_list(args, "--compare")?;
+    // A certified schedule's replay runs every registered edit, so a
+    // selection is for an uncertified look only.
+    let only: Vec<String> = args
+        .flag_all("--edit")
+        .into_iter()
+        .map(String::from)
+        .collect();
+    if !only.is_empty() && (args.switch("--certify") || args.flag("--certificate-out").is_some()) {
+        return Err(usage(
+            "--edit selects edits for an uncertified run; a certified schedule reports every registered edit, as its replay does",
+            EXAMPLE,
+        ));
+    }
     let schedule = regulatory_schedule(form, schedule_code, quarter)?;
     let selection = fa::RegulatorySelection {
         schedule: schedule.clone(),
@@ -147,7 +160,7 @@ pub(crate) fn statement_regulatory(ctx: &mut Ctx<'_>, args: &Args) -> Result<(),
     // Present every amount and run the edits before retaining a certificate
     // or emitting a success.
     statement_presentation(&statement, &book.context().units)?;
-    let edits = edits_event(&book, &schedule, &statement)?;
+    let edits = edits_event(&book, &schedule, &statement, &only)?;
     let retained = certificate
         .as_ref()
         .map(|certificate| {
@@ -181,7 +194,7 @@ pub(crate) fn render_regulatory_schedule(
     statement: &Statement,
     certificate: Option<&str>,
 ) -> Result<(), Fail> {
-    let (fields, human) = edits_event(book, schedule, statement)?;
+    let (fields, human) = edits_event(book, schedule, statement, &[])?;
     render_statement(out, book, statement, certificate)?;
     out.event("regulatory_schedule", fields, &human);
     Ok(())
@@ -205,12 +218,14 @@ fn edits_event(
     book: &Book,
     schedule: &RegulatoryScheduleDefinition,
     statement: &Statement,
+    only: &[String],
 ) -> Result<StatementPresentation, Fail> {
     let units = &book.context().units;
     let schedule_digest = schedule
         .digest()
         .map_err(|error| Fail::Internal(format!("regulatory schedule digest: {error}")))?;
-    let (selector, report) = regulatory_edits_of(schedule, statement)?;
+    let edits = regulatory_edits_of(schedule, statement, only)?;
+    let report = &edits.report;
     let mut rows = Vec::with_capacity(report.rows.len());
     for row in &report.rows {
         let unit = fa_money::UnitId(row.unit_id);
@@ -239,14 +254,19 @@ fn edits_event(
         })
         .collect();
     let human = format!(
-        "{} schedule {} ({}): validity edits {} passed, {} failed; quality edits {} passed, {} failed. Edit ids are illustrative, not FFIEC-published edit numbers.",
+        "{} schedule {} ({}): validity edits {} passed, {} failed; quality edits {} passed, {} failed.{}",
         schedule.form.as_str(),
         schedule.schedule_code,
         schedule.instruction_version,
         report.validity_passed,
         report.validity_failed,
         report.quality_passed,
-        report.quality_failed
+        report.quality_failed,
+        if edits.published {
+            ""
+        } else {
+            " Edit ids are illustrative, not the regulator's published edit numbers."
+        }
     );
     let count = |n: usize| Json::Int(i128::try_from(n).unwrap_or(i128::MAX));
     Ok((
@@ -259,8 +279,8 @@ fn edits_event(
             ("known_at", Json::Int(i128::from(statement.known_at))),
             ("declared_inputs", Json::Arr(declared)),
             ("instrument_inputs_read", Json::Bool(false)),
-            ("edit_selector", s(selector)),
-            ("edit_ids_published", Json::Bool(false)),
+            ("edit_selector", s(&edits.selector)),
+            ("edit_ids_published", Json::Bool(edits.published)),
             ("validity_passed", count(report.validity_passed)),
             ("validity_failed", count(report.validity_failed)),
             ("quality_passed", count(report.quality_passed)),
