@@ -6,12 +6,13 @@
 //! operations it requires, and the CLI's bound-route table must name
 //! exactly those operations.
 //!
-//! A token-bound session never holds more than the Preparer launch ceiling
+//! An MCP token-bound session never holds more than the Preparer launch ceiling
 //! (read, post, post_softclosed, verify, reconcile, produce, partial_view):
 //! a row needing any other operation (approve, witness, schema_change,
 //! hold, erase, privileged, migrate, close, issue_capability) can never be
-//! run by one, and a token with exactly its operations is refused when the
-//! session is bound. Every other row is run in process over an in-memory
+//! run by MCP, and a token with exactly its operations is refused when the
+//! MCP session is bound. Ordinary Human operator tokens have separate coverage
+//! in operator_tokens.rs. Every other row is run in process over an in-memory
 //! book with an issued holder-bound token, and must refuse with exit 7, the
 //! named refusal, an unchanged book head and no host file written when the
 //! token lacks any one of its operations (FA-REF-011), has expired
@@ -101,31 +102,6 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         "installs the chart (schema genesis)",
     ),
     ("period", Some("create"), "births fiscal periods"),
-    (
-        "period",
-        Some("open"),
-        "period transitions are host-confirmed",
-    ),
-    (
-        "period",
-        Some("soft-close"),
-        "period transitions are host-confirmed",
-    ),
-    (
-        "period",
-        Some("close"),
-        "period transitions are host-confirmed",
-    ),
-    (
-        "period",
-        Some("lock"),
-        "period transitions are host-confirmed",
-    ),
-    (
-        "period",
-        Some("reopen"),
-        "period transitions are host-confirmed",
-    ),
     (
         "capability",
         Some("issue"),
@@ -622,6 +598,48 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(&["checkpoint", "create"], &[Op::Witness], Reaches),
+        row(&["period", "open", "FY2026-P04"], &[Op::Close], Reaches),
+        row(
+            &["period", "soft-close", "FY2026-P03"],
+            &[Op::Close],
+            Reaches,
+        ),
+        row(
+            &[
+                "period",
+                "close",
+                "FY2026-P03",
+                "--reason",
+                "Scheduled",
+                "--yes",
+            ],
+            &[Op::Close],
+            Reaches,
+        ),
+        row(
+            &[
+                "period",
+                "lock",
+                "FY2026-P03",
+                "--reason",
+                "AuditComplete",
+                "--yes",
+            ],
+            &[Op::Close],
+            Reaches,
+        ),
+        row(
+            &[
+                "period",
+                "reopen",
+                "FY2026-P03",
+                "--reason",
+                "LateTransactions",
+                "--yes",
+            ],
+            &[Op::Reopen],
+            Reaches,
+        ),
         row(
             &[
                 "case",

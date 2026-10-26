@@ -43,6 +43,316 @@ type Run = (Vec<Vec<String>>, Ended, Vec<Vec<u8>>);
 /// The book directory the lab connections serve.
 const BOOK: &str = "/books/lab";
 
+/// Real holder-bound tokens: only journaled issuance makes these grants usable.
+fn operator_token(
+    principal: &str,
+    capability: fa::Capability,
+) -> fa_cli::authority::CapabilityToken {
+    let secret = [185; 32];
+    fa_cli::authority::CapabilityToken::new(
+        principal,
+        capability.holder_bound(fa_model::domain_digest(
+            b"fa:capability-possession:v1",
+            &[&secret],
+        )),
+        secret,
+    )
+    .unwrap()
+}
+
+fn issue_operator_token(
+    book: &mut Book,
+    issuer: &fa::Capability,
+    token: &fa_cli::authority::CapabilityToken,
+) {
+    book.issue_capability(
+        issuer.clone(),
+        token.capability().clone(),
+        fa_time::DateDay::from_ymd(2026, 3, 15).unwrap(),
+        format!("issue-{}", token.principal()).as_bytes(),
+        "Operator session test grant",
+    )
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
+fn issued_operator_sessions_admit_before_ticking_and_recheck_after_the_tick() {
+    use asupersync::Budget;
+    use asupersync::runtime::RuntimeBuilder;
+    use fa::{BookKeys, Capability, Entropy, Op as CapabilityOp, Profile};
+    use fa_journal::BookSpec;
+    use fa_model::{ControlPayload, Id128, principal_vid};
+    use fa_money::UnitRegistry;
+    use fa_time::{DateDay, FiscalCalendar};
+    use fgdb_types::CommitSeq;
+
+    let mut book = Book::create_memory(
+        BookKeys::for_development(185),
+        BookSpec {
+            book_id: Id128([185; 16]),
+            name: "Issued daemon operator".into(),
+            base_unit: UnitRegistry::embedded().unwrap().lookup("USD").unwrap(),
+            calendar: FiscalCalendar::monthly("operator-clock", 1, 1).unwrap(),
+            time_zone_policy: Some(fa_journal::TimeZonePolicy::Utc),
+            entities: Vec::new(),
+            opening_date: None,
+        },
+        Entropy::deterministic(185),
+    )
+    .unwrap();
+    let issuer = Capability::embedded(
+        principal_vid("operator-issuer"),
+        &[
+            "issue_capability",
+            "witness",
+            "close",
+            "read",
+            "post",
+            "verify",
+        ],
+    )
+    .unwrap();
+    let capability = |principal, profile, ops: &[CapabilityOp]| {
+        Capability::new(principal_vid(principal), profile, ops, issuer.holder()).unwrap()
+    };
+    let witness = operator_token(
+        "witness",
+        capability("witness", Profile::Human, &[CapabilityOp::Witness]),
+    );
+    let revoked = operator_token(
+        "revoked",
+        capability("revoked", Profile::Human, &[CapabilityOp::Witness]),
+    );
+    let wrong_book = operator_token(
+        "wrong-book",
+        capability("wrong-book", Profile::Human, &[CapabilityOp::Witness])
+            .for_books(&[Id128([186; 16])])
+            .unwrap(),
+    );
+    let expired = operator_token(
+        "expired",
+        capability("expired", Profile::Human, &[CapabilityOp::Witness]).expiring_at(CommitSeq(0)),
+    );
+    let no_witness = operator_token(
+        "controller-without-witness",
+        capability(
+            "controller-without-witness",
+            Profile::Human,
+            &[CapabilityOp::Close],
+        ),
+    );
+    let agent = operator_token(
+        "raw-agent",
+        capability(
+            "raw-agent",
+            Profile::Agent,
+            &[CapabilityOp::Read, CapabilityOp::Post],
+        ),
+    );
+    let preparer = operator_token(
+        "raw-preparer",
+        capability(
+            "raw-preparer",
+            Profile::Human,
+            &[CapabilityOp::Read, CapabilityOp::Post],
+        ),
+    );
+    let never_issued = operator_token(
+        "never-issued",
+        capability("never-issued", Profile::Human, &[CapabilityOp::Witness]),
+    );
+    for token in [
+        &witness,
+        &revoked,
+        &wrong_book,
+        &expired,
+        &no_witness,
+        &agent,
+        &preparer,
+    ] {
+        issue_operator_token(&mut book, &issuer, token);
+    }
+    book.revoke_capability(
+        issuer.clone(),
+        revoked.capability().commitment().unwrap(),
+        DateDay::from_ymd(2026, 3, 15).unwrap(),
+        b"revoke-before-session",
+        "Withdraw witness",
+    )
+    .unwrap()
+    .unwrap();
+
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let cx = runtime.request_cx_with_budget(Budget::INFINITE);
+    let work = timed::TimedWork::bootstrap(
+        &cx,
+        &book,
+        timed::Policy {
+            tick_ns: 3_600_000_000_000,
+            sweep_batch: 1,
+            clock_drift_ns: 1_000_000_000,
+        },
+    )
+    .unwrap();
+    let mut server = Server {
+        book: &mut book,
+        dir: PathBuf::from(BOOK),
+        socket: PathBuf::from(BOOK).join("fad.sock"),
+        files_root: None,
+        requests: 0,
+        timed: Some(work),
+        daemon_uid: None,
+        timings: Vec::new(),
+    };
+    let request = |argv: &[&str], bytes: Vec<u8>| Request {
+        op: Op::Run,
+        argv: argv.iter().map(|s| (*s).to_owned()).collect(),
+        cwd: None,
+        stdin: None,
+        token: Some(bytes),
+    };
+    let checkpoint = |token: &fa_cli::authority::CapabilityToken| {
+        request(
+            &["checkpoint", "create", "--json"],
+            token.canonical_bytes().unwrap(),
+        )
+    };
+    let before = server.book.head().unwrap();
+    for token in [&never_issued, &revoked, &wrong_book, &expired, &no_witness] {
+        let (response, _) = runtime.block_on(server.handle(&cx, checkpoint(token)));
+        assert_eq!(
+            response.exit,
+            7,
+            "{}: {}{}",
+            token.principal(),
+            response.stdout,
+            response.stderr
+        );
+        assert_eq!(server.book.head().unwrap(), before, "{}", token.principal());
+        assert!(server.book.latest_tick().unwrap().is_none());
+        assert!(server.book.checkpoints().unwrap().is_empty());
+    }
+    let mut forged = witness.canonical_bytes().unwrap();
+    *forged.last_mut().unwrap() ^= 1;
+    let (response, _) =
+        runtime.block_on(server.handle(&cx, request(&["checkpoint", "create", "--json"], forged)));
+    assert_eq!(response.exit, 2, "{}{}", response.stdout, response.stderr);
+    assert_eq!(server.book.head().unwrap(), before);
+    for token in [&agent, &preparer] {
+        let bytes = token.canonical_bytes().unwrap();
+        assert!(!server.session(&bytes).unwrap().can_confirm());
+        for argv in [
+            vec!["checkpoint", "create", "--yes", "--json"],
+            vec!["period", "close", "FY2026-P03", "--yes", "--json"],
+            vec!["period", "close", "FY2026-P03", "--plan", "false", "--json"],
+            vec![
+                "period",
+                "close",
+                "FY2026-P03",
+                "--plan-out=true",
+                "--plan=false",
+                "--json",
+            ],
+        ] {
+            let (response, _) = runtime.block_on(server.handle(&cx, request(&argv, bytes.clone())));
+            let exit = if argv.contains(&"--yes") { 2 } else { 7 };
+            assert_eq!(
+                response.exit, exit,
+                "{argv:?}: {}{}",
+                response.stdout, response.stderr
+            );
+            assert_eq!(server.book.head().unwrap(), before, "{argv:?}");
+            assert!(server.book.latest_tick().unwrap().is_none());
+        }
+    }
+    // A separating Human grant does not release principal or operation binding.
+    for argv in [
+        vec!["checkpoint", "create", "--as", "operator-issuer", "--json"],
+        vec!["checkpoint", "create", "--grant", "witness", "--json"],
+    ] {
+        let (response, _) = runtime
+            .block_on(server.handle(&cx, request(&argv, witness.canonical_bytes().unwrap())));
+        assert_eq!(response.exit, 2, "{}{}", response.stdout, response.stderr);
+        assert_eq!(server.book.head().unwrap(), before);
+    }
+    assert!(
+        server
+            .session(&witness.canonical_bytes().unwrap())
+            .unwrap()
+            .can_confirm()
+    );
+    let (startup, _) = runtime.block_on(server.handle(&cx, checkpoint(&witness)));
+    assert_eq!(startup.exit, 3, "{}{}", startup.stdout, startup.stderr);
+    assert!(startup.stdout.contains("FA-REF-144"));
+    let first = server.book.latest_tick().unwrap().unwrap();
+    assert!(server.book.checkpoints().unwrap().is_empty());
+
+    let (created, _) = runtime.block_on(server.handle(&cx, checkpoint(&witness)));
+    assert_eq!(created.exit, 0, "{}{}", created.stdout, created.stderr);
+    assert!(created.stdout.contains("\"checkpoint_created\""));
+    let second = server.book.latest_tick().unwrap().unwrap();
+    assert!(second.observed_utc_ns > first.observed_utc_ns);
+    let (entry, tick_seq) = server.book.read_entry(second.entry).unwrap().unwrap();
+    assert!(matches!(
+        entry.proposal.control,
+        Some(ControlPayload::TimeTick {
+            monotonic_ok: true,
+            ..
+        })
+    ));
+    let checkpoints = server.book.checkpoints().unwrap();
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(checkpoints[0].state.through_seq, tick_seq);
+    assert!(checkpoints[0].recorded_at > tick_seq);
+    assert!(server.book.verify_accumulator().unwrap().is_green());
+
+    // Existing capability expiry is a sequence bound. This token is valid
+    // before the command tick, then expires exactly at that publication.
+    let expiry = CommitSeq(server.book.head().unwrap().0 + 2);
+    let on_tick = operator_token(
+        "expires-on-tick",
+        capability("expires-on-tick", Profile::Human, &[CapabilityOp::Witness]).expiring_at(expiry),
+    );
+    issue_operator_token(server.book, &issuer, &on_tick);
+    assert!(
+        server
+            .book
+            .admit_current(on_tick.capability())
+            .unwrap()
+            .is_ok()
+    );
+    let (refused, _) = runtime.block_on(server.handle(&cx, checkpoint(&on_tick)));
+    assert_eq!(refused.exit, 7, "{}{}", refused.stdout, refused.stderr);
+    assert_eq!(server.book.head().unwrap(), expiry);
+    assert_eq!(server.book.checkpoints().unwrap().len(), 1);
+    assert_ne!(server.book.latest_tick().unwrap(), Some(second));
+    let after_expiry = server.book.head().unwrap();
+    let latest = server.book.latest_tick().unwrap();
+    let (again, _) = runtime.block_on(server.handle(&cx, checkpoint(&on_tick)));
+    assert_eq!(again.exit, 7, "{}{}", again.stdout, again.stderr);
+    assert_eq!(server.book.head().unwrap(), after_expiry);
+    assert_eq!(server.book.latest_tick().unwrap(), latest);
+
+    server
+        .book
+        .revoke_capability(
+            issuer,
+            witness.capability().commitment().unwrap(),
+            DateDay::from_ymd(2026, 3, 15).unwrap(),
+            b"revoke-active-session",
+            "Withdraw the active witness",
+        )
+        .unwrap()
+        .unwrap();
+    let revoked_at = server.book.head().unwrap();
+    let (revoked, _) = runtime.block_on(server.handle(&cx, checkpoint(&witness)));
+    assert_eq!(revoked.exit, 7, "{}{}", revoked.stdout, revoked.stderr);
+    assert_eq!(server.book.head().unwrap(), revoked_at);
+    assert_eq!(server.book.latest_tick().unwrap(), latest);
+    assert_eq!(server.book.checkpoints().unwrap().len(), 1);
+}
+
 #[test]
 fn critical_requests_admit_before_observation_and_preserve_preview_frontiers() {
     use asupersync::Budget;

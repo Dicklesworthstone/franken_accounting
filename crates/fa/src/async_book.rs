@@ -3538,8 +3538,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.signer.public_key()
     }
 
-    /// Export a native trial-balance or statement certificate with a signed,
-    /// payload-complete journal prefix for the independent offline verifier. The complete
+    /// Export a native trial-balance, dimension-filtered trial-balance or statement
+    /// certificate with a signed, payload-complete journal prefix. The complete
     /// prefix is disclosed, so account/effective scope caveats cannot be served
     /// by filtering its records. The certificate is replayed before production.
     pub async fn produce_report_bundle(
@@ -3572,15 +3572,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         if certificate.book_id != self.context.book_id
             || !matches!(
                 &certificate.selection,
-                crate::ReportSelection::TrialBalance(_) | crate::ReportSelection::Statement(_)
+                crate::ReportSelection::TrialBalance(_)
+                    | crate::ReportSelection::DimensionTrialBalance { .. }
+                    | crate::ReportSelection::Statement(_)
             )
         {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's native trial-balance or statement certificate",
+                "offline report production requires this book's native trial-balance, dimension-filtered trial-balance or statement certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify a native fa tb or fa statement report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
+                "certify a native fa tb (optionally --dimension kind=value) or fa statement report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
             )));
         }
         if let Err(refusal) = self
@@ -3615,7 +3617,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         let registries = if matches!(&certificate.selection, crate::ReportSelection::Statement(_)) {
-            match crate::certificate::offline_statement_registries_at(
+            match crate::certificate::offline_report_registries_at(
                 &self.db,
                 &cx.query(),
                 &self.context,

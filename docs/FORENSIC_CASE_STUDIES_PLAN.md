@@ -308,6 +308,18 @@ Binding rules (checks K-BIND and K-SCOPE, §3.6):
   - The research's own error is the test case. The SEC's ¶29 phrase "without any supporting
     documentation or proper business rationale" is about entries "for the first quarter of 2001"
     (SEC v. Vinson & Normand). It was applied to the 1Q02 entries; K-SCOPE must refuse that binding.
+  - The word check is `case-fetch-scope-v1` (A9 defined it; A3a's Rust check mirrors it on the shared
+    `[[scope]]` rows of `crates/fa-oracles/data/binding_fixtures.toml`):
+    - a text's period words are quarter labels (`1Q01`, `2001Q1`, `Q1 2001`, "first quarter of
+      2001") and fiscal years ("fiscal 2001", `FY2001`), each fiscal year covering its four quarters;
+    - its account words are `account:<id>` and "account <id>" (also "account No. <id>"), where <id>
+      is 4–12 upper-case letters and digits with at least one digit;
+    - a quote conflicts with `about_scope` when both name periods and the quarter sets are disjoint,
+      or both name accounts and the account sets are disjoint;
+    - a `scheme:` scope never backs a `journal_entry` fact.
+
+    Entry words are not compared: a quote names an entry by its date and amount, which value binding
+    checks.
 - **Sentence alignment.** A quote is one or more whole sentences of the extraction. A fragment such as
   "entered and approved" fails alignment, because its sentence ("Abide rarely entered and approved
   entries himself …") says something different from the fragment.
@@ -1193,6 +1205,15 @@ The tool uses the Python 3 standard library only and runs with `python3 -B`, fol
   - It ends with `[.?!]` plus an optional closing `"` or `)`, followed by whitespace or the end.
   - A boundary preceded by a registered abbreviation (`p`, `pp`, `Inc`, `Co`, `No`, `U.S`, `Mr`, `Ms`,
     `Dr`) is not a boundary.
+  - A block boundary, a blank line or a page break of the extraction, is also a boundary: a quote may
+    start at a block's first character and end at its last. Without it, the sentence after any
+    unpunctuated heading ("SUMMARY OF FINDINGS", then a blank line, then the sentence) runs on from
+    the heading and can never be quoted (found while building A9's fixtures). A heading followed
+    directly by text, with no blank line, still joins that text.
+  - Lines of an anchor that contain no `[.?!]` form one heading sentence: the quote must be their whole
+    normalized text (E1's "UNAUDITED").
+  - The shared `[[normalize]]` and `[[sentence]]` rows of `binding_fixtures.toml` pin these rules for
+    both implementations.
 - **Exit codes** follow the gate vocabulary:
   - 0 when everything is verified;
   - non-zero with `FAIL ` lines on failure;

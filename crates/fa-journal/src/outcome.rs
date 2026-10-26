@@ -2,10 +2,11 @@
 //!
 //! Entry identity still enforces target uniqueness. These immutable claims
 //! additionally reserve (book, principal, key), shared with atomic batches.
-//! Migration retains its declared run-scoped keys. Period and time controls
-//! also reserve the common key; their pre-protocol normal-key entries remain valid
-//! retry anchors. Other dedicated control writers have not migrated. Existing
-//! normal-key controls are checked before a posting takes their key.
+//! Migration retains its declared run-scoped keys. Period, time and normal-key
+//! policy activation controls also reserve the common key; their pre-protocol
+//! entries remain valid retry anchors. Other dedicated writers, including
+//! target-derived capability issuance and revocation, have not migrated.
+//! Existing normal-key controls are checked before a posting takes their key.
 
 mod keys;
 mod rebuild;
@@ -615,21 +616,39 @@ pub fn stage_entry(
     stage_claim(batch, entry, vid).map(Some)
 }
 
-/// Period and time controls retain their normal-key Entry identity, including
+/// These controls retain their normal-key Entry identity, including
 /// old immutable entries that predate these common-key claims. Do not broaden
 /// `covered_class`: historical coverage authenticates monetary posting keys,
 /// and an old control's absence of a claim must not invalidate its exact retry.
+fn normal_key_control(entry: &Entry, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    let admitted = matches!(
+        proposal.class,
+        EntryClass::PERIOD_CONTROL | EntryClass::TIME_CONTROL
+    ) || (proposal.class == EntryClass::POLICY_CONTROL
+        && matches!(
+            &proposal.control,
+            Some(fa_model::ControlPayload::PolicyActivation { .. })
+        ));
+    admitted
+        && vid
+            == fa_model::entry_vid(
+                proposal.book_id,
+                &proposal.principal_ref.0.to_le_bytes(),
+                &proposal.idempotency_key,
+            )
+}
+
+/// Stage only an admitted normal-key control. In particular, a target-derived
+/// capability event cannot use the legacy normal-identity retry exception.
 pub(crate) fn stage_control(
     batch: &mut WriteBatch,
     entry: &Entry,
     vid: VId,
 ) -> Result<(), KernelError> {
-    if !matches!(
-        entry.proposal.class,
-        EntryClass::PERIOD_CONTROL | EntryClass::TIME_CONTROL
-    ) {
+    if !normal_key_control(entry, vid) {
         return Err(KernelError::Corrupt(
-            "control outcome claim requires a PeriodControl or TimeControl entry".into(),
+            "control outcome claim requires an admitted normal-key control entry".into(),
         ));
     }
     stage_claim(batch, entry, vid).map(|_| ())
@@ -655,11 +674,7 @@ pub(crate) fn verify_control_recorded<V: Vfs + Clone>(
     row: &VertexRow,
     entry: &Entry,
 ) -> Result<bool, KernelError> {
-    if !matches!(
-        entry.proposal.class,
-        EntryClass::PERIOD_CONTROL | EntryClass::TIME_CONTROL
-    ) || !original(db, row)?
-    {
+    if !normal_key_control(entry, row.vid) || !original(db, row)? {
         return Ok(false);
     }
     let outcome = entry_outcome_vid(&entry.proposal);

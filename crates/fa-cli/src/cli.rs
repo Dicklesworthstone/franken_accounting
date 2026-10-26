@@ -311,6 +311,8 @@ struct Said {
     issuer_authority: Option<Json>,
     /// The launch template is Agent: trunk plans are rehearsals (FA-REF-013).
     agent: bool,
+    /// An issued Human operator can confirm without releasing any binding.
+    can_confirm: bool,
     owner_principal: Option<String>,
     /// The branch a `--branch` read selected (`scenario:<name>`); trunk
     /// when absent.
@@ -473,12 +475,32 @@ impl Out {
             said.authority = authority.map(LaunchAuthority::envelope_json);
             said.agent =
                 authority.is_some_and(|a| a.profile() == crate::authority::LaunchProfile::Agent);
+            said.can_confirm = authority.is_some_and(LaunchAuthority::can_confirm);
         }
         self
     }
 
     fn is_bound(&self) -> bool {
         self.said.borrow().authority.is_some()
+    }
+
+    fn can_confirm(&self) -> bool {
+        let said = self.said.borrow();
+        said.authority.is_none() || said.can_confirm
+    }
+
+    fn authority_posture(&self) -> &'static str {
+        let said = self.said.borrow();
+        match said
+            .authority
+            .as_ref()
+            .and_then(|authority| authority.get("posture"))
+            .and_then(Json::as_str)
+        {
+            Some("issued-token") => "issued-token",
+            Some(_) => "mcp-launch-config",
+            None => "embedded-owner",
+        }
     }
 
     /// The launch-bound Agent template, whose trunk plans commit for no one.
@@ -1554,6 +1576,9 @@ fn run_scoped_with(
             "--token",
             "--issuer-token",
         ] {
+            if flag == "--yes" && authority.can_confirm() {
+                continue;
+            }
             if args.flags.contains_key(flag) || args.switch(flag) {
                 return usage_error_with_authority(
                     argv,
@@ -1902,8 +1927,15 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
         if out.is_bound() && r.fix.contains("--grant") {
             r.fix = "identity and authority are fixed when the server starts; ask the operator to start a server with the profile and operations you need".to_string();
         }
-        // A launch-bound session cannot add --yes or --grant.
-        if out.is_bound() && !r.rerun_args().is_empty() {
+        // Operator tokens may confirm with --yes, but no bound caller can
+        // add operations. MCP tokens cannot confirm at all.
+        if out.is_bound()
+            && (!out.can_confirm()
+                || r.rerun_args()
+                    .iter()
+                    .any(|arg| arg == "--grant" || arg.starts_with("--grant=")))
+            && !r.rerun_args().is_empty()
+        {
             r = r.rerun_with(Vec::new());
         }
         Failure {
@@ -2206,7 +2238,21 @@ fn dispatch_with(
     // refused for that, never asked to confirm what it could not do. A
     // command the surface does not admit keeps the confirmation refusal,
     // which names how to prepare it instead.
-    let admitted = ctx.authority.is_none() || bound_command_rule(&verb.name, args).is_some();
+    // Period commit rows also serve Human operator tokens. They do not make
+    // independent confirmation available to MCP: retain its existing
+    // confirmation refusal and safe planning alternative before dispatch.
+    let restricted_period_commit = verb.name == "period"
+        && matches!(
+            args.positional.get(1).map(String::as_str),
+            Some("open" | "soft-close" | "close" | "lock" | "reopen")
+        )
+        && !period_plan_only(&verb.name, args)
+        && ctx
+            .authority
+            .as_ref()
+            .is_some_and(|authority| !authority.can_confirm());
+    let admitted = ctx.authority.is_none()
+        || (bound_command_rule(&verb.name, args).is_some() && !restricted_period_commit);
     if admitted {
         admit_bound_command(ctx, verb, args)?;
     }
@@ -2390,7 +2436,10 @@ pub fn bound_command_admissible(
         .verb(verb)
         .filter(|v| !v.subcommands.is_empty())
         .and_then(|_| args.positional.get(1).map(String::as_str));
-    if !period_plan_only(verb, args) && !post_plan_only(verb, args) {
+    if !period_plan_only(verb, args)
+        && !post_plan_only(verb, args)
+        && !(authority.can_confirm() && confirmed(args))
+    {
         for d in reg.dangerous_for(verb, sub) {
             let applies = match &d.condition {
                 Condition::Always => true,
@@ -2400,10 +2449,17 @@ pub fn bound_command_admissible(
                 Condition::Voids | Condition::ExistingCells => false,
             };
             if applies {
-                return Err(format!(
-                    "`{}` requires independent confirmation unavailable over MCP (FA-REF-007)",
-                    command_name(verb, sub)
-                ));
+                return Err(if authority.can_confirm() {
+                    format!(
+                        "`{}` requires confirmation with --yes or its reviewed --plan (FA-REF-007)",
+                        command_name(verb, sub)
+                    )
+                } else {
+                    format!(
+                        "`{}` requires independent confirmation unavailable over MCP (FA-REF-007)",
+                        command_name(verb, sub)
+                    )
+                });
             }
         }
     }
@@ -2792,6 +2848,26 @@ pub(crate) fn confirmed(args: &Args) -> bool {
     args.switch("--yes") || args.flag("--plan").is_some()
 }
 
+fn quoted_argument(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+/// The token file is deliberately absent from bound argv and daemon frames.
+/// A literal placeholder fails closed until the holder supplies that same file;
+/// omitting --token could silently fall back to embedded-owner authority.
+fn operator_command(args: &Args, command: &str) -> String {
+    let mut command = format!("fa --token '<same-token-file>' {command}");
+    for flag in ["--book", "--keys"] {
+        if let Some(value) = args.flag(flag) {
+            command.push_str(&format!(" {flag} {}", quoted_argument(value)));
+        }
+    }
+    command.push_str(" --json");
+    command
+}
+
+const OPERATOR_PLAN_GUIDANCE: &str = "replace <same-token-file> with the original token file; reuse the same holder capability and forward data.bytes on stdin when --plan is -; attach the required independent approvals";
+
 fn command_name(verb: &str, subcommand: Option<&str>) -> String {
     match subcommand {
         Some(sub) => format!("fa {verb} {sub}"),
@@ -2884,7 +2960,7 @@ fn gate_from_argv(
     {
         return Ok(());
     }
-    if authority.is_none() && confirmed(args) {
+    if out.can_confirm() && confirmed(args) {
         // `--plan` is a file argument wherever it appears; only a bare
         // `--yes` can confirm nothing.
         if rows.peek().is_none() && args.switch("--yes") {
@@ -2907,10 +2983,10 @@ fn gate_from_argv(
             Condition::Voids | Condition::ExistingCells => false,
         };
         if applies {
-            return Err(if authority.is_some() {
-                unconfirmed_bound(d, args)
-            } else {
+            return Err(if out.can_confirm() {
                 unconfirmed(d, args)
+            } else {
+                unconfirmed_bound(d, args)
             });
         }
     }
@@ -2928,7 +3004,7 @@ pub(crate) fn gate(
     subcommand: Option<&str>,
     condition: &Condition,
 ) -> Result<(), Fail> {
-    if (!out.is_bound() && confirmed(args)) || post_plan_only(verb, args) {
+    if (out.can_confirm() && confirmed(args)) || post_plan_only(verb, args) {
         return Ok(());
     }
     let reg = registry()?;
@@ -2936,10 +3012,10 @@ pub(crate) fn gate(
         .dangerous_for(verb, subcommand)
         .find(|d| d.condition == *condition)
     {
-        Some(d) => Err(if out.is_bound() {
-            unconfirmed_bound(d, args)
-        } else {
+        Some(d) => Err(if out.can_confirm() {
             unconfirmed(d, args)
+        } else {
+            unconfirmed_bound(d, args)
         }),
         None => Err(Fail::Internal(format!(
             "`{}` gates `{}`, which verbs.toml [[dangerous]] does not list",
@@ -3364,10 +3440,10 @@ fn capability_model(
                 ),
                 (
                     "posture",
-                    s(if authority.is_some() {
-                        "mcp-launch-config"
-                    } else {
-                        "embedded-owner"
+                    s(match authority {
+                        Some(authority) if authority.issued().is_some() => "issued-token",
+                        Some(_) => "mcp-launch-config",
+                        None => "embedded-owner",
                     }),
                 ),
                 (
@@ -3376,11 +3452,28 @@ fn capability_model(
                         .map_or(fa_policy::Profile::Human, |a| a.capability().profile())
                         .name()),
                 ),
-                ("ceilings", Json::Arr(Vec::new())),
-                ("expires_at", Json::Null),
+                (
+                    "ceilings",
+                    Json::Arr(authority.map_or_else(Vec::new, |authority| {
+                        authority
+                            .capability()
+                            .ceilings()
+                            .iter()
+                            .map(|(unit, max)| s(format!("unit_id={}, max_mantissa={max}", unit.0)))
+                            .collect()
+                    })),
+                ),
+                (
+                    "expires_at",
+                    authority
+                        .and_then(|authority| authority.capability().expires_at())
+                        .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+                ),
                 (
                     "trust_boundary",
-                    s(if authority.is_some() {
+                    s(if authority.is_some_and(LaunchAuthority::can_confirm) {
+                        "The presented Human operator token fixes the principal, exact operations and caveats. The kernel checks current issuance, revocation and expiry. --yes or a reviewed --plan can confirm an admitted command, but cannot add rights or replace identity, book, keys or file containment. MCP rejects this operator token; tokens within its ceiling retain the restricted MCP posture on every route."
+                    } else if authority.is_some() {
                         "MCP binds one capability from trusted operator launch configuration: fixed principal, profile, operations, book and key path. Requests cannot choose identity, grants, confirmation or daemon routing. Launch configuration does not authenticate the operator; issued tokens and authenticated daemon sessions remain fa-v62/fa-r3q. The envelope lists this session's actual launch template and ops."
                     } else {
                         "embedded-owner posture: the calling process supplies --as and self-issues Human-profile operations per command with --grant, without ceilings or expiry. The fad argv route has the same owner posture for a same-uid peer; a request carrying an issued token (fa --token) is bound to that token's principal and journaled capability instead. MCP uses a separate launch binding: a launch-config session refuses the daemon route, a --token session presents its token to fad. The kernel evaluates supplied authority; it does not authenticate the operator."
@@ -3410,6 +3503,18 @@ fn robot_docs_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         _ => return Err(unhandled("robot-docs", topic.map(String::as_str))),
     };
     let text = match &ctx.authority {
+        Some(authority) if authority.can_confirm() => format!(
+            "This command is bound to Human operator `{}` under its issued token, with exact ops [{}]. Identity and grants cannot be overridden. --yes or a reviewed --plan confirms an admitted operation; scope, current issuance, expiry, revocation and independent approvals still apply. Direct and daemon commands use the same token, and file paths remain confined. MCP cannot bind this operator token.\n\n{}",
+            authority.principal(),
+            authority
+                .capability()
+                .ops()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>()
+                .join(", "),
+            text
+        ),
         Some(authority) => format!(
             "This MCP server is bound at launch to principal `{}` under the `{}` template, with ops [{}]. Tool requests cannot override identity, grants, confirmation, book or keys. Dangerous commits require independent operator review until confirm_plan is available. The current daemon route cannot carry this authority and is refused. Launch configuration trusts the operator; it is not operator authentication. CLI --as/--grant/--yes examples below describe the operator's embedded-owner command line.\n\n{}",
             authority.principal(),
@@ -5153,6 +5258,25 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let given_reason = || {
                 reason.ok_or_else(|| Fail::Internal("only a period plan carries its reason".into()))
             };
+            let operator_plan_actions = |path: &str| {
+                if !out.is_bound() || !out.can_confirm() {
+                    return Vec::new();
+                }
+                let mut command = format!(
+                    "period {t} {} --plan {}",
+                    quoted_argument(code),
+                    quoted_argument(path)
+                );
+                if t == "reopen"
+                    && let Some(to) = args.flag("--to")
+                {
+                    command.push_str(&format!(" --to {}", quoted_argument(to)));
+                }
+                vec![(
+                    operator_command(args, &command),
+                    OPERATOR_PLAN_GUIDANCE.into(),
+                )]
+            };
             // A plan seals the description once (R4), so an approval
             // recorded by another principal, in another process, binds the
             // proposal the commit rebuilds from the plan's inputs. Plan files
@@ -5179,7 +5303,11 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         reversal_tick.map_or(String::new(), |t| format!("{:032x}", t.0))
                     )
                 };
-                out.event(
+                let actions = operator_plan_actions("-");
+                let guidance = actions
+                    .first()
+                    .map_or_else(String::new, |(command, why)| format!("\n{why}: {command}"));
+                out.event_with_actions(
                     "period_plan",
                     vec![
                         ("period", s(&plan.period_code)),
@@ -5195,7 +5323,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             reversal_tick.map_or(Json::Null, |t| s(format!("{:032x}", t.0))),
                         ),
                     ],
-                    &format!("{}: planned {} → {}; nothing was written.{mints} Approvals bind proposal {}. Commit authority and required approvals are checked separately.\nCanonical period plan bytes (hex):\n{encoded}", plan.period_code, plan.from.name(), plan.to.name(), hex(&digest)),
+                    &format!("{}: planned {} → {}; nothing was written.{mints} Approvals bind proposal {}. Commit authority and required approvals are checked separately.{guidance}\nCanonical period plan bytes (hex):\n{encoded}", plan.period_code, plan.from.name(), plan.to.name(), hex(&digest)),
+                    &actions,
                 );
                 return Ok(());
             }
@@ -5220,7 +5349,11 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
                 write_post_plan(&ctx.files, path, &bytes)?;
-                out.event(
+                let actions = operator_plan_actions(path);
+                let guidance = actions
+                    .first()
+                    .map_or_else(String::new, |(command, why)| format!("\n{why}: {command}"));
+                out.event_with_actions(
                     "period_planned",
                     vec![
                         ("period", s(&plan.period_code)),
@@ -5230,12 +5363,13 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("plan", s(path)),
                     ],
                     &format!(
-                        "{}: planned {} → {}; approvals bind proposal {}; commit with --plan {path}",
+                        "{}: planned {} → {}; approvals bind proposal {}; commit with --plan {path}{guidance}",
                         plan.period_code,
                         plan.from.name(),
                         plan.to.name(),
                         hex(&digest)
                     ),
+                    &actions,
                 );
                 return Ok(());
             }
@@ -9379,18 +9513,22 @@ pub(crate) fn emit_post_plan(
             Disposition::Expires { .. } => "expires",
         });
     let bound = out.is_bound();
-    let authority_posture = if bound {
-        "mcp-launch-config"
-    } else {
-        "embedded-owner"
-    };
-    let bound_void = bound && disposition == Some("voids");
+    let authority_posture = out.authority_posture();
+    let bound_void = !out.can_confirm() && disposition == Some("voids");
     // An Agent's trunk plan is a rehearsal (plan §15.3): it binds the
     // Agent's capability, which commit_plan refuses (FA-REF-013), so no
     // commit is suggested; a Human principal posts the intent.
     let rehearsal = out.is_bound_agent();
-    let command = if bound {
+    let command = if !out.can_confirm() {
         "fa_post_commit_plan".to_string()
+    } else if bound {
+        operator_command(
+            args,
+            &format!(
+                "commit --plan {}",
+                quoted_argument(args.flag("--plan-out").unwrap_or("-"))
+            ),
+        )
     } else {
         let quoted = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
         let mut command = format!(
@@ -9434,8 +9572,10 @@ pub(crate) fn emit_post_plan(
     let next_actions = if bound_void || rehearsal {
         Vec::new()
     } else {
-        vec![(command, if bound {
+        vec![(command, if !out.can_confirm() {
             "review this exact plan, then call fa_post_commit_plan with plan set to data.bytes in the same launch-bound session"
+        } else if bound {
+            OPERATOR_PLAN_GUIDANCE
         } else {
             "review this exact plan, then commit it with the same caller capability; when --plan is -, forward data.bytes on stdin"
         }.to_string())]
@@ -9689,8 +9829,16 @@ fn emit_replacement_plan(
     }
     let encoded = hex(&bytes);
     let rehearsal = out.is_bound_agent();
-    let command = if out.is_bound() {
+    let command = if !out.can_confirm() {
         "fa_post_commit_plan".to_string()
+    } else if out.is_bound() {
+        operator_command(
+            args,
+            &format!(
+                "commit --plan {}",
+                quoted_argument(args.flag("--plan-out").unwrap_or("-"))
+            ),
+        )
     } else {
         let quoted = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
         let mut command = format!(
@@ -9720,7 +9868,11 @@ fn emit_replacement_plan(
         Vec::new()
     } else {
         human.push_str(&format!("\nReview both entries, then {command}"));
-        vec![(command, "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin".into())]
+        vec![(command, if out.is_bound() && out.can_confirm() {
+            OPERATOR_PLAN_GUIDANCE
+        } else {
+            "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin"
+        }.into())]
     };
     if args.flag("--plan-out").is_none() {
         human.push_str(&format!(
@@ -9763,14 +9915,7 @@ fn emit_replacement_plan(
             ("bytes", s(encoded)),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
             ("scope", s("same-snapshot-replacement")),
-            (
-                "authority",
-                s(if out.is_bound() {
-                    "mcp-launch-config"
-                } else {
-                    "embedded-owner"
-                }),
-            ),
+            ("authority", s(out.authority_posture())),
         ],
         &human,
         &actions,
@@ -9800,7 +9945,7 @@ fn commit_replacement_cmd(
                 Ok(replanned) => Ok(fresh_replacement(replanned)?),
                 Err(replan) => Err(replan),
             };
-            return Err(stale_plan(refusal, replanned, ctx.out.is_bound()));
+            return Err(stale_plan(refusal, replanned, &ctx.out, args));
         }
         Err(refusal) => return Err(refusal.into()),
     };
@@ -9824,8 +9969,10 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 1 || args.flag_all("--plan").len() != 1 {
         return Err(usage(
             "commit requires exactly one --plan and no positional arguments",
-            if ctx.out.is_bound() {
+            if !ctx.out.can_confirm() {
                 "call fa_post_commit_plan with exactly one of plan or plan_file; this session's authority stays fixed"
+            } else if ctx.out.is_bound() {
+                "fa --token '<same-token-file>' commit --plan <file|-> --json; replace <same-token-file> with the original token file and keep the same book"
             } else {
                 "fa commit --plan <file|-> [--as <principal>] [--grant <op>]... --json"
             },
@@ -9862,7 +10009,7 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         plan.proposal().control.as_ref(),
         Some(ControlPayload::ReservationRelease)
     );
-    if ctx.out.is_bound() && voids {
+    if !ctx.out.can_confirm() && voids {
         gate(&ctx.out, args, "resolve", None, &Condition::Voids)?;
     }
     if plan.proposal().class == EntryClass::CLOSING {
@@ -9883,7 +10030,7 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Ok(replanned) => Ok(fresh_post(replanned)?),
                 Err(replan) => Err(replan),
             };
-            return Err(stale_plan(refusal, replanned, ctx.out.is_bound()));
+            return Err(stale_plan(refusal, replanned, &ctx.out, args));
         }
         Err(refusal) => return Err(refusal.into()),
     };
@@ -10001,16 +10148,23 @@ fn fresh_batch(
 fn stale_plan(
     mut refusal: Refusal,
     replanned: Result<(Vec<&'static str>, FreshPlan), Refusal>,
-    bound: bool,
+    out: &Out,
+    args: &Args,
 ) -> Fail {
     let detail = match replanned {
         Ok((changed, fresh)) => {
-            refusal.fix = if bound {
+            refusal.fix = if !out.can_confirm() {
                 "review detail.fresh_plan (detail.changed names what differs from the refused plan); to commit it unchanged, call fa_post_commit_plan with plan set to detail.fresh_plan.bytes"
+                    .to_string()
+            } else if out.is_bound() {
+                format!(
+                    "review detail.fresh_plan (detail.changed names what differs from the refused plan); pass detail.fresh_plan.bytes on stdin to {}; replace <same-token-file> with the original token file and reuse the same holder capability",
+                    operator_command(args, "commit --plan -")
+                )
             } else {
                 "review detail.fresh_plan (detail.changed names what differs from the refused plan); to commit it unchanged, pass its bytes: fa commit --plan - (the hex on stdin)"
-            }
-            .to_string();
+                    .to_string()
+            };
             obj(vec![
                 ("changed", Json::Arr(changed.into_iter().map(s).collect())),
                 (

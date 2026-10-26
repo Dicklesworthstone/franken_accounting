@@ -93,8 +93,9 @@ const H0: [u32; 8] = [
 /// One 512-bit block of the compression function (FIPS 180-4 §6.2.2).
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
-    for (slot, word) in w.iter_mut().zip(block.chunks_exact(4)) {
-        *slot = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+    let (words, _) = block.as_chunks::<4>();
+    for (slot, word) in w.iter_mut().zip(words) {
+        *slot = u32::from_be_bytes(*word);
     }
     for t in 16..64 {
         let s0 = w[t - 15].rotate_right(7) ^ w[t - 15].rotate_right(18) ^ (w[t - 15] >> 3);
@@ -134,16 +135,14 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
 #[must_use]
 pub fn digest(bytes: &[u8]) -> [u8; 32] {
     let mut state = H0;
-    let mut blocks = bytes.chunks_exact(64);
-    for block in &mut blocks {
-        let block: &[u8; 64] = block.try_into().expect("chunks_exact yields 64 bytes");
+    let (blocks, rest) = bytes.as_chunks::<64>();
+    for block in blocks {
         compress(&mut state, block);
     }
     // Padding (FIPS 180-4 §5.1.1): 0x80, zeros, then the message length in
     // bits as a big-endian u64, in one block when the remainder leaves room
     // for the nine bytes, else in two. The length is taken modulo 2^64, as
     // the standard specifies.
-    let rest = blocks.remainder();
     let mut tail = [0u8; 128];
     tail[..rest.len()].copy_from_slice(rest);
     tail[rest.len()] = 0x80;
@@ -152,13 +151,12 @@ pub fn digest(bytes: &[u8]) -> [u8; 32] {
         .expect("a slice length fits in u64")
         .wrapping_mul(8);
     tail[tail_len - 8..tail_len].copy_from_slice(&bit_len.to_be_bytes());
-    for block in tail[..tail_len].chunks_exact(64) {
-        let block: &[u8; 64] = block.try_into().expect("chunks_exact yields 64 bytes");
+    for block in tail[..tail_len].as_chunks::<64>().0 {
         compress(&mut state, block);
     }
     let mut out = [0u8; 32];
-    for (dst, word) in out.chunks_exact_mut(4).zip(state) {
-        dst.copy_from_slice(&word.to_be_bytes());
+    for (dst, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(state) {
+        *dst = word.to_be_bytes();
     }
     out
 }

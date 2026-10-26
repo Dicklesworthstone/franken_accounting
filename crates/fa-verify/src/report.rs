@@ -1,4 +1,4 @@
-//! Independent recomputation of native trial balances and statements (plan §13.3).
+//! Independent recomputation of native balances, statements and open items (plan §13.3).
 //!
 //! Report bundles disclose the complete signed checkpoint prefix, including
 //! every payload that derives its selectors. The verifier reconstructs the
@@ -12,17 +12,29 @@
 //! explicitly treats the definition and unit list as report parameters, not
 //! authenticated registration or approval. Bundle version 2 carries the exact
 //! registry closure and requires a recipient certificate pin or signed production
-//! receipt to authenticate that definition and registry closure. Native v2 trial
-//! balances and v4 statements can additionally prove their retained tick-bucket
+//! receipt to authenticate that definition and registry closure. Version 2 also
+//! supports native v3 OpenItems with complete application/reversal history and
+//! historical account metadata. Native v2 trial balances, v3 OpenItems and v4
+//! statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
-//! histories and functional-currency statements remain unsupported. The scope is accounting
+//! histories and functional-currency statements remain unsupported. Native v8
+//! dimension trial balances reconstruct declarations and closes from the signed
+//! journal, then fold only legs tagged with the authenticated value hierarchy.
+//! A filtered view need not balance across the selected legs. The scope is accounting
 //! recomputation, not economic truth, source-document authenticity, journaled
 //! registry activation, or database read attestations.
 
+mod dimension;
 mod metadata;
+mod open_items;
 mod registry;
 mod statement;
 mod temporal;
+pub use dimension::VerifiedDimensionSelection;
+pub use open_items::{
+    OpenItemBalanceLimit, OpenItemUnitPolicy, VerifiedApplication, VerifiedOpenItem,
+    VerifiedOpenItemAccount, VerifiedOpenItems,
+};
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
@@ -43,7 +55,10 @@ pub const REPORT_BUNDLE_FORMAT: &[u8] = b"fa:report-bundle:v1";
 pub const MAX_REPORT_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v1";
 const INSTANT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v2";
+const OPEN_ITEMS_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v3";
 const STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v4";
+const DIMENSION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v8";
+const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:dimension-trial-balance:v1";
 const OUTPUT_FORMAT: &[u8; 19] = b"fa:trial-balance:v1";
 const MAX_ROWS: usize = 1 << 20;
 
@@ -107,7 +122,11 @@ pub struct VerifiedReport {
     pub rows: Vec<ReportRow>,
     /// Present for independently reconstructed native financial statements.
     pub statement: Option<VerifiedStatement>,
-    /// Whether statement units are recipient parameters or come from a
+    /// Authenticated dimension hierarchy and exact values included in the fold.
+    pub dimension: Option<VerifiedDimensionSelection>,
+    /// Present for independently reconstructed native open-item reports.
+    pub open_items: Option<VerifiedOpenItems>,
+    /// Whether report units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
     /// Exact canonical report bytes, independently reconstructed.
@@ -122,6 +141,7 @@ enum Selection {
     AsOf(i32),
     Activity(Vec<String>),
     Statement(statement::Selection),
+    OpenItems(Option<u128>),
 }
 struct Certificate<'a> {
     book: [u8; 16],
@@ -129,6 +149,7 @@ struct Certificate<'a> {
     known_at: u64,
     time_selection: Option<VerifiedInstantSelection>,
     selection: Selection,
+    dimension: Option<dimension::Selection>,
     registry_digest: [u8; 32],
     journal_root: [u8; 32],
     leaves: u64,
@@ -159,10 +180,12 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let format = r.fixed::<24>("certificate.format")?;
     let statement = format == *STATEMENT_CERTIFICATE_FORMAT;
     let instant = format == *INSTANT_CERTIFICATE_FORMAT;
-    if format != *CERTIFICATE_FORMAT && !statement && !instant {
+    let dimension = format == *DIMENSION_CERTIFICATE_FORMAT;
+    let open_items = format == *OPEN_ITEMS_CERTIFICATE_FORMAT;
+    if format != *CERTIFICATE_FORMAT && !statement && !instant && !dimension && !open_items {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance or v4 statement",
+            "expected a native v1/v2 trial balance, v3 OpenItems, v4 statement, or v8 dimension trial balance",
         ));
     }
     for (field, expected) in [
@@ -172,6 +195,10 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "certificate.output_format",
             if statement {
                 "fa:statement:v1"
+            } else if dimension {
+                "fa:dimension-trial-balance:v1"
+            } else if open_items {
+                "fa:open-items:v1"
             } else {
                 "fa:trial-balance:v1"
             },
@@ -185,6 +212,17 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let branch = r.fixed("certificate.branch")?;
     let known_at = r.u64("certificate.known_at")?;
     let selector = r.u8("certificate.selector")?;
+    let selector = if dimension {
+        if selector != 6 {
+            return Err(failed(
+                "supported_report",
+                "native v8 requires a dimension selector",
+            ));
+        }
+        r.u8("certificate.dimension.selection")?
+    } else {
+        selector
+    };
     let selection = if statement {
         if selector != 2 {
             return Err(failed(
@@ -196,6 +234,18 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         let periods = strings(&mut r, "certificate.periods")?;
         let comparative = strings(&mut r, "certificate.comparative")?;
         Selection::Statement(statement::Selection::new(definition, periods, comparative)?)
+    } else if open_items {
+        if selector != 1 {
+            return Err(failed(
+                "supported_report",
+                "native v3 requires an OpenItems selector",
+            ));
+        }
+        Selection::OpenItems(
+            r.present("certificate.account")?
+                .then(|| r.u128("certificate.account"))
+                .transpose()?,
+        )
     } else {
         match selector {
             0 => Selection::Periods(strings(&mut r, "certificate.periods")?),
@@ -207,14 +257,23 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     if matches!(&selection, Selection::Periods(p) | Selection::Activity(p) if p.is_empty()) {
         return Err(failed("report_selector", "period selection is empty"));
     }
+    let dimension_selection = if dimension {
+        Some(dimension::Selection {
+            dimension: text(&mut r, 128, "certificate.dimension")?.to_string(),
+            value: text(&mut r, 128, "certificate.dimension_value")?.to_string(),
+        })
+    } else {
+        None
+    };
     let registry_digest = r.fixed("certificate.registry_digest")?;
     let journal_root = r.fixed("certificate.journal_root")?;
     let leaves = r.u64("certificate.leaves")?;
-    let inputs = r.count(7, 4, "certificate.native_inputs")?;
-    if inputs != 7 {
+    let expected_inputs = if dimension { 8 } else { 7 };
+    let inputs = r.count(expected_inputs, 4, "certificate.native_inputs")?;
+    if inputs != expected_inputs {
         return Err(failed(
             "certificate_closure",
-            "certificate must retain all seven native input attestations",
+            "certificate must retain every native input attestation for its report family",
         ));
     }
     for _ in 0..inputs {
@@ -222,7 +281,9 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
-    let time_selection = if instant || statement && r.present("certificate.time_selection")? {
+    let time_selection = if instant
+        || (statement || dimension || open_items) && r.present("certificate.time_selection")?
+    {
         Some(VerifiedInstantSelection::read(&mut r)?)
     } else {
         None
@@ -247,6 +308,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         known_at,
         time_selection,
         selection,
+        dimension: dimension_selection,
         registry_digest,
         journal_root,
         leaves,
@@ -260,7 +322,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
 /// an exact independently selected checkpoint. An optional detached receipt is
 /// verified over this report bundle's digest using those same trusted keys.
 /// An embedded checkpoint is never a trust anchor merely because it is present.
-/// Version-2 statements require a receipt through this convenience API; use
+/// Version-2 reports require a receipt through this convenience API; use
 /// verify_report_expected to supply a recipient-selected certificate instead.
 /// Version-1 statements require verify_statement_report and recipient unit IDs.
 pub fn verify_report(
@@ -273,7 +335,7 @@ pub fn verify_report(
 }
 
 /// Verify a report with an independently selected source certificate digest.
-/// For version-2 native statements, either this recipient-owned pin or a valid
+/// For version-2 native reports, either this recipient-owned pin or a valid
 /// production receipt is required: a checkpoint authenticates the journal, but cannot by
 /// itself authenticate the certificate's definition and complete unit registry.
 /// Never derive this expected digest from the untrusted bundle being verified.
@@ -417,10 +479,19 @@ fn verify_report_with_inputs(
     }
     let cert = certificate(r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?)?;
     let is_statement = matches!(cert.selection, Selection::Statement(_));
-    if !is_statement && (major == 2 || recipient_units.is_some()) {
+    let is_open_items = matches!(cert.selection, Selection::OpenItems(_));
+    if (!is_statement && recipient_units.is_some())
+        || (!is_statement && !is_open_items && major == 2)
+    {
         return Err(failed(
             "supported_report",
-            "statement bundles and explicit unit universes require a v4 native statement certificate",
+            "registry bundles require a v4 statement or v3 OpenItems; explicit unit universes require a v4 statement",
+        ));
+    }
+    if is_open_items && major != 2 {
+        return Err(failed(
+            "registry_closure",
+            "OpenItems requires a version-2 bundle with its authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -438,7 +509,7 @@ fn verify_report_with_inputs(
     if major == 2 && receipt.is_none() && expected_certificate.is_none() {
         return Err(failed(
             "report_input_authority",
-            "native statement definitions and complete unit registries require a valid production receipt or an independently selected source certificate digest",
+            "native report definitions and complete unit registries require a valid production receipt or an independently selected source certificate digest",
         ));
     }
     let signed_bytes = r.bytes(1024 * 1024, "report_bundle.checkpoint")?;
@@ -546,10 +617,11 @@ fn verify_report_with_inputs(
             "the authenticated entries at known-at do not reproduce the certificate's journal root",
         ));
     }
-    let visible_migrations =
-        crate::migration_balance::report_visibility(envelopes, &records, &bodies, cert.known_at)
+    let (visible_migrations, migration_activations) =
+        crate::migration_balance::report_visibility_at(envelopes, &records, &bodies, cert.known_at)
             .map_err(|e| failed("migration_visibility", e.to_string()))?;
     let mut schema = metadata::Schema::default();
+    let mut dimension_history = dimension::History::default();
     let mut infos = BTreeMap::new();
     let mut by_digest = BTreeMap::new();
     for (index, (envelope, (len, payload))) in envelopes.iter().zip(&records).enumerate() {
@@ -558,7 +630,10 @@ fn verify_report_with_inputs(
         }
         let info = metadata::entry_info(&payload[..*len], envelope)?;
         if let Some((kind, body)) = info.schema {
-            schema.apply(kind, body, &cert.book)?;
+            schema.apply(kind, body, &cert.book, envelope.commit_seq)?;
+            if cert.dimension.is_some() {
+                dimension_history.apply(kind, body, &cert.book)?;
+            }
         }
         if by_digest.insert(envelope.record_digest, index).is_some() {
             return Err(failed(
@@ -595,6 +670,51 @@ fn verify_report_with_inputs(
                 "invalid or duplicate pending resolution",
             ));
         }
+    }
+    let dimension = cert
+        .dimension
+        .as_ref()
+        .map(|selection| dimension_history.select(selection))
+        .transpose()?;
+    if let Selection::OpenItems(account_filter) = &cert.selection {
+        let (open_items, output) = open_items::replay(
+            cert.known_at,
+            *account_filter,
+            &units,
+            &schema,
+            envelopes,
+            &infos,
+            &legs,
+            &records,
+            &visible_migrations,
+            &migration_activations,
+        )?;
+        if output != cert.output {
+            return Err(failed(
+                "report_recomputation",
+                "open-item amounts, complete application history, account metadata or canonical bytes differ from independent replay",
+            ));
+        }
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            bundle_digest: digest,
+            certificate_digest: cert.digest,
+            output_digest: cert.output_digest,
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: cert.time_selection,
+            effective_through: None,
+            activity: false,
+            periods: Vec::new(),
+            rows: Vec::new(),
+            statement: None,
+            dimension: None,
+            open_items: Some(open_items),
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
     }
     if let Selection::Statement(selection) = &cert.selection {
         let (statement, output) = statement::replay(
@@ -636,6 +756,8 @@ fn verify_report_with_inputs(
             periods: selection.periods.clone(),
             rows: Vec::new(),
             statement: Some(statement),
+            dimension: None,
+            open_items: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -647,6 +769,10 @@ fn verify_report_with_inputs(
         });
     }
     let (periods, through, activity) = schema.selection(&cert.selection)?;
+    let dimension_filter = dimension
+        .as_ref()
+        .map(|selection| dimension::LegFilter::new(&cert.book, selection, &dimension_history))
+        .transpose()?;
     let mut sums: BTreeMap<(u128, u32), [i128; 4]> = BTreeMap::new();
     for (index, info) in &infos {
         let e = &envelopes[*index];
@@ -668,7 +794,23 @@ fn verify_report_with_inputs(
         if !selected {
             continue;
         }
-        for leg in &legs[*index] {
+        let selected_legs = dimension_filter
+            .as_ref()
+            .map(|filter| dimension::selected_legs(&records[*index].1[..records[*index].0], filter))
+            .transpose()?;
+        if selected_legs
+            .as_ref()
+            .is_some_and(|mask| mask.len() != legs[*index].len())
+        {
+            return Err(failed(
+                "dimension_tags",
+                "dimension and monetary leg counts disagree",
+            ));
+        }
+        for (leg_index, leg) in legs[*index].iter().enumerate() {
+            if selected_legs.as_ref().is_some_and(|mask| !mask[leg_index]) {
+                continue;
+            }
             if leg.mantissa < 0 {
                 return Err(failed("exact_arithmetic", "a leg has a negative mantissa"));
             }
@@ -709,17 +851,38 @@ fn verify_report_with_inputs(
         });
     }
     rows.sort_by(|a, b| a.code.cmp(&b.code).then(a.unit.cmp(&b.unit)));
-    if totals.values().any(|t| t[0] != t[1] || t[2] != t[3]) {
+    // A dimension view selects individual legs. Its counterpart can be
+    // untagged or belong to another value, so its own totals need not balance.
+    if dimension.is_none() && totals.values().any(|t| t[0] != t[1] || t[2] != t[3]) {
         return Err(failed(
             "monetary_footing",
             "posted or pending monetary totals do not balance",
         ));
     }
-    let output = output(&periods, cert.known_at, through, activity, &rows, &totals);
+    let trial_balance = output(&periods, cert.known_at, through, activity, &rows, &totals);
+    let output = match &dimension {
+        None => trial_balance,
+        Some(filter) => {
+            let mut w = Writer::default();
+            w.fixed(DIMENSION_OUTPUT_FORMAT)
+                .bytes(filter.dimension.as_bytes())
+                .bytes(filter.value.as_bytes())
+                .count(filter.values.len());
+            for value in &filter.values {
+                w.bytes(value.as_bytes());
+            }
+            w.bytes(&trial_balance);
+            w.buf
+        }
+    };
     if output != cert.output {
         return Err(failed(
             "report_recomputation",
-            mismatch(&rows, cert.output)?,
+            if dimension.is_some() {
+                "dimension filter, authenticated descendants, tagged balances or canonical bytes differ from independent replay".to_string()
+            } else {
+                mismatch(&rows, cert.output)?
+            },
         ));
     }
     Ok(VerifiedReport {
@@ -735,6 +898,8 @@ fn verify_report_with_inputs(
         periods,
         rows,
         statement: None,
+        dimension,
+        open_items: None,
         unit_universe_source: "not-applicable",
         output,
         checked_records: records.len(),

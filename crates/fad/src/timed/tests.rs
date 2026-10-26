@@ -223,6 +223,37 @@ fn checkpoint_binds_preceding_tick_without_sweeping_or_postponing_timers() {
     lab(181, |root| async move {
         let mut fixture = fixture(&root, 181).await;
         let cx = PurposeContexts::narrow_runtime_root(&root);
+        let secret = [181; 32];
+        let principal = fa_model::principal_vid("timed-human-witness");
+        let issuer = Capability::embedded(VId(1), &["issue_capability", "witness"]).unwrap();
+        let issued = Capability::new(principal, Profile::Human, &[Op::Witness], issuer.holder())
+            .unwrap()
+            .holder_bound(fa_model::domain_digest(
+                b"fa:capability-possession:v1",
+                &[&secret],
+            ));
+        fixture
+            .book
+            .issue_capability(
+                &cx,
+                issuer,
+                issued.clone(),
+                DateDay::from_ymd(2026, 3, 15).unwrap(),
+                b"issue-timed-human-witness",
+                "Witness the timed checkpoint",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let token =
+            fa_cli::authority::CapabilityToken::new("timed-human-witness", issued, secret).unwrap();
+        let authority = fa_cli::authority::LaunchAuthority::from_operator_token(
+            std::path::PathBuf::from("/books/timed-witness"),
+            None,
+            &token,
+        )
+        .unwrap();
+        assert!(authority.can_confirm());
         let mut work =
             TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
         let scheduled = work.deadline();
@@ -247,11 +278,7 @@ fn checkpoint_binds_preceding_tick_without_sweeping_or_postponing_timers() {
 
         let checkpoint = fixture
             .book
-            .checkpoint(
-                &cx,
-                VId(1),
-                &Capability::embedded(VId(1), &["witness"]).unwrap(),
-            )
+            .checkpoint(&cx, authority.principal_vid(), authority.capability())
             .await
             .unwrap()
             .unwrap();

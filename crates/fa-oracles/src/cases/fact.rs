@@ -494,7 +494,7 @@ pub(crate) fn parse_values(
         }
         let numeric = matches!(rule, LiteralRule::Scale | LiteralRule::NumberWord);
         if !unit.is_empty() {
-            if !unit_codes.iter().any(|c| *c == unit) {
+            if !unit_codes.contains(&unit) {
                 errs.push(r.err(
                     LoadErrorKind::UnknownValue,
                     format!("`unit = \"{unit}\"` is not a registered unit"),

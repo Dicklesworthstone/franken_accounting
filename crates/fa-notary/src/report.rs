@@ -1,4 +1,5 @@
-//! Portable native trial balances and statements over a payload-complete checkpoint.
+//! Portable native and dimension-filtered trial balances and statements over
+//! a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
 //! independent verifier derives selectors from every record, reconstructs the
@@ -26,7 +27,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance or v4 statement certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema and migration bodies",
+        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance or v4 statement certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema and migration bodies",
     )
 }
 
@@ -52,8 +53,8 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
         .map(|bodies| needed.into_iter().zip(bodies).collect()))
 }
 
-/// Package an already replayed native trial balance or statement. For an
-/// instant-selected certificate, the facade supplies its observed time frontier
+/// Package an already replayed native or dimension-filtered trial balance, or
+/// statement. For an instant-selected certificate, the facade supplies its time frontier
 /// as `known_at` so the complete upper-tick closure is retained as well.
 /// Legacy v1 statements require the recipient to supply the complete unit-ID
 /// universe; use `assemble_with_registries` for an authenticated registry closure.
@@ -125,11 +126,12 @@ fn assemble_inner(
     if !(major == 1
         && (certificate.starts_with(b"fa:report-certificate:v1")
             || certificate.starts_with(b"fa:report-certificate:v2")
-            || certificate.starts_with(b"fa:report-certificate:v4"))
+            || certificate.starts_with(b"fa:report-certificate:v4")
+            || certificate.starts_with(b"fa:report-certificate:v8"))
         || major == 2 && certificate.starts_with(b"fa:report-certificate:v4"))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance or v4 statement",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance or v4 statement",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()

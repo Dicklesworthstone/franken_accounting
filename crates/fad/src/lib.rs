@@ -942,14 +942,16 @@ impl Server<'_> {
 
     /// The authority a session token binds a request to (fa-r3q): the
     /// token holds together (its secret proves the capability's possession
-    /// digest and its principal derives the holder), and the session stays
-    /// within its launch template. Its journaled issuance and revocation are
-    /// the kernel's to judge at admission.
+    /// digest and its principal derives the holder). A Human operator's
+    /// separating capability can execute its issued operations; Agent and
+    /// preparer tokens retain the bounded host ceiling and cannot confirm.
+    /// The kernel judges journaled issuance, scope, expiry and revocation at
+    /// admission. Hosted MCP launch still uses the stricter constructor.
     fn session(&self, bytes: &[u8]) -> Result<fa_cli::authority::LaunchAuthority, String> {
         let token = fa_cli::authority::CapabilityToken::decode(bytes).map_err(|e| e.to_string())?;
         // Host paths stay within the daemon's --files-root, as for every
         // other request it serves (relative paths only).
-        fa_cli::authority::LaunchAuthority::from_token(self.dir.clone(), None, &token)
+        fa_cli::authority::LaunchAuthority::from_operator_token(self.dir.clone(), None, &token)
             .and_then(|authority| authority.with_files(self.files_root.clone()))
     }
 

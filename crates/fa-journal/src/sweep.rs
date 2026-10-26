@@ -3108,7 +3108,11 @@ mod tests {
             let template_entry = template_proposal.seal(Vec::new(), None).expect("seal");
             let mirrors = entry_mirrors(&template_entry).expect("mirrors");
             let ctx = self.ctx();
-            let chunk_size = 10_000;
+            // One commit is one Chronicle capsule, and a V1 capsule carries at
+            // most one RFC 6330 source block of protected bytes (~14.4 MB);
+            // 10,000 entry mirrors per batch outgrew it as the mirror gained
+            // properties, so the substrate refused the commit.
+            let chunk_size = 1_000;
             for chunk_start in (0..count).step_by(chunk_size) {
                 let chunk_end = (chunk_start + chunk_size).min(count);
                 let mut batch = WriteBatch::new(relation::IN_BOOK);

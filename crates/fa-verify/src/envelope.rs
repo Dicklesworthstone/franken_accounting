@@ -193,6 +193,24 @@ pub struct Leg {
     pub mantissa: i128,
 }
 
+/// Application facts retained independently of the public balance-leg view.
+/// A digest authenticates the target payload; the VId identifies its leg.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SettlementRef {
+    pub target: u128,
+    pub digest: [u8; 32],
+    pub ordinal: u16,
+    pub unit: u32,
+    pub amount: i128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LegDetails {
+    pub base_amount: Option<(u32, i128)>,
+    pub dimensions: Vec<(u32, u128)>,
+    pub settlements: Vec<SettlementRef>,
+}
+
 /// The selection fields an `fa:entry:v1` proposal determines, read from the
 /// front of the proposal through its legs. Every byte after the legs is
 /// covered by the digests and does not feed an envelope field.
@@ -202,6 +220,7 @@ struct ProposalPrefix {
     class: u16,
     effective_date: i32,
     legs: Vec<Leg>,
+    leg_details: Vec<LegDetails>,
 }
 
 impl ProposalPrefix {
@@ -249,6 +268,12 @@ pub(crate) fn proposal_after_legs(proposal: &[u8]) -> Result<Reader<'_>, DecodeE
     Ok(r)
 }
 
+/// Decode application facts from the same canonical prefix parser that derives
+/// leaf selectors. Authentication remains the caller's `check_record` duty.
+pub(crate) fn proposal_leg_details(proposal: &[u8]) -> Result<Vec<LegDetails>, DecodeError> {
+    Ok(proposal_prefix(proposal)?.leg_details)
+}
+
 fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeError> {
     let major = r.u16("entry.schema_major")?;
     if major != 1 {
@@ -270,6 +295,7 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
     // side u8, account u128, amount (u32, i128), option tag, two counts, memo tag.
     let legs = r.count(MAX_ENVELOPE_LIST, 1 + 16 + 20 + 1 + 4 + 1 + 4, "entry.legs")?;
     let mut parsed = Vec::with_capacity(legs);
+    let mut leg_details = Vec::with_capacity(legs);
     for _ in 0..legs {
         let debit = match r.u8("leg.side")? {
             0 => true,
@@ -284,24 +310,47 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
             unit,
             mantissa,
         });
-        if r.present("leg.base_amount")? {
-            amount(r, "leg.base_amount")?;
-        }
-        let dims = r.count(MAX_ENVELOPE_LIST, 20, "leg.dimension_set")?;
+        let base_amount = if r.present("leg.base_amount")? {
+            Some(amount(r, "leg.base_amount")?)
+        } else {
+            None
+        };
+        // Authenticate the native dimension bound and order before any report
+        // selection can exclude a malformed record.
+        let dims = r.count(64, 20, "leg.dimension_set")?;
+        let mut dimensions = Vec::with_capacity(dims);
+        let mut previous = None;
         for _ in 0..dims {
-            r.u32("dimension.id")?;
-            r.u128("dimension.value")?;
+            let id = r.u32("dimension.id")?;
+            if previous.is_some_and(|before| before >= id) {
+                return Err(r.error("leg.dimension_set", Reason::Unsorted));
+            }
+            previous = Some(id);
+            dimensions.push((id, r.u128("dimension.value")?));
         }
         if r.present("leg.memo")? {
             skip_erasable(r, "leg.memo")?;
         }
         let settles = r.count(MAX_ENVELOPE_LIST, 16 + 32 + 2 + 20, "leg.settles")?;
+        let mut settlements = Vec::with_capacity(settles);
         for _ in 0..settles {
-            r.u128("settles.target.vid")?;
-            r.fixed::<32>("settles.target.entry_digest")?;
-            r.u16("settles.ordinal")?;
-            amount(r, "settles.amount")?;
+            let target = r.u128("settles.target.vid")?;
+            let digest = r.fixed("settles.target.entry_digest")?;
+            let ordinal = r.u16("settles.ordinal")?;
+            let (unit, amount) = amount(r, "settles.amount")?;
+            settlements.push(SettlementRef {
+                target,
+                digest,
+                ordinal,
+                unit,
+                amount,
+            });
         }
+        leg_details.push(LegDetails {
+            base_amount,
+            dimensions,
+            settlements,
+        });
     }
     Ok(ProposalPrefix {
         book_id,
@@ -309,6 +358,7 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
         class,
         effective_date,
         legs: parsed,
+        leg_details,
     })
 }
 

@@ -1,4 +1,5 @@
-//! Immutable source registries for retained native trial balances and statements.
+//! Immutable source registries for retained native trial balances, open items,
+//! and statements.
 //!
 //! The epoch archives source text, not executable code or an authorization grant.
 //! Its semantic closure is the digest the original certificate already binds.
@@ -50,7 +51,9 @@ fn unavailable(why: impl Into<String>) -> Refusal {
 pub(crate) fn supports(selection: &ReportSelection) -> bool {
     matches!(
         selection,
-        ReportSelection::TrialBalance(_) | ReportSelection::Statement(_)
+        ReportSelection::TrialBalance(_)
+            | ReportSelection::OpenItems { .. }
+            | ReportSelection::Statement(_)
     )
 }
 
@@ -250,9 +253,9 @@ impl Epoch {
             return Err(Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 exit::REFUSAL,
-                "the archived registry does not enumerate exactly the statement's book units",
+                "the archived registry does not enumerate exactly the report's book units",
                 "plan §13.6 / FA-INV-11 (the offline unit universe must be exact)",
-                "use the complete recipient unit universe with the legacy statement bundle, or a report whose retained unit epoch matches its book",
+                "use a report whose retained unit epoch matches its complete book unit table",
             ));
         }
         self.sources
@@ -470,6 +473,14 @@ mod tests {
             .certificate
     }
 
+    fn open_items_certificate(h: &Harness, account: Option<VId>) -> ReportCertificate {
+        h.book
+            .certify_report(&h.cx(), ReportSelection::OpenItems { account }, None)
+            .unwrap()
+            .unwrap()
+            .certificate
+    }
+
     /// A retained source transcript from a different executable build. The
     /// fixture changes build provenance only, never native evidence or amounts.
     /// Unlike an API that bypasses admission, it uses an actual native commit
@@ -593,8 +604,9 @@ mod tests {
         let (mut h, _) = Harness::with_posts(1);
         let tb = certificate(&h, false);
         let statement = certificate(&h, true);
+        let open_items = open_items_certificate(&h, None);
         let before = h.head();
-        let ack = h.retain(&tb).unwrap();
+        let ack = h.retain(&open_items).unwrap();
         assert_eq!(ack.recorded_at.0, before.0 + 1);
         let book = h.book.context();
         let root = vid(book.book_id, &tb.registry_digest);
@@ -627,12 +639,13 @@ mod tests {
                 .iter()
                 .all(|row| row.created_at == ack.recorded_at)
         );
-        assert_eq!(h.retain(&tb).unwrap(), ack);
+        assert_eq!(h.retain(&open_items).unwrap(), ack);
         assert_eq!(
             h.head(),
             ack.recorded_at,
             "an exact retry publishes nothing"
         );
+        h.retain(&tb).unwrap();
         h.retain(&statement).unwrap();
         let rows = h.book.db.vertices_at(h.head()).unwrap();
         assert_eq!(
@@ -641,7 +654,7 @@ mod tests {
             "one shared epoch, no copy per certificate"
         );
         let h = h.reopen();
-        for expected in [tb, statement] {
+        for expected in [tb, open_items, statement] {
             let saved = h.read(&expected.digest).unwrap();
             assert_eq!(
                 saved.canonical_bytes().unwrap(),
@@ -649,6 +662,119 @@ mod tests {
             );
             let replay = h.book.replay_report(&h.cx(), &saved).unwrap().unwrap();
             assert_eq!(replay.canonical_bytes().unwrap(), expected.output);
+        }
+    }
+
+    #[test]
+    fn registry_epoch_open_items_replays_archived_sources_after_reopen() {
+        for filtered in [false, true] {
+            let (mut h, _) = Harness::with_posts(1);
+            let account = filtered.then(|| fa_model::account_vid(h.book.context().book_id, "1000"));
+            let original = open_items_certificate(&h, account);
+            let epoch = historical_epoch(h.book.context().book_id);
+            let historical = original.resealed_under(epoch.closure);
+            assert_ne!(historical.registry_digest, original.registry_digest);
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &historical)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+                "an unretained historical source closure is unavailable"
+            );
+            publish_epoch(&mut h, &epoch);
+            let ack = h.retain(&historical).unwrap();
+            let mut h = h.reopen();
+            let stored = h.read(&historical.digest).unwrap();
+            let before = h.head();
+            let replay = h.book.replay_report(&h.cx(), &stored).unwrap().unwrap();
+            assert_eq!(replay.canonical_bytes().unwrap(), original.output);
+            let ReportOutput::OpenItems(report) = replay else {
+                panic!("the archived selector must remain an open-item report");
+            };
+            assert_eq!(report.account_filter, account);
+            assert_eq!(report.items.len(), if filtered { 1 } else { 2 });
+            assert!(report.items.iter().all(|item| item.open == 100));
+            assert_eq!(report.accounts.len(), if filtered { 1 } else { 2 });
+            let archived = resolve(&h.book.db, &h.cx().query(), h.book.context(), &stored)
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let docs = archived.offline_documents(&h.book.context().units).unwrap();
+            assert_eq!(
+                docs[3].1,
+                document("foundations", &epoch.sources[3].1)
+                    .unwrap()
+                    .canonical_bytes()
+            );
+            assert_ne!(
+                docs[3].1,
+                document("foundations", REPORT_REGISTRIES[3].1)
+                    .unwrap()
+                    .canonical_bytes()
+            );
+            assert_eq!(h.retain(&stored).unwrap(), ack);
+            assert_eq!(h.head(), before, "replay, export and retry publish nothing");
+
+            let mut wrong_native = stored.clone();
+            wrong_native.inputs[0].result_digest.0[0] ^= 1;
+            wrong_native = wrong_native.resealed_under(epoch.closure);
+            let refusal = h
+                .book
+                .replay_report(&h.cx(), &wrong_native)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, code::CERTIFICATE_INVALID);
+            assert!(refusal.message.contains("native input"));
+            let mut wrong_output = stored;
+            wrong_output.output[0] ^= 1;
+            wrong_output.output_digest = digest(b"fa:report-output:v1", &wrong_output.output);
+            wrong_output = wrong_output.resealed_under(epoch.closure);
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &wrong_output)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_INVALID
+            );
+        }
+    }
+
+    #[test]
+    fn registry_epoch_open_items_rejects_resealed_application_and_lineage_meanings() {
+        for (from, to) in [
+            ("carries_open_items = true", "carries_open_items = false"),
+            ("supersession = \"reverses\"", "supersession = \"none\""),
+        ] {
+            let (mut h, _) = Harness::with_posts(1);
+            let original = open_items_certificate(&h, None);
+            let mut sources = Epoch::current(h.book.context().book_id).unwrap().sources;
+            assert!(sources[1].1.contains(from));
+            sources[1].1 = sources[1].1.replacen(from, to, 1);
+            let incompatible = Epoch::new(h.book.context().book_id, sources).unwrap();
+            assert_ne!(incompatible.closure, original.registry_digest);
+            publish_epoch(&mut h, &incompatible);
+            let changed = original.resealed_under(incompatible.closure);
+            let before = h.head();
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &changed)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE
+            );
+            assert_eq!(
+                h.retain(&changed).unwrap_err().code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE
+            );
+            assert_eq!(
+                h.head(),
+                before,
+                "incompatible source admission writes nothing"
+            );
         }
     }
 
@@ -676,7 +802,7 @@ mod tests {
             let replay = h.book.replay_report(&h.cx(), &stored).unwrap().unwrap();
             assert_eq!(replay.canonical_bytes().unwrap(), original.output);
             if statement {
-                let docs = offline_statement_registries_at(
+                let docs = offline_report_registries_at(
                     &h.book.db,
                     &h.cx().query(),
                     h.book.context(),

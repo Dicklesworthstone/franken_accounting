@@ -204,7 +204,9 @@ fn bundle(
         .map(|r| leaf_hash(&r.envelope.encode()))
         .collect();
     let (codes, cutoff, activity) = match &selection {
-        Selection::Statement(_) => panic!("use the statement fixture"),
+        Selection::Statement(_) | Selection::OpenItems(_) => {
+            panic!("use the report-family fixture")
+        }
         Selection::AsOf(day) => (
             if *day < 31 {
                 vec!["P1".into()]
@@ -239,7 +241,9 @@ fn bundle(
         .fixed(&[0; 16])
         .u64(known_at);
     match selection {
-        Selection::Statement(_) => panic!("use the statement fixture"),
+        Selection::Statement(_) | Selection::OpenItems(_) => {
+            panic!("use the report-family fixture")
+        }
         Selection::AsOf(day) => {
             cert.u8(1).i32(day);
         }
@@ -435,6 +439,7 @@ fn incomplete_payloads_wrong_anchor_and_unsigned_self_trust_are_refused() {
     );
 }
 
+mod open_items;
 mod statements;
 mod temporal;
 
@@ -650,3 +655,6 @@ fn recipient_statement_unit_lists_are_validated_before_untrusted_bytes() {
         "supported_report"
     );
 }
+
+#[path = "tests/dimension.rs"]
+mod dimension_tests;

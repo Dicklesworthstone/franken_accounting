@@ -12,7 +12,7 @@ fn unhex(s: &str) -> Vec<u8> {
         .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
         .collect()
 }
-fn registries() -> Vec<(String, Vec<u8>)> {
+pub(super) fn registries() -> Vec<(String, Vec<u8>)> {
     let raw = unhex(include_str!("registries.hex"));
     let mut r = Reader::new(&raw);
     let n = r.count(4, 8, "registries").unwrap();
@@ -26,7 +26,7 @@ fn registries() -> Vec<(String, Vec<u8>)> {
     r.finish("registries").unwrap();
     out
 }
-fn closure(docs: &[(String, Vec<u8>)]) -> [u8; 32] {
+pub(super) fn closure(docs: &[(String, Vec<u8>)]) -> [u8; 32] {
     let mut out = Vec::new();
     for (name, bytes) in docs {
         out.extend_from_slice(name.as_bytes());

@@ -1359,3 +1359,387 @@ fn produced_report_bundles_recompute_every_certified_report_across_seeded_histor
     }
     assert_eq!(checked, 4 * 3 * 3, "every seeded report was checked");
 }
+
+fn declare_report_dimension(
+    fixture: &mut Fixture,
+    dimension: &str,
+    code: &str,
+    parent: Option<&str>,
+) {
+    let capability = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    fixture
+        .book
+        .create_dimension_value(
+            &fa::dimension::DimensionValueSpec {
+                dimension: dimension.into(),
+                code: code.into(),
+                name: format!("Portable report {dimension} {code}"),
+                parent: parent.map(str::to_owned),
+                valid_from: None,
+                valid_to: None,
+            },
+            PRINCIPAL,
+            format!("dimension-{dimension}-{code}").as_bytes(),
+            &capability,
+        )
+        .unwrap()
+        .unwrap();
+}
+
+fn dimension_report_legs(
+    fixture: &Fixture,
+    dimension: &str,
+    value: &str,
+    amount: i128,
+) -> Vec<LegPayload> {
+    let mut legs = fixture.legs(fixture.usd, ("6000", "1000"), amount);
+    // Deliberately tag only the expense. A dimension report is a leg filter:
+    // selecting the whole balanced entry would fabricate a cash contribution.
+    legs[0].dimension_set = vec![(
+        fa_model::dimension_kind(dimension).unwrap().id,
+        fa_model::dimension_value_vid(fixture.book.context().book_id, dimension, value),
+    )];
+    legs
+}
+
+fn portable_dimension_selection(
+    selection: fa::TrialBalanceSelection,
+    dimension: &str,
+    value: &str,
+) -> fa::ReportSelection {
+    fa::ReportSelection::DimensionTrialBalance {
+        selection,
+        dimension: dimension.into(),
+        value: value.into(),
+    }
+}
+
+fn verify_dimension_bundle(
+    book: &mut Book,
+    certified: &fa::CertifiedReport,
+    expected_values: &[&str],
+    expected_posted: i128,
+    expected_pending: i128,
+) -> fa_verify::report::VerifiedReport {
+    let ReportOutput::DimensionTrialBalance(native) = &certified.report else {
+        panic!("the selected native output must be a dimensional trial balance");
+    };
+    assert_eq!(
+        native.values,
+        expected_values
+            .iter()
+            .map(|v| (*v).to_owned())
+            .collect::<Vec<_>>()
+    );
+    let usd = book.context().units.lookup("USD").unwrap().0;
+    assert_eq!(native.trial_balance.unit_totals[&usd], (expected_posted, 0));
+    assert_eq!(
+        native.trial_balance.pending_unit_totals[&usd],
+        (expected_pending, 0)
+    );
+    let certificate = &certified.certificate;
+    assert!(
+        certificate
+            .canonical_bytes()
+            .unwrap()
+            .starts_with(b"fa:report-certificate:v8")
+    );
+    let produced = produce(book, certificate);
+    let key = book.checkpoint_public_key();
+    let anchor = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+    let verified = fa_verify::report::verify_report_expected(
+        &produced.bundle.bytes,
+        &[key],
+        Some(&anchor.checkpoint),
+        Some(&produced.receipt),
+        Some(&certificate.digest),
+    )
+    .unwrap();
+    assert_eq!(verified.output, certificate.output);
+    assert_eq!(verified.output, native.canonical_bytes().unwrap());
+    assert_eq!(verified.certificate_digest, certificate.digest);
+    assert_eq!(verified.known_at, certificate.known_at.0);
+    let filter = verified.dimension.as_ref().unwrap();
+    assert_eq!(filter.dimension, native.dimension);
+    assert_eq!(filter.value, native.value);
+    assert_eq!(filter.values, native.values);
+    assert!(verified.statement.is_none());
+    assert_eq!(
+        verified.rows.len(),
+        1,
+        "untagged cash must not enter the report"
+    );
+    let expense = &verified.rows[0];
+    assert_eq!(expense.code, "6000");
+    assert_eq!(expense.unit, usd);
+    assert_eq!(
+        (
+            expense.debits,
+            expense.credits,
+            expense.debits_pending,
+            expense.credits_pending,
+        ),
+        (expected_posted, 0, expected_pending, 0)
+    );
+    verified
+}
+
+#[test]
+fn dimension_bundles_fold_descendant_legs_and_cross_period_pending_resolutions() {
+    use fa::TrialBalanceSelection::{Activity, AsOf, Periods};
+
+    let mut fixture = Fixture::new(0xe4);
+    for (dimension, code, parent) in [
+        ("cost_center", "TOP", None),
+        ("cost_center", "CC10", Some("TOP")),
+        ("cost_center", "CC11", Some("CC10")),
+        ("cost_center", "OTHER", None),
+        ("department", "CC11", None),
+    ] {
+        declare_report_dimension(&mut fixture, dimension, code, parent);
+    }
+    for (key, date, dimension, value, amount) in [
+        ("root", day(2026, 1, 10), "cost_center", "TOP", 20),
+        ("descendant", day(2026, 1, 15), "cost_center", "CC11", 100),
+        ("sibling", day(2026, 1, 15), "cost_center", "OTHER", 900),
+        ("other-kind", day(2026, 1, 15), "department", "CC11", 800),
+        ("next-period", day(2026, 2, 5), "cost_center", "CC10", 30),
+    ] {
+        let proposal = fixture.proposal(
+            date,
+            key.as_bytes(),
+            EntryClass::ORIGINAL,
+            dimension_report_legs(&fixture, dimension, value, amount),
+        );
+        fixture.commit(proposal);
+    }
+    let mut hold = fixture.proposal(
+        day(2026, 1, 20),
+        b"dimension-reservation",
+        EntryClass::PENDING,
+        dimension_report_legs(&fixture, "cost_center", "CC11", 70),
+    );
+    hold.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    let target = fixture.commit(hold).entry_ref();
+    let held_at = fixture.book.head().unwrap();
+    let mut resolution = fixture.proposal(
+        day(2026, 2, 10),
+        b"dimension-partial-post",
+        EntryClass::RESOLUTION,
+        dimension_report_legs(&fixture, "cost_center", "CC11", 30),
+    );
+    resolution.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: Some(target),
+        disposition: Some(Disposition::Posts {
+            source_ordinals: vec![0, 1],
+        }),
+    });
+    fixture.commit(resolution);
+    let resolved_at = fixture.book.head().unwrap();
+
+    // Resolution releases the whole original hold at known_at, regardless
+    // of its February effective date; only the posted sub-vector moves there.
+    for (selection, at, posted, pending) in [
+        (Periods(vec![FEBRUARY.into()]), held_at, 150, 70),
+        (Periods(vec![FEBRUARY.into()]), resolved_at, 180, 0),
+        (Activity(vec![JANUARY.into()]), resolved_at, 120, 0),
+        (Activity(vec![FEBRUARY.into()]), resolved_at, 60, 0),
+        (AsOf(day(2026, 1, 31)), held_at, 120, 70),
+        (AsOf(day(2026, 1, 31)), resolved_at, 120, 0),
+    ] {
+        let certified = fixture
+            .book
+            .certify_report(
+                portable_dimension_selection(selection, "cost_center", "TOP"),
+                Some(at),
+            )
+            .unwrap()
+            .unwrap();
+        verify_dimension_bundle(
+            &mut fixture.book,
+            &certified,
+            &["CC10", "CC11", "TOP"],
+            posted,
+            pending,
+        );
+    }
+    for (dimension, value, amount) in [("cost_center", "OTHER", 900), ("department", "CC11", 800)] {
+        let certified = fixture
+            .book
+            .certify_report(
+                portable_dimension_selection(AsOf(day(2026, 1, 31)), dimension, value),
+                Some(resolved_at),
+            )
+            .unwrap()
+            .unwrap();
+        verify_dimension_bundle(&mut fixture.book, &certified, &[value], amount, 0);
+    }
+}
+
+#[test]
+fn historical_dimension_bundles_do_not_adopt_later_descendants_or_activity() {
+    let mut fixture = Fixture::new(0xe5);
+    declare_report_dimension(&mut fixture, "cost_center", "TOP", None);
+    declare_report_dimension(&mut fixture, "cost_center", "CC10", Some("TOP"));
+    let first = fixture.proposal(
+        day(2026, 1, 15),
+        b"original-dimension-activity",
+        EntryClass::ORIGINAL,
+        dimension_report_legs(&fixture, "cost_center", "CC10", 100),
+    );
+    fixture.commit(first);
+    let selection = portable_dimension_selection(
+        fa::TrialBalanceSelection::AsOf(day(2026, 1, 31)),
+        "cost_center",
+        "TOP",
+    );
+    let historical = fixture
+        .book
+        .certify_report(selection.clone(), None)
+        .unwrap()
+        .unwrap();
+    declare_report_dimension(&mut fixture, "cost_center", "CC11", Some("CC10"));
+    let later = fixture.proposal(
+        day(2026, 1, 16),
+        b"later-descendant-activity",
+        EntryClass::ORIGINAL,
+        dimension_report_legs(&fixture, "cost_center", "CC11", 50),
+    );
+    fixture.commit(later);
+    let current = fixture
+        .book
+        .certify_report(selection.clone(), None)
+        .unwrap()
+        .unwrap();
+    // Closing a value governs future posting admission. It must not erase the
+    // already recorded tagged legs or descendants from historical reports.
+    let schema = fa_journal::Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    fixture
+        .book
+        .close_dimension_value(
+            &fa::dimension::DimensionCloseSpec {
+                dimension: "cost_center".into(),
+                code: "CC10".into(),
+                closed_on: day(2026, 2, 1),
+            },
+            PRINCIPAL,
+            b"close-report-cost-center",
+            &schema,
+        )
+        .unwrap()
+        .unwrap();
+    let after_close = fixture
+        .book
+        .certify_report(selection, None)
+        .unwrap()
+        .unwrap();
+    verify_dimension_bundle(&mut fixture.book, &historical, &["CC10", "TOP"], 100, 0);
+    verify_dimension_bundle(
+        &mut fixture.book,
+        &current,
+        &["CC10", "CC11", "TOP"],
+        150,
+        0,
+    );
+    verify_dimension_bundle(
+        &mut fixture.book,
+        &after_close,
+        &["CC10", "CC11", "TOP"],
+        150,
+        0,
+    );
+}
+
+#[test]
+fn instant_dimension_bundles_pin_hierarchy_to_resolved_sequence_not_tick_frontier() {
+    let mut fixture = Fixture::new(0xe6);
+    declare_report_dimension(&mut fixture, "cost_center", "TOP", None);
+    declare_report_dimension(&mut fixture, "cost_center", "CC10", Some("TOP"));
+    let base = fa_time::UtcInstant::parse("2026-01-15T00:00:00Z")
+        .unwrap()
+        .unix_ns();
+    tick(&mut fixture.book, base + 100, false);
+    let first = fixture.proposal(
+        day(2026, 1, 15),
+        b"dimension-first-bucket",
+        EntryClass::ORIGINAL,
+        dimension_report_legs(&fixture, "cost_center", "CC10", 40),
+    );
+    fixture.commit(first);
+    let selection = portable_dimension_selection(
+        fa::TrialBalanceSelection::Periods(vec![JANUARY.into()]),
+        "cost_center",
+        "TOP",
+    );
+    let open = fixture
+        .book
+        .certify_report_at_instant(selection.clone(), base + 105)
+        .unwrap()
+        .unwrap();
+    tick(&mut fixture.book, base + 110, true);
+    declare_report_dimension(&mut fixture, "cost_center", "CC11", Some("CC10"));
+    let later = fixture.proposal(
+        day(2026, 1, 15),
+        b"dimension-later-bucket",
+        EntryClass::ORIGINAL,
+        dimension_report_legs(&fixture, "cost_center", "CC11", 80),
+    );
+    fixture.commit(later);
+    tick(&mut fixture.book, base + 120, true);
+    let closed = fixture
+        .book
+        .certify_report_at_instant(selection.clone(), base + 105)
+        .unwrap()
+        .unwrap();
+    assert_eq!(open.certificate.known_at, closed.certificate.known_at);
+    assert_eq!(open.certificate.output, closed.certificate.output);
+    assert!(
+        open.certificate
+            .time_selection
+            .as_ref()
+            .unwrap()
+            .resolution
+            .upper
+            .is_none()
+    );
+    assert!(
+        closed
+            .certificate
+            .time_selection
+            .as_ref()
+            .unwrap()
+            .resolution
+            .upper
+            .is_some()
+    );
+    for certified in [&open, &closed] {
+        let verified =
+            verify_dimension_bundle(&mut fixture.book, certified, &["CC10", "TOP"], 40, 0);
+        let time = verified.time_selection.unwrap();
+        let native = certified.certificate.time_selection.as_ref().unwrap();
+        assert_eq!(time.frontier, native.resolution.frontier);
+        assert_eq!(time.resolved_seq, certified.certificate.known_at.0);
+        assert_eq!(time.source_grade(), "uncorroborated_daemon_clock");
+    }
+    let current = fixture
+        .book
+        .certify_report_at_instant(selection, base + 120)
+        .unwrap()
+        .unwrap();
+    let verified = verify_dimension_bundle(
+        &mut fixture.book,
+        &current,
+        &["CC10", "CC11", "TOP"],
+        120,
+        0,
+    );
+    assert_eq!(
+        verified.time_selection.unwrap().source_grade(),
+        "corroborated_daemon_clock"
+    );
+}
