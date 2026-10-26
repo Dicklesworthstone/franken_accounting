@@ -64,7 +64,7 @@ thousands of pages long, but **none of them published a general ledger**. franke
 is a *reconstruction*, and a reconstruction can silently become a test of what we planted.
 
 The project has been burned by exactly that:
-- fa-4psc measured 100% precision for the Lantern calibration "by construction"
+- fa-4psc's Lantern calibration reports 100% precision "by construction"
   (`registries/lantern_calibration.toml:22-32`, because fa-gen labels what it plants);
 - fa-kkxl and fa-e75k retracted oracle claims that overstated what a green test proved.
 
