@@ -38,13 +38,15 @@
 //!   poster, with extension 23 `fa:case-member:v1`. The posting law admits
 //!   a case-bound class only as such a derivation of an Approved case, and
 //!   decides its row's approvals over the case's approvals ([`admit_member`]).
-//!   This build posts PriorPeriodAdjustment, Revision and Restatement
-//!   cases. A Revision case's entries are Revision entries that each revise
+//!   This build posts PriorPeriodAdjustment, Revision, Restatement and
+//!   PolicyChangeRetrospective cases. A Revision case's entries are Revision entries that each revise
 //!   one standing posting (`Revises`, net effect target plus delta) in a
 //!   period the case affects. A Restatement case's entries each restate one
 //!   posting (`Restates`, the delta legs) into the restated period, Closed
 //!   included, under the Restatement SoD rule's session lineage (fa-651f;
-//!   `a_restatement_case_restates_a_closed_period_from_the_cli`).
+//!   `a_restatement_case_restates_a_closed_period_from_the_cli`). A
+//!   PolicyChangeRetrospective case's entries are Restatement entries
+//!   (`a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli`).
 //! - **Disclose** (`Posted → Disclosed`) journals extension 25
 //!   `fa:case-disclosure:v1`: the Disclosure document the case is disclosed
 //!   in and the Reviewed attestation over it, which a principal other than
@@ -2771,10 +2773,12 @@ mod tests {
     }
 
     /// Phrases the module doc once carried while Restatement posting waited
-    /// on fa-651f; it posts now (H12, fa-yugf.88).
-    const STALE: [&str; 2] = [
+    /// on fa-651f (H12, fa-yugf.88), and while no test posted a
+    /// PolicyChangeRetrospective case (H13, fa-yugf.93); both post now.
+    const STALE: [&str; 3] = [
         "Restatement entries wait",
         "This build posts PriorPeriodAdjustment and Revision cases",
+        "not yet exercised by a test",
     ];
 
     fn stale_in(text: &str) -> Vec<&'static str> {
@@ -2795,17 +2799,17 @@ mod tests {
             .and_then(|rest| rest.split(" cases.").next())
             .expect("the module doc says which case kinds this build posts");
         for kind in CaseKind::ALL {
-            // A PolicyChangeRetrospective case's entries are Restatement
-            // entries; no test posts one yet (H13, fa-yugf.93), so the doc
-            // does not claim it.
-            if posting_class(kind).is_some() && kind != CaseKind::PolicyChangeRetrospective {
+            if posting_class(kind).is_some() {
                 let name = format!("{kind:?}");
                 assert!(sentence.contains(&name), "{name} missing from: {sentence}");
             }
         }
         assert!(stale_in(&doc).is_empty(), "{:?}", stale_in(&doc));
-        // The planted negative: the doc as it stood at 8196f5e40 is caught.
+        // The planted negatives: the doc as it stood at 8196f5e40, and the
+        // PolicyChangeRetrospective caveat before f1af9aaf3, are caught.
         let old = "This build posts PriorPeriodAdjustment and Revision cases. Restatement entries wait for their SoD rule's session lineage (fa-651f).";
-        assert_eq!(stale_in(old), STALE.to_vec());
+        assert_eq!(stale_in(old), STALE[..2].to_vec());
+        let caveat = "(a PolicyChangeRetrospective case's entries are Restatement entries, not yet exercised by a test)";
+        assert_eq!(stale_in(caveat), vec![STALE[2]]);
     }
 }

@@ -415,13 +415,16 @@ fn the_registry_check_names_an_invented_verb_subcommand_or_flag() {
 }
 
 /// Phrases the `case` docs carried while Restatement posting waited on
-/// fa-651f (H12, fa-yugf.88). Restatement cases post now
-/// (`a_restatement_case_restates_a_closed_period_from_the_cli`).
-const STALE_CASE_CLAIMS: [&str; 4] = [
+/// fa-651f (H12, fa-yugf.88), and while no test posted a
+/// PolicyChangeRetrospective case (H13, fa-yugf.93). Both post now
+/// (`a_restatement_case_restates_a_closed_period_from_the_cli`,
+/// `a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli`).
+const STALE_CASE_CLAIMS: [&str; 5] = [
     "entries are refused with FA-REF-178",
     "This build posts PriorPeriodAdjustment and Revision cases",
     "a PriorPeriodAdjustment or Revision case's entries",
     "Restatement posting waits",
+    "not yet exercised by a test",
 ];
 
 fn stale_case_posting_claims(text: &str) -> Vec<&'static str> {
@@ -447,12 +450,7 @@ fn case_docs_name_every_postable_kind_and_make_no_stale_posting_claim() {
         .and_then(|rest| rest.split(" cases").next())
         .expect("the case post usage says which kinds this build posts");
     for kind in fa_journal::case::CaseKind::ALL {
-        // A PolicyChangeRetrospective case's entries are Restatement entries;
-        // no test posts one yet (H13, fa-yugf.93), so the usage names it
-        // separately rather than claiming it.
-        if fa_journal::case::posting_class(kind).is_some()
-            && kind != fa_journal::case::CaseKind::PolicyChangeRetrospective
-        {
+        if fa_journal::case::posting_class(kind).is_some() {
             let name = format!("{kind:?}");
             assert!(posts.contains(&name), "{name} missing from: {posts}");
         }
@@ -484,6 +482,12 @@ fn case_docs_name_every_postable_kind_and_make_no_stale_posting_claim() {
     assert_eq!(
         stale_case_posting_claims(old_readme),
         ["Restatement posting waits"]
+    );
+    // The caveat every surface carried before f1af9aaf3 posted one.
+    let old_caveat = "PriorPeriodAdjustment, Revision and Restatement cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries, not yet exercised by a test).";
+    assert_eq!(
+        stale_case_posting_claims(old_caveat),
+        ["not yet exercised by a test"]
     );
 }
 
