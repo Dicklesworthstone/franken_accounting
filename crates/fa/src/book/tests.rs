@@ -4968,8 +4968,23 @@ fn native_certificate_retention_checks_presented_and_current_authority() {
             .unwrap(),
         agent_report.certificate
     );
+    let after_fold = book.trial_balance(&["FY2026-P03".to_string()]).unwrap();
+    assert_eq!(after_fold.known_at, agent_stored.recorded_at);
+    assert_eq!(after_fold.rows, original_fold.rows);
+    assert_eq!(after_fold.unit_totals, original_fold.unit_totals);
     assert_eq!(
-        book.trial_balance(&["FY2026-P03".to_string()]).unwrap(),
+        after_fold.pending_unit_totals,
+        original_fold.pending_unit_totals
+    );
+    assert_eq!(after_fold.periods, original_fold.periods);
+    assert_eq!(
+        after_fold.effective_through,
+        original_fold.effective_through
+    );
+    assert_eq!(after_fold.activity, original_fold.activity);
+    assert_eq!(
+        book.trial_balance_at(&["FY2026-P03".to_string()], Some(original_fold.known_at))
+            .unwrap(),
         original_fold
     );
 
