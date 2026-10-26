@@ -5,8 +5,9 @@
 //! and `roles.toml` from a [`CaseFiles`] (a committed case through
 //! [`embedded`], or an edited copy in a test), refuses every malformed or
 //! inconsistent row with a [`LoadError`] naming its file and line, and
-//! returns the [`Case`] only when nothing is wrong. Later items add book
-//! variants (A1b) and expectations (A1c).
+//! returns the [`Case`] only when nothing is wrong. Book variants
+//! (`books/<stem>.toml`, A1b) load against the case's other files; the
+//! expectations are A1c's.
 //!
 //! The data format is the registries' TOML subset (`fa_registry::toml`):
 //! one-line arrays, basic strings, no floats and no dates (amounts are
@@ -46,6 +47,8 @@ macro_rules! closed_set {
     };
 }
 
+pub mod amount;
+pub mod book;
 pub mod embedded;
 pub mod error;
 pub mod fact;
@@ -62,6 +65,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_registry::toml::Document;
 
+pub use book::{BookVariant, VariantKind};
 pub use error::{LoadError, LoadErrorKind};
 pub use fact::{Fact, Provenance, Value};
 pub use header::{CASE_EXTENSIONS, CaseExtension, CaseHeader, CaseKind};
@@ -100,6 +104,10 @@ pub struct Case {
     pub values: Vec<Value>,
     pub receipts: Vec<Receipt>,
     pub roles: Roles,
+    /// The book variants, by stem (A1b).
+    pub books: BTreeMap<String, BookVariant>,
+    /// Every path among the case's files.
+    pub files: Vec<String>,
 }
 
 /// Loads a case under the committed [`CASE_EXTENSIONS`].
@@ -216,6 +224,19 @@ pub fn load_with(
         .unwrap_or_default();
 
     cross_check(&sources, &facts, &values, &receipts, &roles, &mut errs);
+    let paths: Vec<&str> = files.files.iter().map(|(p, _)| *p).collect();
+    let books = load_books(
+        files,
+        &book::CaseView {
+            sources: &sources,
+            facts: &facts,
+            values: &values,
+            roles: &roles,
+            variants: header.as_ref().map(|h| h.variants.as_slice()),
+            files: &paths,
+        },
+        &mut errs,
+    );
 
     match header {
         Some(header) if errs.is_empty() => Ok(Case {
@@ -225,12 +246,51 @@ pub fn load_with(
             values,
             receipts,
             roles,
+            books,
+            files: paths.iter().map(|p| (*p).to_string()).collect(),
         }),
         _ => {
             error::sort(&mut errs);
             Err(errs)
         }
     }
+}
+
+/// Every `books/*.toml` file, loaded against the case; every variant
+/// `case.toml` declares has its file.
+fn load_books(
+    files: &CaseFiles<'_>,
+    view: &book::CaseView<'_>,
+    errs: &mut Vec<LoadError>,
+) -> BTreeMap<String, BookVariant> {
+    let mut books = BTreeMap::new();
+    let book_files: Vec<(&str, &str)> = files
+        .files
+        .iter()
+        .copied()
+        .filter(|(p, _)| p.starts_with("books/"))
+        .collect();
+    if !book_files.is_empty() {
+        let registries = book::Registries::embedded(errs);
+        for (path, text) in &book_files {
+            if let Some(b) = book::parse(view, &registries, path, text, errs) {
+                books.insert(b.stem.clone(), b);
+            }
+        }
+    }
+    for variant in view.variants.unwrap_or(&[]) {
+        let path = format!("books/{variant}.toml");
+        if !book_files.iter().any(|(p, _)| *p == path) {
+            errs.push(LoadError {
+                file: CASE_FILE.to_string(),
+                line: rows::root_key_line(files.text(CASE_FILE).unwrap_or(""), "variants"),
+                kind: LoadErrorKind::MissingField,
+                row: None,
+                detail: format!("variant `{variant}` has no {path}"),
+            });
+        }
+    }
+    books
 }
 
 fn missing_file(name: &str) -> LoadError {

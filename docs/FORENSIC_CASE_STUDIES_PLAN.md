@@ -828,6 +828,13 @@ source supports.
 | `[[branch_class]]` | `id`, `attribute` (§2.6 enum), `rule` (from `case_branch_rules.toml`), `values` |
 | `[[default]]` | `attribute`, `rule`, `rationale`: the declared default encodings (§2.6 rule 2) |
 
+The table is the plan-level schema. The full field list is the loader's,
+`crates/fa-oracles/src/cases/book.rs` (A1b, bead fa-yugf.4), which also accepts the case beads' extensions:
+- step `principal`, `approvers`, `params`, `evidence`, `asserts` and `document`;
+- the `event_record` and `rule_*` step kinds;
+- `[book] entities` and `entity_relations`;
+- `[[ledger_map]]`, `[[event]]` and `[[migration_import]]`.
+
 A complete worked example for the A8 pilot (WorldCom F2, F4, F9, F12) is authored as the shared
 acceptance fixture of items A1a–A1c; it is not reproduced in this plan. It writes all four files (sources, facts, books/native, expectations) in this subset, and every foreign
 key resolves.

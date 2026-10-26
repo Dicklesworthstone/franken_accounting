@@ -30,6 +30,24 @@ pub enum LoadErrorKind {
     ReceiptMismatch,
     /// Two rows share an id (or a key that must be unique).
     DuplicateId,
+    /// An intent's declared legs do not balance per unit (A1b).
+    Unbalanced,
+    /// An intent or step names a period the variant does not declare, or a
+    /// date no declared period contains.
+    UnknownPeriod,
+    /// A label that keys a runner map (a period code, a checkpoint, an
+    /// entity) is declared twice.
+    DuplicateLabel,
+    /// A reversing, restating, revising or reclassifying intent without its
+    /// `target` and `target_kind`.
+    TargetRequired,
+    /// A text longer than its registered limit (`registries/limits.toml`).
+    TooLong,
+    /// A book file whose stem is not `<kind>[-<suffix>]`, or whose
+    /// `[book] variant` differs from its stem (plan §3.2b).
+    BadStem,
+    /// An intent id that breaks the naming rules of plan §3.2b.
+    BadId,
 }
 
 impl fmt::Display for LoadErrorKind {

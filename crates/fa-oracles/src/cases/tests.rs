@@ -13,6 +13,7 @@ const SOURCES: &str = include_str!("../../tests/fixtures/pilot/sources.toml");
 const FACTS: &str = include_str!("../../tests/fixtures/pilot/facts.toml");
 const RECEIPTS: &str = include_str!("../../tests/fixtures/pilot/receipts.toml");
 const ROLES: &str = include_str!("../../tests/fixtures/pilot/roles.toml");
+const NATIVE: &str = include_str!("../../tests/fixtures/pilot/books/native.toml");
 const BINDING: &str = include_str!("../../data/binding_fixtures.toml");
 
 type Files = Vec<(&'static str, String)>;
@@ -24,6 +25,7 @@ fn pilot() -> Files {
         (FACTS_FILE, FACTS.to_string()),
         (RECEIPTS_FILE, RECEIPTS.to_string()),
         (ROLES_FILE, ROLES.to_string()),
+        ("books/native.toml", NATIVE.to_string()),
     ]
 }
 
@@ -56,6 +58,13 @@ fn text_of<'a>(files: &'a Files, file: &str) -> &'a str {
     &files.iter().find(|(p, _)| *p == file).expect("a file").1
 }
 
+/// The line of the last `[[value]]` row (the one a test appended).
+fn last_value_line(files: &Files) -> Option<usize> {
+    let text = text_of(files, FACTS_FILE);
+    let rows = text.lines().filter(|l| l.trim() == "[[value]]").count();
+    row_line(text, "value", rows - 1)
+}
+
 /// The 1-based line of the first line of `needle` in `text`.
 fn line_of(text: &str, needle: &str) -> usize {
     let at = text.find(needle).expect("the planted text");
@@ -84,10 +93,19 @@ fn pilot_fixture_loads() {
     assert_eq!(case.header.kind, CaseKind::Case);
     assert_eq!(case.sources.len(), 3);
     assert_eq!(case.facts.len(), 8);
-    assert_eq!(case.values.len(), 5);
+    assert_eq!(
+        case.values.len(),
+        7,
+        "A1b added F2#1 and F9#1 for the pilot book"
+    );
     assert_eq!(case.receipts.len(), 3);
     assert!(case.receipts.iter().all(Receipt::binds));
-    assert_eq!(case.roles.roles.len(), 4);
+    assert_eq!(
+        case.roles.roles.len(),
+        10,
+        "A1b added six harness roles for the pilot book"
+    );
+    assert_eq!(case.books.len(), 1);
 }
 
 #[test]
@@ -234,7 +252,7 @@ fn value_with_missing_fact_is_refused() {
     let plant = "\n[[value]]\nfact = \"F99\"\nordinal = 1\nliteral = \"three\"\nrule = \"number_word\"\nvalue = \"3\"\nunit = \"\"\n";
     let mut files = pilot();
     files[2].1.push_str(plant);
-    let line = row_line(text_of(&files, FACTS_FILE), "value", 5);
+    let line = last_value_line(&files);
     refused(
         load_files("worldcom", &files, CASE_EXTENSIONS),
         FACTS_FILE,
@@ -618,7 +636,7 @@ fn negative_precision_on_a_currency_value_is_refused() {
     let files = with_value(
         "\n[[value]]\nfact = \"F12\"\nordinal = 2\nliteral = \"$718 million\"\nrule = \"scale\"\nvalue = \"71800000000\"\nunit = \"USD\"\nprecision = -1\n",
     );
-    let line = row_line(text_of(&files, FACTS_FILE), "value", 5);
+    let line = last_value_line(&files);
     refused(
         load_files("worldcom", &files, CASE_EXTENSIONS),
         FACTS_FILE,
@@ -632,7 +650,7 @@ fn unitless_value_that_is_not_an_integer_is_refused() {
     let files = with_value(
         "\n[[value]]\nfact = \"F12\"\nordinal = 2\nliteral = \"13.9x\"\nrule = \"scale\"\nvalue = \"13.9\"\nunit = \"\"\nprecision = -1\n",
     );
-    let line = row_line(text_of(&files, FACTS_FILE), "value", 5);
+    let line = last_value_line(&files);
     refused(
         load_files("worldcom", &files, CASE_EXTENSIONS),
         FACTS_FILE,
@@ -732,6 +750,8 @@ fn case_header_missing_a_required_field_is_refused() {
 #[test]
 fn case_header_with_empty_claims_capabilities_and_variants_loads() {
     let mut files = edited(CASE_FILE, "variants = [\"native\"]", "variants = []");
+    // A case with no variants has no books (A1b refuses an undeclared one).
+    files.retain(|(p, _)| !p.starts_with("books/"));
     files[0].1 = files[0].1.replacen(
         "capabilities = [\"procedure:expense.capitalization@2\", \"refusal:FA-REF-080\", \"verb:post\"]",
         "capabilities = []",

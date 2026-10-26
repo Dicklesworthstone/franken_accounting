@@ -21,5 +21,35 @@ label = "case-second-reader"
 kind = "harness"
 description = "independently reads every interpretation and reviews placeholders"
 
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "runs the pilot book's period transitions and issuances"
+
+[[role]]
+label = "case-approver-1"
+kind = "harness"
+description = "approves period locks and the restatement case's effect manifest"
+
+[[role]]
+label = "case-approver-2"
+kind = "harness"
+description = "the second approver, with no session lineage shared with the first"
+
+[[role]]
+label = "case-poster-1"
+kind = "harness"
+description = "opens, rehearses and posts the restatement case; approves none of it"
+
+[[role]]
+label = "examiner-1"
+kind = "harness"
+description = "records the pilot's findings and checkpoints"
+
+[[role]]
+label = "examiner-witness"
+kind = "harness"
+description = "witnesses the pilot's checkpoints (plan §12.7)"
+
 [deny]
 hashes = ["9936228e243e1ba6060617f1fc1cdf574887f045b8b5e873e66d45a476492759"]
