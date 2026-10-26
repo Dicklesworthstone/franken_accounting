@@ -1,0 +1,11 @@
+# Reads fixture (fa-yugf.16, A7b): a per_account T with its assert_balance step, and an R read-back,
+# on a micro-book, for fa-cli's tests/cases.rs. Never copied to cases/; claims nothing.
+id = "reads"
+title = "Reads fixture: a certified per-account read, its assertion and a read-back"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's T and R reads (explain balance --certify), assert-balance and its FA-REF-140 twin"
+claims = []
+capabilities = ["verb:post", "verb:assert-balance", "verb:explain"]
+pinned_commit = "b4fe3e23c"
+variants = ["native"]

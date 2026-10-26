@@ -229,6 +229,8 @@ pub fn rows(
                     None => match (e.kind, t) {
                         (ExpectationType::D, Some(t)) => d_row(run, e, t, row),
                         (ExpectationType::P, None) => p_row(run, e, row),
+                        (ExpectationType::T, t) => t_row(run, e, t, row),
+                        (ExpectationType::R, t) => r_row(run, e, t, row),
                         (ExpectationType::N, None) => {
                             let spec = specs.iter().find(|(id, _)| *id == e.id).map(|(_, s)| s);
                             n_row(run, e, spec, twins.get(&e.id), row)
@@ -678,6 +680,168 @@ fn d_reference(
         RefVerdict::Agree => {}
     }
     (verdict, witnesses)
+}
+
+/// A T or R row's read, compared with the value its row names (`published`
+/// for a T, `posted` for an R): the row's `read=` and `value=` tokens, and
+/// why it fails, or why it waits (`needs:`), if it does.
+fn read_against(
+    run: &BookRun<'_>,
+    e: &Expectation,
+    t: Option<&Target>,
+    row: &mut RowLine,
+    value_key: &str,
+) -> Result<(), (RowVerdict, String)> {
+    let key = super::reads::key(e, t);
+    let Some(read) = run.reads.get(&key) else {
+        return Err((
+            RowVerdict::Fail,
+            format!("expected a read of {key} observed none"),
+        ));
+    };
+    row.projection.push(("read".into(), read.token.clone()));
+    let observed = match &read.value {
+        Ok(v) => *v,
+        Err(why) if why.starts_with("needs:") => return Err((RowVerdict::Unrun, why.clone())),
+        Err(why) => return Err((RowVerdict::Fail, why.clone())),
+    };
+    let fact = super::reads::field(e, t, value_key).unwrap_or("-");
+    let Some((want, unit)) = run.value_of(fact) else {
+        return Err((
+            RowVerdict::Fail,
+            format!("expected a [[value]] of {value_key} fact {fact} observed none"),
+        ));
+    };
+    let scale = super::reads::scale_of(&unit).unwrap_or(0);
+    row.projection
+        .push(("value".into(), format_amount(observed, scale)));
+    // Exact equality at the published value's declared precision (§5.3);
+    // a value stated to a coarser precision needs its rounding rule first.
+    if run
+        .case
+        .values
+        .iter()
+        .find(|v| v.fact == fact && v.ordinal == 1)
+        .and_then(|v| v.precision)
+        .is_some_and(|p| p > 0)
+    {
+        return Err((
+            RowVerdict::Unrun,
+            format!("needs:A7b ({fact} is stated to a coarser precision)"),
+        ));
+    }
+    if observed == want {
+        Ok(())
+    } else {
+        Err((
+            RowVerdict::Fail,
+            mismatch(
+                "value",
+                format_amount(want, scale),
+                format_amount(observed, scale),
+            ),
+        ))
+    }
+}
+
+/// A T row (§5.3): its certified read equals its published value; a
+/// `per_account` T is kernel-attested, so its `assert_balance` step must
+/// have recorded B and its twin (B plus one minor unit) been refused
+/// `FA-REF-140`. A T that holds still waits on its contributing-entry
+/// witness (A11b) and its outsider check (A12): never PASS before both.
+fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLine) -> Eval {
+    let kind = e.fields.str("kind").unwrap_or("-");
+    row.projection.push(("kind".into(), kind.to_string()));
+    let mut fails = Vec::new();
+    let mut waits = None;
+    match read_against(run, e, t, &mut row, "published") {
+        Ok(()) => {}
+        Err((RowVerdict::Unrun, why)) => waits = Some(why),
+        Err((_, why)) => fails.push(why),
+    }
+    if kind == "per_account" {
+        let step = t.map_or_else(|| e.id.clone(), |t| format!("{}#{}", e.id, t.fact));
+        match run
+            .assertions
+            .get(&step)
+            .or_else(|| run.assertions.get(&e.id))
+        {
+            None => fails.push(format!(
+                "expected an assert_balance step for {step} (a per_account T is kernel-attested) observed none"
+            )),
+            Some(a) => {
+                let recorded = a.asserted.exit == 0;
+                row.projection.push((
+                    "assert".into(),
+                    if recorded { "recorded" } else { "refused" }.into(),
+                ));
+                if !recorded {
+                    fails.push(format!(
+                        "expected assert-balance {} recorded observed exit={} {}",
+                        a.balance,
+                        a.asserted.exit,
+                        a.asserted.refusal_id().unwrap_or_default()
+                    ));
+                }
+                let twin = a.twin.refusal_id();
+                row.projection.push((
+                    "twin".into(),
+                    format!(
+                        "refused:{}:exit={}",
+                        twin.as_deref().unwrap_or("none"),
+                        a.twin.exit
+                    ),
+                ));
+                if twin.as_deref() != Some("FA-REF-140") || a.twin.exit != 3 {
+                    fails.push(format!(
+                        "expected the twin of {} refused FA-REF-140 exit=3 observed {} exit={}",
+                        a.balance,
+                        twin.as_deref().unwrap_or("admitted"),
+                        a.twin.exit
+                    ));
+                }
+            }
+        }
+    }
+    let mut witnesses = vec![("kind".to_string(), kind.to_string())];
+    witnesses.extend(read_certificate(run, e, t));
+    if !fails.is_empty() {
+        row.verdict = RowVerdict::Fail;
+        row.reason = Some(fails.join("; "));
+    } else {
+        row.verdict = RowVerdict::Unrun;
+        row.reason = Some(waits.unwrap_or_else(|| "contributing_entry,outsider".into()));
+    }
+    (row, witnesses, None)
+}
+
+/// An R row (§5.3): a read-back of a posted value through a selector or an
+/// attestation path; it passes when the certified read equals the posted
+/// value.
+fn r_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLine) -> Eval {
+    row.projection.push(("kind".into(), "read_back".into()));
+    match read_against(run, e, t, &mut row, "posted") {
+        Ok(()) => row.verdict = RowVerdict::Pass,
+        Err((verdict, why)) => {
+            row.verdict = verdict;
+            row.reason = Some(why);
+        }
+    }
+    (row, read_certificate(run, e, t), None)
+}
+
+/// The certificate a row's read retained, as a record witness.
+fn read_certificate(
+    run: &BookRun<'_>,
+    e: &Expectation,
+    t: Option<&Target>,
+) -> Vec<(String, String)> {
+    run.reads
+        .get(&super::reads::key(e, t))
+        .and_then(|r| r.certificate.clone())
+        .map(|c| ("certificate".to_string(), c))
+        .into_iter()
+        .collect()
 }
 
 /// Whether a refusal's `fix.argv` (after `fa`) parses against the verb it

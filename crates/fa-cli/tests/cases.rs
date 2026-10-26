@@ -21,6 +21,8 @@ mod evaluate;
 mod invariance;
 #[path = "cases/property.rs"]
 mod property;
+#[path = "cases/reads.rs"]
+mod reads;
 #[path = "cases/run.rs"]
 mod run;
 
@@ -1794,4 +1796,79 @@ fn rel_row_agrees_across_book_ids_when_its_rule_holds() {
         "{text}"
     );
     assert!(row.contains(" rel=15"), "{text}");
+}
+
+/// The reads fixture (`crates/fa-oracles/tests/fixtures/reads/`, A7b): a
+/// per_account T with its assert_balance step and an R read-back.
+const READS: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/reads/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/reads/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/reads/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/reads/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/reads/expectations.toml"),
+    ),
+];
+
+fn reads_run(edits: &[PlantedEdit]) -> Box<RunOutcome> {
+    match run_files("reads", &READS, edits, HARNESS_VERBS) {
+        Ok(o) => Box::new(o),
+        Err(o) => o,
+    }
+}
+
+/// A7b (§5.3): the per_account T reads its cell certified, equal to its
+/// published 1,000.00; its assert_balance step recorded B and its twin
+/// (B plus one minor unit) was refused FA-REF-140; the T then waits on its
+/// contributing-entry witness (A11b) and outsider check (A12), never PASS.
+/// The R row reads the locked quarter as originally reported: PASS.
+#[test]
+fn per_account_t_and_its_read_back_are_read_certified() {
+    let o = reads_run(&[]);
+    let text = o.text();
+    assert_eq!(
+        o.row("reads-T-01"),
+        Some(
+            "UNRUN reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1000.00 assert=recorded twin=refused:FA-REF-140:exit=3 reason=contributing_entry,outsider"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        o.row("reads-R-01"),
+        Some(
+            "PASS reads-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,originally-reported value=1000.00"
+        ),
+        "{text}"
+    );
+}
+
+/// A7b: a published value the book does not reach fails the T row, naming
+/// both values, and the kernel refuses its assertion FA-REF-140.
+#[test]
+fn t_whose_read_differs_from_its_published_value_fails() {
+    let o = reads_run(&[PlantedEdit {
+        file: "facts.toml",
+        old: "fact = \"P-1\"\nordinal = 1\nliteral = \"1,000\"\nrule = \"scale\"\nparam = 0\nvalue = \"100000\"",
+        new: "fact = \"P-1\"\nordinal = 1\nliteral = \"999\"\nrule = \"scale\"\nparam = 0\nvalue = \"99900\"",
+    }]);
+    let text = o.text();
+    let row = o.row("reads-T-01").expect("the T row");
+    assert!(
+        row.starts_with("FAIL reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1000.00 assert=refused ")
+            && row.contains("reason=expected value=999.00 observed value=1000.00; expected assert-balance 999.00 USD recorded observed exit=3 FA-REF-140"),
+        "{text}"
+    );
 }
