@@ -1,0 +1,11 @@
+# Twin fixture (fa-yugf.27, A11c): two N rows and their harness-only twins on a micro-book, for
+# fa-cli's tests/cases.rs. Never copied to cases/; claims nothing.
+id = "twins"
+title = "Twin fixture: a no_finding N and a no_refusal N with their twins"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's N evaluation: target runs and mutation / harness-observability twins"
+claims = []
+capabilities = ["verb:post", "procedure:jet.round_amounts@1", "refusal:FA-REF-010"]
+pinned_commit = "00b64d85d"
+variants = ["native"]

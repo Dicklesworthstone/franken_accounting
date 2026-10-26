@@ -19,10 +19,12 @@ use fa_oracles::cases::book::{BookVariant, StepDef, StepKind, VariantKind};
 use fa_oracles::cases::check::{self, Verdict};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::CASES;
+use fa_oracles::cases::expect::ExpectationType;
 use fa_oracles::cases::harness_verbs::{HARNESS_VERBS, missing};
 use fa_oracles::cases::log::{StepRecord, VerdictRecord};
 use fa_oracles::cases::observe::Observation;
 use fa_oracles::cases::selfrow;
+use fa_oracles::cases::twin::{TwinKind, TwinSpec, twin_of};
 use fa_oracles::cases::verdict::{RowLine, RowVerdict};
 use fa_oracles::cases::{Case, CaseFiles, intent_json, stub};
 use fa_oracles::json::Json;
@@ -1696,9 +1698,46 @@ pub fn run_case(files: &CaseFiles<'_>, verbs: &[(&str, Option<&str>)]) -> RunOut
         if run.failure.is_none() && run.unrun_steps.is_empty() {
             run.trial_balances();
         }
-        let rows = evaluate::rows(&run);
+        // Each N row's harness-only twin runs on its own book (A11c), after
+        // the target's history ran; a matcher twin (A16) or an exact_gap
+        // twin target needs no book of its own.
+        let specs: Vec<(String, Result<TwinSpec, String>)> = case
+            .expectations
+            .iter()
+            .flat_map(|s| s.expectations.iter())
+            .filter(|e| {
+                e.kind == ExpectationType::N && e.fields.str("book_variant") == Some(&book.stem)
+            })
+            .map(|e| {
+                (
+                    e.id.clone(),
+                    twin_of(&case, e).map_err(|err| err.to_string()),
+                )
+            })
+            .collect();
+        let mut twins: BTreeMap<String, BookRun<'_>> = BTreeMap::new();
+        if run.failure.is_none() && run.unrun_steps.is_empty() {
+            for (id, spec) in &specs {
+                let Ok(spec) = spec else { continue };
+                if spec.kind == TwinKind::Matcher || spec.n_kind == "exact_gap" {
+                    continue;
+                }
+                let work = root.join(format!("{}-{id}", spec.book.stem));
+                std::fs::create_dir_all(&work).expect("twin dir");
+                let mut t = BookRun::new(&case, &spec.book, work, files.files);
+                t.build();
+                t.replay();
+                twins.insert(id.clone(), t);
+            }
+        }
+        let rows = evaluate::rows(&run, &specs, &twins);
         out.lines.append(&mut run.lines);
         out.steps.append(&mut run.steps);
+        for t in twins.values_mut() {
+            out.lines
+                .extend(t.lines.drain(..).filter(|l| !l.starts_with("PERIODS ")));
+            out.steps.append(&mut t.steps);
+        }
         for ev in rows {
             out.lines.extend(ev.reproduce);
             out.lines.push(ev.row.to_string());
