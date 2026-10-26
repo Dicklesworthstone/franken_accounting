@@ -2625,6 +2625,8 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--workpaper-out",
         "--review-out",
         "--receipt-out",
+        "--csv-out",
+        "--applications-csv-out",
     ] {
         if let Some(value) = args.flag(flag) {
             paths.push((flag, value, HostPath::Output));
@@ -15287,6 +15289,35 @@ pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
         (book.open_items_report(account, known_at)?, None)
     };
     validate_open_items_report(&report, &book.context().units)?;
+    // The same report as text CSV (fa-registers' exact exporters): every
+    // item with its original, applied and open mantissas, and every
+    // application against those items, undone ones included. New files only,
+    // written after admission.
+    type Csv = fn(
+        &fa_registers::open_items::OpenItemsReport,
+    ) -> Result<String, fa_registers::RegisterError>;
+    let exporters: [(&str, Csv); 2] = [
+        (
+            "--csv-out",
+            fa_registers::open_items::OpenItemsReport::to_csv,
+        ),
+        (
+            "--applications-csv-out",
+            fa_registers::open_items::OpenItemsReport::applications_to_csv,
+        ),
+    ];
+    for (flag, render) in exporters {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                "fa open-items --help",
+            ));
+        }
+        if let Some(path) = args.flag(flag) {
+            let csv = render(&report).map_err(BookError::Registers)?;
+            write_new_output_file(&ctx.files, path, csv.as_bytes(), "open-items", flag)?;
+        }
+    }
     let retained = certificate
         .as_ref()
         .zip(certify_cap.as_ref())

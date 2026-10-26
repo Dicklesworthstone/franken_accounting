@@ -869,6 +869,8 @@ impl McpRegistry {
             "--certificate-out",
             "--review-out",
             "--output",
+            "--csv-out",
+            "--applications-csv-out",
         ]
         .iter()
         .any(|flag| parsed.flag(flag).is_some())

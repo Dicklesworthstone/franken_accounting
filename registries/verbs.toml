@@ -572,11 +572,11 @@ name = "open-items"
 summary = "Open items (plan §5.7): each live posted leg, its applications, and its open amount, with account metadata at the selected historical snapshot."
 writes = true
 subcommands = []
-flags = ["--account", "--as-of", "--as-known-at", "--certificate-out", "--branch"]
+flags = ["--account", "--as-of", "--as-known-at", "--certificate-out", "--branch", "--csv-out", "--applications-csv-out"]
 switches = ["--certify"]
 events = ["open_items", "report_certificate"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["open-items [--account <code>] [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]", "Without certification this is a pure read. --as-of folds open items through an inclusive civil date. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
+usage = ["open-items [--account <code>] [--as-of YYYY-MM-DD] [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>] [--csv-out <new-file>] [--applications-csv-out <new-file>]", "--csv-out writes the same report as text CSV: one row per item with its exact original, applied, applied-out and open mantissas, unit id and leg identity. --applications-csv-out writes every application against those items, undone ones included (live=false). Both are new files only. Import them as text to keep every digit.", "Without certification this is a pure read. --as-of folds open items through an inclusive civil date. --certify retains an immutable report certificate in the book; --certificate-out also creates a new external copy. Unknown account filters refuse, including accounts absent at the selected known-at. Replay fixes that snapshot, account metadata, and application/reversal lineage."]
 example = "fa open-items --account 1200 --book ./books/myco --json"
 
 [[verb]]

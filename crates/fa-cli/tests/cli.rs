@@ -8282,6 +8282,65 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     );
     assert!(out.contains("\"live\":true"), "{out}");
 
+    // The same report as text CSV: the exact item, and its one application.
+    let items_csv = dir.join("open-items.csv");
+    let applications_csv = dir.join("applications.csv");
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "open-items",
+            "--account",
+            "1200",
+            "--csv-out",
+            items_csv.to_str().unwrap(),
+            "--applications-csv-out",
+            applications_csv.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let items = std::fs::read_to_string(&items_csv)?;
+    let rows: Vec<&str> = items.lines().collect();
+    assert!(
+        rows[0].starts_with("known_at,account_vid,account_code,account_name,"),
+        "{items}"
+    );
+    // Both legs on the receivable, zero-open items included: the invoice
+    // (original 500.00, applied 300.00, open 200.00) and the receipt's
+    // credit (300.00 applied out to the invoice, open 0).
+    assert_eq!(rows.len(), 3, "{items}");
+    let row = |vid: &str| {
+        rows.iter()
+            .find(|row| row.contains(vid))
+            .copied()
+            .unwrap_or_else(|| panic!("no row for {vid}: {items}"))
+    };
+    assert!(row(&inv_vid).contains(",1200,Receivable,"), "{items}");
+    assert!(row(&inv_vid).ends_with(",50000,30000,0,20000"), "{items}");
+    assert!(row(&rcpt_vid).ends_with(",30000,0,30000,0"), "{items}");
+    let applications = std::fs::read_to_string(&applications_csv)?;
+    let rows: Vec<&str> = applications.lines().collect();
+    assert_eq!(rows.len(), 2, "{applications}");
+    assert!(
+        rows[1].contains(&inv_vid) && rows[1].contains(&rcpt_vid),
+        "{applications}"
+    );
+    assert!(rows[1].ends_with(",30000,true"), "{applications}");
+    // An existing path is never overwritten.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "open-items",
+            "--account",
+            "1200",
+            "--csv-out",
+            items_csv.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(std::fs::read_to_string(&items_csv)?, items);
+
     // Over-application is refused with the open amount; reversing the
     // invoice is refused while the receipt is applied.
     let over = write(
