@@ -1,0 +1,564 @@
+//! The case model (docs/FORENSIC_CASE_STUDIES_PLAN.md §3.2): a case's files
+//! loaded into typed, cross-checked rows.
+//!
+//! [`load`] reads `case.toml`, `sources.toml`, `facts.toml`, `receipts.toml`
+//! and `roles.toml` from a [`CaseFiles`] (a committed case through
+//! [`embedded`], or an edited copy in a test), refuses every malformed or
+//! inconsistent row with a [`LoadError`] naming its file and line, and
+//! returns the [`Case`] only when nothing is wrong. Later items add book
+//! variants (A1b) and expectations (A1c).
+//!
+//! The data format is the registries' TOML subset (`fa_registry::toml`):
+//! one-line arrays, basic strings, no floats and no dates (amounts are
+//! integer strings at the unit's scale, dates `YYYY-MM-DD` strings), and
+//! arrays of tables that do not nest, so values are foreign-key rows.
+
+/// A closed set of string values, parsed and rendered from one list.
+macro_rules! closed_set {
+    ($(#[$meta:meta])* $name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            /// Every member, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// The member's spelling in the case files.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $text),+
+                }
+            }
+
+            /// The member spelled `s`, if any.
+            #[must_use]
+            pub fn parse(s: &str) -> Option<Self> {
+                match s {
+                    $($text => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+pub mod embedded;
+pub mod error;
+pub mod fact;
+mod fields;
+pub mod header;
+pub mod receipt;
+pub mod roles;
+pub mod rows;
+pub mod source;
+#[cfg(test)]
+mod tests;
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use fa_registry::toml::Document;
+
+pub use error::{LoadError, LoadErrorKind};
+pub use fact::{Fact, Provenance, Value};
+pub use header::{CASE_EXTENSIONS, CaseExtension, CaseHeader, CaseKind};
+pub use receipt::{Alignment, Receipt};
+pub use roles::Roles;
+pub use source::{Assurance, Source, SourceStatus};
+
+/// The files A1a's loaders own.
+pub const CASE_FILE: &str = "case.toml";
+pub const SOURCES_FILE: &str = "sources.toml";
+pub const FACTS_FILE: &str = "facts.toml";
+pub const RECEIPTS_FILE: &str = "receipts.toml";
+pub const ROLES_FILE: &str = "roles.toml";
+
+/// A case's files as (relative path, text) pairs, under the id it is loaded
+/// as (the directory name for a committed case).
+#[derive(Clone, Copy, Debug)]
+pub struct CaseFiles<'a> {
+    pub id: &'a str,
+    pub files: &'a [(&'a str, &'a str)],
+}
+
+impl CaseFiles<'_> {
+    #[must_use]
+    pub fn text(&self, path: &str) -> Option<&str> {
+        self.files.iter().find(|(p, _)| *p == path).map(|(_, t)| *t)
+    }
+}
+
+/// A loaded case.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Case {
+    pub header: CaseHeader,
+    pub sources: Vec<Source>,
+    pub facts: Vec<Fact>,
+    pub values: Vec<Value>,
+    pub receipts: Vec<Receipt>,
+    pub roles: Roles,
+}
+
+/// Loads a case under the committed [`CASE_EXTENSIONS`].
+///
+/// # Errors
+///
+/// Every problem found, sorted by (file, line).
+pub fn load(files: &CaseFiles<'_>) -> Result<Case, Vec<LoadError>> {
+    load_with(files, CASE_EXTENSIONS)
+}
+
+/// Loads a case under the given extension rows (a test can admit a key
+/// under a test-only row).
+///
+/// # Errors
+///
+/// Every problem found, sorted by (file, line).
+pub fn load_with(
+    files: &CaseFiles<'_>,
+    extensions: &[CaseExtension],
+) -> Result<Case, Vec<LoadError>> {
+    let mut errs = Vec::new();
+    let parse = |name: &str, errs: &mut Vec<LoadError>| -> Option<(String, Document)> {
+        let text = files.text(name)?;
+        match fa_registry::toml::parse(text) {
+            Ok(doc) => Some((text.to_string(), doc)),
+            Err(e) => {
+                errs.push(LoadError {
+                    file: name.to_string(),
+                    line: Some(e.line),
+                    kind: LoadErrorKind::Toml,
+                    row: None,
+                    detail: e.message,
+                });
+                None
+            }
+        }
+    };
+    let schema_files = [
+        CASE_FILE,
+        SOURCES_FILE,
+        FACTS_FILE,
+        RECEIPTS_FILE,
+        ROLES_FILE,
+    ];
+    let rows_files: Vec<&str> = files
+        .files
+        .iter()
+        .map(|(p, _)| *p)
+        .filter(|p| !schema_files.contains(p))
+        .collect();
+    let unit_codes: Vec<String> = match fa_registry::units_embedded() {
+        Ok(units) => units.into_iter().map(|u| u.code).collect(),
+        Err(e) => {
+            errs.push(LoadError {
+                file: "registries/units.toml".into(),
+                line: None,
+                kind: LoadErrorKind::Toml,
+                row: None,
+                detail: e.to_string(),
+            });
+            Vec::new()
+        }
+    };
+
+    let header = match parse(CASE_FILE, &mut errs) {
+        Some((text, doc)) => Some(header::parse(
+            CASE_FILE, &text, &doc, files.id, extensions, &mut errs,
+        )),
+        None => {
+            if files.text(CASE_FILE).is_none() {
+                errs.push(missing_file(CASE_FILE));
+            }
+            None
+        }
+    };
+    let sources = parse(SOURCES_FILE, &mut errs)
+        .map(|(text, doc)| {
+            only(SOURCES_FILE, &text, &doc, &["source"], &[], &mut errs);
+            source::parse_rows(SOURCES_FILE, &text, rows_of(&doc, "source"), &mut errs)
+        })
+        .unwrap_or_default();
+    let (facts, values) = parse(FACTS_FILE, &mut errs)
+        .map(|(text, doc)| {
+            only(FACTS_FILE, &text, &doc, &["fact", "value"], &[], &mut errs);
+            let facts = fact::parse_facts(
+                FACTS_FILE,
+                &text,
+                rows_of(&doc, "fact"),
+                &rows_files,
+                &mut errs,
+            );
+            let values = fact::parse_values(
+                FACTS_FILE,
+                &text,
+                rows_of(&doc, "value"),
+                &unit_codes,
+                &mut errs,
+            );
+            (facts, values)
+        })
+        .unwrap_or_default();
+    let receipts = parse(RECEIPTS_FILE, &mut errs)
+        .map(|(text, doc)| {
+            only(RECEIPTS_FILE, &text, &doc, &["receipt"], &[], &mut errs);
+            receipt::parse_rows(RECEIPTS_FILE, &text, rows_of(&doc, "receipt"), &mut errs)
+        })
+        .unwrap_or_default();
+    let roles = parse(ROLES_FILE, &mut errs)
+        .map(|(text, doc)| {
+            only(ROLES_FILE, &text, &doc, &["role"], &["deny"], &mut errs);
+            roles::parse(ROLES_FILE, &text, &doc, &mut errs)
+        })
+        .unwrap_or_default();
+
+    cross_check(&sources, &facts, &values, &receipts, &roles, &mut errs);
+
+    match header {
+        Some(header) if errs.is_empty() => Ok(Case {
+            header,
+            sources,
+            facts,
+            values,
+            receipts,
+            roles,
+        }),
+        _ => {
+            error::sort(&mut errs);
+            Err(errs)
+        }
+    }
+}
+
+fn missing_file(name: &str) -> LoadError {
+    LoadError {
+        file: name.to_string(),
+        line: None,
+        kind: LoadErrorKind::MissingField,
+        row: None,
+        detail: "the file is required".into(),
+    }
+}
+
+fn rows_of<'d>(doc: &'d Document, array: &str) -> &'d [fa_registry::toml::Table] {
+    doc.arrays.get(array).map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// Refuses root keys, tables and arrays a schema file does not declare.
+fn only(
+    file: &str,
+    text: &str,
+    doc: &Document,
+    arrays: &[&str],
+    tables: &[&str],
+    errs: &mut Vec<LoadError>,
+) {
+    for key in doc.root.keys() {
+        errs.push(LoadError {
+            file: file.to_string(),
+            line: rows::root_key_line(text, key),
+            kind: LoadErrorKind::UnknownField,
+            row: None,
+            detail: format!("unknown root key `{key}`"),
+        });
+    }
+    for name in doc.tables.keys().filter(|n| !tables.contains(&n.as_str())) {
+        errs.push(LoadError {
+            file: file.to_string(),
+            line: None,
+            kind: LoadErrorKind::UnknownField,
+            row: None,
+            detail: format!("unknown table `[{name}]`"),
+        });
+    }
+    for name in doc.arrays.keys().filter(|n| !arrays.contains(&n.as_str())) {
+        errs.push(LoadError {
+            file: file.to_string(),
+            line: rows::row_line(text, name, 0),
+            kind: LoadErrorKind::UnknownField,
+            row: None,
+            detail: format!("unknown array `[[{name}]]`"),
+        });
+    }
+}
+
+fn row_err(
+    file: &str,
+    line: Option<usize>,
+    row: &str,
+    kind: LoadErrorKind,
+    detail: String,
+) -> LoadError {
+    LoadError {
+        file: file.to_string(),
+        line,
+        kind,
+        row: Some(row.to_string()),
+        detail,
+    }
+}
+
+/// Foreign keys and uniqueness across the files.
+fn cross_check(
+    sources: &[Source],
+    facts: &[Fact],
+    values: &[Value],
+    receipts: &[Receipt],
+    roles: &Roles,
+    errs: &mut Vec<LoadError>,
+) {
+    let mut by_source: BTreeMap<&str, &Source> = BTreeMap::new();
+    for s in sources {
+        if by_source.insert(s.id.as_str(), s).is_some() {
+            errs.push(row_err(
+                SOURCES_FILE,
+                s.line,
+                &s.id,
+                LoadErrorKind::DuplicateId,
+                "duplicate source id".into(),
+            ));
+        }
+    }
+    let mut by_fact: BTreeMap<&str, &Fact> = BTreeMap::new();
+    for f in facts {
+        if by_fact.insert(f.id.as_str(), f).is_some() {
+            errs.push(row_err(
+                FACTS_FILE,
+                f.line,
+                &f.id,
+                LoadErrorKind::DuplicateId,
+                "duplicate fact id".into(),
+            ));
+        }
+    }
+    for s in sources {
+        for r in s.restates.iter().flatten() {
+            if !by_source.contains_key(r.as_str()) {
+                errs.push(row_err(
+                    SOURCES_FILE,
+                    s.line,
+                    &s.id,
+                    LoadErrorKind::DanglingKey,
+                    format!("`restates` names unknown source `{r}`"),
+                ));
+            }
+        }
+        if let Some(af) = &s.assurance_fact
+            && by_fact
+                .get(af.as_str())
+                .and_then(|f| f.sourced())
+                .is_none_or(|sf| sf.source != s.id)
+        {
+            errs.push(row_err(
+                SOURCES_FILE,
+                s.line,
+                &s.id,
+                LoadErrorKind::DanglingKey,
+                format!("`assurance_fact = \"{af}\"` is not a sourced fact of this source"),
+            ));
+        }
+    }
+    let mut cells: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for f in facts {
+        let dangling = |what: &str, key: &str| {
+            row_err(
+                FACTS_FILE,
+                f.line,
+                &f.id,
+                LoadErrorKind::DanglingKey,
+                format!("`{what}` names unknown `{key}`"),
+            )
+        };
+        match &f.provenance {
+            Provenance::Sourced(s) => {
+                match by_source.get(s.source.as_str()) {
+                    None => errs.push(dangling("source", &s.source)),
+                    Some(src) => {
+                        if src.status != SourceStatus::Ok {
+                            errs.push(row_err(
+                                FACTS_FILE,
+                                f.line,
+                                &f.id,
+                                LoadErrorKind::UnknownValue,
+                                format!("source `{}` is BLOCKED; facts cite only OK rows", src.id),
+                            ));
+                        }
+                        if s.assurance.is_some()
+                            && src.assurance.is_none_or(|a| a == Assurance::NotApplicable)
+                        {
+                            errs.push(row_err(
+                                FACTS_FILE,
+                                f.line,
+                                &f.id,
+                                LoadErrorKind::UnknownValue,
+                                format!("a fact `assurance` on source `{}`, which is not a filer statement with an assurance", src.id),
+                            ));
+                        }
+                    }
+                }
+                if let Some(af) = &s.assurance_fact
+                    && by_fact
+                        .get(af.as_str())
+                        .and_then(|x| x.sourced())
+                        .is_none_or(|x| x.source != s.source)
+                {
+                    errs.push(row_err(
+                        FACTS_FILE,
+                        f.line,
+                        &f.id,
+                        LoadErrorKind::DanglingKey,
+                        format!(
+                            "`assurance_fact = \"{af}\"` is not a sourced fact of the same source"
+                        ),
+                    ));
+                }
+                if let Some(c) = &s.complaint
+                    && !by_source.contains_key(c.as_str())
+                {
+                    errs.push(dangling("complaint", c));
+                }
+                if let Some(c) = &s.cell
+                    && !cells.insert((s.source.as_str(), c.as_str()))
+                {
+                    errs.push(row_err(
+                        FACTS_FILE,
+                        f.line,
+                        &f.id,
+                        LoadErrorKind::DuplicateId,
+                        format!("source `{}` already has a fact for cell `{c}`", s.source),
+                    ));
+                }
+            }
+            Provenance::Interpretation(x) => {
+                for from in &x.from {
+                    if !by_fact.contains_key(from.as_str()) {
+                        errs.push(dangling("from", from));
+                    }
+                }
+            }
+            Provenance::Derived(x) => {
+                for from in &x.from {
+                    if !by_fact.contains_key(from.as_str()) {
+                        errs.push(dangling("from", from));
+                    }
+                }
+            }
+            Provenance::Synthetic(_) => {}
+        }
+    }
+    let mut ordinals: BTreeSet<(&str, i128)> = BTreeSet::new();
+    for v in values {
+        if !by_fact.contains_key(v.fact.as_str()) {
+            errs.push(row_err(
+                FACTS_FILE,
+                v.line,
+                &v.fact,
+                LoadErrorKind::DanglingKey,
+                format!("`[[value]]` names unknown fact `{}`", v.fact),
+            ));
+        }
+        if !ordinals.insert((v.fact.as_str(), v.ordinal)) {
+            errs.push(row_err(
+                FACTS_FILE,
+                v.line,
+                &v.fact,
+                LoadErrorKind::DuplicateId,
+                format!(
+                    "fact `{}` already has a value with ordinal {}",
+                    v.fact, v.ordinal
+                ),
+            ));
+        }
+    }
+    let mut receipt_facts: BTreeSet<&str> = BTreeSet::new();
+    for r in receipts {
+        let mismatch = |detail: String| {
+            row_err(
+                RECEIPTS_FILE,
+                r.line,
+                &r.fact,
+                LoadErrorKind::ReceiptMismatch,
+                detail,
+            )
+        };
+        if !receipt_facts.insert(r.fact.as_str()) {
+            errs.push(row_err(
+                RECEIPTS_FILE,
+                r.line,
+                &r.fact,
+                LoadErrorKind::DuplicateId,
+                "a second receipt for this fact".into(),
+            ));
+        }
+        let Some(fact) = by_fact.get(r.fact.as_str()) else {
+            errs.push(row_err(
+                RECEIPTS_FILE,
+                r.line,
+                &r.fact,
+                LoadErrorKind::DanglingKey,
+                format!("receipt for unknown fact `{}`", r.fact),
+            ));
+            continue;
+        };
+        let Some(sf) = fact.sourced() else {
+            errs.push(mismatch(format!(
+                "fact `{}` is not sourced; only sourced facts carry receipts",
+                r.fact
+            )));
+            continue;
+        };
+        if sf.source != r.source {
+            errs.push(mismatch(format!(
+                "receipt source `{}` differs from the fact's `{}`",
+                r.source, sf.source
+            )));
+        }
+        let expected = if sf.anchor_kind.is_prose() {
+            Alignment::Sentence
+        } else {
+            Alignment::Value
+        };
+        if r.alignment != expected {
+            errs.push(mismatch(format!(
+                "`alignment = \"{}\"` on a `{}` fact (expected `{}`)",
+                r.alignment.as_str(),
+                sf.anchor_kind.as_str(),
+                expected.as_str()
+            )));
+        }
+        if let Some(src) = by_source.get(r.source.as_str())
+            && src.original_hash_compared != r.original_hash_compared
+        {
+            errs.push(mismatch(format!(
+                "`original_hash_compared = {}` differs from source `{}` (`{}`)",
+                r.original_hash_compared, src.id, src.original_hash_compared
+            )));
+        }
+    }
+    let mut labels: BTreeSet<&str> = BTreeSet::new();
+    for role in &roles.roles {
+        if !labels.insert(role.label.as_str()) {
+            errs.push(row_err(
+                ROLES_FILE,
+                role.line,
+                &role.label,
+                LoadErrorKind::DuplicateId,
+                "duplicate role label".into(),
+            ));
+        }
+        if let Some(d) = &role.described_by
+            && !by_fact.contains_key(d.as_str())
+        {
+            errs.push(row_err(
+                ROLES_FILE,
+                role.line,
+                &role.label,
+                LoadErrorKind::DanglingKey,
+                format!("`described_by` names unknown fact `{d}`"),
+            ));
+        }
+    }
+}

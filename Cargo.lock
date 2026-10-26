@@ -1099,6 +1099,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-oracles"
+version = "0.0.1"
+dependencies = [
+ "fa-registry",
+]
+
+[[package]]
 name = "fa-palimpsest"
 version = "0.0.1"
 dependencies = [

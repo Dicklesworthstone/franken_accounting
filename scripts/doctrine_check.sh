@@ -105,6 +105,7 @@ amount_crates = [
     "fa-notary",
     "fa-intents",
     "fa-policy",
+    "fa-oracles",
 ]
 float_re = re.compile(r"\b(f32|f64)\b")
 float_hits = []

@@ -1,0 +1,53 @@
+# Pilot fixture sources (hash-first: hashes stand for the retrieved bytes; schema fixture only).
+
+[[source]]
+id = "SRC-WC-001"
+title = "Report of Investigation by the Special Investigative Committee of the Board of Directors of WorldCom, Inc."
+publisher = "WorldCom, Inc. (EDGAR exhibit 99.1)"
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/000093176303001862/dex991.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-24T17:00:00Z"
+sha256 = "7aea64fc1af13c030ce0fca1edf3c9a5a3faa183617c8b251d7c4ad079556ba8"
+format = "htm"
+extraction = ["case_fetch.py extract", "fixture", "b5a0b39702ad5d9d1a59945b2d1574f9ef7325b6a2e13dba8f3a2571f2dfb163"]
+redistribution_basis = "company-commissioned/edgar-exhibit"
+assertion_status = "investigative_finding"
+anchor_scheme = ["page"]
+status = "OK"
+filed_on = "2003-06-09"
+
+[[source]]
+id = "SRC-WC-401"
+title = "WorldCom 10-K405 FY2000 (originally filed)"
+publisher = "WorldCom, Inc."
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/fixture-10-k405-fy2000.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-24T17:05:00Z"
+sha256 = "cd6a4daf202bc83537a65a9291d62809572e710471e97f9082d0fcbe7c88da6f"
+format = "txt"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+assurance = "audited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+filed_on = "2001-03-30"
+
+[[source]]
+id = "SRC-WC-406"
+title = "WorldCom (MCI) 10-K FY2002 (restating)"
+publisher = "MCI, Inc."
+original_url = "https://www.sec.gov/Archives/edgar/data/723527/000119312504039709/fixture.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-24T17:10:00Z"
+sha256 = "b64ccd225ef567cb5ae6d884fedf72a1278a40a09c293e9e07ce8ac42701a9ee"
+format = "htm"
+redistribution_basis = "public-record/sec-filing"
+assertion_status = "filer_audited"
+assurance = "audited"
+anchor_scheme = ["table_cell", "page"]
+status = "OK"
+filed_on = "2004-03-12"
+restates = ["SRC-WC-401"]
