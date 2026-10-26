@@ -12,15 +12,19 @@
 //! explicitly treats the definition and unit list as report parameters, not
 //! authenticated registration or approval. Bundle version 2 carries the exact
 //! registry closure and requires a recipient certificate pin or signed production
-//! receipt to authenticate that definition and registry closure. Instant selections
-//! and functional-currency statements remain unsupported. The scope is accounting
+//! receipt to authenticate that definition and registry closure. Native v2 trial
+//! balances and v4 statements can additionally prove their retained tick-bucket
+//! selection from the complete TimeControl history. Migrated/genesis-policy
+//! histories and functional-currency statements remain unsupported. The scope is accounting
 //! recomputation, not economic truth, source-document authenticity, journaled
 //! registry activation, or database read attestations.
 
 mod metadata;
 mod registry;
 mod statement;
+mod temporal;
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
+pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
 mod tests;
 
@@ -38,6 +42,7 @@ use crate::tree::{leaf_hash, root_of};
 pub const REPORT_BUNDLE_FORMAT: &[u8] = b"fa:report-bundle:v1";
 pub const MAX_REPORT_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v1";
+const INSTANT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v2";
 const STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v4";
 const OUTPUT_FORMAT: &[u8; 19] = b"fa:trial-balance:v1";
 const MAX_ROWS: usize = 1 << 20;
@@ -93,6 +98,9 @@ pub struct VerifiedReport {
     pub output_digest: [u8; 32],
     pub checkpoint: SignedCheckpoint,
     pub known_at: u64,
+    /// Complete authenticated tick-bucket resolution, when the report was
+    /// selected by an instant. This proves no external UTC or genesis policy.
+    pub time_selection: Option<VerifiedInstantSelection>,
     pub effective_through: Option<i32>,
     pub activity: bool,
     pub periods: Vec<String>,
@@ -119,6 +127,7 @@ struct Certificate<'a> {
     book: [u8; 16],
     branch: [u8; 16],
     known_at: u64,
+    time_selection: Option<VerifiedInstantSelection>,
     selection: Selection,
     registry_digest: [u8; 32],
     journal_root: [u8; 32],
@@ -149,10 +158,11 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut r = Reader::new(bytes);
     let format = r.fixed::<24>("certificate.format")?;
     let statement = format == *STATEMENT_CERTIFICATE_FORMAT;
-    if format != *CERTIFICATE_FORMAT && !statement {
+    let instant = format == *INSTANT_CERTIFICATE_FORMAT;
+    if format != *CERTIFICATE_FORMAT && !statement && !instant {
         return Err(failed(
             "supported_report",
-            "expected a sequence-selected native v1 trial balance or v4 statement",
+            "expected a native v1/v2 trial balance or v4 statement",
         ));
     }
     for (field, expected) in [
@@ -212,12 +222,11 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
-    if statement && r.present("certificate.time_selection")? {
-        return Err(failed(
-            "supported_report",
-            "Instant-selected statements need a portable time-evidence closure",
-        ));
-    }
+    let time_selection = if instant || statement && r.present("certificate.time_selection")? {
+        Some(VerifiedInstantSelection::read(&mut r)?)
+    } else {
+        None
+    };
     let digest = r.fixed("certificate.digest")?;
     r.finish("report certificate")?;
     if hash_parts(b"fa:report-output:v1", &[output]) != output_digest {
@@ -236,6 +245,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         book,
         branch,
         known_at,
+        time_selection,
         selection,
         registry_digest,
         journal_root,
@@ -509,6 +519,9 @@ fn verify_report_with_inputs(
         })
         .transpose()?;
     let envelopes = &prefix.envelopes;
+    if let Some(time) = &cert.time_selection {
+        temporal::verify(time, cert.known_at, anchor.through_seq, envelopes, &records)?;
+    }
     let mut hashes = Vec::new();
     let mut last_seq = None;
     let mut ordinal = 0u32;
@@ -617,6 +630,7 @@ fn verify_report_with_inputs(
             output_digest: cert.output_digest,
             checkpoint: signed,
             known_at: cert.known_at,
+            time_selection: cert.time_selection,
             effective_through: Some(statement.columns[0].effective_through),
             activity: selection.activity(),
             periods: selection.periods.clone(),
@@ -715,6 +729,7 @@ fn verify_report_with_inputs(
         output_digest: cert.output_digest,
         checkpoint: signed,
         known_at: cert.known_at,
+        time_selection: cert.time_selection,
         effective_through: through,
         activity,
         periods,

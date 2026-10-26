@@ -1387,6 +1387,39 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ),
                         ],
                     ));
+                    if let Some(time) = &report.time_selection {
+                        checks.push(Check::pass(
+                            "time_selection",
+                            "authenticated_tick_bucket",
+                            vec![
+                                ("requested_utc_ns", n(time.requested_utc_ns)),
+                                ("frontier", n(time.frontier)),
+                                ("resolved_seq", n(time.resolved_seq)),
+                                ("precision_grade", s("tick_bucket")),
+                                ("lower_entry", s(format!("{:032x}", time.lower_entry))),
+                                ("lower_recorded_at", n(time.lower.recorded_at)),
+                                ("lower_observed_utc_ns", n(time.lower.observed_utc_ns)),
+                                (
+                                    "upper_entry",
+                                    time.upper_entry
+                                        .map_or(Json::Null, |entry| s(format!("{entry:032x}"))),
+                                ),
+                                (
+                                    "upper_recorded_at",
+                                    time.upper.map_or(Json::Null, |tick| n(tick.recorded_at)),
+                                ),
+                                (
+                                    "upper_observed_utc_ns",
+                                    time.upper
+                                        .map_or(Json::Null, |tick| n(tick.observed_utc_ns)),
+                                ),
+                                ("source_grade", s(time.source_grade())),
+                                ("physical_commit_time", s("not_judged")),
+                                ("external_utc_accuracy", s("not_judged")),
+                                ("book_genesis_policy_admission", s("not_judged")),
+                            ],
+                        ));
+                    }
                     if let Some(statement) = &report.statement {
                         checks.extend(statement_checks(statement, report.unit_universe_source));
                     }
