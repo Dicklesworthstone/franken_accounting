@@ -4592,16 +4592,16 @@ impl RaceCoverage {
             let c = self.races[race];
             assert!(c.conflicted >= 1, "{what}: {race} never conflicted: {c:?}");
         }
-        // Every two posts in one unit share its unit vertex: each leg adds an
-        // IN_UNIT edge into it, and an ordinary commit conflicts on shared
-        // endpoints (fgdb's append-only rebase would admit both; the kernel
-        // does not use it). So disjoint writers serialize today, and each
-        // contended pair must still end with both entries posted: both
-        // commit, or the loser's retry is admitted.
+        // Pure-create posts commit through fgdb's append-only rebase
+        // (`commit_append_only_rebased`), so disjoint writers in one unit do
+        // not conflict on the shared unit vertex (`IN_UNIT` endpoint) and
+        // both commit (`both_committed == contended`, `conflicted == 0`).
         let disjoint = self.races["disjoint"];
         assert!(
-            disjoint.both_committed + disjoint.retried_in == disjoint.contended,
-            "{what}: a disjoint writer was never posted: {disjoint:?}"
+            disjoint.both_committed >= 1
+                && disjoint.both_committed == disjoint.contended
+                && disjoint.conflicted == 0,
+            "{what}: disjoint writers must both commit without conflict: {disjoint:?}"
         );
         assert!(self.replayed > 0, "{what}: nothing replayed");
     }

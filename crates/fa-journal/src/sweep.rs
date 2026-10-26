@@ -3065,7 +3065,7 @@ mod tests {
             let template_entry = template_proposal.seal(Vec::new(), None).expect("seal");
             let mirrors = entry_mirrors(&template_entry).expect("mirrors");
             let ctx = self.ctx();
-            let chunk_size = 50_000;
+            let chunk_size = 10_000;
             for chunk_start in (0..count).step_by(chunk_size) {
                 let chunk_end = (chunk_start + chunk_size).min(count);
                 let mut batch = WriteBatch::new(relation::IN_BOOK);

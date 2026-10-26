@@ -378,3 +378,14 @@ replace = "            m.release(leg.side, leg.amount.mantissa - legs.iter().fil
 law = "FA-INV-15.availability"
 killed_by = ["fa-formats::tests/tigerbeetle.rs::corpus_runs_through_kernel"]
 description = "A partial post of a hold releases only the unposted remainder from the limited account's LimitCell (20 of an 80 hold after posting 60) instead of the hold's full original legs (plan §5.4). The planted negative fa-w3n6 names: in the TigerBeetle corpus run through the kernel, tb_09's partial capture of an 8000 hold on a 10000-limit account posts 6000 while the cell still reserves 6000, so the capture itself is refused FA-REF-091, the hold stays pending, and the follow-up transfer is refused too."
+
+# ---- 14. Period-state point witness under append-only rebase (fa-jogp) ------
+
+[[mutant]]
+id = "MUT-038"
+file = "crates/fa-journal/src/post.rs"
+find = "    let state_scalar = txn.vertex_property(db, pvid, property::STATE)?;"
+replace = "    let state_scalar = db.vertex(pvid)?.and_then(|r| prop(&r, property::STATE).cloned());"
+law = "FA-INV-03.witness-race"
+killed_by = ["fa-registers::tests/differential.rs::serial_equivalence_oracle", "fa-conformance::tests/substrate.rs::post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period"]
+description = "Read the target period's state from the database outside the posting transaction instead of witnessing it via txn.vertex_property. Once pure-create posts commit through commit_append_only_rebased, the IN_PERIOD edge endpoint no longer masks the missing witness, so a post prepared in an Open period slips into a concurrently soft-closed/closed period when the transition commits first (fa-jogp)."

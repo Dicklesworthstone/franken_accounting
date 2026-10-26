@@ -209,6 +209,9 @@ pub struct PreparedPost {
     identity: Identity,
     seal_key: SealKey,
     paired_reversal: Option<PairMember>,
+    /// True when preparation staged only unconditional vertex/edge creations,
+    /// so publication may use [`WriteTxn::commit_append_only_rebased`].
+    append_only: bool,
     /// Prepared by [`prepare_plan`] for a dry run: never published.
     planning: bool,
 }
@@ -329,6 +332,7 @@ impl PreparedPost {
         db: &mut Database<V>,
         batch: WriteBatch,
     ) -> Result<(), KernelError> {
+        self.append_only = false;
         self.txn.write_ordered(db, vec![batch])?;
         Ok(())
     }
@@ -402,6 +406,7 @@ impl PreparedPost {
             identity,
             seal_key,
             paired_reversal,
+            append_only,
             planning,
         } = self;
         if planning {
@@ -421,33 +426,51 @@ impl PreparedPost {
             txn.abort();
             return Ok(Err(policy::refusal(&d)));
         }
-        let accounts = crate::register_capacity::accounts(
-            std::iter::once(&entry.proposal)
-                .chain(paired_reversal.iter().map(|m| &m.entry.proposal)),
-        );
-        let staged = paired_reversal
-            .iter()
-            .map(|m| m.entry_ref.vid)
-            .chain(std::iter::once(entry_ref.vid));
-        if let Err(refusal) = crate::register_capacity::admit(
-            &txn,
-            db,
-            ctx,
-            entry.proposal.book_id,
-            &accounts,
-            staged,
-        )? {
-            txn.abort();
-            return Ok(Err(refusal));
+        if paired_reversal.is_none() && entry.proposal.class != EntryClass::RESOLUTION {
+            if let Err(refusal) = crate::register_capacity::admit_addition(
+                &txn,
+                db,
+                ctx,
+                std::iter::empty(),
+                entry_ref.vid,
+                &entry,
+            )? {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
+        } else {
+            let accounts = crate::register_capacity::accounts(
+                std::iter::once(&entry.proposal)
+                    .chain(paired_reversal.iter().map(|m| &m.entry.proposal)),
+            );
+            let staged = paired_reversal
+                .iter()
+                .map(|m| m.entry_ref.vid)
+                .chain(std::iter::once(entry_ref.vid));
+            if let Err(refusal) = crate::register_capacity::admit(
+                &txn,
+                db,
+                ctx,
+                entry.proposal.book_id,
+                &accounts,
+                staged,
+            )? {
+                txn.abort();
+                return Ok(Err(refusal));
+            }
         }
-        if requires_aggregate_basis(&request.proposal)?
-            && let Err(refusal) = check_aggregate_basis(txn.basis(), db.frontier()?)
-        {
+        let aggregate = requires_aggregate_basis(&request.proposal)?;
+        if aggregate && let Err(refusal) = check_aggregate_basis(txn.basis(), db.frontier()?) {
             txn.abort();
             return Ok(Err(refusal));
         }
         let prepared_at = txn.basis();
-        match txn.commit_with_crash(db, &commit, crash_at).await {
+        let committed = if append_only && !aggregate && crash_at.is_none() {
+            txn.commit_append_only_rebased(db, &commit, 65_536).await
+        } else {
+            txn.commit_with_crash(db, &commit, crash_at).await
+        };
+        match committed {
             Ok(seq) => Ok(Ok(Posted::Committed {
                 entry_ref,
                 recorded_at: seq,
@@ -2190,6 +2213,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // (The capability was found current at the admission point in 1a'.)
 
     // From here every read is a witness of this transaction.
+    let had_carried = carried.is_some();
     let txn_cx = ctx.txn();
     let (mut txn, paired_reversal) = match (replacement_basis, carried) {
         // A replacement pair is its own two-member transaction; a batch
@@ -2331,7 +2355,9 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(refusal));
         }
     };
-    if let Some(row) = txn.vertex(db, evid)? {
+    if txn.vertex_has_label(db, evid, label::ENTRY)?.is_some()
+        && let Some(row) = txn.vertex(db, evid)?
+    {
         let checked = checked_entry_staged(&txn, db, &row);
         txn.abort();
         let (recorded, _) = checked?;
@@ -3347,7 +3373,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                 .at("leg", i)
                 .at("settles", j)
                 .at("entry", format!("{:032x}", s.target.vid.0))
-                .or_field_change(format!("legs[{i}].settles[{j}].ordinal"), candidates)));
+                .or_field_change(
+                    format!("legs[{i}].settles[{j}].ordinal"),
+                    candidates,
+                )));
             };
             if target_leg.account_ref != leg.account_ref
                 || target_leg.amount.unit != leg.amount.unit
@@ -4226,6 +4255,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     if let Admission::Recurring(token) = admission {
         crate::recurring::stage_progress(&mut txn, db, token, evid)?;
     }
+    let append_only = !had_carried
+        && paired_reversal.is_none()
+        && judged.moves.is_empty()
+        && usage.is_none()
+        && applications.is_empty()
+        && undo.is_empty()
+        && cancelled_schedule.is_none()
+        && !matches!(admission, Admission::Recurring(_));
     Ok(Ok(PostPreparation::Ready(Box::new(PreparedPost {
         txn,
         request: req,
@@ -4238,6 +4275,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         identity,
         seal_key: book.seal_key.clone(),
         paired_reversal,
+        append_only,
         planning,
     }))))
 }
@@ -4769,8 +4807,8 @@ fn reclassification_admissible<V: asupersync::fs::Vfs + Clone>(
     match fa_palimpsest::validate_reclassification(&remaining, target, proposal) {
         Ok(()) => Ok(Ok(())),
         Err(e) => {
-            let mut r = reclassification_shape(e.to_string())
-                .at("entry", format!("{:032x}", target.vid.0));
+            let mut r =
+                reclassification_shape(e.to_string()).at("entry", format!("{:032x}", target.vid.0));
             let mut caps = Vec::new();
             for rleg in &proposal.legs {
                 let opposite = match rleg.side {
