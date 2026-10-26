@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod driver;
 pub mod rebuild;
 pub mod stats;
 
@@ -1029,6 +1030,8 @@ pub struct BenchRunReport {
     pub comparison: stats::Comparison,
     /// The 95% bootstrap interval of the candidate's p50.
     pub candidate_p50_interval: (u64, u64),
+    /// BLAKE3 of the incumbent binary the driver ran, when it ran one.
+    pub incumbent_binary_blake3: Option<[u8; 32]>,
 }
 
 impl BenchRunReport {
@@ -1060,8 +1063,15 @@ impl BenchRunReport {
             None => "null".to_string(),
         };
         let c = &self.comparison;
+        let incumbent_binary = match &self.incumbent_binary_blake3 {
+            Some(d) => format!(
+                "\"{}\"",
+                d.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ),
+            None => "null".to_string(),
+        };
         let judged = format!(
-            ",\"p50_interval_us\":[{},{}],\"witness\":{{\"counter\":\"{}\",\"stated\":{},\"counted\":{}}},\"comparison\":{{\"slower_pairs\":{},\"faster_pairs\":{},\"u_doubled\":{},\"significant\":{},\"cliffs_delta_milli\":{},\"magnitude\":\"{}\",\"verdict\":\"{}\"}}",
+            ",\"incumbent_binary_blake3\":{incumbent_binary},\"p50_interval_us\":[{},{}],\"witness\":{{\"counter\":\"{}\",\"stated\":{},\"counted\":{}}},\"comparison\":{{\"slower_pairs\":{},\"faster_pairs\":{},\"u_doubled\":{},\"significant\":{},\"cliffs_delta_milli\":{},\"magnitude\":\"{}\",\"verdict\":\"{}\"}}",
             self.candidate_p50_interval.0,
             self.candidate_p50_interval.1,
             self.witness.counter,
@@ -1121,10 +1131,26 @@ impl BenchOutcome {
                 bench_name,
                 reason,
             } => format!(
-                "{{\"event\":\"bench_unmeasured\",\"slo_id\":\"{slo_id}\",\"bench_name\":\"{bench_name}\",\"reason\":\"{reason}\"}}"
+                "{{\"event\":\"bench_unmeasured\",\"slo_id\":\"{slo_id}\",\"bench_name\":\"{bench_name}\",\"reason\":\"{}\"}}",
+                json_text(reason)
             ),
         }
     }
+}
+
+/// `text` as the inside of a JSON string: a reason may quote another
+/// binary's diagnostics.
+fn json_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Bootstrap resamples behind a candidate's p50 interval.
@@ -1170,20 +1196,23 @@ pub fn judge_run(
         witness,
         comparison,
         candidate_p50_interval,
+        incumbent_binary_blake3: None,
         manifest,
     })))
 }
 
-/// Why a §17 workload is unmeasured. No bench in this crate runs one yet.
+/// Why a §17 workload with no bench is unmeasured.
 const UNMEASURED_REASON: &str =
     "no bench executes this workload at its stated scale yet; tracked by fa-ykbp";
+/// Why a §17 workload with a real bench is unmeasured when run alone.
+const NO_INCUMBENT_REASON: &str = "a real workload runs (`fa-bench sample`), but a §17 number needs the previous release's fa-bench in the same invocation on the manifest's worker class (`fa-bench --bench <name> --incumbent <binary> --worker-class <class>`); tracked by fa-ykbp";
 
 /// Run one §17 benchmark by `bench_name` or `slo_id`.
 ///
-/// No §17 workload is executed by this crate yet, so every known benchmark
-/// returns [`BenchOutcome::Unmeasured`]; an unknown name is an error. `smoke`
-/// is accepted for interface stability and has no effect until real workloads
-/// exist (fa-ykbp).
+/// Without an incumbent no §17 number is drawn, so every known benchmark
+/// returns [`BenchOutcome::Unmeasured`], naming whether a real workload
+/// exists ([`driver::drive`] runs one against an incumbent); an unknown
+/// name is an error. `smoke` is accepted for interface stability.
 pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchOutcome, BenchError> {
     let _ = smoke;
     let manifests = load_embedded_manifests()?;
@@ -1191,10 +1220,18 @@ pub fn run_benchmark(bench_name: &str, smoke: bool) -> Result<BenchOutcome, Benc
         .into_iter()
         .find(|m| m.bench_name == bench_name || m.slo_id == bench_name)
         .ok_or_else(|| BenchError::UnknownBenchmark(bench_name.to_string()))?;
+    let sampled = driver::SAMPLED
+        .iter()
+        .any(|s| s.bench_name == manifest.bench_name);
     Ok(BenchOutcome::Unmeasured {
         slo_id: manifest.slo_id,
         bench_name: manifest.bench_name,
-        reason: UNMEASURED_REASON.to_string(),
+        reason: if sampled {
+            NO_INCUMBENT_REASON
+        } else {
+            UNMEASURED_REASON
+        }
+        .to_string(),
     })
 }
 
@@ -1384,6 +1421,21 @@ mod tests {
             stated: 10_000_000,
             counted,
         }
+    }
+
+    #[test]
+    fn an_unmeasured_reason_quoting_diagnostics_stays_one_json_string() {
+        let o = BenchOutcome::Unmeasured {
+            slo_id: "FA-BENCH-06".into(),
+            bench_name: "register_rebuild_10m".into(),
+            reason: "incumbent said \"no\" at C:\\bin\n".into(),
+        };
+        assert!(
+            o.to_json_line()
+                .ends_with(r#""reason":"incumbent said \"no\" at C:\\bin\u000a"}"#),
+            "{}",
+            o.to_json_line()
+        );
     }
 
     #[test]
