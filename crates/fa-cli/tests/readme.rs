@@ -414,6 +414,132 @@ fn the_registry_check_names_an_invented_verb_subcommand_or_flag() {
     }
 }
 
+/// Phrases the `case` docs carried while Restatement posting waited on
+/// fa-651f (H12, fa-yugf.88). Restatement cases post now
+/// (`a_restatement_case_restates_a_closed_period_from_the_cli`).
+const STALE_CASE_CLAIMS: [&str; 4] = [
+    "entries are refused with FA-REF-178",
+    "This build posts PriorPeriodAdjustment and Revision cases",
+    "a PriorPeriodAdjustment or Revision case's entries",
+    "Restatement posting waits",
+];
+
+fn stale_case_posting_claims(text: &str) -> Vec<&'static str> {
+    STALE_CASE_CLAIMS
+        .iter()
+        .copied()
+        .filter(|p| text.contains(p))
+        .collect()
+}
+
+#[test]
+fn case_docs_name_every_postable_kind_and_make_no_stale_posting_claim() {
+    let reg = registry().expect("verbs.toml");
+    let case = reg.verb("case").expect("the case verb");
+    let post = case
+        .usage
+        .iter()
+        .find(|u| u.starts_with("case post"))
+        .expect("a case post usage line");
+    let posts = post
+        .split("This build posts ")
+        .nth(1)
+        .and_then(|rest| rest.split(" cases").next())
+        .expect("the case post usage says which kinds this build posts");
+    for kind in fa_journal::case::CaseKind::ALL {
+        // A PolicyChangeRetrospective case's entries are Restatement entries;
+        // no test posts one yet (H13, fa-yugf.93), so the usage names it
+        // separately rather than claiming it.
+        if fa_journal::case::posting_class(kind).is_some()
+            && kind != fa_journal::case::CaseKind::PolicyChangeRetrospective
+        {
+            let name = format!("{kind:?}");
+            assert!(posts.contains(&name), "{name} missing from: {posts}");
+        }
+    }
+    let surfaces = [
+        ("case post usage", post.as_str()),
+        ("case summary", case.summary.as_str()),
+        ("README", README.split("## TL;DR").next().unwrap_or(README)),
+    ];
+    for (what, text) in surfaces {
+        let stale = stale_case_posting_claims(text);
+        assert!(stale.is_empty(), "{what}: {stale:?}");
+    }
+    // The planted negative: every surface as it stood at 8196f5e40 is caught.
+    let old_usage = "This build posts PriorPeriodAdjustment and Revision cases: a Revision case's scenario plans each Revision; a Restatement case's entries are refused with FA-REF-178.)";
+    assert_eq!(
+        stale_case_posting_claims(old_usage),
+        [
+            "entries are refused with FA-REF-178",
+            "This build posts PriorPeriodAdjustment and Revision cases"
+        ]
+    );
+    let old_summary = "approve its effect manifest under dual control, post a PriorPeriodAdjustment or Revision case's entries in one batch,";
+    assert_eq!(
+        stale_case_posting_claims(old_summary),
+        ["a PriorPeriodAdjustment or Revision case's entries"]
+    );
+    let old_readme = "PriorPeriodAdjustment and Revision cases post their entries (Restatement posting waits on its SoD rule's session lineage, `fa-651f`).";
+    assert_eq!(
+        stale_case_posting_claims(old_readme),
+        ["Restatement posting waits"]
+    );
+}
+
+/// The `--scenario` list in a `demo init` usage line, split on `|`.
+fn demo_usage_scenarios(usage: &str) -> Option<Vec<String>> {
+    let start = usage.find("--scenario ")? + "--scenario ".len();
+    let end = start + usage[start..].find(']')?;
+    Some(usage[start..end].split('|').map(str::to_string).collect())
+}
+
+#[test]
+fn demo_usage_names_exactly_the_scenarios_fa_demo_parses() {
+    // H3 (fa-yugf.84): the usage once listed five scenarios `Scenario::parse`
+    // rejects (saas, manufacturing, nonprofit, holding, crypto) and omitted
+    // ghost-payroll. An agent follows usage text literally, so the registry's
+    // list must be exactly the parser's.
+    let names: Vec<&str> = fa_demo::Scenario::ALL.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        names,
+        fa_demo::SCENARIO_NAMES,
+        "SCENARIO_NAMES is Scenario::ALL"
+    );
+    let reg = registry().expect("verbs.toml");
+    let demo = reg.verb("demo").expect("the demo verb");
+    let init = demo
+        .usage
+        .iter()
+        .find(|u| u.starts_with("demo init"))
+        .expect("a demo init usage line");
+    let listed = demo_usage_scenarios(init).expect("a --scenario list");
+    assert_eq!(
+        listed,
+        fa_demo::SCENARIO_NAMES,
+        "verbs.toml demo usage: {init}"
+    );
+    for name in &listed {
+        assert!(fa_demo::Scenario::parse(name).is_some(), "{name} parses");
+    }
+    // The planted negative: the stale list is caught, naming what fails.
+    let stale = "demo init [--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing] [--seed <N>]";
+    let stale_names = demo_usage_scenarios(stale).expect("the stale list parses");
+    let rejected: Vec<&String> = stale_names
+        .iter()
+        .filter(|n| fa_demo::Scenario::parse(n).is_none())
+        .collect();
+    assert_eq!(
+        rejected,
+        ["saas", "manufacturing", "nonprofit", "holding", "crypto"]
+    );
+    assert_ne!(
+        stale_names,
+        fa_demo::SCENARIO_NAMES,
+        "ghost-payroll was missing"
+    );
+}
+
 #[test]
 fn every_command_the_generated_demo_readme_prints_is_registered() {
     // `fa demo init` writes a README.md telling its reader what to run next.

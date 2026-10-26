@@ -3990,6 +3990,12 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
+/// The demo scenarios `fa_demo::Scenario::parse` accepts, as `a|b|c`: the
+/// usage text and every fix name exactly these, so they cannot drift.
+fn demo_scenarios() -> String {
+    fa_demo::SCENARIO_NAMES.join("|")
+}
+
 fn demo_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
@@ -3997,20 +4003,17 @@ fn demo_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if args.flag_all("--scenario").len() > 1 {
                 return Err(usage(
                     "--scenario may be supplied only once",
-                    "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
+                    format!("--scenario {}", demo_scenarios()),
                 ));
             }
             if args.flag_all("--seed").len() > 1 {
                 return Err(usage("--seed may be supplied only once", "--seed 7"));
             }
-            let scenario_name = args.require(
-                "--scenario",
-                "retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
-            )?;
+            let scenario_name = args.require("--scenario", &demo_scenarios())?;
             let scenario = fa_demo::Scenario::parse(scenario_name).ok_or_else(|| {
                 usage(
                     format!("unknown demo scenario `{scenario_name}`"),
-                    "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
+                    format!("--scenario {}", demo_scenarios()),
                 )
             })?;
             let seed_raw = args.flag("--seed").unwrap_or("7");
@@ -4222,7 +4225,7 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
     if let Some(sc) = args.flag("--scenario") {
         fa_demo::Scenario::parse(sc).ok_or_else(|| UsageError {
             message: format!("unknown demo scenario `{sc}`"),
-            fix: "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing".to_string(),
+            fix: format!("--scenario {}", demo_scenarios()),
         })?;
     }
     if let Some(sd) = args.flag("--seed") {

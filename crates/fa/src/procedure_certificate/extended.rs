@@ -47,7 +47,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("recon.attested_register_compare", 1),
     ("recon.assertion_drift", 1),
     ("completeness.unrecorded_liabilities", 1),
-    ("events.subsequent", 1),
+    // H18 (fa-yugf.98): a closed boundary is a period whose latest transition closed it.
+    ("events.subsequent", 2),
     ("party.master_changes", 1),
     ("payroll.ghost", 2),
     ("expense.capitalization", 2),

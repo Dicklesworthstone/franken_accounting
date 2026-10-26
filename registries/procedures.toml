@@ -1488,13 +1488,13 @@ meaning = "Post-period lookahead window in civil days for subsequent disbursemen
 
 [[procedure]]
 id = "events.subsequent"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L45"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Subsequent events review (AS 2801 / IAS 10): material postings, reversals, or restatements effective or recorded within window_days after a closed or soft-closed period boundary."
+summary = "Subsequent events review (AS 2801 / IAS 10): material postings, reversals, or restatements effective or recorded within window_days after a closed or soft-closed period boundary. A period is such a boundary when its latest recorded transition put it in SoftClosed, Closed or Locked. Version 1 counted every period with any recorded transition, including one that was only opened."
 
 [[parameter]]
 procedure = "events.subsequent"
