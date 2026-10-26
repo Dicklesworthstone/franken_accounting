@@ -42,10 +42,16 @@ fn open_existing(path: &Path, write: bool) -> io::Result<File> {
     // afterwards. O_NONBLOCK on supported Unix targets also prevents a raced
     // replacement by a FIFO from waiting indefinitely at open.
     if !std::fs::symlink_metadata(path)?.file_type().is_file() {
-        return Err(invalid("writer lease path is not a regular non-symlink file"));
+        return Err(invalid(
+            "writer lease path is not a regular non-symlink file",
+        ));
     }
     let mut options = OpenOptions::new();
-    options.read(true).write(write).create(false).truncate(false);
+    options
+        .read(true)
+        .write(write)
+        .create(false)
+        .truncate(false);
     let file = apply_no_follow(&mut options).open(path)?;
     validate_file(path, &file)?;
     Ok(file)
@@ -58,7 +64,9 @@ pub(super) fn validate_file(path: &Path, file: &File) -> io::Result<()> {
     let held = file.metadata()?;
     let named = std::fs::symlink_metadata(path)?;
     if !held.is_file() || !named.file_type().is_file() {
-        return Err(invalid("writer lease must remain a regular non-symlink file"));
+        return Err(invalid(
+            "writer lease must remain a regular non-symlink file",
+        ));
     }
     #[cfg(unix)]
     {
@@ -67,7 +75,9 @@ pub(super) fn validate_file(path: &Path, file: &File) -> io::Result<()> {
             return Err(invalid("writer lease path changed after opening"));
         }
         if held.nlink() != 1 || named.nlink() != 1 {
-            return Err(invalid("writer lease must have exactly one filesystem link"));
+            return Err(invalid(
+                "writer lease must have exactly one filesystem link",
+            ));
         }
         if held.permissions().mode() & 0o7777 != 0o600
             || named.permissions().mode() & 0o7777 != 0o600
@@ -84,7 +94,9 @@ pub(super) fn inspect_locked(path: &Path, file: &mut File) -> io::Result<()> {
     validate_file(path, file)?;
     let bytes = note_bytes(file)?;
     if !is_existing_lease_note(&bytes) {
-        return Err(invalid("existing file is not a writer lease; refusing to truncate"));
+        return Err(invalid(
+            "existing file is not a writer lease; refusing to truncate",
+        ));
     }
     validate_file(path, file)
 }
@@ -106,7 +118,9 @@ pub(super) fn holder_note(file: &mut File) -> String {
     if !is_existing_lease_note(&bytes) {
         return String::new();
     }
-    String::from_utf8(bytes).map(|text| text.trim().to_string()).unwrap_or_default()
+    String::from_utf8(bytes)
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -119,7 +133,9 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {
             let dir = std::env::temp_dir().join(format!(
-                "fa-checked-lease-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+                "fa-checked-lease-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             match std::fs::create_dir(&dir) {
                 Ok(()) => return dir.join("fad.lease"),
@@ -158,7 +174,10 @@ mod tests {
         let first = open_writer(&path).unwrap();
         first.try_lock().unwrap();
         let second = open_writer(&path).unwrap();
-        assert!(matches!(second.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        assert!(matches!(
+            second.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
         drop(first);
         second.try_lock().unwrap();
     }
@@ -203,10 +222,14 @@ mod tests {
         let path = path();
         let mut held = open_writer(&path).unwrap();
         held.try_lock().unwrap();
-        held.set_permissions(std::fs::Permissions::from_mode(0o640)).unwrap();
+        held.set_permissions(std::fs::Permissions::from_mode(0o640))
+            .unwrap();
         assert!(inspect_locked(&path, &mut held).is_err());
         assert!(open_reader(&path).is_err());
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777, 0o640);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o640
+        );
     }
 
     #[cfg(unix)]
