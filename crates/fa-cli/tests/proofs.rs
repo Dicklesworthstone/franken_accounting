@@ -1572,6 +1572,131 @@ fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
     assert_eq!(cli(&xml, false).exit, 2);
 }
 
+/// fa-mv0f: a migrated book's extracts verify offline. Every demo book holds
+/// a finalized MigrationRun. A proved whole-chart extract's bundle carries a
+/// migration-aware balance over every chart cell, whose run bodies let
+/// fa-verify decide each chunk's visibility. The migration entries are in
+/// GL_Detail and proven, in ADS and SAF-T alike. One taken out fails, and
+/// the same extract judged against the state's plain prefix bundle (no
+/// balances) is refused, naming the visibility it cannot prove.
+#[test]
+fn a_migrated_books_extracts_verify_offline() {
+    let dir = temp_dir();
+    let book = dir.join("book");
+    let (code, made) = run(
+        &book,
+        &["demo", "init", "--scenario", "retail", "--seed", "7"],
+    );
+    assert_eq!(code, 0, "{}", made.render());
+    ok(&book, &["checkpoint", "create", "--grant", "witness"]);
+    let export = |format: &str| {
+        let out = dir.join(format);
+        let line = ok(
+            &book,
+            &[
+                "export",
+                format,
+                "--as-of",
+                "2026-12-31",
+                "--out",
+                out.to_str().unwrap(),
+                "--with-proofs",
+            ],
+        );
+        (out, line)
+    };
+    let (ads, line) = export("ads");
+    let proof = get(&line, "proof");
+    let key: [u8; 32] = unhex(text(proof, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    let read = |name: &str| std::fs::read_to_string(ads.join(name)).expect(name);
+    let (certificate, chart, gl, tb) = (
+        read("ADS_Coordinate_Certificate.toml"),
+        read("Chart_of_Accounts.txt"),
+        read("GL_Detail.txt"),
+        read("Trial_Balance.txt"),
+    );
+    let receipt = std::fs::read(ads.join("ADS_Proof.receipt")).expect("receipt");
+    let verify = |gl: &str, bundle: &[u8], receipt: &[u8]| {
+        fa_verify::ads::verify_ads(&certificate, &chart, gl, &tb, bundle, &[key], Some(receipt))
+            .expect("a well-formed bundle")
+    };
+    let bundle = std::fs::read(ads.join("ADS_Proof.fab")).expect("bundle");
+    let report = verify(&gl, &bundle, &receipt);
+    assert!(report.verified(), "{:?}", report.failures);
+    assert!(report.chart_rows.is_some(), "{report:?}");
+    // The migration entries (Entry_Class 12) are in the extract, proven.
+    let migrated: Vec<&str> = gl
+        .lines()
+        .skip(1)
+        .filter(|row| row.split('|').nth(4) == Some("12"))
+        .collect();
+    assert!(!migrated.is_empty(), "{gl}");
+    let id = migrated[0].split('|').next().unwrap();
+    let without: String = gl
+        .lines()
+        .filter(|row| !row.starts_with(&format!("{id}|")))
+        .map(|row| format!("{row}\n"))
+        .collect();
+    let missing = verify(&without, &bundle, &receipt);
+    assert!(
+        missing
+            .failures
+            .iter()
+            .any(|f| f.contains("missing from GL_Detail")),
+        "{:?}",
+        missing.failures
+    );
+    // The same extract against the state's plain prefix bundle: nothing
+    // decides the chunks' visibility, so they are refused, not guessed.
+    let plain = dir.join("plain.fab");
+    let plain_receipt = dir.join("plain.receipt");
+    ok(
+        &book,
+        &[
+            "bundle",
+            "produce",
+            "--state",
+            text(proof, "state"),
+            "--out",
+            plain.to_str().unwrap(),
+            "--receipt-out",
+            plain_receipt.to_str().unwrap(),
+        ],
+    );
+    let unproven = verify(
+        &gl,
+        &std::fs::read(&plain).expect("plain bundle"),
+        &std::fs::read(&plain_receipt).expect("plain receipt"),
+    );
+    assert!(!unproven.verified());
+    assert!(
+        unproven
+            .failures
+            .iter()
+            .any(|f| f.contains("proves whether its run makes it visible")),
+        "{:?}",
+        unproven.failures
+    );
+
+    // SAF-T of the same book verifies the same way.
+    let (saft, saft_line) = export("saft");
+    let saft_proof = get(&saft_line, "proof");
+    let saft_key: [u8; 32] = unhex(text(saft_proof, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    let judged = fa_verify::saft::verify_saft(
+        &std::fs::read_to_string(saft.join("SAF-T.xml")).expect("SAF-T.xml"),
+        &std::fs::read(saft.join("SAFT_Proof.fab")).expect("bundle"),
+        &[saft_key],
+        Some(&std::fs::read(saft.join("SAFT_Proof.receipt")).expect("receipt")),
+    )
+    .expect("a well-formed bundle");
+    assert!(judged.verified(), "{:?}", judged.failures);
+    assert_eq!(judged.entries, report.entries);
+}
+
 #[test]
 fn ads_text_survives_real_post_export_reimport_and_offline_verification() {
     let f = Fixture::new();

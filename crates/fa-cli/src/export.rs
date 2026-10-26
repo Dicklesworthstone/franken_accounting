@@ -211,6 +211,48 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )));
         }
         let journal = book.format_journal(through, Some(seq))?;
+        // A migration chunk counts only when its run makes it visible, and
+        // fa-verify learns that from migration-aware balance proofs, which
+        // carry the run bodies (fa-mv0f). So a proved whole-chart extract is
+        // produced again at the same state with a balance over every chart
+        // account in every unit its legs use, cut off at the extract's
+        // cutoff. That covers each cell a chunk, visible or not, could touch,
+        // and is a second witness of every Trial_Balance row.
+        if account.is_none()
+            && let Some((first, key)) = proved.take()
+        {
+            let book_id = book.context().book_id;
+            let mut units: std::collections::BTreeSet<u32> = journal
+                .entries
+                .iter()
+                .flat_map(|e| e.legs.iter().map(|l| l.amount.unit.0))
+                .collect();
+            units.insert(book.spec()?.base_unit.0);
+            let balances = journal
+                .accounts
+                .iter()
+                .flat_map(|a| {
+                    let vid = fa_model::account_vid(book_id, &a.code);
+                    units.iter().map(move |unit| fa::BalanceRequest {
+                        account: vid,
+                        unit: *unit,
+                        effective_through: Some(through.0),
+                    })
+                })
+                .collect();
+            let request = fa::BundleRequest {
+                scope: fa::BundleScope::Prefix,
+                balances,
+                inline_documents: false,
+            };
+            let state = first.checkpoint.checkpoint.body.state_oid;
+            let again = book
+                .produce_bundle(capability.holder(), &capability, Some(state), &request)??
+                .ok_or_else(|| {
+                    Fail::Internal("the proof state is no longer on the checkpoint chain".into())
+                })?;
+            proved = Some((again, key));
+        }
         selected = Some(match account {
             None => journal,
             Some(code) => journal.scoped_to_account(code).map_err(|_| {

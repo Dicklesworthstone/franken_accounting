@@ -435,7 +435,7 @@ pub fn verify_saft(
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
 ) -> Result<AdsReport, BundleError> {
-    let (report, records) = ads::prove(bundle, trusted_keys, receipt)?;
+    let (report, authenticated) = ads::prove(bundle, trusted_keys, receipt)?;
     let doc = read(xml);
     let header = doc.as_ref().ok().and_then(|d| d.child("Header").ok());
     let header_text = |name: &str| {
@@ -455,7 +455,7 @@ pub fn verify_saft(
         return Ok(out);
     }
     match doc.and_then(|doc| stated(&doc)) {
-        Ok(stated) => Ok(ads::judge(out, records, stated, &PARTS)),
+        Ok(stated) => Ok(ads::judge(out, authenticated, stated, &PARTS)),
         Err(why) => {
             out.failures.push(why);
             Ok(out)
