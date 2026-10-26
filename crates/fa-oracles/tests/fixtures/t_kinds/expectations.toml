@@ -1,0 +1,107 @@
+# FIXTURE (A3b t_kinds, bead fa-yugf.8): one T of each kind for the static T checks. Synthetic values;
+# digests computed by a one-off script independently of fa-oracles; edit by hand like any fixture.
+# Never copied to cases/; no figure here is a case's published value.
+
+[[expectation]]
+id = "X-T-01"
+type = "T"
+book_variant = "native"
+statement_template = "T.bridge"
+basis = ["F-A", "F-D", "F-B"]
+kind = "bridge"
+vintages = ["A:SRC-TK-A", "D:SRC-TK-B", "B:SRC-TK-B"]
+read_verb = "balance"
+read_target = "1100"
+read_coordinate = "FY2020"
+published = "F-B"
+
+[[expectation]]
+id = "X-T-02"
+type = "T"
+book_variant = "native"
+statement_template = "T.footing"
+basis = ["F-X1", "F-X2", "F-XT"]
+kind = "footing"
+vintages = ["exhibit:SRC-TK-X"]
+read_verb = "balance"
+read_target = "1000"
+read_coordinate = "FY2020"
+published = "F-XT"
+
+[[expectation]]
+id = "X-T-03"
+type = "T"
+book_variant = "native"
+statement_template = "T.per_account"
+basis = ["F-S1", "F-S2", "F-SP", "F-SP2"]
+kind = "per_account"
+vintages = ["source:SRC-TK-S"]
+
+[[expectation]]
+id = "X-T-04"
+type = "T"
+book_variant = "native"
+statement_template = "T.allocation"
+basis = ["F-S1", "F-S2", "F-SE"]
+kind = "allocation"
+vintages = ["source:SRC-TK-S"]
+read_verb = "balance"
+read_target = "5000"
+read_coordinate = "FY2020"
+published = "F-SE"
+
+[[expectation]]
+id = "X-T-05"
+type = "T"
+book_variant = "native"
+statement_template = "T.delta"
+basis = ["F-D", "F-DLINE"]
+kind = "delta"
+vintages = ["D:SRC-TK-B"]
+read_verb = "balance"
+read_target = "4000"
+read_coordinate = "FY2020"
+published = "F-DLINE"
+
+[[expectation]]
+id = "X-T-06"
+type = "T"
+book_variant = "native"
+statement_template = "T.rule"
+basis = ["F-S1", "F-S2", "F-SL"]
+kind = "rule"
+vintages = ["source:SRC-TK-S"]
+rule = "sum"
+read_verb = "balance"
+read_target = "Liability"
+read_coordinate = "FY2020"
+published = "F-SL"
+
+[[expectation]]
+id = "X-T-07"
+type = "T"
+book_variant = "native"
+statement_template = "T.round_trip"
+basis = ["F-RT"]
+kind = "round_trip"
+vintages = ["B:SRC-TK-B"]
+read_verb = "balance"
+read_target = "Revenue"
+read_coordinate = "FY2020"
+published = "F-RT"
+
+[[target]]
+expectation = "X-T-03"
+fact = "F-S1"
+read_verb = "balance"
+read_target = "2000"
+read_coordinate = "FY2020"
+published = "F-SP"
+
+[[target]]
+expectation = "X-T-03"
+fact = "F-S2"
+read_verb = "balance"
+read_target = "2100"
+read_coordinate = "FY2020"
+published = "F-SP2"

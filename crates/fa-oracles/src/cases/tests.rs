@@ -16,9 +16,9 @@ const ROLES: &str = include_str!("../../tests/fixtures/pilot/roles.toml");
 const NATIVE: &str = include_str!("../../tests/fixtures/pilot/books/native.toml");
 const BINDING: &str = include_str!("../../data/binding_fixtures.toml");
 
-type Files = Vec<(&'static str, String)>;
+pub(crate) type Files = Vec<(&'static str, String)>;
 
-fn pilot() -> Files {
+pub(crate) fn pilot() -> Files {
     vec![
         (CASE_FILE, CASE.to_string()),
         (SOURCES_FILE, SOURCES.to_string()),
@@ -29,7 +29,7 @@ fn pilot() -> Files {
     ]
 }
 
-fn load_files(
+pub(crate) fn load_files(
     id: &str,
     files: &Files,
     extensions: &[CaseExtension],
@@ -79,10 +79,15 @@ fn refused(
     line: Option<usize>,
 ) -> LoadError {
     let errs = result.expect_err("the planted edit must be refused");
-    errs.iter()
+    let found = errs
+        .iter()
         .find(|e| e.file == file && e.kind == kind && (line.is_none() || e.line == line))
-        .cloned()
-        .unwrap_or_else(|| panic!("no {kind} in {file} at {line:?}; got: {errs:#?}"))
+        .cloned();
+    assert!(
+        found.is_some(),
+        "no {kind} in {file} at {line:?}; got: {errs:#?}"
+    );
+    found.expect("asserted above")
 }
 
 #[test]
@@ -98,7 +103,7 @@ fn pilot_fixture_loads() {
         7,
         "A1b added F2#1 and F9#1 for the pilot book"
     );
-    assert_eq!(case.receipts.len(), 3);
+    assert_eq!(case.receipts.len(), 7);
     assert!(case.receipts.iter().all(Receipt::binds));
     assert_eq!(
         case.roles.roles.len(),
@@ -451,7 +456,14 @@ fn receipt_alignment_not_matching_its_anchor_kind_is_refused() {
         "alignment = \"value\"",
         "alignment = \"sentence\"",
     );
-    let line = row_line(text_of(&files, RECEIPTS_FILE), "receipt", 2);
+    // The receipt that was value-aligned (the pilot's one table_cell fact).
+    let text = text_of(&files, RECEIPTS_FILE);
+    let index = text
+        .split("[[receipt]]")
+        .skip(1)
+        .position(|row| row.contains("fact = \"W406-TA-2000\""))
+        .expect("W406-TA-2000's receipt");
+    let line = row_line(text, "receipt", index);
     refused(
         load_files("worldcom", &files, CASE_EXTENSIONS),
         RECEIPTS_FILE,

@@ -9011,30 +9011,7 @@ fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             POST_REVIEW_EXAMPLE,
         ));
     }
-    let expected = parse_digest(
-        args.require("--digest", "<review_digest>")?,
-        "review digest",
-    )?;
-    let path = args.require("--review", "<file|hex|->")?;
-    let bytes = read_review_bytes(&ctx.files, path, ctx.authority().is_some())?;
-    let review = PostIntent::decode(&bytes).map_err(|e| {
-        usage(
-            format!("invalid post review: {e}"),
-            "use the unchanged bytes of fa post --review-only or --review-out",
-        )
-    })?;
-    if review
-        .digest()
-        .map_err(|e| Fail::Internal(format!("post review digest: {e}")))?
-        != expected
-        || !review.approvals().is_empty()
-        || review.proposal().class == EntryClass::CLOSING
-    {
-        return Err(usage(
-            "post review digest or type does not match",
-            "use the review's independently retained review_digest; a closing review is restored by fa close year-end --review",
-        ));
-    }
+    let review = restore_post_review(ctx, args)?;
     let digest = review
         .proposal()
         .proposal_digest()
@@ -9069,6 +9046,39 @@ fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let posted = book.commit_plan(plan, &capability)??;
     out.at_book(&book)?;
     emit_posted(out, posted, &class_name, false, None, None)
+}
+
+/// Restores an unchanged `fa post` review from `--review <file|hex|->` and
+/// `--digest <review_digest>`: its bytes decode, hash to the digest, carry
+/// no approvals, and are not a closing review (fa-6f3g). `fa post --review`
+/// plans or posts it; `fa document attest manual --review` records a
+/// ManualAssertion over its proposal_digest (fa-kokk).
+pub(crate) fn restore_post_review(ctx: &Ctx<'_>, args: &Args) -> Result<PostIntent, Fail> {
+    let expected = parse_digest(
+        args.require("--digest", "<review_digest>")?,
+        "review digest",
+    )?;
+    let path = args.require("--review", "<file|hex|->")?;
+    let bytes = read_review_bytes(&ctx.files, path, ctx.authority().is_some())?;
+    let review = PostIntent::decode(&bytes).map_err(|e| {
+        usage(
+            format!("invalid post review: {e}"),
+            "use the unchanged bytes of fa post --review-only or --review-out",
+        )
+    })?;
+    if review
+        .digest()
+        .map_err(|e| Fail::Internal(format!("post review digest: {e}")))?
+        != expected
+        || !review.approvals().is_empty()
+        || review.proposal().class == EntryClass::CLOSING
+    {
+        return Err(usage(
+            "post review digest or type does not match",
+            "use the review's independently retained review_digest; a closing review is restored by fa close year-end --review",
+        ));
+    }
+    Ok(review)
 }
 
 /// A plan is portable canonical bytes, never an authority token supplied by

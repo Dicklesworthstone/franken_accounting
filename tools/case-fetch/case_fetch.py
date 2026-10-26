@@ -42,15 +42,18 @@ unpunctuated heading can be quoted. Lines of an anchor that contain no
 `[.?!]` form one heading sentence: the quote must be their whole normalized
 text.
 
-Scope (case-fetch-scope-v1): the period words of a text are quarter labels
-(`1Q01`, `2001Q1`, `Q1 2001`, `first quarter of 2001`) and fiscal years
-(`fiscal 2001`, `fiscal year 2001`, `FY2001`, each covering its four
-quarters); its account words are `account:<id>` and `account <id>` (also
-`account No. <id>`, `account number <id>`, `account #<id>`) where <id> is
-4-12 upper-case letters and digits with at least one digit. A quote conflicts
-with `about_scope` when both name periods and the quarter sets are disjoint,
-or both name accounts and the sets are disjoint. An `about_scope` that starts
-with `scheme:` cannot back a `journal_entry` fact (§2.1: through an
+Scope (case-fetch-scope-v2, word for word fa-oracles' src/cases/scope.rs):
+`about_scope` is `entry:<fact>`, `period:<YYYYQn|FYyyyy|YYYY-MM>`,
+`scheme:<slug>` (its range read from the slug's tail: `<P1>-<P2>` quarters,
+`<YYYY-MM>-<YYYY-MM>`, `<YYYY-MM-DD>`, `<YYYY-MM>` or `<P>`; a dated tail
+that parses as none of these, or runs backwards, is refused) or
+`account:<id>`. A quote's named quarters and fiscal years must equal a period
+or entry scope's label or lie inside a scheme's range; its named dates, day
+ranges and months must lie inside a scheme's range (they are not compared
+with a period or entry scope: an entry's quote names the day it was made
+beside the period it was booked to); its named accounts (account words, and
+bare ids the case's account: scopes name) must equal an account: scope. A
+scheme scope cannot back a `journal_entry` fact (§2.1: through an
 interpretation only).
 """
 
@@ -72,9 +75,9 @@ import xml.parsers.expat
 from fractions import Fraction
 from pathlib import Path
 
-TOOL_VERSION = "case-fetch-v1"
+TOOL_VERSION = "case-fetch-v2"
 STRIP_VERSION = "case-fetch-strip-v1"
-SCOPE_VERSION = "case-fetch-scope-v1"
+SCOPE_VERSION = "case-fetch-scope-v2"
 EXTRACT_TOOL = "case_fetch.py extract"
 USER_AGENT = "franken_accounting-agent (+https://github.com/Dicklesworthstone/franken_accounting)"
 MIN_REQUEST_INTERVAL_S = 1.0
@@ -617,8 +620,6 @@ FISCAL_PATTERNS = (
     re.compile(r"\bfiscal(?: year)? (\d{4})\b", re.IGNORECASE),
     re.compile(r"\bFY ?(\d{4})\b"),
 )
-ACCOUNT_PATTERN = re.compile(
-    r"\baccount(?::| (?:No\. ?|number |#)?)([0-9A-Z]{4,12})\b", re.IGNORECASE)
 
 
 def two_digit_year(yy):
@@ -733,41 +734,387 @@ def apply_rule(rule, literal, param, unit, precision, scales):
     raise RuleError(f"unknown rule `{rule}`")
 
 
-def quarter_labels(text):
-    found = []
-    for pattern, parse in QUARTER_PATTERNS:
-        for m in pattern.finditer(text):
-            year, q = parse(m)
-            label = f"{year}Q{q}"
-            if label not in found:
-                found.append(label)
-    return found
+# --- scope (case-fetch-scope-v2; fa-oracles src/cases/scope.rs, word for word) -
+
+class ScopeError(ValueError):
+    pass
 
 
-def period_quarters(text):
-    quarters = set(quarter_labels(text))
-    for pattern in FISCAL_PATTERNS:
-        for m in pattern.finditer(text):
-            quarters.update(f"{m.group(1)}Q{q}" for q in range(1, 5))
-    return quarters
+SCOPE_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
+                "september", "october", "november", "december")
+UPPER_DIGITS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 
-def account_ids(text):
-    return {m.group(1) for m in ACCOUNT_PATTERN.finditer(text)
-            if any(c.isdigit() for c in m.group(1)) and m.group(1) == m.group(1).upper()}
+def _lower(word):
+    return word.lower() if word.isascii() else word
 
 
-def scope_ok(quote, about_scope, granularity):
-    """case-fetch-scope-v1 (see the module docstring)."""
-    if about_scope.startswith("scheme:") and granularity == "journal_entry":
-        return False, "a scheme-level scope backs a journal_entry fact only through an interpretation"
-    pq, ps = period_quarters(quote), period_quarters(about_scope)
-    if pq and ps and pq.isdisjoint(ps):
-        return False, f"the quote names {sorted(pq)}, the scope {sorted(ps)}"
-    aq, as_ = account_ids(quote), account_ids(about_scope)
-    if aq and as_ and aq.isdisjoint(as_):
-        return False, f"the quote names accounts {sorted(aq)}, the scope {sorted(as_)}"
-    return True, ""
+def _ieq(word, lower):
+    return word.isascii() and word.lower() == lower
+
+
+def _digits(word, n):
+    return len(word) == n and all("0" <= c <= "9" for c in word)
+
+
+def _year(word):
+    return int(word) if _digits(word, 4) else None
+
+
+def _day_num(word):
+    return int(word) if _digits(word, 1) or _digits(word, 2) else None
+
+
+def _month(word):
+    w = _lower(word[:-1] if word.endswith(".") else word)
+    for i, m in enumerate(SCOPE_MONTHS):
+        if m == w or (len(w) == 3 and m.startswith(w)) or (w == "sept" and m == "september"):
+            return i + 1
+    return None
+
+
+def _ordinal(word):
+    return ORDINALS.get(_lower(word))
+
+
+def _joiner(word):
+    return word in ("and", "through", "to", "-", "–")
+
+
+def _clean(word):
+    return word.lstrip('(["“').rstrip(',.;:)]"”')
+
+
+def _days_in_month(year, month):
+    if month == 2:
+        return 29 if (year % 4 == 0 and year % 100 != 0) or year % 400 == 0 else 28
+    return 30 if month in (4, 6, 9, 11) else 31
+
+
+def _date(year, month, day):
+    if 1 <= month <= 12 and 1 <= day <= _days_in_month(year, month):
+        return (year, month, day)
+    return None
+
+
+def _show(d):
+    return f"{d[0]:04d}-{d[1]:02d}-{d[2]:02d}"
+
+
+def _quarter(year, q):
+    if not 1 <= q <= 4:
+        return None
+    m = 3 * q - 2
+    return (year, m, 1), (year, m + 2, _days_in_month(year, m + 2))
+
+
+def _month_span(year, month):
+    return (year, month, 1), (year, month, _days_in_month(year, month))
+
+
+def _quarter_label(label):
+    if len(label) != 6 or label[4] != "Q" or label[5] not in "1234":
+        return None
+    y = _year(label[:4])
+    return None if y is None else (y, int(label[5]))
+
+
+def _month_label(label):
+    y, sep, m = label.partition("-")
+    if not sep or not _digits(m, 2) or not 1 <= int(m) <= 12 or _year(y) is None:
+        return None
+    return _year(y), int(m)
+
+
+def period_span(label):
+    """The days of a period label: YYYYQn, FYyyyy or YYYY-MM."""
+    if label.startswith("FY") and _year(label[2:]) is not None:
+        y = _year(label[2:])
+        return (y, 1, 1), (y, 12, 31)
+    q = _quarter_label(label)
+    if q:
+        return _quarter(*q)
+    m = _month_label(label)
+    return _month_span(*m) if m else None
+
+
+def _label_word(w):
+    if len(w) == 4 and w[0] in "1234" and w[1] == "Q" and _digits(w[2:], 2):
+        return f"{two_digit_year(w[2:])}Q{w[0]}"
+    if _quarter_label(w):
+        return w
+    if w.startswith("FY") and _year(w[2:]) is not None:
+        return f"FY{_year(w[2:])}"
+    return None
+
+
+def account_id(word):
+    return (4 <= len(word) <= 12 and all(c in UPPER_DIGITS for c in word)
+            and any("0" <= c <= "9" for c in word))
+
+
+def _period_named(label):
+    span = period_span(label)
+    return None if span is None else ("period", label, span)
+
+
+def _days_range(a, b):
+    return ("days", f"{_show(a)}..{_show(b)}", (a, b))
+
+
+def _days_one(a):
+    return ("days", _show(a), (a, a))
+
+
+def _scan(words, i, accounts):
+    """What the words from i name, and the index after them, or None."""
+    def at(k):
+        return words[k] if k < len(words) else ""
+    m1 = _month(at(i))
+    if m1:
+        d1, y1 = _day_num(at(i + 1)), _year(at(i + 2))
+        if d1 is not None and y1 is not None and _joiner(at(i + 3)):
+            m2, d2, y2 = _month(at(i + 4)), _day_num(at(i + 5)), _year(at(i + 6))
+            if m2 and d2 is not None and y2 is not None:
+                a, b = _date(y1, m1, d1), _date(y2, m2, d2)
+                if a and b and a <= b:
+                    return _days_range(a, b), i + 7
+        joined = None
+        w = at(i + 1)
+        cuts = [k for k in (w.find("-"), w.find("–")) if k >= 0]
+        if cuts:
+            k = min(cuts)
+            a, b = _day_num(w[:k]), _day_num(w[k + 1:])
+            if a is not None and b is not None:
+                joined = ((a, b), i + 2)
+        spaced = None
+        a, b = _day_num(at(i + 1)), _day_num(at(i + 3))
+        if a is not None and _joiner(at(i + 2)) and b is not None:
+            spaced = ((a, b), i + 4)
+        pair = joined if joined is not None else spaced
+        if pair is not None:
+            (d1, d2), year_at = pair
+            y = _year(at(year_at))
+            if y is not None:
+                a, b = _date(y, m1, d1), _date(y, m1, d2)
+                if a and b and a <= b:
+                    return _days_range(a, b), year_at + 1
+        d, y = _day_num(at(i + 1)), _year(at(i + 2))
+        if d is not None and y is not None and _date(y, m1, d):
+            a = _date(y, m1, d)
+            return _days_one(a), i + 3
+        y = _year(at(i + 1))
+        if y is not None:
+            return ("days", f"{y:04d}-{m1:02d}", _month_span(y, m1)), i + 2
+    d, m, y = _day_num(at(i)), _month(at(i + 1)), _year(at(i + 2))
+    if d is not None and m and y is not None and _date(y, m, d):
+        a = _date(y, m, d)
+        return _days_one(a), i + 3
+    w = at(i)
+    ordinal = None
+    k = w.find("-")
+    if k >= 0 and _ieq(w[k + 1:], "quarter"):
+        n = _ordinal(w[:k])
+        ordinal = (n, i + 1) if n else None
+    elif _ieq(at(i + 1), "quarter"):
+        n = _ordinal(w)
+        ordinal = (n, i + 2) if n else None
+    if ordinal:
+        q, after = ordinal
+        year_at = after + 1 if _ieq(at(after), "of") else after
+        y = _year(at(year_at))
+        if y is not None:
+            return _period_named(f"{y}Q{q}"), year_at + 1
+
+    def q_word(x):
+        return x[1:] if x.startswith("Q") and _digits(x[1:], 1) else None
+    q, y = q_word(at(i)), _year(at(i + 1))
+    if q is not None and y is not None and _period_named(f"{y}Q{q}"):
+        return _period_named(f"{y}Q{q}"), i + 2
+    y, q = _year(at(i)), q_word(at(i + 1))
+    if q is not None and y is not None and _period_named(f"{y}Q{q}"):
+        return _period_named(f"{y}Q{q}"), i + 2
+    label = _label_word(w)
+    if label and _period_named(label):
+        return _period_named(label), i + 1
+    fiscal = _ieq(w, "fiscal")
+    if fiscal or w == "FY":
+        year_at = i + 2 if fiscal and _ieq(at(i + 1), "year") else i + 1
+        y = _year(at(year_at))
+        if y is not None:
+            return _period_named(f"FY{y}"), year_at + 1
+    if w.startswith("account:") and account_id(w[len("account:"):]):
+        return ("account", w[len("account:"):], None), i + 1
+    if _ieq(w, "account") or _ieq(w, "accounts"):
+        j = i + 2 if _ieq(at(i + 1), "no") or _ieq(at(i + 1), "number") else i + 1
+        ident = at(j)[1:] if at(j).startswith("#") else at(j)
+        if account_id(ident):
+            return ("account", ident, None), j + 1
+    if w in accounts:
+        return ("account", w, None), i + 1
+    return None
+
+
+def scope_named(quote, accounts=frozenset()):
+    """Everything a quote names, in order: ("period"|"days"|"account", text, span)."""
+    words = [_clean(w) for w in normalize(quote).split(" ") if w]
+    out, i = [], 0
+    while i < len(words):
+        hit = _scan(words, i, accounts)
+        if hit is None:
+            i += 1
+        else:
+            out.append(hit[0])
+            i = hit[1]
+    return out
+
+
+def _shown(named):
+    kind, text, _ = named
+    return {"period": f"period {text}", "account": f"account {text}"}.get(kind, text)
+
+
+def _scheme_range(slug):
+    parts = slug.split("-")
+    n = len(parts)
+
+    def tail(k):
+        return parts[n - k:] if n > k else None
+
+    def quarter_of(w):
+        q = _quarter_label(w)
+        return _quarter(*q) if q else None
+
+    def month_pair(y, m):
+        if _year(y) is None:
+            return None
+        ml = _month_label(f"{y}-{m}")
+        return _month_span(*ml) if ml else None
+
+    def ranged(t, a, b):
+        if a[0] <= b[1]:
+            return "-".join(t), (a[0], b[1])
+        raise ScopeError(f"scheme `{slug}`: its range runs backwards")
+
+    t = tail(2)
+    if t and quarter_of(t[0]) and quarter_of(t[1]):
+        return ranged(t, quarter_of(t[0]), quarter_of(t[1]))
+    t = tail(4)
+    if t and month_pair(t[0], t[1]) and month_pair(t[2], t[3]):
+        return ranged(t, month_pair(t[0], t[1]), month_pair(t[2], t[3]))
+    t = tail(3)
+    if t and _digits(t[2], 2) and month_pair(t[0], t[1]):
+        first = month_pair(t[0], t[1])[0]
+        one = _date(first[0], first[1], int(t[2]))
+        if one:
+            return "-".join(t), (one, one)
+    t = tail(2)
+    if t and month_pair(t[0], t[1]):
+        return "-".join(t), month_pair(t[0], t[1])
+    t = tail(1)
+    if t and quarter_of(t[0]):
+        return t[0], quarter_of(t[0])
+    if any(len(w) >= 4 and _digits(w[:4], 4) for w in parts[1:][max(n - 4, 0):]):
+        raise ScopeError(f"scheme `{slug}`: its range tail parses as no quarter, month or day form")
+    return None
+
+
+def parse_scope(about):
+    """("entry", fact) | ("period", label, span) | ("scheme", slug, range) | ("account", id)."""
+    if about.startswith("entry:") and about[len("entry:"):]:
+        return ("entry", about[len("entry:"):])
+    if about.startswith("period:"):
+        label = about[len("period:"):]
+        span = period_span(label)
+        if span is None:
+            raise ScopeError(f"`{about}`: a period is YYYYQn, FYyyyy or YYYY-MM")
+        return ("period", label, span)
+    if about.startswith("account:"):
+        ident = about[len("account:"):]
+        if not account_id(ident):
+            raise ScopeError(
+                f"`{about}`: an account id is 4-12 upper-case letters and digits with a digit")
+        return ("account", ident)
+    if about.startswith("scheme:") and about[len("scheme:"):]:
+        slug = about[len("scheme:"):]
+        return ("scheme", slug, _scheme_range(slug))
+    raise ScopeError(
+        f"`{about}` is not entry:<fact>, period:<label>, scheme:<slug> or account:<id>")
+
+
+def check_scope(about, granularity):
+    """The scope's own refusals, which need no quote."""
+    scope = parse_scope(about)
+    if scope[0] == "scheme" and granularity == "journal_entry":
+        raise ScopeError(f"`{about}` is scheme-level; it backs a journal_entry fact only "
+                         "through an interpretation")
+    return scope
+
+
+def _inside(outer, inner):
+    return outer[0] <= inner[0] and inner[1] <= outer[1]
+
+
+def scope_check(quote, about, granularity, entry_period=None, accounts=frozenset()):
+    """The verdict: "range=none" for a rangeless scheme, "" otherwise; raises
+    ScopeError naming the conflict. entry_period(fact) returns the entry's
+    period label or None, and raises ScopeError for an unknown fact."""
+    scope = check_scope(about, granularity)
+    names = scope_named(quote, accounts)
+    label, rng, against = None, None, ""
+    if scope[0] == "period":
+        label, against = scope[1], f"scope period {scope[1]}"
+    elif scope[0] == "entry":
+        fact = scope[1]
+        got = entry_period(fact) if entry_period else None
+        if got is not None:
+            if period_span(got) is None:
+                raise ScopeError(f"entry {fact}'s period `{got}` is not YYYYQn, FYyyyy or YYYY-MM")
+            label, against = got, f"entry {fact} is {got}"
+        else:
+            for n in names:
+                if n[0] == "period":
+                    raise ScopeError(f"names {_shown(n)}, and entry {fact} has no period")
+    elif scope[0] == "scheme" and scope[2] is not None:
+        rng, against = scope[2][1], f"outside {scope[2][0]}"
+    for n in names:
+        if n[0] == "period":
+            ok = n[1] == label if label is not None else (rng is None or _inside(rng, n[2]))
+        elif n[0] == "days":
+            ok = rng is None or _inside(rng, n[2])
+        else:
+            ok = scope[0] != "account" or n[1] == scope[1]
+        if not ok:
+            if n[0] == "account":
+                raise ScopeError(f"names account {n[1]}, scope account {scope[1]}")
+            raise ScopeError(f"names {_shown(n)}, {against}")
+    return "range=none" if scope[0] == "scheme" and scope[2] is None else ""
+
+
+def scope_context(facts, values):
+    """K-SCOPE's case inputs: entry_period(fact) and the account ids the
+    case's account: scopes name."""
+    accounts = frozenset(f["about_scope"][len("account:"):] for f in facts.values()
+                         if f.get("about_scope", "").startswith("account:"))
+
+    def entry_period(fid):
+        fact = facts.get(fid)
+        if fact is None:
+            raise ScopeError(f"entry:{fid} names no fact of this case")
+        for v in values.get(fid, []):
+            if v.get("rule") == "period_literal":
+                return str(v["value"])
+        about = fact.get("about_scope", "")
+        return about[len("period:"):] if about.startswith("period:") else None
+    return entry_period, accounts
+
+
+def scope_ok(quote, about_scope, granularity, entry_period=None, accounts=frozenset()):
+    """(ok, text): text is the conflict, or the verdict's note."""
+    try:
+        return True, scope_check(quote, about_scope, granularity, entry_period, accounts)
+    except ScopeError as e:
+        return False, str(e)
 
 
 def literal_in(literal, quote):
@@ -1133,7 +1480,7 @@ def bind_xbrl(text, fact, values, scales, b):
             b.member_ok = False
 
 
-def bind(fact, values, source, text, loc, scales):
+def bind(fact, values, source, text, loc, scales, scope_ctx=(None, frozenset())):
     b = Binding(fact)
     b.member_ok = True
     kind = fact["anchor_kind"]
@@ -1147,7 +1494,8 @@ def bind(fact, values, source, text, loc, scales):
         ok, problems = values_bind(b.quote, values, scales, whole=kind in VALUE_ANCHORS)
         b.values = ok and b.member_ok
         b.problems.extend(problems)
-        b.scope, why = scope_ok(b.quote, fact.get("about_scope", ""), fact.get("granularity", ""))
+        b.scope, why = scope_ok(b.quote, fact.get("about_scope", ""), fact.get("granularity", ""),
+                                *scope_ctx)
         if not b.scope:
             b.problems.append("scope: " + why)
     return b
@@ -1193,6 +1541,7 @@ def verify(case, report):
     sources = sources_of(case)
     facts, values = facts_of(case)
     scales = unit_scales()
+    scope_ctx = scope_context(facts, values)
     sourced = sorted(fid for fid, f in facts.items() if f.get("provenance") == "sourced")
     texts, receipts = {}, []
     for fid in sourced:
@@ -1231,7 +1580,7 @@ def verify(case, report):
             continue
         text, loc, extraction_sha, fetched_utc = got
         rows = values.get(fid, [])
-        b = bind(fact, rows, src, text, loc, scales)
+        b = bind(fact, rows, src, text, loc, scales, scope_ctx)
         receipts.append({
             "source": sid, "fact": fid, "anchor": b.anchor, "verified_utc": fetched_utc,
             "tool_version": TOOL_VERSION, "extraction_sha256": extraction_sha,
