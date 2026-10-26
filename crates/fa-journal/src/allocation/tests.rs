@@ -4,6 +4,7 @@ use fa_money::{RoundingLaw, UnitId};
 
 fn basis(total: i128, method: AllocationMethod, weights: &[u128]) -> AllocationPosting {
     AllocationPosting {
+        target_cells: Vec::new(),
         source: VId(10),
         source_side: Side::Credit,
         dimensions: Vec::new(),

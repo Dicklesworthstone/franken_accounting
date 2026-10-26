@@ -14,7 +14,10 @@ use fa_notary::Journal;
 
 use super::*;
 use crate::aging::portfolio::{AgingAccountScope, AgingPortfolio};
-use crate::{CertificateStatus, GeneralLedger, IndirectCashFlow, ReportOutput, ReportSelection};
+use crate::{
+    CashFlowBasis, CertificateStatus, GeneralLedger, IndirectCashFlow, ReportOutput,
+    ReportSelection,
+};
 
 /// Only metadata actually emitted by the selected report can supersede it.
 /// Portfolio coverage includes unselected leaves; an indirect report includes
@@ -95,12 +98,32 @@ fn same_ledger(original: &GeneralLedger, current: &GeneralLedger) -> bool {
         && original.lines() == current.lines()
 }
 
+/// Compare every original basis field, ignoring only the native known-at.
+fn same_cash_basis(original: &CashFlowBasis, current: &CashFlowBasis) -> bool {
+    if !same_ledger(original.source(), current.source()) {
+        return false;
+    }
+    match (original, current) {
+        (CashFlowBasis::Explicit(before), CashFlowBasis::Explicit(after)) => {
+            before.definition() == after.definition() && before.units() == after.units()
+        }
+        (CashFlowBasis::Policy(before), CashFlowBasis::Policy(after)) => {
+            before.policy() == after.policy()
+                && before.decisions() == after.decisions()
+                && before.report().definition() == after.report().definition()
+                && before.report().units() == after.report().units()
+        }
+        (CashFlowBasis::Split(before), CashFlowBasis::Split(after)) => {
+            before.definition() == after.definition() && before.units() == after.units()
+        }
+        _ => false,
+    }
+}
+
 fn same_indirect(original: &IndirectCashFlow, current: &IndirectCashFlow) -> bool {
     let mut income = current.income().clone();
     income.known_at = original.income().known_at;
-    same_ledger(original.cash().source(), current.cash().source())
-        && original.cash().definition() == current.cash().definition()
-        && original.cash().units() == current.cash().units()
+    same_cash_basis(original.cash(), current.cash())
         && original.income() == &income
         && match (original.non_cash_source(), current.non_cash_source()) {
             (Some(before), Some(after)) => same_ledger(before, after),

@@ -973,6 +973,7 @@ fn company_statement_mcp_transports_inline_reviews_and_preserves_operation_autho
         fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
     assert_eq!(parsed.flag("--definition"), Some("company-income"));
     assert_eq!(parsed.flag("--scale-digits"), Some("3"));
+    assert!(!parsed.switch("--functional"));
     assert_eq!(
         fa_cli::cli::bound_command_ops("statement", &parsed)
             .unwrap()
@@ -980,6 +981,33 @@ fn company_statement_mcp_transports_inline_reviews_and_preserves_operation_autho
             .map(|op| op.name())
             .collect::<Vec<_>>(),
         ["read", "produce"]
+    );
+    let mut functional = args.clone();
+    functional["functional"] = json!(true);
+    let invocation = tool.invocation(&mcp, reg, &functional).unwrap();
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert!(parsed.switch("--functional"));
+    assert_eq!(parsed.flag("--compare"), Some("FY2026-P02"));
+    assert_eq!(parsed.flag("--scale-digits"), Some("3"));
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("statement", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read", "produce"]
+    );
+    functional["certify"] = json!(false);
+    let plain = tool.invocation(&mcp, reg, &functional).unwrap();
+    let parsed = fa_cli::args::parse(&plain.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("statement", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read"]
     );
     for argument in ["as", "grant", "yes", "book", "plan_out", "certificate_out"] {
         let mut rejected = args.clone();
@@ -1048,4 +1076,57 @@ fn functional_trial_balance_mcp_preserves_scope_time_and_certificate_authority()
             .collect::<Vec<_>>(),
         ["read"]
     );
+}
+
+#[test]
+fn reconciliation_bundle_keeps_the_request_separate_from_certificate_stdin() {
+    let (mcp, reg) = embedded();
+    let tool = mcp.tool_by_wire("fa_notary_bundle").unwrap();
+    let schema = tool.input_schema(&mcp, reg);
+    assert_eq!(schema["properties"]["expect"]["type"], json!("string"));
+    for property in [
+        "expect_file",
+        "out",
+        "receipt_out",
+        "grant",
+        "profile",
+        "principal",
+    ] {
+        assert!(schema["properties"].get(property).is_none(), "{property}");
+    }
+    let expected = r#"{"kind":"aging-reconciliation","account":"1000","through":"2026-03-31","known_at":42,"buckets":[0,30]}"#;
+    let certificate = format!("C:{}", "ab".repeat(32));
+    let invocation = tool
+        .invocation(
+            &mcp,
+            reg,
+            &json!({"certificate": certificate, "expect": expected}),
+        )
+        .unwrap();
+    assert_eq!(invocation.stdin, Some(certificate.into_bytes()));
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(parsed.positional, vec!["bundle", "produce"]);
+    assert_eq!(parsed.flag("--certificate"), Some("-"));
+    assert_eq!(parsed.flag("--expect"), Some(expected));
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("bundle", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read", "produce"]
+    );
+    for arguments in [
+        json!({"certificate": "abcd", "expect": {"known_at": 42}}),
+        json!({"certificate": "abcd", "expect": ["{}"]}),
+        json!({"certificate": "abcd", "expect_file": "/outside-launch-root/request.json"}),
+        json!({"certificate": "abcd", "expect": expected, "out": "/outside-launch-root/report.fab"}),
+        json!({"certificate": "abcd", "expect": expected, "grant": ["produce"]}),
+    ] {
+        assert!(
+            tool.invocation(&mcp, reg, &arguments).is_err(),
+            "{arguments:?}"
+        );
+    }
 }

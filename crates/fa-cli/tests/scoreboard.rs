@@ -509,6 +509,283 @@ fn polish_bar_suite(vars: &[String]) -> ProbeOutcome {
     ProbeOutcome::ok("polish_bar_ok")
 }
 
+/// G2-03 (fa-75j4, plan §8.2–§8.3): supersession netting and a restatement
+/// case with certified diffs, through the CLI on the probe's own book.
+/// - Netting: a mistaken posting moves March's nets, and its Reversal
+///   returns every net exactly to what it was before the mistake.
+/// - The case: March is closed. A Revision case is opened with its
+///   determination, rehearsed on a scenario with that scenario's certified
+///   diff, approved under dual control by two Humans who planned nothing,
+///   and posted: the closed March moves by exactly the delta. Its statement
+///   diffs are certified, and each certificate replays to the same diff.
+///   The case is disclosed in a reviewed Disclosure document and closed.
+fn restatement_cases_suite() -> ProbeOutcome {
+    match restatement_cases() {
+        Ok(()) => ProbeOutcome::ok("restatement_cases_ok"),
+        Err(reason) => ProbeOutcome::err(format!("G2-03: {reason}")),
+    }
+}
+
+fn restatement_cases() -> Result<(), String> {
+    let root = tmp_dir("g2-03");
+    let book = root.join("book").to_string_lossy().into_owned();
+    let ok = |args: &[&str]| -> Result<Vec<Json>, String> {
+        let out = run_cli_probe(
+            &args
+                .iter()
+                .copied()
+                .chain(["--book", book.as_str(), "--json"])
+                .map(String::from)
+                .collect::<Vec<_>>(),
+        );
+        if out.exit != 0 {
+            return Err(format!(
+                "{args:?}: exit {}\n{}{}",
+                out.exit, out.raw_stdout, out.raw_stderr
+            ));
+        }
+        Ok(out
+            .raw_stdout
+            .lines()
+            .filter_map(|line| json::parse(line).ok())
+            .collect())
+    };
+    let event = |lines: &[Json], name: &str| -> Vec<Json> {
+        lines
+            .iter()
+            .filter(|line| line.get("event").and_then(Json::as_str) == Some(name))
+            .map(|line| line.get("data").cloned().unwrap_or(Json::Null))
+            .collect()
+    };
+    let first = |lines: &[Json]| -> Json {
+        lines
+            .first()
+            .and_then(|line| line.get("data").cloned())
+            .unwrap_or(Json::Null)
+    };
+    let text = |value: &Json, key: &str| -> String {
+        value
+            .get(key)
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let nets = |tb: &[Json]| -> Vec<(String, String)> {
+        first(tb)
+            .get("rows")
+            .and_then(Json::as_arr)
+            .unwrap_or_default()
+            .iter()
+            .map(|row| (text(row, "code"), text(row, "net")))
+            .collect()
+    };
+    let chart = write_file(
+        &root,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Office expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    for args in [
+        &["book", "create", "--name", "G2-03 probe"][..],
+        &["chart", "import", &chart],
+        &["period", "create", "--fiscal-year", "2026"],
+        &["period", "open", "FY2026-P03"],
+    ] {
+        ok(args)?;
+    }
+    let invoice = write_file(&root, "invoice.txt", "G2-03 probe: office supplies invoice");
+    let evidence = text(
+        &first(&ok(&[
+            "document",
+            "add",
+            &invoice,
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ])?),
+        "oid",
+    );
+    let post = |key: &str, amount: &str| -> Result<String, String> {
+        let intent = write_file(
+            &root,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-03-16","idempotency_key":"{key}","legs":[{{"side":"debit","account":"6100","amount":"{amount} USD"}},{{"side":"credit","account":"1000","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        let vid = text(
+            &first(&ok(&[
+                "post",
+                "--intent",
+                &intent,
+                "--evidence",
+                &evidence,
+            ])?),
+            "vid",
+        );
+        if vid.is_empty() {
+            return Err(format!("post {key} named no entry"));
+        }
+        Ok(vid)
+    };
+    let tb = ["tb", "--period", "FY2026-P03"];
+    let target = post("g2-03-expense", "1000.00")?;
+
+    // Supersession netting: the Reversal negates its target exactly.
+    let before = nets(&ok(&tb)?);
+    let mistake = post("g2-03-mistake", "7.00")?;
+    if nets(&ok(&tb)?) == before {
+        return Err("the mistaken posting did not move March's nets".into());
+    }
+    ok(&["reverse", &mistake, "--reason", "Duplicate"])?;
+    let netted = nets(&ok(&tb)?);
+    if netted != before {
+        return Err(format!(
+            "a posting and its Reversal do not net to nothing: {before:?} became {netted:?}"
+        ));
+    }
+
+    // A Revision case corrects the closed March.
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+    ])?;
+    let opened = first(&ok(&[
+        "case",
+        "open",
+        "--kind",
+        "Revision",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+    ])?);
+    let case_state = |data: &Json| text(data.get("case").unwrap_or(&Json::Null), "state");
+    if case_state(&opened) != "Determined" {
+        return Err(format!("the opened case is not Determined: {opened:?}"));
+    }
+    ok(&["scenario", "fork", "revised", "--as", "analyst"])?;
+    let revision = write_file(
+        &root,
+        "revision.json",
+        &format!(
+            r#"{{"class":"Revision","revises":"{target}","reason":"WrongAmount","idempotency_key":"g2-03-revision","legs":[{{"side":"debit","account":"6100","amount":"20.00 USD"}},{{"side":"credit","account":"1000","amount":"20.00 USD"}}]}}"#
+        ),
+    );
+    ok(&[
+        "scenario", "run", "revised", "--intent", &revision, "--as", "analyst", "--grant",
+        "restate",
+    ])?;
+    let rehearsal = root.join("rehearsal.cert").to_string_lossy().into_owned();
+    ok(&[
+        "scenario",
+        "diff",
+        "revised",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &rehearsal,
+    ])?;
+    ok(&["case", "rehearse", "1", "--certificate", &rehearsal])?;
+    let digest = text(
+        &first(&ok(&["case", "approve", "1", "--dry-run"])?),
+        "digest",
+    );
+    let approve = |who: &str| -> Result<String, String> {
+        Ok(text(
+            &first(&ok(&["approve", "--proposal", &digest, "--as", who])?),
+            "approval_vid",
+        ))
+    };
+    let (controller, auditor) = (approve("controller")?, approve("auditor")?);
+    ok(&[
+        "case",
+        "approve",
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &auditor,
+    ])?;
+    let posted = first(&ok(&["case", "post", "1"])?);
+    if case_state(&posted) != "Posted" {
+        return Err(format!("the case did not post: {posted:?}"));
+    }
+    let revised = nets(&ok(&tb)?);
+    if !revised.contains(&("6100".to_string(), "1020.00 USD".to_string())) {
+        return Err(format!(
+            "the closed March did not move by the delta: {revised:?}"
+        ));
+    }
+
+    // Its statement diffs, certified, each replaying to the same diff.
+    let plain = event(
+        &ok(&["case", "diff", "1", "--statements"])?,
+        "statement_diff",
+    );
+    let certified = ok(&["case", "diff", "1", "--statements", "--certify"])?;
+    let certified_diffs: Vec<&Json> = certified
+        .iter()
+        .filter(|line| line.get("event").and_then(Json::as_str) == Some("statement_diff"))
+        .collect();
+    if plain.is_empty() || certified_diffs.len() != plain.len() {
+        return Err(format!(
+            "{} plain and {} certified statement diffs",
+            plain.len(),
+            certified_diffs.len()
+        ));
+    }
+    for (line, diff) in certified_diffs.iter().zip(&plain) {
+        if line.get("data") != Some(diff) {
+            return Err("a certified statement diff differs from the plain one".into());
+        }
+        let oid = text(line, "certificate");
+        if oid.len() != 64 {
+            return Err(format!(
+                "a certified statement diff names no certificate: {line:?}"
+            ));
+        }
+        let replayed = event(&ok(&["replay", &format!("C:{oid}")])?, "statement_diff");
+        if replayed.as_slice() != std::slice::from_ref(diff) {
+            return Err(format!("C:{oid} does not replay to its statement diff"));
+        }
+    }
+
+    // Disclosed in a reviewed Disclosure document, then closed.
+    let note = write_file(
+        &root,
+        "note.txt",
+        "Note 2: revision of the March 2026 office expense",
+    );
+    let note_oid = text(
+        &first(&ok(&[
+            "document",
+            "add",
+            &note,
+            "--kind",
+            "Disclosure",
+            "--grade",
+            "HumanUpload",
+        ])?),
+        "oid",
+    );
+    ok(&[
+        "document", "attest", "review", &note_oid, "--as", "reviewer",
+    ])?;
+    ok(&["case", "disclose", "1", "--document", &note_oid])?;
+    let closed = first(&ok(&["case", "close", "1"])?);
+    if case_state(&closed) != "Closed" {
+        return Err(format!("the case did not close: {closed:?}"));
+    }
+    Ok(())
+}
+
 /// G3-06 (fa-2q91): an ADS and a SAF-T export with proofs, each verified
 /// offline by fa-verify against its own bundle. The probe builds and
 /// checkpoints its own book (no migration: a migration chunk in scope is not
@@ -664,6 +941,9 @@ fn run_typed_probe(
             }
             if argv[0] == "g3_ads_saft_exports_with_proofs" {
                 return exports_with_proofs_suite();
+            }
+            if argv[0] == "g2_restatement_cases_with_diff_certificates" {
+                return restatement_cases_suite();
             }
             if argv.len() == 1 && argv[0].starts_with('g') && argv[0].contains('_') {
                 return ProbeOutcome::err(format!("absent CLI gate suite `{}`", argv[0]));

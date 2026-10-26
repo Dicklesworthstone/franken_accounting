@@ -493,6 +493,21 @@ rule = "restating_filing_date"
 rationale = "no non-reliance 8-K row exists yet; the restating filing's date is public, fixed and never precedes the restated figures (plan §2.6)"
 
 [[default]]
+attribute = "leg_split"
+rule = "one_leg_per_named_account"
+rationale = "the record names one account per side of each transfer; one leg per named (account, side) is the encoding (plan §2.6 rule 2, §6.4 W-D-01)"
+
+[[default]]
+attribute = "entry_class"
+rule = "Original"
+rationale = "the record describes ordinary journal entries; Original is the class such an entry posts under (plan §2.6 rule 2)"
+
+[[default]]
+attribute = "period_state_at_commit"
+rule = "Open"
+rationale = "the record dates each entry inside its quarter, before that quarter's close: the book posts it while its period is Open (plan §2.6 rule 2)"
+
+[[default]]
 attribute = "reason"
 rule = "WrongAccount"
 rationale = "the entries moved line costs into asset accounts; the correction's reason is the account, never Fraud (K-REASON)"

@@ -5,14 +5,20 @@
 
 #[path = "proofs/aging.rs"]
 mod aging;
+#[path = "proofs/cash_flow.rs"]
+mod cash_flow;
 #[path = "proofs/dimension_report.rs"]
 mod dimension_report;
 #[path = "proofs/explanation_report.rs"]
 mod explanation_report;
+#[path = "proofs/indirect_cash_flow_basis.rs"]
+mod indirect_cash_flow_basis;
 #[path = "proofs/prefix.rs"]
 mod prefix;
 #[path = "proofs/report.rs"]
 mod report;
+#[path = "proofs/roll_forward.rs"]
+mod roll_forward;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

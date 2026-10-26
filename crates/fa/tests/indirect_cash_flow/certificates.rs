@@ -107,7 +107,9 @@ fn permutations_share_identity_but_equal_operating_cash_does_not_authorize_anoth
     let original = certify(&h, &expected);
     let mut permuted = expected.clone();
     permuted.cash.units.reverse();
-    permuted.cash_definition.assignments.reverse();
+    explicit_definition_mut(&mut permuted.cash_definition)
+        .assignments
+        .reverse();
     permuted.definition.adjustments.reverse();
     assert_eq!(certify(&h, &permuted).certificate(), original.certificate());
     assert_eq!(
@@ -200,7 +202,8 @@ fn replay_requires_independently_fixed_cash_scope_periods_and_all_classification
     let mut periods = expected.clone();
     periods.income_periods = vec!["FY2026-P02".into()];
     let mut cash_class = expected.clone();
-    cash_class.cash_definition.assignments[0].activity = CashFlowActivity::ExchangeEffect;
+    explicit_definition_mut(&mut cash_class.cash_definition).assignments[0].activity =
+        CashFlowActivity::ExchangeEffect;
     let mut name = expected.clone();
     name.definition.name = "substituted workpaper".into();
     let mut sign = expected;
@@ -365,11 +368,11 @@ fn an_empty_month_certifies_with_no_adjustments_and_keeps_zero_native_cells() {
     let h = Harness::new();
     let cash = h.cash_request();
     let request = IndirectCashFlowRequest {
-        cash_definition: CashFlowDefinition {
+        cash_definition: CashFlowBasisDefinition::Explicit(CashFlowDefinition {
             name: "Empty cash v1".into(),
             cash_accounts: cash.accounts.iter().map(|a| a.0).collect(),
             assignments: Vec::new(),
-        },
+        }),
         cash,
         income_periods: vec!["FY2026-OPEN".into(), "FY2026-P01".into()],
         definition: IndirectCashFlowDefinition {

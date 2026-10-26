@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use asupersync::fs::Vfs;
 use fa_journal::rows::bytes;
-use fa_journal::{AllocationPosting, KernelError, Refusal, exit};
+use fa_journal::{AllocationPosting, AllocationTargetCell, KernelError, Refusal, exit};
 use fa_model::limits::MAX_DIMENSIONS_PER_LEG;
 use fa_model::symbols::{label, property};
 use fa_model::{ApprovalRef, Entry, EntryPayload, Id128, Writer, domain_digest};
@@ -46,6 +46,8 @@ pub struct BalanceAllocationRequest {
     pub dimensions: Vec<(u32, VId)>,
     pub method: AllocationMethod,
     pub targets: Vec<AllocationTarget>,
+    /// Empty retains v1 shared dimensions; otherwise one exact cell per target.
+    pub target_cells: Vec<AllocationTargetCell>,
 }
 
 impl BalanceAllocationRequest {
@@ -54,6 +56,7 @@ impl BalanceAllocationRequest {
             source: self.source,
             source_side,
             dimensions: self.dimensions.clone(),
+            target_cells: self.target_cells.clone(),
             request: AllocationRequest {
                 total: Amount::new(self.unit, total),
                 method: self.method,

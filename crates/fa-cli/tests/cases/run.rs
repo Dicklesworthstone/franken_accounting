@@ -33,6 +33,7 @@ use fa_oracles::json::Json;
 use super::budget::Budget;
 use super::cells;
 use super::evaluate;
+use super::invariance;
 
 /// A planted edit of a case file in a test copy: `old` must occur exactly
 /// once in the file as it then stands.
@@ -54,8 +55,14 @@ pub struct RunOutcome {
     pub verdicts: Vec<VerdictRecord>,
     /// Each built variant's retained book directory.
     pub books: BTreeMap<String, PathBuf>,
-    /// The case passed: no FAIL row, and no claimed row short of PASS.
+    /// The case passed: no FAIL row, no claimed row short of PASS, and it
+    /// kept its wall-clock budget.
     pub ok: bool,
+    /// The same, its budget aside. A harness test of another behavior
+    /// asserts this: a contended worker can push a small case past 60 s
+    /// (fa-yugf.17), which is the budget's verdict, not that behavior's. The
+    /// budget's own tests assert `ok` and the BUDGET lines.
+    pub rows_ok: bool,
 }
 
 impl RunOutcome {
@@ -72,6 +79,13 @@ impl RunOutcome {
             .find(|l| l.split(' ').nth(1) == Some(id))
     }
 }
+
+/// The members one filler chunk posts by default: within the registered
+/// `max_batch_entries` (8,190), as the chunk rule allows ("at most"), and
+/// small because batch admission is superlinear in one batch's size. A
+/// 2,000-member `fa batch` did not finish in 30 min on a worker, where 100-member
+/// chunks posted the same entries at ~130 ms each (A11a's measurement).
+pub const FILLER_CHUNK: usize = 100;
 
 /// A fresh retained directory under the system temp dir; never deleted, so
 /// a printed `REPRODUCE` argv stays runnable.
@@ -322,7 +336,9 @@ impl<'c> BookRun<'c> {
             failure: None,
             map_batch_legs: true,
             filler: None,
-            chunk_max: filler::max_batch_entries().unwrap_or(8190),
+            chunk_max: filler::max_batch_entries()
+                .unwrap_or(8190)
+                .min(FILLER_CHUNK),
         }
     }
 
@@ -1704,7 +1720,7 @@ impl<'c> BookRun<'c> {
     }
 
     /// The SELF row's read: `fa procedure run jet.self_sourced_evidence`.
-    fn self_procedure(&mut self) {
+    pub(crate) fn self_procedure(&mut self) {
         if self.failure.is_some() || !self.unrun_steps.is_empty() {
             return;
         }
@@ -1766,6 +1782,7 @@ pub fn run_case_with(
         verdicts: Vec::new(),
         books: BTreeMap::new(),
         ok: true,
+        rows_ok: true,
     };
     // 1. Load and validate, purely.
     let case = match fa_oracles::cases::load(files) {
@@ -1775,6 +1792,7 @@ pub fn run_case_with(
                 out.lines.push(format!("FAIL {} load {e:?}", files.id));
             }
             out.ok = false;
+            out.rows_ok = false;
             return finish(out);
         }
     };
@@ -1782,6 +1800,11 @@ pub fn run_case_with(
     for r in &reports {
         out.lines
             .extend(r.render(Some(files.id)).lines().map(str::to_string));
+    }
+    // Each target's component statuses (A5b).
+    if let Ok(rules) = fa_oracles::cases::branch::rules() {
+        out.lines
+            .extend(fa_oracles::cases::status::status_lines(&case, &rules));
     }
     let failed: Vec<&str> = reports
         .iter()
@@ -1805,6 +1828,7 @@ pub fn run_case_with(
             );
         }
         out.ok = false;
+        out.rows_ok = false;
         return finish(out);
     }
     // 2. The verb table, before any book exists.
@@ -1822,6 +1846,7 @@ pub fn run_case_with(
             unknown.join(", ")
         ));
         out.ok = false;
+        out.rows_ok = false;
         return finish(out);
     }
     // 3–10. Each book variant.
@@ -1875,7 +1900,23 @@ pub fn run_case_with(
                 twins.insert(id.clone(), t);
             }
         }
-        let rows = evaluate::rows(&run, &specs, &twins);
+        let mut rows = evaluate::rows(&run, &specs, &twins);
+        // A11a: the rows still waiting on filler invariance, compared
+        // across every filler spec and two book ids.
+        if let Ok(tiers) = fa_oracles::cases::tiers::tiers() {
+            let applied = invariance::apply(
+                &case,
+                book,
+                files.files,
+                &run,
+                &mut rows,
+                &specs,
+                &twins,
+                &tiers,
+            );
+            out.steps.extend(applied.steps);
+            out.lines.extend(applied.lines);
+        }
         out.lines.append(&mut run.lines);
         out.steps.append(&mut run.steps);
         for t in twins.values_mut() {
@@ -1931,14 +1972,14 @@ pub fn run_case_with(
     // The case passes when no row FAILs, it kept its budget, and every
     // claimed expectation's verdict, the worst of its rows, is PASS.
     let verdicts = evaluate::expectation_verdicts(&out.verdicts);
-    out.ok = !sweep_failed
-        && within_budget
+    out.rows_ok = !sweep_failed
         && verdicts.values().all(|v| *v != RowVerdict::Fail)
         && case
             .header
             .claims
             .iter()
             .all(|c| verdicts.get(c) == Some(&RowVerdict::Pass));
+    out.ok = out.rows_ok && within_budget;
     finish(out)
 }
 

@@ -130,6 +130,50 @@ Period selection remains explicit: new periods are not discovered automatically.
 Historical checkpoints, cadence policies, functional-value maintenance, other
 register families and the remaining cached report reads are unfinished.
 
+### Approved company statement layouts
+
+Company balance sheets and income statements can use an editable TOML layout.
+Generate a template, give it a company-specific name and version, and edit its
+account mappings and formula lines. Lint reports missing or multiply mapped
+accounts. A saved review binds the exact layout, its effective date and the
+accounting schema; activation requires two independent Human approvers, neither
+of whom is the preparer.
+
+```bash
+fa statement template --definition income-statement --out company-income.toml --json
+# Edit the template's name to company-income and configure its mappings.
+fa statement lint --file company-income.toml --book ./books/acme --json
+fa statement define --file company-income.toml --from 2026-01-01 --key company-income-v1 \
+  --plan-out company-income.plan --book ./books/acme --json
+# Each reviewer approves the emitted proposal_digest with their own issued Human token.
+fa approve --proposal <proposal-digest> --token reviewer-a.token --book ./books/acme --json
+fa approve --proposal <proposal-digest> --token reviewer-b.token --book ./books/acme --json
+fa statement activate --plan company-income.plan --approval <approval-a-vid> \
+  --approval <approval-b-vid> --book ./books/acme --json
+fa statement custom --definition company-income --for FY2026-P03 --compare FY2026-P02 \
+  --functional --certify --book ./books/acme --json
+```
+
+Without `--functional`, amounts remain separated by native unit. With it, both
+columns use the book's historical functional currency and exact retained base
+amounts, verified against their original Rate documents and valuation laws.
+Unvalued foreign entries are refused; the report never chooses a current rate
+or posts a new valuation. Add `--scale-digits 2 --rounding HalfEven
+--residual-line rounding --residual-label "Presentation rounding"` to divide the
+functional mantissas by 100 with explicit residual rows. The scale is a mantissa
+divisor, so choose it according to the registered currency scale.
+
+Certification retains both exact and rounded output. Native custom reports use
+v11 certificates; functional custom reports use v12. Replay keeps the original
+approved layout, reporting basis and historical Rate evidence after later
+postings or layout activations. Certificate status reports relevant later
+activity. These are native replay certificates; portable independent custom
+report verification remains unsupported. The MCP statement tool accepts the
+same `functional`, comparative and presentation options and transports review
+source inline. Embedded callers use `Book::functional_custom_statement` or
+`Book::certify_functional_custom_statement` to prepare historical reads under
+current authority.
+
 ### Timed holds and scheduled reversals
 
 The CLI and MCP accept the kernel's timed accounting inputs. A Pending intent
@@ -375,6 +419,190 @@ coordinates and the selected bucket bounds. The receipt and `--expect` pin the
 of the nested open-item source is insufficient. The complete-prefix authority,
 registry and historical-identity requirements above also apply. MCP accepts the
 retained `C:<oid>` or complete aging certificate hex through `fa_notary_bundle`.
+
+Roll-forward lead schedules can also be delivered as independently verifiable
+bundles. For example, a cash lead schedule at one fixed recorded frontier:
+
+```bash
+fa gl roll-forward --account 1000 --unit USD \
+  --from 2026-01-01 --to 2026-03-31 --label "Cash lead schedule" \
+  --certify --certificate-out cash-lead.cert --book ./books/acme --json
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate cash-lead.cert --book ./books/acme \
+  --out cash-lead.fab --receipt-out cash-lead.receipt --json
+fa-verify report cash-lead.fab --key <trusted-checkpoint-public-key> \
+  --receipt cash-lead.receipt --json
+```
+
+The recipient reconstructs opening stock strictly before `--from`, closing stock
+through `--to`, and every posted movement inside the inclusive interval. Each
+movement retains its entry digest, leg index, original recorded sequence, class,
+supersession reasons and Rule-origin version. Pending reservations stay outside
+the schedule; posted resolutions, reversals and Closing entries remain real
+movements. Omitting an offsetting debit/credit pair fails verification even when
+the closing balance still agrees. Selected zero-valued leaves and units remain
+explicit, and amounts use debit minus credit separately for each account/unit.
+
+The receipt or recipient `--expect` must bind the outer roll-forward certificate,
+including accounts, units, label and dates. Its nested closing trial-balance
+digest alone cannot authenticate the lead schedule. Roll-forward bundles require
+the complete four-document registry closure and sequence-selected trunk history.
+The complete roll-forward source retained by `fa gl detail --certify` is also
+exportable; its portable result is the lead schedule with all movement citations.
+MCP uses `fa_proof_gl` with `view: "roll-forward"`, then `fa_notary_bundle` with
+the retained `C:<oid>` or complete certificate bytes.
+
+Direct cash-flow and account-rule cash-flow certificates use that same portable
+path. A policy states the selected cash accounts and the treatment of non-cash
+counterparts. For example, `cash-policy.json` can assign account `4000` to
+operating cash flow:
+
+```json
+{"name":"operating-cash-v1","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"}],"overrides":[]}
+```
+
+```bash
+fa gl cash-flow --account 1000 --unit USD \
+  --from 2026-01-01 --to 2026-03-31 --policy cash-policy.json \
+  --certify --certificate-out cash-flow.cert --book ./books/acme --json
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate cash-flow.cert --book ./books/acme \
+  --out cash-flow.fab --receipt-out cash-flow.receipt --json
+fa-verify report cash-flow.fab --key <trusted-checkpoint-public-key> \
+  --receipt cash-flow.receipt --json
+```
+
+The recipient reconstructs the complete general ledger, including running
+balances, then classifies every selected cash leg exactly once. Gross inflows
+and outflows net opposing legs within one entry, unit and activity; a refund or
+reversal in a separate entry retains its actual direction. Internal transfers
+must cancel inside one entry and unit across distinct selected cash accounts.
+Each unit independently reconciles opening cash plus activity to closing cash,
+including explicitly selected zero units.
+
+For account-rule policies, the verifier reads all original same-unit counterpart
+legs, validates every rule against the historical chart, and reproduces each
+classification and its decision basis. Mixed or unmapped counterparts require
+an explicit override. The exact policy, including unused rules and overrides,
+is bound by the **outer policy certificate**; its nested direct cash report or
+roll-forward digest cannot replace that pin. Explicit direct assignments also
+export, with their own outer cash certificate. These are checks of the declared
+classification and arithmetic, without a policy-approval or accounting-treatment
+judgment. Split and indirect cash-flow certificates retain their existing native
+replay paths and are not yet supported by this portable profile.
+
+MCP passes the policy object inline to `fa_proof_gl` with `view: "cash-flow"` and
+`certify: true`, then exports its retained ID or complete bytes through
+`fa_notary_bundle`. Both cash profiles use sequence-selected trunk history and
+the complete four-document historical registry closure under whole-book read
+and produce authority.
+
+Indirect cash-flow reports accept the same three native cash bases: explicit
+`assignments`, `account_rules` with optional whole-leg `overrides`, or exact
+`splits`. Choose one classification family, add `cash_policy` for the underlying
+cash definition's name, and retain `name` and `adjustments` for the indirect
+workpaper. For example, this February policy separates one loan payment into
+principal and interest, and cites a depreciation expense leg for its non-cash
+addback:
+
+```json
+{
+  "name": "february-indirect",
+  "cash_policy": "loan-cash-v1",
+  "cash_accounts": ["1000"],
+  "splits": [
+    {
+      "entry_digest": "<64-hex receipt entry digest>",
+      "leg_index": 0,
+      "reason": "Customer cash receipt",
+      "portions": [{"activity": "operating", "amount": "200.00 USD"}]
+    },
+    {
+      "entry_digest": "<64-hex repayment entry digest>",
+      "leg_index": 2,
+      "reason": "Loan principal and interest in one bank payment",
+      "portions": [
+        {"activity": "financing", "amount": "100.00 USD"},
+        {"activity": "operating", "amount": "10.00 USD"}
+      ]
+    }
+  ],
+  "adjustments": [{
+    "entry_digest": "<64-hex depreciation entry digest>",
+    "leg_index": 0,
+    "category": "non_cash",
+    "sign": "debit_minus_credit",
+    "reason": "Depreciation expense addback"
+  }]
+}
+```
+
+Replace the example citations with the actual entry digests and original leg
+indices from `fa gl detail`. Every selected cash leg must be covered, all split
+portions must use that leg's native currency, and their positive exact amounts
+must sum to the original leg. Non-cash adjustments still cite whole original
+non-cash legs with an explicit category, sign and reason.
+
+```bash
+fa gl cash-flow --indirect --income-period FY2026-P02 \
+  --account 1000 --unit USD --from 2026-02-01 --to 2026-02-28 \
+  --policy february-indirect.json --certify \
+  --certificate-out february-indirect.cert --book ./books/acme --json
+```
+
+With opening cash 1,000.00 USD, revenue 200.00 USD, the single 110.00 USD loan
+payment above, and depreciation expense 20.00 USD, net income is 170.00 USD.
+Adding back depreciation gives operating cash 190.00 USD; financing cash is
+-100.00 USD, net cash change is 90.00 USD, and closing cash is 1,090.00 USD.
+The original payment remains one journal leg with two classified portions.
+
+The income periods must cover the complete cash interval, including overlapping
+special periods. Cash, income and adjustments use one fixed recorded prefix.
+An explicit basis preserves the existing v1 report and certificate bytes;
+policy and split bases use v2, retaining their complete native source certificate
+and classification provenance. Replay still takes `kind: "indirect-cash-flow"`
+with independently retained account/date/unit selectors, numeric `known_at`,
+`income_periods`, and the full original policy. Changing a split reason, an
+unused account rule, an override or the classification family is a different
+request even when section totals agree. The retained artifact supports native
+replay and freshness checks after reopening the book. MCP uses `fa_proof_gl`
+with `view: "cash-flow"`, `indirect: true`, `income_period`, the inline policy,
+and `certify: true`; `fa_read_replay` takes its retained ID and the independent
+expectation. These indirect artifacts remain outside the portable bundle profile.
+
+An aging-to-control reconciliation can be exported as one independently verifiable
+workpaper. Choose the account, effective cutoff, recorded sequence and bucket bounds
+before receiving the artifact, then supply that same request when exporting it:
+
+```bash
+fa gl aging --reconcile --account 1200 --as-of 2026-03-31 --as-known-at 42 \
+  --bucket 0 --bucket 30 --bucket 60 --bucket 90 \
+  --certificate-out march-reconciliation.cert --book ./books/acme --json
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate march-reconciliation.cert \
+  --expect '{"kind":"aging-reconciliation","account":"1200","through":"2026-03-31","known_at":42,"buckets":[0,30,60,90]}' \
+  --book ./books/acme --out march-reconciliation.fab \
+  --receipt-out march-reconciliation.receipt --json
+fa-verify report march-reconciliation.fab --key <trusted-checkpoint-public-key> \
+  --receipt march-reconciliation.receipt --json
+```
+
+The bundle keeps the original outer certificate and both source certificates. The
+independent verifier reconstructs the effective-date aging and the control account's
+as-of trial balance from the same authenticated journal prefix and canonical registry
+documents. It then checks each native unit's posted net, open net and difference;
+pending debits and credits remain separate. The result includes the item drilldown,
+control-account cells, historical account metadata and both source digests. A valid
+proof can report a nonzero difference: `reconciled: false` is an accounting result.
+
+Export's `--expect` is the independent JSON request, with a fixed integer
+`known_at`; it is required for this family. The recipient's
+`fa-verify report --expect <digest>` instead pins the **outer reconciliation
+certificate**. A nested aging or trial-balance digest does not authenticate the
+complete workpaper. A valid signed production receipt can supply the recipient
+binding instead. MCP exposes the same request as a separate `expect` string on
+`fa_notary_bundle`, alongside a retained `C:<oid>` or full certificate hex.
+Export remains read-only and requires whole-book read and produce authority.
 
 Instant-selected certificates also retain their requested instant, observed frontier,
 and tick identities. Replay uses those saved brackets even after later ticks or

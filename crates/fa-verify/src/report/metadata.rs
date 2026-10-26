@@ -21,6 +21,9 @@ pub(super) struct EntryInfo<'a> {
     pub resolution: Option<(u128, [u8; 32])>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
     pub supersession_reasons: Vec<u16>,
+    /// Literal Rule-origin version, authenticated by the entry payload. This
+    /// identifies a movement bucket; it does not prove execution of the rule.
+    pub rule_version_oid: Option<[u8; 32]>,
     pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
     pub identity: u128,
     /// Before replacement-pair identities were target-derived, the immutable
@@ -152,6 +155,11 @@ pub(super) fn entry_info<'a>(
     }
     let mut probe = Reader::new(&proposal[proposal.len() - r.remaining()..]);
     let origin = probe.u8("origin.tag")?;
+    let rule_version_oid = if origin == 1 {
+        Some(probe.fixed("origin.rule_version_oid")?)
+    } else {
+        None
+    };
     let migration = if origin == 2 {
         Some(probe.u128("origin.run")?)
     } else {
@@ -356,6 +364,7 @@ pub(super) fn entry_info<'a>(
         resolution,
         supersession,
         supersession_reasons,
+        rule_version_oid,
         evidence,
         identity,
         legacy_identity,
@@ -709,7 +718,10 @@ impl Schema {
         &self,
         selection: &Selection,
     ) -> Result<(Vec<String>, Option<i32>, bool), ReportError> {
-        if self.periods.is_empty() {
+        // A complete authenticated prefix can establish that no periods have
+        // been declared yet. Native AsOf still folds by the explicit civil
+        // cutoff and returns an empty period-code list in that case.
+        if self.periods.is_empty() && !matches!(selection, Selection::AsOf(_)) {
             return Err(failed(
                 "period_metadata",
                 "report requires authenticated period-birth controls",

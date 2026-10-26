@@ -17,6 +17,7 @@ use fgdb_types::{CommitSeq, QueryCx, VId};
 use crate::{AsyncBook, BookError, Outcome};
 
 pub const OUTPUT_FORMAT: &str = "fa:custom-statement-report:v1";
+pub const FUNCTIONAL_OUTPUT_FORMAT: &str = "fa:functional-custom-statement:v1";
 
 /// One approved layout applied to current and optional comparative columns.
 /// The current column's cutoff selects the activation's effective date. A
@@ -28,6 +29,10 @@ pub struct CustomStatementSelection {
     /// The activation's original native commit, which selects its approval
     /// and chart evidence independently of the report's later known-at.
     pub activated_at: CommitSeq,
+    /// Fold immutable retained base valuations into the historical functional
+    /// currency. The enclosing certificate selector distinguishes this basis;
+    /// the original native selection payload keeps its exact v11 bytes.
+    pub functional: bool,
     pub periods: Vec<String>,
     pub comparative: Vec<String>,
     pub presentation: Option<PresentationRoundingSpec>,
@@ -84,7 +89,7 @@ impl CustomStatementSelection {
         Ok(())
     }
 
-    pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    pub(crate) fn read(r: &mut Reader<'_>, functional: bool) -> Result<Self, DecodeError> {
         let definition = CustomStatementDefinition::decode(r.bytes(
             fa_statements::MAX_DEFINITION_BYTES,
             "custom statement definition",
@@ -106,6 +111,7 @@ impl CustomStatementSelection {
             definition,
             activation,
             activated_at,
+            functional,
             periods,
             comparative,
             presentation,
@@ -123,6 +129,9 @@ impl CustomStatementSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomStatementReport {
     pub activation: VId,
+    /// None for separate native-unit columns, or the one historical unit of
+    /// the retained base valuations. Functional reports use a distinct format.
+    pub functional_unit: Option<fa_money::UnitId>,
     pub statement: Statement,
     pub presented: Option<PresentedStatement>,
 }
@@ -143,6 +152,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Err(refusal) => return Ok(Err(refusal)),
             };
             crate::certificate::context_at(db, book, at)?;
+            if selection.functional
+                && let Err(refusal) =
+                    crate::certificate::verify_functional_sources(db, cx, book, at)?
+            {
+                return Ok(Err(refusal));
+            }
             report_at(db, &cx.query(), book, &selection.normalize(), at)
         })
     }
@@ -176,6 +191,59 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )
         })
     }
+
+    /// Read an approved layout in the historical functional currency. Current
+    /// whole-book authority is checked before hydrating retained history and
+    /// again after evaluation. No current rate or monetary entry is created.
+    pub async fn functional_custom_statement(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_policy::Capability,
+        mut selection: CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<CustomStatementReport> {
+        let at = match self
+            .prepare_functional_report(cx, capability.holder(), capability, known_at, false)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        selection.functional = true;
+        let result = self.custom_statement(cx, capability, selection, Some(at))?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, capability.holder(), capability, Some(at), false)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Certify an approved functional layout, its retained valuation evidence,
+    /// and any explicit presentation rounding under current Read + Produce.
+    pub async fn certify_functional_custom_statement(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_policy::Capability,
+        mut selection: CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let at = match self
+            .prepare_functional_report(cx, capability.holder(), capability, known_at, true)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        selection.functional = true;
+        let result = self.certify_custom_statement(cx, capability, selection, Some(at))?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, capability.holder(), capability, Some(at), true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
 }
 
 fn admit<V: Vfs + Clone>(
@@ -203,10 +271,22 @@ fn admit<V: Vfs + Clone>(
 }
 
 impl CustomStatementReport {
+    #[must_use]
+    pub const fn output_format(&self) -> &'static str {
+        if self.functional_unit.is_some() {
+            FUNCTIONAL_OUTPUT_FORMAT
+        } else {
+            OUTPUT_FORMAT
+        }
+    }
+
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
-        w.fixed(OUTPUT_FORMAT.as_bytes())
-            .u128(self.activation.0)
+        w.fixed(self.output_format().as_bytes());
+        if let Some(unit) = self.functional_unit {
+            w.str("retained-base-amounts").u32(unit.0);
+        }
+        w.u128(self.activation.0)
             .bytes(&self.statement.canonical_bytes()?);
         match &self.presented {
             None => {
@@ -246,10 +326,21 @@ pub(crate) fn report_at<V: Vfs + Clone>(
         selection.definition.kind,
         [&selection.periods, &selection.comparative],
         at,
-        false,
+        selection.functional,
     )? {
         Ok(input) => input,
         Err(refusal) => return Ok(Err(refusal)),
+    };
+    let functional_unit = if selection.functional {
+        let [unit] = input.units.as_slice() else {
+            return Err(fa_journal::KernelError::Corrupt(
+                "a functional custom statement must have one historical base unit".into(),
+            )
+            .into());
+        };
+        Some(fa_money::UnitId(*unit))
+    } else {
+        None
     };
     let Some(current) = input.columns.first() else {
         return Ok(Err(crate::statements::invalid(
@@ -286,6 +377,7 @@ pub(crate) fn report_at<V: Vfs + Clone>(
     };
     Ok(Ok(CustomStatementReport {
         activation: selection.activation,
+        functional_unit,
         statement,
         presented,
     }))

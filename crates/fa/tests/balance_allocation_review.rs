@@ -137,6 +137,7 @@ impl Harness {
     }
     fn request(&self) -> BalanceAllocationRequest {
         BalanceAllocationRequest {
+            target_cells: Vec::new(),
             source: account("source"),
             period: "FY2026-P03".into(),
             unit: self.usd,

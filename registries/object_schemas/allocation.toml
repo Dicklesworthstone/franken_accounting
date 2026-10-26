@@ -2,12 +2,13 @@
 # current-balance sweep, FX rule, settlement, or signed evidence claim.
 schema_version = 1
 name = "fa:allocation-posting:v1"
+format_versions = [1, 2]
 entry_extension_tag = 5
 entry_schema_minor = 1
 max_targets = 1024
 document_kind = 21
 evidence_role = 1
-scope = "explicit-total-single-unit-shared-dimensions"
+scope = "explicit-total-single-unit-source-and-target-dimensions"
 # The ordered basis encodes FA-ALLOC-BASIS NUL, version u16=1, source u128,
 # source_side u8 (0 debit, 1 credit), dimensions list(u32,u128), and a
 # length-prefixed fa-money canonical AllocationRequest. Target IDs are actual
@@ -21,3 +22,15 @@ scope = "explicit-total-single-unit-shared-dimensions"
 # the normal evidence pipeline witnesses the document and its provenance.
 # Zero shares retain their targets in the basis and are omitted from legs;
 # all declared target accounts are witnessed, including those receiving zero.
+#
+# Version 2 retains that layout through bytes(request), then appends an
+# ordered list of target cells: (account u128, dimensions list(u32,u128)).
+# Each request target id is the little-endian u128 in the first 16 bytes of
+# domain_digest("fa:allocation-target:v2", [canonical_cell_bytes]); the cell
+# bytes are account u128 followed by its canonical dimension list. Request
+# order is unchanged. Duplicate complete target cells and the complete source
+# cell are forbidden; equal accounts with different dimensions are valid.
+# The outer record version is 2 and its basis digest uses
+# fa:allocation-basis:v2. The law digest is unchanged. Declared target cells,
+# including zero-share cells, pass account and dimension admission. Version 1
+# records and reviews retain their original bytes and interpretation.

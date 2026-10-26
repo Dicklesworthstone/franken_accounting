@@ -1009,3 +1009,6 @@ fn aging_migration_visibility_uses_finalize_without_rewriting_age_or_recorded_ti
         }
     }
 }
+
+#[path = "reconciliation.rs"]
+mod reconciliation_tests;

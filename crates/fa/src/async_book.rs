@@ -128,6 +128,37 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     signer: fa_notary::SigningKey,
 }
 
+/// Borrow the exact certificate being exported while sharing its native
+/// source closure. A composed report always keeps its outer bytes and digest.
+#[derive(Clone, Copy)]
+enum ReportBundleCertificate<'a> {
+    Native(&'a crate::ReportCertificate),
+    Aging(&'a crate::AgingCertificate),
+    RollForward(&'a crate::RollForwardCertificate),
+    CashFlow(&'a crate::CashFlowCertificate),
+    CashFlowPolicy(&'a crate::cash_flow_policy::CashFlowPolicyCertificate),
+    AgingReconciliation {
+        certificate: &'a crate::AgingReconciliationCertificate,
+        expected: &'a crate::AgingReconciliationRequest,
+    },
+}
+
+impl<'a> ReportBundleCertificate<'a> {
+    fn source(self) -> &'a crate::ReportCertificate {
+        match self {
+            Self::Native(certificate) => certificate,
+            Self::Aging(certificate) => certificate.source(),
+            Self::RollForward(certificate) => certificate.source_certificate(),
+            Self::CashFlow(certificate) => certificate.source_certificate().source_certificate(),
+            Self::CashFlowPolicy(certificate) => certificate
+                .source_certificate()
+                .source_certificate()
+                .source_certificate(),
+            Self::AgingReconciliation { certificate, .. } => certificate.aging_source().source(),
+        }
+    }
+}
+
 impl<V: Vfs + Clone> AsyncBook<V> {
     /// Create `<dir>/store` and use `<dir>/blobs` for external documents.
     /// The caller supplies the runtime, filesystem, keys and entropy.
@@ -3619,8 +3650,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         state: Option<fa_model::Oid>,
         certificate: &crate::ReportCertificate,
     ) -> Outcome<Option<ProducedBundle>> {
-        self.produce_report_bundle_inner(cx, principal, capability, state, certificate, None)
-            .await
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::Native(certificate),
+        )
+        .await
     }
 
     /// Export an effective-date aging schedule and its native OpenItems source
@@ -3641,8 +3678,100 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             principal,
             capability,
             state,
-            certificate.source(),
-            Some(certificate),
+            ReportBundleCertificate::Aging(certificate),
+        )
+        .await
+    }
+
+    /// Export an exact account lead schedule over one authenticated prefix.
+    /// Its explicit account/unit/date selection, opening stock, every posted
+    /// movement and closing stock remain bound by the outer certificate.
+    /// Current whole-book read and produce precede any history observation.
+    pub async fn produce_roll_forward_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::RollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::RollForward(certificate),
+        )
+        .await
+    }
+
+    /// Export classified direct cash flow with its exact original movements,
+    /// opening and closing stock, and authenticated historical registry inputs.
+    /// The outer certificate binds the complete explicit classification; its
+    /// roll-forward source alone cannot authenticate those professional inputs.
+    pub async fn produce_cash_flow_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::CashFlowCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::CashFlow(certificate),
+        )
+        .await
+    }
+
+    /// Export policy-classified direct cash flow. Replay derives each decision
+    /// from the original complete counterpart entries before the exact policy,
+    /// including unused rules and explicit overrides, is signed in the bundle.
+    /// This does not journal, activate or approve the caller's policy.
+    pub async fn produce_cash_flow_policy_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::cash_flow_policy::CashFlowPolicyCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::CashFlowPolicy(certificate),
+        )
+        .await
+    }
+
+    /// Export the original aging/control reconciliation and both native
+    /// sources over one signed complete prefix. The recipient must independently
+    /// select the account, cutoff, fixed sequence and age bands in `expected`.
+    /// Both sources are replayed before export; current whole-book read and
+    /// produce authority are required before observing retained history.
+    pub async fn produce_aging_reconciliation_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::AgingReconciliation {
+                certificate,
+                expected,
+            },
         )
         .await
     }
@@ -3653,14 +3782,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         principal: VId,
         capability: &fa_policy::Capability,
         state: Option<fa_model::Oid>,
-        certificate: &crate::ReportCertificate,
-        aging: Option<&crate::AgingCertificate>,
+        report: ReportBundleCertificate<'_>,
     ) -> Outcome<Option<ProducedBundle>> {
+        let certificate = report.source();
         cx.query().checkpoint().map_err(BookError::Context)?;
         let reach = fa_policy::Reach {
-            observes: capability
-                .known_at_pin()
-                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            // Roll-forward and cash-flow replay require unpinned head authority.
+            // Enforce that boundary before restoring any report history.
+            observes: match report {
+                ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::CashFlow(_)
+                | ReportBundleCertificate::CashFlowPolicy(_) => fa_policy::Observes::Head,
+                _ => capability
+                    .known_at_pin()
+                    .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            },
             ..fa_policy::Reach::whole_book(true)
         };
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
@@ -3699,17 +3835,78 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        let replayed = if let Some(aging) = aging {
-            if let Err(refusal) =
-                self.replay_effective_date_aging(cx, principal, capability, aging)?
-            {
-                return Ok(Err(refusal));
+        let replayed = match report {
+            ReportBundleCertificate::Native(certificate) => {
+                match self.replay_report(cx, certificate)? {
+                    Ok(report) => Some(report),
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
             }
-            None
-        } else {
-            match self.replay_report(cx, certificate)? {
-                Ok(report) => Some(report),
-                Err(refusal) => return Ok(Err(refusal)),
+            ReportBundleCertificate::Aging(certificate) => {
+                if let Err(refusal) =
+                    self.replay_effective_date_aging(cx, principal, capability, certificate)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::RollForward(certificate) => {
+                if let Err(refusal) =
+                    self.replay_roll_forward(cx, principal, capability, certificate)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::CashFlow(certificate) => {
+                if let Err(refusal) = self.replay_cash_flow(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    certificate.request(),
+                    certificate.definition(),
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::CashFlowPolicy(certificate) => {
+                if let Err(refusal) = self.replay_cash_flow_with_policy(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    certificate.request(),
+                    certificate.policy(),
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::AgingReconciliation {
+                certificate: reconciliation,
+                expected,
+            } => {
+                if let Err(refusal) = self.replay_effective_date_aging_reconciliation(
+                    cx,
+                    principal,
+                    capability,
+                    reconciliation,
+                    expected,
+                )? {
+                    return Ok(Err(refusal));
+                }
+                if reconciliation.control_source().registry_digest != certificate.registry_digest {
+                    return Ok(Err(fa_journal::Refusal::new(
+                        fa_notary::code::SCOPE_UNSUPPORTED,
+                        fa_journal::exit::REFUSAL,
+                        "portable aging/control reconciliation requires one original registry closure for both sources",
+                        "plan §5.7 / §13.3 (independent reconstruction from the authenticated inputs)",
+                        "retain and export aging and AsOf control sources certified against the same historical registry epoch",
+                    )));
+                }
+                None
             }
         };
         let closure_frontier = certificate
@@ -3735,6 +3932,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         let requires_registry_closure = matches!(
+            report,
+            ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::CashFlow(_)
+                | ReportBundleCertificate::CashFlowPolicy(_)
+                | ReportBundleCertificate::AgingReconciliation { .. }
+        ) || matches!(
             &certificate.selection,
             crate::ReportSelection::OpenItems { .. }
                 | crate::ReportSelection::ExplainBalance { .. }
@@ -3839,17 +4042,58 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(bodies) => bodies,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let bytes = match aging {
-            Some(aging) => match aging.canonical_bytes() {
+        let bytes = match report {
+            ReportBundleCertificate::Native(certificate) => certificate
+                .canonical_bytes()
+                .map_err(|error| KernelError::Model(error.into()))?,
+            ReportBundleCertificate::Aging(certificate) => match certificate.canonical_bytes() {
                 Ok(bytes) => bytes,
                 Err(refusal) => return Ok(Err(refusal)),
             },
-            None => certificate
-                .canonical_bytes()
-                .map_err(|error| KernelError::Model(error.into()))?,
+            ReportBundleCertificate::RollForward(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::CashFlow(certificate) => match certificate.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            },
+            ReportBundleCertificate::CashFlowPolicy(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::AgingReconciliation { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
         };
-        let assembled = match registries.as_deref() {
-            Some(registries) => fa_notary::report::assemble_with_registries(
+        let assembled = match (report, registries.as_deref()) {
+            (ReportBundleCertificate::AgingReconciliation { .. }, Some(registries)) => {
+                fa_notary::report::assemble_reconciliation_with_registries(
+                    &journal,
+                    &checkpoint,
+                    &bytes,
+                    closure_frontier,
+                    &bodies,
+                    registries,
+                )
+            }
+            (ReportBundleCertificate::AgingReconciliation { .. }, None) => {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    fa_journal::exit::REFUSAL,
+                    "portable aging/control reconciliation requires the complete original registry closure",
+                    "plan §5.7 / §13.3 (independent reconstruction from the authenticated inputs)",
+                    "retain the source certificates' original account, entry-class, unit and foundation registries",
+                )));
+            }
+            (_, Some(registries)) => fa_notary::report::assemble_with_registries(
                 &journal,
                 &checkpoint,
                 &bytes,
@@ -3857,7 +4101,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &bodies,
                 registries,
             ),
-            None => fa_notary::report::assemble(
+            (_, None) => fa_notary::report::assemble(
                 &journal,
                 &checkpoint,
                 &bytes,

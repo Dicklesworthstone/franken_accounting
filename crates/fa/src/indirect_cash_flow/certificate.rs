@@ -24,15 +24,33 @@ use super::{
     IndirectCashFlow, IndirectCashFlowDefinition, IndirectCashFlowRequest,
     MAX_INDIRECT_CASH_FLOW_BYTES, native, normalize, periods,
 };
-use crate::{AsyncBook, BookError, CashFlowCertificate, Outcome};
+use crate::{AsyncBook, BookError, CashFlowBasisCertificate, CashFlowBasisKind, Outcome};
 
 pub const INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT: &[u8] = b"fa:indirect-cash-flow-certificate:v1";
+pub const INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2: &[u8] = b"fa:indirect-cash-flow-certificate:v2";
 pub const MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES: usize = MAX_INDIRECT_CASH_FLOW_BYTES;
 const DIGEST_DOMAIN: &[u8] = b"fa:indirect-cash-flow-certificate-digest:v1";
+const DIGEST_DOMAIN_V2: &[u8] = b"fa:indirect-cash-flow-certificate-digest:v2";
+
+fn format(kind: CashFlowBasisKind) -> &'static [u8] {
+    match kind {
+        CashFlowBasisKind::Explicit => INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT,
+        CashFlowBasisKind::Policy | CashFlowBasisKind::Split => {
+            INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2
+        }
+    }
+}
+
+fn digest_domain(kind: CashFlowBasisKind) -> &'static [u8] {
+    match kind {
+        CashFlowBasisKind::Explicit => DIGEST_DOMAIN,
+        CashFlowBasisKind::Policy | CashFlowBasisKind::Split => DIGEST_DOMAIN_V2,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndirectCashFlowCertificate {
-    source: CashFlowCertificate,
+    source: CashFlowBasisCertificate,
     income_periods: Vec<String>,
     definition: IndirectCashFlowDefinition,
     output: Vec<u8>,
@@ -63,7 +81,7 @@ impl CertifiedIndirectCashFlow {
 impl IndirectCashFlowCertificate {
     /// Whole-book native evidence, despite the nested report's cash selection.
     #[must_use]
-    pub fn source_certificate(&self) -> &CashFlowCertificate {
+    pub fn source_certificate(&self) -> &CashFlowBasisCertificate {
         &self.source
     }
     #[must_use]
@@ -88,7 +106,7 @@ impl IndirectCashFlowCertificate {
         &self.digest
     }
 
-    fn seal(source: CashFlowCertificate, report: &IndirectCashFlow) -> Result<Self, Refusal> {
+    fn seal(source: CashFlowBasisCertificate, report: &IndirectCashFlow) -> Result<Self, Refusal> {
         let column = report
             .income()
             .columns
@@ -101,7 +119,7 @@ impl IndirectCashFlowCertificate {
             output: report.canonical_bytes().map_err(as_invalid)?,
             digest: [0; 32],
         };
-        value.digest = domain_digest(DIGEST_DOMAIN, &[&value.body_bytes()?]);
+        value.digest = domain_digest(digest_domain(value.source.kind()), &[&value.body_bytes()?]);
         Ok(value)
     }
 }
@@ -130,7 +148,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &IndirectCashFlowRequest,
     ) -> Outcome<CertifiedIndirectCashFlow> {
-        let source = match self.certify_cash_flow(
+        let (cash, source) = match crate::cash_flow_basis::certify(
+            self,
             cx,
             principal,
             capability,
@@ -146,18 +165,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             cx,
             principal,
             capability,
-            source.report().clone(),
+            cash,
             &request.income_periods,
             &request.definition,
         )? {
             Ok(value) => value,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let certificate =
-            match IndirectCashFlowCertificate::seal(source.into_certificate(), &report) {
-                Ok(value) => value,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
+        let certificate = match IndirectCashFlowCertificate::seal(source, &report) {
+            Ok(value) => value,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         cx.query().checkpoint().map_err(BookError::Context)?;
         Ok(Ok(CertifiedIndirectCashFlow {
             report,
@@ -180,7 +198,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Outcome<IndirectCashFlow> {
         // Admission and native replay precede additional financial reads. The
         // fixed expected request prevents silently accepting HEAD or an old cut.
-        let cash = match self.replay_cash_flow(
+        let cash = match crate::cash_flow_basis::replay(
+            self,
             cx,
             principal,
             capability,

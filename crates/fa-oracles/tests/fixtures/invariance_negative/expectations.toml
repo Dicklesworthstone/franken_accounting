@@ -1,0 +1,28 @@
+# Invariance negative fixture expectations: numbers.round_amount_density flags account 4000 (24 of
+# its 24 legs round against the book's 48 of 118: (24*118 - 24*48)^2 = 2,822,400 >= 9 * 24*48*70 =
+# 725,760, under four times that, 2,903,040, so Medium) and cites E-1's round leg. Its statistic is
+# the account's own count, but its severity moves with the book's share: 4 filler entries (N = 126)
+# give 3,504,384 >= 4 * 9 * 24*48*78 = 3,234,816, High.
+
+[[expectation]]
+id = "invariance_negative-D-01"
+type = "D"
+book_variant = "native"
+statement_template = "D.detection"
+basis = ["N-1"]
+granularity = "journal_entry"
+capabilities = ["procedure:numbers.round_amount_density@1"]
+procedure = "numbers.round_amount_density"
+version = 1
+
+[[target]]
+expectation = "invariance_negative-D-01"
+fact = "N-1"
+basis = ["N-1"]
+cite_status = "X"
+severity = "Medium"
+severity_status = "S"
+statistic_name = "round_legs"
+statistic_value = "24"
+statistic_scale = 0
+statistic_status = "S"

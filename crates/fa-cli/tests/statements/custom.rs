@@ -267,7 +267,8 @@ fn company_statement_template_and_explicit_rounding_options_are_reachable() {
             "company-income",
             "--for",
             "FY2026-P03",
-            "--functional",
+            "--branch",
+            "unsupported-branch",
         ],
     );
     assert_eq!(exit, 2, "{errors:?}");

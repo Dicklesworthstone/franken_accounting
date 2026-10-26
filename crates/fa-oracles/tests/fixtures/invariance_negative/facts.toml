@@ -1,0 +1,13 @@
+# Invariance negative fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "N-1"
+provenance = "synthetic"
+reason = "a round 200.00 revenue entry on the account the density procedure flags"
+discipline = "never cited by a case; the D row's target"
+
+[[fact]]
+id = "N-POP"
+provenance = "synthetic"
+reason = "the rest of the population the density is measured against"
+discipline = "never cited by a case; population only"

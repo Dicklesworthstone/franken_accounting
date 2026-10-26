@@ -274,6 +274,7 @@ impl Harness {
             source: self.id(debit_account),
             source_side: Side::Debit,
             dimensions: Vec::new(),
+            target_cells: Vec::new(),
             request: AllocationRequest {
                 total: Amount::new(unit, amount),
                 method: AllocationMethod::LargestRemainder,

@@ -659,3 +659,6 @@ fn recipient_statement_unit_lists_are_validated_before_untrusted_bytes() {
 
 #[path = "tests/dimension.rs"]
 mod dimension_tests;
+
+#[path = "tests/class_laws.rs"]
+mod class_laws;

@@ -75,9 +75,46 @@ pub struct BranchRule {
     /// The closed class list (an empty list leaves an enum rule's values to
     /// its branch classes).
     pub classes: Vec<String>,
+    /// The verdict components the reader's branch on this input moves (A5b):
+    /// `cite`, `severity`, `statistic` for a procedure, `refusal`, `law_row`
+    /// for a kernel step. A component reads exactly the rules that list it.
+    pub components: Vec<String>,
+    /// The observed covariate (§2.6 rule 9) the reader also selects by, when
+    /// it does: `expense.capitalization` picks the minimum-VId fixed-asset
+    /// debit, so a component this rule moves may be `Rel(account_vid_order)`.
+    pub covariate: Option<String>,
+    /// Which legs of an entry the reader reads for this input.
+    pub legs: LegSelector,
     pub code_justification: String,
     pub line: Option<usize>,
 }
+
+/// The legs a rule's reader reads (A5b): `all` (the default), or the debit
+/// (credit) legs on accounts holding a role, `debit:<role>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LegSelector {
+    All,
+    Debit(String),
+    Credit(String),
+}
+
+impl LegSelector {
+    /// Whether a leg on an account holding `role` (if any) on `side`
+    /// (`Dr`/`Cr`) is read.
+    #[must_use]
+    pub fn reads(&self, side: &str, role: Option<&str>) -> bool {
+        match self {
+            Self::All => true,
+            Self::Debit(r) => side == "Dr" && role == Some(r.as_str()),
+            Self::Credit(r) => side == "Cr" && role == Some(r.as_str()),
+        }
+    }
+}
+
+/// The components a procedure's rule may move (A5b).
+pub const D_COMPONENTS: [&str; 3] = ["cite", "severity", "statistic"];
+/// The components a kernel step's rule may move.
+pub const P_COMPONENTS: [&str; 2] = ["refusal", "law_row"];
 
 /// The loaded table.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,6 +194,9 @@ impl BranchRules {
             let class_param = r.opt_str("class_param", &mut errs);
             let parameters = r.req_strs("parameters", &mut errs);
             let classes = r.req_strs("classes", &mut errs);
+            let components = r.req_strs("components", &mut errs);
+            let covariate = r.opt_str("covariate", &mut errs);
+            let legs = r.opt_str("legs", &mut errs);
             let code_justification = r.req_str("code_justification", &mut errs);
             r.finish(&[], " in `[[rule]]`", &mut errs);
             let line = r.line();
@@ -302,6 +342,68 @@ impl BranchRules {
                     ),
                 );
             }
+            let allowed: &[&str] = match &reader {
+                Reader::Procedure { .. } => &D_COMPONENTS,
+                Reader::Kernel(_) => &P_COMPONENTS,
+            };
+            if components.is_empty() {
+                fail(
+                    LoadErrorKind::MissingField,
+                    format!("`components` lists what the rule moves, of {allowed:?}"),
+                );
+            }
+            for c in &components {
+                if !allowed.contains(&c.as_str()) {
+                    fail(
+                        LoadErrorKind::UnknownValue,
+                        format!("component `{c}` is not one of {allowed:?} for this reader"),
+                    );
+                }
+            }
+            if let Some(cov) = covariate.as_deref() {
+                if !super::expect::COVARIATES.contains(&cov) {
+                    fail(
+                        LoadErrorKind::UnknownValue,
+                        format!(
+                            "`covariate = \"{cov}\"` is not an observed covariate (§2.6 rule 9)"
+                        ),
+                    );
+                }
+                if matches!(reader, Reader::Kernel(_)) {
+                    fail(
+                        LoadErrorKind::UnknownValue,
+                        "a kernel step selects by no covariate".into(),
+                    );
+                }
+            }
+            let legs = match legs.as_deref() {
+                None | Some("all") => LegSelector::All,
+                Some(s) => {
+                    let parsed = s.split_once(':').and_then(|(side, role)| {
+                        let roles = fa_registry::account_roles::AccountRoles::embedded().ok()?;
+                        roles
+                            .rows
+                            .iter()
+                            .any(|r| r.name == role)
+                            .then(|| match side {
+                                "debit" => Some(LegSelector::Debit(role.to_string())),
+                                "credit" => Some(LegSelector::Credit(role.to_string())),
+                                _ => None,
+                            })?
+                    });
+                    if let Some(sel) = parsed {
+                        sel
+                    } else {
+                        fail(
+                            LoadErrorKind::UnknownValue,
+                            format!(
+                                "`legs = \"{s}\"` is all, debit:<role> or credit:<role>, the role registered in account_roles.toml"
+                            ),
+                        );
+                        continue;
+                    }
+                }
+            };
             rules.push(BranchRule {
                 id,
                 attribute,
@@ -309,6 +411,9 @@ impl BranchRules {
                 class_rule,
                 parameters,
                 classes,
+                components,
+                covariate,
+                legs,
                 code_justification,
                 line,
             });

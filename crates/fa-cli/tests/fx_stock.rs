@@ -17,6 +17,9 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use fgdb_types::{CanonicalScalar, CommitSeq};
 
+#[path = "fx_stock/custom_statement.rs"]
+mod custom_statement;
+
 fn data(value: &Json) -> &Json {
     value.get("data").expect("robot data")
 }

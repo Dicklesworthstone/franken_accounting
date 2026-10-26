@@ -22,7 +22,7 @@ impl Magnitude {
     }
 }
 #[derive(Clone, Copy, Default)]
-pub(super) struct Sum {
+pub(in crate::report) struct Sum {
     positive: Magnitude,
     negative: Magnitude,
 }

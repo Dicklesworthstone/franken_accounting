@@ -77,7 +77,8 @@ pub const LEGAL_HOLD_SCOPE_EXTENSION: u16 = 4;
 /// `Allocation` entry's computation binding — the driver basis's canonical
 /// bytes, law digest and basis digest
 /// (`registries/object_schemas/allocation.toml`). fa-journal `allocation`
-/// interprets it in full.
+/// interprets it in full. Format v2 binds an ordered destination account and
+/// dimension map; v1 retains its original shared-dimension encoding.
 pub const ALLOCATION_EXTENSION: u16 = 5;
 /// Extension tag 6, `fa:event-ref:v1` (plan §4.1 `Event`, §4.5, FA-INV-05,
 /// bead `fa-f3bo`): binds an `EntryProposal` to a committed REA `Event`

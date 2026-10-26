@@ -413,7 +413,10 @@ fn aging_ignores_holds_but_reconciliation_tracks_them_and_later_effective_releas
 
 #[test]
 fn indirect_status_tracks_non_cash_sources_and_keeps_unselected_units_current() {
-    use crate::{IndirectCashFlowDefinition, IndirectCashFlowRequest};
+    use crate::{
+        CashFlowBasisCertificate, CashFlowBasisDefinition, IndirectCashFlowDefinition,
+        IndirectCashFlowRequest,
+    };
     let mut h = Harness::new(96);
     add_accounts(&mut h, &[("2000", AccountType::ASSET)]);
     let cash = RollForwardRequest {
@@ -460,7 +463,7 @@ fn indirect_status_tracks_non_cash_sources_and_keeps_unselected_units_current() 
         .unwrap();
     let request = IndirectCashFlowRequest {
         cash,
-        cash_definition,
+        cash_definition: CashFlowBasisDefinition::Explicit(cash_definition),
         income_periods,
         definition: IndirectCashFlowDefinition {
             name: "No operating activity".into(),
@@ -509,15 +512,22 @@ fn indirect_status_tracks_non_cash_sources_and_keeps_unselected_units_current() 
             later_entries: vec![later]
         }
     );
-    let cash_source =
-        ReportArtifact::try_from(certified.certificate().source_certificate()).unwrap();
+    let CashFlowBasisCertificate::Explicit(cash_certificate) =
+        certified.certificate().source_certificate()
+    else {
+        panic!("this fixture requires an explicit cash certificate");
+    };
+    let CashFlowBasisDefinition::Explicit(cash_definition) = &request.cash_definition else {
+        panic!("this fixture requires an explicit cash definition");
+    };
+    let cash_source = ReportArtifact::try_from(cash_certificate).unwrap();
     assert_eq!(
         status_for(
             &h,
             &cash_source,
             ReportArtifactExpectation::CashFlow {
                 request: &request.cash,
-                definition: &request.cash_definition,
+                definition: cash_definition,
             }
         ),
         CertificateStatus::Current {

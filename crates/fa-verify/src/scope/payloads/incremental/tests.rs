@@ -97,6 +97,9 @@ fn journal(entries: &[Entry], through_seq: u64) -> Journal {
     let mut envelopes = Vec::new();
     let mut payloads = Vec::new();
     for e in entries {
+        let control = e.class == 17;
+        assert!(e.class == 1 || control);
+        let accounts: &[u128] = if control { &[] } else { &e.accounts };
         let mut w = Writer::default();
         w.u16(1)
             .u16(1)
@@ -110,8 +113,8 @@ fn journal(entries: &[Entry], through_seq: u64) -> Journal {
             .fixed(&[0; 24])
             .bytes(SECRET)
             .u8(0)
-            .count(2);
-        for (side, account) in e.accounts.iter().enumerate() {
+            .count(accounts.len());
+        for (side, account) in accounts.iter().enumerate() {
             w.u8(side as u8)
                 .u128(*account)
                 .u32(1)
@@ -121,17 +124,22 @@ fn journal(entries: &[Entry], through_seq: u64) -> Journal {
                 .u8(0)
                 .count(0);
         }
-        w.u8(0)
-            .count(1)
-            .u32(1)
-            .i128(123)
-            .i128(123)
-            .u8(0)
-            .bytes(&e.seq.to_le_bytes())
-            .u8(0)
-            .fixed(&[9; 32])
-            .u16(1)
-            .u128(7)
+        let schema_body = 0u32.to_le_bytes();
+        if control {
+            // A real undated SchemaControl has no monetary legs or totals.
+            // Its empty chart declaration still contributes an authenticated
+            // payload that the incremental proof may not omit.
+            w.u8(1).u8(1).u16(1).bytes(&schema_body).count(0);
+        } else {
+            w.u8(0).count(1).u32(1).i128(123).i128(123);
+        }
+        w.u8(0).bytes(&e.seq.to_le_bytes());
+        if control {
+            w.u8(3).u16(1).fixed(&hash_parts(b"", &[&schema_body]));
+        } else {
+            w.u8(0).fixed(&[9; 32]).u16(1);
+        }
+        w.u128(7)
             .u8(0)
             .count(0)
             .count(0)
@@ -143,7 +151,12 @@ fn journal(entries: &[Entry], through_seq: u64) -> Journal {
         let proposal_digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&w.buf]);
         let digest = hash_parts(ENTRY_DIGEST_DOMAIN, &[&proposal_digest, &[0; 5]]);
         w.fixed(&[0; 5]).fixed(&proposal_digest).fixed(&digest);
-        envelopes.push(envelope_of_entry(&w.buf, split, e.seq, e.ordinal).unwrap());
+        let envelope = envelope_of_entry(&w.buf, split, e.seq, e.ordinal).unwrap();
+        if control {
+            assert!(envelope.account_vids.is_empty() && envelope.unit_ids.is_empty());
+            assert_eq!(envelope.effective_day, None);
+        }
+        envelopes.push(envelope);
         payloads.push((split, w.buf));
     }
     let cp = Checkpoint {
@@ -226,7 +239,7 @@ fn incremental_metadata_equals_full_derivation_after_late_effective_and_undated_
     let old = journal(&[entry(7, 100)], 7);
     let (index, retained) = old.baseline();
     let mut control = entry(11, 999);
-    control.class = 17; // undated synthetic record; no accounting-admission claim
+    control.class = 17; // legless undated schema record; no accounting-admission claim
     let mut last = entry(30, i32::MIN);
     last.ordinal = 1;
     last.accounts = [30, 40];

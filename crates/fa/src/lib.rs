@@ -60,6 +60,7 @@ pub mod balance_allocation;
 pub mod balance_allocation_review;
 pub mod bank;
 pub mod book;
+pub mod cash_flow_basis;
 pub mod cash_flow_certificate;
 pub mod cash_flow_policy;
 pub mod cash_flow_split;
@@ -134,6 +135,9 @@ pub use book::{
     Book, BookError, BookKeys, Entropy, Outcome, PLAN_BINDINGS, ProducedBundle, ReadScope,
     Replanned,
 };
+pub use cash_flow_basis::{
+    CashFlowBasis, CashFlowBasisCertificate, CashFlowBasisDefinition, CashFlowBasisKind,
+};
 pub use cash_flow_certificate::{
     CASH_FLOW_CERTIFICATE_FORMAT, CashFlowCertificate, CertifiedCashFlow,
     MAX_CASH_FLOW_CERTIFICATE_BYTES,
@@ -179,15 +183,15 @@ pub use fa_journal::closing::{
     YearEndCloseVerification,
 };
 pub use fa_journal::{
-    AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, DocumentEvidenceSummary,
-    EventRow, EvidenceExplanation, ExhibitMarkedOutcome, ExternalIdRow, InstantSelection,
-    InstrumentRow, LegalEntityRow, LineageEdgeSummary, LineageEntrySummary, LineageReport,
-    ManualAssertionSummary, NetPosition, NettingLaw, PartyRow, PeriodBalance, PeriodCheck,
-    PeriodHistoryVerification, PeriodTransitionRecord, PeriodVerification, ReaControlRecorded,
-    ReaSnapshot, RecordedExhibit, RelatedPartyHit, RelationshipRow, ReviewedSummary,
-    RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode,
-    RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine, TrialBalanceLine,
-    UploadRequest, UsageVerification,
+    AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, AllocationTargetCell,
+    DocumentEvidenceSummary, EventRow, EvidenceExplanation, ExhibitMarkedOutcome, ExternalIdRow,
+    InstantSelection, InstrumentRow, LegalEntityRow, LineageEdgeSummary, LineageEntrySummary,
+    LineageReport, ManualAssertionSummary, NetPosition, NettingLaw, PartyRow, PeriodBalance,
+    PeriodCheck, PeriodHistoryVerification, PeriodTransitionRecord, PeriodVerification,
+    ReaControlRecorded, ReaSnapshot, RecordedExhibit, RelatedPartyHit, RelationshipRow,
+    ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest,
+    RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine,
+    TrialBalanceLine, UploadRequest, UsageVerification,
 };
 pub use fa_model::{
     EventKind, EventResource, EventSpec, InstrumentKind, InstrumentSpec, PartyKind, PartySpec,
@@ -258,7 +262,8 @@ pub use general_ledger::{
 };
 pub use indirect_cash_flow::{
     AdjustmentCategory, AdjustmentSign, CertifiedIndirectCashFlow,
-    INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, INDIRECT_CASH_FLOW_FORMAT, IndirectCashFlow,
+    INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2,
+    INDIRECT_CASH_FLOW_FORMAT, INDIRECT_CASH_FLOW_FORMAT_V2, IndirectCashFlow,
     IndirectCashFlowAdjustment, IndirectCashFlowCertificate, IndirectCashFlowContribution,
     IndirectCashFlowDefinition, IndirectCashFlowRequest, IndirectCashFlowUnit,
     MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,

@@ -1,0 +1,27 @@
+# Invariance fixture expectations: jet.round_amounts on S-1 (3,000.00: both legs whole multiples of
+# 1,000.00, so both cited, Medium). Tier C filler never touches S-1, so the projection must agree on
+# every filler variant and both book ids of the empty variant.
+
+[[expectation]]
+id = "invariance-D-01"
+type = "D"
+book_variant = "native"
+statement_template = "D.detection"
+basis = ["S-1"]
+granularity = "journal_entry"
+capabilities = ["procedure:jet.round_amounts@1"]
+procedure = "jet.round_amounts"
+version = 1
+
+[[target]]
+expectation = "invariance-D-01"
+fact = "S-1"
+basis = ["S-1"]
+cite = ["S-1#0", "S-1#1"]
+cite_status = "S"
+severity = "Medium"
+severity_status = "S"
+statistic_name = "round_legs"
+statistic_value = "2"
+statistic_scale = 0
+statistic_status = "S"

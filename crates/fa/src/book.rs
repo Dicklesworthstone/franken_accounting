@@ -3910,6 +3910,34 @@ impl Book {
         ))
     }
 
+    /// Evaluate an approved company layout using retained functional amounts,
+    /// with current authority and the complete historical source available.
+    pub fn functional_custom_statement(
+        &mut self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CustomStatementReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_custom_statement(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Retain the approved layout, original valuations and optional presented
+    /// view in a functional custom report certificate.
+    pub fn certify_functional_custom_statement(
+        &mut self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_custom_statement(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
     /// Evaluate a statement in the historical book's functional currency.
     /// The admitted whole-book reader receives exact retained valuations;
     /// this hydrates history without publishing or revaluing any entry.
@@ -4462,6 +4490,93 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.produce_aging_bundle(
             &purposes, principal, capability, state, certificate,
         )))
+    }
+
+    /// Produce a portable account lead schedule for `fa-verify report`.
+    /// Replays the complete roll-forward at its historical recorded prefix
+    /// under current whole-book read/produce authority. The signed complete
+    /// prefix and exact four-registry closure let a recipient reconstruct
+    /// opening balances, every posted movement and closing balances; even
+    /// offsetting movements remain independently checkable. The outer
+    /// roll-forward certificate is preserved and bound by the signed receipt.
+    /// Sequence-selected trunk certificates are supported. Returns `None`
+    /// when the selected recorded checkpoint is unavailable.
+    pub fn produce_roll_forward_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::RollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_roll_forward_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce classified direct cash flow for independent `fa-verify report`
+    /// recomputation. The bundle carries every original selected cash movement
+    /// and the exact four-document historical registry closure. Current
+    /// whole-book read/produce authority is checked before observing history;
+    /// the receipt binds the outer classification certificate, not merely its
+    /// roll-forward source. Returns `None` when its checkpoint is unavailable.
+    pub fn produce_cash_flow_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::CashFlowCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_cash_flow_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce policy-classified direct cash flow for offline recomputation.
+    /// Native replay derives each classification from complete original
+    /// counterpart entries; the signed outer artifact preserves every policy
+    /// rule, override and decision basis. Current whole-book read/produce
+    /// authority and the exact historical registry closure are mandatory.
+    /// Policy choices are retained inputs, not journaled approval or activation.
+    /// Returns `None` when the selected checkpoint is unavailable.
+    pub fn produce_cash_flow_policy_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::cash_flow_policy::CashFlowPolicyCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_cash_flow_policy_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Export an aging-to-control reconciliation under current whole-book
+    /// read and produce authority. The original aging and AsOf trial-balance
+    /// certificates share one signed, complete journal prefix and original
+    /// registry closure. Recipients can recompute every open, posted, pending
+    /// and difference cell without the source book.
+    ///
+    /// `expected` is the recipient's independently selected account, civil
+    /// cutoff, fixed recorded sequence and age bands; HEAD is not an expectation.
+    /// The outer reconciliation digest identifies the delivered claim. Export
+    /// appends nothing and returns `None` when the selected checkpoint is absent.
+    pub fn produce_aging_reconciliation_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_aging_reconciliation_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
     }
 
     /// Produce an evidence bundle (plan §13.2) and its detached production

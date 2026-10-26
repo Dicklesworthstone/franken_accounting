@@ -2,7 +2,8 @@
 //! (docs/FORENSIC_CASE_STUDIES_PLAN.md §3.6; bead fa-yugf.7, A3a), and
 //! K-BASIS, K-TAUT, K-ORACLE and K-VINTAGE (bead fa-yugf.8, A3b), K-TIER
 //! (bead fa-yugf.10, A4), and K-ASSERT, K-ERRRATE, K-NAMES, K-EVID and
-//! K-REASON (bead fa-yugf.9, A3c): the
+//! K-REASON (bead fa-yugf.9, A3c), and K-BRANCH, K-PRED and K-JOINT (bead
+//! fa-yugf.13, A5b): the
 //! harness's refusals of its own research record, run offline over a loaded
 //! [`Case`] (tests never read the fetch cache, §4.3; a quote-less fact is
 //! bound by its receipt, §4.4).
@@ -33,14 +34,19 @@ pub mod anchor;
 pub mod assert;
 pub mod basis;
 pub mod bind;
+pub mod branch;
 pub mod derive;
 pub mod errrate;
 pub mod evid;
+pub mod joint;
 pub mod names;
 pub mod oracle;
+pub mod pred;
 pub mod prov;
 pub mod reason;
 pub mod scope;
+#[cfg(test)]
+mod status_tests;
 #[cfg(test)]
 mod t_tests;
 pub mod taut;
@@ -361,6 +367,9 @@ pub fn run_load_checks_with(cx: &Context<'_>, case_checks: &[CaseCheck]) -> Vec<
         names::check(cx),
         evid::check(cx),
         reason::check(cx),
+        branch::check(cx),
+        pred::check(cx),
+        joint::check(cx),
     ];
     for c in case_checks.iter().filter(|c| c.case == cx.case.header.id) {
         let mut report = (c.run)(cx.case);

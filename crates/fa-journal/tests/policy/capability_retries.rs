@@ -227,10 +227,15 @@ fn a_target_identity_requires_the_right_control_and_its_empty_acceptance_envelop
                     *caveats_digest = [126; 32];
                 }
                 "origin" => {
-                    altered.origin = EntryOrigin::Control {
-                        control_kind: fa_model::ControlKind::CHART_INSTALL,
-                        spec_body_digest: [127; 32],
-                    }
+                    let EntryOrigin::Control {
+                        spec_body_digest, ..
+                    } = &mut altered.origin
+                    else {
+                        panic!("capability control origin")
+                    };
+                    // Keep the class-compatible kind so sealing reaches the
+                    // retained-origin authentication this fixture exercises.
+                    *spec_body_digest = [127; 32];
                 }
                 "book" => altered.book_id = Id128([128; 16]),
                 "branch" => altered.branch_id = Id128([129; 16]),

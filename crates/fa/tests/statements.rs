@@ -3,12 +3,18 @@
 
 #[path = "statements/aging_bundle.rs"]
 mod aging_bundle;
+#[path = "statements/aging_reconciliation_bundle.rs"]
+mod aging_reconciliation_bundle;
+#[path = "statements/cash_flow_bundle.rs"]
+mod cash_flow_bundle;
 #[path = "statements/explanation_bundle.rs"]
 mod explanation_bundle;
 #[path = "statements/open_items_bundle.rs"]
 mod open_items_bundle;
 #[path = "statements/report_bundle.rs"]
 mod report_bundle;
+#[path = "statements/roll_forward_bundle.rs"]
+mod roll_forward_bundle;
 
 use std::path::Path;
 
