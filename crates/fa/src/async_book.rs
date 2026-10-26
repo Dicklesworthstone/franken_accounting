@@ -17,7 +17,7 @@ use fa_journal::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, KernelError, PostRequest, Posted,
     Transitioned,
 };
-use fa_model::{Entry, Erasable, SealKey, SymbolTable};
+use fa_model::{Entry, EntryClass, Erasable, SealKey, SymbolTable};
 use fa_registers::{
     AvailabilityVerification, BalanceExplanation, Fold, OpenItem, OpenItemVerification,
     TrialBalance, Verification,
