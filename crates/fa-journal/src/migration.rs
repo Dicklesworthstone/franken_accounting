@@ -1542,6 +1542,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         book,
         &req.capability,
         &activated_accounts,
+        &mut None,
     )? {
         Ok(citations) => citations,
         Err(refusal) => {

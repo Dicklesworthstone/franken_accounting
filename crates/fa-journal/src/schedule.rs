@@ -969,6 +969,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         capability,
         schedule.reverse_on,
         &proposal.legs,
+        &mut None,
     )? {
         Ok(citations) => citations,
         Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
