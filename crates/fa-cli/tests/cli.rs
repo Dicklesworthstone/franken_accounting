@@ -4661,11 +4661,10 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         args.extend(["approve", "--proposal", digest.as_str(), "--json"]);
         text(&doc(&ok(&args)), "approval_vid").to_string()
     };
-    // An issued token cannot approve on the CLI: a token-bound session stays
-    // within the Preparer ceiling, which holds no `approve` (FA-REF-011). So
-    // a CLI approval is never under an issued capability, and the
-    // session_lineage refusals over issued tokens live in the library test
-    // (fa restatement_case).
+    // An issued Human token holding `approve` approves on the CLI under its
+    // own journaled capability (ead3caec5). The controller issued it, so it
+    // shares a session lineage with the controller: the case refuses that
+    // pair as its dual control (FA-REF-008) and stays Rehearsed.
     let token = dir.join("delegate.token").display().to_string();
     ok(&[
         "capability",
@@ -4686,18 +4685,25 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         "approve",
         "--json",
     ]);
+    let delegate = approval(&["--token", &token]);
+    let controller = approval(&["--as", "controller"]);
+    let auditor = approval(&["--as", "auditor"]);
     let (code, out) = run(&[
-        "--token",
-        &token,
+        "case",
         "approve",
-        "--proposal",
-        &digest,
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &delegate,
         "--json",
     ]);
     assert_eq!(code, 7, "{out}");
-    assert!(out.contains("FA-REF-011"), "{out}");
-    let controller = approval(&["--as", "controller"]);
-    let auditor = approval(&["--as", "auditor"]);
+    assert!(out.contains("FA-REF-008"), "{out}");
+    assert!(out.contains("session lineage"), "{out}");
+    let case = doc(&ok(&["case", "show", "1", "--json"]));
+    let state = case.get("case").map(|c| text(c, "state").to_string());
+    assert_eq!(state.as_deref(), Some("Rehearsed"));
     // One approval is not dual control; the case stays Rehearsed.
     let (code, out) = run(&["case", "approve", "1", "--approval", &controller, "--json"]);
     assert_eq!(code, 7, "{out}");
