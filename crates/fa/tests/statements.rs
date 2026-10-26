@@ -396,7 +396,11 @@ fn retained_comparatives_replay_after_later_and_backdated_postings() {
 
         let retained = fixture
             .book
-            .retain_certificate(&certified.certificate)
+            .retain_certificate(
+                PRINCIPAL,
+                &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+                &certified.certificate,
+            )
             .unwrap()
             .unwrap();
         let loaded = fixture
@@ -406,7 +410,15 @@ fn retained_comparatives_replay_after_later_and_backdated_postings() {
             .unwrap();
         assert_eq!(loaded, certified.certificate);
         assert_eq!(
-            fixture.book.retain_certificate(&loaded).unwrap().unwrap(),
+            fixture
+                .book
+                .retain_certificate(
+                    PRINCIPAL,
+                    &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+                    &loaded,
+                )
+                .unwrap()
+                .unwrap(),
             retained
         );
         assert_eq!(fixture.book.head().unwrap(), retained.recorded_at);
@@ -528,7 +540,11 @@ fn large_retained_certificate_survives_reopen_as_native_fragments_without_a_blob
     );
     let retained = fixture
         .book
-        .retain_certificate(&certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &certificate,
+        )
         .unwrap()
         .unwrap();
     // c9b1c775 (fa-9ae, report_certificate_storage.toml): above one native
@@ -564,9 +580,24 @@ fn large_retained_certificate_survives_reopen_as_native_fragments_without_a_blob
     assert_eq!(loaded, certificate);
     assert_eq!(loaded.canonical_bytes().unwrap(), canonical);
     assert_eq!(replay(&book, &loaded), certified.statement);
-    assert_eq!(book.retain_certificate(&loaded).unwrap().unwrap(), retained);
     assert_eq!(
-        book.retain_certificate(&certificate).unwrap().unwrap(),
+        book.retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &loaded,
+        )
+        .unwrap()
+        .unwrap(),
+        retained
+    );
+    assert_eq!(
+        book.retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &certificate,
+        )
+        .unwrap()
+        .unwrap(),
         retained
     );
     assert_eq!(
@@ -737,7 +768,11 @@ fn historical_zero_leaf_mappings_survive_a_later_covered_chart_extension() {
     );
     let retained = fixture
         .book
-        .retain_certificate(&certified.certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &certified.certificate,
+        )
         .unwrap()
         .unwrap();
 
@@ -918,7 +953,11 @@ fn the_first_statement_issuance_pins_as_originally_reported_to_its_certificate()
         .unwrap();
     let retained = fixture
         .book
-        .retain_certificate(&certified.certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &certified.certificate,
+        )
         .unwrap()
         .unwrap();
     // A February correction recorded after the issued certificate.
@@ -1101,7 +1140,11 @@ fn the_first_statement_issuance_pins_as_originally_reported_to_its_certificate()
         .unwrap();
     let restated = fixture
         .book
-        .retain_certificate(&restated.certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &restated.certificate,
+        )
         .unwrap()
         .unwrap();
     let plan_for = |book: &Book, key: &[u8]| {
@@ -1214,7 +1257,11 @@ fn a_restatement_view_never_answers_from_an_unreported_coordinate() {
         .unwrap();
     let retained = fixture
         .book
-        .retain_certificate(&certified.certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &certified.certificate,
+        )
         .unwrap()
         .unwrap();
     // A later posting moves HEAD but never the reported coordinate.
@@ -1250,7 +1297,11 @@ fn a_restatement_view_never_answers_from_an_unreported_coordinate() {
         .unwrap();
     let tb = fixture
         .book
-        .retain_certificate(&tb.certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &tb.certificate,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(

@@ -4101,26 +4101,18 @@ impl Book {
         with_store!(&self.store, core => self.runtime.block_on(core.access_log(&purposes, since)))
     }
 
-    /// Persist a certificate lazily as an immutable object in this book.
-    /// Exact retries return the original storage sequence without a write.
-    /// The report's known-at coordinate does not change when it is retained.
+    /// Persist an immutable certificate under the presented principal's
+    /// current `read` and `produce` authority, including on an exact retry.
+    /// Retries return the original storage sequence without a write; neither
+    /// retention nor retry changes the report's known-at or accounting fold.
     pub fn retain_certificate(
         &mut self,
-        certificate: &crate::ReportCertificate,
-    ) -> Outcome<crate::RetainedCertificate> {
-        let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, certificate)))
-    }
-
-    /// Persist a certificate lazily after verifying current `read` and
-    /// `produce` authority for this book (fa-mg2j).
-    pub fn retain_certificate_authorized(
-        &mut self,
-        certificate: &crate::ReportCertificate,
+        principal: VId,
         capability: &fa_policy::Capability,
+        certificate: &crate::ReportCertificate,
     ) -> Outcome<crate::RetainedCertificate> {
         let purposes = self.purposes();
-        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate_authorized(&purposes, certificate, capability)))
+        with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, principal, capability, certificate)))
     }
 
     /// Load a retained artifact by its full public certificate digest.

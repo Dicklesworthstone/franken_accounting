@@ -209,7 +209,11 @@ fn historical_explanations_recompute_whole_period_digest_released_holds_lineage_
         final_fold = Some(native.fold_digest);
         fixture
             .book
-            .retain_certificate(&certified.certificate)
+            .retain_certificate(
+                PRINCIPAL,
+                &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+                &certified.certificate,
+            )
             .unwrap()
             .unwrap();
         let produced = produce(&mut fixture.book, &certified.certificate);
@@ -232,7 +236,11 @@ fn historical_explanations_recompute_whole_period_digest_released_holds_lineage_
     assert_eq!(native.watermark, Some(reversed_at));
     fixture
         .book
-        .retain_certificate(&empty.certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &empty.certificate,
+        )
         .unwrap()
         .unwrap();
     let produced = produce(&mut fixture.book, &empty.certificate);
@@ -260,7 +268,11 @@ fn resealed_explanation_history_evidence_metadata_and_whole_period_forgery_are_r
     };
     fixture
         .book
-        .retain_certificate(&certified.certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &certified.certificate,
+        )
         .unwrap()
         .unwrap();
     let produced = produce(&mut fixture.book, &certified.certificate);
@@ -343,7 +355,11 @@ fn explanation_export_requires_current_authority_and_the_original_retained_reaso
     );
     fixture
         .book
-        .retain_certificate(&certificate)
+        .retain_certificate(
+            PRINCIPAL,
+            &Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap(),
+            &certificate,
+        )
         .unwrap()
         .unwrap();
     let produced = produce(&mut fixture.book, &certificate);
