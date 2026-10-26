@@ -305,4 +305,202 @@ fn creditor_and_investor_margins_survive_public_workflow() {
         "{}",
         pro_rata.render()
     );
+
+    // Solvency maturity & valuation workflow on a fresh book (`fa-5dpd`, `fa-8j3g`, `fa-v0m2`):
+    // 1. Balance-sheet solvency with contra-assets (1510 Equipment +100.00, 1590 Accumulated
+    //    Depreciation -80.00 -> net assets 20.00 vs 2000 Liabilities 50.00 -> deficit 30.00),
+    //    historical RegisterEquals non-override, and explicit dated valuation adjustment
+    //    (+22.00 USD on 1510 effective 2026-04-30 -> valued assets 42.00 vs 50.00 -> deficit 8.00).
+    // 2. Cash-flow solvency with authenticated obligation maturity (`obligation_maturity`):
+    //    cash 100.00 at 2026-04-30, long-term debt 1000.00 booked 2026-01-01 due 2026-12-31
+    //    plus short-term debts 40.00 (due 2026-05-15), 35.00 (due 2026-05-30), and 50.00
+    //    (due 2026-05-31): 0 findings at 30 days (75.00 <= 100.00) and 25.00 shortfall at 31 days.
+    let s = Fixture::new();
+    let sol_chart = s.file(
+        "sol_chart.json",
+        r#"{"accounts":[
+{"code":"1510","name":"Equipment","type":"Asset","unit":"USD"},
+{"code":"1590","name":"Accumulated depreciation","type":"Asset","normal_balance":"credit","unit":"USD"}]}"#,
+    );
+    ok(&s.book, &["chart", "import", &sol_chart]);
+
+    // Fund 100.00 cash on Jan 1 against 1000.00 long-term AP (due 2026-12-31) and 900.00 rent.
+    let long_debt = s.file(
+        "long-debt.json",
+        r#"{"effective_date":"2026-01-10","idempotency_key":"long-debt","legs":[
+{"side":"debit","account":"1000","amount":"100.00 USD"},
+{"side":"debit","account":"6000","amount":"900.00 USD"},
+{"side":"credit","account":"2000","amount":"1000.00 USD"}
+],"obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]}"#,
+    );
+    ok(
+        &s.book,
+        &["post", "--intent", &long_debt, "--evidence", &s.evidence],
+    );
+
+    // At 2026-04-30 with horizon_days=30, the 1000.00 debt due 2026-12-31 is deferred -> 0 findings.
+    let cf_long_only = ok(
+        &s.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.cash_flow_test",
+            "--effective-through",
+            "2026-04-30",
+            "--param",
+            "horizon_days=30",
+        ],
+    );
+    assert_eq!(integer(data(&cf_long_only), "finding_count"), 0);
+
+    // Add inside-horizon and boundary obligations: 40.00 due May 15, 35.00 due May 30, 50.00 due May 31.
+    for (key, due, amt) in [
+        ("short-may15", "2026-05-15", "40.00 USD"),
+        ("short-may30", "2026-05-30", "35.00 USD"),
+        ("short-may31", "2026-05-31", "50.00 USD"),
+    ] {
+        let doc = s.file(
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-04-10","idempotency_key":"{key}","legs":[
+{{"side":"debit","account":"6000","amount":"{amt}"}},
+{{"side":"credit","account":"2000","amount":"{amt}"}}
+],"obligation_maturity":[{{"ordinal":1,"status":"contractual","installments":[{{"due_date":"{due}","amount":"{amt}"}}]}}]}}"#
+            ),
+        );
+        ok(&s.book, &["post", "--intent", &doc, "--evidence", &s.evidence]);
+    }
+
+    // 30-day horizon (through May 30): 40.00 + 35.00 = 75.00 <= 100.00 cash -> 0 findings.
+    let cf_30 = ok(
+        &s.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.cash_flow_test",
+            "--effective-through",
+            "2026-04-30",
+            "--param",
+            "horizon_days=30",
+        ],
+    );
+    assert_eq!(integer(data(&cf_30), "finding_count"), 0);
+
+    // 31-day horizon (through May 31): 75.00 + 50.00 = 125.00 > 100.00 cash -> 25.00 (2,500) shortfall.
+    let cf_31 = ok(
+        &s.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.cash_flow_test",
+            "--effective-through",
+            "2026-04-30",
+            "--param",
+            "horizon_days=31",
+        ],
+    );
+    assert_eq!(integer(data(&cf_31), "finding_count"), 1);
+    let cf_finding = &rows(data(&cf_31), "findings")[0];
+    assert_eq!(
+        integer(cf_finding.get("statistic").unwrap(), "value"),
+        2_500
+    );
+
+    // Record and replay the 31-day cash-flow solvency certificate.
+    let cf_rec = ok(
+        &s.book,
+        &[
+            "finding",
+            "record",
+            "solvency.cash_flow_test",
+            "--effective-through",
+            "2026-04-30",
+            "--param",
+            "horizon_days=31",
+        ],
+    );
+    let cf_cert = text(data(&cf_rec), "certificate").to_string();
+    let cf_replayed = ok(&s.book, &["replay", &format!("C:{cf_cert}")]);
+    assert_eq!(data(&cf_replayed), data(&cf_31));
+
+    // Balance-sheet solvency with contra-assets and explicit valuation adjustment on a dedicated book.
+    let b = Fixture::new();
+    let bs_chart = b.file(
+        "bs_chart.json",
+        r#"{"accounts":[
+{"code":"1510","name":"Equipment","type":"Asset","unit":"USD"},
+{"code":"1590","name":"Accumulated depreciation","type":"Asset","normal_balance":"credit","unit":"USD"}]}"#,
+    );
+    ok(&b.book, &["chart", "import", &bs_chart]);
+    b.post(
+        "equip-fund",
+        "2026-04-01",
+        &[
+            ("debit", "1510", "100.00", None),
+            ("credit", "2000", "50.00", None),
+            ("credit", "3000", "50.00", None),
+        ],
+    );
+    b.post(
+        "equip-dep",
+        "2026-04-15",
+        &[
+            ("debit", "6000", "80.00", None),
+            ("credit", "1590", "80.00", None),
+        ],
+    );
+    let bs_book = ok(
+        &b.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.balance_sheet_test",
+            "--effective-through",
+            "2026-04-30",
+        ],
+    );
+    assert_eq!(integer(data(&bs_book), "finding_count"), 1);
+    assert_eq!(
+        integer(
+            rows(data(&bs_book), "findings")[0]
+                .get("statistic")
+                .unwrap(),
+            "value"
+        ),
+        3_000
+    );
+
+    // Post an entry carrying an authenticated valuation adjustment (+22.00 USD on 1510 at 2026-04-30).
+    let val_entry = b.file(
+        "val-entry.json",
+        r#"{"effective_date":"2026-04-20","idempotency_key":"val-entry","legs":[
+{"side":"debit","account":"6000","amount":"1.00 USD"},
+{"side":"credit","account":"3000","amount":"1.00 USD"}
+],"valuation_adjustments":[{"valuation_id":"VAL-EQUIP-2026Q2","account":"1510","basis_law":"signed_delta","effective_date":"2026-04-30","amount":"22.00 USD"}]}"#,
+    );
+    ok(
+        &b.book,
+        &["post", "--intent", &val_entry, "--evidence", &b.evidence],
+    );
+    let bs_valued = ok(
+        &b.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.balance_sheet_test",
+            "--effective-through",
+            "2026-04-30",
+        ],
+    );
+    assert_eq!(integer(data(&bs_valued), "finding_count"), 1);
+    let bs_val_finding = &rows(data(&bs_valued), "findings")[0];
+    assert_eq!(
+        integer(bs_val_finding.get("statistic").unwrap(), "value"),
+        800,
+        "net book assets 20.00 + valuation delta 22.00 = 42.00 vs 50.00 debt -> 8.00 deficit"
+    );
+    assert!(
+        text(bs_val_finding, "narrative")
+            .contains("VAL-EQUIP-2026Q2:signed_delta:exact_as_of(2026-04-30)")
+    );
 }

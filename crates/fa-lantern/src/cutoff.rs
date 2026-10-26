@@ -1347,17 +1347,49 @@ impl Procedure for ConfirmCoverage {
     }
 }
 
-/// `solvency.balance_sheet_test` (plan §11.6, `FA-EVID-L52`):
-/// A balance-sheet screen over the signed native asset and liability basis.
+/// `solvency.balance_sheet_test` (plan §11.6, `FA-EVID-L52`, `fa-8j3g`):
+/// A balance-sheet screen over the signed native asset and liability basis,
+/// with optional authenticated dated valuation inputs
+/// (`SolvencyBalanceSheetTest::with_valuation_schedule` or inline
+/// `fa:solvency-valuation:v1` entry extensions).
 /// Version 2 preserves contra-accounts and applies the declared haircut once
 /// to each unit's positive net asset basis, truncating toward zero. A negative
 /// asset basis remains negative. `RegisterEquals` records are reconciliation
-/// assertions, never valuation instructions. Explicit documented valuations
-/// remain unsupported; this screen makes no fair-value or legal conclusion.
+/// assertions, never valuation instructions.
 pub struct SolvencyBalanceSheetTest {
     params: Params,
+    valuation_schedule: Option<crate::solvency::AuthenticatedValuationSchedule>,
 }
-procedure_boilerplate!(SolvencyBalanceSheetTest, "solvency.balance_sheet_test");
+
+impl SolvencyBalanceSheetTest {
+    pub const ID: &'static str = "solvency.balance_sheet_test";
+
+    pub fn new() -> Result<Self, LanternError> {
+        Ok(Self {
+            params: Params::defaults(Self::ID)?,
+            valuation_schedule: None,
+        })
+    }
+
+    #[must_use]
+    pub fn with(params: Params) -> Self {
+        Self {
+            params,
+            valuation_schedule: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_valuation_schedule(
+        params: Params,
+        schedule: crate::solvency::AuthenticatedValuationSchedule,
+    ) -> Self {
+        Self {
+            params,
+            valuation_schedule: Some(schedule),
+        }
+    }
+}
 
 impl Procedure for SolvencyBalanceSheetTest {
     fn id(&self) -> &'static str {
@@ -1382,6 +1414,31 @@ impl Procedure for SolvencyBalanceSheetTest {
                 name: "fair_value_haircut_bps".into(),
                 message: "must be in 0..=10000".into(),
             });
+        }
+
+        if let Some(schedule) = &self.valuation_schedule {
+            let report = crate::solvency::evaluate_balance_sheet_solvency(
+                Self::ID,
+                snapshot,
+                book,
+                haircut_bps,
+                schedule,
+                work,
+            )?;
+            return Ok(report.findings);
+        }
+        if let Some(inline_schedule) =
+            crate::solvency::valuation_schedule_from_inline_extensions(Self::ID, snapshot)?
+        {
+            let report = crate::solvency::evaluate_balance_sheet_solvency(
+                Self::ID,
+                snapshot,
+                book,
+                haircut_bps,
+                &inline_schedule,
+                work,
+            )?;
+            return Ok(report.findings);
         }
 
         let through = snapshot.coordinate.effective_through;

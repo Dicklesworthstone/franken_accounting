@@ -8243,6 +8243,7 @@ fn build_post_request_with_prior(
         .map_err(BookError::Kernel)?,
         None => proposal,
     };
+    let proposal = apply_solvency_extensions(doc, &ctx, proposal)?;
     Ok(BuiltPost {
         request: PostRequest {
             proposal,
@@ -8254,6 +8255,245 @@ fn build_post_request_with_prior(
         typed_reversal,
         reversal_detail,
     })
+}
+
+fn apply_solvency_extensions(
+    doc: &Json,
+    ctx: &fa_journal::BookContext,
+    mut proposal: EntryPayload,
+) -> Result<EntryPayload, Fail> {
+    use fa_lantern::solvency::{
+        InlineObligationTerms, InlineValuationTerms, ObligationInstallment, ObligationStatus,
+        ValuationApplicabilityLaw, ValuationBasisLaw, ValuationSubject,
+    };
+
+    if let Some(raw_maturity) = doc.get("obligation_maturity") {
+        let items = raw_maturity.as_arr().ok_or_else(|| {
+            usage(
+                "intent: `obligation_maturity` must be an array",
+                "\"obligation_maturity\": [{\"ordinal\": 1, \"status\": \"contractual\", \"installments\": [{\"due_date\": \"2026-12-31\", \"amount\": \"1000.00 USD\"}]}]",
+            )
+        })?;
+        let mut terms = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let ordinal_raw = item
+                .get("ordinal")
+                .and_then(|v| match v {
+                    Json::Int(n) => Some(*n),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    usage(
+                        format!("obligation_maturity[{i}]: `ordinal` must be an integer leg index"),
+                        "\"ordinal\": 1",
+                    )
+                })?;
+            let ordinal = u16::try_from(ordinal_raw).map_err(|_| {
+                usage(
+                    format!("obligation_maturity[{i}]: `ordinal` {ordinal_raw} is out of u16 range"),
+                    "\"ordinal\": 0..65535",
+                )
+            })?;
+            let status_s = item
+                .get("status")
+                .and_then(Json::as_str)
+                .unwrap_or("contractual");
+            let status = match status_s {
+                "contractual" | "Contractual" => ObligationStatus::Contractual,
+                "missing_maturity" | "MissingMaturity" => ObligationStatus::MissingMaturity,
+                "disputed" | "Disputed" => {
+                    let rc = item
+                        .get("reason_code")
+                        .and_then(|v| match v {
+                            Json::Int(n) => u16::try_from(*n).ok(),
+                            _ => None,
+                        })
+                        .unwrap_or(1);
+                    ObligationStatus::Disputed { reason_code: rc }
+                }
+                other => {
+                    return Err(usage(
+                        format!("obligation_maturity[{i}]: unknown status `{other}`"),
+                        "\"status\": \"contractual\" | \"disputed\" | \"missing_maturity\"",
+                    ));
+                }
+            };
+            let mut installments = Vec::new();
+            if let Some(raw_inst) = item.get("installments") {
+                let arr = raw_inst.as_arr().ok_or_else(|| {
+                    usage(
+                        format!("obligation_maturity[{i}].installments must be an array"),
+                        "\"installments\": [{\"due_date\": \"2026-12-31\", \"amount\": \"1000.00 USD\"}]",
+                    )
+                })?;
+                for (j, inst) in arr.iter().enumerate() {
+                    let due_s = req_str(
+                        inst,
+                        "due_date",
+                        &format!("obligation_maturity[{i}].installments[{j}]"),
+                    )?;
+                    let due_date = DateDay::parse(due_s).map_err(|e| {
+                        usage(
+                            format!("obligation_maturity[{i}].installments[{j}].due_date `{due_s}`: {e:?}"),
+                            "due_date: \"YYYY-MM-DD\"",
+                        )
+                    })?;
+                    let amt_s = req_str(
+                        inst,
+                        "amount",
+                        &format!("obligation_maturity[{i}].installments[{j}]"),
+                    )?;
+                    let amt = Amount::parse(amt_s, &ctx.units).map_err(|e| {
+                        usage(
+                            format!("obligation_maturity[{i}].installments[{j}].amount `{amt_s}`: {e:?}"),
+                            "amount: \"1000.00 USD\"",
+                        )
+                    })?;
+                    if let Some(leg) = proposal.legs.get(usize::from(ordinal))
+                        && leg.amount.unit != amt.unit
+                    {
+                        return Err(usage(
+                            format!(
+                                "obligation_maturity[{i}].installments[{j}].amount unit does not match leg {ordinal}"
+                            ),
+                            "use the same unit as the scheduled liability leg",
+                        ));
+                    }
+                    installments.push(ObligationInstallment {
+                        due_date,
+                        amount: amt.mantissa,
+                    });
+                }
+            }
+            terms.push(InlineObligationTerms {
+                ordinal,
+                status,
+                installments,
+            });
+        }
+        let ext = InlineObligationTerms::to_extension(&terms)
+            .map_err(|e| usage(format!("obligation_maturity: {e}"), "check obligation_maturity fields"))?;
+        proposal.schema_minor = proposal.schema_minor.max(2);
+        proposal.extensions.retain(|(t, _)| *t != ext.0);
+        proposal.extensions.push(ext);
+        proposal.extensions.sort_by_key(|(t, _)| *t);
+    }
+
+    if let Some(raw_val) = doc.get("valuation_adjustments") {
+        let items = raw_val.as_arr().ok_or_else(|| {
+            usage(
+                "intent: `valuation_adjustments` must be an array",
+                "\"valuation_adjustments\": [{\"valuation_id\": \"VAL-1\", \"account\": \"1510\", \"basis_law\": \"signed_delta\", \"effective_date\": \"2026-04-30\", \"amount\": \"22.00 USD\"}]",
+            )
+        })?;
+        let mut terms = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let where_s = format!("valuation_adjustments[{i}]");
+            let valuation_id = req_str(item, "valuation_id", &where_s)?.to_string();
+            let subject = if let Some(inst_s) = item.get("instrument").and_then(Json::as_str) {
+                let carrying_code = req_str(item, "carrying_account", &where_s)?;
+                let inst_vid = if inst_s.len() == 32 && inst_s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    parse_vid(inst_s, "instrument")?
+                } else {
+                    fa_model::instrument_vid(ctx.book_id, inst_s)
+                };
+                ValuationSubject::Instrument {
+                    instrument: inst_vid,
+                    carrying_account: account_vid(ctx.book_id, carrying_code),
+                }
+            } else {
+                let acct_code = req_str(item, "account", &where_s)?;
+                ValuationSubject::Account(account_vid(ctx.book_id, acct_code))
+            };
+            let entity = match item.get("entity").and_then(Json::as_str) {
+                Some(e_code) => Some(if e_code.len() == 32 && e_code.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    parse_vid(e_code, "entity")?
+                } else {
+                    fa_model::legal_entity_vid(ctx.book_id, e_code)
+                }),
+                None => None,
+            };
+            let basis_s = item
+                .get("basis_law")
+                .and_then(Json::as_str)
+                .unwrap_or("signed_delta");
+            let basis_law = match basis_s {
+                "signed_delta" | "SignedDelta" => ValuationBasisLaw::SignedDelta,
+                "absolute_signed_basis" | "AbsoluteSignedBasis" => {
+                    ValuationBasisLaw::AbsoluteSignedBasis
+                }
+                other => {
+                    return Err(usage(
+                        format!("{where_s}: unknown basis_law `{other}`"),
+                        "\"basis_law\": \"signed_delta\" | \"absolute_signed_basis\"",
+                    ));
+                }
+            };
+            let applicability = if let (Some(from_s), Some(to_s)) = (
+                item.get("effective_from").and_then(Json::as_str),
+                item.get("effective_through").and_then(Json::as_str),
+            ) {
+                let effective_from = DateDay::parse(from_s).map_err(|e| {
+                    usage(
+                        format!("{where_s}.effective_from `{from_s}`: {e:?}"),
+                        "effective_from: \"YYYY-MM-DD\"",
+                    )
+                })?;
+                let effective_through = DateDay::parse(to_s).map_err(|e| {
+                    usage(
+                        format!("{where_s}.effective_through `{to_s}`: {e:?}"),
+                        "effective_through: \"YYYY-MM-DD\"",
+                    )
+                })?;
+                ValuationApplicabilityLaw::EffectiveWindow {
+                    effective_from,
+                    effective_through,
+                }
+            } else {
+                let eff_s = req_str(item, "effective_date", &where_s)?;
+                let effective_date = DateDay::parse(eff_s).map_err(|e| {
+                    usage(
+                        format!("{where_s}.effective_date `{eff_s}`: {e:?}"),
+                        "effective_date: \"YYYY-MM-DD\"",
+                    )
+                })?;
+                ValuationApplicabilityLaw::ExactAsOf { effective_date }
+            };
+            let amt_s = req_str(item, "amount", &where_s)?;
+            let amt = Amount::parse(amt_s, &ctx.units).map_err(|e| {
+                usage(
+                    format!("{where_s}.amount `{amt_s}`: {e:?}"),
+                    "amount: \"22.00 USD\" (or \"-10.00 USD\")",
+                )
+            })?;
+            let supersedes = item
+                .get("supersedes")
+                .and_then(Json::as_str)
+                .map(str::to_string);
+            terms.push(InlineValuationTerms {
+                valuation_id,
+                subject,
+                entity,
+                unit: amt.unit,
+                basis_law,
+                applicability,
+                signed_amount: amt.mantissa,
+                supersedes,
+            });
+        }
+        let ext = InlineValuationTerms::to_extension(&terms).map_err(|e| {
+            usage(
+                format!("valuation_adjustments: {e}"),
+                "check valuation_adjustments fields",
+            )
+        })?;
+        proposal.schema_minor = proposal.schema_minor.max(2);
+        proposal.extensions.retain(|(t, _)| *t != ext.0);
+        proposal.extensions.push(ext);
+        proposal.extensions.sort_by_key(|(t, _)| *t);
+    }
+
+    Ok(proposal)
 }
 
 pub(crate) fn post_document(
