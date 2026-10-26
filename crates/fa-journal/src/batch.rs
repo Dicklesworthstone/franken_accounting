@@ -248,15 +248,16 @@ pub(crate) struct TemplateByteTracker {
             std::collections::BTreeMap<fgdb_delta_types::PropertyKeyId, usize>,
         ),
     >,
-    property_updates: std::collections::BTreeMap<
-        (VId, fgdb_delta_types::PropertyKeyId),
-        (
-            fgdb_delta_types::RelationId,
-            Option<CanonicalScalar>,
-            Option<CanonicalScalar>,
-        ),
-    >,
+    property_updates:
+        std::collections::BTreeMap<(VId, fgdb_delta_types::PropertyKeyId), PropertyUpdate>,
 }
+
+/// A staged property update: its relation, and the value before and after.
+type PropertyUpdate = (
+    fgdb_delta_types::RelationId,
+    Option<CanonicalScalar>,
+    Option<CanonicalScalar>,
+);
 
 impl TemplateByteTracker {
     pub(crate) fn create_vertex(
@@ -462,7 +463,7 @@ impl TemplateByteTracker {
     pub(crate) fn total_bytes(&self) -> usize {
         let mut relations = self.fixed_relations.clone();
         let mut row_bytes = self.fixed_row_bytes;
-        for (_, (relation, labels_len, props)) in &self.created_vertices {
+        for (relation, labels_len, props) in self.created_vertices.values() {
             relations.insert(*relation);
             row_bytes += 38 + 8 * labels_len + props.values().map(|len| 12 + len).sum::<usize>();
         }
@@ -514,6 +515,8 @@ pub(crate) fn batch_byte_budget_refusal(
     refusal
 }
 
+/// [`stage_outcome_tracked`] without a byte budget; only tests stage this way.
+#[cfg(test)]
 fn stage_outcome(
     cx: &QueryCx,
     stage: &mut WriteBatch,
