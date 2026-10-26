@@ -21,6 +21,7 @@ use fa_oracles::cases::branch::{self, Enumeration};
 use fa_oracles::cases::expect::{Expectation, Target};
 use fa_oracles::cases::intent_json;
 use fa_oracles::cases::log::StepRecord;
+use fa_oracles::cases::reference::{CellSetting, period_state};
 use fa_oracles::cases::stub;
 use fa_oracles::cases::sweep::{PeriodState, SweepCell, SweepGroup, coresident as coresident_book};
 use fa_oracles::cases::tiers::{Tier, tiers};
@@ -329,11 +330,62 @@ impl Sweeper<'_, '_> {
             }
         }
         if fails.is_empty() {
-            row.reason = Some(match (&cell.pending, &cell.expect) {
-                (Some(p), _) => p.clone(),
-                (None, None) => "needs:A5b (the cell's authored outcome)".into(),
-                (None, Some(_)) => "reference".into(),
-            });
+            match (&cell.pending, &cell.expect) {
+                (Some(p), _) => row.reason = Some(p.clone()),
+                (None, None) => {
+                    row.reason = Some("needs:A5b (the cell's authored outcome)".into());
+                }
+                (None, Some(_)) => {
+                    // A4r: the reference oracle decides the same cell. Branch
+                    // cells run on the empty variant only (A7c's combination
+                    // rule), so an agreeing reference completes the cell.
+                    let value = |a: BranchAttribute| {
+                        cell.attrs
+                            .iter()
+                            .zip(&cell.key)
+                            .find(|(x, _)| **x == a)
+                            .map(|(_, v)| v.clone())
+                    };
+                    let setting = CellSetting {
+                        entry_class: value(BranchAttribute::EntryClass),
+                        period_state: period_state(state.as_str()),
+                        evidence: value(BranchAttribute::EvidenceAttached),
+                        key: Some(cell.idempotency_key.clone()),
+                    };
+                    let kernel = (observed != "admitted").then_some(observed.as_str());
+                    let expectation = self
+                        .run
+                        .case
+                        .expectations
+                        .as_ref()
+                        .and_then(|s| s.get(&cell.expectation));
+                    let (token, fail) = match expectation {
+                        Some(e) => {
+                            let (token, fail, _) = super::evaluate::reference(
+                                self.run,
+                                e,
+                                &self.group.intent,
+                                &setting,
+                                kernel,
+                                false,
+                            );
+                            (token, fail)
+                        }
+                        None => (
+                            "disagree".to_string(),
+                            Some(format!("expected {} observed none", cell.expectation)),
+                        ),
+                    };
+                    row.projection.push(("ref".into(), token));
+                    if let Some(why) = fail {
+                        row.verdict = RowVerdict::Fail;
+                        row.reason = Some(why);
+                        repro.push(reproduce(&dry));
+                    } else {
+                        row.verdict = RowVerdict::Pass;
+                    }
+                }
+            }
         } else {
             row.verdict = RowVerdict::Fail;
             row.reason = Some(fails.join("; "));

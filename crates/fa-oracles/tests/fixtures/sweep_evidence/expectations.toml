@@ -13,7 +13,7 @@ intent = "S-1"
 refusal = "FA-REF-080"
 law_row = "evidence_policy.toml#Original"
 attribute = "evidence_attached"
-reference_verdict = "not_modelled"
+reference_verdict = "FA-REF-080"
 
 [[target]]
 expectation = "sweep_evidence-P-01"

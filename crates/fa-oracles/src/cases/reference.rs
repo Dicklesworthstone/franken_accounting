@@ -608,6 +608,20 @@ impl<'c> ReferenceAdapter<'c> {
     }
 }
 
+/// A period state by its name (`Future`, `Open`, `SoftClosed`, `Closed`,
+/// `Locked`), as the sweep and the branch classes spell it.
+#[must_use]
+pub fn period_state(name: &str) -> Option<PeriodState> {
+    Some(match name {
+        "Future" => PeriodState::Future,
+        "Open" => PeriodState::Open,
+        "SoftClosed" => PeriodState::SoftClosed,
+        "Closed" => PeriodState::Closed,
+        "Locked" => PeriodState::Locked,
+        _ => return None,
+    })
+}
+
 /// A registered ManualAssertion reason code's tag, by name.
 fn reason_tag(name: &str) -> Option<u16> {
     fa_registry::reason_codes::ReasonCodes::embedded()

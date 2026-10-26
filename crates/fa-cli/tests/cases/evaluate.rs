@@ -16,6 +16,7 @@ use fa_oracles::cases::book::StepKind;
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
+use fa_oracles::cases::reference::{CellSetting, RefVerdict, ReferenceAdapter};
 use fa_oracles::cases::rel;
 use fa_oracles::cases::remedy::{self, Cells, Check};
 use fa_oracles::cases::selfrow;
@@ -37,10 +38,9 @@ pub struct Evaluated {
     pub reproduce: Option<String>,
 }
 
-/// The witness a D row still lacks when every component agrees.
+/// The witness a D, P or N row still lacks when every component agrees
+/// (A11a); a P row reaches it only once the reference oracle agrees (A4r).
 pub(crate) const FILLER: &str = "filler_invariance";
-/// The witness a P row still lacks when every component agrees.
-const REFERENCE: &str = "reference";
 
 /// The (expectation, target)'s effective type (A3b's retypes applied).
 fn kind_of(case: &Case, e: &Expectation, target: Option<&str>) -> String {
@@ -692,16 +692,95 @@ fn p_row(run: &BookRun<'_>, e: &Expectation, mut row: RowLine) -> Eval {
     } else if observed.is_some() {
         fails.push("expected an error event observed none".into());
     }
-    let witnesses = vec![("exit".to_string(), call.exit.to_string())];
+    let mut witnesses = vec![("exit".to_string(), call.exit.to_string())];
     if fails.is_empty() {
+        // A4r: the reference oracle decides the same intent, and its first
+        // refusal must be the kernel's; then the row waits on the
+        // filler-invariance witness (A11a).
+        let (token, fail, mut seen) = reference(
+            run,
+            e,
+            intent,
+            &CellSetting::default(),
+            observed.as_deref(),
+            true,
+        );
+        row.projection.push(("ref".into(), token));
+        witnesses.append(&mut seen);
+        if let Some(why) = fail {
+            row.verdict = RowVerdict::Fail;
+            row.reason = Some(why);
+            return (row, witnesses, Some(reproduce(call)));
+        }
         row.verdict = RowVerdict::Unrun;
-        row.reason = Some(REFERENCE.into());
+        row.reason = Some(FILLER.into());
         (row, witnesses, None)
     } else {
         row.verdict = RowVerdict::Fail;
         row.reason = Some(fails.join("; "));
         (row, witnesses, Some(reproduce(call)))
     }
+}
+
+/// The reference verdict (A4r) on a P row or cell: the `ref=` token, why it
+/// fails the row if it does, and the verdict record's witnesses
+/// (`reference`, and `reference_reason` or `reference_refusal`). The
+/// oracle decides `intent` under `cell`; `kernel` is the kernel's first
+/// refusal (`None` when it admitted). A disagreement fails; `not_modelled`
+/// never counts as agreement and must be what the row declares; and on the
+/// documented outcome (`documented`), the declared `reference_verdict` is
+/// the refusal the reference agreed on.
+pub(crate) fn reference(
+    run: &BookRun<'_>,
+    e: &Expectation,
+    intent: &str,
+    cell: &CellSetting,
+    kernel: Option<&str>,
+    documented: bool,
+) -> (String, Option<String>, Vec<(String, String)>) {
+    let Some(it) = run.book.intents.iter().find(|i| i.id == intent) else {
+        return (
+            "disagree".into(),
+            Some(format!(
+                "expected intent {intent} in the book observed none"
+            )),
+            Vec::new(),
+        );
+    };
+    let verdict = match ReferenceAdapter::new(run.case, run.book) {
+        Ok(a) => a.p_cell(it, cell, kernel),
+        Err(why) => RefVerdict::Disagree {
+            reference: format!("unmapped ({why})"),
+            kernel: kernel.unwrap_or("admit").into(),
+        },
+    };
+    let declared = e.fields.str("reference_verdict");
+    let mut witnesses = vec![("reference".to_string(), verdict.token().to_string())];
+    let observed = kernel.unwrap_or("admit");
+    let fail = match &verdict {
+        RefVerdict::Agree if declared == Some("not_modelled") => Some(format!(
+            "expected reference_verdict=not_modelled observed ref=agree ({observed})"
+        )),
+        RefVerdict::Agree => declared
+            .filter(|d| documented && *d != observed)
+            .map(|d| format!("expected reference_verdict={d} observed {observed}")),
+        RefVerdict::NotModelled { reason } => {
+            witnesses.push(("reference_reason".into(), (*reason).into()));
+            (declared != Some("not_modelled")).then(|| {
+                format!(
+                    "expected reference_verdict={} observed not_modelled ({reason})",
+                    declared.unwrap_or("-")
+                )
+            })
+        }
+        RefVerdict::Disagree { reference, .. } => {
+            witnesses.push(("reference_refusal".into(), reference.clone()));
+            Some(format!(
+                "expected ref=agree observed ref=disagree (reference {reference})"
+            ))
+        }
+    };
+    (verdict.token().to_string(), fail, witnesses)
 }
 
 /// The variant's SELF row (§2.7): `jet.self_sourced_evidence` cites every

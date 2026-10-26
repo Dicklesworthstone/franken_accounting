@@ -49,7 +49,7 @@ fn _selftest() {
     assert!(
         p.starts_with(
             "UNRUN _selftest-P-01 P native -/default law=admissibility.toml#Original/Future refusal=FA-REF-010 exit=7 law_named=ok matrix=ok "
-        ) && p.ends_with(" alternatives=ok reason=reference"),
+        ) && p.ends_with(" alternatives=ok ref=agree reason=filler_invariance"),
         "{text}"
     );
     assert_eq!(
@@ -1078,12 +1078,12 @@ fn every_p_cell_of_one_entry_is_decided_by_dry_run_on_one_book() {
     let text = o.text();
     let cells = sweep_cells(o);
     assert_eq!(cells.len(), 10, "{text}");
-    // Every observed outcome is the authored one; the reference verdict
-    // (A4r) is not built, so none reads PASS.
+    // Every observed outcome is the authored one, and the reference oracle
+    // (A4r) decides each cell the same way, so each reads PASS.
     assert!(
         cells
             .iter()
-            .all(|l| l.starts_with("UNRUN ") && l.ends_with(" reason=reference")),
+            .all(|l| l.starts_with("PASS ") && l.ends_with(" ref=agree")),
         "{text}"
     );
     for (cell, outcome) in [
@@ -1112,7 +1112,7 @@ fn every_p_cell_of_one_entry_is_decided_by_dry_run_on_one_book() {
             "refusal=FA-REF-010 exit=7",
         ),
     ] {
-        let prefix = format!("UNRUN sweep-P-01 P native S-1/entry_class={cell} {outcome}");
+        let prefix = format!("PASS sweep-P-01 P native S-1/entry_class={cell} {outcome}");
         assert!(
             cells.iter().any(|l| l.starts_with(&prefix)),
             "{prefix}\n{text}"
@@ -1510,7 +1510,7 @@ fn manual_assertion_cell_is_planned_by_attest_manual_and_committed_from_that_pla
         ),
     ] {
         let line = format!(
-            "UNRUN sweep_evidence-P-01 P native S-1/evidence_attached={cell} state=Open {outcome} reason=reference"
+            "PASS sweep_evidence-P-01 P native S-1/evidence_attached={cell} state=Open {outcome} ref=agree"
         );
         assert!(o.lines.contains(&line), "{line}\n{text}");
     }
