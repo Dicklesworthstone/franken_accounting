@@ -46,6 +46,9 @@ const BOB: VId = VId(22);
 const CAROL: VId = VId(23);
 const AGENT: VId = VId(31);
 
+#[path = "policy/capability_retries.rs"]
+mod capability_retries;
+
 struct Harness {
     runtime: Runtime,
     root: Cx,

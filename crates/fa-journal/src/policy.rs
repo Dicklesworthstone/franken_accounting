@@ -1514,6 +1514,119 @@ pub struct Revoked {
     pub already_recorded: bool,
 }
 
+/// Authenticate a target-derived capability result before treating it as a
+/// no-op. A different scoped key may observe the existing target result; an
+/// original-key retry must also preserve its semantic request. This does not
+/// reserve capability keys in the common IntentOutcome namespace.
+fn recorded_capability_event<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    row: &fgdb::VertexRow,
+    requested: &Entry,
+) -> Outcome<CommitSeq> {
+    let proposal = &requested.proposal;
+    let Some(ControlPayload::CapabilityEvent {
+        kind, commitment, ..
+    }) = &proposal.control
+    else {
+        return Err(KernelError::Corrupt(
+            "capability retry is not a capability event".into(),
+        ));
+    };
+    let expected_vid = match *kind {
+        CAPABILITY_EVENT_ISSUE => issuance_vid(book.book_id, commitment),
+        CAPABILITY_EVENT_REVOKE => revocation_vid(book.book_id, commitment),
+        _ => {
+            return Err(KernelError::Corrupt(
+                "capability retry has an unsupported event kind".into(),
+            ));
+        }
+    };
+    let conflict = || {
+        Refusal::new(
+            code::IDEMPOTENCY_CONFLICT,
+            exit::CONFLICT,
+            format!(
+                "the recorded capability event at {:032x} does not authenticate this request",
+                row.vid.0,
+            ),
+            "plan §5.9 / §14.2 (original journaled capability results and semantic retries)",
+            "retain the original event and retry its exact request; inspect a conflicting or rewritten capability record before proceeding",
+        )
+    };
+    let (stored, _) = crate::post::entry_of(row)?;
+    if row.vid != expected_vid
+        || row.labels != vec![label::ENTRY]
+        || row.props != entry_mirrors(&stored)?
+        || stored.proposal.book_id != book.book_id
+        || stored.proposal.branch_id != Id128::TRUNK
+        || stored.proposal.class != EntryClass::POLICY_CONTROL
+        || stored.proposal.control != proposal.control
+        || !stored.approvals.is_empty()
+        || stored.plan_certificate.is_some()
+    {
+        return Ok(Err(conflict()));
+    }
+    let origin_matches = match (&stored.proposal.origin, *kind) {
+        (
+            EntryOrigin::Control {
+                control_kind,
+                spec_body_digest,
+            },
+            CAPABILITY_EVENT_REVOKE,
+        ) => {
+            *control_kind == fa_model::ControlKind::CAPABILITY_REVOCATION
+                && spec_body_digest == commitment
+                && stored.proposal.extensions.is_empty()
+        }
+        (
+            EntryOrigin::Control {
+                control_kind,
+                spec_body_digest,
+            },
+            CAPABILITY_EVENT_ISSUE,
+        ) if *control_kind == fa_model::ControlKind::CAPABILITY_ISSUANCE
+            && *spec_body_digest != [0; 32] =>
+        {
+            let (issued, _) = crate::usage::issued_capability(row, book.book_id, commitment)?;
+            issued.issuer() == stored.proposal.principal_ref
+        }
+        _ => false,
+    };
+    let Some(before) = row.created_at.0.checked_sub(1).map(CommitSeq) else {
+        return Ok(Err(conflict()));
+    };
+    if !origin_matches
+        || db.vertex_at(row.vid, before)?.is_some()
+        || db.vertex_at(row.vid, row.created_at)?.as_ref() != Some(row)
+    {
+        return Ok(Err(conflict()));
+    }
+    if stored.proposal.principal_ref != proposal.principal_ref
+        || stored.proposal.idempotency_key != proposal.idempotency_key
+        || stored.proposal_digest == requested.proposal_digest
+    {
+        return Ok(Ok(row.created_at));
+    }
+    match (
+        stored.proposal.semantic_digest(&book.seal_key),
+        proposal.semantic_digest(&book.seal_key),
+    ) {
+        (Ok(a), Ok(b)) if a == b => Ok(Ok(row.created_at)),
+        (Ok(_), Ok(_)) => Ok(Err(conflict())),
+        (Err(fa_model::EntryError::Sealed(_)), _) | (_, Err(fa_model::EntryError::Sealed(_))) => {
+            Ok(Err(Refusal::new(
+                code::EQUIVALENCE_UNVERIFIABLE,
+                exit::CONFLICT,
+                "the original capability event exists but a sealed field cannot be opened to compare this retry",
+                "plan §8.5 (no plaintext equivalence over destroyed secrets)",
+                "resubmit the original prepared request bytes",
+            )))
+        }
+        (Err(e), _) | (_, Err(e)) => Err(e.into()),
+    }
+}
+
 /// Journal a revocation (plan §14.2: "issuance and revocation are journaled
 /// control entries"): a PolicyControl entry carrying a `CapabilityEvent`
 /// with `kind = Revoke`, at [`revocation_vid`], in one commit. A revocation
@@ -1582,6 +1695,13 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let vid = revocation_vid(book.book_id, &req.revoked);
+    let entry = proposal.seal(Vec::new(), None)?;
+    if let Err(r) = capability_admitted(db, book, &req.capability)? {
+        return Ok(Err(r));
+    }
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
@@ -1590,13 +1710,14 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
     }
     if let Some(row) = txn.vertex(db, vid)? {
         txn.abort();
-        return Ok(Ok(Revoked {
-            control_entry: vid,
-            recorded_at: row.created_at,
-            already_recorded: true,
-        }));
+        return Ok(
+            recorded_capability_event(db, book, &row, &entry)?.map(|recorded_at| Revoked {
+                control_entry: vid,
+                recorded_at,
+                already_recorded: true,
+            }),
+        );
     }
-    let entry = proposal.seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry)?);
     txn.write(db, batch)?;
@@ -1618,11 +1739,13 @@ pub async fn revoke_capability<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(vid)? {
-            Some(row) => Ok(Ok(Revoked {
-                control_entry: vid,
-                recorded_at: row.created_at,
-                already_recorded: true,
-            })),
+            Some(row) => Ok(recorded_capability_event(db, book, &row, &entry)?.map(
+                |recorded_at| Revoked {
+                    control_entry: vid,
+                    recorded_at,
+                    already_recorded: true,
+                },
+            )),
             None => Err(KernelError::Corrupt(
                 "revocation identity spent but no live row".into(),
             )),
@@ -1911,6 +2034,13 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
         );
     }
     let vid = issuance_vid(book.book_id, &commitment);
+    let entry = proposal.seal(Vec::new(), None)?;
+    if let Err(r) = capability_admitted(db, book, &req.capability)? {
+        return Ok(Err(r));
+    }
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
@@ -1919,14 +2049,15 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
     }
     if let Some(row) = txn.vertex(db, vid)? {
         txn.abort();
-        return Ok(Ok(Issued {
-            control_entry: vid,
-            commitment,
-            recorded_at: row.created_at,
-            already_recorded: true,
-        }));
+        return Ok(
+            recorded_capability_event(db, book, &row, &entry)?.map(|recorded_at| Issued {
+                control_entry: vid,
+                commitment,
+                recorded_at,
+                already_recorded: true,
+            }),
+        );
     }
-    let entry = proposal.seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(vid, vec![label::ENTRY], entry_mirrors(&entry)?);
     txn.write(db, batch)?;
@@ -1949,12 +2080,14 @@ pub async fn issue_capability<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(vid)? {
-            Some(row) => Ok(Ok(Issued {
-                control_entry: vid,
-                commitment,
-                recorded_at: row.created_at,
-                already_recorded: true,
-            })),
+            Some(row) => Ok(recorded_capability_event(db, book, &row, &entry)?.map(
+                |recorded_at| Issued {
+                    control_entry: vid,
+                    commitment,
+                    recorded_at,
+                    already_recorded: true,
+                },
+            )),
             None => Err(KernelError::Corrupt(
                 "issuance identity spent but no live row".into(),
             )),
