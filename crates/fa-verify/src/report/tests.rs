@@ -204,7 +204,7 @@ fn bundle(
         .map(|r| leaf_hash(&r.envelope.encode()))
         .collect();
     let (codes, cutoff, activity) = match &selection {
-        Selection::Statement(_) | Selection::OpenItems(_) => {
+        Selection::Statement(_) | Selection::OpenItems(_) | Selection::ExplainBalance { .. } => {
             panic!("use the report-family fixture")
         }
         Selection::AsOf(day) => (
@@ -241,7 +241,7 @@ fn bundle(
         .fixed(&[0; 16])
         .u64(known_at);
     match selection {
-        Selection::Statement(_) | Selection::OpenItems(_) => {
+        Selection::Statement(_) | Selection::OpenItems(_) | Selection::ExplainBalance { .. } => {
             panic!("use the report-family fixture")
         }
         Selection::AsOf(day) => {
@@ -439,6 +439,7 @@ fn incomplete_payloads_wrong_anchor_and_unsigned_self_trust_are_refused() {
     );
 }
 
+mod explain;
 mod open_items;
 mod statements;
 mod temporal;

@@ -2,7 +2,7 @@
 //!
 //! The producer supplies the parsed canonical document, not executable code or
 //! a mutable registry lookup. This independent decoder checks framing and order,
-//! binds all four documents to the certificate's registry closure, and accepts
+//! binds the selector's four- or five-document certificate closure, and accepts
 //! only the accounting tags interpreted by this version. It does not attest
 //! journaled RegistryEpoch activation or reinterpret unknown future semantics.
 
@@ -12,6 +12,20 @@ use super::{ReportError, failed};
 use crate::blake3::hash_parts;
 
 const NAMES: [&str; 4] = ["account_types", "entry_classes", "units", "foundations"];
+const EXPLANATION_NAMES: [&str; 5] = [
+    "account_types",
+    "entry_classes",
+    "units",
+    "foundations",
+    "reason_codes",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reason {
+    pub code: u16,
+    pub name: String,
+    pub meaning: String,
+}
 const MAGIC: &[u8] = b"fa:registry-document:v1";
 const MAX_DOCUMENT: usize = 1024 * 1024;
 
@@ -352,13 +366,75 @@ fn units(doc: &Document) -> Result<Vec<u32>, ReportError> {
     Ok(ids)
 }
 
+fn reasons(doc: &Document) -> Result<BTreeMap<u16, Reason>, ReportError> {
+    const SCOPES: [&str; 5] = [
+        "manual_assertion",
+        "supersession",
+        "period_control",
+        "period_reopen",
+        "adjustment_pass",
+    ];
+    if doc.root.len() != 1 || doc.named_tables != 0 || doc.arrays.len() != 1 {
+        return Err(invalid("unsupported reason-code registry shape"));
+    }
+    let mut codes = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    let mut scopes = BTreeSet::new();
+    let mut supersession = BTreeMap::new();
+    for row in rows(doc, "reason")? {
+        let code = u16::try_from(integer(row, "code")?)
+            .ok()
+            .filter(|n| *n != 0)
+            .ok_or_else(|| invalid("reason code must be in 1..=65535"))?;
+        let scope = string(row, "scope")?;
+        let name = string(row, "name")?;
+        let meaning = string(row, "meaning")?;
+        if row.len() != 4
+            || !SCOPES.contains(&scope)
+            || name.is_empty()
+            || meaning.trim().is_empty()
+            || !codes.insert((scope.to_string(), code))
+            || !names.insert((scope.to_string(), name.to_string()))
+        {
+            return Err(invalid(
+                "reason registry has an unknown scope, duplicate code/name, or empty definition",
+            ));
+        }
+        scopes.insert(scope);
+        if scope == "supersession" {
+            supersession.insert(
+                code,
+                Reason {
+                    code,
+                    name: name.into(),
+                    meaning: meaning.into(),
+                },
+            );
+        }
+    }
+    if SCOPES.iter().any(|scope| !scopes.contains(scope)) {
+        return Err(invalid("reason registry omits a required scope"));
+    }
+    Ok(supersession)
+}
+
 pub(super) fn verify(
     inputs: &[(&str, &[u8])],
     expected: &[u8; 32],
-) -> Result<Vec<u32>, ReportError> {
-    if inputs.iter().map(|(name, _)| *name).ne(NAMES) {
+    explanation: bool,
+) -> Result<(Vec<u32>, BTreeMap<u16, Reason>), ReportError> {
+    let names = if explanation {
+        EXPLANATION_NAMES.as_slice()
+    } else {
+        NAMES.as_slice()
+    };
+    if inputs
+        .iter()
+        .map(|(name, _)| *name)
+        .ne(names.iter().copied())
+    {
         return Err(invalid(
-            "all four registry documents are required in certificate closure order",
+            "every registry document is required in the report selector's exact certificate closure order",
         ));
     }
     let mut transcript = Vec::new();
@@ -376,5 +452,12 @@ pub(super) fn verify(
     }
     account_types(&docs[0])?;
     entry_classes(&docs[1])?;
-    units(&docs[2])
+    Ok((
+        units(&docs[2])?,
+        if explanation {
+            reasons(&docs[4])?
+        } else {
+            BTreeMap::new()
+        },
+    ))
 }

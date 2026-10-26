@@ -195,7 +195,7 @@ fn dimension_bundle(
         Selection::AsOf(day) => {
             cert.u8(1).i32(day);
         }
-        Selection::Statement(_) | Selection::OpenItems(_) => {
+        Selection::Statement(_) | Selection::OpenItems(_) | Selection::ExplainBalance { .. } => {
             panic!("dimension selection must be a trial balance")
         }
     }

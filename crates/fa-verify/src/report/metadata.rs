@@ -20,6 +20,8 @@ pub(super) struct EntryInfo<'a> {
     pub period: Option<(&'a str, &'a str)>,
     pub resolution: Option<(u128, [u8; 32])>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
+    pub supersession_reasons: Vec<u16>,
+    pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
     pub identity: u128,
     /// Before replacement-pair identities were target-derived, the immutable
     /// corrected member used its ordinary key identity. Both encodings name
@@ -203,16 +205,22 @@ pub(super) fn entry_info<'a>(
         r.u128("entry.session")?;
     }
     let n = r.count(MAX_ENVELOPE_LIST, 65, "entry.evidence")?;
+    let mut evidence = Vec::with_capacity(n);
     for _ in 0..n {
-        r.fixed::<65>("evidence")?;
+        evidence.push((
+            r.fixed("evidence.document_oid")?,
+            r.fixed("evidence.doc_commit")?,
+            r.u8("evidence.role")?,
+        ));
     }
     let n = r.count(MAX_ENVELOPE_LIST, 51, "entry.supersession")?;
     let mut supersession = Vec::with_capacity(n);
+    let mut supersession_reasons = Vec::with_capacity(n);
     for _ in 0..n {
         let target = r.u128("supersession.target")?;
         let digest = r.fixed("supersession.digest")?;
         let kind = r.u8("supersession.kind")?;
-        r.u16("supersession.reason")?;
+        supersession_reasons.push(r.u16("supersession.reason")?);
         if !(1..=6).contains(&kind) {
             return Err(failed("entry_lineage", "unknown supersession kind"));
         }
@@ -347,6 +355,8 @@ pub(super) fn entry_info<'a>(
         period,
         resolution,
         supersession,
+        supersession_reasons,
+        evidence,
         identity,
         legacy_identity,
     })
@@ -661,7 +671,9 @@ impl Schema {
             ));
         }
         match selection {
-            Selection::Statement(_) | Selection::OpenItems(_) => Err(failed(
+            Selection::Statement(_)
+            | Selection::OpenItems(_)
+            | Selection::ExplainBalance { .. } => Err(failed(
                 "report_selector",
                 "report selection requires its authenticated registry closure",
             )),

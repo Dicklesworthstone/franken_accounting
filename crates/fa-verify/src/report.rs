@@ -13,8 +13,10 @@
 //! authenticated registration or approval. Bundle version 2 carries the exact
 //! registry closure and requires a recipient certificate pin or signed production
 //! receipt to authenticate that definition and registry closure. Version 2 also
-//! supports native v3 OpenItems with complete application/reversal history and
-//! historical account metadata. Native v2 trial balances, v3 OpenItems and v4
+//! supports native v3 OpenItems and ExplainBalance with complete history and
+//! historical account metadata. ExplainBalance also binds whole-period register
+//! commitments and committed evidence/lineage under its fifth reason-code registry.
+//! Native v2 trial balances, v3 reports and v4
 //! statements can additionally prove their retained tick-bucket
 //! selection from the complete TimeControl history. Migrated/genesis-policy
 //! histories and functional-currency statements remain unsupported. Native v8
@@ -25,16 +27,23 @@
 //! registry activation, or database read attestations.
 
 mod dimension;
+mod explain;
 mod metadata;
 mod open_items;
 mod registry;
 mod statement;
 mod temporal;
 pub use dimension::VerifiedDimensionSelection;
+pub use explain::{
+    ExplanationCell, ExplanationCellChange, ExplanationColumn, ExplanationContribution,
+    ExplanationEvidence, ExplanationSupersession, VerifiedBalanceExplanation,
+};
+pub use open_items::VerifiedOpenItemAccount as VerifiedReportAccount;
 pub use open_items::{
     OpenItemBalanceLimit, OpenItemUnitPolicy, VerifiedApplication, VerifiedOpenItem,
     VerifiedOpenItemAccount, VerifiedOpenItems,
 };
+pub use registry::Reason as ExplanationReason;
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
 pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
@@ -126,6 +135,8 @@ pub struct VerifiedReport {
     pub dimension: Option<VerifiedDimensionSelection>,
     /// Present for independently reconstructed native open-item reports.
     pub open_items: Option<VerifiedOpenItems>,
+    /// Exact period cells, whole-period commitment, contributions and history.
+    pub explanation: Option<VerifiedBalanceExplanation>,
     /// Whether report units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
@@ -142,6 +153,7 @@ enum Selection {
     Activity(Vec<String>),
     Statement(statement::Selection),
     OpenItems(Option<u128>),
+    ExplainBalance { account: u128, period: String },
 }
 struct Certificate<'a> {
     book: [u8; 16],
@@ -185,29 +197,18 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     if format != *CERTIFICATE_FORMAT && !statement && !instant && !dimension && !open_items {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance, v3 OpenItems, v4 statement, or v8 dimension trial balance",
+            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, or v8 dimension trial balance",
         ));
     }
     for (field, expected) in [
         ("certificate.scope", "fa-fold-over-prefix"),
         ("certificate.authority", "embedded-owner"),
-        (
-            "certificate.output_format",
-            if statement {
-                "fa:statement:v1"
-            } else if dimension {
-                "fa:dimension-trial-balance:v1"
-            } else if open_items {
-                "fa:open-items:v1"
-            } else {
-                "fa:trial-balance:v1"
-            },
-        ),
     ] {
         if text(&mut r, 64, field)? != expected {
             return Err(failed("supported_report", field));
         }
     }
+    let output_format = text(&mut r, 64, "certificate.output_format")?;
     let book = r.fixed("certificate.book")?;
     let branch = r.fixed("certificate.branch")?;
     let known_at = r.u64("certificate.known_at")?;
@@ -235,17 +236,30 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         let comparative = strings(&mut r, "certificate.comparative")?;
         Selection::Statement(statement::Selection::new(definition, periods, comparative)?)
     } else if open_items {
-        if selector != 1 {
-            return Err(failed(
-                "supported_report",
-                "native v3 requires an OpenItems selector",
-            ));
+        match selector {
+            0 if output_format == "fa:balance-explanation:v1" => {
+                let account = r.u128("certificate.account")?;
+                let period = text(&mut r, 128, "certificate.period")?.to_string();
+                if period.is_empty() {
+                    return Err(failed(
+                        "report_selector",
+                        "balance explanation period is empty",
+                    ));
+                }
+                Selection::ExplainBalance { account, period }
+            }
+            1 if output_format == "fa:open-items:v1" => Selection::OpenItems(
+                r.present("certificate.account")?
+                    .then(|| r.u128("certificate.account"))
+                    .transpose()?,
+            ),
+            _ => {
+                return Err(failed(
+                    "supported_report",
+                    "native v3 selector and output format disagree",
+                ));
+            }
         }
-        Selection::OpenItems(
-            r.present("certificate.account")?
-                .then(|| r.u128("certificate.account"))
-                .transpose()?,
-        )
     } else {
         match selector {
             0 => Selection::Periods(strings(&mut r, "certificate.periods")?),
@@ -254,6 +268,19 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             _ => return Err(failed("supported_report", "unknown trial-balance selector")),
         }
     };
+    let expected_format = match &selection {
+        Selection::ExplainBalance { .. } => "fa:balance-explanation:v1",
+        Selection::OpenItems(_) => "fa:open-items:v1",
+        Selection::Statement(_) => "fa:statement:v1",
+        _ if dimension => "fa:dimension-trial-balance:v1",
+        _ => "fa:trial-balance:v1",
+    };
+    if output_format != expected_format {
+        return Err(failed(
+            "supported_report",
+            "certificate output format disagrees with its selector",
+        ));
+    }
     if matches!(&selection, Selection::Periods(p) | Selection::Activity(p) if p.is_empty()) {
         return Err(failed("report_selector", "period selection is empty"));
     }
@@ -480,18 +507,19 @@ fn verify_report_with_inputs(
     let cert = certificate(r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?)?;
     let is_statement = matches!(cert.selection, Selection::Statement(_));
     let is_open_items = matches!(cert.selection, Selection::OpenItems(_));
+    let is_explanation = matches!(cert.selection, Selection::ExplainBalance { .. });
     if (!is_statement && recipient_units.is_some())
-        || (!is_statement && !is_open_items && major == 2)
+        || (!is_statement && !is_open_items && !is_explanation && major == 2)
     {
         return Err(failed(
             "supported_report",
-            "registry bundles require a v4 statement or v3 OpenItems; explicit unit universes require a v4 statement",
+            "registry bundles require a v4 statement or v3 OpenItems/ExplainBalance; explicit unit universes require a v4 statement",
         ));
     }
-    if is_open_items && major != 2 {
+    if (is_open_items || is_explanation) && major != 2 {
         return Err(failed(
             "registry_closure",
-            "OpenItems requires a version-2 bundle with its authenticated complete registry closure",
+            "native v3 reports require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -561,8 +589,12 @@ fn verify_report_with_inputs(
             r.bytes(MAX_RECORD_BYTES, "migration.body")?,
         ));
     }
-    let units = if major == 2 {
-        let n = r.count(4, 8, "report_bundle.registries")?;
+    let (units, supersession_reasons) = if major == 2 {
+        let n = r.count(
+            if is_explanation { 5 } else { 4 },
+            8,
+            "report_bundle.registries",
+        )?;
         let mut inputs = Vec::with_capacity(n);
         for _ in 0..n {
             inputs.push((
@@ -570,16 +602,19 @@ fn verify_report_with_inputs(
                 r.bytes(1024 * 1024, "registry.canonical")?,
             ));
         }
-        let units = registry::verify(&inputs, &cert.registry_digest)?;
+        let (units, reasons) = registry::verify(&inputs, &cert.registry_digest, is_explanation)?;
         if recipient_units.is_some_and(|expected| expected != units.as_slice()) {
             return Err(failed(
                 "statement_units",
                 "recipient unit identifiers differ from the authenticated complete registry universe",
             ));
         }
-        units
+        (units, reasons)
     } else {
-        recipient_units.unwrap_or_default().to_vec()
+        (
+            recipient_units.unwrap_or_default().to_vec(),
+            BTreeMap::new(),
+        )
     };
     r.finish("report bundle")?;
     let digest = hash_parts(REPORT_BUNDLE_FORMAT, &[bundle]);
@@ -644,6 +679,7 @@ fn verify_report_with_inputs(
         infos.insert(index, info);
     }
     let mut resolved = BTreeSet::new();
+    let mut releases = BTreeMap::new();
     for (index, info) in &infos {
         let e = &envelopes[*index];
         if e.class != 3 {
@@ -670,6 +706,7 @@ fn verify_report_with_inputs(
                 "invalid or duplicate pending resolution",
             ));
         }
+        releases.insert(target_index, e.commit_seq);
     }
     let dimension = cert
         .dimension
@@ -710,6 +747,50 @@ fn verify_report_with_inputs(
             statement: None,
             dimension: None,
             open_items: Some(open_items),
+            explanation: None,
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
+    if let Selection::ExplainBalance { account, period } = &cert.selection {
+        let (explanation, output) = explain::replay(
+            cert.known_at,
+            *account,
+            period,
+            &units,
+            &supersession_reasons,
+            &schema,
+            envelopes,
+            &infos,
+            &legs,
+            &visible_migrations,
+            &migration_activations,
+            &releases,
+        )?;
+        if output != cert.output {
+            return Err(failed(
+                "report_recomputation",
+                "balance explanation cells, whole-period commitment, provenance or complete history differ from independent replay",
+            ));
+        }
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            bundle_digest: digest,
+            certificate_digest: cert.digest,
+            output_digest: cert.output_digest,
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: cert.time_selection,
+            effective_through: None,
+            activity: false,
+            periods: vec![period.clone()],
+            rows: Vec::new(),
+            statement: None,
+            dimension: None,
+            open_items: None,
+            explanation: Some(explanation),
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -758,6 +839,7 @@ fn verify_report_with_inputs(
             statement: Some(statement),
             dimension: None,
             open_items: None,
+            explanation: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -900,6 +982,7 @@ fn verify_report_with_inputs(
         statement: None,
         dimension,
         open_items: None,
+        explanation: None,
         unit_universe_source: "not-applicable",
         output,
         checked_records: records.len(),

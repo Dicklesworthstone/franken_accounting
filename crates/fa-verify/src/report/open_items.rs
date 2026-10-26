@@ -100,7 +100,10 @@ fn absent_identity(
     }
 }
 
-fn account(id: u128, schema: &metadata::Schema) -> Result<VerifiedOpenItemAccount, ReportError> {
+pub(super) fn account(
+    id: u128,
+    schema: &metadata::Schema,
+) -> Result<VerifiedOpenItemAccount, ReportError> {
     let row = schema.accounts.get(&id).ok_or_else(|| {
         failed(
             "account_metadata",
