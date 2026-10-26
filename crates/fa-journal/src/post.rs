@@ -275,12 +275,21 @@ pub fn check_aggregate_basis(expected: CommitSeq, actual: CommitSeq) -> Result<(
     ))
 }
 
+/// The embedded intent dependency law, parsed once per process: every post
+/// asks it, and parsing it costs about a millisecond (fa-rcw1's profile).
+fn intent_dependencies() -> Result<&'static fa_registry::IntentDependencies, KernelError> {
+    static DEPENDENCIES: std::sync::OnceLock<Result<fa_registry::IntentDependencies, String>> =
+        std::sync::OnceLock::new();
+    DEPENDENCIES
+        .get_or_init(|| fa_registry::IntentDependencies::embedded().map_err(|e| e.to_string()))
+        .as_ref()
+        .map_err(|e| KernelError::Corrupt(e.clone()))
+}
+
 /// Fold-derived PostEntry families admitted by the current kernel. Other
 /// intents retain their own protocols; this does not enable a new family.
 pub(crate) fn requires_aggregate_basis(proposal: &EntryPayload) -> Result<bool, KernelError> {
-    let registry = fa_registry::IntentDependencies::embedded()
-        .map_err(|e| KernelError::Corrupt(e.to_string()))?;
-    let dependency = registry
+    let dependency = intent_dependencies()?
         .get("PostEntry", Some(proposal.class.0))
         .map_err(|e| KernelError::Corrupt(e.to_string()))?;
     Ok(dependency == fa_registry::DependencyClass::Aggregate
