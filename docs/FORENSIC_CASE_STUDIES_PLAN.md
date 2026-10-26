@@ -308,18 +308,32 @@ Binding rules (checks K-BIND and K-SCOPE, §3.6):
   - The research's own error is the test case. The SEC's ¶29 phrase "without any supporting
     documentation or proper business rationale" is about entries "for the first quarter of 2001"
     (SEC v. Vinson & Normand). It was applied to the 1Q02 entries; K-SCOPE must refuse that binding.
-  - The word check is `case-fetch-scope-v1` (A9 defined it; A3a's Rust check mirrors it on the shared
-    `[[scope]]` rows of `crates/fa-oracles/data/binding_fixtures.toml`):
-    - a text's period words are quarter labels (`1Q01`, `2001Q1`, `Q1 2001`, "first quarter of
-      2001") and fiscal years ("fiscal 2001", `FY2001`), each fiscal year covering its four quarters;
-    - its account words are `account:<id>` and "account <id>" (also "account No. <id>"), where <id>
-      is 4–12 upper-case letters and digits with at least one digit;
-    - a quote conflicts with `about_scope` when both name periods and the quarter sets are disjoint,
-      or both name accounts and the account sets are disjoint;
-    - a `scheme:` scope never backs a `journal_entry` fact.
-
-    Entry words are not compared: a quote names an entry by its date and amount, which value binding
-    checks.
+  - The word check is `case-fetch-scope-v2`. It is implemented word for word in Rust
+    (`crates/fa-oracles/src/cases/scope.rs`, A3a) and in A9's `verify`. Both are tested on the shared
+    `[[scope]]` rows of `crates/fa-oracles/data/binding_fixtures.toml`, verdicts and messages. v1
+    compared quarter sets loosely over free-text scopes; A3a replaced it.
+    - **Scope forms.** A free-text `about_scope` is refused. The forms:
+      - `period:<label>`: a quarter `YYYYQn`, a calendar fiscal year `FYyyyy`, or a month `YYYY-MM`.
+      - `entry:<fact>`: that fact's first `period_literal` value, else its own `period:` label.
+      - `scheme:<slug>`: the range is read from the slug's tail (A3a's bead gives the grammar). A
+        dated tail that parses as no form, or runs backwards, is refused. A slug with no dated tail
+        bounds no period and is reported `range=none`.
+      - `account:<id>`.
+    - **A quote's words.**
+      - Quarter phrases and labels (`the first quarter of 2001`, `1Q01`, `2001Q1`, `Q1 2001`).
+      - Fiscal years (`fiscal 2001`, `fiscal year 2001`, `FY2001`).
+      - Dates, same-month and two-date day ranges, and months (`July 17, 2001`, `July 17–19, 2000`,
+        `September 2001`).
+      - Account words (`account 1ZR010`, `account No. 1ZR010`, `account:1ZR010`), and any bare id
+        that the case's `account:` scopes name.
+    - **The verdict.**
+      - A named quarter or fiscal year must equal a `period:` or `entry:` scope's label, or lie
+        inside a scheme's range. A fiscal year therefore no longer "covers" its quarters.
+      - A named date, day range or month must lie inside a scheme's range. It is not compared with a
+        `period:` or `entry:` scope, because an entry's quote names the day it was made beside the
+        period it was booked to (WorldCom's July 17, 2001 entry for the second quarter).
+      - A named account must equal an `account:` scope.
+      - A `scheme:` scope never backs a `journal_entry` fact.
 - **Sentence alignment.** A quote is one or more whole sentences of the extraction. A fragment such as
   "entered and approved" fails alignment, because its sentence ("Abide rarely entered and approved
   entries himself …") says something different from the fragment.

@@ -50,6 +50,7 @@ macro_rules! closed_set {
 
 pub mod amount;
 pub mod book;
+pub mod check;
 pub mod date;
 pub mod derive;
 pub mod embedded;
@@ -58,9 +59,12 @@ pub mod expect;
 pub mod fact;
 mod fields;
 pub mod header;
+pub mod normalize;
 pub mod receipt;
 pub mod roles;
 pub mod rows;
+pub mod scope;
+pub mod sentence;
 pub mod source;
 pub mod templates;
 #[cfg(test)]
@@ -117,6 +121,9 @@ pub struct Case {
     pub files: Vec<String>,
     /// `expectations.toml`, when the case has one (A1c).
     pub expectations: Option<Expectations>,
+    /// Each committed rows file a fact names, by path: its exact text, which
+    /// K-BIND hashes and K-DERIVE reads (A3a).
+    pub rows: BTreeMap<String, String>,
 }
 
 /// Loads a case under the committed [`CASE_EXTENSIONS`].
@@ -254,6 +261,11 @@ pub fn load_with(
         set
     });
 
+    let rows: BTreeMap<String, String> = facts
+        .iter()
+        .filter_map(|f| f.sourced()?.rows_file.as_deref())
+        .filter_map(|path| Some((path.to_string(), files.text(path)?.to_string())))
+        .collect();
     match header {
         Some(header) if errs.is_empty() => Ok(Case {
             header,
@@ -265,6 +277,7 @@ pub fn load_with(
             books,
             files: paths.iter().map(|p| (*p).to_string()).collect(),
             expectations,
+            rows,
         }),
         _ => {
             error::sort(&mut errs);

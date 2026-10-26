@@ -235,20 +235,20 @@ class VerifyPlantedFailures(unittest.TestCase):
     def test_quote_not_found_fails(self):
         _, code, out = self.planted(("facts.toml", fact_row(
             "FX-ABSENT", "SRC-FX-001", "page", "p12:l3-10",
-            "The committee approved every entry.", "the 2Q01 transfer")))
+            "The committee approved every entry.", "period:2001Q2")))
         self.assert_fails(code, out, "FX-ABSENT", "no sentence-aligned span")
 
     def test_quote_found_twice_fails(self):
         case, code, out = self.planted(("facts.toml", fact_row(
             "FX-TWICE", "SRC-FX-001", "page", "p12:l10-10", "The committee reviewed the ledger.",
-            "the committee's review", "statement_line")))
+            "period:FY2001", "statement_line")))
         self.assert_fails(code, out, "FX-TWICE", "spans at the anchor")
         self.assertIs(case.receipts()["FX-TWICE"]["quote_found_once"], False)
 
     def test_value_not_in_quote_fails(self):
         case, code, out = self.planted(
             ("facts.toml", fact_row("FX-VALUE", "SRC-FX-001", "page", "p12:l3-5", TRANSFER,
-                                    "the 2Q01 line-cost transfer to CIP")),
+                                    "period:2001Q2")),
             ("facts.toml", value_row("FX-VALUE", 1, "$561 million", "scale", "56100000000",
                                      "USD", 6, 6)))
         self.assert_fails(code, out, "FX-VALUE", "is not in the quote")
@@ -257,7 +257,7 @@ class VerifyPlantedFailures(unittest.TestCase):
     def test_value_under_the_wrong_rule_result_fails(self):
         _, code, out = self.planted(
             ("facts.toml", fact_row("FX-SCALE", "SRC-FX-001", "page", "p12:l3-5", TRANSFER,
-                                    "the 2Q01 line-cost transfer to CIP")),
+                                    "period:2001Q2")),
             ("facts.toml", value_row("FX-SCALE", 1, "$560 million", "scale", "560000000",
                                      "USD", 6, 6)))
         self.assert_fails(code, out, "FX-SCALE", "under scale is 56000000000")
@@ -266,15 +266,26 @@ class VerifyPlantedFailures(unittest.TestCase):
         quote = ("These entries for the first quarter of 2001 were made without any supporting "
                  "documentation or proper business rationale.")
         case, code, out = self.planted(("facts.toml", fact_row(
-            "FX-SCOPE", "SRC-FX-001", "page", "p12:l8-9", quote,
-            "the 1Q02 line-cost transfer to capital")))
-        self.assert_fails(code, out, "FX-SCOPE", "scope:")
+            "FX-SCOPE", "SRC-FX-001", "page", "p12:l8-9", quote, "entry:FX-TRANSFER")))
+        self.assert_fails(code, out, "FX-SCOPE",
+                          "scope: names period 2001Q1, entry FX-TRANSFER is 2001Q2")
         self.assertIs(case.receipts()["FX-SCOPE"]["scope_ok"], False)
+
+    def test_entry_scope_naming_no_fact_fails(self):
+        _, code, out = self.planted(("facts.toml", fact_row(
+            "FX-NO-ENTRY", "SRC-FX-001", "page", "p12:l3-5", TRANSFER, "entry:FX-NONE")))
+        self.assert_fails(code, out, "FX-NO-ENTRY", "scope: entry:FX-NONE names no fact")
+
+    def test_unstructured_scope_fails(self):
+        _, code, out = self.planted(("facts.toml", fact_row(
+            "FX-FREE", "SRC-FX-001", "page", "p12:l3-5", TRANSFER,
+            "the 2Q01 line-cost transfer to CIP")))
+        self.assert_fails(code, out, "FX-FREE", "is not entry:<fact>, period:<label>")
 
     def test_sentence_fragment_fails(self):
         case, code, out = self.planted(("facts.toml", fact_row(
             "FX-FRAGMENT", "SRC-FX-001", "page", "p12:l6-7", "entered and approved",
-            "the director's approvals")))
+            "entry:FX-TRANSFER")))
         self.assert_fails(code, out, "FX-FRAGMENT", "not sentence-aligned")
         r = case.receipts()["FX-FRAGMENT"]
         self.assertIs(r["aligned"], False)
@@ -283,25 +294,25 @@ class VerifyPlantedFailures(unittest.TestCase):
     def test_part_of_a_heading_line_fails(self):
         _, code, out = self.planted(("facts.toml", fact_row(
             "FX-HEAD-PART", "SRC-FX-001", "page", "p12:l1-1", "SUMMARY",
-            "the summary heading", "statement_line")))
+            "period:FY2001", "statement_line")))
         self.assert_fails(code, out, "FX-HEAD-PART", "not sentence-aligned")
 
     def test_fact_citing_a_blocked_source_fails(self):
         _, code, out = self.planted(("facts.toml", fact_row(
             "FX-BLOCKED", "SRC-FX-005", "line", "l1-1",
-            "A candidate source the fixture marks BLOCKED.", "the candidate")))
+            "A candidate source the fixture marks BLOCKED.", "period:FY2001")))
         self.assert_fails(code, out, "FX-BLOCKED", "status is BLOCKED (facts may cite only OK")
 
     def test_quote_outside_its_anchor_fails(self):
         _, code, out = self.planted(("facts.toml", fact_row(
             "FX-ELSEWHERE", "SRC-FX-001", "page", "p12:l8-9", TRANSFER,
-            "the 2Q01 line-cost transfer to CIP")))
+            "period:2001Q2")))
         self.assert_fails(code, out, "FX-ELSEWHERE", "no sentence-aligned span")
 
     def test_xbrl_fact_with_wrong_decimals_fails(self):
         case, code, out = self.planted(
             ("facts.toml", fact_row("FX-XBRL-DEC", "SRC-FX-004", "xbrl", "us-gaap:Assets|c-2022",
-                                    "1616334000", "total assets at 2022-12-31", "xbrl_fact",
+                                    "1616334000", "period:FY2022", "xbrl_fact",
                                     "total_assets@2022-12-31")),
             ("facts.toml", value_row("FX-XBRL-DEC", 1, "1616334000", "scale", "161633400000",
                                      "USD", 0, 6)))
@@ -312,7 +323,7 @@ class VerifyPlantedFailures(unittest.TestCase):
         case, code, out = self.planted(
             ("facts.toml", fact_row("FX-XBRL-MEM", "SRC-FX-004", "xbrl",
                                     "us-gaap:Assets|c-2022-adj", "-12000000",
-                                    "the adjustment at 2022-12-31", "xbrl_fact",
+                                    "period:FY2022", "xbrl_fact",
                                     "total_assets@2022-12-31")),
             ("facts.toml", value_row("FX-XBRL-MEM", 1, "-12000000", "scale", "-1200000000",
                                      "USD", 0, 3)))
@@ -322,7 +333,7 @@ class VerifyPlantedFailures(unittest.TestCase):
     def test_table_cell_fragment_fails(self):
         _, code, out = self.planted(("facts.toml", fact_row(
             "FX-CELL-PART", "SRC-FX-003", "table_cell", "Selected Financial Data|Basis|2000",
-            "previously reported", "the basis legend", "statement_line", "basis@2000-12-31")))
+            "previously reported", "period:FY2000", "statement_line", "basis@2000-12-31")))
         self.assert_fails(code, out, "FX-CELL-PART", "fragment of its cell")
 
 
@@ -374,13 +385,14 @@ class SharedFixtures(unittest.TestCase):
             with self.subTest(row=row["id"]):
                 got = cf.normalize(bytes.fromhex(row["input_hex"]).decode("utf-8"))
                 self.assertEqual(got, bytes.fromhex(row["normalized_hex"]).decode("utf-8"))
+                self.assertEqual(sha(got.encode("utf-8")), row["quote_sha256"])
 
     def test_sentence_alignment_matches_the_shared_fixtures(self):
         for row in read_toml(BINDING)["sentence"]:
             with self.subTest(row=row["id"]):
                 loc = cf.Located(row["text"])
                 quote = cf.normalize(row["quote"])
-                self.assertEqual(loc.count(quote), 1, "the quote occurs once")
+                self.assertEqual(loc.count(quote), row["count"])
                 s = loc.norm.find(quote)
                 aligned = s in loc.starts and s + len(quote) in loc.ends
                 self.assertEqual(aligned, row["aligned"])
@@ -388,8 +400,11 @@ class SharedFixtures(unittest.TestCase):
     def test_scope_matches_the_shared_fixtures(self):
         for row in read_toml(BINDING)["scope"]:
             with self.subTest(row=row["id"]):
-                ok, _ = cf.scope_ok(row["quote"], row["about_scope"], row["granularity"])
-                self.assertEqual(ok, row["scope_ok"])
+                entry = row.get("entry_period") or None
+                ok, why = cf.scope_ok(row["quote"], row["about_scope"], row["granularity"],
+                                      lambda _fact: entry, frozenset(row.get("case_accounts", [])))
+                self.assertEqual(ok, row["scope_ok"], why)
+                self.assertEqual(why, row["reason"])
 
     def test_values_sha256_matches_the_shared_fixture_rows(self):
         for row in read_toml(BINDING)["values"]:
