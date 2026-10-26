@@ -854,6 +854,13 @@ fn a_rewritten_committed_entry_ends_the_capacity_summary() {
     for leg in &mut entry.proposal.legs {
         leg.amount = Amount::new(h.usd, i128::MAX - 2);
     }
+    entry.proposal.unit_totals = EntryPayload::fold_unit_totals(&entry.proposal.legs).unwrap();
+    // A well-formed entry, its digests recomputed: only its amounts lie.
+    let entry = entry
+        .proposal
+        .clone()
+        .seal(entry.approvals.clone(), entry.plan_certificate)
+        .unwrap();
     let mut damage = fgdb::WriteBatch::new(relation::IN_PERIOD);
     damage.set_vertex_property(
         vid,
