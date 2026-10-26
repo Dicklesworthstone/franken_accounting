@@ -20526,6 +20526,28 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("entries_decoded", Json::Int(advanced.entries_decoded as i128)),
                         ("rebuilt", Json::Bool(advanced.rebuilt)),
                         ("wrote", Json::Bool(advanced.wrote)),
+                        (
+                            "checkpoint_through",
+                            advanced.checkpoint.map_or(Json::Null, |checkpoint| {
+                                Json::Int(i128::from(checkpoint.through.0))
+                            }),
+                        ),
+                        (
+                            "checkpoint_digest",
+                            advanced.checkpoint.map_or(Json::Null, |checkpoint| {
+                                s(hex(&checkpoint.body_digest))
+                            }),
+                        ),
+                        (
+                            "checkpoint_cadence",
+                            Json::Int(i128::from(advanced.checkpoint_cadence)),
+                        ),
+                        (
+                            "recovered_from",
+                            advanced
+                                .recovered_from
+                                .map_or(Json::Null, |through| Json::Int(i128::from(through.0))),
+                        ),
                         ("cells", Json::Int(fold.cells.len() as i128)),
                         ("pending_cells", Json::Int(fold.pending.len() as i128)),
                         ("entries", Json::Int(fold.entries as i128)),
@@ -20546,6 +20568,8 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             "already current"
                         } else if advanced.rebuilt {
                             "rebuilt from journal"
+                        } else if advanced.recovered_from.is_some() {
+                            "recovered from checkpoint"
                         } else {
                             "advanced"
                         }

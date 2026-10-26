@@ -3460,7 +3460,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         period: &str,
     ) -> Result<Verification, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::verify_period(db, book, period)?)
+            Ok(fa_registers::verify_period_with_context(
+                db,
+                &cx.query(),
+                book,
+                period,
+            )?)
         })
     }
 
@@ -4621,18 +4626,26 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::trial_balance_served_at(db, book, periods, known_at)?.0)
+            Ok(fa_registers::trial_balance_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                known_at,
+            )?
+            .0)
         })
     }
 
     /// Load the committed delta window back to the oldest maintained
-    /// register cursor (fa-715). A store reopened from a checkpoint holds
-    /// only its frontier, so without this a head read in a new process
+    /// register or complete checkpoint cursor (fa-715, fa-9xf9). A store
+    /// reopened from a checkpoint holds only its frontier, so without this
+    /// a head read in a new process
     /// cannot fold the tail after a cursor and folds the journal literally.
     /// Admitted like [`AsyncBook::prepare_report_history`]: whole-book read
     /// authority, checked before anything is observed. A book without
-    /// maintained cells loads nothing; an explicitly retired interval stays
-    /// retired, and reads over it keep folding literally.
+    /// maintained cells or checkpoints loads nothing; an explicitly retired
+    /// interval stays retired, and reads over it keep folding literally.
     pub async fn prepare_head_reads(
         &mut self,
         cx: &PurposeContexts,
@@ -4651,7 +4664,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let oldest = self.query(cx, |db, book| {
             let mut oldest: Option<CommitSeq> = None;
             for period in fa_journal::genesis::list_periods(db)? {
-                if let Some(cursor) = fa_registers::maintainer::cursor(db, book, &period.code)? {
+                if let Some(cursor) = fa_registers::maintainer::cursor_with_context(
+                    db,
+                    &cx.query(),
+                    book,
+                    &period.code,
+                )? {
                     oldest = Some(oldest.map_or(cursor, |seen: CommitSeq| seen.min(cursor)));
                 }
             }
@@ -4677,7 +4695,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::period_activity_served(db, book, periods)?)
+            Ok(fa_registers::period_activity_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                None,
+            )?)
         })
     }
 
@@ -4690,7 +4714,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::trial_balance_served(db, book, periods)?)
+            Ok(fa_registers::trial_balance_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                None,
+            )?)
         })
     }
 
@@ -4715,7 +4745,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::period_activity_served_at(db, book, periods, known_at)?.0)
+            Ok(fa_registers::period_activity_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                known_at,
+            )?
+            .0)
         })
     }
 }

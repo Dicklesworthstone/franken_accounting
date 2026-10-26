@@ -2452,8 +2452,8 @@ fields = ["period:string", "cells:int", "pending_cells:int", "entries:int", "wat
 [[event]]
 name = "registers_advanced"
 book = true
-doc = "Native posted/pending period registers advanced through the journal prefix. Cells and cursor publish atomically per period; wrote=false changes nothing and recorded_at is null. entries_decoded counts incremental decoding only; rebuilt=true reports a full journal refold instead. Damaged cache is refused. This is maintenance metadata, not a certified RegisterCheckpoint."
-fields = ["period:string", "from:seq", "through:seq", "recorded_at:seq?", "entries_decoded:int", "rebuilt:bool", "wrote:bool", "cells:int", "pending_cells:int", "entries:int", "watermark:seq?", "fold_digest:hex"]
+doc = "Native posted/pending period registers advanced through the journal prefix. Cells, cursor and any due complete immutable checkpoint publish atomically per period; wrote=false changes nothing and recorded_at is null. checkpoint_through and checkpoint_digest identify the snapshot published by this call, or are null when none was published. checkpoint_cadence is the chosen positive commit interval capped by verified commit-retention floors, applied when maintenance changes state; it is not an automatic every-N-book-commits guarantee. recovered_from identifies the archive restored after primary header loss. entries_decoded counts suffix decoding only; rebuilt=true reports a full journal refold, including when an actually retired suffix is unavailable. Damaged cache requires explicit materialization. Checkpoints remain derived caches; independent verification refolds their journal prefixes."
+fields = ["period:string", "from:seq", "through:seq", "recorded_at:seq?", "entries_decoded:int", "rebuilt:bool", "wrote:bool", "checkpoint_through:seq?", "checkpoint_digest:hex?", "checkpoint_cadence:int", "recovered_from:seq?", "cells:int", "pending_cells:int", "entries:int", "watermark:seq?", "fold_digest:hex"]
 
 [[event]]
 name = "entry"

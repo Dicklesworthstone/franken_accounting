@@ -6368,9 +6368,12 @@ fn a_scratch_replay_reproduces_the_book_and_scenario_posts_stay_in_it() {
     assert!(
         scratch_rows.iter().all(|v| {
             !v.labels.contains(&fa_model::symbols::label::REGISTER_STATE)
+                && !v
+                    .labels
+                    .contains(&fa_model::symbols::label::REGISTER_CHECKPOINT)
                 && !v.labels.contains(&fa_model::symbols::label::CERTIFICATE)
         }),
-        "no maintainer state or source-bound certificate reaches the scratch book"
+        "no maintainer state, complete register checkpoint or source-bound certificate reaches the scratch book"
     );
 
     post_rent(&mut scratch, usd, principal, day, b"what-if", 150_000)

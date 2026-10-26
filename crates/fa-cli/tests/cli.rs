@@ -2068,6 +2068,10 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     assert!(int(&initial, "entries_decoded").unwrap() > 0);
     let first_through = int(&initial, "through").unwrap();
     assert!(int(&initial, "recorded_at").unwrap() > first_through);
+    assert_eq!(int(&initial, "checkpoint_through"), Some(first_through));
+    assert_eq!(text(&initial, "checkpoint_digest").len(), 64);
+    assert_eq!(int(&initial, "checkpoint_cadence"), Some(1));
+    assert_eq!(initial.get("recovered_from"), Some(&Json::Null));
     // Follow the emitted next action after filling its documented selector;
     // a hint that omits the required period must fail through the real CLI.
     let envelope = robot_line(&initial_output);
@@ -2104,12 +2108,23 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     assert_eq!(int(&current, "entries"), Some(2));
     assert_eq!(current.get("wrote"), Some(&Json::Bool(true)));
     assert_eq!(current.get("rebuilt"), Some(&Json::Bool(false)));
+    assert_eq!(
+        int(&current, "checkpoint_through"),
+        int(&current, "through")
+    );
+    assert_ne!(
+        text(&current, "checkpoint_digest"),
+        text(&initial, "checkpoint_digest")
+    );
     ok(&["verify", "registers", "--period", period, "--json"]);
     let balance_before = report(&book, &["tb", "--period", period, "--json"]);
     assert_cash_credits(&balance_before, "30.00 USD");
     let no_op = doc(&ok(&advance));
     assert_eq!(no_op.get("wrote"), Some(&Json::Bool(false)));
     assert_eq!(no_op.get("recorded_at"), Some(&Json::Null));
+    assert_eq!(no_op.get("checkpoint_through"), Some(&Json::Null));
+    assert_eq!(no_op.get("checkpoint_digest"), Some(&Json::Null));
+    assert_eq!(no_op.get("recovered_from"), Some(&Json::Null));
     assert_eq!(int(&no_op, "entries_decoded"), Some(0));
     assert_eq!(int(&no_op, "from"), int(&current, "through"));
     assert_eq!(int(&no_op, "through"), int(&current, "through"));

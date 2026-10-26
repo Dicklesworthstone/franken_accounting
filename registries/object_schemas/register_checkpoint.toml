@@ -41,7 +41,10 @@ max_distinct_cells = 100000
 # u64 through || body_digest)). Root properties: BOOK_ID, FA_PAYLOAD (object
 # storage kind 6), FA_DIGEST (body_digest). Root/fragments preserve original birth.
 # Head identity uses head_identity_domain, book and length-prefixed period.
-# Head properties: BOOK_ID, EFFECTIVE_PERIOD, TARGET_REF. Its bounded pointer is
+# Head properties: BOOK_ID, EFFECTIVE_PERIOD, TARGET_REF. When the primary
+# maintenance header is absent, the existing head also carries FA_PAYLOAD and
+# FA_DIGEST for the replacement FARSv2 header; no spent vertex is resurrected.
+# The bounded TARGET_REF pointer is
 # fixed(pointer_format), u64 through, digest[32]. Existing FARSv2 stays unchanged.
 # A checkpoint's predecessor must have a strictly earlier through frontier.
 # Root, fragments, head, mutable register cells and consumed cursor publish in

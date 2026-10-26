@@ -35,6 +35,11 @@ use fgdb_types::{CommitSeq, VId};
 
 const PRINCIPAL: VId = VId(7);
 
+#[path = "differential/checkpoint_recovery.rs"]
+mod checkpoint_recovery;
+#[path = "differential/empty_checkpoint_repair.rs"]
+mod empty_checkpoint_repair;
+
 fn maintain(k: &mut Kernel, period: &str) -> fa_registers::Advance {
     let ctx = k.ctx();
     let result = k
