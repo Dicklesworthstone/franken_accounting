@@ -611,6 +611,7 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
         .unwrap();
     let report = fa_verify::ads::verify_ads(
         &String::from_utf8(read("ADS_Coordinate_Certificate.toml")).unwrap(),
+        &String::from_utf8(read("Chart_of_Accounts.txt")).unwrap(),
         &String::from_utf8(read("GL_Detail.txt")).unwrap(),
         &String::from_utf8(read("Trial_Balance.txt")).unwrap(),
         &read("ADS_Proof.fab"),
@@ -620,6 +621,8 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
     .unwrap();
     assert!(report.verified(), "{:?}", report.failures);
     assert_eq!(report.entries, 2);
+    // The pinned state's chart, judged against its own declarations.
+    assert_eq!(report.chart_rows, Some(2));
 
     // A state named beyond the pin is out of scope, and writes nothing.
     f.out_of_scope(
@@ -675,6 +678,7 @@ fn ads_proofs_disclose_only_what_the_token_reaches() {
             .unwrap();
         fa_verify::ads::verify_ads(
             &String::from_utf8(read("ADS_Coordinate_Certificate.toml")).unwrap(),
+            &String::from_utf8(read("Chart_of_Accounts.txt")).unwrap(),
             &String::from_utf8(read("GL_Detail.txt")).unwrap(),
             &String::from_utf8(read("Trial_Balance.txt")).unwrap(),
             &read("ADS_Proof.fab"),

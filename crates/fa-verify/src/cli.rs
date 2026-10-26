@@ -1514,6 +1514,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 })
             };
             let certificate = text("ADS_Coordinate_Certificate.toml")?;
+            let chart_of_accounts = text("Chart_of_Accounts.txt")?;
             let gl_detail = text("GL_Detail.txt")?;
             let trial_balance = text("Trial_Balance.txt")?;
             let bundle = load(read, &format!("{dir}/ADS_Proof.fab"), false)?;
@@ -1524,6 +1525,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             Ok(
                 match verify_ads(
                     &certificate,
+                    &chart_of_accounts,
                     &gl_detail,
                     &trial_balance,
                     &bundle,
@@ -1890,6 +1892,7 @@ fn ads_checks(report: &AdsReport) -> Vec<Check> {
         ("entries", n(report.entries)),
         ("rows", n(report.rows)),
         ("tb_rows", n(report.tb_rows)),
+        ("chart_rows", report.chart_rows.map_or(Json::Null, n)),
         (
             "units",
             Json::List(

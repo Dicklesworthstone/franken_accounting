@@ -1018,15 +1018,37 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
     let bundle = std::fs::read(dir.join("ADS_Proof.fab")).expect("bundle");
     let receipt = std::fs::read(dir.join("ADS_Proof.receipt")).expect("receipt");
     let tb = read("Trial_Balance.txt");
-    let verify_with = |gl: &str, tb: &str| {
-        fa_verify::ads::verify_ads(&certificate, gl, tb, &bundle, &[key], Some(&receipt))
+    let chart = read("Chart_of_Accounts.txt");
+    let verify_package = |chart: &str, gl: &str, tb: &str| {
+        fa_verify::ads::verify_ads(&certificate, chart, gl, tb, &bundle, &[key], Some(&receipt))
             .expect("a well-formed bundle")
     };
+    let verify_with = |gl: &str, tb: &str| verify_package(&chart, gl, tb);
     let verify = |gl: &str| verify_with(gl, &tb);
     let gl = read("GL_Detail.txt");
     let report = verify(&gl);
     assert!(report.verified(), "{:?}", report.failures);
     assert_eq!((report.entries, report.rows), (2, 4));
+    // The chart is exactly the one the proven entries declare: the code,
+    // name, type and normal balance of each account.
+    assert_eq!(report.chart_rows, Some(2), "{chart}");
+    assert!(chart.contains("1000|Cash|Asset|D\n"), "{chart}");
+    for bad in [
+        chart.replace("|Cash|", "|Petty cash|"),
+        chart.replace("Cash|Asset", "Cash|Expense"),
+        format!("{chart}9999|Suspense|Asset|D\n"),
+    ] {
+        let judged = verify_package(&bad, &gl, &tb);
+        assert!(!judged.verified(), "{bad}");
+        assert!(
+            judged
+                .failures
+                .iter()
+                .any(|f| f.contains("Chart_of_Accounts")),
+            "{:?}",
+            judged.failures
+        );
+    }
     // The trial balance is the refold of the two proven entries, and so is
     // proven too; an altered balance is not.
     assert_eq!(report.tb_rows, 2);
@@ -1244,8 +1266,9 @@ fn an_account_month_ads_extract_is_proven_by_its_scope_index_offline() {
     let receipt = std::fs::read(dir.join("ADS_Proof.receipt")).expect("receipt");
     let gl = read(&dir, "GL_Detail.txt");
     let tb = read(&dir, "Trial_Balance.txt");
+    let chart = read(&dir, "Chart_of_Accounts.txt");
     let verify_as = |certificate: &str, gl: &str, tb: &str| {
-        fa_verify::ads::verify_ads(certificate, gl, tb, &bundle, &[key], Some(&receipt))
+        fa_verify::ads::verify_ads(certificate, &chart, gl, tb, &bundle, &[key], Some(&receipt))
             .expect("a well-formed bundle")
     };
     let verify_with = |gl: &str, tb: &str| verify_as(&certificate, gl, tb);
@@ -1253,6 +1276,18 @@ fn an_account_month_ads_extract_is_proven_by_its_scope_index_offline() {
     assert!(report.verified(), "{:?}", report.failures);
     assert_eq!(report.account_scope.as_deref(), Some("1000"));
     assert_eq!((report.entries, report.rows), (2, 4));
+    // One account's run carries no chart declaration: its chart is not
+    // judged, and the report says so rather than passing it.
+    assert_eq!(report.chart_rows, None);
+    assert_eq!(
+        chart
+            .lines()
+            .skip(1)
+            .map(|row| &row[..4])
+            .collect::<Vec<_>>(),
+        ["1000", "2000", "4000"],
+        "the accounts Cash's entries name: {chart}"
+    );
     assert!(!gl.contains("|6000|"), "{gl}");
     // Cash's own balance only: 12.34 in, 3.00 out.
     assert_eq!(report.tb_rows, 1);

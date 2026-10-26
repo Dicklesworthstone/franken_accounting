@@ -362,6 +362,51 @@ pub(super) fn entry_info<'a>(
     })
 }
 
+/// One account the authenticated chart declarations name at a sequence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DeclaredAccount {
+    pub code: String,
+    pub name: String,
+    pub account_type: u8,
+    /// 0 debit, 1 credit.
+    pub normal_balance: u8,
+}
+
+/// The chart the authenticated entry records declare through `known_at`
+/// (account vid → account), replaying their schema controls in prefix
+/// order exactly as a report's recomputation does. The records are the
+/// bundle's own: each envelope with its authenticated proposal bytes.
+pub(crate) fn declared_chart<'a>(
+    records: impl IntoIterator<Item = (&'a LeafEnvelope, &'a [u8])>,
+    book: &[u8; 16],
+    known_at: u64,
+) -> Result<BTreeMap<u128, DeclaredAccount>, ReportError> {
+    let mut schema = Schema::default();
+    for (envelope, proposal) in records {
+        if envelope.kind != crate::envelope::KIND_ENTRY || envelope.commit_seq > known_at {
+            continue;
+        }
+        if let Some((kind, body)) = entry_info(proposal, envelope)?.schema {
+            schema.apply(kind, body, book, envelope.commit_seq)?;
+        }
+    }
+    Ok(schema
+        .accounts
+        .into_iter()
+        .map(|(vid, a)| {
+            (
+                vid,
+                DeclaredAccount {
+                    code: a.code,
+                    name: a.name,
+                    account_type: a.account_type,
+                    normal_balance: a.normal_balance,
+                },
+            )
+        })
+        .collect())
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Account {
     pub code: String,

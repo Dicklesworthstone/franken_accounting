@@ -14,8 +14,11 @@
 //! ids one to one (the codes' names are not authenticated offline). A
 //! migration chunk in scope is not judged: its visibility is not proven
 //! offline, as for balances. `Trial_Balance.txt` must then be exactly the
-//! refold of those proven rows, so it is proven too; the chart's names and
-//! types are not.
+//! refold of those proven rows, so it is proven too. Against a complete
+//! prefix, `Chart_of_Accounts.txt` must be exactly the chart the proven
+//! entries declare at the sequence (code, name, type, normal balance); one
+//! account's scope-index run carries no chart declaration, so its chart is
+//! not judged and the report says so (`chart_rows: None`).
 
 use std::collections::BTreeMap;
 
@@ -48,6 +51,10 @@ pub struct AdsReport {
     pub rows: u64,
     /// Trial_Balance rows equal to the refold of those rows.
     pub tb_rows: u64,
+    /// Chart_of_Accounts rows equal to the chart the proven entries declare:
+    /// code, name, type and normal balance. `None` when the bundle proves
+    /// one account's run, which carries no chart declaration.
+    pub chart_rows: Option<u64>,
     /// Unit code to the unit id its rows matched, one to one.
     pub units: Vec<(String, u32)>,
     /// Every way the extract differs from the proven selection.
@@ -325,19 +332,22 @@ fn same(extract: &Extracted, proven: &Proven, book: &[u8; 16], units: &Units) ->
 /// only against a verified complete-prefix bundle.
 pub fn verify_ads(
     certificate: &str,
+    chart_of_accounts: &str,
     gl_detail: &str,
     trial_balance: &str,
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
 ) -> Result<AdsReport, BundleError> {
-    let mut records: Vec<(LeafEnvelope, Vec<Leg>)> = Vec::new();
+    let mut records: Vec<(LeafEnvelope, Vec<Leg>, Vec<u8>)> = Vec::new();
     let report = verify_bundle_observing(
         bundle,
         trusted_keys,
         receipt,
         |_, _| {},
-        |envelope, legs| records.push((envelope.clone(), legs.to_vec())),
+        |envelope, legs, proposal| {
+            records.push((envelope.clone(), legs.to_vec(), proposal.to_vec()));
+        },
     )?;
     let mut out = AdsReport {
         bundle: report,
@@ -349,6 +359,7 @@ pub fn verify_ads(
         entries: 0,
         rows: 0,
         tb_rows: 0,
+        chart_rows: None,
         units: Vec::new(),
         failures: Vec::new(),
     };
@@ -420,9 +431,29 @@ pub fn verify_ads(
         });
         return Ok(out);
     }
+    // A complete prefix carries the chart's declarations, so
+    // Chart_of_Accounts is judged against them. One account's run carries
+    // none: its chart is then not judged, and the report says so.
+    let declared = if matches!(manifest.scope, BundleScope::Prefix) {
+        match crate::report::declared_chart(
+            records.iter().map(|(e, _, p)| (e, p.as_slice())),
+            &manifest.book_id,
+            manifest.through_seq,
+        ) {
+            Ok(chart) => Some(chart),
+            Err(why) => {
+                out.failures.push(format!(
+                    "the proven chart declarations do not decode: {why}"
+                ));
+                return Ok(out);
+            }
+        }
+    } else {
+        None
+    };
     // The proven entries the export selects, by recorded sequence.
     let mut proven: BTreeMap<u64, Vec<Proven>> = BTreeMap::new();
-    for (envelope, legs) in records {
+    for (envelope, legs, _) in records {
         let Some(day) = envelope.effective_day else {
             continue;
         };
@@ -503,8 +534,103 @@ pub fn verify_ads(
             Err(why) => out.failures.push(why),
         }
     }
+    if out.failures.is_empty()
+        && let Some(declared) = &declared
+    {
+        match chart_rows(
+            chart_of_accounts,
+            declared,
+            &extract,
+            scoped.as_deref(),
+            escaped,
+        ) {
+            Ok(rows) => out.chart_rows = Some(rows),
+            Err(why) => out.failures.push(why),
+        }
+    }
     out.units = units.by_code.into_iter().collect();
     Ok(out)
+}
+
+/// The registered account type names (`account_types.toml`, tags 1..=8),
+/// as the ADS writer prints them; a test cross-checks the registry.
+const ACCOUNT_TYPE_NAMES: [&str; 8] = [
+    "Asset",
+    "Liability",
+    "Equity",
+    "Revenue",
+    "Expense",
+    "Memo",
+    "Statistical",
+    "OffBalance",
+];
+/// The Chart_of_Accounts header `fa export ads` writes.
+pub const CHART_HEADER: &str = "GL_Account_Number|GL_Account_Name|Account_Type|Normal_Balance";
+
+/// Check `chart` is exactly the declared chart's rows, in code order: the
+/// whole chart, or for one account's extract the accounts its rows and its
+/// scope name. Each row states the declared code, name, registered type
+/// name and normal balance (D or C). Returns the row count.
+fn chart_rows(
+    chart: &str,
+    declared: &BTreeMap<u128, crate::report::DeclaredAccount>,
+    extract: &[Extracted],
+    scope: Option<&str>,
+    escaped: bool,
+) -> Result<u64, String> {
+    let mut expected: Vec<&crate::report::DeclaredAccount> = match scope {
+        None => declared.values().collect(),
+        Some(code) => {
+            let named: std::collections::BTreeSet<&str> = extract
+                .iter()
+                .flat_map(|entry| entry.rows.iter().map(|row| row.account.as_str()))
+                .chain([code])
+                .collect();
+            declared
+                .values()
+                .filter(|account| named.contains(account.code.as_str()))
+                .collect()
+        }
+    };
+    expected.sort_by(|a, b| a.code.cmp(&b.code));
+    let mut lines = chart.split('\n');
+    if lines.next() != Some(CHART_HEADER) {
+        return Err("Chart_of_Accounts does not start with the ADS chart header".into());
+    }
+    let stated: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
+    if stated.len() != expected.len() {
+        return Err(format!(
+            "Chart_of_Accounts has {} rows; the proven chart declares {} for this extract",
+            stated.len(),
+            expected.len()
+        ));
+    }
+    for (line, account) in stated.iter().zip(&expected) {
+        let decoded = fields(line, escaped, false)?;
+        let type_name = usize::from(account.account_type)
+            .checked_sub(1)
+            .and_then(|i| ACCOUNT_TYPE_NAMES.get(i))
+            .copied();
+        let side = if account.normal_balance == 1 {
+            "C"
+        } else {
+            "D"
+        };
+        let agrees = decoded.len() == 4
+            && decoded[0] == account.code
+            && decoded[1] == account.name
+            && type_name.is_some_and(|name| decoded[2] == name)
+            && decoded[3] == side;
+        if !agrees {
+            return Err(format!(
+                "Chart_of_Accounts row `{line}` is not the proven declaration of account {} ({}, {}, {side})",
+                account.code,
+                account.name,
+                type_name.unwrap_or("an unregistered type")
+            ));
+        }
+    }
+    u64::try_from(stated.len()).map_err(|_| "Chart_of_Accounts row count".to_string())
 }
 
 /// Check `trial_balance` is exactly the refold of the extract's rows: one
@@ -700,6 +826,79 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn the_chart_is_exactly_the_declared_accounts() {
+        let declared: BTreeMap<u128, crate::report::DeclaredAccount> = [
+            ("1000", "Cash", 1, 0),
+            ("4000", "Revenue", 4, 1),
+            ("6000", "Rent", 5, 0),
+        ]
+        .into_iter()
+        .zip(0u128..)
+        .map(|((code, name, account_type, normal_balance), vid)| {
+            (
+                vid,
+                crate::report::DeclaredAccount {
+                    code: code.into(),
+                    name: name.into(),
+                    account_type,
+                    normal_balance,
+                },
+            )
+        })
+        .collect();
+        let chart = format!(
+            "{CHART_HEADER}\n1000|Cash|Asset|D\n4000|Revenue|Revenue|C\n6000|Rent|Expense|D\n"
+        );
+        assert_eq!(chart_rows(&chart, &declared, &[], None, false), Ok(3));
+        for bad in [
+            chart.replace("|Cash|", "|Petty cash|"),
+            chart.replace("Revenue|C", "Revenue|D"),
+            chart.replace("Rent|Expense", "Rent|Asset"),
+            chart.replace("6000|Rent|Expense|D\n", ""),
+            format!("{chart}9999|Extra|Asset|D\n"),
+            chart.replace(CHART_HEADER, "GL_Account_Number|GL_Account_Name"),
+        ] {
+            assert!(
+                chart_rows(&bad, &declared, &[], None, false).is_err(),
+                "{bad}"
+            );
+        }
+        // One account's extract: the accounts its rows and its scope name.
+        let gl = format!(
+            "{GL_HEADER}\n\
+             aa|1|2026-03-10|7|1|1000|D|1.00|USD|2|x||\n\
+             aa|2|2026-03-10|7|1|4000|C|1.00|USD|2|x||\n"
+        );
+        let extract = extracted(&gl, false).unwrap();
+        let cash = format!("{CHART_HEADER}\n1000|Cash|Asset|D\n4000|Revenue|Revenue|C\n");
+        assert_eq!(
+            chart_rows(&cash, &declared, &extract, Some("1000"), false),
+            Ok(2)
+        );
+        assert!(
+            chart_rows(&chart, &declared, &extract, Some("1000"), false).is_err(),
+            "an account the extract never names is not its chart"
+        );
+    }
+
+    #[test]
+    fn account_type_names_are_the_registered_ones() {
+        let registry = include_str!("../../../registries/account_types.toml");
+        let mut tags = Vec::new();
+        let mut names = Vec::new();
+        for line in registry.lines() {
+            if let Some(tag) = line.strip_prefix("tag = ") {
+                tags.push(tag.trim().parse::<usize>().unwrap());
+            }
+            if let Some(name) = line.strip_prefix("name = ") {
+                names.push(name.trim().trim_matches('"').to_string());
+            }
+        }
+        assert_eq!(tags, (1..=8).collect::<Vec<_>>());
+        assert_eq!(names, ACCOUNT_TYPE_NAMES);
     }
 
     #[test]
