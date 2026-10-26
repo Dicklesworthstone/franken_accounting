@@ -569,7 +569,11 @@ fn verify_report_with_inputs(
             .ok_or_else(|| failed("pending_resolution", "pending target is missing"))?;
         let original = &envelopes[target_index];
         if original.class != 2
-            || original.commit_seq >= e.commit_seq
+            // An atomic batch can publish its Pending and Resolution together.
+            // Prefix ordinals order identities, not member execution. The
+            // authenticated target digest, derived VId and single resolution
+            // establish the snapshot's lifecycle without trusting that order.
+            || original.commit_seq > e.commit_seq
             || !infos[&target_index].matches_identity(target.0)
             || !resolved.insert(target_index)
         {

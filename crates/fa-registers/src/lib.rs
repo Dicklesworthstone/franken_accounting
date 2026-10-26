@@ -431,7 +431,7 @@ pub(crate) fn resolutions(
 ) -> Result<BTreeMap<VId, CommitSeq>, RegisterError> {
     let by_id: BTreeMap<_, _> = entries.iter().map(|(id, e, seq)| (*id, (e, seq))).collect();
     let mut resolved = BTreeMap::new();
-    for (_, entry, seq) in entries {
+    for (vid, entry, seq) in entries {
         if entry.proposal.class != EntryClass::RESOLUTION {
             continue;
         }
@@ -446,7 +446,11 @@ pub(crate) fn resolutions(
         };
         if original.proposal.class != EntryClass::PENDING
             || original.entry_digest != target.entry_digest
-            || *original_seq >= seq
+            // An earlier batch member and its resolution publish atomically.
+            // Their VId order is not their staging order; both are visible at
+            // this frontier, with the exact target digest and derived identity.
+            || *original_seq > seq
+            || *vid != fa_journal::rows::resolution_vid(target.vid)
             || resolved.insert(target.vid, *seq).is_some()
         {
             return Err(

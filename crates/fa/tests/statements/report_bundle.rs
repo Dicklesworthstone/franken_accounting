@@ -281,6 +281,159 @@ fn historical_native_statements_export_comparatives_zero_leaves_and_pending_excl
     }
 }
 
+#[test]
+fn atomic_pending_resolutions_export_and_replay_as_one_accounting_frontier() {
+    let mut fixture = Fixture::new(0xf1);
+    let usd = fixture.usd;
+    fixture.transfer(
+        day(2026, 1, 10),
+        b"atomic-capital",
+        usd,
+        ("1000", "3000"),
+        1_000,
+    );
+    fixture.book.advance_registers(JANUARY).unwrap();
+    fixture.book.advance_registers(FEBRUARY).unwrap();
+    let before = fixture.book.head().unwrap();
+    let book_id = fixture.book.context().book_id;
+    let mut proposals = Vec::new();
+    for (label, accounts, reserved, posted, resolution_first) in [
+        ("void", ("6000", "1000"), 700, 0, false),
+        ("posts", ("1000", "4000"), 500, 300, true),
+    ] {
+        let mut pending = fixture.proposal(
+            day(2026, 1, 20),
+            b"atomic-hold",
+            EntryClass::PENDING,
+            fixture.legs(usd, accounts, reserved),
+        );
+        pending.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        let vid = (0u64..)
+            .find_map(|nonce| {
+                pending.idempotency_key = format!("atomic-{label}-{nonce}").into_bytes();
+                let vid = fa_model::entry_vid(
+                    book_id,
+                    &PRINCIPAL.0.to_le_bytes(),
+                    &pending.idempotency_key,
+                );
+                ((fa_journal::rows::resolution_vid(vid).0 < vid.0) == resolution_first)
+                    .then_some(vid)
+            })
+            .unwrap();
+        let target = fa_model::EntryRef {
+            vid,
+            entry_digest: pending.clone().seal(Vec::new(), None).unwrap().entry_digest,
+        };
+        let mut resolution = fixture.proposal(
+            day(2026, 2, 5),
+            format!("atomic-{label}-resolution").as_bytes(),
+            EntryClass::RESOLUTION,
+            if posted == 0 {
+                Vec::new()
+            } else {
+                fixture.legs(usd, accounts, posted)
+            },
+        );
+        resolution.pending = Some(Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(if posted == 0 {
+                Disposition::Voids
+            } else {
+                Disposition::Posts {
+                    source_ordinals: vec![0, 1],
+                }
+            }),
+        });
+        if posted == 0 {
+            resolution.control = Some(fa_model::ControlPayload::ReservationRelease);
+        }
+        proposals.extend([pending, resolution]);
+    }
+    let batch = |key: &[u8], members: Vec<EntryPayload>| {
+        fa_intents::PostBatch::new(
+            key.to_vec(),
+            members
+                .into_iter()
+                .map(|p| fa_intents::PostIntent::new(p, Vec::new()).unwrap())
+                .collect(),
+        )
+        .unwrap()
+    };
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let refused = fixture
+        .book
+        .post_batch(
+            batch(
+                b"atomic-forward-reference",
+                vec![proposals[1].clone(), proposals[0].clone()],
+            ),
+            &capability,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, "FA-REF-060");
+    assert_eq!(fixture.book.head().unwrap(), before);
+    let posted = fixture
+        .book
+        .post_batch(batch(b"atomic-resolve", proposals), &capability)
+        .unwrap()
+        .unwrap();
+    assert_eq!(posted.recorded_at.0, before.0 + 1);
+    assert_eq!(posted.entries.len(), 4);
+    let known_at = posted.recorded_at;
+    for period in [JANUARY, FEBRUARY] {
+        let literal = fixture.book.fold_period(period).unwrap();
+        let maintained = fixture.book.advance_registers(period).unwrap();
+        assert!(!maintained.rebuilt);
+        assert_eq!(maintained.fold, literal);
+        assert!(literal.pending.is_empty());
+        assert!(literal.pending_holds.is_empty());
+    }
+    for at in [before, known_at] {
+        let certified = fixture
+            .book
+            .certify_trial_balance(
+                fa::TrialBalanceSelection::Periods(vec![FEBRUARY.into()]),
+                Some(at),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(certified.report.pending_unit_totals[&usd.0], (0, 0));
+        let produced = produce(&mut fixture.book, &certified.certificate);
+        let key = fixture.book.checkpoint_public_key();
+        let checkpoint = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            Some(&checkpoint.checkpoint),
+            Some(&produced.receipt),
+            Some(&certified.certificate.digest),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certified.certificate.output);
+        for name in ["balance-sheet", "income-statement"] {
+            let certified = fixture
+                .book
+                .certify_statement(selection(name, FEBRUARY, JANUARY), Some(at))
+                .unwrap()
+                .unwrap();
+            let fulfilled = if at == before { 0 } else { 300 };
+            if name == "balance-sheet" {
+                assert_eq!(amounts(&certified.statement, "assets", usd), [1_000 + fulfilled, 1_000]);
+            } else {
+                assert_eq!(amounts(&certified.statement, "net_income", usd), [fulfilled, 0]);
+            }
+            let produced = produce(&mut fixture.book, &certified.certificate);
+            verify(&fixture.book, &produced, &certified.certificate);
+        }
+    }
+}
+
 fn close_year(fixture: &mut Fixture) {
     let book_id = fixture.book.context().book_id;
     let close = Capability::embedded(PRINCIPAL, &["read", "post", "close"]).unwrap();

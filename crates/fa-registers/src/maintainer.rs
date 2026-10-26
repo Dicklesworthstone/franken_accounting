@@ -379,7 +379,13 @@ fn apply_tail<V: asupersync::fs::Vfs + Clone>(
                 }
             }
         }
-        batch_entries.sort_by_key(|(vid, _)| vid.0);
+        // A batch can create and resolve a hold at one CommitSeq. Journal
+        // identities do not encode the batch's staging order, so install all
+        // its holds before applying releases. Posted entries still retain VId
+        // order, preserving the literal fold's contribution digest.
+        batch_entries.sort_by_key(|(vid, entry)| {
+            (entry.proposal.class != EntryClass::PENDING, vid.0)
+        });
         for (vid, entry) in batch_entries {
             if matches!(
                 entry.proposal.control,
@@ -541,7 +547,7 @@ fn release<V: asupersync::fs::Vfs + Clone>(
         .ok_or_else(|| KernelError::Corrupt("delta resolution target missing".into()))?;
     if hold.proposal.class != EntryClass::PENDING
         || hold.entry_digest != target.entry_digest
-        || hold_seq >= seq
+        || hold_seq > seq
         || vid != fa_journal::rows::resolution_vid(target.vid)
         || hold.proposal.book_id != book.book_id
         || hold.proposal.branch_id != Id128::TRUNK
