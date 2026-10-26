@@ -104,7 +104,8 @@ commands:
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,...]               independently recompute native or dimension-filtered
-                                                trial-balance rows, or statement lines. V1 statements require --units;
+                                                trial balances, statements, or native open items.
+                                                V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
@@ -214,6 +215,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Json {
     Null,
+    Bool(bool),
     Int(i64),
     Str(String),
     List(Vec<Json>),
@@ -240,6 +242,7 @@ impl Json {
     fn write(&self, out: &mut String) {
         match self {
             Self::Null => out.push_str("null"),
+            Self::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
             Self::Int(n) => out.push_str(&n.to_string()),
             Self::Str(s) => write_str(out, s),
             Self::List(items) => {
@@ -1369,16 +1372,28 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ("effective_through", day(report.effective_through)),
                             (
                                 "report_mode",
-                                s(if report.activity { "activity" } else { "stock" }),
+                                s(if report.open_items.is_some() {
+                                    "open_items"
+                                } else if report.activity {
+                                    "activity"
+                                } else {
+                                    "stock"
+                                }),
                             ),
                             ("records", n(report.checked_records as u64)),
                             (
                                 "rows",
-                                n(report
-                                    .statement
-                                    .as_ref()
-                                    .map_or(report.rows.len(), |statement| statement.lines.len())
-                                    as u64),
+                                n(report.open_items.as_ref().map_or_else(
+                                    || {
+                                        report
+                                            .statement
+                                            .as_ref()
+                                            .map_or(report.rows.len(), |statement| {
+                                                statement.lines.len()
+                                            })
+                                    },
+                                    |open_items| open_items.items.len(),
+                                ) as u64),
                             ),
                             ("unit_universe_source", s(report.unit_universe_source)),
                             (
@@ -1443,6 +1458,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(statement) = &report.statement {
                         checks.extend(statement_checks(statement, report.unit_universe_source));
+                    }
+                    if let Some(open_items) = &report.open_items {
+                        checks.extend(open_items_checks(open_items));
                     }
                     for row in &report.rows {
                         checks.push(Check::pass(
@@ -1524,6 +1542,117 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         }
         _ => unreachable_command(cmd),
     }
+}
+
+fn open_items_checks(report: &crate::report::VerifiedOpenItems) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "open_items_parameters",
+        "authenticated_parameters",
+        vec![
+            (
+                "account_filter",
+                report
+                    .account_filter
+                    .map_or(Json::Null, |id| s(format!("{id:032x}"))),
+            ),
+            ("unit_universe_source", s("authenticated-registry")),
+            (
+                "application_history",
+                s("complete; reversed applications retained"),
+            ),
+            ("amount_basis", s("native units")),
+        ],
+    )];
+    for account in report.accounts.values() {
+        let policy = match account.unit_policy {
+            crate::report::OpenItemUnitPolicy::Single(unit) => format!("single:{unit}"),
+            crate::report::OpenItemUnitPolicy::AnyCurrency => "any_currency".into(),
+            crate::report::OpenItemUnitPolicy::AnyUnit => "any_unit".into(),
+        };
+        checks.push(Check::pass(
+            "open_item_account",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", account.account))),
+                ("code", s(&account.code)),
+                ("name", s(&account.name)),
+                ("account_type", n(u64::from(account.account_type))),
+                (
+                    "normal_balance",
+                    s(if account.normal_balance == 0 {
+                        "debit"
+                    } else {
+                        "credit"
+                    }),
+                ),
+                ("is_leaf", Json::Bool(account.is_leaf)),
+                ("unit_policy", s(policy)),
+                (
+                    "limit_lower",
+                    account
+                        .limit
+                        .as_ref()
+                        .and_then(|limit| limit.lower)
+                        .map_or(Json::Null, |value| s(value.to_string())),
+                ),
+                (
+                    "limit_upper",
+                    account
+                        .limit
+                        .as_ref()
+                        .and_then(|limit| limit.upper)
+                        .map_or(Json::Null, |value| s(value.to_string())),
+                ),
+                (
+                    "limit_scope",
+                    account.limit.as_ref().map_or(Json::Null, |limit| {
+                        s(if limit.period_scoped {
+                            "period"
+                        } else {
+                            "lifetime"
+                        })
+                    }),
+                ),
+                ("created_at", n(account.created_at)),
+            ],
+        ));
+    }
+    for item in &report.items {
+        checks.push(Check::pass(
+            "open_item",
+            "recomputation",
+            vec![
+                ("entry", s(format!("{:032x}", item.entry))),
+                ("ordinal", n(u64::from(item.ordinal))),
+                ("account", s(format!("{:032x}", item.account))),
+                ("unit", n(u64::from(item.unit_id))),
+                ("side", s(if item.debit { "debit" } else { "credit" })),
+                ("effective_date", day(Some(item.effective_date))),
+                ("recorded_at", n(item.recorded_at)),
+                ("original", s(item.original.to_string())),
+                ("applied", s(item.applied.to_string())),
+                ("applied_out", s(item.applied_out.to_string())),
+                ("open", s(item.open.to_string())),
+                ("applications", n(item.applications.len() as u64)),
+            ],
+        ));
+        for application in &item.applications {
+            checks.push(Check::pass(
+                "open_item_application",
+                "recomputation",
+                vec![
+                    ("target_entry", s(format!("{:032x}", item.entry))),
+                    ("target_ordinal", n(u64::from(item.ordinal))),
+                    ("entry", s(format!("{:032x}", application.entry))),
+                    ("ordinal", n(u64::from(application.ordinal))),
+                    ("amount", s(application.amount.to_string())),
+                    ("recorded_at", n(application.recorded_at)),
+                    ("live", Json::Bool(application.live)),
+                ],
+            ));
+        }
+    }
+    checks
 }
 
 fn statement_checks(
@@ -1779,6 +1908,50 @@ pub fn run(args: &[String], read: Read<'_>) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_items_render_exact_amounts_and_undone_application_history() {
+        let report = crate::report::VerifiedOpenItems {
+            account_filter: Some(9),
+            accounts: std::collections::BTreeMap::new(),
+            items: vec![crate::report::VerifiedOpenItem {
+                entry: 1,
+                ordinal: 0,
+                account: 9,
+                unit_id: 1,
+                debit: true,
+                effective_date: 10,
+                recorded_at: 3,
+                original: i128::MAX,
+                applied: 0,
+                applied_out: 0,
+                open: i128::MAX,
+                applications: vec![crate::report::VerifiedApplication {
+                    entry: 2,
+                    ordinal: 1,
+                    amount: 40,
+                    recorded_at: 4,
+                    live: false,
+                }],
+            }],
+        };
+        let checks = open_items_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "open_items_parameters",
+                "open_item",
+                "open_item_application"
+            ]
+        );
+        let mut rendered = String::new();
+        Json::Obj(checks[1].detail.clone()).write(&mut rendered);
+        assert!(rendered.contains(&format!("\"open\":\"{}\"", i128::MAX)));
+        rendered.clear();
+        Json::Obj(checks[2].detail.clone()).write(&mut rendered);
+        assert!(rendered.contains("\"live\":false"));
+        assert!(rendered.contains("\"amount\":\"40\""));
+    }
     use std::collections::BTreeMap;
 
     const ACCUMULATOR: &str = include_str!("../tests/fixtures/accumulator_v1.txt");

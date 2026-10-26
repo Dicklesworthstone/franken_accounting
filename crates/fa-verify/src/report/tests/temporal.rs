@@ -156,6 +156,7 @@ pub(super) fn with_time(bytes: &[u8], time: &VerifiedInstantSelection) -> (Vec<u
     let certificate = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate").unwrap();
     let rest = &bytes[bytes.len() - r.remaining()..];
     let optional_time = certificate.starts_with(STATEMENT_CERTIFICATE_FORMAT)
+        || certificate.starts_with(OPEN_ITEMS_CERTIFICATE_FORMAT)
         || certificate.starts_with(DIMENSION_CERTIFICATE_FORMAT);
     let mut cert = Writer::default();
     let end = certificate.len() - 32 - usize::from(optional_time);

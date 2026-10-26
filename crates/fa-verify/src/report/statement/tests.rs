@@ -126,8 +126,8 @@ fn schema() -> metadata::Schema {
         .i32(59)
         .u8(0);
     let mut schema = metadata::Schema::default();
-    schema.apply(1, &chart.buf, &[0; 16]).unwrap();
-    schema.apply(13, &periods.buf, &[0; 16]).unwrap();
+    schema.apply(1, &chart.buf, &[0; 16], 1).unwrap();
+    schema.apply(13, &periods.buf, &[0; 16], 2).unwrap();
     schema
 }
 #[test]

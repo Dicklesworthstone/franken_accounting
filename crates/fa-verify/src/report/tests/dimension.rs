@@ -195,7 +195,9 @@ fn dimension_bundle(
         Selection::AsOf(day) => {
             cert.u8(1).i32(day);
         }
-        Selection::Statement(_) => panic!("dimension selection must be a trial balance"),
+        Selection::Statement(_) | Selection::OpenItems(_) => {
+            panic!("dimension selection must be a trial balance")
+        }
     }
     cert.bytes(b"cost_center")
         .bytes(value.as_bytes())

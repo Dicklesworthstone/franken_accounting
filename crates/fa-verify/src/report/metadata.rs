@@ -357,7 +357,17 @@ pub(super) struct Account {
     pub code: String,
     pub name: String,
     pub account_type: u8,
+    pub normal_balance: u8,
     pub is_leaf: bool,
+    pub unit_policy: i64,
+    pub limit: Option<BalanceLimit>,
+    pub created_at: u64,
+}
+#[derive(Clone, Debug)]
+pub(super) struct BalanceLimit {
+    pub lower: Option<i128>,
+    pub upper: Option<i128>,
+    pub period_scoped: bool,
 }
 #[derive(Clone, Debug)]
 struct Period {
@@ -370,9 +380,11 @@ pub(super) struct Schema {
     pub accounts: BTreeMap<u128, Account>,
     calendar: Option<String>,
     periods: BTreeMap<String, Period>,
+    native_control_accounts: BTreeSet<u128>,
+    native_subledger_codes: BTreeSet<String>,
 }
 
-fn account(r: &mut Reader<'_>) -> Result<Account, ReportError> {
+fn account(r: &mut Reader<'_>, recorded_at: u64) -> Result<Account, ReportError> {
     let code = text(r, 64, "account.code")?.to_string();
     let name = text(r, MAX_RECORD_BYTES, "account.name")?.to_string();
     let account_type = r.u8("account.type")?;
@@ -397,17 +409,30 @@ fn account(r: &mut Reader<'_>) -> Result<Account, ReportError> {
         code,
         name,
         account_type,
+        normal_balance: normal,
         is_leaf,
+        unit_policy: policy,
+        limit: None,
+        created_at: recorded_at,
     })
 }
-fn optional_limit(r: &mut Reader<'_>) -> Result<(), ReportError> {
-    if r.present("limit.lower")? {
-        r.i128("limit.lower")?;
+fn optional_limit(r: &mut Reader<'_>) -> Result<BalanceLimit, ReportError> {
+    let lower = r
+        .present("limit.lower")?
+        .then(|| r.i128("limit.lower"))
+        .transpose()?;
+    let upper = r
+        .present("limit.upper")?
+        .then(|| r.i128("limit.upper"))
+        .transpose()?;
+    if lower.is_none() && upper.is_none() || matches!((lower, upper), (Some(l), Some(u)) if l > u) {
+        return Err(failed("account_metadata", "invalid account balance limit"));
     }
-    if r.present("limit.upper")? {
-        r.i128("limit.upper")?;
-    }
-    Ok(())
+    Ok(BalanceLimit {
+        lower,
+        upper,
+        period_scoped: false,
+    })
 }
 impl Schema {
     pub(super) fn has_historical_periods(&self) -> bool {
@@ -424,14 +449,20 @@ impl Schema {
         }
         Ok(())
     }
-    pub fn apply(&mut self, kind: u16, bytes: &[u8], book: &[u8; 16]) -> Result<(), ReportError> {
+    pub fn apply(
+        &mut self,
+        kind: u16,
+        bytes: &[u8],
+        book: &[u8; 16],
+        recorded_at: u64,
+    ) -> Result<(), ReportError> {
         let mut r = Reader::new(bytes);
         match kind {
             1 => {
                 let n = r.count(MAX_ROWS, 20, "chart.accounts")?;
                 let mut codes = BTreeSet::new();
                 for _ in 0..n {
-                    let a = account(&mut r)?;
+                    let a = account(&mut r, recorded_at)?;
                     codes.insert(a.code.clone());
                     self.add(a, book)?;
                 }
@@ -443,7 +474,11 @@ impl Schema {
                         if !codes.contains(code) || !limited.insert(code.to_string()) {
                             return Err(failed("account_metadata", "invalid chart limit account"));
                         }
-                        optional_limit(&mut r)?;
+                        let limit = optional_limit(&mut r)?;
+                        self.accounts
+                            .get_mut(&crate::ads::account_vid(book, code))
+                            .ok_or_else(|| failed("account_metadata", "absent limited account"))?
+                            .limit = Some(limit);
                     }
                     if r.remaining() != 0 {
                         let n = r.count(limited.len(), 4, "chart.period_limits")?;
@@ -456,17 +491,25 @@ impl Schema {
                                     "invalid period limit account",
                                 ));
                             }
+                            self.accounts
+                                .get_mut(&crate::ads::account_vid(book, code))
+                                .and_then(|account| account.limit.as_mut())
+                                .ok_or_else(|| failed("account_metadata", "absent period limit"))?
+                                .period_scoped = true;
                         }
                     }
                 }
             }
             2 => {
-                let a = account(&mut r)?;
+                let mut a = account(&mut r, recorded_at)?;
                 if r.present("account.limit")? {
-                    optional_limit(&mut r)?;
-                    if r.u8("limit.scope")? > 1 {
+                    let mut limit = optional_limit(&mut r)?;
+                    let scope = r.u8("limit.scope")?;
+                    if scope > 1 {
                         return Err(failed("account_metadata", "unknown limit scope"));
                     }
+                    limit.period_scoped = scope == 1;
+                    a.limit = Some(limit);
                 }
                 let opened = r.i32("account.opened")?;
                 if r.present("account.closed")? && r.i32("account.closed")? <= opened {
@@ -486,16 +529,29 @@ impl Schema {
                     ));
                 }
                 r.i32("account.lifecycle_date")?;
+                let id = crate::ads::account_vid(book, code);
                 if kind == 4 {
                     let account = self
                         .accounts
-                        .get_mut(&crate::ads::account_vid(book, code))
+                        .get_mut(&id)
                         .ok_or_else(|| failed("account_metadata", "absent promoted account"))?;
-                    if !account.is_leaf {
-                        return Err(failed("account_metadata", "account was already a summary"));
+                    if !account.is_leaf
+                        || account.limit.is_some()
+                        || self.native_control_accounts.contains(&id)
+                    {
+                        return Err(failed(
+                            "account_metadata",
+                            "account is already a summary, limited, or controls a native subledger",
+                        ));
                     }
                     account.is_leaf = false;
                 }
+                // Native property mutation retires the prior vertex version;
+                // both close and promotion advance its created_at sequence.
+                self.accounts
+                    .get_mut(&id)
+                    .ok_or_else(|| failed("account_metadata", "absent lifecycle account"))?
+                    .created_at = recorded_at;
             }
             13 => {
                 if &r.fixed::<21>("period_creation.domain")? != b"fa:period-creation:v1" {
@@ -539,11 +595,51 @@ impl Schema {
                     }
                 }
             }
-            // Existing REA controls, role/closing/FX/subledger declarations,
+            15 => {
+                if &r.fixed::<{ b"fa:native-subledger:v1".len() }>("native_subledger.format")?
+                    != b"fa:native-subledger:v1"
+                {
+                    return Err(failed(
+                        "account_metadata",
+                        "unknown native subledger declaration",
+                    ));
+                }
+                let code = text(&mut r, 64, "native_subledger.code")?;
+                let name = text(&mut r, 256, "native_subledger.name")?;
+                let kind = r.u8("native_subledger.kind")?;
+                let id = r.u128("native_subledger.control_account")?;
+                if code.is_empty()
+                    || name.is_empty()
+                    || !matches!(kind, 1 | 2)
+                    || !self.native_subledger_codes.insert(code.into())
+                    || !self.native_control_accounts.insert(id)
+                {
+                    return Err(failed(
+                        "account_metadata",
+                        "invalid or duplicate native subledger declaration",
+                    ));
+                }
+                let account = self.accounts.get_mut(&id).ok_or_else(|| {
+                    failed(
+                        "account_metadata",
+                        "native subledger control account is absent",
+                    )
+                })?;
+                if !account.is_leaf || account.account_type != kind {
+                    return Err(failed(
+                        "account_metadata",
+                        "native subledger requires a correctly typed posting account",
+                    ));
+                }
+                // The native control_of property changes this account's row
+                // version even though its rendered name/type remain unchanged.
+                account.created_at = recorded_at;
+            }
+            // Existing REA controls, role/closing/FX declarations,
             // dimension values (17), requirements (18) and closes (19), and
             // Canon rule versions (20) change neither the immutable account
             // labels nor period boundaries.
-            5..=12 | 14..=20 => return Ok(()),
+            5..=12 | 14 | 16..=20 => return Ok(()),
             _ => {
                 return Err(failed(
                     "schema_history",
@@ -565,9 +661,9 @@ impl Schema {
             ));
         }
         match selection {
-            Selection::Statement(_) => Err(failed(
+            Selection::Statement(_) | Selection::OpenItems(_) => Err(failed(
                 "report_selector",
-                "statement selection requires its authenticated registry closure",
+                "report selection requires its authenticated registry closure",
             )),
             Selection::AsOf(day) => Ok((
                 self.periods

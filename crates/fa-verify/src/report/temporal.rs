@@ -109,7 +109,7 @@ pub(super) fn verify(
         }
         let info = metadata::entry_info(&payload[..*len], envelope)?;
         if let Some((13, body)) = info.schema {
-            periods.apply(13, body, &envelope.book_id)?;
+            periods.apply(13, body, &envelope.book_id, envelope.commit_seq)?;
         }
         if let Some(tick) = info.time_tick {
             if !identities.insert(info.identity) {
