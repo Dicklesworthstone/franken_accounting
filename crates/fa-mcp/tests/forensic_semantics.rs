@@ -438,7 +438,9 @@ fn solvency_inputs_and_refusals_match_cli() {
         let f = write_file(
             &bs_dir,
             &format!("{key}.json"),
-            &format!(r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":{legs_json}}}"#),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":{legs_json}}}"#
+            ),
         );
         cli_ok_data(&bs_book, &["post", "--intent", &f, "--evidence", &bs_ev]);
     }
