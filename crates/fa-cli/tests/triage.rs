@@ -753,7 +753,7 @@ fn all_closed_book_offers_period_list_and_names_the_next_fiscal_year() {
         if state == "future" {
             f.ok(&["period", "open", code]);
         }
-        f.ok(&["period", "close", code, "--yes"]);
+        f.ok(&["period", "close", code, "--reason", "Scheduled", "--yes"]);
     }
     let triage = f.ok(&["triage"]);
     let actions: Vec<(&str, &str)> = rows(&triage, "next_actions")
@@ -810,7 +810,7 @@ fn no_triage_branch_emits_a_placeholder_token() {
     for period in rows(data(&listed), "periods") {
         let code = text(period, "code");
         run(&["period", "open", code]);
-        run(&["period", "close", code, "--yes"]);
+        run(&["period", "close", code, "--reason", "Scheduled", "--yes"]);
     }
     let triage = run(&["triage"]);
     let next = run(&["next"]);
