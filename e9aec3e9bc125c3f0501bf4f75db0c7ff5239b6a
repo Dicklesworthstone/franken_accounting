@@ -1,0 +1,9 @@
+owner-watch v1
+verdict=UNRUN
+commit=e9aec3e9bc125c3f0501bf4f75db0c7ff5239b6a
+tree=1de49cc2d3152dcc0be997762cf760b93d71befe
+recorded_utc=2026-10-26T00:10:25Z
+worker=unknown
+steps=clippy:UNRUN,test:UNRUN
+test_totals=passed:0,failed:0
+tracker_drift_no_bead=8fd8c0b9 docs(cases): forensic case-study plan, corrections from the beads conversion;
