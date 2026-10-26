@@ -18195,6 +18195,12 @@ fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::R
     assert_eq!(field(&period_ex, "kind"), Some("Normal"));
     let period_doc = doc(&period_ex);
     assert_eq!(arr(&period_doc, "transitions").len(), 1);
+    // No clock journaled a tick in this book, so the open names none.
+    assert_eq!(
+        arr(&period_doc, "transitions")[0].get("recorded_after"),
+        Some(&Json::Null),
+        "{period_ex}"
+    );
     assert!(!arr(&period_doc, "admissible_classes").is_empty());
 
     // 4. Add a document, post an entry, attach a supplement, and reverse the entry.

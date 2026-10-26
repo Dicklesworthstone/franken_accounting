@@ -494,6 +494,51 @@ fn critical_requests_admit_before_observation_and_preserve_preview_frontiers() {
         Some(&Json::Int(0))
     );
 
+    // `fa explain period` shows the tick the daemon journaled before the
+    // soft close (fa-7uhr). The open ran before any tick, so it names none;
+    // the startup observation was never corroborated, so nothing names it.
+    let (explained, _) = runtime
+        .block_on(server.handle(&cx, request(&["explain", "period", "FY2026-P03", "--json"])));
+    assert_eq!(
+        explained.exit, 0,
+        "{}{}",
+        explained.stdout, explained.stderr
+    );
+    let line = fa_cli::json::parse(explained.stdout.lines().last().unwrap()).unwrap();
+    let transitions = line
+        .get("data")
+        .and_then(|data| data.get("transitions"))
+        .and_then(Json::as_arr)
+        .unwrap();
+    assert_eq!(transitions.len(), 2, "{}", explained.stdout);
+    assert_eq!(transitions[0].get("to"), Some(&Json::Str("Open".into())));
+    assert_eq!(transitions[0].get("recorded_after"), Some(&Json::Null));
+    let soft_close = &transitions[1];
+    assert_eq!(soft_close.get("to"), Some(&Json::Str("SoftClosed".into())));
+    let after = soft_close.get("recorded_after").unwrap();
+    let (_, tick_seq) = server.book.read_entry(second.entry).unwrap().unwrap();
+    assert_eq!(
+        after.get("entry"),
+        Some(&Json::Str(format!("{:032x}", second.entry.0)))
+    );
+    assert_eq!(
+        after.get("observed_utc_ns"),
+        Some(&Json::Int(i128::from(second.observed_utc_ns)))
+    );
+    assert_eq!(after.get("monotonic_ok"), Some(&Json::Bool(true)));
+    assert_eq!(
+        after.get("recorded_at"),
+        Some(&Json::Int(i128::from(tick_seq.0)))
+    );
+    let Some(Json::Int(closed_at)) = soft_close.get("recorded_at") else {
+        panic!("{}", explained.stdout);
+    };
+    assert!(i128::from(tick_seq.0) < *closed_at);
+    assert_ne!(
+        after.get("entry"),
+        Some(&Json::Str(format!("{:032x}", first.entry.0)))
+    );
+
     // The public alias and its canonical command both request fresh time.
     for argv in [
         vec!["sweep", "now", "--json"],
