@@ -1113,7 +1113,17 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, Admission::Commit, None, None, &mut None)
+    prepare_post_in(
+        db,
+        ctx,
+        book,
+        req,
+        None,
+        Admission::Commit,
+        None,
+        None,
+        &mut None,
+    )
 }
 
 /// [`prepare_post`] for a dry run (plan §15.3): the same pipeline and
