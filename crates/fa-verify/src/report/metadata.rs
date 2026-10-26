@@ -9,8 +9,14 @@ use crate::envelope::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+// Registered fa:entry:v1 TimeTick and derived-identity bounds, independently
+// encoded here rather than importing the producer's model or decoder.
+const MAX_TICK_UTC_NS: u64 = 9_223_372_036_854_775_807;
+const MAX_TICK_KEY_BYTES: usize = 64;
+
 pub(super) struct EntryInfo<'a> {
     pub schema: Option<(u16, &'a [u8])>,
+    pub time_tick: Option<super::temporal::TimeObservation>,
     pub period: Option<(&'a str, &'a str)>,
     pub resolution: Option<(u128, [u8; 32])>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
@@ -77,9 +83,11 @@ pub(super) fn entry_info<'a>(
     };
     let mut r = proposal_after_legs(proposal)?;
     let mut schema = None;
+    let mut time_tick = None;
     if r.present("entry.control")? {
         let mut probe = Reader::new(&proposal[proposal.len() - r.remaining()..]);
-        if probe.u8("control.tag")? == 1 {
+        let tag = probe.u8("control.tag")?;
+        if tag == 1 {
             if envelope.class != 17 {
                 return Err(failed(
                     "schema_history",
@@ -90,10 +98,36 @@ pub(super) fn entry_info<'a>(
                 probe.u16("control.kind")?,
                 probe.bytes(MAX_RECORD_BYTES, "control.body")?,
             ));
+        } else if tag == 4 {
+            let tick = super::temporal::TimeObservation {
+                recorded_at: envelope.commit_seq,
+                observed_utc_ns: probe.u64("control.observed_utc_ns")?,
+                source: probe.u8("control.source")?,
+                monotonic_ok: probe.present("control.monotonic_ok")?,
+            };
+            if tick.source > 2 || tick.observed_utc_ns > MAX_TICK_UTC_NS {
+                return Err(failed(
+                    "time_history",
+                    "TimeTick source or observed UTC nanoseconds exceeds its registered bound",
+                ));
+            }
+            time_tick = Some(tick);
         }
         skip_control(&mut r)?;
     }
+    if (envelope.class == 19) != time_tick.is_some() {
+        return Err(failed(
+            "time_history",
+            "TimeControl class and TimeTick payload disagree",
+        ));
+    }
+    if time_tick.is_some() && (!envelope.account_vids.is_empty() || !envelope.unit_ids.is_empty()) {
+        return Err(failed("time_history", "TimeTick carries monetary legs"));
+    }
     let n = r.count(MAX_ENVELOPE_LIST, 36, "entry.unit_totals")?;
+    if time_tick.is_some() && n != 0 {
+        return Err(failed("time_history", "TimeTick carries monetary totals"));
+    }
     for _ in 0..n {
         r.fixed::<36>("unit_total")?;
     }
@@ -108,6 +142,12 @@ pub(super) fn entry_info<'a>(
         }
     }
     let key = r.bytes(MAX_RECORD_BYTES, "entry.idempotency_key")?;
+    if time_tick.is_some() && (key.is_empty() || key.len() > MAX_TICK_KEY_BYTES) {
+        return Err(failed(
+            "time_history",
+            "TimeTick identity requires a key of 1..=64 bytes",
+        ));
+    }
     let mut probe = Reader::new(&proposal[proposal.len() - r.remaining()..]);
     let origin = probe.u8("origin.tag")?;
     let migration = if origin == 2 {
@@ -138,6 +178,21 @@ pub(super) fn entry_info<'a>(
             "schema change has an unrelated control origin",
         ));
     }
+    if let Some(tick) = time_tick {
+        if origin != 3 || probe.u16("origin.control_kind")? != 4 {
+            return Err(failed(
+                "time_history",
+                "TimeTick has an unrelated control origin",
+            ));
+        }
+        let expected = crate::blake3::hash_parts(b"", &[&tick.observed_utc_ns.to_le_bytes()]);
+        if probe.fixed::<32>("origin.spec_body_digest")? != expected {
+            return Err(failed(
+                "time_history",
+                "TimeTick origin digest does not bind its observed UTC nanoseconds",
+            ));
+        }
+    }
     skip_origin(&mut r)?;
     let principal = r.u128("entry.principal")?;
     let key_identity = framed_identity(
@@ -165,6 +220,9 @@ pub(super) fn entry_info<'a>(
     }
     let mut resolution = None;
     if r.present("entry.pending")? {
+        if time_tick.is_some() {
+            return Err(failed("time_history", "TimeTick carries a pending block"));
+        }
         if r.present("pending.timeout")? {
             r.u64("pending.timeout")?;
         }
@@ -285,6 +343,7 @@ pub(super) fn entry_info<'a>(
     }
     Ok(EntryInfo {
         schema,
+        time_tick,
         period,
         resolution,
         supersession,
@@ -351,6 +410,10 @@ fn optional_limit(r: &mut Reader<'_>) -> Result<(), ReportError> {
     Ok(())
 }
 impl Schema {
+    pub(super) fn has_historical_periods(&self) -> bool {
+        self.periods.values().any(|period| period.kind == 4)
+    }
+
     fn add(&mut self, account: Account, book: &[u8; 16]) -> Result<(), ReportError> {
         let id = crate::ads::account_vid(book, &account.code);
         if self.accounts.insert(id, account).is_some() {

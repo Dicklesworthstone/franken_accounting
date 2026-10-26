@@ -372,11 +372,22 @@ fn pack(
     docs: &[(String, Vec<u8>)],
     registry_digest: [u8; 32],
 ) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
+    pack_at(records, definition, output, docs, registry_digest, 9)
+}
+
+fn pack_at(
+    records: &[Record],
+    definition: &[u8],
+    output: &[u8],
+    docs: &[(String, Vec<u8>)],
+    registry_digest: [u8; 32],
+    known_at: u64,
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let all: Vec<_> = records.iter().map(|r| r.envelope.encode()).collect();
     let checkpoint = Checkpoint {
         book_id: BOOK,
         branch_id: [0; 16],
-        through_seq: 10,
+        through_seq: records.last().unwrap().envelope.commit_seq,
         leaf_count: all.len() as u64,
         root: root_of(&all.iter().map(|e| leaf_hash(e)).collect::<Vec<_>>()),
     };
@@ -390,7 +401,7 @@ fn pack(
     }
     let old: Vec<_> = records
         .iter()
-        .filter(|r| r.envelope.commit_seq <= 9)
+        .filter(|r| r.envelope.commit_seq <= known_at)
         .map(|r| leaf_hash(&r.envelope.encode()))
         .collect();
     let mut cert = Writer::default();
@@ -400,7 +411,7 @@ fn pack(
         .bytes(b"fa:statement:v1")
         .fixed(&BOOK)
         .fixed(&[0; 16])
-        .u64(9)
+        .u64(known_at)
         .u8(2)
         .bytes(definition)
         .count(1)
@@ -626,10 +637,37 @@ fn unknown_statement_major_and_instant_selection_fail_closed() {
     assert_eq!(
         certificate(&instant)
             .err()
-            .expect("Instant refused")
+            .expect("incomplete Instant evidence refused")
             .predicate,
-        "supported_report"
+        "canonical_encoding"
     );
+}
+
+#[test]
+fn instant_statements_recompute_the_authenticated_tick_selection_and_every_line() {
+    let mut records = history();
+    records.pop(); // The last ordinary posting is outside the original report.
+    records.extend([
+        temporal::tick(10, 100, true),
+        temporal::tick(11, 200, false),
+    ]);
+    let definition = definition(true);
+    let docs = registries();
+    let expected = expected(true);
+    let (bytes, anchor, _) = pack_at(
+        &records,
+        &definition,
+        &output_bytes(&expected, &definition, 10),
+        &docs,
+        closure(&docs),
+        10,
+    );
+    let time = temporal::selection(150, 11, 10, (10, 100, true), Some((11, 200, false)));
+    let (bytes, digest) = temporal::with_time(&bytes, &time);
+    let verified = verify_statement_fixture(&bytes, anchor, digest).unwrap();
+    assert_eq!(verified.statement, Some(expected));
+    assert_eq!(verified.time_selection, Some(time));
+    assert_eq!(verified.known_at, 10);
 }
 
 #[test]

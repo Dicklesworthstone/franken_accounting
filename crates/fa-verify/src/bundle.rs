@@ -74,8 +74,8 @@
 //! hold the documents an entry's own evidence list cites (no events,
 //! rules, approvals, supplemental evidence or attestations); there are no
 //! redaction contracts, register cells, statements, certificates or
-//! findings; the receipt's `time_evidence_oid` is absent until TimeEvidence
-//! is bound (a registered interim). `scope_label` and `bundle_digest` are
+//! findings. A receipt can bind the checkpoint prefix's retained TimeEvidence;
+//! this does not attest the physical UTC time of production. `scope_label` and `bundle_digest` are
 //! derived, not stored, so neither can disagree with what it labels.
 
 use std::collections::BTreeMap;

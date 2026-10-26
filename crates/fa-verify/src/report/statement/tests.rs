@@ -17,6 +17,7 @@ fn envelope(index: u8, class: u16, at: u64) -> LeafEnvelope {
 }
 fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::EntryInfo<'static> {
     metadata::EntryInfo {
+        time_tick: None,
         schema: None,
         period: None,
         resolution: None,
