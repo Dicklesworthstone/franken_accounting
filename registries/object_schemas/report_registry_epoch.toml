@@ -28,12 +28,12 @@ sources = ["account_types", "entry_classes", "units", "foundations"]
 # retries do not write or retrofit an epoch. All records preserve original birth.
 # Epochs are excluded from accounting-object scratch replay like certificates.
 #
-# Interpreter v1: native TB/statement only. Schema majors must all equal 1;
+# Interpreter v1: native TB, statement and OpenItems. Schema majors must all equal 1;
 # account-type and entry-class documents must have identical canonical semantic
 # fields to the interpreter's vocabulary. Every book unit must have the same
 # id, code, version, scale, kind, ISO identity, default rounding and balance law
 # in the archived source; unknown unit fields or tables are unavailable.
-# Offline statement export additionally requires exact
+# Offline statement and OpenItems export additionally require exact
 # unit enumeration. Foundation revisions are authenticated provenance, not
 # dynamic executable selection: Database::replay for every native input and
 # complete report-output recomputation remain mandatory after compatibility.

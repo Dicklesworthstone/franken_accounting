@@ -17,7 +17,7 @@ use fa_journal::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, KernelError, PostRequest, Posted,
     Transitioned,
 };
-use fa_model::{Entry, Erasable, SealKey, SymbolTable};
+use fa_model::{Entry, EntryClass, Erasable, SealKey, SymbolTable};
 use fa_registers::{
     AvailabilityVerification, BalanceExplanation, Fold, OpenItem, OpenItemVerification,
     TrialBalance, Verification,
@@ -3617,7 +3617,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         let registries = if matches!(&certificate.selection, crate::ReportSelection::Statement(_)) {
-            match crate::certificate::offline_statement_registries_at(
+            match crate::certificate::offline_report_registries_at(
                 &self.db,
                 &cx.query(),
                 &self.context,

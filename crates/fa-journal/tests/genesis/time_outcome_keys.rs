@@ -200,7 +200,7 @@ fn a_legacy_tick_retries_without_claim_backfill_but_new_ticks_need_verified_cove
     batch.set_vertex_property(
         book_root(),
         property::LATEST_TICK,
-        CanonicalScalar::bytes(latest).unwrap(),
+        Some(CanonicalScalar::bytes(latest).unwrap()),
     );
     let ctx = h.ctx();
     let recorded_at = h

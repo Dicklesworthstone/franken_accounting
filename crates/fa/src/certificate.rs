@@ -710,24 +710,27 @@ fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
     )
 }
 
-/// Canonical registry inputs carried by the native statement report bundle.
+/// Canonical registry inputs carried by native statement and open-item bundles.
 /// The closure must be the one this certificate actually names. A historical
 /// or custom book unit table cannot be replaced by the executable's defaults:
 /// native statements render zero-valued lines for every book unit as well.
-pub(crate) fn offline_statement_registries(
+pub(crate) fn offline_report_registries(
     certificate: &ReportCertificate,
     units: &fa_money::UnitRegistry,
 ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
-    if !matches!(&certificate.selection, ReportSelection::Statement(_)) {
+    if !matches!(
+        &certificate.selection,
+        ReportSelection::Statement(_) | ReportSelection::OpenItems { .. }
+    ) {
         return Err(invalid(
-            "portable statement registries require a native statement certificate",
+            "portable report registries require a native statement or open-item certificate",
         ));
     }
     let sources = report_registries(&certificate.selection);
     let current = registry_digest(&certificate.selection)?;
     if certificate.registry_digest != current {
         return Err(registry_unavailable(
-            "offline statement certificate",
+            "offline report certificate",
             &certificate.registry_digest,
             &current,
             &sources,
@@ -740,7 +743,7 @@ pub(crate) fn offline_statement_registries(
             fa_notary::code::SCOPE_UNSUPPORTED,
             exit::REFUSAL,
             "the book's exact unit definitions differ from the certificate's portable registry closure",
-            "plan §13.6 / FA-INV-11 (every statement input, including zero-valued unit columns, is bound)",
+            "plan §13.6 / FA-INV-11 (every report input, including unit meanings, is bound)",
             "export this report from a book whose immutable unit table matches its retained registry epoch; do not substitute or renumber historical units",
         ));
     }
@@ -758,20 +761,23 @@ pub(crate) fn offline_statement_registries(
 /// Export the original archived closure after a compatible executable upgrade.
 /// The same interpreter checks used by replay apply before any registry bytes
 /// leave the book; a current registry is never substituted for a saved epoch.
-pub(crate) fn offline_statement_registries_at<V: Vfs + Clone>(
+pub(crate) fn offline_report_registries_at<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
     book: &BookContext,
     certificate: &ReportCertificate,
 ) -> Outcome<Vec<(String, Vec<u8>)>> {
-    if !matches!(&certificate.selection, ReportSelection::Statement(_)) {
+    if !matches!(
+        &certificate.selection,
+        ReportSelection::Statement(_) | ReportSelection::OpenItems { .. }
+    ) {
         return Ok(Err(invalid(
-            "portable statement registries require a native statement certificate",
+            "portable report registries require a native statement or open-item certificate",
         )));
     }
     match registry_epoch::resolve(db, cx, book, certificate)? {
         Ok(Some(epoch)) => Ok(epoch.offline_documents(&book.units)),
-        Ok(None) => Ok(offline_statement_registries(certificate, &book.units)),
+        Ok(None) => Ok(offline_report_registries(certificate, &book.units)),
         Err(refusal) => Ok(Err(refusal)),
     }
 }
@@ -3167,7 +3173,7 @@ mod tests {
         let mut certificate = wire_fixture(selection, None);
         certificate.registry_digest = registry_digest(&certificate.selection).unwrap();
         let units = fa_money::UnitRegistry::embedded().unwrap();
-        let documents = offline_statement_registries(&certificate, &units).unwrap();
+        let documents = offline_report_registries(&certificate, &units).unwrap();
         assert_eq!(
             documents
                 .iter()
@@ -3193,7 +3199,7 @@ mod tests {
             .register(units.iter().next().unwrap().1.clone())
             .unwrap();
         assert_eq!(
-            offline_statement_registries(&certificate, &subset)
+            offline_report_registries(&certificate, &subset)
                 .unwrap_err()
                 .code,
             fa_notary::code::SCOPE_UNSUPPORTED
@@ -3209,14 +3215,14 @@ mod tests {
             changed.register(unit).unwrap();
         }
         assert_eq!(
-            offline_statement_registries(&certificate, &changed)
+            offline_report_registries(&certificate, &changed)
                 .unwrap_err()
                 .code,
             fa_notary::code::SCOPE_UNSUPPORTED
         );
         certificate.registry_digest = legacy_v2_registry_digest(&certificate.selection).unwrap();
         assert_eq!(
-            offline_statement_registries(&certificate, &units)
+            offline_report_registries(&certificate, &units)
                 .unwrap_err()
                 .code,
             code::CERTIFICATE_REGISTRY_UNAVAILABLE
