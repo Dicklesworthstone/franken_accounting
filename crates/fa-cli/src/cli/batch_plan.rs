@@ -239,9 +239,17 @@ pub(super) fn emit(
     }
 
     let rehearsal = out.is_bound_agent();
-    let bound_release = out.is_bound() && plan.prepared_entries().iter().any(releases);
-    let command = if out.is_bound() {
+    let bound_release = !out.can_confirm() && plan.prepared_entries().iter().any(releases);
+    let command = if !out.can_confirm() {
         "fa_post_commit_plan".to_string()
+    } else if out.is_bound() {
+        super::operator_command(
+            args,
+            &format!(
+                "commit --plan {}",
+                super::quoted_argument(args.flag("--plan-out").unwrap_or("-"))
+            ),
+        )
     } else {
         let quote = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
         let mut command = format!(
@@ -276,7 +284,11 @@ pub(super) fn emit(
         Vec::new()
     } else {
         human.push_str(&format!("\nReview every member, then {command}"));
-        vec![(command, "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin".into())]
+        vec![(command, if out.is_bound() && out.can_confirm() {
+            super::OPERATOR_PLAN_GUIDANCE
+        } else {
+            "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin"
+        }.into())]
     };
     human.push_str(
         "\nAny intervening book publication requires a fresh plan before its first commit.",
@@ -324,14 +336,7 @@ pub(super) fn emit(
             ("bytes", s(encoded)),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
             ("scope", s("same-snapshot-batch")),
-            (
-                "authority",
-                s(if out.is_bound() {
-                    "mcp-launch-config"
-                } else {
-                    "embedded-owner"
-                }),
-            ),
+            ("authority", s(out.authority_posture())),
         ],
         &human,
         &actions,
@@ -343,7 +348,7 @@ pub(super) fn commit(ctx: &mut Ctx<'_>, args: &Args, plan: BatchPlan) -> Result<
     // A portable artifact cannot grant the bound host independent dangerous-
     // operation confirmation. Inspect every member before opening the book.
     for entry in plan.prepared_entries() {
-        if ctx.out.is_bound() && releases(entry) {
+        if !ctx.out.can_confirm() && releases(entry) {
             gate(&ctx.out, args, "resolve", None, &Condition::Voids)?;
         }
         if entry.proposal.class == EntryClass::CLOSING {
@@ -378,7 +383,7 @@ pub(super) fn commit(ctx: &mut Ctx<'_>, args: &Args, plan: BatchPlan) -> Result<
                 Ok(replanned) => Ok(super::fresh_batch(replanned)?),
                 Err(replan) => Err(replan),
             };
-            return Err(super::stale_plan(refusal, replanned, ctx.out.is_bound()));
+            return Err(super::stale_plan(refusal, replanned, &ctx.out, args));
         }
         Err(refusal) => return Err(refusal.into()),
     };

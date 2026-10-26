@@ -15,7 +15,7 @@
 
 > <!-- fa-verified-status -->Verified at 90fbbcc4c63e (2026-10-25): PASS
 
-> **Status (2026-10-25): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and `--certify` retains a certificate that `fa replay` reproduces byte for byte; a token with any scope caveat is refused every query before the book opens, and per-row procedure CALLs inside a pipeline are still open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision and Restatement cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries, not yet exercised by a test). Year-end close and closing routes run as `fa close`; the CloseRun task DAG (`fa-4o0`) is still a design target. Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a read-only Human bound session runs (read, produce and verify only, as auditor-style tokens are) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (Agent and writing sessions and the owner are not recorded yet, `fa-7dw`); the ordinary CLI and daemon remain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
+> **Status (2026-10-25): implementation in progress.** The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and `--certify` retains a certificate that `fa replay` reproduces byte for byte; a token with any scope caveat is refused every query before the book opens, and per-row procedure CALLs inside a pipeline are still open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision and Restatement cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries, not yet exercised by a test). Year-end close and closing routes run as `fa close`; the CloseRun task DAG (`fa-4o0`) is still a design target. Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a read-only Human bound session runs (read, produce and verify only, as auditor-style tokens are) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (Agent and writing sessions and the owner are not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open.
 
 > **A note on tense.** The sections above `## TL;DR` document **what runs today** (and [`crates/fa-cli/tests/readme.rs`](./crates/fa-cli/tests/readme.rs) executes `### Try it today` and validates every present-tense `fa` command above `## TL;DR`). Starting at `## TL;DR`, the README describes the **1.0 target state** from [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md), with target-only capabilities annotated with the bead (`fa-…`) that delivers them.
 
@@ -158,15 +158,15 @@ authorize automatic effects. Rejected jumps retain the original comparison
 baseline; repeated bad samples cannot gradually establish trust in a jump.
 Monotonic agreement is corroboration, not proof of UTC accuracy.
 
-In timed mode, admitted period close/lock, year-end close, statement issuance,
-and explicit sweep requests obtain a fresh observation before their final
+In timed mode, admitted checkpoint creation, period close/lock, year-end close,
+statement issuance and explicit sweep requests obtain a fresh observation before their final
 publication. The command uses the corroboration grade actually committed by
 the kernel. An uncorroborated startup or jump is retained as evidence and
 refuses the requested operation with `FA-REF-144`; retry after a corroborated
 observation. Help and read-only previews do not request an extra observation.
 The command observation does not run unrelated sweeps or postpone the periodic
-timer. Existing authority checks still apply: daemon callers cannot add a
-witness grant, and checkpoint creation remains subject to that restriction.
+timer. Checkpoint creation requires an issued Human Witness token on the daemon
+route; command arguments cannot add a witness grant.
 
 After the daemon has recorded an anchor, submit ordinary evidence-backed
 intent files through the same CLI:
@@ -483,6 +483,36 @@ requires any needed approvals to exist already. Planning before approval
 collection, rebasing through portable read witnesses, atomic multi-intent
 batches, draft promotion and authenticated sessions remain unfinished
 under `fa-we7` and its dependent beads.
+
+### Issued Human operator tokens
+
+The ordinary CLI and daemon accept issued Human operator tokens for authorized
+period transitions, approvals and checkpoints. The token must have both a
+Human profile and Human operator kind, with an explicit `approve`, `close`,
+`reopen` or `witness` operation. Every command still requires its own operations;
+holding `witness` never grants `close`, and opening a period with due scheduled
+reversals still needs `post`.
+
+```bash
+fa --token controller.token --book ./books/acme \
+  period close FY2026-P03 --reason Scheduled --yes --json
+fa --token witness.token --book ./books/acme --via fad \
+  checkpoint create --json
+```
+
+`--yes` or a reviewed `--plan` confirms an otherwise admitted operation. Token
+identity, grants, scope, expiry and revocation remain fixed, and independent
+approvals still apply. Plan output shows how to commit with the same token;
+single-entry and batch void plans retain their exact capability binding and
+idempotent retry behavior. File reads and writes remain confined to the caller's
+working directory or the daemon's configured file root.
+
+MCP retains its Agent/Preparer ceiling and rejects these operator tokens. Tokens
+whose operations fit that ceiling retain the restricted confirmation behavior
+on both CLI and daemon routes, including Human Preparer tokens. Timed daemon
+commands check current token admission before requesting a fresh observation and
+again before publication; a token that expires at the intervening tick cannot
+publish the requested checkpoint.
 
 ### MCP launch authority
 
