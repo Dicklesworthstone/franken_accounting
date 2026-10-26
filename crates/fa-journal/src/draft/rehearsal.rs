@@ -490,14 +490,20 @@ fn capture<V: Vfs + Clone>(
                         "Plan record carries a different extension or proof",
                     ));
                 }
-                let (intent, capability, resolved_entry_digest) = decode_intent(bytes)?;
+                let (intent, capability, resolved_entry_digest, resolved_entry) =
+                    decode_intent(bytes)?;
                 let planned = intent.proposal();
                 if proposal.principal_ref != body.owner
                     || capability.holder() != body.owner
                     || planned.principal_ref != body.owner
                     || planned.book_id != book.book_id
                     || planned.branch_id != Id128::TRUNK
-                    || intent_bytes(&intent, &capability, resolved_entry_digest)? != *bytes
+                    || intent_bytes(
+                        &intent,
+                        &capability,
+                        resolved_entry_digest,
+                        resolved_entry.as_ref(),
+                    )? != *bytes
                     || !member_keys.insert(planned.idempotency_key.clone())
                 {
                     return Err(corrupt(
@@ -510,6 +516,7 @@ fn capture<V: Vfs + Clone>(
                     intent,
                     capability,
                     resolved_entry_digest,
+                    resolved_entry,
                 });
                 plans.push(record.reference.clone());
                 Kind::Plan

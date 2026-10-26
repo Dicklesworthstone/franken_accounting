@@ -1032,6 +1032,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::plan_into_draft(&mut self.db, cx, &self.context, name, intent, req).await?)
     }
 
+    /// Rehearse this owner's retained draft members without publishing them.
+    /// Returns their resolved entries, or `None` for an empty open draft.
+    pub async fn preview_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Option<fa_journal::DraftPreview>> {
+        Ok(fa_journal::preview_draft(&mut self.db, cx, &self.context, capability, name).await?)
+    }
+
+    /// Original resolved draft entries for dependent request construction.
+    /// Retained targets remain readable by the owner after discard or drift;
+    /// preparing a new append still revalidates the complete draft.
+    pub async fn draft_entries(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Vec<fa_model::Entry>> {
+        Ok(fa_journal::draft_entries(&mut self.db, cx, &self.context, capability, name).await?)
+    }
+
     /// Replay the draft's intents to trunk in one batch under a promoter
     /// holding `approve` who is not its owner.
     pub async fn promote_draft(

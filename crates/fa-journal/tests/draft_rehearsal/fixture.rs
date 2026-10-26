@@ -264,6 +264,25 @@ impl Harness {
         capability: Capability,
         intent: PostIntent,
     ) -> DraftRecorded {
+        self.historical_plan(name, capability, intent, false)
+    }
+
+    pub(super) fn legacy_digest_plan(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        intent: PostIntent,
+    ) -> DraftRecorded {
+        self.historical_plan(name, capability, intent, true)
+    }
+
+    fn historical_plan(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        intent: PostIntent,
+        retain_digest: bool,
+    ) -> DraftRecorded {
         let ctx = self.ctx();
         plan_post(
             &mut self.db,
@@ -278,9 +297,12 @@ impl Harness {
         assert_eq!(view.state, DraftState::Open);
         assert_eq!(view.body.owner, capability.holder());
         let mut w = fa_model::Writer::new();
-        w.u16(1)
+        w.u16(if retain_digest { 2 } else { 1 })
             .bytes(&intent.canonical_bytes().unwrap())
             .bytes(&capability.canonical_bytes().unwrap());
+        if retain_digest {
+            w.fixed(&member_ref(&intent).entry_digest);
+        }
         let proposal = EntryPayload {
             schema_minor: fa_model::entry::SCHEMA_MINOR,
             book_id: self.book.book_id,
@@ -353,6 +375,49 @@ impl Harness {
         read_draft(&self.db, &self.ctx().query(), &self.book, name)
             .unwrap()
             .unwrap()
+    }
+
+    pub(super) fn preview(
+        &mut self,
+        name: &str,
+        capability: &Capability,
+    ) -> Result<Option<DraftPreview>, Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(preview_draft(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                capability,
+                name,
+            ))
+            .unwrap()
+    }
+
+    pub(super) fn retained_entries(
+        &mut self,
+        name: &str,
+        capability: &Capability,
+    ) -> Result<Vec<fa_model::Entry>, Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(draft_entries(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                capability,
+                name,
+            ))
+            .unwrap()
+    }
+
+    pub(super) fn discard(&mut self, name: &str) {
+        let request = self.request(agent());
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(discard_draft(&mut self.db, &ctx, &self.book, name, request))
+            .unwrap()
+            .unwrap();
     }
 
     pub(super) fn approve(&mut self, proposal: &EntryPayload, principal: VId) -> ApprovalRef {

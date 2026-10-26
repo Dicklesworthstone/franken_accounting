@@ -7,6 +7,8 @@
 //! (`10^k`) and emits an explicit residual line whenever rounded formula operands
 //! differ from the rounded formula total.
 
+mod input;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fa_model::{AccountType, DecodeError, EncodeError, Id128, Oid, Reader, Writer, domain_digest};
@@ -21,6 +23,7 @@ use crate::{
 pub const CUSTOM_STATEMENT_DEF_FORMAT: &[u8] = b"fa:custom-statement-def:v1";
 pub const STATEMENT_LINT_REPORT_FORMAT: &[u8] = b"fa:statement-lint:v1";
 pub const PRESENTED_STATEMENT_FORMAT: &[u8] = b"fa:presented-statement:v1";
+pub const PRESENTATION_ROUNDING_SPEC_FORMAT: &[u8] = b"fa:presentation-rounding-spec:v1";
 
 const MAX_EXPR_DEPTH: usize = 8;
 const MAX_EXPR_ITEMS: usize = 1024;
@@ -420,7 +423,11 @@ impl CustomStatementDefinition {
             .list(&self.check_lines, |w, code| {
                 w.str(code);
             });
-        w.finish()
+        let bytes = w.finish()?;
+        if bytes.len() > crate::MAX_DEFINITION_BYTES {
+            return Err(EncodeError::LengthOverflow);
+        }
+        Ok(bytes)
     }
 
     pub fn digest(&self) -> Result<Oid, EncodeError> {
@@ -431,6 +438,11 @@ impl CustomStatementDefinition {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, StatementError> {
+        if bytes.len() > crate::MAX_DEFINITION_BYTES {
+            return Err(StatementError::Definition(
+                "custom statement definition exceeds the 64 KiB byte bound".into(),
+            ));
+        }
         let mut r = Reader::new(bytes);
         let magic = r.fixed::<{ CUSTOM_STATEMENT_DEF_FORMAT.len() }>("custom_def.magic")?;
         if magic != CUSTOM_STATEMENT_DEF_FORMAT {
@@ -934,11 +946,84 @@ pub fn evaluate_custom(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PresentationRoundingSpec {
     pub rounding_law: RoundingLaw,
-    /// Power-of-ten scale reduction `k` (`0..=18`), dividing exact mantissas by `10^k`.
+    /// Power-of-ten scale reduction `k` (`0..=38`), dividing exact mantissas by `10^k`.
     pub scale_reduction_digits: u8,
     /// Code prefix/suffix used for explicit presentation-rounding residual lines.
     pub residual_line_code: String,
     pub residual_line_label: String,
+}
+
+impl PresentationRoundingSpec {
+    /// Validate the bounded report parameter before evaluating or certifying it.
+    pub fn validate(&self) -> Result<(), StatementError> {
+        if self.scale_reduction_digits > MAX_SCALE_REDUCTION {
+            return Err(input(format!(
+                "scale_reduction_digits {} exceeds maximum {MAX_SCALE_REDUCTION}",
+                self.scale_reduction_digits
+            )));
+        }
+        if self.residual_line_code.is_empty()
+            || self.residual_line_code.len() > 64
+            || !self
+                .residual_line_code
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(input(
+                "presentation rounding requires a residual_line_code that is a bounded ASCII identifier",
+            ));
+        }
+        if self.residual_line_label.trim().is_empty() || self.residual_line_label.len() > 256 {
+            return Err(input(
+                "presentation rounding requires a non-empty residual_line_label of at most 256 bytes",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Encode the parameter without changing the existing presented-output format.
+    /// Call `validate` when accepting a parameter constructed by a caller.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        if self.residual_line_code.len() > 64 || self.residual_line_label.len() > 256 {
+            return Err(EncodeError::LengthOverflow);
+        }
+        let mut w = Writer::new();
+        w.fixed(PRESENTATION_ROUNDING_SPEC_FORMAT)
+            .u16(self.rounding_law.id())
+            .u8(self.scale_reduction_digits)
+            .str(&self.residual_line_code)
+            .str(&self.residual_line_label);
+        w.finish()
+    }
+
+    /// Decode one complete, bounded parameter and enforce the same validation.
+    pub fn decode(bytes: &[u8]) -> Result<Self, StatementError> {
+        const MAX_BYTES: usize = PRESENTATION_ROUNDING_SPEC_FORMAT.len() + 2 + 1 + 4 + 64 + 4 + 256;
+        if bytes.len() > MAX_BYTES {
+            return Err(input(
+                "presentation rounding specification exceeds its byte bound",
+            ));
+        }
+        let mut r = Reader::new(bytes);
+        if r.fixed::<{ PRESENTATION_ROUNDING_SPEC_FORMAT.len() }>("presentation.format")?
+            != PRESENTATION_ROUNDING_SPEC_FORMAT
+        {
+            return Err(r
+                .invalid("presentation rounding specification format")
+                .into());
+        }
+        let rounding_law = RoundingLaw::from_id(r.u16("presentation.rounding_law")?)
+            .ok_or_else(|| r.invalid("registered presentation rounding law"))?;
+        let value = Self {
+            rounding_law,
+            scale_reduction_digits: r.u8("presentation.scale_reduction_digits")?,
+            residual_line_code: r.str(64, "presentation.residual_line_code")?.to_string(),
+            residual_line_label: r.str(256, "presentation.residual_line_label")?.to_string(),
+        };
+        r.finish()?;
+        value.validate()?;
+        Ok(value)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1087,17 +1172,7 @@ pub fn apply_presentation_rounding(
     definition: &CustomStatementDefinition,
     spec: &PresentationRoundingSpec,
 ) -> Result<PresentedStatement, StatementError> {
-    if spec.scale_reduction_digits > MAX_SCALE_REDUCTION {
-        return Err(input(format!(
-            "scale_reduction_digits {} exceeds maximum {MAX_SCALE_REDUCTION}",
-            spec.scale_reduction_digits
-        )));
-    }
-    if spec.residual_line_code.trim().is_empty() || spec.residual_line_label.trim().is_empty() {
-        return Err(input(
-            "presentation rounding requires a non-empty residual_line_code and residual_line_label",
-        ));
-    }
+    spec.validate()?;
     let divisor_u128 = 10u128.pow(u32::from(spec.scale_reduction_digits));
     let divisor =
         i128::try_from(divisor_u128).map_err(|_| input("presentation divisor overflows i128"))?;

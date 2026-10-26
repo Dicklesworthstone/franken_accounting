@@ -311,6 +311,269 @@ fn ordered_draft_resolves_balancing_after_earlier_members_and_promotes_exactly()
 }
 
 #[test]
+fn owner_preview_resolves_capped_pending_targets_for_later_draft_members() {
+    let mut h = Harness::new(Some(BalanceLimit {
+        lower: Some(-1_000),
+        upper: None,
+        scope: LimitScope::Lifetime,
+    }));
+    h.open("pending-target", agent());
+    let empty_at = h.head();
+    let empty_rows = h.db.vertices().unwrap();
+    assert_eq!(h.preview("pending-target", &agent()).unwrap(), None);
+    assert_eq!(h.head(), empty_at);
+    assert_eq!(h.db.vertices().unwrap(), empty_rows);
+
+    let first = PostIntent::new(
+        h.proposal(600, b"first", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    h.plan("pending-target", agent(), first);
+    let mut pending = h.proposal(1_000, b"hold", EntryClass::PENDING, AGENT);
+    pending.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: None,
+        disposition: None,
+    });
+    let pending = PostIntent::new(balancing_proposal(pending, 1).unwrap(), Vec::new()).unwrap();
+    let requested = member_ref(&pending);
+    h.plan("pending-target", agent(), pending);
+    let basis = h.head();
+    let rows = h.db.vertices().unwrap();
+    let edges = h.db.edges_at(basis).unwrap();
+    let view = h.draft("pending-target");
+    let preview = h.preview("pending-target", &agent()).unwrap().unwrap();
+    assert_eq!(preview.snapshot_seq(), basis);
+    assert_eq!(preview.draft(), view.vid);
+    assert_eq!(preview.principal(), AGENT);
+    assert_eq!(preview.members().len(), 2);
+    let held = &preview.members()[1].entry;
+    assert_eq!(held.proposal.legs[1].amount.mantissa, 400);
+    assert_ne!(held.entry_digest, requested.entry_digest);
+    assert_eq!(
+        Some(held.entry_digest),
+        view.intents[1].resolved_entry_digest
+    );
+    assert_eq!(
+        h.preview("pending-target", &agent()).unwrap().unwrap(),
+        preview
+    );
+    assert_eq!(h.head(), basis);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert_eq!(h.db.edges_at(basis).unwrap(), edges);
+    assert_eq!(h.draft("pending-target"), view);
+    assert!(read_entry(&h.db, requested.vid).unwrap().is_none());
+
+    // The resolved digest, not the request's larger amount, authenticates
+    // the reservation. A partial post releases the complete original hold.
+    let target = EntryRef {
+        vid: requested.vid,
+        entry_digest: held.entry_digest,
+    };
+    let mut resolution = h.proposal(250, b"resolve", EntryClass::RESOLUTION, AGENT);
+    resolution.pending = Some(fa_model::Pending {
+        timeout_ns: None,
+        resolution_of: Some(target),
+        disposition: Some(fa_model::Disposition::Posts {
+            source_ordinals: vec![0, 1],
+        }),
+    });
+    h.plan(
+        "pending-target",
+        agent(),
+        PostIntent::new(resolution, Vec::new()).unwrap(),
+    );
+    let reviewed = h.preview("pending-target", &agent()).unwrap().unwrap();
+    assert_eq!(reviewed.members().len(), 3);
+    assert_eq!(reviewed.members()[1].entry, *held);
+    let promoted = h.promote("pending-target");
+    assert_eq!(promoted.entries[1], target);
+    assert_eq!(
+        promoted.entries[2].vid,
+        fa_journal::rows::resolution_vid(target.vid)
+    );
+    for (entry_ref, expected) in promoted.entries.iter().zip(reviewed.members()) {
+        let (entry, recorded_at) = read_entry(&h.db, entry_ref.vid).unwrap().unwrap();
+        assert_eq!(entry, expected.entry);
+        assert_eq!(recorded_at, promoted.recorded_at);
+    }
+    assert_eq!(cash_balance(&h.db, h.cash), -850);
+    assert_eq!(
+        h.preview("pending-target", &agent()).unwrap_err().code,
+        code::DRAFT_NOT_OPEN
+    );
+}
+
+#[test]
+fn owner_preview_requires_current_whole_book_planning_authority_before_draft_lookup() {
+    let mut h = Harness::new(None);
+    h.open("private-preview", agent());
+    let revoked = agent().with_ceiling(h.usd, 500).unwrap();
+    h.revoke(&revoked, b"revoke-preview");
+    let basis = h.head();
+    let rows = h.db.vertices().unwrap();
+    let refused = [
+        Capability::new(AGENT, Profile::Agent, &[Op::Read], OWNER).unwrap(),
+        agent().for_books(&[Id128([99; 16])]).unwrap(),
+        agent().for_accounts(&["1000"]).unwrap(),
+        agent().for_periods(&[&h.period]).unwrap(),
+        agent().known_at_most(basis),
+        agent().expiring_at(basis),
+        revoked,
+    ];
+    for capability in refused {
+        let existing = h.preview("private-preview", &capability).unwrap_err();
+        let absent = h.preview("no-such-draft", &capability).unwrap_err();
+        assert_eq!(existing.exit, exit::SAFETY, "{existing}");
+        assert_ne!(existing.code, code::DRAFT_UNKNOWN);
+        assert_eq!(existing.code, absent.code);
+        assert_eq!(h.head(), basis);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+    let non_owner = Capability::embedded(REVIEWER, &["post", "read"]).unwrap();
+    assert_eq!(
+        h.preview("private-preview", &non_owner).unwrap_err().code,
+        code::CAPABILITY
+    );
+    assert_eq!(h.preview("private-preview", &agent()).unwrap(), None);
+    assert_eq!(
+        h.preview("no-such-draft", &agent()).unwrap_err().code,
+        code::DRAFT_UNKNOWN
+    );
+    assert_eq!(h.head(), basis);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn retained_draft_targets_preserve_dependent_retries_after_discard_or_amount_drift() {
+    for discard in [false, true] {
+        let mut h = Harness::new(Some(BalanceLimit {
+            lower: Some(-1_000),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }));
+        h.open("retry-target", agent());
+        let mut hold = h.proposal(1_500, b"hold", EntryClass::PENDING, AGENT);
+        hold.pending = Some(fa_model::Pending {
+            timeout_ns: None,
+            resolution_of: None,
+            disposition: None,
+        });
+        let hold = PostIntent::new(balancing_proposal(hold, 1).unwrap(), Vec::new()).unwrap();
+        let hold_vid = member_ref(&hold).vid;
+        h.plan("retry-target", agent(), hold);
+        let retained = h.retained_entries("retry-target", &agent()).unwrap();
+        assert_eq!(retained[0].proposal.legs[1].amount.mantissa, 1_000);
+        let target = retained[0].entry_ref(hold_vid);
+        let mut resolution = h.proposal(200, b"resolution", EntryClass::RESOLUTION, AGENT);
+        resolution.pending = Some(fa_model::Pending {
+            timeout_ns: None,
+            resolution_of: Some(target),
+            disposition: Some(fa_model::Disposition::Posts {
+                source_ordinals: vec![0, 1],
+            }),
+        });
+        let resolution = PostIntent::new(resolution, Vec::new()).unwrap();
+        let first = h.plan("retry-target", agent(), resolution.clone());
+        let original_entries = h.retained_entries("retry-target", &agent()).unwrap();
+        if discard {
+            h.discard("retry-target");
+        } else {
+            h.post(h.proposal(100, b"outside", EntryClass::ORIGINAL, OWNER));
+        }
+        let basis = h.head();
+        let rows = h.db.vertices().unwrap();
+        let view = h.draft("retry-target");
+        let targets = h.retained_entries("retry-target", &agent()).unwrap();
+        assert_eq!(targets, original_entries);
+        assert_eq!(targets[0].entry_ref(hold_vid), target);
+        assert!(read_entry(&h.db, hold_vid).unwrap().is_none());
+        assert!(h.preview("retry-target", &agent()).is_err());
+        let retry = h.plan("retry-target", agent(), resolution.clone());
+        assert!(retry.recorded.already_recorded);
+        assert_eq!(retry.recorded.control_entry, first.recorded.control_entry);
+        assert_eq!(retry.recorded.recorded_at, first.recorded.recorded_at);
+        assert!(retry.plan.is_none());
+        let mut changed = resolution.proposal().clone();
+        for leg in &mut changed.legs {
+            leg.amount.mantissa = 201;
+        }
+        changed.unit_totals = EntryPayload::fold_unit_totals(&changed.legs).unwrap();
+        assert_eq!(
+            h.try_plan(
+                "retry-target",
+                agent(),
+                PostIntent::new(changed, Vec::new()).unwrap(),
+            )
+            .unwrap_err()
+            .code,
+            code::IDEMPOTENCY_CONFLICT
+        );
+        let new = PostIntent::new(
+            h.proposal(1, b"new-member", EntryClass::ORIGINAL, AGENT),
+            Vec::new(),
+        )
+        .unwrap();
+        let refused = h.try_plan("retry-target", agent(), new).unwrap_err();
+        assert_eq!(
+            refused.code,
+            if discard {
+                code::DRAFT_NOT_OPEN
+            } else {
+                code::PLAN_INVALIDATED
+            },
+            "{refused}"
+        );
+        assert_eq!(h.head(), basis);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert_eq!(h.draft("retry-target"), view);
+        let stranger = Capability::embedded(REVIEWER, &["post", "read"]).unwrap();
+        assert_eq!(
+            h.retained_entries("retry-target", &stranger)
+                .unwrap_err()
+                .code,
+            code::CAPABILITY
+        );
+    }
+}
+
+#[test]
+fn historical_v2_draft_entries_use_verified_preview_without_changing_original_records() {
+    let mut h = Harness::new(None);
+    h.open("legacy-digest", agent());
+    let intent = PostIntent::new(
+        h.proposal(100, b"legacy-member", EntryClass::ORIGINAL, AGENT),
+        Vec::new(),
+    )
+    .unwrap();
+    let expected = member_ref(&intent);
+    let recorded = h.legacy_digest_plan("legacy-digest", agent(), intent);
+    let before = read_entry(&h.db, recorded.control_entry).unwrap().unwrap();
+    let basis = h.head();
+    let original = h.draft("legacy-digest");
+    assert_eq!(
+        original.intents[0].resolved_entry_digest,
+        Some(expected.entry_digest)
+    );
+    assert!(original.intents[0].resolved_entry.is_none());
+    let entries = h.retained_entries("legacy-digest", &agent()).unwrap();
+    assert_eq!(entries[0].entry_ref(expected.vid), expected);
+    let (target, _) = h.target();
+    let (_, replay) = h
+        .rehearse(target, &reader(), "legacy-digest", basis)
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.view, original);
+    assert_eq!(replay.batch.entries, vec![expected]);
+    assert_eq!(h.head(), basis);
+    assert_eq!(
+        read_entry(&h.db, recorded.control_entry).unwrap().unwrap(),
+        before
+    );
+}
+
+#[test]
 fn ordered_append_refuses_cumulative_overdraft_without_recording_the_candidate() {
     let mut h = Harness::new(Some(BalanceLimit {
         lower: Some(-1_000),
@@ -379,6 +642,8 @@ fn reviewed_draft_amount_drift_refuses_append_review_and_promotion_atomically() 
     let basis = h.head();
     let rows = h.db.vertices().unwrap();
     let view = h.draft("drift");
+    let refusal = h.preview("drift", &agent()).unwrap_err();
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED, "{refusal}");
     let refusal = h.try_promote("drift").unwrap_err();
     assert_eq!(refusal.code, code::PLAN_INVALIDATED, "{refusal}");
 
@@ -562,6 +827,12 @@ fn maintenance_coordinates_cannot_revive_expired_planner_authority() {
     let captured = h.head();
     assert_eq!(captured.0 + 1, expiry.0);
     h.maintenance(3);
+    assert_eq!(h.head(), expiry);
+
+    // Fresh caller authority cannot replace the expired capability retained
+    // with the original member when preparing further dependent intents.
+    let refusal = h.preview("expiry", &agent()).unwrap_err();
+    assert!(refusal.message.contains("expired"), "{refusal}");
     assert_eq!(h.head(), expiry);
 
     let (target, storage) = h.target();

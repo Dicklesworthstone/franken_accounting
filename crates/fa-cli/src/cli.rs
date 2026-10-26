@@ -6495,8 +6495,10 @@ fn plan_document_into_draft(
     let mut book = ctx.books.open_admitted(args, |book| {
         crate::fx::admit_intent_sources(book, &capability, doc)
     })?;
-    let BuiltPost { request: req, .. } =
-        build_post_request(out, &mut book, args, forced, doc, who, capability)?;
+    let earlier = batch_plan::draft_entries(&mut book, &capability, name, doc)?;
+    let BuiltPost { request: req, .. } = build_post_request_with_prior(
+        out, &mut book, args, forced, doc, who, capability, &earlier,
+    )?;
     let req = prepare_balancing_request(args, req)?;
     let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
         usage(
@@ -6504,12 +6506,7 @@ fn plan_document_into_draft(
             "check the entry intent",
         )
     })?;
-    let p = intent.proposal();
-    let entry = fa_model::entry_vid(
-        book.context().book_id,
-        &p.principal_ref.0.to_le_bytes(),
-        &p.idempotency_key,
-    );
+    let entry = batch_plan::proposal_vid(intent.proposal())?;
     let planned = book.plan_into_draft(req.capability, name, intent)??;
     out.at_book(&book)?;
     let (plan_digest, proposal_digest, balancing) = match &planned.plan {
