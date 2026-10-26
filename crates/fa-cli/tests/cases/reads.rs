@@ -4,13 +4,15 @@
 //! After the history, every T and R row's read runs once and is kept on the
 //! run, keyed by `<expectation>/<target fact>` (`-` for a row without
 //! targets). A `balance` read is `fa explain balance <account> --period
-//! <code> --certify --json` (with `--as-originally-reported` or
-//! `--as-currently-stated` for those selectors); its value is the cell's
-//! net (debits minus credits) in the published unit's minor units. A
-//! coordinate is a `[[period]] code`, or a fiscal year label (`FY<yyyy>`),
-//! read at that year's last period. An `assert_balance` step records B with
-//! `fa assert-balance` and posts its twin, B plus one minor unit, which the
-//! kernel must refuse `FA-REF-140` (§5.3, §3.7 item 4).
+//! <code> --certify --json`, through the row's selector: `--as-originally-reported`,
+//! `--as-currently-stated`, or `--as-reported-in C:<oid>` for
+//! `reported_in:<period>[#<n>]`, the certificate the period's n-th `issue`
+//! step issued. Its value is the cell's net (debits minus credits) in the
+//! published unit's minor units. A coordinate is a `[[period]] code`, or a
+//! fiscal year label (`FY<yyyy>`), read at that year's last period. An
+//! `assert_balance` step records B with `fa assert-balance` and posts its
+//! twins, B plus and B minus one minor unit, which the kernel must each
+//! refuse `FA-REF-140` (§5.3, §3.7 item 4).
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::StepDef;
@@ -29,10 +31,11 @@ pub struct Read {
     pub certificate: Option<String>,
 }
 
-/// One `assert_balance` step's two calls.
+/// One `assert_balance` step's calls.
 pub struct Assertion {
     pub asserted: Call,
-    pub twin: Call,
+    /// Its twins, each with its offset from B in minor units (+1, then -1).
+    pub twins: Vec<(i128, Call)>,
     /// The asserted B, as the step rendered it (`<amount> <UNIT>`).
     pub balance: String,
 }
@@ -116,10 +119,11 @@ impl BookRun<'_> {
         let target = field(e, t, "read_target").unwrap_or("-");
         let coordinate = field(e, t, "read_coordinate").unwrap_or("-");
         let selector = field(e, t, "read_selector").filter(|s| !s.is_empty());
+        let (slot, view) = self.view(selector);
         let mut token = format!("{verb},{target},{coordinate}");
-        if let Some(sel) = selector {
+        if let Some(slot) = slot {
             token.push(',');
-            token.push_str(&sel.replace('_', "-"));
+            token.push_str(&slot);
         }
         let fail = |token: String, why: String| Read {
             token,
@@ -151,11 +155,9 @@ impl BookRun<'_> {
             "--period".to_string(),
             code,
         ];
-        match selector {
-            None => {}
-            Some("originally_reported") => args.push("--as-originally-reported".into()),
-            Some("currently_stated") => args.push("--as-currently-stated".into()),
-            Some(other) => return fail(token, format!("needs:A7b ({other} reads)")),
+        match view {
+            Ok(flags) => args.extend(flags),
+            Err(why) => return fail(token, why),
         }
         args.extend(["--certify".to_string(), "--json".to_string()]);
         let reference = key(e, t);
@@ -165,9 +167,12 @@ impl BookRun<'_> {
             return fail(
                 token,
                 format!(
-                    "expected exit=0 from explain balance observed exit={}",
-                    call.exit
-                ),
+                    "expected exit=0 from explain balance observed exit={} {}",
+                    call.exit,
+                    call.refusal_id().unwrap_or_default()
+                )
+                .trim_end()
+                .to_string(),
             );
         }
         let certificate = call.str_field("balance_explained", "certificate");
@@ -195,9 +200,53 @@ impl BookRun<'_> {
         }
     }
 
+    /// A read selector's slot in the `read=` token and its flags (§3.3 step
+    /// 7): `as-originally-reported`, `as-currently-stated`, or
+    /// `as-reported-in=$C_ISSUE_<period>[_<n>]`, the certificate of the
+    /// period's n-th issuance.
+    fn view(&self, selector: Option<&str>) -> (Option<String>, Result<Vec<String>, String>) {
+        let flag = |slot: &str| (Some(slot.to_string()), Ok(vec![format!("--{slot}")]));
+        let Some(selector) = selector else {
+            return (None, Ok(Vec::new()));
+        };
+        match selector {
+            "originally_reported" => return flag("as-originally-reported"),
+            "currently_stated" => return flag("as-currently-stated"),
+            _ => {}
+        }
+        let Some(rest) = selector.strip_prefix("reported_in:") else {
+            return (
+                Some(selector.to_string()),
+                Err(format!(
+                    "expected a read_selector originally_reported, currently_stated or reported_in:<period>[#<n>] observed {selector}"
+                )),
+            );
+        };
+        let (label, n) = rest
+            .split_once('#')
+            .map_or((rest, Some(1)), |(l, n)| (l, n.parse::<usize>().ok()));
+        let placeholder = match n {
+            Some(1) => format!("$C_ISSUE_{label}"),
+            Some(n) => format!("$C_ISSUE_{label}_{n}"),
+            None => format!("$C_ISSUE_{label}_?"),
+        };
+        let issued = self.issuances.get(label);
+        let oid = n
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| issued.and_then(|v| v.get(i)));
+        let flags = match oid {
+            Some(oid) => Ok(vec!["--as-reported-in".to_string(), format!("C:{oid}")]),
+            None => Err(format!(
+                "expected an issuance {placeholder} observed {} issuance(s) of {label}",
+                issued.map_or(0, Vec::len)
+            )),
+        };
+        (Some(format!("as-reported-in={placeholder}")), flags)
+    }
+
     /// An `assert_balance` step: B recorded with `fa assert-balance` on the
-    /// cell its row reads, citing the step's filing stub, and its twin (B
-    /// plus one minor unit) posted to be refused (§5.3).
+    /// cell its row reads, citing the step's filing stub, and its twins (B
+    /// plus and B minus one minor unit) posted to be refused (§5.3).
     pub(crate) fn assert_balance(&mut self, step: &StepDef) {
         let case = self.case;
         let Some(set) = case.expectations.as_ref() else {
@@ -269,15 +318,25 @@ impl BookRun<'_> {
             args.extend(["--as".to_string(), principal.clone(), "--json".to_string()]);
             args
         };
-        let asserted_args = args_for(minor);
-        let twin_args = args_for(minor + 1);
-        let asserted = self.call(step.seq, &step.reference, "assert-balance", asserted_args);
-        let twin = self.call(step.seq, &step.reference, "assert-balance", twin_args);
+        let asserted = self.call(step.seq, &step.reference, "assert-balance", args_for(minor));
+        let mut twins = Vec::new();
+        for offset in [1, -1] {
+            // A twin past the i128 range has no cell to differ from.
+            if let Some(amount) = minor.checked_add(offset) {
+                let call = self.call(
+                    step.seq,
+                    &step.reference,
+                    "assert-balance",
+                    args_for(amount),
+                );
+                twins.push((offset, call));
+            }
+        }
         self.assertions.insert(
             step.reference.clone(),
             Assertion {
                 asserted,
-                twin,
+                twins,
                 balance: format!("{} {unit}", format_amount(minor, scale)),
             },
         );

@@ -19,6 +19,8 @@ mod cells;
 mod evaluate;
 #[path = "cases/invariance.rs"]
 mod invariance;
+#[path = "cases/lifecycle.rs"]
+mod lifecycle;
 #[path = "cases/property.rs"]
 mod property;
 #[path = "cases/reads.rs"]
@@ -1799,8 +1801,9 @@ fn rel_row_agrees_across_book_ids_when_its_rule_holds() {
 }
 
 /// The reads fixture (`crates/fa-oracles/tests/fixtures/reads/`, A7b): a
-/// per_account T with its assert_balance step and an R read-back.
-const READS: [(&str, &str); 5] = [
+/// per_account T with its assert_balance step, a quarter issued twice, and
+/// read-backs through each selector.
+const READS: [(&str, &str); 6] = [
     (
         "case.toml",
         include_str!("../../fa-oracles/tests/fixtures/reads/case.toml"),
@@ -1808,6 +1811,10 @@ const READS: [(&str, &str); 5] = [
     (
         "roles.toml",
         include_str!("../../fa-oracles/tests/fixtures/reads/roles.toml"),
+    ),
+    (
+        "sources.toml",
+        include_str!("../../fa-oracles/tests/fixtures/reads/sources.toml"),
     ),
     (
         "facts.toml",
@@ -1830,11 +1837,12 @@ fn reads_run(edits: &[PlantedEdit]) -> Box<RunOutcome> {
     }
 }
 
-/// A7b (§5.3): the per_account T reads its cell certified, equal to its
-/// published 1,000.00; its assert_balance step recorded B and its twin
-/// (B plus one minor unit) was refused FA-REF-140; the T then waits on its
-/// contributing-entry witness (A11b) and outsider check (A12), never PASS.
-/// The R row reads the locked quarter as originally reported: PASS.
+/// A7b (§5.3, §3.3 step 7): the per_account T reads its cell certified,
+/// equal to its published 1,250.00; its assert_balance step recorded B and
+/// both twins (B plus and minus one minor unit) were refused FA-REF-140; the
+/// T then waits on its contributing-entry witness (A11b) and outsider check
+/// (A12), never PASS. As originally reported reads the quarter's first
+/// issuance (1,000.00, before R-2), and as currently stated the head.
 #[test]
 fn per_account_t_and_its_read_back_are_read_certified() {
     let o = reads_run(&[]);
@@ -1842,33 +1850,171 @@ fn per_account_t_and_its_read_back_are_read_certified() {
     assert_eq!(
         o.row("reads-T-01"),
         Some(
-            "UNRUN reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1000.00 assert=recorded twin=refused:FA-REF-140:exit=3 reason=contributing_entry,outsider"
+            "UNRUN reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 assert=recorded twin=refused:FA-REF-140:exit=3 reason=contributing_entry,outsider"
         ),
         "{text}"
     );
     assert_eq!(
         o.row("reads-R-01"),
         Some(
-            "PASS reads-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,originally-reported value=1000.00"
+            "PASS reads-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00"
         ),
         "{text}"
     );
+    assert_eq!(
+        o.row("reads-R-04"),
+        Some(
+            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
+        ),
+        "{text}"
+    );
+    assert!(o.rows_ok, "{text}");
+}
+
+/// A7b (§3.3 step 4): each `issue` step certifies the balance sheet, plans
+/// its issuance, has another hand approve it and commits it. The quarter's
+/// first issuance binds `$C_ISSUE_2026Q1` and its second
+/// `$C_ISSUE_2026Q1_2`, and `reported_in:2026Q1#<n>` reads as reported in
+/// the n-th: 1,000.00, then 1,250.00.
+#[test]
+fn second_issuance_of_a_period_binds_its_own_placeholder() {
+    let o = reads_run(&[]);
+    let text = o.text();
+    assert_eq!(
+        o.row("reads-R-02"),
+        Some(
+            "PASS reads-R-02 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1 value=1000.00"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        o.row("reads-R-03"),
+        Some(
+            "PASS reads-R-03 R native -/default kind=read_back read=balance,1100,2026Q1,as-reported-in=$C_ISSUE_2026Q1_2 value=1250.00"
+        ),
+        "{text}"
+    );
+    for (seq, placeholder) in [(3, "$C_ISSUE_2026Q1"), (6, "$C_ISSUE_2026Q1_2")] {
+        let steps: Vec<_> = o
+            .steps
+            .iter()
+            .filter(|s| s.step == seq && (s.verb == "statement" || s.verb == "approve"))
+            .collect();
+        let verbs: Vec<String> = steps
+            .iter()
+            .map(|s| {
+                format!(
+                    "{} exit={} cert={}",
+                    // After `--book $BOOK`.
+                    s.argv_redacted.get(2..4).unwrap_or_default().join(" "),
+                    s.exit,
+                    s.certificate_kind.as_deref().unwrap_or("-")
+                )
+            })
+            .collect();
+        assert_eq!(
+            verbs,
+            [
+                "statement balance-sheet exit=0 cert=BalanceSheet",
+                "statement issue exit=0 cert=-",
+                "approve --proposal exit=0 cert=-",
+                "statement issue exit=0 cert=StatementIssuance",
+            ],
+            "{text}"
+        );
+        let planned = steps.get(1).expect("the plan");
+        assert!(
+            planned.argv_redacted.contains(&format!("C:{placeholder}"))
+                && planned.binds.iter().any(|(p, _)| p == placeholder),
+            "{:?}",
+            planned.argv_redacted
+        );
+    }
 }
 
 /// A7b: a published value the book does not reach fails the T row, naming
-/// both values, and the kernel refuses its assertion FA-REF-140.
+/// both values, and the kernel refuses its assertion FA-REF-140; the
+/// read-backs of the same value fail too.
 #[test]
 fn t_whose_read_differs_from_its_published_value_fails() {
     let o = reads_run(&[PlantedEdit {
         file: "facts.toml",
-        old: "fact = \"P-1\"\nordinal = 1\nliteral = \"1,000\"\nrule = \"scale\"\nparam = 0\nvalue = \"100000\"",
+        old: "fact = \"P-1\"\nordinal = 1\nliteral = \"1,250\"\nrule = \"scale\"\nparam = 0\nvalue = \"125000\"",
         new: "fact = \"P-1\"\nordinal = 1\nliteral = \"999\"\nrule = \"scale\"\nparam = 0\nvalue = \"99900\"",
     }]);
     let text = o.text();
     let row = o.row("reads-T-01").expect("the T row");
     assert!(
-        row.starts_with("FAIL reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1000.00 assert=refused ")
-            && row.contains("reason=expected value=999.00 observed value=1000.00; expected assert-balance 999.00 USD recorded observed exit=3 FA-REF-140"),
+        row.starts_with("FAIL reads-T-01 T native -/default kind=per_account read=balance,1100,2026Q1 value=1250.00 assert=refused twin=refused:FA-REF-140:exit=3 ")
+            && row.contains("reason=expected value=999.00 observed value=1250.00; expected assert-balance 999.00 USD recorded observed exit=3 FA-REF-140"),
         "{text}"
     );
+    for id in ["reads-R-03", "reads-R-04"] {
+        assert!(
+            o.row(id)
+                .is_some_and(|r| r.starts_with(&format!("FAIL {id} "))
+                    && r.contains("expected value=999.00 observed value=1250.00")),
+            "{text}"
+        );
+    }
+    assert!(!o.rows_ok, "{text}");
+}
+
+/// A7b (§3.3 step 4, §7.4): a period never issued nor locked has no
+/// original report. With the history's `issue` and `period_lock` steps
+/// removed (and the reported_in reads turned into originally-reported
+/// ones), `explain balance --as-originally-reported` is refused FA-REF-161
+/// and each such read-back fails naming it; as currently stated still reads
+/// the head.
+#[test]
+fn as_originally_reported_without_issuance_or_lock_is_refused_fa_ref_161() {
+    let edits = [
+        PlantedEdit {
+            file: "books/native.toml",
+            old: "[[step]]\nseq = 3\nkind = \"issue\"\nref = \"2026Q1\"\nprincipal = \"case-closer-1\"\napprovers = [\"case-second-reader\"]\ndocument = \"DOC-RD-1\"\n\n",
+            new: "",
+        },
+        PlantedEdit {
+            file: "books/native.toml",
+            old: "[[step]]\nseq = 6\nkind = \"issue\"\nref = \"2026Q1\"\nprincipal = \"case-closer-1\"\napprovers = [\"case-second-reader\"]\ndocument = \"DOC-RD-1\"\n\n",
+            new: "",
+        },
+        PlantedEdit {
+            file: "books/native.toml",
+            old: "[[step]]\nseq = 8\nkind = \"period_lock\"\nref = \"2026Q1\"\nprincipal = \"case-closer-1\"\napprovers = [\"case-second-reader\"]\n\n",
+            new: "",
+        },
+        PlantedEdit {
+            file: "expectations.toml",
+            old: "read_selector = \"reported_in:2026Q1\"\n",
+            new: "read_selector = \"originally_reported\"\n",
+        },
+        PlantedEdit {
+            file: "expectations.toml",
+            old: "read_selector = \"reported_in:2026Q1#2\"\n",
+            new: "read_selector = \"originally_reported\"\n",
+        },
+    ];
+    let o = reads_run(&edits);
+    let text = o.text();
+    for id in ["reads-R-01", "reads-R-02", "reads-R-03"] {
+        assert_eq!(
+            o.row(id),
+            Some(
+                format!(
+                    "FAIL {id} R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported reason=expected exit=0 from explain balance observed exit=3 FA-REF-161"
+                )
+                .as_str()
+            ),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        o.row("reads-R-04"),
+        Some(
+            "PASS reads-R-04 R native -/default kind=read_back read=balance,1100,2026Q1,as-currently-stated value=1250.00"
+        ),
+        "{text}"
+    );
+    assert!(!o.rows_ok, "{text}");
 }

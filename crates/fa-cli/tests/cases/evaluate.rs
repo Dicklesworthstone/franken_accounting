@@ -783,22 +783,46 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
                         a.asserted.refusal_id().unwrap_or_default()
                     ));
                 }
-                let twin = a.twin.refusal_id();
-                row.projection.push((
-                    "twin".into(),
-                    format!(
-                        "refused:{}:exit={}",
-                        twin.as_deref().unwrap_or("none"),
-                        a.twin.exit
-                    ),
-                ));
-                if twin.as_deref() != Some("FA-REF-140") || a.twin.exit != 3 {
+                // One token when both twins agree, else one per offset.
+                let tokens: Vec<String> = a
+                    .twins
+                    .iter()
+                    .map(|(_, c)| {
+                        format!(
+                            "refused:{}:exit={}",
+                            c.refusal_id().as_deref().unwrap_or("none"),
+                            c.exit
+                        )
+                    })
+                    .collect();
+                let token = match tokens.as_slice() {
+                    [plus, minus] if plus == minus => plus.clone(),
+                    _ => a
+                        .twins
+                        .iter()
+                        .zip(&tokens)
+                        .map(|((offset, _), t)| format!("{offset:+}:{t}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                };
+                row.projection.push(("twin".into(), token));
+                if a.twins.len() != 2 {
                     fails.push(format!(
-                        "expected the twin of {} refused FA-REF-140 exit=3 observed {} exit={}",
+                        "expected the twins of {} at plus and minus one minor unit observed {}",
                         a.balance,
-                        twin.as_deref().unwrap_or("admitted"),
-                        a.twin.exit
+                        a.twins.len()
                     ));
+                }
+                for (offset, c) in &a.twins {
+                    let id = c.refusal_id();
+                    if id.as_deref() != Some("FA-REF-140") || c.exit != 3 {
+                        fails.push(format!(
+                            "expected the twin of {} at {offset:+} minor unit refused FA-REF-140 exit=3 observed {} exit={}",
+                            a.balance,
+                            id.as_deref().unwrap_or("admitted"),
+                            c.exit
+                        ));
+                    }
                 }
             }
         }

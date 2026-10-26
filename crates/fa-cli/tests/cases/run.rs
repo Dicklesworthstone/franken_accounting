@@ -182,7 +182,7 @@ pub fn fa(book: &Path, args: &[String]) -> Call {
     }
 }
 
-fn s<T: ToString>(v: T) -> String {
+pub(crate) fn s<T: ToString>(v: T) -> String {
     v.to_string()
 }
 
@@ -305,6 +305,8 @@ pub struct BookRun<'c> {
     pub reads: BTreeMap<String, super::reads::Read>,
     /// Each `assert_balance` step's calls, by its `ref` (A7b).
     pub assertions: BTreeMap<String, super::reads::Assertion>,
+    /// Each period label's issued report certificates, in step order (A7b).
+    pub issuances: BTreeMap<String, Vec<String>>,
 }
 
 impl<'c> BookRun<'c> {
@@ -345,6 +347,7 @@ impl<'c> BookRun<'c> {
                 .min(FILLER_CHUNK),
             reads: BTreeMap::new(),
             assertions: BTreeMap::new(),
+            issuances: BTreeMap::new(),
         }
     }
 
@@ -356,7 +359,7 @@ impl<'c> BookRun<'c> {
 
     /// Records `value` as the run-variant token `placeholder`, bound by
     /// `<event>.<field>` of this step.
-    fn bind(
+    pub(crate) fn bind(
         &mut self,
         value: &str,
         placeholder: String,
@@ -892,6 +895,7 @@ impl<'c> BookRun<'c> {
                 Some(StepKind::EventRecord) => self.event_record(step),
                 Some(StepKind::FillerBatch) => self.filler_batch(step),
                 Some(StepKind::AssertBalance) => self.assert_balance(step),
+                Some(StepKind::Issue) => self.issue(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -1031,7 +1035,7 @@ impl<'c> BookRun<'c> {
     /// One approval of `digest` by `label`: the only place the runner
     /// produces an approval (A7a; fa-z46b will change what a second
     /// principal is). Returns the approval vid.
-    fn approve_as(&mut self, seq: i128, label: &str, digest: &str) -> Option<String> {
+    pub(crate) fn approve_as(&mut self, seq: i128, label: &str, digest: &str) -> Option<String> {
         let call = self.call(
             seq,
             label,
