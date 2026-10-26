@@ -21,6 +21,7 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("document", Some("add")),
     ("document", Some("attest")),
     ("post", None),
+    ("entry", Some("show")),
     ("commit", None),
     ("allocate", None),
     ("batch", None),

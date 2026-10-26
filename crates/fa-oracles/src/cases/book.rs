@@ -1691,6 +1691,31 @@ impl<'a> Check<'a, '_> {
     }
 
     fn periods(&mut self) {
+        // `fa book create --opening-date` admits only the first day of a
+        // Normal period of the book's calendar (`BookSpec::validate`,
+        // crates/fa-journal/src/genesis.rs).
+        let opening = self.book.book.opening_date.as_str();
+        if is_date(opening)
+            && !self
+                .book
+                .periods
+                .iter()
+                .any(|p| p.kind == "Normal" && p.start == opening)
+        {
+            let line = self
+                .text
+                .lines()
+                .position(|l| l.trim_start().starts_with("opening_date"))
+                .map(|n| n + 1);
+            self.push(
+                line,
+                None,
+                LoadErrorKind::UnknownPeriod,
+                format!(
+                    "`opening_date = \"{opening}\"` is not the first day of a Normal [[period]]; `fa book create --opening-date` admits no other day"
+                ),
+            );
+        }
         let mut seen = BTreeSet::new();
         for p in &self.book.periods {
             if !seen.insert(p.code.as_str()) {

@@ -4,7 +4,7 @@
 
 [book]
 variant = "native"
-opening_date = "2000-12-31"
+opening_date = "2001-01-01"
 calendar = "custom"
 base_unit = "USD"
 posture = "embedded-owner"

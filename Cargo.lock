@@ -866,6 +866,7 @@ dependencies = [
  "fa-model",
  "fa-money",
  "fa-notary",
+ "fa-oracles",
  "fa-policy",
  "fa-registers",
  "fa-registry",

@@ -226,6 +226,42 @@ fn step_with_unknown_period_is_refused() {
     assert_eq!(e.line, Some(line_of(&book, "ref = \"2001Q9\"")));
 }
 
+/// `fa book create --opening-date` admits only the first day of a Normal
+/// period; the eve of the first period, the convention every fixture used
+/// before the runner built a book, is refused at load.
+#[test]
+fn opening_date_off_a_normal_period_start_is_refused() {
+    let book = native(
+        "opening_date = \"2001-01-01\"",
+        "opening_date = \"2000-12-31\"",
+    );
+    let errs = refused_native(&book);
+    let e = native_err(&errs, LoadErrorKind::UnknownPeriod, "2000-12-31");
+    assert_eq!(
+        e.line,
+        Some(line_of(&book, "opening_date = \"2000-12-31\""))
+    );
+    assert!(
+        e.detail
+            .contains("not the first day of a Normal [[period]]"),
+        "{e}"
+    );
+    // A Historical period's first day is no opening day either.
+    let historical = once(
+        MIGRATION_MIN,
+        "opening_date = \"2003-01-01\"",
+        "opening_date = \"2001-07-01\"",
+    );
+    let errs = load(&case_with(&[("books/migration.toml", &historical)]))
+        .expect_err("an opening day on a Historical period is refused");
+    find(
+        &errs,
+        "books/migration.toml",
+        LoadErrorKind::UnknownPeriod,
+        "`opening_date = \"2001-07-01\"`",
+    );
+}
+
 #[test]
 fn duplicate_period_label_is_refused() {
     let book = native("code = \"2001Q3\"", "code = \"2001Q2\"");
@@ -841,7 +877,7 @@ fn ledger_map_transfer_account_with_the_cash_role_is_refused() {
 }
 
 fn statement_book() -> String {
-    "[book]\nvariant = \"statement-bridge\"\nopening_date = \"1999-12-31\"\ncalendar = \"custom\"\nbase_unit = \"USD\"\nposture = \"embedded-owner\"\n\n\
+    "[book]\nvariant = \"statement-bridge\"\nopening_date = \"2000-10-01\"\ncalendar = \"custom\"\nbase_unit = \"USD\"\nposture = \"embedded-owner\"\n\n\
      [[period]]\ncode = \"2000Q4\"\nstart = \"2000-10-01\"\nend = \"2000-12-31\"\nfiscal_year = 2000\nkind = \"Normal\"\n\n\
      [[principal]]\nlabel = \"case-closer-1\"\nprofile = \"Human\"\ngrants = [\"read\", \"post\", \"close\"]\n\n\
      [[principal]]\nlabel = \"case-approver-1\"\nprofile = \"Human\"\ngrants = [\"read\", \"approve\"]\n\n\
@@ -859,7 +895,7 @@ fn statement_book() -> String {
 
 fn ledger_book() -> String {
     format!(
-        "[book]\nvariant = \"ledger\"\nopening_date = \"1999-12-31\"\ncalendar = \"custom\"\nbase_unit = \"USD\"\nposture = \"embedded-owner\"\n\n\
+        "[book]\nvariant = \"ledger\"\nopening_date = \"2001-07-01\"\ncalendar = \"custom\"\nbase_unit = \"USD\"\nposture = \"embedded-owner\"\n\n\
          [[period]]\ncode = \"2001Q3\"\nstart = \"2001-07-01\"\nend = \"2001-09-30\"\nfiscal_year = 2001\nkind = \"Normal\"\n\n\
          [[principal]]\nlabel = \"case-closer-1\"\nprofile = \"Human\"\ngrants = [\"read\", \"post\"]\n\n\
          [[account]]\ncode = \"1000\"\nname_fact = \"F2\"\ntype = \"Asset\"\nrole = \"cash\"\nopened = \"1999-12-31\"\n\n\

@@ -3,7 +3,7 @@
 
 [book]
 variant = "migration"
-opening_date = "2002-12-31"
+opening_date = "2003-01-01"
 calendar = "custom"
 base_unit = "USD"
 posture = "embedded-owner"
@@ -14,6 +14,13 @@ start = "2001-07-01"
 end = "2001-09-30"
 fiscal_year = 2001
 kind = "Historical"
+
+[[period]]
+code = "2003Q1"
+start = "2003-01-01"
+end = "2003-03-31"
+fiscal_year = 2003
+kind = "Normal"
 
 [[principal]]
 label = "case-closer-1"

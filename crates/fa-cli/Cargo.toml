@@ -39,4 +39,7 @@ fgdb-types = { workspace = true }
 asupersync = { workspace = true }
 fgdb = { workspace = true }
 fa-notary = { path = "../fa-notary", version = "=0.0.1" }
+# The forensic case runner (tests/cases.rs, bead fa-yugf.15) loads and
+# evaluates the committed cases with the harness model.
+fa-oracles = { path = "../fa-oracles", version = "=0.0.1" }
 fa-verify = { path = "../fa-verify", version = "=0.0.1" }

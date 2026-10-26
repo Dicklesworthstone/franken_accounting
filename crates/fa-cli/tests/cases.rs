@@ -1,0 +1,388 @@
+//! The forensic case runner (docs/FORENSIC_CASE_STUDIES_PLAN.md §3.3; bead
+//! fa-yugf.15, A7a), driving the real `fa` binary over every committed case
+//! under `crates/fa-oracles/cases/`. Each case's `#[test]` is named after
+//! its directory; each case-file negative is a `<dir>_neg_<slug>` test over
+//! a planted temp copy, so no committed case file is edited.
+//!
+//! The runner prints one line per evaluated (expectation, variant, target,
+//! cell) row, `REPRODUCE fa …` above a failing step's row, and `LOG <path>`
+//! last; the JSONL log carries one step record per `fa` call and one verdict
+//! record per row. No row reads PASS until its witnesses exist (A11a–c,
+//! A4r); what the self-test proves today is that every implemented stage
+//! ran and every evaluated component agreed.
+
+#[path = "cases/evaluate.rs"]
+mod evaluate;
+#[path = "cases/run.rs"]
+mod run;
+
+use fa_oracles::cases::harness_verbs::HARNESS_VERBS;
+use fa_oracles::json::{self, Json};
+
+use run::{PlantedEdit, fa, outcome, run_case, run_planted};
+
+const SELFTEST: &str = "_selftest";
+
+const SELFTEST_D: &str = "UNRUN _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 reason=filler_invariance";
+
+fn selftest_files() -> fa_oracles::cases::CaseFiles<'static> {
+    fa_oracles::cases::embedded::SELFTEST.case_files()
+}
+
+/// The harness self-test: every implemented stage over its synthetic book,
+/// each row's evaluated components in agreement.
+#[test]
+fn _selftest() {
+    let o = outcome(SELFTEST);
+    let text = o.text();
+    assert!(o.ok, "{text}");
+    assert_eq!(o.row("_selftest-D-01"), Some(SELFTEST_D), "{text}");
+    let p = o.row("_selftest-P-01").unwrap_or_default();
+    assert!(
+        p.starts_with(
+            "UNRUN _selftest-P-01 P native -/default law=admissibility.toml#Original/Future refusal=FA-REF-010 exit=7 law_named=ok matrix=ok "
+        ) && p.ends_with(" alternatives=ok reason=reference"),
+        "{text}"
+    );
+    assert_eq!(
+        o.row("_selftest-SELF-native"),
+        Some(
+            "UNRUN _selftest-SELF-native D native -/default procedure=jet.self_sourced_evidence@1 entries=S-1 severity=Medium reason=filler_invariance"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("REPRODUCE"), "{text}");
+    assert_eq!(
+        o.lines.last().map(String::as_str),
+        Some(format!("LOG {}", o.log_path.display()).as_str())
+    );
+}
+
+/// The JSONL log: one step record per `fa` call, one verdict record per
+/// printed row, each line a record the log module parses back.
+#[test]
+fn _selftest_logs_every_step_and_every_row() {
+    let o = outcome(SELFTEST);
+    let log = std::fs::read_to_string(&o.log_path).expect("the run log");
+    let (mut steps, mut verdicts) = (0, 0);
+    for line in log.lines() {
+        let doc = json::parse(line).expect("a JSON log line");
+        let record = doc.get("record").and_then(Json::as_str);
+        assert!(
+            matches!(record, Some("step" | "verdict")),
+            "unknown record: {line}"
+        );
+        if record == Some("step") {
+            fa_oracles::cases::log::StepRecord::parse_line(line).expect("a step record");
+            steps += 1;
+        } else {
+            fa_oracles::cases::log::VerdictRecord::parse_line(line).expect("a verdict record");
+            verdicts += 1;
+        }
+    }
+    assert_eq!(steps, o.steps.len());
+    let rows = o
+        .lines
+        .iter()
+        .filter(|l| {
+            ["PASS ", "FAIL ", "UNRUN "]
+                .iter()
+                .any(|v| l.starts_with(v))
+        })
+        .count();
+    assert_eq!(verdicts, rows, "{}", o.text());
+    assert_eq!(rows, 3, "{}", o.text());
+}
+
+/// Every `fa` call the runner makes is a (verb, subcommand) of the table it
+/// checks against `verbs.toml` before any book exists, and every
+/// run-variant token in a logged argv is a bound placeholder.
+#[test]
+fn every_logged_verb_is_in_the_harness_verb_table() {
+    let o = outcome(SELFTEST);
+    assert!(!o.steps.is_empty());
+    for s in &o.steps {
+        let argv = &s.argv_redacted;
+        assert_eq!(
+            argv.get(..2),
+            Some(&["--book".to_string(), "$BOOK".to_string()][..])
+        );
+        let verb = argv.get(2).map(String::as_str).unwrap_or_default();
+        let sub = argv.get(3).map(String::as_str);
+        assert_eq!(s.verb, verb, "{argv:?}");
+        assert!(
+            HARNESS_VERBS
+                .iter()
+                .any(|(v, x)| *v == verb && (x.is_none() || *x == sub)),
+            "{argv:?} is not in HARNESS_VERBS"
+        );
+        for a in argv {
+            assert!(
+                !a.contains(o.books["native"].to_str().unwrap_or("-")),
+                "{argv:?}"
+            );
+            if let Some(p) = a
+                .split('$')
+                .nth(1)
+                .filter(|p| !p.starts_with("BOOK") && !p.starts_with("WORK"))
+            {
+                let placeholder = format!("${}", p.split('/').next().unwrap_or_default());
+                assert!(
+                    s.binds.iter().any(|(b, _)| *b == placeholder),
+                    "{placeholder} in {argv:?} has no bind: {:?}",
+                    s.binds
+                );
+            }
+        }
+    }
+    let finding = o
+        .steps
+        .iter()
+        .find(|s| s.argv_redacted.get(2..4) == Some(&["finding".into(), "list".into()][..]))
+        .expect("a finding list step");
+    assert_eq!(
+        finding.binds,
+        [(
+            "$C_FINDINGRUN_jet.round_amounts".to_string(),
+            "findings_recorded.certificate of step 4 (jet.round_amounts)".to_string()
+        )]
+    );
+}
+
+/// Exactly one runner-generated SELF row per book variant.
+#[test]
+fn every_variant_gets_exactly_one_self_row() {
+    let o = outcome(SELFTEST);
+    for variant in o.books.keys() {
+        let id = format!("_selftest-SELF-{variant}");
+        let n = o
+            .lines
+            .iter()
+            .filter(|l| l.split(' ').nth(1) == Some(id.as_str()))
+            .count();
+        assert_eq!(n, 1, "{}", o.text());
+    }
+}
+
+/// The period label → book code map, matched by dates, is printed once per
+/// book; the self-test's two quarters are its custom calendar's P01 and P02.
+#[test]
+fn period_label_map_is_logged_once_per_book() {
+    let o = outcome(SELFTEST);
+    let maps: Vec<&String> = o
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("PERIODS "))
+        .collect();
+    assert_eq!(
+        maps,
+        ["PERIODS native 2026Q1=FY2026-P01 2026Q2=FY2026-P02"],
+        "{}",
+        o.text()
+    );
+}
+
+/// `pre_case` on a variant with no `[[case]]` reads at the head at the
+/// `finding_record` step. The self-test's last write before that step is
+/// S-1's post (S-2 is refused, `entry show` is a read), so the run's source
+/// coordinate is S-1's recorded sequence, and the runner passed exactly it.
+#[test]
+fn pre_case_on_a_book_without_a_case_is_the_head_at_the_finding_step() {
+    let o = outcome(SELFTEST);
+    let book = &o.books["native"];
+    let runs = fa(book, &["finding".into(), "runs".into(), "--json".into()]);
+    assert_eq!(runs.exit, 0, "{}", runs.stdout);
+    let rows = runs.array_field("finding_runs", "runs");
+    assert_eq!(rows.len(), 1, "{}", runs.stdout);
+    let source = rows[0].get("source_known_at").and_then(Json::as_int);
+    let cert = rows[0]
+        .get("certificate")
+        .and_then(Json::as_str)
+        .unwrap_or_default();
+    let listed = fa(
+        book,
+        &[
+            "finding".into(),
+            "list".into(),
+            "--certificate".into(),
+            format!("C:{cert}"),
+            "--json".into(),
+        ],
+    );
+    let findings = listed.array_field("finding_list", "findings");
+    let entry = findings
+        .first()
+        .and_then(|f| f.at(&["finding", "cites"]))
+        .and_then(Json::as_array)
+        .and_then(|cites| {
+            cites
+                .iter()
+                .find(|c| c.get("kind").and_then(Json::as_str) == Some("entry"))
+        })
+        .and_then(|c| c.get("entry"))
+        .and_then(Json::as_str)
+        .expect("the finding cites S-1's entry");
+    let shown = fa(
+        book,
+        &["entry".into(), "show".into(), entry.into(), "--json".into()],
+    );
+    let posted_at = shown
+        .event("entry")
+        .and_then(|o| o.field("recorded_at"))
+        .and_then(Json::as_int);
+    assert!(posted_at.is_some(), "{}", shown.stdout);
+    assert_eq!(source, posted_at, "{}\n{}", runs.stdout, shown.stdout);
+    let step = o
+        .steps
+        .iter()
+        .find(|s| {
+            s.finding_procedure.is_some()
+                && s.argv_redacted.get(3).map(String::as_str) == Some("record")
+        })
+        .expect("the finding record step");
+    let at = step
+        .argv_redacted
+        .iter()
+        .position(|a| a == "--known-at")
+        .and_then(|i| step.argv_redacted.get(i + 1))
+        .and_then(|v| v.parse::<i128>().ok());
+    assert_eq!(at, source);
+}
+
+/// A renamed verb fails the case before any book is created.
+#[test]
+fn renamed_verb_fails_before_any_book_is_created() {
+    let verbs: Vec<(&str, Option<&str>)> = HARNESS_VERBS
+        .iter()
+        .map(|(v, s)| {
+            if (*v, *s) == ("period", Some("open")) {
+                ("periods", Some("open"))
+            } else {
+                (*v, *s)
+            }
+        })
+        .collect();
+    let o = run_case(&selftest_files(), &verbs);
+    assert!(!o.ok);
+    assert!(o.books.is_empty(), "{}", o.text());
+    assert!(o.steps.is_empty(), "{}", o.text());
+    assert!(
+        o.lines.contains(
+            &"FAIL _selftest verbs: the runner invokes periods open that verbs.toml does not register"
+                .to_string()
+        ),
+        "{}",
+        o.text()
+    );
+}
+
+/// A wrong refusal id reports FAIL, and the printed `REPRODUCE` argv
+/// reproduces the observed refusal.
+#[test]
+fn _selftest_neg_wrong_refusal_id() {
+    let o = run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "expectations.toml",
+            old: "refusal = \"FA-REF-010\"",
+            new: "refusal = \"FA-REF-011\"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a wrong refusal id fails the case");
+    let text = o.text();
+    let at = o
+        .lines
+        .iter()
+        .position(|l| l.starts_with("FAIL _selftest-P-01 "))
+        .expect("the P row");
+    let row = &o.lines[at];
+    assert!(
+        row.starts_with("FAIL _selftest-P-01 P native -/default law=admissibility.toml#Original/Future refusal=FA-REF-010 exit=7 ")
+            && row.ends_with(" reason=expected refusal=FA-REF-011 observed refusal=FA-REF-010"),
+        "{text}"
+    );
+    let argv: Vec<String> = o.lines[at - 1]
+        .strip_prefix("REPRODUCE fa ")
+        .expect("a REPRODUCE line above the row")
+        .split(' ')
+        .map(str::to_string)
+        .collect();
+    let book = std::path::PathBuf::from(&argv[1]);
+    let again = fa(&book, &argv[2..]);
+    assert_eq!(again.exit, 7, "{}", again.stdout);
+    assert_eq!(again.refusal_id().as_deref(), Some("FA-REF-010"));
+}
+
+/// A cite of the wrong fact reports FAIL on the D row.
+#[test]
+fn _selftest_neg_cite_of_the_wrong_fact() {
+    let o = run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "expectations.toml",
+            old: "cite = [\"S-1#0\", \"S-1#1\"]",
+            new: "cite = [\"S-1#0\", \"S-2#1\"]",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a wrong cite fails the case");
+    assert_eq!(
+        o.row("_selftest-D-01"),
+        Some(
+            "FAIL _selftest-D-01 D native S-1/default procedure=jet.round_amounts@1 entry=S-1 cite=S-1#0,S-1#1 severity=Medium statistic_name=round_legs statistic=2 scale=0 reason=expected cite=S-1#0,S-2#1 observed cite=S-1#0,S-1#1"
+        ),
+        "{}",
+        o.text()
+    );
+}
+
+/// A planted copy that stops at a load check reports that check on every
+/// row and builds no book.
+#[test]
+fn _selftest_neg_blank_discipline_stops_at_k_prov() {
+    let o = run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "facts.toml",
+            old: "discipline = \"never cited by a case; exercises an observed FA-REF-010 refusal\"",
+            new: "discipline = \" \"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a K-PROV failure fails the case");
+    assert!(o.books.is_empty() && o.steps.is_empty(), "{}", o.text());
+    let rows: Vec<&String> = o
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("FAIL _selftest-"))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "FAIL _selftest-D-01 D native S-1/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-P-01 P native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+            "FAIL _selftest-SELF-native D native -/default reason=expected K-PROV=PASS observed K-PROV=FAIL",
+        ],
+        "{}",
+        o.text()
+    );
+}
+
+/// A planted edit whose `old` text is not in the copy is refused, naming
+/// the edit.
+#[test]
+#[should_panic(
+    expected = "planted edit `refusal = \"FA-REF-999\"` in expectations.toml must occur exactly once"
+)]
+fn planted_edit_missing_from_the_copy_is_refused() {
+    let _ = run_planted(
+        SELFTEST,
+        &[PlantedEdit {
+            file: "expectations.toml",
+            old: "refusal = \"FA-REF-999\"",
+            new: "refusal = \"FA-REF-010\"",
+        }],
+        HARNESS_VERBS,
+    );
+}

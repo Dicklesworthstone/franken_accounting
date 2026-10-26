@@ -1,0 +1,14 @@
+# Harness self-test facts: synthetic stand-ins for the documented entries the self-test posts.
+# They support no claim (plan §2.1 `synthetic`); the self-test's rows are about the runner.
+
+[[fact]]
+id = "S-1"
+provenance = "synthetic"
+reason = "a round-amount Original entry in an Open period, the D row's target"
+discipline = "never cited by a case; exercises the runner's post and D evaluation"
+
+[[fact]]
+id = "S-2"
+provenance = "synthetic"
+reason = "an Original entry dated in a period no step opens"
+discipline = "never cited by a case; exercises an observed FA-REF-010 refusal"
