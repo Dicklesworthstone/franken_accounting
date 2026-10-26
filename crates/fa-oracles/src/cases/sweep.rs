@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 
 use super::Case;
-use super::book::{BookVariant, CELL_KEY_SUFFIX_BYTES, StepKind};
+use super::book::{BookVariant, BranchAttribute, CELL_KEY_SUFFIX_BYTES, StepKind};
 use super::branch::Enumeration;
 use super::error::{LoadError, LoadErrorKind};
 use super::expect::ExpectationType;
@@ -55,7 +55,9 @@ pub struct SweepCell {
     pub expectation: String,
     /// The target's fact (or intent) id, A7a's `<target>`.
     pub target: String,
-    /// A1c's cell key, A7a's `<cell>`.
+    /// The branched attributes, in `branch_attrs` order.
+    pub attrs: Vec<BranchAttribute>,
+    /// A1c's cell key (one value per attribute), A7a's `<cell>`.
     pub key: Vec<String>,
     /// The period state the cell is decided in: its `period_state_at_commit`
     /// value, or else the state the history leaves the entry's period in at
@@ -285,6 +287,7 @@ pub fn sweep_plan(
             cells.push(SweepCell {
                 expectation: e.expectation.clone(),
                 target: e.target.clone(),
+                attrs: e.attrs.clone(),
                 key: c.key.clone(),
                 state,
                 record_consistent: c.record_consistent,

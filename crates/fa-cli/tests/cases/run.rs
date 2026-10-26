@@ -29,6 +29,7 @@ use fa_oracles::cases::verdict::{RowLine, RowVerdict};
 use fa_oracles::cases::{Case, CaseFiles, intent_json, stub};
 use fa_oracles::json::Json;
 
+use super::cells;
 use super::evaluate;
 
 /// A planted edit of a case file in a test copy: `old` must occur exactly
@@ -282,7 +283,7 @@ pub struct BookRun<'c> {
 }
 
 impl<'c> BookRun<'c> {
-    fn new(
+    pub(crate) fn new(
         case: &'c Case,
         book: &'c BookVariant,
         work: PathBuf,
@@ -364,7 +365,13 @@ impl<'c> BookRun<'c> {
     }
 
     /// Runs `fa` on this variant's book and logs the step.
-    fn call(&mut self, step: i128, reference: &str, verb: &str, args: Vec<String>) -> Call {
+    pub(crate) fn call(
+        &mut self,
+        step: i128,
+        reference: &str,
+        verb: &str,
+        args: Vec<String>,
+    ) -> Call {
         let call = fa(&self.dir, &args);
         let (argv_redacted, binds) = self.redact(&call.argv);
         self.steps.push(StepRecord {
@@ -417,14 +424,14 @@ impl<'c> BookRun<'c> {
         Some(call)
     }
 
-    fn write(&self, name: &str, bytes: &[u8]) -> String {
+    pub(crate) fn write(&self, name: &str, bytes: &[u8]) -> String {
         let p = self.work.join(name);
         std::fs::write(&p, bytes).expect("write a runner file");
         p.display().to_string()
     }
 
     /// Book, periods, chart and documents (plan §3.3 step 2).
-    fn build(&mut self) {
+    pub(crate) fn build(&mut self) {
         let mut years: BTreeMap<i128, Vec<Json>> = BTreeMap::new();
         for p in &self.book.periods {
             years
@@ -785,10 +792,18 @@ impl<'c> BookRun<'c> {
 
     /// The documented history in `[[step]]` order (plan §3.3 steps 3 and 6).
     fn replay(&mut self) {
-        for step in &self.book.steps {
+        let book = self.book;
+        for step in &book.steps {
             if self.failure.is_some() {
                 return;
             }
+            self.step(step);
+        }
+    }
+
+    /// Runs one history step (a P-cell sweep replays steps one by one, A7c).
+    pub(crate) fn step(&mut self, step: &StepDef) {
+        {
             let kind = step.step_kind();
             match kind {
                 Some(StepKind::PeriodOpen | StepKind::PeriodSoftClose | StepKind::PeriodClose) => {
@@ -1699,6 +1714,7 @@ pub fn run_case(files: &CaseFiles<'_>, verbs: &[(&str, Option<&str>)]) -> RunOut
         return finish(out);
     }
     // 3–10. Each book variant.
+    let mut sweep_failed = false;
     for book in case.books.values() {
         let work = root.join(&book.stem);
         std::fs::create_dir_all(&work).expect("variant dir");
@@ -1755,11 +1771,39 @@ pub fn run_case(files: &CaseFiles<'_>, verbs: &[(&str, Option<&str>)]) -> RunOut
             out.lines.push(ev.row.to_string());
             out.verdicts.push(ev.record);
         }
+        // Every P target with a branch table, swept cell by cell by dry run
+        // on a book of its own per entry (A7c).
+        match sweep_groups(&case, &book.stem) {
+            Ok(groups) => {
+                for g in &groups {
+                    let swept = cells::sweep(&case, g, files.files, None);
+                    out.lines.extend(
+                        swept
+                            .lines
+                            .into_iter()
+                            .filter(|l| !l.starts_with("PERIODS ")),
+                    );
+                    out.steps.extend(swept.steps);
+                    for c in swept.cells {
+                        let ev = evaluate::finish(&case, (c.row, Vec::new(), c.reproduce));
+                        out.lines.extend(ev.reproduce);
+                        out.lines.push(ev.row.to_string());
+                        out.verdicts.push(ev.record);
+                    }
+                }
+            }
+            Err(e) => {
+                out.lines
+                    .push(format!("FAIL {} sweep {} {e}", files.id, book.stem));
+                sweep_failed = true;
+            }
+        }
     }
     // The case passes when no row FAILs and every claimed expectation's
     // verdict, the worst of its rows, is PASS.
     let verdicts = evaluate::expectation_verdicts(&out.verdicts);
-    out.ok = verdicts.values().all(|v| *v != RowVerdict::Fail)
+    out.ok = !sweep_failed
+        && verdicts.values().all(|v| *v != RowVerdict::Fail)
         && case
             .header
             .claims
@@ -1886,4 +1930,32 @@ pub fn build_book<'c>(
         s.branch_class = Some(branch_class.to_string());
     }
     run
+}
+
+/// The sweep groups of one variant: A5a's tables of its P targets with a
+/// branch table, planned by A7c's sweep_plan.
+pub(crate) fn sweep_groups(
+    case: &Case,
+    variant: &str,
+) -> Result<Vec<fa_oracles::cases::sweep::SweepGroup>, fa_oracles::cases::LoadError> {
+    let Some(set) = &case.expectations else {
+        return Ok(Vec::new());
+    };
+    let mut tables = Vec::new();
+    for e in set
+        .expectations
+        .iter()
+        .filter(|e| e.kind == ExpectationType::P && e.fields.str("book_variant") == Some(variant))
+    {
+        for t in set
+            .targets_of(&e.id)
+            .filter(|t| evaluate::has_branch_table(t))
+        {
+            tables.push(fa_oracles::cases::branch::enumerate(case, e, t)?);
+        }
+    }
+    if tables.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(fa_oracles::cases::sweep::sweep_plan(case, variant, &tables)?.groups)
 }

@@ -11,6 +11,8 @@
 //! A4r); what the self-test proves today is that every implemented stage
 //! ran and every evaluated component agreed.
 
+#[path = "cases/cells.rs"]
+mod cells;
 #[path = "cases/evaluate.rs"]
 mod evaluate;
 #[path = "cases/property.rs"]
@@ -1015,6 +1017,192 @@ fn out_of_class_witness_fails_the_property_test() {
     );
     assert!(
         o.lines[at + 1].starts_with("REPRODUCE fa --book "),
+        "{text}"
+    );
+}
+
+/// The sweep fixture (`crates/fa-oracles/tests/fixtures/sweep/`): S-1's
+/// entry class × period state table (A7c).
+const SWEEP: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/sweep/expectations.toml"),
+    ),
+];
+
+fn sweep_run() -> &'static RunOutcome {
+    static RUN: std::sync::OnceLock<RunOutcome> = std::sync::OnceLock::new();
+    RUN.get_or_init(|| match run_files("sweep", &SWEEP, &[], HARNESS_VERBS) {
+        Ok(o) => o,
+        Err(o) => *o,
+    })
+}
+
+/// The swept cell lines of sweep-P-01.
+fn sweep_cells(o: &RunOutcome) -> Vec<&str> {
+    o.lines
+        .iter()
+        .map(String::as_str)
+        .filter(|l| l.contains(" sweep-P-01 P native S-1/"))
+        .collect()
+}
+
+/// A7c (§3.3): every P cell of S-1 is decided by `fa post --dry-run` on one
+/// book, across Future → Open → SoftClosed → Closed → Locked, each under its
+/// own key, and each observes its admissibility.toml outcome. The sweep
+/// supplies the soft-close the history lacks.
+#[test]
+fn every_p_cell_of_one_entry_is_decided_by_dry_run_on_one_book() {
+    let o = sweep_run();
+    let text = o.text();
+    let cells = sweep_cells(o);
+    assert_eq!(cells.len(), 10, "{text}");
+    // Every observed outcome is the authored one; the reference verdict
+    // (A4r) is not built, so none reads PASS.
+    assert!(
+        cells
+            .iter()
+            .all(|l| l.starts_with("UNRUN ") && l.ends_with(" reason=reference")),
+        "{text}"
+    );
+    for (cell, outcome) in [
+        (
+            "Original,period_state_at_commit=Future state=Future",
+            "refusal=FA-REF-010 exit=7",
+        ),
+        (
+            "Original,period_state_at_commit=Open state=Open",
+            "refusal=admitted exit=0",
+        ),
+        (
+            "Original,period_state_at_commit=SoftClosed state=SoftClosed",
+            "refusal=FA-REF-011 exit=7",
+        ),
+        (
+            "Adjusting,period_state_at_commit=SoftClosed state=SoftClosed",
+            "refusal=admitted exit=0",
+        ),
+        (
+            "Adjusting,period_state_at_commit=Closed state=Closed",
+            "refusal=FA-REF-011 exit=7",
+        ),
+        (
+            "Adjusting,period_state_at_commit=Locked state=Locked",
+            "refusal=FA-REF-010 exit=7",
+        ),
+    ] {
+        let prefix = format!("UNRUN sweep-P-01 P native S-1/entry_class={cell} {outcome}");
+        assert!(
+            cells.iter().any(|l| l.starts_with(&prefix)),
+            "{prefix}\n{text}"
+        );
+    }
+    // One book, one dry run per cell, each under its own `<key>.<12 hex>`.
+    let dry: Vec<_> = o
+        .steps
+        .iter()
+        .filter(|s| s.verb == "post" && s.argv_redacted.iter().any(|a| a == "--dry-run"))
+        .collect();
+    assert_eq!(dry.len(), 10, "{text}");
+    let books: std::collections::BTreeSet<_> = dry.iter().map(|s| s.book_id.clone()).collect();
+    assert_eq!(books.len(), 1, "{text}");
+    // The sweep's own soft-close (the history has none).
+    assert!(
+        o.steps
+            .iter()
+            .any(|s| s.verb == "period" && s.argv_redacted.iter().any(|a| a == "soft-close")),
+        "{text}"
+    );
+}
+
+/// One representative per distinct outcome (FA-REF-010, admitted,
+/// FA-REF-011) is committed right after its dry run and agrees with it.
+#[test]
+fn one_committed_representative_per_outcome_agrees_with_its_dry_run() {
+    let o = sweep_run();
+    let text = o.text();
+    let reps: Vec<&str> = sweep_cells(o)
+        .into_iter()
+        .filter(|l| l.contains(" commit_agrees="))
+        .collect();
+    assert_eq!(reps.len(), 3, "{text}");
+    assert!(
+        reps.iter().all(|l| l.contains(" commit_agrees=ok ")),
+        "{text}"
+    );
+    for cell in [
+        "Original,period_state_at_commit=Future",
+        "Original,period_state_at_commit=Open",
+        "Original,period_state_at_commit=SoftClosed",
+    ] {
+        assert!(
+            reps.iter()
+                .any(|l| l.contains(&format!("S-1/entry_class={cell} "))),
+            "{cell}\n{text}"
+        );
+    }
+    // The admitted representative was committed from its dry run's plan.
+    assert!(
+        o.steps.iter().any(|s| s.verb == "commit"
+            && s.exit == 0
+            && s.argv_redacted.iter().any(|a| a == "--plan")),
+        "{text}"
+    );
+}
+
+/// The representative of Original in SoftClosed, committed under a grant
+/// its dry run lacked, disagrees with the dry run: FAIL, naming the cell.
+#[test]
+fn planted_dry_run_commit_divergence_fails_naming_the_cell() {
+    let case = fa_oracles::cases::load(&fa_oracles::cases::CaseFiles {
+        id: "sweep",
+        files: &SWEEP,
+    })
+    .expect("the sweep fixture loads");
+    let groups = run::sweep_groups(&case, "native").expect("a plan");
+    assert_eq!(groups.len(), 1);
+    let plant = cells::Plant {
+        cell: vec!["Original".into(), "SoftClosed".into()],
+        commit_args: vec!["--grant".into(), "post_softclosed".into()],
+    };
+    let swept = cells::sweep(&case, &groups[0], &SWEEP, Some(&plant));
+    let lines: Vec<String> = swept.cells.iter().map(|c| c.row.to_string()).collect();
+    let text = lines.join("\n");
+    let line = lines
+        .iter()
+        .find(|l| l.contains("S-1/entry_class=Original,period_state_at_commit=SoftClosed "))
+        .expect("the planted cell's line");
+    // The grant admits the commit its dry run refused.
+    assert_eq!(
+        line,
+        "FAIL sweep-P-01 P native S-1/entry_class=Original,period_state_at_commit=SoftClosed state=SoftClosed refusal=FA-REF-011 exit=7 record_consistent=false commit_agrees=fail reason=expected FA-REF-011 observed admitted",
+        "{text}"
+    );
+    let planted = swept
+        .cells
+        .iter()
+        .find(|c| c.row.to_string() == *line)
+        .expect("the cell");
+    assert!(
+        planted.reproduce.as_deref().is_some_and(
+            |r| r.starts_with("REPRODUCE fa --book ") && r.contains("--grant post_softclosed")
+        ),
         "{text}"
     );
 }
