@@ -35,6 +35,8 @@ use fgdb_types::{CanonicalScalar, VId};
 mod account_role_tests;
 #[path = "genesis/carrying.rs"]
 mod carrying_tests;
+#[path = "genesis/chart_outcome_keys.rs"]
+mod chart_outcome_keys;
 #[path = "genesis/closing_carrying.rs"]
 mod closing_carrying_tests;
 #[path = "genesis/external_subledger.rs"]

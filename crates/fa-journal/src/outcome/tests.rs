@@ -13,6 +13,57 @@ use fgdb_types::ids::DatabaseSecurityNamespaceId;
 use super::*;
 
 #[test]
+fn account_lifecycle_claims_do_not_admit_other_schema_controls_or_target_identities() {
+    let mut h = Harness::source("schema control key identity");
+    for kind in [1_u16, 2, 3, 4, 13, 17, 18, 19] {
+        let key = kind.to_le_bytes();
+        let proposal = crate::chart::schema_control_proposal(
+            &h.book,
+            kind,
+            Vec::new(),
+            VId(116),
+            fa_time::DateDay(0),
+            &key,
+            fa_model::Erasable::seal(
+                &"schema control".to_string(),
+                None,
+                &h.book.seal_key,
+                [117; 32],
+                [118; 24],
+            ),
+        );
+        let entry = proposal.seal(Vec::new(), None).unwrap();
+        let normal = fa_model::entry_vid(h.book.book_id, &116_u128.to_le_bytes(), &key);
+        let mut claimed = WriteBatch::new(relation::IN_BOOK);
+        assert_eq!(
+            stage_control(&mut claimed, &entry, normal).is_ok(),
+            matches!(kind, 2 | 3 | 4),
+        );
+        let target = crate::policy::revocation_vid(h.book.book_id, &[kind as u8; 32]);
+        assert!(stage_control(&mut WriteBatch::new(relation::IN_BOOK), &entry, target).is_err());
+        // Original pre-protocol births exercise the same restriction on retry,
+        // so an unrelated schema writer cannot inherit the legacy exception.
+        let mut legacy = WriteBatch::new(relation::IN_BOOK);
+        for vid in [normal, target] {
+            legacy.create_vertex(
+                vid,
+                vec![label::ENTRY],
+                fa_model::entry_mirrors(&entry).unwrap(),
+            );
+        }
+        h.write(legacy);
+        assert_eq!(
+            verify_control_recorded(&h.db, &h.db.vertex(normal).unwrap().unwrap(), &entry).unwrap(),
+            matches!(kind, 2 | 3 | 4),
+        );
+        assert!(
+            !verify_control_recorded(&h.db, &h.db.vertex(target).unwrap().unwrap(), &entry)
+                .unwrap()
+        );
+    }
+}
+
+#[test]
 fn a_target_derived_control_cannot_use_the_normal_key_legacy_exception() {
     let mut h = Harness::source("control key identity");
     let proposal = crate::policy::activation_proposal(
