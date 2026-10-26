@@ -78,6 +78,7 @@ pub mod sentence;
 pub mod source;
 pub mod stream;
 pub mod stub;
+pub mod sweep;
 pub mod templates;
 #[cfg(test)]
 mod tests;

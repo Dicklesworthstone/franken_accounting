@@ -13,6 +13,8 @@
 
 #[path = "cases/evaluate.rs"]
 mod evaluate;
+#[path = "cases/property.rs"]
+mod property;
 #[path = "cases/run.rs"]
 mod run;
 
@@ -854,5 +856,165 @@ fn exact_gap_n_whose_gaps_disagree_reports_fail() {
         ),
         "{}",
         o.text()
+    );
+}
+
+/// The pilot (`crates/fa-oracles/tests/fixtures/pilot/`), loaded for its
+/// branch tables (A5a).
+fn pilot_case() -> fa_oracles::cases::Case {
+    const PILOT: [(&str, &str); 7] = [
+        (
+            "case.toml",
+            include_str!("../../fa-oracles/tests/fixtures/pilot/case.toml"),
+        ),
+        (
+            "sources.toml",
+            include_str!("../../fa-oracles/tests/fixtures/pilot/sources.toml"),
+        ),
+        (
+            "facts.toml",
+            include_str!("../../fa-oracles/tests/fixtures/pilot/facts.toml"),
+        ),
+        (
+            "receipts.toml",
+            include_str!("../../fa-oracles/tests/fixtures/pilot/receipts.toml"),
+        ),
+        (
+            "roles.toml",
+            include_str!("../../fa-oracles/tests/fixtures/pilot/roles.toml"),
+        ),
+        (
+            "books/native.toml",
+            include_str!("../../fa-oracles/tests/fixtures/pilot/books/native.toml"),
+        ),
+        (
+            "expectations.toml",
+            include_str!("../../fa-oracles/tests/fixtures/pilot/expectations.toml"),
+        ),
+    ];
+    fa_oracles::cases::load(&fa_oracles::cases::CaseFiles {
+        id: "worldcom",
+        files: &PILOT,
+    })
+    .expect("the pilot loads")
+}
+
+/// The pilot's W-D-03/F4 table: F4's three credit legs under round_power 3.
+fn f4_cells() -> Vec<fa_oracles::cases::branch::Cell> {
+    let case = pilot_case();
+    let set = case.expectations.as_ref().expect("expectations");
+    let e = set.get("W-D-03").expect("W-D-03");
+    let t = set
+        .targets_of("W-D-03")
+        .find(|t| t.fact == "F4")
+        .expect("F4");
+    fa_oracles::cases::branch::enumerate(&case, e, t)
+        .expect("F4's table")
+        .cells
+}
+
+/// A5a (§2.6 rule 5, §3.7 item 5): 64 seeded witnesses of every class of
+/// round_residue_legs (F4's five feasible cells, through jet.round_amounts)
+/// and of period_end_window (inside and outside, through
+/// jet.period_end_timing) each give the class's verdict on a micro-book.
+#[test]
+fn branch_class_witnesses_give_the_class_verdict() {
+    use fa_oracles::cases::branch::{Cell, CellPart, witnesses};
+    use fa_oracles::cases::date::Day;
+    let cells = f4_cells();
+    assert_eq!(cells.len(), 5);
+    let (first, last) = (
+        Day::parse("2026-01-01").expect("day"),
+        Day::parse("2026-03-31").expect("day"),
+    );
+    let windows: Vec<Cell> = [("inside_window", true), ("outside_window", false)]
+        .into_iter()
+        .map(|(key, inside)| Cell {
+            key: vec![key.to_string()],
+            parts: vec![CellPart::Window {
+                inside,
+                window_days: 3,
+                first,
+                last,
+            }],
+            record_consistent: false,
+            default: false,
+        })
+        .collect();
+    // Each class's micro-book is independent: run them side by side.
+    let outcomes: Vec<property::ClassOutcome> = std::thread::scope(|s| {
+        let residue = cells.iter().map(|cell| {
+            s.spawn(move || {
+                let w = witnesses("worldcom", "W-D-03", cell, 64);
+                property::residue_class("worldcom", "W-D-03", cell, &w, None)
+            })
+        });
+        let window = windows.iter().map(|cell| {
+            s.spawn(move || {
+                let w = witnesses("property", "period_end_window", cell, 64);
+                property::window_class("property", "period_end_window", cell, &w)
+            })
+        });
+        residue
+            .collect::<Vec<_>>()
+            .into_iter()
+            .chain(window.collect::<Vec<_>>())
+            .map(|h| h.join().expect("a class run"))
+            .collect()
+    });
+    let text: Vec<String> = outcomes.iter().flat_map(|o| o.lines.clone()).collect();
+    let text = text.join("\n");
+    assert_eq!(outcomes.len(), 7);
+    for o in &outcomes {
+        assert_eq!((o.witnesses, o.agree), (64, 64), "{text}");
+    }
+    assert!(!text.contains("FAIL "), "{text}");
+}
+
+/// A planted witness from outside its class (a non-multiple credit in the
+/// all-multiples cell) gives another verdict, and the property test fails,
+/// naming the rule, the class, the seed and the witness, with its argv.
+#[test]
+fn out_of_class_witness_fails_the_property_test() {
+    use fa_oracles::cases::branch::{WitnessValue, witness_seed, witnesses};
+    let cells = f4_cells();
+    let mmm = cells.iter().find(|c| c.key == ["mmm"]).expect("mmm");
+    let w = witnesses("worldcom", "W-D-03", mmm, 64);
+    // Move one minor unit from the first credit to the second: both become
+    // non-multiples, the total is unchanged.
+    let mut planted: Vec<i128> = w[7]
+        .values
+        .iter()
+        .filter_map(|v| match v {
+            WitnessValue::Legs(legs) => Some(legs.iter().map(|(_, a)| *a).collect::<Vec<_>>()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(planted.len(), 3, "a per-leg witness");
+    planted[0] -= 1;
+    planted[1] += 1;
+    let o = property::residue_class("worldcom", "W-D-03", mmm, &w, Some((7, planted)));
+    let text = o.lines.join("\n");
+    assert_eq!((o.witnesses, o.agree), (64, 63), "{text}");
+    let seed: String = witness_seed("worldcom", "W-D-03", mmm)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let at = o
+        .lines
+        .iter()
+        .position(|l| l.starts_with("FAIL property "))
+        .expect("the failing witness");
+    assert_eq!(
+        o.lines[at],
+        format!(
+            "FAIL property round_residue_legs class=mmm seed={seed} witness=7 expected severity=Medium statistic=4 legs=[W-7#0,W-7#1,W-7#2,W-7#3] observed severity=Low statistic=2 legs=[W-7#0,W-7#3]"
+        ),
+        "{text}"
+    );
+    assert!(
+        o.lines[at + 1].starts_with("REPRODUCE fa --book "),
+        "{text}"
     );
 }
