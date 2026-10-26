@@ -3578,6 +3578,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         state: Option<fa_model::Oid>,
         certificate: &crate::ReportCertificate,
     ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(cx, principal, capability, state, certificate, None)
+            .await
+    }
+
+    /// Export an effective-date aging schedule and its native OpenItems source
+    /// over one signed complete prefix. The outer certificate binds the cutoff,
+    /// bucket boundaries and exact historical output; it is never replaced by
+    /// the all-effective-time source certificate. Current whole-book read and
+    /// produce authority are required before either history is observed.
+    pub async fn produce_aging_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            certificate.source(),
+            Some(certificate),
+        )
+        .await
+    }
+
+    async fn produce_report_bundle_inner(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ReportCertificate,
+        aging: Option<&crate::AgingCertificate>,
+    ) -> Outcome<Option<ProducedBundle>> {
         cx.query().checkpoint().map_err(BookError::Context)?;
         let reach = fa_policy::Reach {
             observes: capability
@@ -3621,9 +3658,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        let replayed = match self.replay_report(cx, certificate)? {
-            Ok(report) => report,
-            Err(refusal) => return Ok(Err(refusal)),
+        let replayed = if let Some(aging) = aging {
+            if let Err(refusal) =
+                self.replay_effective_date_aging(cx, principal, capability, aging)?
+            {
+                return Ok(Err(refusal));
+            }
+            None
+        } else {
+            match self.replay_report(cx, certificate)? {
+                Ok(report) => Some(report),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
         };
         let closure_frontier = certificate
             .time_selection
@@ -3679,7 +3725,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         } else {
             None
         };
-        if let crate::ReportOutput::ExplainBalance(explanation) = &replayed
+        if let Some(crate::ReportOutput::ExplainBalance(explanation)) = &replayed
             && let Err(refusal) = crate::certificate::check_explanation_reasons_at(
                 &self.db,
                 &cx.query(),
@@ -3752,9 +3798,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(bodies) => bodies,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let bytes = certificate
-            .canonical_bytes()
-            .map_err(|error| KernelError::Model(error.into()))?;
+        let bytes = match aging {
+            Some(aging) => match aging.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            },
+            None => certificate
+                .canonical_bytes()
+                .map_err(|error| KernelError::Model(error.into()))?,
+        };
         let assembled = match registries.as_deref() {
             Some(registries) => fa_notary::report::assemble_with_registries(
                 &journal,

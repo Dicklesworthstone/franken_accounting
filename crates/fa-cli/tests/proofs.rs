@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "proofs/aging.rs"]
+mod aging;
 #[path = "proofs/dimension_report.rs"]
 mod dimension_report;
 #[path = "proofs/explanation_report.rs"]

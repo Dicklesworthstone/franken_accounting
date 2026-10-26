@@ -4327,6 +4327,29 @@ impl Book {
         )))
     }
 
+    /// Produce a portable effective-date aging schedule for `fa-verify report`.
+    /// Replays both the source OpenItems certificate and the historical cutoff
+    /// under current whole-book read/produce authority. The complete signed
+    /// prefix and exact registry closure allow a recipient to reconstruct the
+    /// items, applications, age bands and separate debit/credit totals without
+    /// the source book. The receipt binds the outer aging certificate.
+    ///
+    /// Ages are measured from posting effective dates, not contractual due
+    /// dates. Sequence-selected trunk certificates are supported. Returns
+    /// `None` if the selected recorded checkpoint is unavailable.
+    pub fn produce_aging_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_aging_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the
