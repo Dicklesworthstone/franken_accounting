@@ -105,7 +105,7 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,...]               independently recompute native or dimension-filtered
                                                 trial balances, statements, open items, balance explanations,
-                                                effective-date aging, reconciliation or account roll-forwards.
+                                                effective-date aging, reconciliation, account roll-forwards or direct cash flows.
                                                 V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
@@ -1318,7 +1318,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         .ok_or_else(|| {
                             usage(
                                 format!("`--expect {raw}` is not 64 hex characters"),
-                                "pass the independently selected report certificate digest (the outer certificate for composed aging, reconciliation and roll-forward reports)",
+                                "pass the independently selected report certificate digest (the outer certificate for composed aging, reconciliation, roll-forward and cash-flow reports)",
                             )
                         })
                 })
@@ -1384,6 +1384,12 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     "aging_reconciliation"
                                 } else if report.aging.is_some() {
                                     "effective_date_aging"
+                                } else if let Some(cash) = &report.cash_flow {
+                                    if cash.policy.is_some() {
+                                        "policy_cash_flow"
+                                    } else {
+                                        "cash_flow"
+                                    }
                                 } else if report.roll_forward.is_some() {
                                     "roll_forward"
                                 } else if report.open_items.is_some() {
@@ -1403,6 +1409,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     comparison.rows.len()
                                 } else if let Some(aging) = &report.aging {
                                     aging.items.len()
+                                } else if let Some(cash) = &report.cash_flow {
+                                    cash.units.len()
                                 } else if let Some(schedule) = &report.roll_forward {
                                     schedule.rows.len()
                                 } else if let Some(open_items) = &report.open_items {
@@ -1490,6 +1498,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(schedule) = &report.roll_forward {
                         checks.extend(roll_forward_checks(schedule));
+                    }
+                    if let Some(cash) = &report.cash_flow {
+                        checks.extend(cash_flow_checks(cash));
                     }
                     for row in &report.rows {
                         checks.push(Check::pass(
@@ -2137,6 +2148,238 @@ fn roll_forward_checks(report: &crate::report::VerifiedRollForward) -> Vec<Check
     checks
 }
 
+fn cash_activity(activity: crate::report::CashFlowActivity) -> &'static str {
+    use crate::report::CashFlowActivity;
+    match activity {
+        CashFlowActivity::Operating => "operating",
+        CashFlowActivity::Investing => "investing",
+        CashFlowActivity::Financing => "financing",
+        CashFlowActivity::ExchangeEffect => "exchange_effect",
+        CashFlowActivity::InternalTransfer => "internal_transfer",
+    }
+}
+
+fn cash_basis(basis: crate::report::CashFlowDecisionBasis) -> &'static str {
+    use crate::report::CashFlowDecisionBasis;
+    match basis {
+        CashFlowDecisionBasis::AccountRules => "account_rules",
+        CashFlowDecisionBasis::ExplicitOverride => "explicit_override",
+        CashFlowDecisionBasis::InternalTransfer => "internal_transfer",
+    }
+}
+
+fn cash_section(section: crate::report::CashFlowSection) -> Json {
+    Json::Obj(vec![
+        ("inflows", amount(section.inflows)),
+        ("outflows", amount(section.outflows)),
+        ("net", amount(section.net)),
+    ])
+}
+
+fn cash_flow_checks(report: &crate::report::VerifiedCashFlow) -> Vec<Check> {
+    let ledger = &report.ledger;
+    let mut checks = vec![Check::pass(
+        "cash_flow_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&ledger.book_id)),
+            ("known_at", n(ledger.known_at)),
+            ("label", s(&ledger.label)),
+            ("definition", s(&report.definition.name)),
+            ("effective_from", day(Some(ledger.effective_from))),
+            ("effective_through", day(Some(ledger.effective_through))),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "units",
+                Json::List(
+                    ledger
+                        .units
+                        .iter()
+                        .map(|&unit| n(u64::from(unit)))
+                        .collect(),
+                ),
+            ),
+            (
+                "cash_accounts",
+                Json::List(
+                    report
+                        .definition
+                        .cash_accounts
+                        .iter()
+                        .map(|id| s(format!("{id:032x}")))
+                        .collect(),
+                ),
+            ),
+            (
+                "amount_basis",
+                s("registered native units; debit minus credit; no cross-unit conversion"),
+            ),
+            (
+                "gross_basis",
+                s("net only within original entry, native unit and activity section"),
+            ),
+            (
+                "running_balance_basis",
+                s("effective-day order, then recorded sequence and original leg citation"),
+            ),
+            ("economic_classification", s("not_judged")),
+            ("cash_equivalence", s("not_judged")),
+            ("definition_approval", s("not_judged")),
+        ],
+    )];
+    for account in &ledger.accounts {
+        checks.push(Check::pass(
+            "cash_flow_account",
+            "authenticated_metadata",
+            vec![
+                ("account", s(format!("{:032x}", account.id))),
+                ("code", s(&account.code)),
+                ("name", s(&account.name)),
+                ("account_type", n(u64::from(account.account_type))),
+                ("is_leaf", Json::Bool(account.is_leaf)),
+            ],
+        ));
+    }
+    for (index, bucket) in ledger.buckets.iter().enumerate() {
+        checks.push(Check::pass(
+            "cash_flow_bucket",
+            "recomputation",
+            vec![
+                ("bucket", n(index as u64)),
+                ("class", n(u64::from(bucket.class))),
+                ("reason_code", s(&bucket.reason_code)),
+                (
+                    "rule_digest",
+                    bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| h(digest)),
+                ),
+                ("rule_execution", s("not_judged")),
+            ],
+        ));
+    }
+    for (index, cell) in ledger.cells.iter().enumerate() {
+        checks.push(Check::pass(
+            "cash_flow_cell",
+            "recomputation",
+            vec![
+                ("cell", n(index as u64)),
+                ("account", s(format!("{:032x}", cell.account_id))),
+                ("unit", n(u64::from(cell.unit_id))),
+                ("opening", amount(cell.opening)),
+                ("debits", amount(cell.debits)),
+                ("credits", amount(cell.credits)),
+                ("net_change", amount(cell.net_change)),
+                ("closing", amount(cell.closing)),
+                ("line_start", n(u64::from(cell.line_start))),
+                ("line_end", n(u64::from(cell.line_end))),
+            ],
+        ));
+    }
+    let activities: std::collections::BTreeMap<_, _> = report
+        .definition
+        .assignments
+        .iter()
+        .map(|assignment| {
+            (
+                (assignment.entry_digest, assignment.leg_index),
+                assignment.activity,
+            )
+        })
+        .collect();
+    for line in &ledger.lines {
+        checks.push(Check::pass(
+            "cash_flow_movement",
+            "recomputation",
+            vec![
+                ("cell", n(u64::from(line.cell_index))),
+                ("entry_digest", h(&line.entry_digest)),
+                ("leg_index", n(u64::from(line.leg_index))),
+                ("recorded_seq", n(line.recorded_seq)),
+                ("effective_day", day(Some(line.effective_day))),
+                ("bucket", n(u64::from(line.bucket_index))),
+                ("debits", amount(line.debits)),
+                ("credits", amount(line.credits)),
+                ("running_balance", amount(line.running_balance)),
+                (
+                    "activity",
+                    activities
+                        .get(&(line.entry_digest, line.leg_index))
+                        .map_or(Json::Null, |&activity| s(cash_activity(activity))),
+                ),
+            ],
+        ));
+    }
+    for unit in &report.units {
+        checks.push(Check::pass(
+            "cash_flow_unit",
+            "recomputation",
+            vec![
+                ("unit", n(u64::from(unit.unit_id))),
+                ("opening", amount(unit.opening)),
+                ("operating", cash_section(unit.operating)),
+                ("investing", cash_section(unit.investing)),
+                ("financing", cash_section(unit.financing)),
+                ("exchange_effects", cash_section(unit.exchange_effects)),
+                ("net_change", amount(unit.net_change)),
+                ("closing", amount(unit.closing)),
+            ],
+        ));
+    }
+    if let Some(verified) = &report.policy {
+        checks.push(Check::pass(
+            "cash_flow_policy",
+            "authenticated_parameters",
+            vec![
+                ("source_certificate_digest", h(&verified.source_certificate_digest)),
+                ("name", s(&verified.policy.name)),
+                ("cash_accounts", Json::List(verified.policy.cash_accounts.iter().map(|id| s(format!("{id:032x}"))).collect())),
+                ("decision_basis", s("every original nonzero counterpart in the same entry and native unit, plus explicit overrides")),
+                ("policy_approval", s("not_judged")),
+            ],
+        ));
+        for rule in &verified.policy.account_rules {
+            checks.push(Check::pass(
+                "cash_flow_rule",
+                "authenticated_parameters",
+                vec![
+                    ("account", s(format!("{:032x}", rule.account_id))),
+                    ("activity", s(cash_activity(rule.activity))),
+                    ("historical_account", s("existing monetary leaf")),
+                ],
+            ));
+        }
+        for assignment in &verified.policy.overrides {
+            checks.push(Check::pass(
+                "cash_flow_override",
+                "authenticated_parameters",
+                vec![
+                    ("entry_digest", h(&assignment.entry_digest)),
+                    ("leg_index", n(u64::from(assignment.leg_index))),
+                    ("activity", s(cash_activity(assignment.activity))),
+                ],
+            ));
+        }
+        for decision in &verified.decisions {
+            checks.push(Check::pass(
+                "cash_flow_decision",
+                "recomputation",
+                vec![
+                    ("entry_digest", h(&decision.entry_digest)),
+                    ("leg_index", n(u64::from(decision.leg_index))),
+                    ("activity", s(cash_activity(decision.activity))),
+                    ("basis", s(cash_basis(decision.basis))),
+                ],
+            ));
+        }
+    }
+    checks
+}
+
 fn statement_checks(
     statement: &crate::report::VerifiedStatement,
     unit_universe_source: &str,
@@ -2653,6 +2896,177 @@ mod tests {
         assert!(render(4).contains("\"leg_index\":2"));
         assert!(render(4).contains(&format!("\"entry_digest\":\"{}\"", "05".repeat(32))));
         assert!(render(4).contains(&format!("\"credits\":\"{}\"", i128::MAX)));
+    }
+
+    #[test]
+    fn cash_flow_renders_exact_gross_sections_gl_and_policy_derivation() {
+        use crate::report::*;
+        let assignment = CashFlowAssignment {
+            entry_digest: [5; 32],
+            leg_index: 2,
+            activity: CashFlowActivity::Operating,
+        };
+        let mut report = VerifiedCashFlow {
+            source_certificate_digest: [4; 32],
+            ledger: VerifiedGeneralLedger {
+                book_id: [3; 16],
+                known_at: 9,
+                label: "Cash source".into(),
+                effective_from: 10,
+                effective_through: 40,
+                accounts: vec![RollForwardAccount {
+                    id: 1,
+                    code: "1000".into(),
+                    name: "Cash".into(),
+                    account_type: 1,
+                    is_leaf: true,
+                }],
+                units: vec![0, 7],
+                buckets: vec![RollForwardBucket {
+                    class: 4,
+                    reason_code: "supersession:1".into(),
+                    rule_digest: Some([7; 32]),
+                }],
+                cells: vec![
+                    GeneralLedgerCell {
+                        account_id: 1,
+                        unit_id: 0,
+                        opening: i128::MAX,
+                        debits: 0,
+                        credits: i128::MAX,
+                        net_change: -i128::MAX,
+                        closing: 0,
+                        line_start: 0,
+                        line_end: 1,
+                    },
+                    GeneralLedgerCell {
+                        account_id: 1,
+                        unit_id: 7,
+                        opening: 0,
+                        debits: 0,
+                        credits: 0,
+                        net_change: 0,
+                        closing: 0,
+                        line_start: 1,
+                        line_end: 1,
+                    },
+                ],
+                lines: vec![GeneralLedgerLine {
+                    cell_index: 0,
+                    entry_digest: [5; 32],
+                    leg_index: 2,
+                    recorded_seq: 8,
+                    effective_day: 30,
+                    bucket_index: 0,
+                    debits: 0,
+                    credits: i128::MAX,
+                    running_balance: 0,
+                }],
+            },
+            definition: CashFlowDefinition {
+                name: "Cash policy €".into(),
+                cash_accounts: vec![1],
+                assignments: vec![assignment.clone()],
+            },
+            units: vec![
+                CashFlowUnit {
+                    unit_id: 0,
+                    opening: i128::MAX,
+                    operating: CashFlowSection {
+                        inflows: 0,
+                        outflows: i128::MAX,
+                        net: -i128::MAX,
+                    },
+                    investing: CashFlowSection::default(),
+                    financing: CashFlowSection::default(),
+                    exchange_effects: CashFlowSection::default(),
+                    net_change: -i128::MAX,
+                    closing: 0,
+                },
+                CashFlowUnit {
+                    unit_id: 7,
+                    opening: 0,
+                    operating: CashFlowSection::default(),
+                    investing: CashFlowSection::default(),
+                    financing: CashFlowSection::default(),
+                    exchange_effects: CashFlowSection::default(),
+                    net_change: 0,
+                    closing: 0,
+                },
+            ],
+            policy: Some(VerifiedCashFlowPolicy {
+                source_certificate_digest: [6; 32],
+                policy: CashFlowPolicy {
+                    name: "Cash policy €".into(),
+                    cash_accounts: vec![1],
+                    account_rules: vec![CashFlowAccountRule {
+                        account_id: 9,
+                        activity: CashFlowActivity::Investing,
+                    }],
+                    overrides: vec![assignment],
+                },
+                decisions: vec![CashFlowPolicyDecision {
+                    entry_digest: [5; 32],
+                    leg_index: 2,
+                    activity: CashFlowActivity::Operating,
+                    basis: CashFlowDecisionBasis::ExplicitOverride,
+                }],
+            }),
+        };
+        let checks = cash_flow_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "cash_flow_parameters",
+                "cash_flow_account",
+                "cash_flow_bucket",
+                "cash_flow_cell",
+                "cash_flow_cell",
+                "cash_flow_movement",
+                "cash_flow_unit",
+                "cash_flow_unit",
+                "cash_flow_policy",
+                "cash_flow_rule",
+                "cash_flow_override",
+                "cash_flow_decision",
+            ]
+        );
+        let render = |index: usize| {
+            let mut value = String::new();
+            Json::Obj(checks[index].detail.clone()).write(&mut value);
+            value
+        };
+        assert!(render(0).contains("\"economic_classification\":\"not_judged\""));
+        assert!(render(0).contains("\"units\":[0,7]"));
+        assert!(render(2).contains("\"reason_code\":\"supersession:1\""));
+        assert!(render(3).contains(&format!("\"credits\":\"{}\"", i128::MAX)));
+        assert!(render(4).contains("\"line_start\":1,\"line_end\":1"));
+        assert!(render(5).contains(&format!("\"entry_digest\":\"{}\"", "05".repeat(32))));
+        assert!(render(5).contains("\"recorded_seq\":8"));
+        assert!(render(5).contains("\"leg_index\":2"));
+        assert!(render(5).contains("\"running_balance\":\"0\""));
+        assert!(render(6).contains(&format!(
+            "\"operating\":{{\"inflows\":\"0\",\"outflows\":\"{}\",\"net\":\"{}\"}}",
+            i128::MAX,
+            -i128::MAX
+        )));
+        assert!(render(7).contains("\"unit\":7,\"opening\":\"0\""));
+        assert!(render(8).contains(&format!(
+            "\"source_certificate_digest\":\"{}\"",
+            "06".repeat(32)
+        )));
+        assert!(render(9).contains("\"activity\":\"investing\""));
+        assert!(render(11).contains("\"basis\":\"explicit_override\""));
+        report.policy = None;
+        assert_eq!(cash_flow_checks(&report).len(), 8);
+        assert_eq!(
+            cash_basis(CashFlowDecisionBasis::AccountRules),
+            "account_rules"
+        );
+        assert_eq!(
+            cash_basis(CashFlowDecisionBasis::InternalTransfer),
+            "internal_transfer"
+        );
     }
 
     #[test]

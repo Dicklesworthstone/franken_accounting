@@ -1,6 +1,9 @@
 //! Hand-calculated lead schedules and an independent wire encoder. These
 //! fixtures authenticate the entire source prefix, including omitted dates,
 //! pending reservations, reversals and migration controls.
+#[path = "cash_flow.rs"]
+mod cash_flow;
+
 use super::*;
 use crate::report::{
     RollForwardAccount, RollForwardBucket, RollForwardMovement, RollForwardRow, VerifiedRollForward,
