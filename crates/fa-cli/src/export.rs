@@ -14,11 +14,23 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_read_flag, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json, fa export ads [--account <code>] (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json, or fa export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
+const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json, fa export ads [--account <code>] (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json, fa export saft (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json, or fa export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
 const WAREHOUSE_EXAMPLE: &str = "fa export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
 /// The complete-prefix bundle and its receipt an ADS extract is proved with.
 const PROOF_BUNDLE: &str = "ADS_Proof.fab";
 const PROOF_RECEIPT: &str = "ADS_Proof.receipt";
+/// The same pair beside a SAF-T extract.
+const SAFT_PROOF_BUNDLE: &str = "SAFT_Proof.fab";
+const SAFT_PROOF_RECEIPT: &str = "SAFT_Proof.receipt";
+
+/// The bundle and receipt file names a proved `format` package carries.
+fn proof_files(format: &str) -> (&'static str, &'static str) {
+    if format == "saft" {
+        (SAFT_PROOF_BUNDLE, SAFT_PROOF_RECEIPT)
+    } else {
+        (PROOF_BUNDLE, PROOF_RECEIPT)
+    }
+}
 
 /// One output file of an export: its name in the package and its bytes.
 struct ExportFile {
@@ -67,19 +79,21 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "omit --out to receive the complete export inline",
         ));
     }
-    // An ADS extract with its proofs (plan §13.1, fa-2q91): the complete
-    // prefix of a recorded accumulator state, and the extract selected at
-    // exactly that state's sequence, so fa-verify ads can check every row.
+    // An ADS or SAF-T extract with its proofs (plan §13.1, fa-2q91): the
+    // complete prefix of a recorded accumulator state, and the extract
+    // selected at exactly that state's sequence, so fa-verify ads or saft can
+    // check every row. A proved SAF-T file is written into a new directory
+    // beside its bundle and receipt, as the ADS package is.
     let with_proofs = args.switch("--with-proofs");
     if with_proofs
-        && (format != "ads"
+        && (!matches!(format, "ads" | "saft")
             || output.is_none()
             || args.flag("--as-known-at").is_some()
             || args.flag("--known-at").is_some())
     {
         return Err(usage(
-            "--with-proofs proves an ADS package written with --out, at its proof state's own sequence: no --as-known-at",
-            "fa export ads --period <code> --out <new dir> --with-proofs [--state <oid|latest>] --json",
+            "--with-proofs proves an ADS or SAF-T package written to a new --out directory, at its proof state's own sequence: no --as-known-at",
+            "fa export ads|saft --period <code> --out <new dir> --with-proofs [--state <oid|latest>] --json",
         ));
     }
     if !with_proofs && args.flag("--state").is_some() {
@@ -226,10 +240,10 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let mut paths = Vec::new();
     if let Some(path) = output {
-        if format == "ads" {
+        if format == "ads" || with_proofs {
             std::fs::create_dir(ctx.files.resolve(path)).map_err(|e| {
                 usage(
-                    format!("cannot create the ADS package directory {path}: {e}"),
+                    format!("cannot create the {format} package directory {path}: {e}"),
                     "choose a new --out directory; an existing path is never reused",
                 )
             })?;
@@ -245,9 +259,10 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 paths.push(inner);
             }
             if let Some((produced, _)) = &proved {
+                let (bundle, receipt) = proof_files(format);
                 for (name, bytes) in [
-                    (PROOF_BUNDLE, produced.bundle.bytes.as_slice()),
-                    (PROOF_RECEIPT, produced.receipt.as_slice()),
+                    (bundle, produced.bundle.bytes.as_slice()),
+                    (receipt, produced.receipt.as_slice()),
                 ] {
                     let inner = format!("{path}/{name}");
                     write_new_output_file(&ctx.files, &inner, bytes, "export", "--out")?;
@@ -291,8 +306,8 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 proved.as_ref().map_or(Json::Null, |(produced, key)| {
                     let statement = &produced.checkpoint.checkpoint.body.statement;
                     obj(vec![
-                        ("bundle", s(PROOF_BUNDLE)),
-                        ("receipt", s(PROOF_RECEIPT)),
+                        ("bundle", s(proof_files(format).0)),
+                        ("receipt", s(proof_files(format).1)),
                         ("bundle_digest", s(hex(&produced.bundle.digest))),
                         (
                             "state",

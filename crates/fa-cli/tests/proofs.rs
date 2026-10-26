@@ -1434,6 +1434,144 @@ fn an_account_month_ads_extract_is_proven_by_its_scope_index_offline() {
     );
 }
 
+/// Plan §13.1 (fa-2q91, scoreboard G3-06): `fa export saft --with-proofs`
+/// writes the SAF-T 2.00 extract at exactly a recorded state's sequence,
+/// beside that state's complete-prefix bundle and receipt, in a new
+/// directory. `fa_verify::saft` reads it without fa-formats and judges it
+/// as `fa-verify ads` does: its transactions are exactly the proven entries
+/// the export selects, its balance assertions their refold, and its
+/// accounts the proven chart. An altered amount, a dropped transaction, an
+/// altered assertion, a renamed account or a moved coordinate fails.
+#[test]
+fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    f.post("saft-1", "2026-03-10", "12.34", &evidence);
+    f.post("saft-2", "2026-03-20", "2.00", &evidence);
+    f.checkpoint();
+    // Recorded after the state: not in the extract.
+    f.post("saft-3", "2026-03-25", "5.00", &evidence);
+    let dir = f.dir.join("saft");
+    let line = ok(
+        &f.book,
+        &[
+            "export",
+            "saft",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            dir.to_str().unwrap(),
+            "--with-proofs",
+        ],
+    );
+    let proof = get(&line, "proof");
+    assert_eq!(text(proof, "completeness"), "seq_range_complete");
+    assert_eq!(text(proof, "bundle"), "SAFT_Proof.fab");
+    assert_eq!(integer(&line, "known_at"), integer(proof, "through_seq"));
+    assert_eq!(integer(&line, "entries"), 2);
+    let key: [u8; 32] = unhex(text(proof, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    let xml = std::fs::read_to_string(dir.join("SAF-T.xml")).expect("SAF-T.xml");
+    let bundle = std::fs::read(dir.join("SAFT_Proof.fab")).expect("bundle");
+    let receipt = std::fs::read(dir.join("SAFT_Proof.receipt")).expect("receipt");
+    let verify = |xml: &str| {
+        fa_verify::saft::verify_saft(xml, &bundle, &[key], Some(&receipt))
+            .expect("a well-formed bundle")
+    };
+    let report = verify(&xml);
+    assert!(report.verified(), "{:?}", report.failures);
+    assert_eq!((report.entries, report.rows), (2, 4));
+    assert_eq!(report.tb_rows, 2);
+    assert_eq!(report.chart_rows, Some(2));
+    assert_eq!(report.effective_through, "2026-03-31");
+
+    let fails_on = |bad: &str, part: &str| {
+        assert_ne!(bad, xml, "the planted edit changed nothing");
+        let judged = verify(bad);
+        assert!(!judged.verified(), "{bad}");
+        assert!(
+            judged.failures.iter().any(|f| f.contains(part)),
+            "{part}: {:?}",
+            judged.failures
+        );
+    };
+    // An amount in the transactions, the first entry's debit.
+    fails_on(
+        &xml.replacen(
+            "<DebitAmount>12.34</DebitAmount>",
+            "<DebitAmount>12.35</DebitAmount>",
+            1,
+        ),
+        "is no proven entry",
+    );
+    // A whole transaction dropped.
+    let start = xml.find("    <Transaction>").unwrap();
+    let end =
+        xml[start..].find("    </Transaction>\n").unwrap() + start + "    </Transaction>\n".len();
+    let dropped = format!("{}{}", &xml[..start], &xml[end..]);
+    fails_on(&dropped, "missing from GeneralLedgerEntries");
+    // A balance assertion.
+    fails_on(
+        &xml.replacen("<Amount>14.34</Amount>", "<Amount>14.35</Amount>", 1),
+        "is not the refold",
+    );
+    // An account renamed in the master files.
+    fails_on(
+        &xml.replace(
+            "<AccountDescription>Cash</AccountDescription>",
+            "<AccountDescription>Petty cash</AccountDescription>",
+        ),
+        "GeneralLedgerAccounts row",
+    );
+    // The coordinate moved.
+    let seq = integer(proof, "through_seq");
+    fails_on(
+        &xml.replace(
+            &format!("<KnownAtSeq>{seq}</KnownAtSeq>"),
+            &format!("<KnownAtSeq>{}</KnownAtSeq>", seq + 1),
+        ),
+        "known_at_seq",
+    );
+
+    // `fa-verify saft <dir>` reads the package by its names: exit 0 as
+    // written, 8 when a transaction is dropped, 2 with no key.
+    let cli = |xml_text: &str, with_key: bool| {
+        let mut args = vec![
+            "saft".to_string(),
+            dir.to_str().unwrap().to_string(),
+            "--json".to_string(),
+        ];
+        if with_key {
+            args.extend([
+                "--key".to_string(),
+                text(proof, "checkpoint_public_key").to_string(),
+            ]);
+        }
+        let read = |path: &str| {
+            if path.ends_with("/SAF-T.xml") {
+                Ok(xml_text.as_bytes().to_vec())
+            } else {
+                std::fs::read(path)
+            }
+        };
+        fa_verify::cli::run(&args, &read)
+    };
+    let verified = cli(&xml, true);
+    assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
+    let parsed = json::parse(verified.stdout.trim()).expect("one JSON report");
+    let Json::Arr(checks) = get(&parsed, "checks") else {
+        panic!("checks: {}", verified.stdout);
+    };
+    let extract = checks
+        .iter()
+        .find(|check| text(check, "check") == "saft_extract")
+        .expect("the extract is a named check");
+    assert_eq!(text(extract, "result"), "pass");
+    assert_eq!(cli(&dropped, true).exit, 8);
+    assert_eq!(cli(&xml, false).exit, 2);
+}
+
 #[test]
 fn ads_text_survives_real_post_export_reimport_and_offline_verification() {
     let f = Fixture::new();

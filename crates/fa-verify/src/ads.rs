@@ -84,30 +84,86 @@ pub fn account_vid(book_id: &[u8; 16], code: &str) -> u128 {
     u128::from_le_bytes(low)
 }
 
-/// One GL_Detail row.
+/// One extract row (a GL_Detail row, or a SAF-T transaction line).
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Row {
-    journal_id: String,
-    line: u32,
-    date: String,
-    seq: u64,
-    class: u16,
-    account: String,
-    debit: bool,
-    mantissa: i128,
-    unit: String,
-    scale: u32,
+pub(crate) struct Row {
+    pub(crate) journal_id: String,
+    pub(crate) line: u32,
+    pub(crate) date: String,
+    pub(crate) seq: u64,
+    pub(crate) class: u16,
+    pub(crate) account: String,
+    pub(crate) debit: bool,
+    pub(crate) mantissa: i128,
+    pub(crate) unit: String,
+    pub(crate) scale: u32,
 }
 
 /// One extract entry: its rows in line order.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Extracted {
-    journal_id: String,
-    seq: u64,
-    date: String,
-    class: u16,
-    rows: Vec<Row>,
+pub(crate) struct Extracted {
+    pub(crate) journal_id: String,
+    pub(crate) seq: u64,
+    pub(crate) date: String,
+    pub(crate) class: u16,
+    pub(crate) rows: Vec<Row>,
 }
+
+/// One balance as an extract states it (a Trial_Balance row, or a SAF-T
+/// balance assertion). `side` is `D` or `C`; `scale` is stated by ADS only
+/// (SAF-T states it by the amount's decimals).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatedBalance {
+    pub(crate) line: String,
+    pub(crate) account: String,
+    pub(crate) as_of: String,
+    pub(crate) side: String,
+    pub(crate) amount: String,
+    pub(crate) unit: String,
+    pub(crate) scale: Option<u32>,
+}
+
+/// One chart row as an extract states it; `side` is `D` or `C`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatedAccount {
+    pub(crate) line: String,
+    pub(crate) code: String,
+    pub(crate) name: String,
+    pub(crate) account_type: String,
+    pub(crate) side: String,
+}
+
+/// What an extract states, read by its own format's reader: its coordinate,
+/// entries, balances and chart. A part that does not read is its error.
+pub(crate) struct Stated {
+    pub(crate) effective_through: String,
+    pub(crate) known_at_seq: Option<u64>,
+    pub(crate) entry_count: Option<u64>,
+    pub(crate) account_scope: Option<String>,
+    pub(crate) entries: Result<Vec<Extracted>, String>,
+    pub(crate) balances: Result<Vec<StatedBalance>, String>,
+    pub(crate) chart: Result<Vec<StatedAccount>, String>,
+}
+
+/// The names a format gives its parts, for failure messages.
+pub(crate) struct Parts {
+    /// `ADS` or `SAF-T`.
+    pub(crate) format: &'static str,
+    pub(crate) coordinate: &'static str,
+    pub(crate) entries: &'static str,
+    pub(crate) entry: &'static str,
+    pub(crate) balances: &'static str,
+    pub(crate) chart: &'static str,
+}
+
+const ADS_PARTS: Parts = Parts {
+    format: "ADS",
+    coordinate: "the certificate",
+    entries: "GL_Detail",
+    entry: "GL_Detail entry",
+    balances: "Trial_Balance",
+    chart: "Chart_of_Accounts",
+};
 
 /// One proven entry the export selects.
 struct Proven {
@@ -118,7 +174,7 @@ struct Proven {
 
 /// `value` at `scale` decimal places as an exact mantissa: digits, then a
 /// point and exactly `scale` digits when `scale > 0`.
-fn exact(value: &str, scale: u32) -> Option<i128> {
+pub(crate) fn exact(value: &str, scale: u32) -> Option<i128> {
     let (whole, fraction) = match value.split_once('.') {
         Some((w, f)) if scale > 0 && f.len() == usize::try_from(scale).ok()? => (w, f),
         None if scale == 0 => (value, ""),
@@ -327,6 +383,51 @@ fn same(extract: &Extracted, proven: &Proven, book: &[u8; 16], units: &Units) ->
         })
 }
 
+/// The records a verified bundle authenticates: each record's envelope, the
+/// legs it rebuilds and its proposal bytes.
+pub(crate) type Records = Vec<(LeafEnvelope, Vec<Leg>, Vec<u8>)>;
+
+/// Verify the bundle and keep the records it authenticates.
+pub(crate) fn prove(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    receipt: Option<&[u8]>,
+) -> Result<(crate::bundle::BundleReport, Records), BundleError> {
+    let mut records: Records = Vec::new();
+    let report = verify_bundle_observing(
+        bundle,
+        trusted_keys,
+        receipt,
+        |_, _| {},
+        |envelope, legs, proposal| {
+            records.push((envelope.clone(), legs.to_vec(), proposal.to_vec()));
+        },
+    )?;
+    Ok((report, records))
+}
+
+impl AdsReport {
+    /// The bundle's report, before any extract is judged against it.
+    pub(crate) fn new(
+        bundle: crate::bundle::BundleReport,
+        effective_through: String,
+        known_at_seq: Option<u64>,
+    ) -> Self {
+        Self {
+            bundle,
+            effective_through,
+            known_at_seq,
+            account_scope: None,
+            entries: 0,
+            rows: 0,
+            tb_rows: 0,
+            chart_rows: None,
+            units: Vec::new(),
+            failures: Vec::new(),
+        }
+    }
+}
+
 /// Verify the bundle, then the extract against the entries it proves. The
 /// bundle's own failure is reported, never masked; the extract is judged
 /// only against a verified complete-prefix bundle.
@@ -339,30 +440,14 @@ pub fn verify_ads(
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
 ) -> Result<AdsReport, BundleError> {
-    let mut records: Vec<(LeafEnvelope, Vec<Leg>, Vec<u8>)> = Vec::new();
-    let report = verify_bundle_observing(
-        bundle,
-        trusted_keys,
-        receipt,
-        |_, _| {},
-        |envelope, legs, proposal| {
-            records.push((envelope.clone(), legs.to_vec(), proposal.to_vec()));
-        },
-    )?;
-    let mut out = AdsReport {
-        bundle: report,
-        effective_through: field(certificate, "effective_through")
+    let (report, records) = prove(bundle, trusted_keys, receipt)?;
+    let mut out = AdsReport::new(
+        report,
+        field(certificate, "effective_through")
             .unwrap_or_default()
             .to_string(),
-        known_at_seq: field(certificate, "known_at_seq").and_then(|v| v.parse().ok()),
-        account_scope: None,
-        entries: 0,
-        rows: 0,
-        tb_rows: 0,
-        chart_rows: None,
-        units: Vec::new(),
-        failures: Vec::new(),
-    };
+        field(certificate, "known_at_seq").and_then(|v| v.parse().ok()),
+    );
     if !out.bundle.verified() {
         out.failures
             .push("the bundle did not verify, so GL_Detail was not judged against it".into());
@@ -392,22 +477,51 @@ pub fn verify_ads(
             return Ok(out);
         }
     };
+    let stated = Stated {
+        effective_through: out.effective_through.clone(),
+        known_at_seq: out.known_at_seq,
+        entry_count: field(certificate, "entry_count").and_then(|v| v.parse().ok()),
+        account_scope: scoped,
+        entries: extracted(gl_detail, escaped),
+        balances: ads_balances(trial_balance, escaped),
+        chart: ads_chart(chart_of_accounts, escaped),
+    };
+    Ok(judge(out, records, stated, &ADS_PARTS))
+}
+
+/// Judge what an extract states against the records a verified bundle
+/// authenticates (the core `fa-verify ads` and `fa-verify saft` share):
+/// the coordinate is the checkpoint's; the bundle proves the extract's scope
+/// complete; the entries are exactly the proven entries the export selects;
+/// the balances are exactly their refold; and, against a complete prefix,
+/// the chart is exactly the one the proven entries declare.
+pub(crate) fn judge(
+    mut out: AdsReport,
+    records: Records,
+    stated: Stated,
+    parts: &Parts,
+) -> AdsReport {
+    let scoped = stated.account_scope;
     out.account_scope.clone_from(&scoped);
     let manifest = out.bundle.manifest.clone();
-    if out.known_at_seq != Some(manifest.through_seq) {
+    if stated.known_at_seq != Some(manifest.through_seq) {
         out.failures.push(format!(
-            "the certificate's known_at_seq ({}) is not the checkpoint's through_seq ({})",
-            out.known_at_seq
+            "{}'s known_at_seq ({}) is not the checkpoint's through_seq ({})",
+            parts.coordinate,
+            stated
+                .known_at_seq
                 .map_or_else(|| "absent".to_string(), |s| s.to_string()),
             manifest.through_seq
         ));
-        return Ok(out);
+        return out;
     }
-    let cutoff = out.effective_through.clone();
+    let cutoff = stated.effective_through.clone();
     if cutoff.len() != 10 {
-        out.failures
-            .push("the certificate states no effective_through date".into());
-        return Ok(out);
+        out.failures.push(format!(
+            "{} states no effective_through date",
+            parts.coordinate
+        ));
+        return out;
     }
     // The whole chart needs a complete prefix. One account's extract needs
     // the prefix or that account's scope-index run over every effective
@@ -424,12 +538,15 @@ pub fn verify_ads(
     };
     if !complete {
         out.failures.push(match &scoped {
-            None => "the bundle proves a narrower scope; a whole-chart ADS extract is judged against a complete-prefix bundle".into(),
+            None => format!(
+                "the bundle proves a narrower scope; a whole-chart {} extract is judged against a complete-prefix bundle",
+                parts.format
+            ),
             Some(code) => format!(
                 "the bundle proves neither the complete prefix nor account {code}'s entries over every effective day through {cutoff}"
             ),
         });
-        return Ok(out);
+        return out;
     }
     // A complete prefix carries the chart's declarations, so
     // Chart_of_Accounts is judged against them. One account's run carries
@@ -445,7 +562,7 @@ pub fn verify_ads(
                 out.failures.push(format!(
                     "the proven chart declarations do not decode: {why}"
                 ));
-                return Ok(out);
+                return out;
             }
         }
     } else {
@@ -479,11 +596,11 @@ pub fn verify_ads(
             legs,
         });
     }
-    let extract = match extracted(gl_detail, escaped) {
+    let extract = match stated.entries {
         Ok(extract) => extract,
         Err(why) => {
             out.failures.push(why);
-            return Ok(out);
+            return out;
         }
     };
     let mut units = Units::default();
@@ -506,30 +623,36 @@ pub fn verify_ads(
                     .saturating_add(u64::try_from(entry.rows.len()).unwrap_or(u64::MAX));
             }
             _ => out.failures.push(format!(
-                "GL_Detail entry {} (recorded at {}) is no proven entry selected through {cutoff}",
-                entry.journal_id, entry.seq
+                "{} {} (recorded at {}) is no proven entry selected through {cutoff}",
+                parts.entry, entry.journal_id, entry.seq
             )),
         }
     }
     for (seq, list) in &proven {
         for p in list {
             out.failures.push(format!(
-                "a proven entry recorded at {seq} (effective {}, {} legs) is missing from GL_Detail",
+                "a proven entry recorded at {seq} (effective {}, {} legs) is missing from {}",
                 p.date,
-                p.legs.len()
+                p.legs.len(),
+                parts.entries
             ));
         }
     }
-    let stated = field(certificate, "entry_count").and_then(|v| v.parse::<u64>().ok());
-    if out.failures.is_empty() && stated != Some(out.entries) {
+    if out.failures.is_empty() && stated.entry_count != Some(out.entries) {
         out.failures.push(format!(
-            "the certificate's entry_count ({}) is not the {} entries GL_Detail holds",
-            stated.map_or_else(|| "absent".to_string(), |c| c.to_string()),
-            out.entries
+            "{}'s entry_count ({}) is not the {} entries {} holds",
+            parts.coordinate,
+            stated
+                .entry_count
+                .map_or_else(|| "absent".to_string(), |c| c.to_string()),
+            out.entries,
+            parts.entries
         ));
     }
     if out.failures.is_empty() {
-        match trial_balance_rows(trial_balance, &extract, &cutoff, escaped, scoped.as_deref()) {
+        match stated.balances.and_then(|balances| {
+            balance_rows(&balances, &extract, &cutoff, scoped.as_deref(), parts)
+        }) {
             Ok(rows) => out.tb_rows = rows,
             Err(why) => out.failures.push(why),
         }
@@ -537,19 +660,16 @@ pub fn verify_ads(
     if out.failures.is_empty()
         && let Some(declared) = &declared
     {
-        match chart_rows(
-            chart_of_accounts,
-            declared,
-            &extract,
-            scoped.as_deref(),
-            escaped,
-        ) {
+        match stated
+            .chart
+            .and_then(|chart| chart_matches(&chart, declared, &extract, scoped.as_deref(), parts))
+        {
             Ok(rows) => out.chart_rows = Some(rows),
             Err(why) => out.failures.push(why),
         }
     }
     out.units = units.by_code.into_iter().collect();
-    Ok(out)
+    out
 }
 
 /// The registered account type names (`account_types.toml`, tags 1..=8),
@@ -567,16 +687,57 @@ const ACCOUNT_TYPE_NAMES: [&str; 8] = [
 /// The Chart_of_Accounts header `fa export ads` writes.
 pub const CHART_HEADER: &str = "GL_Account_Number|GL_Account_Name|Account_Type|Normal_Balance";
 
-/// Check `chart` is exactly the declared chart's rows, in code order: the
-/// whole chart, or for one account's extract the accounts its rows and its
-/// scope name. Each row states the declared code, name, registered type
-/// name and normal balance (D or C). Returns the row count.
+/// The ADS Chart_of_Accounts rows as stated.
+fn ads_chart(chart: &str, escaped: bool) -> Result<Vec<StatedAccount>, String> {
+    let mut lines = chart.split('\n');
+    if lines.next() != Some(CHART_HEADER) {
+        return Err("Chart_of_Accounts does not start with the ADS chart header".into());
+    }
+    lines
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let decoded = fields(line, escaped, false)?;
+            let [code, name, account_type, side] = <[String; 4]>::try_from(decoded)
+                .map_err(|_| format!("Chart_of_Accounts row `{line}` has not four fields"))?;
+            Ok(StatedAccount {
+                line: line.to_string(),
+                code,
+                name,
+                account_type,
+                side,
+            })
+        })
+        .collect()
+}
+
+/// ADS's [`chart_matches`] over Chart_of_Accounts text.
+#[cfg(test)]
 fn chart_rows(
     chart: &str,
     declared: &BTreeMap<u128, crate::report::DeclaredAccount>,
     extract: &[Extracted],
     scope: Option<&str>,
     escaped: bool,
+) -> Result<u64, String> {
+    chart_matches(
+        &ads_chart(chart, escaped)?,
+        declared,
+        extract,
+        scope,
+        &ADS_PARTS,
+    )
+}
+
+/// Check `stated` is exactly the declared chart's rows, in code order: the
+/// whole chart, or for one account's extract the accounts its rows and its
+/// scope name. Each row states the declared code, name, registered type
+/// name and normal balance (D or C). Returns the row count.
+pub(crate) fn chart_matches(
+    stated: &[StatedAccount],
+    declared: &BTreeMap<u128, crate::report::DeclaredAccount>,
+    extract: &[Extracted],
+    scope: Option<&str>,
+    parts: &Parts,
 ) -> Result<u64, String> {
     let mut expected: Vec<&crate::report::DeclaredAccount> = match scope {
         None => declared.values().collect(),
@@ -593,20 +754,15 @@ fn chart_rows(
         }
     };
     expected.sort_by(|a, b| a.code.cmp(&b.code));
-    let mut lines = chart.split('\n');
-    if lines.next() != Some(CHART_HEADER) {
-        return Err("Chart_of_Accounts does not start with the ADS chart header".into());
-    }
-    let stated: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
     if stated.len() != expected.len() {
         return Err(format!(
-            "Chart_of_Accounts has {} rows; the proven chart declares {} for this extract",
+            "{} has {} rows; the proven chart declares {} for this extract",
+            parts.chart,
             stated.len(),
             expected.len()
         ));
     }
-    for (line, account) in stated.iter().zip(&expected) {
-        let decoded = fields(line, escaped, false)?;
+    for (row, account) in stated.iter().zip(&expected) {
         let type_name = usize::from(account.account_type)
             .checked_sub(1)
             .and_then(|i| ACCOUNT_TYPE_NAMES.get(i))
@@ -616,35 +772,83 @@ fn chart_rows(
         } else {
             "D"
         };
-        let agrees = decoded.len() == 4
-            && decoded[0] == account.code
-            && decoded[1] == account.name
-            && type_name.is_some_and(|name| decoded[2] == name)
-            && decoded[3] == side;
+        let agrees = row.code == account.code
+            && row.name == account.name
+            && type_name.is_some_and(|name| row.account_type == name)
+            && row.side == side;
         if !agrees {
             return Err(format!(
-                "Chart_of_Accounts row `{line}` is not the proven declaration of account {} ({}, {}, {side})",
+                "{} row `{}` is not the proven declaration of account {} ({}, {}, {side})",
+                parts.chart,
+                row.line,
                 account.code,
                 account.name,
                 type_name.unwrap_or("an unregistered type")
             ));
         }
     }
-    u64::try_from(stated.len()).map_err(|_| "Chart_of_Accounts row count".to_string())
+    u64::try_from(stated.len()).map_err(|_| format!("{} row count", parts.chart))
 }
 
-/// Check `trial_balance` is exactly the refold of the extract's rows: one
-/// row per (account, currency) in that order, as of `cutoff`, the signed
-/// sum of its legs (debits positive) stated as D (zero or more) or C with
-/// its magnitude at the currency's one scale. A scoped extract folds its
-/// account's rows only: the other legs of its entries are context. Returns
-/// the row count.
+/// The ADS Trial_Balance rows as stated.
+fn ads_balances(trial_balance: &str, escaped: bool) -> Result<Vec<StatedBalance>, String> {
+    let mut lines = trial_balance.split('\n');
+    if lines.next() != Some(TB_HEADER) {
+        return Err("Trial_Balance does not start with the ADS trial balance header".into());
+    }
+    lines
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let decoded = fields(line, escaped, false)?;
+            let [account, as_of, side, amount, unit, scale] = <[String; 6]>::try_from(decoded)
+                .map_err(|_| format!("Trial_Balance row `{line}` has not six fields"))?;
+            Ok(StatedBalance {
+                line: line.to_string(),
+                account,
+                as_of,
+                side,
+                amount,
+                unit,
+                scale: Some(
+                    scale
+                        .parse()
+                        .map_err(|_| format!("Trial_Balance row `{line}`: Unit_Scale"))?,
+                ),
+            })
+        })
+        .collect()
+}
+
+/// ADS's [`balance_rows`] over Trial_Balance text.
+#[cfg(test)]
 fn trial_balance_rows(
     trial_balance: &str,
     extract: &[Extracted],
     cutoff: &str,
     escaped: bool,
     scope: Option<&str>,
+) -> Result<u64, String> {
+    balance_rows(
+        &ads_balances(trial_balance, escaped)?,
+        extract,
+        cutoff,
+        scope,
+        &ADS_PARTS,
+    )
+}
+
+/// Check `stated` is exactly the refold of the extract's rows: one row per
+/// (account, currency) in that order, as of `cutoff`, the signed sum of its
+/// legs (debits positive) stated as D (zero or more) or C with its
+/// magnitude at the currency's one scale. A scoped extract folds its
+/// account's rows only: the other legs of its entries are context. Returns
+/// the row count.
+pub(crate) fn balance_rows(
+    stated: &[StatedBalance],
+    extract: &[Extracted],
+    cutoff: &str,
+    scope: Option<&str>,
+    parts: &Parts,
 ) -> Result<u64, String> {
     let mut folded: BTreeMap<(&str, &str), (i128, u32)> = BTreeMap::new();
     for row in extract
@@ -656,49 +860,47 @@ fn trial_balance_rows(
             .entry((row.account.as_str(), row.unit.as_str()))
             .or_insert((0, row.scale));
         if cell.1 != row.scale {
-            return Err(format!("GL_Detail states two scales for {}", row.unit));
+            return Err(format!(
+                "{} states two scales for {}",
+                parts.entries, row.unit
+            ));
         }
         let moved = if row.debit {
             cell.0.checked_add(row.mantissa)
         } else {
             cell.0.checked_sub(row.mantissa)
         };
-        cell.0 =
-            moved.ok_or_else(|| "a GL_Detail balance exceeds the exact fold range".to_string())?;
+        cell.0 = moved
+            .ok_or_else(|| format!("a {} balance exceeds the exact fold range", parts.entries))?;
     }
-    let mut lines = trial_balance.split('\n');
-    if lines.next() != Some(TB_HEADER) {
-        return Err("Trial_Balance does not start with the ADS trial balance header".into());
-    }
-    let stated: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
     if stated.len() != folded.len() {
         return Err(format!(
-            "Trial_Balance has {} rows; the proven GL_Detail folds to {} (account, currency) balances",
+            "{} has {} rows; the proven {} folds to {} (account, currency) balances",
+            parts.balances,
             stated.len(),
+            parts.entries,
             folded.len()
         ));
     }
-    for (line, ((account, unit), (balance, scale))) in stated.iter().zip(&folded) {
-        let decoded = fields(line, escaped, false)?;
-        let fields: Vec<&str> = decoded.iter().map(String::as_str).collect();
+    for (row, ((account, unit), (balance, scale))) in stated.iter().zip(&folded) {
         let magnitude = balance
             .checked_abs()
-            .ok_or_else(|| "a GL_Detail balance exceeds the exact fold range".to_string())?;
+            .ok_or_else(|| format!("a {} balance exceeds the exact fold range", parts.entries))?;
         let side = if *balance < 0 { "C" } else { "D" };
-        let agrees = fields.len() == 6
-            && fields[0] == *account
-            && fields[1] == cutoff
-            && fields[2] == side
-            && fields[5].parse::<u32>().ok() == Some(*scale)
-            && exact(fields[3], *scale) == Some(magnitude)
-            && fields[4] == *unit;
+        let agrees = row.account == *account
+            && row.as_of == cutoff
+            && row.side == side
+            && row.scale.is_none_or(|stated| stated == *scale)
+            && exact(&row.amount, *scale) == Some(magnitude)
+            && row.unit == *unit;
         if !agrees {
             return Err(format!(
-                "Trial_Balance row `{line}` is not the refold of the proven GL_Detail ({account} {unit}: {side} {magnitude} at scale {scale}, as of {cutoff})"
+                "{} row `{}` is not the refold of the proven {} ({account} {unit}: {side} {magnitude} at scale {scale}, as of {cutoff})",
+                parts.balances, row.line, parts.entries
             ));
         }
     }
-    u64::try_from(stated.len()).map_err(|_| "Trial_Balance row count".to_string())
+    u64::try_from(stated.len()).map_err(|_| format!("{} row count", parts.balances))
 }
 
 #[cfg(test)]
