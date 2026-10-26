@@ -5759,6 +5759,21 @@ when_all = ["--summary"]
 when_any = ["--certify", "--certificate-out"]
 ops = ["read", "produce"]
 
+# Native report certification retains metadata just as every other report
+# family does. Its scope remains judged at the selected recorded frontier.
+[[bound]]
+verbs = ["tb", "open-items"]
+when_any = ["--certify", "--certificate-out"]
+ops = ["read", "produce"]
+reach = "judged"
+
+[[bound]]
+verbs = ["explain"]
+subcommands = ["balance"]
+when_any = ["--certify", "--certificate-out"]
+ops = ["read", "produce"]
+reach = "judged"
+
 # Bank reconciliation metadata has its own admitted scope even when reached
 # through the generic procedure and finding tools. Retained certificates are
 # identified under Read, then their native bank replay requires Reconcile.
@@ -5879,7 +5894,6 @@ ops = ["read"]
 # the latest of its periods, an activity basis exactly its periods.
 [[bound]]
 verbs = ["statement"]
-when_all = ["--functional"]
 when_any = ["--certify", "--certificate-out"]
 ops = ["read", "produce"]
 reach = "judged"

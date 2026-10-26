@@ -1910,7 +1910,22 @@ mod bound_tests {
             ops("gl", Some("detail"), None, &["--certify"], &[]),
             names(&["read", "produce"])
         );
-        assert_eq!(ops("tb", None, None, &["--certify"], &[]), names(&["read"]));
+        for (verb, subcommand) in [
+            ("tb", None),
+            ("statement", Some("balance-sheet")),
+            ("statement", Some("income-statement")),
+            ("open-items", None),
+            ("explain", Some("balance")),
+        ] {
+            assert_eq!(ops(verb, subcommand, None, &[], &[]), names(&["read"]));
+            for flag in ["--certify", "--certificate-out"] {
+                assert_eq!(
+                    ops(verb, subcommand, None, &[flag], &[]),
+                    names(&["read", "produce"]),
+                    "{verb} {subcommand:?} {flag}"
+                );
+            }
+        }
         assert_eq!(
             ops("tb", None, None, &["--summary", "--certify"], &[]),
             names(&["read", "produce"])

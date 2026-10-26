@@ -191,7 +191,11 @@ fn scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them() {
     let pin_text = pin.to_string();
 
     // A token confined to March reads March's activity and its explanations.
-    let (march, commitment) = f.issue("auditor-march", &["--period", "FY2026-P03"]);
+    let (march, commitment) = f.issue_ops(
+        "auditor-march",
+        &["read", "produce"],
+        &["--period", "FY2026-P03"],
+    );
     let scope = f.scope_of(&commitment);
     assert_eq!(
         scope.get("periods"),

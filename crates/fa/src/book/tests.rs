@@ -3964,6 +3964,62 @@ fn certificate_status_detects_period_catalog_changes_without_a_new_entry() {
 }
 
 #[test]
+fn native_certificate_retention_requires_produce() {
+    use crate::TrialBalanceSelection;
+    let (mut book, _, day, _) = certified_fixture();
+    let certified = book
+        .certify_trial_balance(TrialBalanceSelection::AsOf(day), None)
+        .unwrap()
+        .unwrap();
+    let before = book.head().unwrap();
+    let reader = Capability::embedded(VId(1), &["read"]).unwrap();
+    let refused = book
+        .retain_certificate_authorized(&certified.certificate, &reader)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("FA-REF-011", 7));
+    assert!(refused.message.contains("produce"));
+    assert_eq!(book.head().unwrap(), before);
+    assert!(
+        book.read_certificate(&certified.certificate.digest)
+            .unwrap()
+            .is_err()
+    );
+
+    let producer = Capability::embedded(VId(1), &["read", "produce"]).unwrap();
+    let retained = book
+        .retain_certificate_authorized(&certified.certificate, &producer)
+        .unwrap()
+        .unwrap();
+    assert!(retained.recorded_at > before);
+    assert_eq!(
+        book.read_certificate(&retained.digest).unwrap().unwrap(),
+        certified.certificate
+    );
+    let published = book.head().unwrap();
+    assert_eq!(
+        book.retain_certificate_authorized(&certified.certificate, &producer)
+            .unwrap()
+            .unwrap(),
+        retained
+    );
+    assert_eq!(
+        book.head().unwrap(),
+        published,
+        "exact retry publishes nothing"
+    );
+    assert_eq!(
+        book.retain_certificate_authorized(&certified.certificate, &reader)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "FA-REF-011",
+        "an existing locator does not grant retention authority"
+    );
+    assert_eq!(book.head().unwrap(), published);
+}
+
+#[test]
 fn retained_certificates_are_idempotent_without_changing_the_certified_report() {
     use crate::{CertificateStatus, TrialBalanceSelection};
     let (mut book, _, day, _) = certified_fixture();

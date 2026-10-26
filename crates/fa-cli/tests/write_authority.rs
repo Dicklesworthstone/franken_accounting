@@ -52,6 +52,8 @@ const ZERO_DIGEST: &str = "00000000000000000000000000000000000000000000000000000
 enum Admitted {
     /// Its inputs are complete: it succeeds (exit 0).
     Succeeds,
+    /// The read succeeds and publishes its immutable certificate receipt.
+    RetainsCertificate,
     /// Its inputs are placeholders: it may fail, but never on authority.
     Reaches,
 }
@@ -372,8 +374,53 @@ fn write_files(dir: &Path, files: &[(&str, &str)]) {
 }
 
 fn rows(document: &str, entry: &str) -> Vec<Row> {
-    use Admitted::{Reaches, Succeeds};
+    use Admitted::{Reaches, RetainsCertificate, Succeeds};
     let mut rows = vec![
+        row(
+            &["tb", "--period", "FY2026-P03", "--certify"],
+            &[Op::Read, Op::Produce],
+            RetainsCertificate,
+        ),
+        row(
+            &[
+                "statement",
+                "balance-sheet",
+                "--for",
+                "FY2026-P03",
+                "--certify",
+            ],
+            &[Op::Read, Op::Produce],
+            RetainsCertificate,
+        ),
+        row(
+            &[
+                "explain",
+                "balance",
+                "1000",
+                "--period",
+                "FY2026-P03",
+                "--certify",
+            ],
+            &[Op::Read, Op::Produce],
+            RetainsCertificate,
+        ),
+        row(
+            &["open-items", "--account", "1200", "--certify"],
+            &[Op::Read, Op::Produce],
+            RetainsCertificate,
+        ),
+        row(
+            &[
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--dimension",
+                "cost_center=not-created",
+                "--certify",
+            ],
+            &[Op::Read, Op::Produce],
+            Reaches,
+        ),
         row(
             &["post", "--intent", "post.json", "--evidence", document],
             &[Op::Post],
@@ -1269,6 +1316,25 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
     );
     bundle.output = Some("matrix.fab");
     rows.push(bundle);
+    for args in [
+        vec!["tb", "--period", "FY2026-P03"],
+        vec!["statement", "income-statement", "--for", "FY2026-P03"],
+        vec!["explain", "balance", "1000", "--period", "FY2026-P03"],
+        vec!["open-items", "--account", "1200"],
+    ] {
+        let file = match args[0] {
+            "tb" => "matrix-tb.certificate",
+            "statement" => "matrix-statement.certificate",
+            "explain" => "matrix-explanation.certificate",
+            "open-items" => "matrix-open-items.certificate",
+            _ => unreachable!(),
+        };
+        let mut args = args;
+        args.extend(["--certificate-out", file]);
+        let mut report = row(&args, &[Op::Read, Op::Produce], RetainsCertificate);
+        report.output = Some(file);
+        rows.push(report);
+    }
     rows
 }
 
@@ -1512,6 +1578,29 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
             Admitted::Succeeds => {
                 assert_eq!(exit, 0, "exact ops {:?}: {out:?}", row.argv);
                 parse_line(&out);
+            }
+            Admitted::RetainsCertificate => {
+                assert_eq!(exit, 0, "exact ops {:?}: {out:?}", row.argv);
+                let lines: Vec<_> = out.stdout.lines().collect();
+                assert_eq!(lines.len(), 2, "report and certificate: {out:?}");
+                for line in &lines {
+                    registry().unwrap().check_line(line).expect("robot schema");
+                }
+                let receipt = json::parse(lines[1]).expect("certificate receipt");
+                assert_eq!(
+                    receipt.get("event").and_then(Json::as_str),
+                    Some("report_certificate"),
+                    "{out:?}"
+                );
+                let digest = receipt
+                    .get("data")
+                    .and_then(|data| data.get("oid"))
+                    .and_then(Json::as_str)
+                    .expect("retained certificate digest");
+                assert_eq!(digest.len(), 64, "{out:?}");
+                if let Some(file) = row.output {
+                    assert!(m.dir.join(file).exists(), "certificate copy is written");
+                }
             }
             Admitted::Reaches => {
                 if exit != 0 {

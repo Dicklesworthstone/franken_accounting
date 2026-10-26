@@ -4436,7 +4436,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 
     /// Retain verified canonical certificate bytes after verifying current
-    /// `read` authority for this book (fa-1nx).
+    /// `read` and `produce` authority for this book (fa-mg2j). Retention
+    /// publishes metadata even though producing the report itself is a read.
     pub async fn retain_certificate_authorized(
         &mut self,
         cx: &PurposeContexts,
@@ -4444,7 +4445,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::RetainedCertificate> {
         if let Err(denial) =
-            fa_policy::admit_read(capability, capability.holder(), self.context.book_id)
+            fa_policy::admit_read(capability, capability.holder(), self.context.book_id).and_then(
+                |()| {
+                    fa_policy::require(
+                        capability,
+                        fa_policy::Op::Produce,
+                        "retaining a report certificate",
+                    )
+                },
+            )
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }

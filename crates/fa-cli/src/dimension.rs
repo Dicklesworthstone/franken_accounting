@@ -433,7 +433,14 @@ pub(crate) fn tb(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     registered(dimension, TB)?;
     let who = ctx.principal(args);
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
-    let cap = ctx.capability(args, &["read"])?;
+    let cap = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
     let mut book = ctx
         .books
         .open_admitted(args, |book| crate::rea::admit_read(book, who, &cap))?;
