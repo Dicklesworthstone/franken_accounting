@@ -186,10 +186,10 @@ impl Fixture {
     }
 }
 
-/// `"obligations"` declaring one contractual installment on leg 1.
+/// `"obligation_maturity"` declaring one contractual installment on leg 1.
 fn due(on: &str, amount: &str) -> String {
     format!(
-        r#""obligations":[{{"leg":1,"status":"contractual","installments":[{{"due":"{on}","amount":"{amount} USD"}}]}}]"#
+        r#""obligation_maturity":[{{"ordinal":1,"status":"contractual","installments":[{{"due_date":"{on}","amount":"{amount} USD"}}]}}]"#
     )
 }
 
@@ -650,7 +650,7 @@ fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
             ("debit", "6000", "40.00", None),
             ("credit", "2000", "40.00", None),
         ],
-        r#""obligations":[{"leg":0,"status":"contractual","installments":[{"due":"2026-05-15","amount":"40.00 USD"}]}]"#,
+        r#""obligation_maturity":[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-05-15","amount":"40.00 USD"}]}]"#,
     );
     assert_eq!(code, 2, "{}", debit.render());
     assert!(

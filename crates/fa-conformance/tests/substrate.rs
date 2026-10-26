@@ -1981,10 +1981,10 @@ mod forensic_semantics {
     //! the head's balance-sheet screen differs, so the equality is not vacuous.
     //! Every expected value is a literal from the economic history.
     //!
-    //! Not covered here: a dated valuation term on the balance-sheet screen.
-    //! fa-lantern's `VALUATION_ADJUSTMENT_EXT_TAG` (0x5356) is not a registered
-    //! entry extension, so `EntryPayload::validate` refuses any entry that
-    //! carries one; the screen runs on the signed posted basis (fa-8j3g).
+    //! Not covered here: a dated valuation term on the balance-sheet screen,
+    //! so the screen runs on the signed posted basis. Valuation inputs are
+    //! entry extension 34 (fa-8j3g); the fa-cli forensic workflow test posts
+    //! one through `fa post`.
 
     use super::*;
     use fa_journal::evidence::{Document, add_document};

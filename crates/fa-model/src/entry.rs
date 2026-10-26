@@ -215,6 +215,11 @@ pub const RULE_INPUTS_EXTENSION: u16 = 32;
 /// ([`crate::obligation::InlineObligationTerms`]); validated against the
 /// legs by [`crate::obligation::validate_terms`].
 pub const OBLIGATION_MATURITY_EXTENSION: u16 = 33;
+/// Extension tag 34, `fa:valuation-adjustment:v1` (plan §11.6, bead fa-8j3g):
+/// explicit dated valuation inputs this entry carries
+/// ([`crate::valuation::InlineValuationTerms`]); validated by
+/// [`crate::valuation::validate_terms`].
+pub const VALUATION_ADJUSTMENT_EXTENSION: u16 = 34;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -251,6 +256,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     RECURRING_OCCURRENCE_EXTENSION,
     RULE_INPUTS_EXTENSION,
     OBLIGATION_MATURITY_EXTENSION,
+    VALUATION_ADJUSTMENT_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1799,6 +1805,13 @@ impl EntryPayload {
         {
             crate::obligation::validate_terms(bytes, &self.legs)
                 .map_err(|(what, why)| invalid(what, why))?;
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(t, _)| *t == VALUATION_ADJUSTMENT_EXTENSION)
+        {
+            crate::valuation::validate_terms(bytes).map_err(|(what, why)| invalid(what, why))?;
         }
         if let (Some((_, bytes)), EntryOrigin::Rule { event_ref, .. }) = (
             self.extensions

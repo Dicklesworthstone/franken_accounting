@@ -34,6 +34,7 @@ pub mod rea;
 pub mod revaluation;
 pub mod symbols;
 pub mod unit;
+pub mod valuation;
 
 pub use account::AccountType;
 pub use canon::{DecodeError, EncodeError, Reader, Writer};
