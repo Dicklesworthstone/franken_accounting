@@ -2471,7 +2471,9 @@ struct InvestorPopulation {
 /// and from words in the entry's description (fa-kxc4). Version 3 attributes
 /// each entry's cash per `(unit, legal entity)` partition to the investors
 /// whose own legs fund or receive it ([`attribution`], fa-6l8g); version 2
-/// gave every party an entry named its whole cash.
+/// gave every party an entry named its whole cash. Version 4 keeps in the
+/// population only parties with an investor movement (fa-yugf.83); version 3
+/// kept every party with attributed cash in.
 fn collect_investor_positions(
     procedure: &str,
     snapshot: &Snapshot,
@@ -2620,10 +2622,14 @@ fn collect_investor_positions(
         }
     }
 
-    // Retain parties that invested principal (cash_in > 0) or touched an explicit investor account
+    // Retain only investors: parties with an investor movement, whose
+    // contra leg is on an Equity account or one holding the investor_capital
+    // role (the registry summary; fa-yugf.83). A member's other attributed
+    // cash still counts, so a payout booked through an expense account still
+    // reaches its investor; a vendor's refund makes no one an investor.
     let positions: Vec<InvestorPosition> = positions
         .into_iter()
-        .filter(|(k, p)| p.cash_in > 0 || explicit_investor_party.contains(k))
+        .filter(|(k, _)| explicit_investor_party.contains(k))
         .map(|(_, p)| p)
         .collect();
 
@@ -2669,7 +2675,7 @@ impl Procedure for PonziNetInvestment {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        4
     }
     fn params(&self) -> &Params {
         &self.params
@@ -3053,7 +3059,7 @@ impl Procedure for DistributionRisingTide {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        4
     }
     fn params(&self) -> &Params {
         &self.params
@@ -3226,7 +3232,7 @@ impl Procedure for DistributionProRata {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        4
     }
     fn params(&self) -> &Params {
         &self.params
