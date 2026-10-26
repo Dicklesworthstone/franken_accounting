@@ -67,6 +67,7 @@ reference_verdict = "FA-REF-010"
 expectation = "W-D-01"
 fact = "F4"
 basis = ["F4", "F4-p26"]
+admitted_cell = ["evidence_attached=placeholder_reviewed"]
 cite = ["F4#0"]
 cite_status = "Sd"
 severity = "High"
@@ -81,6 +82,7 @@ expectation = "W-D-01"
 fact = "F9"
 basis = ["F9"]
 branch_attrs = ["leg_split"]
+admitted_cell = ["evidence_attached=placeholder_reviewed"]
 cite = ["F9#0"]
 cite_status = "Rel(account_vid_order)"
 rel_rule = "min_vid_debit_leg{fixed_asset}"
@@ -95,6 +97,7 @@ expectation = "W-D-03"
 fact = "F4"
 basis = ["F4", "F4-p26"]
 branch_attrs = ["leg_split"]
+admitted_cell = ["evidence_attached=placeholder_reviewed"]
 cite = ["F4#0"]
 cite_status = "Sd"
 severity_status = "B(leg_split)"

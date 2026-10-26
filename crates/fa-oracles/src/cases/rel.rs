@@ -113,13 +113,17 @@ pub struct Expected {
     pub ordinals: Vec<i128>,
 }
 
+/// The order the procedure sorts a debit leg by: (account VId, unit,
+/// magnitude).
+type SortKey<'a> = (u128, &'a str, i128);
+
 /// The debit legs on accounts holding the rule's role, keyed as the
 /// procedure sorts them, with the account's VId supplied by `vid`.
 fn candidates<'a>(
     rule: &RelRule,
     legs: &'a [RelLeg],
     vid: &dyn Fn(&str) -> Option<u128>,
-) -> Option<Vec<((u128, &'a str, i128), &'a RelLeg)>> {
+) -> Option<Vec<(SortKey<'a>, &'a RelLeg)>> {
     let mut out = Vec::new();
     for leg in legs
         .iter()

@@ -485,8 +485,12 @@ const TARGET: &[(&str, Kind, &[ExpectationType])] = &[
     ("statistic_value", Kind::Str, &[E::D, E::N]),
     ("statistic_scale", Kind::Int, &[E::D, E::N]),
     ("statistic_status", Kind::Str, &[E::D]),
-    // A5b: the relational rule of a `Rel(…)` component (rel.rs).
+    // A5b: the relational rule of a `Rel(…)` component (rel.rs), and R-QUAL's
+    // `<interpretive rule>:<fact>` constraints and the sourced facts that
+    // document an exception for this target (§2.6 rule 3; K-BRANCH, K-PRED).
     ("rel_rule", Kind::Str, &[E::D]),
+    ("constraints", Kind::Strs, &[E::D]),
+    ("exceptions", Kind::Strs, &[E::D]),
     ("read_verb", Kind::Str, &[E::T, E::R]),
     ("read_target", Kind::Str, &[E::T, E::R]),
     ("read_coordinate", Kind::Str, &[E::T, E::R]),

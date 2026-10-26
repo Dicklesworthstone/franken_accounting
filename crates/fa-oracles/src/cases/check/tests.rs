@@ -814,7 +814,10 @@ fn case_scoped_check_runs_only_on_its_case() {
             "K-ERRRATE",
             "K-NAMES",
             "K-EVID",
-            "K-REASON"
+            "K-REASON",
+            "K-BRANCH",
+            "K-PRED",
+            "K-JOINT"
         ]
     );
     case.header.id = "xbrl".into();

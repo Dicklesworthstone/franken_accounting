@@ -19,6 +19,13 @@
 #   inside_window  inside or outside the last `class_param` days of the period;
 #   before_after   before, or on or after, the YYYY-MM-DD date `class_param`.
 # `parameters` lists the registry parameters of the reader the rule reads.
+# `components` lists the verdict components the reader's branch on the input moves
+# (A5b): cite, severity, statistic for a procedure; refusal, law_row for a kernel step.
+# A component's status reads exactly the rules that list it. `covariate` names an
+# observed covariate the reader also selects by (§2.6 rule 9): a component of such a
+# rule may be Rel(<covariate>).
+# `legs` (default `all`) names the legs the reader reads for the input: `debit:<role>`
+# or `credit:<role>`, the debit (credit) legs on accounts holding a registered role.
 # code_justification is the file:line where the reader branches on the input.
 # =============================================================================
 
@@ -37,6 +44,7 @@ class_rule = "residue_mod"
 class_param = "round_power"
 parameters = ["round_power"]
 classes = ["multiple", "non_multiple"]
+components = ["cite", "severity", "statistic"]
 code_justification = "crates/fa-lantern/src/jet.rs:113-138"
 
 [[rule]]
@@ -47,6 +55,7 @@ class_rule = "residue_mod"
 class_param = "round_power"
 parameters = ["round_power"]
 classes = ["multiple", "non_multiple"]
+components = ["cite", "severity", "statistic"]
 code_justification = "crates/fa-lantern/src/jet.rs:113-138"
 
 [[rule]]
@@ -56,6 +65,9 @@ reader = "expense.capitalization@2"
 class_rule = "enum"
 parameters = []
 classes = []
+components = ["cite", "statistic"]
+covariate = "account_vid_order"
+legs = "debit:fixed_asset"
 code_justification = "crates/fa-lantern/src/cutoff.rs:1095-1112"
 
 [[rule]]
@@ -66,6 +78,7 @@ class_rule = "inside_window"
 class_param = "window_days"
 parameters = ["window_days"]
 classes = ["inside_window", "outside_window"]
+components = ["cite", "statistic"]
 code_justification = "crates/fa-lantern/src/jet.rs:187-191"
 
 [[rule]]
@@ -75,6 +88,7 @@ reader = "kernel:5. Period law"
 class_rule = "enum"
 parameters = []
 classes = []
+components = ["refusal", "law_row"]
 code_justification = "crates/fa-journal/src/post.rs:2631"
 
 [[rule]]
@@ -84,6 +98,7 @@ reader = "kernel:5. Period law"
 class_rule = "enum"
 parameters = []
 classes = ["Future", "Open", "SoftClosed", "Closed", "Locked"]
+components = ["refusal", "law_row"]
 code_justification = "crates/fa-journal/src/post.rs:2631"
 
 [[rule]]
@@ -93,4 +108,5 @@ reader = "kernel:5b. Evidence minimum"
 class_rule = "enum"
 parameters = []
 classes = ["none", "placeholder_unreviewed", "placeholder_reviewed", "manual_assertion"]
+components = ["refusal", "law_row"]
 code_justification = "crates/fa-journal/src/post.rs:3049"
