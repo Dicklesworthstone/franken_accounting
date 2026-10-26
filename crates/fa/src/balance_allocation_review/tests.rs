@@ -13,6 +13,7 @@ fn artifact(total: i128, method: AllocationMethod, weights: &[u128]) -> BalanceA
         source: VId(10),
         source_side: Side::Credit,
         dimensions: vec![(1, VId(31))],
+        target_cells: Vec::new(),
         request: AllocationRequest {
             total: Amount::new(UnitId(7), total),
             method,
@@ -296,4 +297,39 @@ fn diagnostics_do_not_disclose_source_selector_driver_or_sealed_data() {
     ] {
         assert!(!diagnostic.contains(secret));
     }
+}
+
+#[test]
+fn compound_review_preserves_v2_destination_cells_separately_from_source_dimensions() {
+    let mut original = artifact(100, AllocationMethod::LargestRemainder, &[3, 2]);
+    let mut posting = original.review().posting().clone();
+    posting.target_cells = vec![
+        fa_journal::AllocationTargetCell {
+            account: posting.source,
+            dimensions: vec![(1, VId(41))],
+        },
+        fa_journal::AllocationTargetCell {
+            account: posting.source,
+            dimensions: vec![(1, VId(42))],
+        },
+    ];
+    for (target, cell) in posting.request.targets.iter_mut().zip(&posting.target_cells) {
+        target.id = cell.identity().unwrap();
+    }
+    let mut template = original.review().proposal().clone();
+    template.legs.clear();
+    template.unit_totals.clear();
+    template.extensions.clear();
+    template.evidence = vec![posting.driver_evidence(template.book_id).unwrap()];
+    original.review = AllocationReview::new(posting.clone(), template).unwrap();
+    let bytes = original.canonical_bytes().unwrap();
+    let restored = BalanceAllocationReview::decode(&bytes).unwrap();
+    assert_eq!(restored, original);
+    assert_eq!(restored.request().dimensions, vec![(1, VId(31))]);
+    assert_eq!(restored.request().target_cells, posting.target_cells);
+    assert_eq!(restored.request().targets, posting.request.targets);
+    assert_eq!(restored.source_digest(), [9; 32]);
+    assert_eq!(restored.source_period(), "FY2026-P03");
+    assert_eq!(restored.review().proposal().legs[1].dimension_set, vec![(1, VId(41))]);
+    assert_eq!(restored.review().proposal().legs[2].dimension_set, vec![(1, VId(42))]);
 }

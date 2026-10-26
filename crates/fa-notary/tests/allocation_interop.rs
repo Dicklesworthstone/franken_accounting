@@ -21,6 +21,7 @@ const ENTRY: VId = VId(0x1234);
 
 fn posting(total: i128, method: AllocationMethod, weights: &[u128]) -> AllocationPosting {
     AllocationPosting {
+        target_cells: Vec::new(),
         source: VId(10),
         source_side: Side::Credit,
         dimensions: vec![(1, VId(55)), (9, VId(99))],
@@ -218,4 +219,92 @@ fn conserving_arithmetic_that_cannot_be_journaled_is_rejected_by_both_posting_si
     assert!(example.proposal(template(&example)).is_err());
     let decoded = AllocationBasis::decode(&example.basis_bytes().unwrap()).unwrap();
     assert_eq!(decoded.shares(), Err(AllocationError::Arithmetic));
+}
+
+fn with_target_dimensions(mut posting: AllocationPosting) -> AllocationPosting {
+    let recipient_index = match posting.request.method {
+        AllocationMethod::ProRataResidualToNamed { recipient, .. } => Some(
+            posting
+                .request
+                .targets
+                .iter()
+                .position(|target| target.id == recipient)
+                .unwrap(),
+        ),
+        _ => None,
+    };
+    posting.target_cells = (0..posting.request.targets.len())
+        .map(|index| fa_journal::AllocationTargetCell {
+            account: posting.source,
+            dimensions: vec![(1, VId(55)), (9, VId(100 + index as u128))],
+        })
+        .collect();
+    for (target, cell) in posting.request.targets.iter_mut().zip(&posting.target_cells) {
+        target.id = cell.identity().unwrap();
+    }
+    if let AllocationMethod::ProRataResidualToNamed { rounding, .. } = posting.request.method {
+        posting.request.method = AllocationMethod::ProRataResidualToNamed {
+            rounding,
+            recipient: posting.request.targets[recipient_index.unwrap()].id,
+        };
+    }
+    posting
+}
+
+#[test]
+fn actual_v2_producer_cells_verify_independently_for_all_laws_and_rounding_modes() {
+    let mut examples = vec![
+        posting(100, AllocationMethod::LargestRemainder, &[3, 2]),
+        posting(10, AllocationMethod::Waterfall, &[4, 0, 9]),
+        posting(2, AllocationMethod::EqualSplitResidualFirst, &[1; 5]),
+    ];
+    for rounding in RoundingLaw::ALL {
+        for recipient in [20, 21, 22] {
+            examples.push(posting(
+                1,
+                AllocationMethod::ProRataResidualToNamed {
+                    rounding,
+                    recipient,
+                },
+                &[1; 3],
+            ));
+        }
+    }
+    for example in examples {
+        let mut example = with_target_dimensions(example);
+        for side in [Side::Debit, Side::Credit] {
+            example.source_side = side;
+            let verified = compare(&example);
+            assert_eq!(verified.basis.version(), 2);
+            assert_eq!(verified.basis.target_cells.len(), example.target_cells.len());
+            for (index, cell) in example.target_cells.iter().enumerate() {
+                let dimensions: Vec<_> = cell
+                    .dimensions
+                    .iter()
+                    .map(|(kind, value)| (*kind, value.0))
+                    .collect();
+                assert_eq!(
+                    verified.basis.target_cell(index),
+                    Some((cell.account.0, dimensions.as_slice()))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn producer_resealing_does_not_hide_a_destination_dimension_change() {
+    let example = with_target_dimensions(posting(
+        100,
+        AllocationMethod::LargestRemainder,
+        &[3, 2],
+    ));
+    let bytes = example.basis_bytes().unwrap();
+    let mut changed = example.proposal(template(&example)).unwrap();
+    changed.legs[1].dimension_set = changed.legs[2].dimension_set.clone();
+    let (proof_bytes, checkpoint, digest) = proof(changed.seal(Vec::new(), None).unwrap());
+    assert_eq!(
+        verify_allocation_for(&proof_bytes, &checkpoint, &digest, &bytes),
+        Err(AllocationError::LegMismatch { ordinal: 1 })
+    );
 }

@@ -179,7 +179,8 @@ pub use fa_journal::closing::{
     YearEndCloseVerification,
 };
 pub use fa_journal::{
-    AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, DocumentEvidenceSummary,
+    AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, AllocationTargetCell,
+    DocumentEvidenceSummary,
     EventRow, EvidenceExplanation, ExhibitMarkedOutcome, ExternalIdRow, InstantSelection,
     InstrumentRow, LegalEntityRow, LineageEdgeSummary, LineageEntrySummary, LineageReport,
     ManualAssertionSummary, NetPosition, NettingLaw, PartyRow, PeriodBalance, PeriodCheck,

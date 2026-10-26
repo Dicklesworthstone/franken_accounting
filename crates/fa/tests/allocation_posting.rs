@@ -141,6 +141,7 @@ impl Harness {
         weights: &[(&str, u128)],
     ) -> AllocationPosting {
         AllocationPosting {
+            target_cells: Vec::new(),
             source: account("source"),
             source_side: Side::Credit,
             dimensions: Vec::new(),

@@ -475,6 +475,7 @@ fn synchronous_book_completes_the_same_review_approval_and_native_plan_workflow(
     .unwrap()
     .unwrap();
     let basis = AllocationPosting {
+        target_cells: Vec::new(),
         source: account("source"),
         source_side: Side::Credit,
         dimensions: Vec::new(),

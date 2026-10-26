@@ -101,6 +101,7 @@ impl BalanceAllocationReview {
             dimensions: posting.dimensions.clone(),
             method: posting.request.method,
             targets: posting.request.targets.clone(),
+            target_cells: posting.target_cells.clone(),
         }
     }
 
