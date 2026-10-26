@@ -392,7 +392,7 @@ fn planted_edit_missing_from_the_copy_is_refused() {
 
 /// The runner fixture (`crates/fa-oracles/tests/fixtures/runner_ext/`):
 /// one of each extension step kind on a synthetic book.
-const RUNNER_EXT: [(&str, &str); 5] = [
+const RUNNER_EXT: [(&str, &str); 6] = [
     (
         "case.toml",
         include_str!("../../fa-oracles/tests/fixtures/runner_ext/case.toml"),
@@ -412,6 +412,10 @@ const RUNNER_EXT: [(&str, &str); 5] = [
     (
         "expectations.toml",
         include_str!("../../fa-oracles/tests/fixtures/runner_ext/expectations.toml"),
+    ),
+    (
+        "rules/cash_sale.rule",
+        include_str!("../../fa-oracles/tests/fixtures/runner_ext/rules/cash_sale.rule"),
     ),
 ];
 
@@ -464,6 +468,9 @@ fn extension_step_kinds_run_through_their_verbs() {
         ("engagement", Some("file")),
         ("approve", None),
         ("period", Some("lock")),
+        ("rule", Some("check")),
+        ("rule", Some("propose")),
+        ("rule", Some("backtest")),
     ] {
         let steps = steps_of(o, verb, sub);
         assert!(!steps.is_empty(), "no `{verb} {sub:?}` step:\n{text}");
@@ -499,6 +506,25 @@ fn extension_step_kinds_run_through_their_verbs() {
             .iter()
             .any(|s| s.argv_redacted.contains(&"--finding".to_string())),
         "{text}"
+    );
+    // The backtest's --compare is the digest the propose step reported.
+    let backtest = steps_of(o, "rule", Some("backtest"));
+    let argv = &backtest[0].argv_redacted;
+    let at = argv
+        .iter()
+        .position(|a| a == "--compare")
+        .expect("--compare");
+    assert_eq!(
+        argv.get(at + 1).map(String::as_str),
+        Some("$RULE_13"),
+        "{argv:?}"
+    );
+    assert_eq!(
+        backtest[0].binds,
+        [(
+            "$RULE_13".to_string(),
+            "rule_proposed.ir_digest of step 13 (rules/cash_sale.rule)".to_string()
+        )]
     );
     // The lock cites the approval approve_as produced.
     let locks = steps_of(o, "period", Some("lock"));

@@ -1,0 +1,5 @@
+rule cash_sale v1 for event Sale {
+  let cash = event.resource("cash", "USD")
+  debit  "1000" cash
+  credit "6100" cash
+}

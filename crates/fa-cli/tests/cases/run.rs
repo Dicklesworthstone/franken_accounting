@@ -254,6 +254,10 @@ pub struct BookRun<'c> {
     pub posts: BTreeMap<String, Call>,
     /// Procedure id → its recorded run.
     pub runs: BTreeMap<String, FindingRun>,
+    /// The case's files (a rule step's `rules/<name>.rule` source).
+    pub texts: &'c [(&'c str, &'c str)],
+    /// A `rule_propose` step's seq → the IR digest it reported.
+    pub rule_digests: BTreeMap<i128, String>,
     /// The SELF row's procedure run: its findings, or why it did not run.
     pub self_run: Option<Result<Vec<Json>, String>>,
     /// The highest sequence observed so far.
@@ -270,7 +274,12 @@ pub struct BookRun<'c> {
 }
 
 impl<'c> BookRun<'c> {
-    fn new(case: &'c Case, book: &'c BookVariant, work: PathBuf) -> Self {
+    fn new(
+        case: &'c Case,
+        book: &'c BookVariant,
+        work: PathBuf,
+        texts: &'c [(&'c str, &'c str)],
+    ) -> Self {
         let dir = work.join("book");
         Self {
             case,
@@ -285,6 +294,8 @@ impl<'c> BookRun<'c> {
             accounts: BTreeMap::new(),
             posts: BTreeMap::new(),
             runs: BTreeMap::new(),
+            texts,
+            rule_digests: BTreeMap::new(),
             self_run: None,
             head: 0,
             unrun_steps: Vec::new(),
@@ -816,6 +827,9 @@ impl<'c> BookRun<'c> {
                     self.finding_record(step.seq, procedure, step.principal.as_deref(), &params);
                 }
                 Some(StepKind::EngagementFile) => self.engagement_file(step),
+                Some(StepKind::RuleCheck | StepKind::RulePropose | StepKind::RuleBacktest) => {
+                    self.rule_step(step);
+                }
                 Some(StepKind::EventRecord) => self.event_record(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
@@ -1107,6 +1121,77 @@ impl<'c> BookRun<'c> {
             .unwrap_or_default();
         for v in vids {
             file(self, "--finding", v);
+        }
+    }
+
+    /// A `rule_check`, `rule_propose` or `rule_backtest` step over the case's
+    /// `rules/<name>.rule`. A propose step's IR digest is bound as
+    /// `$RULE_<seq>`; a backtest's `compare=<seq>` param passes that digest
+    /// as `--compare`, and its `from`/`to` params as `--from`/`--to`.
+    fn rule_step(&mut self, step: &StepDef) {
+        let Some(text) = self
+            .texts
+            .iter()
+            .find(|(p, _)| *p == step.reference)
+            .map(|(_, t)| *t)
+        else {
+            self.fail(format!(
+                "expected the case file {} (step {}) observed none",
+                step.reference, step.seq
+            ));
+            return;
+        };
+        let file = self.write(&step.reference.replace('/', "_"), text.as_bytes());
+        let kind = step.step_kind();
+        let sub = match kind {
+            Some(StepKind::RuleCheck) => "check",
+            Some(StepKind::RulePropose) => "propose",
+            _ => "backtest",
+        };
+        let mut args = vec![s("rule"), s(sub), file];
+        for p in step.params.iter().flatten() {
+            let Some((name, value)) = p.split_once('=') else {
+                continue;
+            };
+            match name {
+                "compare" => {
+                    let digest = value
+                        .parse::<i128>()
+                        .ok()
+                        .and_then(|seq| self.rule_digests.get(&seq).cloned());
+                    let Some(digest) = digest else {
+                        self.fail(format!(
+                            "expected rule_propose step {value} to report an IR digest (step {}) observed none",
+                            step.seq
+                        ));
+                        return;
+                    };
+                    args.extend([s("--compare"), digest]);
+                }
+                "from" | "to" => args.extend([format!("--{name}"), value.to_string()]),
+                _ => {}
+            }
+        }
+        if let Some(p) = step.principal.as_deref() {
+            args.extend([s("--as"), p.to_string()]);
+        }
+        args.push(s("--json"));
+        let call = self.call(step.seq, &step.reference, "rule", args);
+        if call.exit != 0 {
+            self.lines.push(reproduce(&call));
+            return;
+        }
+        if kind == Some(StepKind::RulePropose)
+            && let Some(digest) = call.str_field("rule_proposed", "ir_digest")
+        {
+            self.bind(
+                &digest,
+                format!("$RULE_{}", step.seq),
+                "rule_proposed.ir_digest",
+                step.seq,
+                &step.reference,
+            );
+            self.rule_digests.insert(step.seq, digest);
         }
     }
 
@@ -1603,7 +1688,7 @@ pub fn run_case(files: &CaseFiles<'_>, verbs: &[(&str, Option<&str>)]) -> RunOut
     for book in case.books.values() {
         let work = root.join(&book.stem);
         std::fs::create_dir_all(&work).expect("variant dir");
-        let mut run = BookRun::new(&case, book, work);
+        let mut run = BookRun::new(&case, book, work, files.files);
         run.build();
         out.books.insert(book.stem.clone(), run.dir.clone());
         run.replay();

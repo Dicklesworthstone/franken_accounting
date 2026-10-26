@@ -1,7 +1,8 @@
 # Runner fixture native book: one quarter opened, posted to, closed and locked; an Original
 # round-amount entry, an equal-split allocation, a manually asserted entry, a two-entry batch, a
 # recorded event, a jet.round_amounts run with an explicit parameter, its findings filed in the
-# provenance engagement. Synthetic; amounts are fixture values.
+# provenance engagement, and a rule checked, proposed and backtested against itself. Synthetic;
+# amounts are fixture values.
 
 [book]
 variant = "native"
@@ -317,6 +318,25 @@ kind = "period_lock"
 ref = "2026Q1"
 principal = "case-closer-1"
 approvers = ["case-approver-1"]
+
+[[step]]
+seq = 12
+kind = "rule_check"
+ref = "rules/cash_sale.rule"
+principal = "selftest-preparer-1"
+
+[[step]]
+seq = 13
+kind = "rule_propose"
+ref = "rules/cash_sale.rule"
+principal = "selftest-preparer-1"
+
+[[step]]
+seq = 14
+kind = "rule_backtest"
+ref = "rules/cash_sale.rule"
+principal = "selftest-preparer-1"
+params = ["compare=13", "from=2026-01-01", "to=2026-03-31"]
 
 [[default]]
 attribute = "evidence_attached"
