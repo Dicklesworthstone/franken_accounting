@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod rebuild;
 pub mod stats;
 
 use std::fmt;
