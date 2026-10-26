@@ -1,6 +1,7 @@
 # Reads fixture expectations: a per_account T reading 1100 certified at 2026Q1 against the published
-# 1,000.00 (kernel-attested: its assert_balance step records B and its twin is refused FA-REF-140),
-# and an R reading the same cell as originally reported against the posted 1,000.00.
+# 1,250.00 (kernel-attested: its assert_balance step records B and its twins are refused FA-REF-140),
+# and four read-backs of the same cell: as originally reported and as reported in the first issuance
+# (1,000.00, before R-2), as reported in the second issuance and as currently stated (1,250.00).
 
 [[expectation]]
 id = "reads-T-01"
@@ -26,3 +27,39 @@ read_target = "1100"
 read_coordinate = "2026Q1"
 read_selector = "originally_reported"
 posted = "R-1"
+
+[[expectation]]
+id = "reads-R-02"
+type = "R"
+book_variant = "native"
+statement_template = "R.read_back"
+basis = ["R-1"]
+read_verb = "balance"
+read_target = "1100"
+read_coordinate = "2026Q1"
+read_selector = "reported_in:2026Q1"
+posted = "R-1"
+
+[[expectation]]
+id = "reads-R-03"
+type = "R"
+book_variant = "native"
+statement_template = "R.read_back"
+basis = ["P-1"]
+read_verb = "balance"
+read_target = "1100"
+read_coordinate = "2026Q1"
+read_selector = "reported_in:2026Q1#2"
+posted = "P-1"
+
+[[expectation]]
+id = "reads-R-04"
+type = "R"
+book_variant = "native"
+statement_template = "R.read_back"
+basis = ["P-1"]
+read_verb = "balance"
+read_target = "1100"
+read_coordinate = "2026Q1"
+read_selector = "currently_stated"
+posted = "P-1"

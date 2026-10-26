@@ -1,6 +1,7 @@
-# Reads fixture native book: one quarter, one entry (R-1: Dr 1100 1,000.00 / Cr 4000 1,000.00), the
-# 1100 balance asserted while the quarter is Open, then the quarter closed and locked, so the R row can
-# read it as originally reported. Synthetic; amounts are fixture values.
+# Reads fixture native book: one quarter. R-1 (Dr 1100 / Cr 4000 1,000.00) is posted and the
+# quarter issued to the SEC; R-2 (250.00) is posted after it; the 1100 balance of 1,250.00 is
+# asserted; the quarter is issued again, then closed and locked. So the first issuance reads
+# 1,000.00 and the second and the head 1,250.00. Synthetic; amounts are fixture values.
 
 [book]
 variant = "native"
@@ -59,8 +60,20 @@ grade = "AgentUpload"
 reviewed_by = "case-second-reader"
 
 [[document]]
+id = "DOC-PH-R-2"
+stub_of = "placeholder:R-2"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
 id = "DOC-PH-P-1"
 stub_of = "placeholder:P-1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-RD-1"
+stub_of = "SRC-RD-1"
 grade = "AgentUpload"
 reviewed_by = "case-second-reader"
 
@@ -92,6 +105,34 @@ amount_literal = "1000.00"
 amount_rule = "value:R-1#1"
 unit = "USD"
 
+[[intent]]
+id = "R-2"
+fact = "R-2"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-05"
+memo = "a later sale (reads fixture)"
+evidence = "DOC-PH-R-2"
+idempotency_key = "reads-R-2"
+
+[[leg]]
+intent = "R-2"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "250.00"
+amount_rule = "value:R-2#1"
+unit = "USD"
+
+[[leg]]
+intent = "R-2"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "250.00"
+amount_rule = "value:R-2#1"
+unit = "USD"
+
 [[step]]
 seq = 1
 kind = "period_open"
@@ -105,19 +146,40 @@ ref = "R-1"
 
 [[step]]
 seq = 3
-kind = "assert_balance"
-ref = "reads-T-01"
-principal = "case-reconciler-1"
-evidence = "DOC-PH-P-1"
+kind = "issue"
+ref = "2026Q1"
+principal = "case-closer-1"
+approvers = ["case-second-reader"]
+document = "DOC-RD-1"
 
 [[step]]
 seq = 4
+kind = "intent"
+ref = "R-2"
+
+[[step]]
+seq = 5
+kind = "assert_balance"
+ref = "reads-T-01"
+principal = "case-reconciler-1"
+evidence = "DOC-RD-1"
+
+[[step]]
+seq = 6
+kind = "issue"
+ref = "2026Q1"
+principal = "case-closer-1"
+approvers = ["case-second-reader"]
+document = "DOC-RD-1"
+
+[[step]]
+seq = 7
 kind = "period_close"
 ref = "2026Q1"
 principal = "case-closer-1"
 
 [[step]]
-seq = 5
+seq = 8
 kind = "period_lock"
 ref = "2026Q1"
 principal = "case-closer-1"
