@@ -115,14 +115,44 @@ pub(crate) fn invalid(why: impl Into<String>) -> Refusal {
     )
 }
 
-/// The definitions `fa statement lint` names: the two registered built-ins
-/// and the code-range presets a book can adopt (plan §12.1).
+/// The definitions `fa statement lint` names: the two registered built-ins,
+/// the code-range presets a book can adopt (plan §12.1) and the regulatory
+/// schedules, which map the us-bank-call-report template (plan §12.6,
+/// fa-doa9).
 pub const LINTABLE_DEFINITIONS: &[&str] = &[
     "balance-sheet",
     "income-statement",
     "us_gaap_small_company_balance_sheet",
     "us_gaap_small_company_income_statement",
+    "ffiec_041_schedule_rc_2026q1",
+    "ffiec_041_schedule_ri_2026q1",
+    "fr_y9c_schedule_hc_2026q1",
 ];
+
+/// The named definitions that map accounts by code rather than by type:
+/// the presets and the regulatory schedules.
+fn named_custom(name: &str) -> Option<fa_statements::custom::CustomStatementDefinition> {
+    use fa_statements::custom::CustomStatementDefinition;
+    use fa_statements::regulatory::RegulatoryScheduleDefinition;
+    Some(match name {
+        "us_gaap_small_company_balance_sheet" => {
+            CustomStatementDefinition::us_gaap_small_company_balance_sheet()
+        }
+        "us_gaap_small_company_income_statement" => {
+            CustomStatementDefinition::us_gaap_small_company_income_statement()
+        }
+        "ffiec_041_schedule_rc_2026q1" => {
+            RegulatoryScheduleDefinition::ffiec_041_schedule_rc_2026q1().statement_definition
+        }
+        "ffiec_041_schedule_ri_2026q1" => {
+            RegulatoryScheduleDefinition::ffiec_041_schedule_ri_2026q1().statement_definition
+        }
+        "fr_y9c_schedule_hc_2026q1" => {
+            RegulatoryScheduleDefinition::fr_y9c_schedule_hc_2026q1().statement_definition
+        }
+        _ => return None,
+    })
+}
 
 /// Lint the named definition against a chart (plan §12.1, FA-INV-04 mapping
 /// partition): covered leaves no line maps or several lines map, and codes a
@@ -131,9 +161,7 @@ pub(crate) fn lint(
     name: &str,
     chart: &[AccountRow],
 ) -> Result<fa_statements::custom::StatementLintReport, Refusal> {
-    use fa_statements::custom::{
-        CustomStatementDefinition, lint_custom_statement_definition, lint_statement_definition,
-    };
+    use fa_statements::custom::{lint_custom_statement_definition, lint_statement_definition};
     let accounts: Vec<Account> = chart
         .iter()
         .map(|row| Account {
@@ -144,16 +172,9 @@ pub(crate) fn lint(
             is_leaf: row.is_leaf,
         })
         .collect();
-    let linted = match name {
-        "us_gaap_small_company_balance_sheet" => lint_custom_statement_definition(
-            &CustomStatementDefinition::us_gaap_small_company_balance_sheet(),
-            &accounts,
-        ),
-        "us_gaap_small_company_income_statement" => lint_custom_statement_definition(
-            &CustomStatementDefinition::us_gaap_small_company_income_statement(),
-            &accounts,
-        ),
-        _ => match StatementDefinition::embedded(name) {
+    let linted = match named_custom(name) {
+        Some(definition) => lint_custom_statement_definition(&definition, &accounts),
+        None => match StatementDefinition::embedded(name) {
             Ok(definition) => lint_statement_definition(&definition, &accounts),
             Err(_) => {
                 return Err(invalid(format!(
@@ -204,22 +225,17 @@ pub(crate) fn mapping_definition(
     name: &str,
 ) -> Result<fa_statements::custom::CustomStatementDefinition, Refusal> {
     use fa_statements::custom::CustomStatementDefinition;
-    match name {
-        "us_gaap_small_company_balance_sheet" => {
-            Ok(CustomStatementDefinition::us_gaap_small_company_balance_sheet())
-        }
-        "us_gaap_small_company_income_statement" => {
-            Ok(CustomStatementDefinition::us_gaap_small_company_income_statement())
-        }
-        _ => StatementDefinition::embedded(name)
-            .map(|definition| CustomStatementDefinition::from_builtin(&definition))
-            .map_err(|_| {
-                invalid(format!(
-                    "unknown statement definition `{name}`; one of {}",
-                    LINTABLE_DEFINITIONS.join(", ")
-                ))
-            }),
+    if let Some(definition) = named_custom(name) {
+        return Ok(definition);
     }
+    StatementDefinition::embedded(name)
+        .map(|definition| CustomStatementDefinition::from_builtin(&definition))
+        .map_err(|_| {
+            invalid(format!(
+                "unknown statement definition `{name}`; one of {}",
+                LINTABLE_DEFINITIONS.join(", ")
+            ))
+        })
 }
 
 /// Attribute legs `(account, side, mantissa)` to `definition`'s lines. A leg

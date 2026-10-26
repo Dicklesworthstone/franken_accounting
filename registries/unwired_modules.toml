@@ -32,12 +32,6 @@ owner_bead = "fa-p370"
 reason = "FDIC Part 370 files need ORC capacity codes on account-participant edges, which the REA model does not carry; no fa export part370."
 expires = "2026-11-21"
 
-[[unwired]]
-path = "fa_statements::regulatory"
-owner_bead = "fa-doa9"
-reason = "FFIEC 031/041 and FR Y-9C schedule definitions key on two-digit code prefixes that do not match templates/charts/us-bank-call-report.json, so they cannot be surfaced as they stand."
-expires = "2026-11-21"
-
 [[verification]]
 path = "fa_formats::conformance"
 consumer = "crates/fa-formats/tests/formats_conformance.rs"
