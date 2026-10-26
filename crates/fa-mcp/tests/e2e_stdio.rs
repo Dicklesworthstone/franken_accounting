@@ -28,6 +28,8 @@ mod draft_review;
 mod explanation_bundle;
 #[path = "e2e_stdio/open_items_bundle.rs"]
 mod open_items_bundle;
+#[path = "e2e_stdio/roll_forward_bundle.rs"]
+mod roll_forward_bundle;
 
 const PROTOCOL: &str = "2026-07-28";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);

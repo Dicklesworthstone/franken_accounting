@@ -376,6 +376,38 @@ of the nested open-item source is insufficient. The complete-prefix authority,
 registry and historical-identity requirements above also apply. MCP accepts the
 retained `C:<oid>` or complete aging certificate hex through `fa_notary_bundle`.
 
+Roll-forward lead schedules can also be delivered as independently verifiable
+bundles. For example, a cash lead schedule at one fixed recorded frontier:
+
+```bash
+fa gl roll-forward --account 1000 --unit USD \
+  --from 2026-01-01 --to 2026-03-31 --label "Cash lead schedule" \
+  --certify --certificate-out cash-lead.cert --book ./books/acme --json
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate cash-lead.cert --book ./books/acme \
+  --out cash-lead.fab --receipt-out cash-lead.receipt --json
+fa-verify report cash-lead.fab --key <trusted-checkpoint-public-key> \
+  --receipt cash-lead.receipt --json
+```
+
+The recipient reconstructs opening stock strictly before `--from`, closing stock
+through `--to`, and every posted movement inside the inclusive interval. Each
+movement retains its entry digest, leg index, original recorded sequence, class,
+supersession reasons and Rule-origin version. Pending reservations stay outside
+the schedule; posted resolutions, reversals and Closing entries remain real
+movements. Omitting an offsetting debit/credit pair fails verification even when
+the closing balance still agrees. Selected zero-valued leaves and units remain
+explicit, and amounts use debit minus credit separately for each account/unit.
+
+The receipt or recipient `--expect` must bind the outer roll-forward certificate,
+including accounts, units, label and dates. Its nested closing trial-balance
+digest alone cannot authenticate the lead schedule. Roll-forward bundles require
+the complete four-document registry closure and sequence-selected trunk history.
+The complete roll-forward source retained by `fa gl detail --certify` is also
+exportable; its portable result is the lead schedule with all movement citations.
+MCP uses `fa_proof_gl` with `view: "roll-forward"`, then `fa_notary_bundle` with
+the retained `C:<oid>` or complete certificate bytes.
+
 Instant-selected certificates also retain their requested instant, observed frontier,
 and tick identities. Replay uses those saved brackets even after later ticks or
 postings arrive. An open upper bracket is explicit; this is a clock-observation

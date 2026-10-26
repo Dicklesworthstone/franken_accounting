@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn certify(fixture: &Fixture, arguments: &[&str]) -> Json {
+pub(super) fn certify(fixture: &Fixture, arguments: &[&str]) -> Json {
     let output = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
         .arg(&fixture.book)
@@ -199,14 +199,12 @@ fn retained_aging_exports_by_oid_file_and_stdin_with_the_outer_recipient_pin() {
 fn other_composed_report_families_do_not_inherit_aging_bundle_support() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();
-    fixture.post("not-portable-roll-forward", "2026-03-10", "5.00", &evidence);
+    fixture.post("not-portable-equity", "2026-03-10", "5.00", &evidence);
     let metadata = certify(
         &fixture,
         &[
-            "gl",
-            "roll-forward",
-            "--account",
-            "1000",
+            "statement",
+            "equity-roll-forward",
             "--from",
             "2026-03-01",
             "--to",
@@ -214,7 +212,10 @@ fn other_composed_report_families_do_not_inherit_aging_bundle_support() {
         ],
     );
     let artifact = fa::ReportArtifact::decode(&unhex(text(&metadata, "bytes"))).unwrap();
-    assert_eq!(artifact.family(), fa::ReportArtifactFamily::RollForward);
+    assert_eq!(
+        artifact.family(),
+        fa::ReportArtifactFamily::EquityRollForward
+    );
     fixture.checkpoint();
     let before = fixture.head();
     let locator = format!("C:{}", text(&metadata, "oid"));

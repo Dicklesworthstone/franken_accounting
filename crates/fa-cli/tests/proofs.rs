@@ -13,6 +13,8 @@ mod explanation_report;
 mod prefix;
 #[path = "proofs/report.rs"]
 mod report;
+#[path = "proofs/roll_forward.rs"]
+mod roll_forward;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
