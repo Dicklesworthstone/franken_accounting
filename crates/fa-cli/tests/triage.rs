@@ -591,10 +591,7 @@ fn find_angle_token(s: &str) -> Option<&str> {
     None
 }
 
-fn check_no_placeholder_tokens(
-    branch: &str,
-    actions: &[(String, String)],
-) -> Result<(), String> {
+fn check_no_placeholder_tokens(branch: &str, actions: &[(String, String)]) -> Result<(), String> {
     for (command, why) in actions {
         if let Some(tok) = find_angle_token(command) {
             return Err(format!(
@@ -806,11 +803,7 @@ fn no_triage_branch_emits_a_placeholder_token() {
     run(&["period", "create", "--fiscal-year", "2026"]);
     let triage = run(&["triage"]);
     let next = run(&["next"]);
-    check_no_placeholder_tokens(
-        "no_open_with_future",
-        &collect_actions(&triage, &next),
-    )
-    .unwrap();
+    check_no_placeholder_tokens("no_open_with_future", &collect_actions(&triage, &next)).unwrap();
 
     // 4. All Closed (no Open and no Future period).
     let listed = run(&["period", "list"]);
@@ -900,4 +893,3 @@ fn restored_placeholder_fails_the_any_token_test() {
     assert!(err.contains("no_chart"), "{err}");
     assert!(err.contains("<chart.json>"), "{err}");
 }
-

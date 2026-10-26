@@ -5470,4 +5470,3 @@ fn fa_orient_next_offers_audit_program_matching_cli_next() {
     );
     assert_eq!(mcp.finish(), 0);
 }
-

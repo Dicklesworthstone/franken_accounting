@@ -817,7 +817,9 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         ));
     } else if periods.is_empty() {
         let initial_year = match &book.context().calendar.kind {
-            fa_time::CalendarKind::Custom { years } => years.first().map_or(2026, |y| y.fiscal_year),
+            fa_time::CalendarKind::Custom { years } => {
+                years.first().map_or(2026, |y| y.fiscal_year)
+            }
             _ => 2026,
         };
         steps.push(write_step(
