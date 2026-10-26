@@ -634,10 +634,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
         || (proposal.class == EntryClass::SCHEMA_CONTROL
             && matches!(
                 &proposal.control,
-                Some(fa_model::ControlPayload::SchemaChange {
-                    kind: 2..=4,
-                    ..
-                })
+                Some(fa_model::ControlPayload::SchemaChange { kind: 2..=4, .. })
             ));
     admitted
         && vid
