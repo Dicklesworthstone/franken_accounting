@@ -38,7 +38,7 @@ use std::collections::BTreeSet;
 use super::Case;
 use super::book::{BookVariant, BranchAttribute, IntentDef, LegDef};
 use super::branch::{BranchRule, BranchRules, ClassRule, D_COMPONENTS, P_COMPONENTS, Reader};
-use super::expect::{Expectation, ExpectationType, Status, Target};
+use super::expect::{Expectation, ExpectationType, Projection, Status, Target};
 use super::fact::{Provenance, ProvenanceKind};
 
 /// Whether `expectation` declares `closed_cites = true`.
@@ -474,6 +474,156 @@ pub fn component_statuses(
     out
 }
 
+/// One run's finding for a D target, projected as §5.2 compares it (the
+/// runner projects cites to `<intent>#<ordinal>` and account codes).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ObservedD {
+    pub cites: BTreeSet<String>,
+    pub severity: String,
+    pub statistic_name: String,
+    pub statistic: String,
+    pub scale: String,
+}
+
+/// A branch cell's authored values, projected like an observation; a value
+/// the row does not state is `None`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CellWant {
+    pub cites: Option<BTreeSet<String>>,
+    pub severity: Option<String>,
+    pub statistic: Option<String>,
+}
+
+/// One component's verdict on one cell of one run (§5.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ComponentVerdict {
+    /// Equal to its expectation (S, Sd, Si), its rule held (Rel), or equal
+    /// to its cell's row (B).
+    Pass(&'static str),
+    /// The component, what it expected, what the run observed.
+    Fail(&'static str, String, String),
+    /// X: not asserted, never compared.
+    NotAsserted(&'static str),
+    /// A B component whose cell states no value for it: it waits.
+    NoCellValue(&'static str),
+    /// A Rel component the run could not judge (no account VIds).
+    Unjudged(&'static str),
+}
+
+/// The row verdict of a cell's component verdicts: FAIL on any failure,
+/// UNRUN when a component waits or is unjudged, PASS otherwise.
+#[must_use]
+pub fn row_verdict(verdicts: &[ComponentVerdict]) -> super::verdict::RowVerdict {
+    use super::verdict::RowVerdict;
+    if verdicts
+        .iter()
+        .any(|v| matches!(v, ComponentVerdict::Fail(..)))
+    {
+        RowVerdict::Fail
+    } else if verdicts.iter().any(|v| {
+        matches!(
+            v,
+            ComponentVerdict::NoCellValue(_) | ComponentVerdict::Unjudged(_)
+        )
+    }) {
+        RowVerdict::Unrun
+    } else {
+        RowVerdict::Pass
+    }
+}
+
+fn joined(set: &BTreeSet<String>) -> String {
+    set.iter().cloned().collect::<Vec<_>>().join(",")
+}
+
+/// §5.2's D pass rule on one cell of one run: every S, Sd and Si component
+/// equals its expectation and every Rel component's rule holds (`rel`,
+/// judged by the runner from the run's account VIds; `None` when it cannot
+/// judge), every B component equals its `[[branch_cell]]` row (`cell`), and
+/// no X component is compared. `want_cites` is the target's cites projected
+/// like the observation's.
+#[must_use]
+pub fn evaluate_d(
+    projection: &Projection,
+    want_cites: &BTreeSet<String>,
+    observed: &ObservedD,
+    cell: Option<&CellWant>,
+    rel: &dyn Fn(&str) -> Option<bool>,
+) -> Vec<ComponentVerdict> {
+    let judge = |component: &'static str,
+                 status: &Status,
+                 want: Option<String>,
+                 cell_want: Option<String>,
+                 got: String| {
+        match status {
+            Status::X => ComponentVerdict::NotAsserted(component),
+            Status::Rel(_) => match rel(component) {
+                Some(true) => ComponentVerdict::Pass(component),
+                Some(false) => ComponentVerdict::Fail(
+                    component,
+                    "its relational rule".into(),
+                    format!("{got} (the rule does not hold on this run)"),
+                ),
+                None => ComponentVerdict::Unjudged(component),
+            },
+            Status::B(_) => match cell_want {
+                None => ComponentVerdict::NoCellValue(component),
+                Some(w) if w == got => ComponentVerdict::Pass(component),
+                Some(w) => ComponentVerdict::Fail(component, w, got),
+            },
+            Status::S | Status::Sd | Status::Si => match want {
+                Some(w) if w == got => ComponentVerdict::Pass(component),
+                Some(w) => ComponentVerdict::Fail(component, w, got),
+                None => ComponentVerdict::Fail(component, "-".into(), got),
+            },
+        }
+    };
+    let mut out = vec![judge(
+        "cite",
+        &projection.cite.status,
+        Some(joined(want_cites)),
+        cell.and_then(|c| c.cites.as_ref()).map(joined),
+        joined(&observed.cites),
+    )];
+    out.push(judge(
+        "severity",
+        &projection.severity.status,
+        projection.severity.value.clone(),
+        cell.and_then(|c| c.severity.clone()),
+        observed.severity.clone(),
+    ));
+    let mut statistic = judge(
+        "statistic",
+        &projection.statistic.status,
+        projection.statistic.value.clone(),
+        cell.and_then(|c| c.statistic.clone()),
+        observed.statistic.clone(),
+    );
+    // A single statistic also names its statistic and scale.
+    if matches!(
+        projection.statistic.status,
+        Status::S | Status::Sd | Status::Si
+    ) && statistic == ComponentVerdict::Pass("statistic")
+    {
+        if let Some(name) = &projection.statistic_name
+            && *name != observed.statistic_name
+        {
+            statistic =
+                ComponentVerdict::Fail("statistic", name.clone(), observed.statistic_name.clone());
+        } else if let Some(scale) = projection.statistic_scale
+            && scale.to_string() != observed.scale
+        {
+            statistic = ComponentVerdict::Fail(
+                "statistic",
+                format!("scale {scale}"),
+                format!("scale {}", observed.scale),
+            );
+        }
+    }
+    out.push(statistic);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +637,96 @@ mod tests {
             |c| format!("{anchor}closed_cites = {c}\n"),
         );
         pilot_planted(&[("expectations.toml", anchor, &with)])
+    }
+
+    fn component(status: &str, value: Option<&str>) -> crate::cases::expect::Component {
+        crate::cases::expect::Component {
+            status: Status::parse(status).expect("a status"),
+            value: value.map(str::to_string),
+        }
+    }
+
+    /// §5.2 per status on synthetic observations: single components equal
+    /// their expectation, a Rel component passes when its rule holds whatever
+    /// its value (two book ids, two values), a B component equals its cell
+    /// row or waits without one, and an X component is never compared.
+    #[test]
+    fn evaluate_d_applies_the_section_5_2_pass_rule() {
+        use crate::cases::verdict::RowVerdict;
+        let p = Projection {
+            procedure: "expense.capitalization".into(),
+            version: 2,
+            cite: component("Rel(account_vid_order)", None),
+            severity: component("S", Some("High")),
+            statistic_name: Some("capitalized_amount".into()),
+            statistic: component("B(leg_split)", None),
+            statistic_scale: Some(2),
+        };
+        let want = cited(&["F9#0"]);
+        let obs = |cite: &str, stat: &str| ObservedD {
+            cites: cited(&[cite]),
+            severity: "High".into(),
+            statistic_name: "capitalized_amount".into(),
+            statistic: stat.into(),
+            scale: "2".into(),
+        };
+        let cell = CellWant {
+            cites: None,
+            severity: None,
+            statistic: Some("30000000000".into()),
+        };
+        let holds = |_: &str| Some(true);
+        // Two runs (two book ids) cite different fixed-asset accounts and
+        // capitalize different legs; the rule holds on both: PASS.
+        for (cite, stat) in [("1500", "30000000000"), ("1510", "30000000000")] {
+            let v = evaluate_d(&p, &want, &obs(cite, stat), Some(&cell), &holds);
+            assert_eq!(row_verdict(&v), RowVerdict::Pass, "{v:?}");
+        }
+        // The rule fails on a run: FAIL naming the cite.
+        let fails = |_: &str| Some(false);
+        let v = evaluate_d(&p, &want, &obs("1500", "30000000000"), Some(&cell), &fails);
+        assert!(matches!(v[0], ComponentVerdict::Fail("cite", ..)), "{v:?}");
+        // No VIds to judge it: UNRUN.
+        let none = |_: &str| None;
+        let v = evaluate_d(&p, &want, &obs("1500", "30000000000"), Some(&cell), &none);
+        assert_eq!(v[0], ComponentVerdict::Unjudged("cite"));
+        assert_eq!(row_verdict(&v), RowVerdict::Unrun);
+        // The B statistic differs from its cell row: FAIL; without a row
+        // value it waits.
+        let v = evaluate_d(&p, &want, &obs("1500", "1"), Some(&cell), &holds);
+        assert_eq!(
+            v[2],
+            ComponentVerdict::Fail("statistic", "30000000000".into(), "1".into())
+        );
+        let v = evaluate_d(&p, &want, &obs("1500", "1"), None, &holds);
+        assert_eq!(v[2], ComponentVerdict::NoCellValue("statistic"));
+        // A single severity that differs fails; a single statistic checks
+        // its name and scale; an X is never compared.
+        let mut single = p.clone();
+        single.cite = component("Sd", Some("F9#0"));
+        single.statistic = component("Sd", Some("74272500000"));
+        let mut o = obs("F9#0", "74272500000");
+        assert_eq!(
+            row_verdict(&evaluate_d(&single, &want, &o, None, &none)),
+            RowVerdict::Pass
+        );
+        o.severity = "Low".into();
+        assert_eq!(
+            evaluate_d(&single, &want, &o, None, &none)[1],
+            ComponentVerdict::Fail("severity", "High".into(), "Low".into())
+        );
+        o.severity = "High".into();
+        o.scale = "0".into();
+        assert!(matches!(
+            evaluate_d(&single, &want, &o, None, &none)[2],
+            ComponentVerdict::Fail("statistic", ..)
+        ));
+        single.severity = component("X", None);
+        o.scale = "2".into();
+        o.severity = "anything".into();
+        let v = evaluate_d(&single, &want, &o, None, &none);
+        assert_eq!(v[1], ComponentVerdict::NotAsserted("severity"));
+        assert_eq!(row_verdict(&v), RowVerdict::Pass);
     }
 
     fn cited(ids: &[&str]) -> BTreeSet<String> {
