@@ -4728,6 +4728,488 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
     Ok(())
 }
 
+/// fa-yugf.93 (H13; plan §8.3): a PolicyChangeRetrospective case restates a
+/// Closed period from the CLI through the full case lifecycle, certifies and
+/// replays its statement diffs, discloses under a reviewed Disclosure document,
+/// and closes.
+#[test]
+fn a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli() -> std::io::Result<()>
+{
+    let dir = tmp("pcr-case")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Policy Recast Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2300","name":"Deferred revenue","type":"Liability","unit":"USD"},{"code":"4000","name":"Subscription revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let initial = write(
+        &dir,
+        "initial.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"sub-1","legs":[{"side":"debit","account":"1000","amount":"1000.00 USD"},{"side":"credit","account":"4000","amount":"1000.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &initial,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    let opened = ok(&[
+        "case",
+        "open",
+        "--kind",
+        "PolicyChangeRetrospective",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+        "--json",
+    ]);
+    let opened_case = doc(&opened).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&opened_case, "kind"), "PolicyChangeRetrospective");
+    assert_eq!(text(&opened_case, "state"), "Determined");
+
+    ok(&["scenario", "fork", "pcr", "--as", "analyst", "--json"]);
+    let recast = write(
+        &dir,
+        "recast.json",
+        &format!(
+            r#"{{"class":"Restatement","restates":"{target}","reason":"PolicyChange","idempotency_key":"pcr-rst","legs":[{{"side":"debit","account":"4000","amount":"250.00 USD"}},{{"side":"credit","account":"2300","amount":"250.00 USD"}}]}}"#
+        ),
+    );
+    ok(&[
+        "scenario", "run", "pcr", "--intent", &recast, "--as", "analyst", "--grant", "restate",
+        "--json",
+    ]);
+    let rehearsal = dir.join("pcr-rehearsal.cert").display().to_string();
+    ok(&[
+        "scenario",
+        "diff",
+        "pcr",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &rehearsal,
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "rehearse",
+        "1",
+        "--certificate",
+        &rehearsal,
+        "--json",
+    ]);
+    let digest = text(
+        &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
+        "digest",
+    )
+    .to_string();
+    let approval = |who: &str| {
+        text(
+            &doc(&ok(&[
+                "approve",
+                "--proposal",
+                &digest,
+                "--as",
+                who,
+                "--json",
+            ])),
+            "approval_vid",
+        )
+        .to_string()
+    };
+    let controller = approval("controller");
+    let auditor = approval("auditor");
+    ok(&[
+        "case",
+        "approve",
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &auditor,
+        "--json",
+    ]);
+    let out = ok(&["case", "post", "1", "--json"]);
+    let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Posted", "{out}");
+    assert_eq!(text(&case, "kind"), "PolicyChangeRetrospective", "{out}");
+    let entry = text(&arr(&case, "posted")[0], "entry").to_string();
+    let explained = ok(&["explain", "entry", &entry, "--json"]);
+    assert!(explained.contains("Restatement"), "{explained}");
+    let lineage = ok(&["explain", "lineage", &target, "--json"]);
+    assert!(lineage.contains(&entry), "{lineage}");
+    assert!(lineage.contains("Restates"), "{lineage}");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(
+        tb.contains("250.00 USD"),
+        "the closed March moves by the policy-change delta: {tb}"
+    );
+
+    // Statement diffs certify and replay.
+    let statement_diffs = |out: &str| -> Vec<Json> {
+        out.lines()
+            .filter(|l| l.contains("\"event\":\"statement_diff\""))
+            .map(|l| json::parse(l).unwrap_or(Json::Null))
+            .collect()
+    };
+    let data = |line: &Json| line.get("data").cloned().unwrap_or(Json::Null);
+    let certified = statement_diffs(&ok(&[
+        "case",
+        "diff",
+        "1",
+        "--statements",
+        "--certify",
+        "--json",
+    ]));
+    assert_eq!(certified.len(), 3, "{certified:?}");
+    for d in &certified {
+        let oid = d
+            .get("certificate")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(oid.len(), 64, "{d:?}");
+        let replayed = statement_diffs(&ok(&["replay", &format!("C:{oid}"), "--json"]));
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(data(&replayed[0]), data(d), "C:{oid} replays");
+    }
+
+    // Disclose with a reviewed Disclosure document and close the case.
+    let note_file = write(
+        &dir,
+        "note2.txt",
+        "Note 2: Retrospective adoption of ASC 606 across FY2026-P03.",
+    );
+    let added = doc(&ok(&[
+        "document",
+        "add",
+        &note_file,
+        "--kind",
+        "Disclosure",
+        "--grade",
+        "HumanUpload",
+        "--json",
+    ]));
+    let note_oid = text(&added, "oid").to_string();
+    ok(&[
+        "document", "attest", "review", &note_oid, "--as", "reviewer", "--json",
+    ]);
+    let disclosed = doc(&ok(&[
+        "case",
+        "disclose",
+        "1",
+        "--document",
+        &note_oid,
+        "--json",
+    ]));
+    assert_eq!(
+        disclosed.get("case").map(|c| text(c, "state")),
+        Some("Disclosed"),
+        "{disclosed:?}"
+    );
+    let closed = doc(&ok(&["case", "close", "1", "--json"]));
+    assert_eq!(
+        closed.get("case").map(|c| text(c, "state")),
+        Some("Closed"),
+        "{closed:?}"
+    );
+    Ok(())
+}
+
+/// fa-yugf.93 negative 1: a PolicyChangeRetrospective case approved with one
+/// approval is refused FA-REF-012 and remains Rehearsed.
+#[test]
+fn pcr_case_with_one_approval_is_refused_fa_ref_012() -> std::io::Result<()> {
+    let dir = tmp("pcr-one-approval")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "PCR One Approval Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "open",
+        "--kind",
+        "PolicyChangeRetrospective",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+        "--json",
+    ]);
+    ok(&["scenario", "fork", "pcr", "--as", "analyst", "--json"]);
+    let recast = write(
+        &dir,
+        "recast.json",
+        &format!(
+            r#"{{"class":"Restatement","restates":"{target}","reason":"PolicyChange","idempotency_key":"pcr-rst","legs":[{{"side":"debit","account":"6100","amount":"25.00 USD"}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#
+        ),
+    );
+    ok(&[
+        "scenario", "run", "pcr", "--intent", &recast, "--as", "analyst", "--grant", "restate",
+        "--json",
+    ]);
+    let rehearsal = dir.join("rehearsal.cert").display().to_string();
+    ok(&[
+        "scenario",
+        "diff",
+        "pcr",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &rehearsal,
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "rehearse",
+        "1",
+        "--certificate",
+        &rehearsal,
+        "--json",
+    ]);
+    let digest = text(
+        &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
+        "digest",
+    )
+    .to_string();
+    let controller = text(
+        &doc(&ok(&[
+            "approve",
+            "--proposal",
+            &digest,
+            "--as",
+            "controller",
+            "--json",
+        ])),
+        "approval_vid",
+    )
+    .to_string();
+    let (code, out) = run(&["case", "approve", "1", "--approval", &controller, "--json"]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-012"), "{out}");
+    let shown = doc(&ok(&["case", "show", "1", "--json"]));
+    assert_eq!(
+        shown.get("case").map(|c| text(c, "state")),
+        Some("Rehearsed"),
+        "{shown:?}"
+    );
+    Ok(())
+}
+
+/// fa-yugf.93 negative 2: a PolicyChangeRetrospective scenario intent naming
+/// `revises` instead of `restates` on its Restatement entry is refused (exit 2).
+#[test]
+fn pcr_intent_with_revises_instead_of_restates_is_refused() -> std::io::Result<()> {
+    let dir = tmp("pcr-revises")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "PCR Revises Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "open",
+        "--kind",
+        "PolicyChangeRetrospective",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+        "--json",
+    ]);
+    ok(&["scenario", "fork", "pcr", "--as", "analyst", "--json"]);
+    let misnamed = write(
+        &dir,
+        "misnamed.json",
+        &format!(
+            r#"{{"class":"Restatement","revises":"{target}","reason":"PolicyChange","idempotency_key":"pcr-bad","legs":[{{"side":"debit","account":"6100","amount":"25.00 USD"}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out) = run(&[
+        "scenario", "run", "pcr", "--intent", &misnamed, "--as", "analyst", "--grant", "restate",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("`revises` names the target of a Revision only"),
+        "{out}"
+    );
+    Ok(())
+}
+
+/// fa-yugf.93 negative 3: posting a PolicyChangeRetrospective Restatement
+/// intent outside its case is refused FA-REF-178.
+#[test]
+fn pcr_restatement_outside_its_case_is_refused_fa_ref_178() -> std::io::Result<()> {
+    let dir = tmp("pcr-outside")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "PCR Outside Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    let recast = write(
+        &dir,
+        "recast.json",
+        &format!(
+            r#"{{"class":"Restatement","restates":"{target}","reason":"PolicyChange","idempotency_key":"pcr-rst","legs":[{{"side":"debit","account":"6100","amount":"25.00 USD"}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out) = run(&[
+        "post", "--intent", &recast, "--grant", "restate", "--yes", "--json",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-178"), "{out}");
+    Ok(())
+}
+
 /// fa-xvba: `fa reclass` moves part of an entry's leg to another account
 /// with the leg's side; the trial balance moves exactly, lineage names the
 /// reclassification, a move beyond what remains is FA-REF-185, and a Closed
