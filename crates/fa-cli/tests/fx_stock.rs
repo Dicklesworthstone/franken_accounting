@@ -869,3 +869,213 @@ fn functional_statement_file_at_cold_head_replays_and_reports_status_without_ret
     assert_eq!(text(data(&status), "status"), "Current");
     assert_eq!(head(&fixture.book), before);
 }
+
+#[test]
+fn functional_trial_balance_certifies_each_scope_and_replays_after_backdates_and_reopen() {
+    const SEED: u8 = 0xeb;
+    let fixture = Fixture::create(Some(SEED));
+    fixture.post("tb-certificate-january", "2026-01-05", "100.00", 11);
+    fixture.post("tb-certificate-february", "2026-02-05", "200.00", 12);
+    let prefix = head(&fixture.book).to_string();
+    fixture.compact(SEED);
+    let mut retained = Vec::new();
+    for (name, selection, expected) in [
+        (
+            "activity",
+            vec!["--activity", "--period", "FY2026-P02"],
+            "240.00 USD",
+        ),
+        ("period-stock", vec!["--period", "FY2026-P02"], "350.00 USD"),
+        ("date-stock", vec!["--as-of", "2026-02-28"], "350.00 USD"),
+    ] {
+        let mut args = vec!["tb", "--functional"];
+        args.extend(selection);
+        args.extend(["--as-known-at", &prefix]);
+        let before_read = head(&fixture.book);
+        let plain = ok(&fixture.book, &args);
+        assert_eq!(
+            head(&fixture.book),
+            before_read,
+            "plain read publishes nothing"
+        );
+        let file = fixture.dir.join(format!("{name}.cert"));
+        args.extend(["--certificate-out", file.to_str().unwrap()]);
+        let original = ok_many(&fixture.book, &args);
+        assert_eq!(original.len(), 2);
+        assert_eq!(data(&original[0]), data(&plain));
+        assert_eq!(total_debits(&original[0]), expected);
+        assert_eq!(text(data(&original[0]), "base_unit"), "USD");
+        assert_eq!(integer(data(&original[0]), "known_at").to_string(), prefix);
+        assert_eq!(text(&original[1], "event"), "report_certificate");
+        assert_eq!(
+            text(data(&original[1]), "output_format"),
+            "fa:functional-trial-balance:v1"
+        );
+        let oid = text(data(&original[1]), "oid");
+        assert_eq!(original[0].get("certificate"), Some(&Json::Str(oid.into())));
+        let bytes = std::fs::read(&file).unwrap();
+        assert!(bytes.starts_with(b"fa:report-certificate:v10"));
+        let certificate = fa::ReportCertificate::decode(&bytes).unwrap();
+        assert_eq!(certificate.canonical_bytes().unwrap(), bytes);
+        assert!(matches!(
+            &certificate.selection,
+            fa::ReportSelection::FunctionalTrialBalance(_)
+        ));
+        let reference = format!("C:{oid}");
+        assert_eq!(
+            ok_many(&fixture.book, &["replay", &reference])[0],
+            original[0]
+        );
+        retained.push((name, reference, original[0].clone()));
+    }
+
+    // A later quote is not a revaluation and cannot supersede carried amounts.
+    fixture.rate("later-unused-quote", "2026-02-05", 99);
+    for (_, reference, original) in &retained {
+        let status = ok(&fixture.book, &["certificate", "status", reference]);
+        assert_eq!(text(data(&status), "status"), "Current");
+        assert_eq!(ok_many(&fixture.book, &["replay", reference])[0], *original);
+    }
+    fixture.post(
+        "tb-certificate-backdated-january",
+        "2026-01-20",
+        "10.00",
+        13,
+    );
+    for (name, reference, original) in &retained {
+        let status = ok(&fixture.book, &["certificate", "status", reference]);
+        assert_eq!(
+            text(data(&status), "status"),
+            if *name == "activity" {
+                "Current"
+            } else {
+                "SupersededBy"
+            },
+            "January contributes to February stock, not February activity"
+        );
+        assert_eq!(ok_many(&fixture.book, &["replay", reference])[0], *original);
+    }
+    fixture.post(
+        "tb-certificate-backdated-february",
+        "2026-02-20",
+        "5.00",
+        14,
+    );
+    fixture.compact(SEED);
+    for (_, reference, original) in &retained {
+        let status = ok(&fixture.book, &["certificate", "status", reference]);
+        assert_eq!(text(data(&status), "status"), "SupersededBy");
+        assert!(!rows(data(&status), "later_entries").is_empty());
+        assert_eq!(ok_many(&fixture.book, &["replay", reference])[0], *original);
+    }
+    assert_eq!(
+        total_debits(&ok(
+            &fixture.book,
+            &["tb", "--functional", "--period", "FY2026-P02"]
+        )),
+        "370.00 USD"
+    );
+}
+
+#[test]
+fn functional_trial_balance_certification_requires_produce_and_never_writes_a_denied_file() {
+    let fixture = Fixture::new();
+    fixture.post("tb-reader-only", "2026-01-05", "100.00", 11);
+    let token = fixture.dir.join("tb-reader-only.token");
+    ok(
+        &fixture.book,
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "tb-reader",
+            "--profile",
+            "human",
+            "--op",
+            "read",
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--out",
+            token.to_str().unwrap(),
+        ],
+    );
+    let output = fixture.dir.join("denied-functional-tb.cert");
+    let before = head(&fixture.book);
+    for selection in [
+        vec!["--period", "FY2026-P01", "--certify"],
+        vec!["--activity", "--period", "FY2026-P01", "--certify"],
+        vec![
+            "--as-of",
+            "2026-01-31",
+            "--certificate-out",
+            output.to_str().unwrap(),
+        ],
+    ] {
+        let mut args = vec!["--token", token.to_str().unwrap(), "tb", "--functional"];
+        args.extend(selection);
+        let (code, denied) = run(&fixture.book, &args);
+        assert_eq!(code, 7, "{}", denied.render());
+        assert_eq!(text(&denied, "event"), "error");
+        assert_eq!(denied.get("certificate"), Some(&Json::Null));
+        assert!(text(data(&denied), "message").contains("produce"));
+    }
+    assert!(!output.exists());
+    assert_eq!(
+        head(&fixture.book),
+        before + access_events_since(&fixture.book, before),
+        "denied retention publishes no certificate; external reads retain only their access audit"
+    );
+}
+
+#[test]
+fn functional_trial_balance_certificate_keeps_original_instant_brackets_on_replay() {
+    const LOWER_NS: u64 = 1_773_576_000_000_000_000;
+    const UPPER_NS: u64 = 1_773_576_010_000_000_000;
+    const INSTANT: &str = "2026-03-15T12:00:05Z";
+    let fixture = Fixture::new();
+    let keys = BookKeys::load(&fixture.book.join("book.keys")).unwrap();
+    let runtime = RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(Budget::INFINITE);
+    let witness = fa::Capability::embedded(fgdb_types::VId(7), &["witness"]).unwrap();
+    let tick = |instant| {
+        let mut book = Book::open_dir(&fixture.book, keys.clone(), Entropy::production()).unwrap();
+        runtime
+            .block_on(book.record_tick(&root, instant, true, &witness))
+            .unwrap()
+            .unwrap()
+    };
+    tick(LOWER_NS);
+    fixture.post("instant-tb-january", "2026-01-05", "100.00", 11);
+    let expected_prefix = head(&fixture.book);
+    tick(UPPER_NS);
+    fixture.post("instant-tb-later", "2026-02-05", "200.00", 12);
+    let original = ok_many(
+        &fixture.book,
+        &[
+            "tb",
+            "--functional",
+            "--period",
+            "FY2026-P02",
+            "--as-known-at",
+            INSTANT,
+            "--certify",
+        ],
+    );
+    assert_eq!(original.len(), 2);
+    assert_eq!(integer(data(&original[0]), "known_at"), expected_prefix);
+    assert_eq!(total_debits(&original[0]), "110.00 USD");
+    let time = original[0]
+        .get("coordinate")
+        .and_then(|coordinate| coordinate.get("time_evidence"))
+        .expect("retained instant resolution");
+    assert_eq!(text(time, "precision"), "tick_bucket");
+    assert_eq!(integer(time, "resolved_seq"), expected_prefix);
+    let reference = format!("C:{}", text(data(&original[1]), "oid"));
+    tick(UPPER_NS + 10_000_000_000);
+    assert_eq!(
+        ok_many(&fixture.book, &["replay", &reference])[0],
+        original[0]
+    );
+}

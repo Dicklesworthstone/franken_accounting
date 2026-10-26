@@ -2419,6 +2419,21 @@ mod tests {
                 "tb",
             ),
             (
+                "fa_read_trial_balance",
+                json!({"period": "P", "functional": true, "certify": true}),
+                "tb",
+            ),
+            (
+                "fa_read_trial_balance",
+                json!({"period": "P", "functional": true, "activity": true, "certify": true}),
+                "tb",
+            ),
+            (
+                "fa_read_trial_balance",
+                json!({"as_of": "2026-02-28", "functional": true, "certify": true}),
+                "tb",
+            ),
+            (
                 "fa_read_explain_balance",
                 json!({"account": "1000", "period": "P", "certify": true}),
                 "explain",

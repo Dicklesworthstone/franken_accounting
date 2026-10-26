@@ -72,6 +72,10 @@ pub const DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT: &str = "fa:dimension-trial-bala
 /// columns, with the statement it evaluates to. Native units only.
 pub const REGULATORY_SCHEDULE_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v9";
 pub const REGULATORY_SCHEDULE_OUTPUT_FORMAT: &str = "fa:regulatory-schedule:v1";
+/// Functional trial balances retain entity cells, the historical display chart,
+/// and the same independently replayed Rate/law closure as functional statements.
+pub const FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v10";
+pub const FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT: &str = "fa:functional-trial-balance:v1";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -134,7 +138,7 @@ impl TrialBalanceSelection {
         self
     }
 
-    fn write(&self, w: &mut Writer) {
+    pub(crate) fn write(&self, w: &mut Writer) {
         match self {
             Self::Periods(periods) | Self::Activity(periods) => {
                 w.u8(if matches!(self, Self::Periods(_)) {
@@ -196,6 +200,9 @@ impl TrialBalanceSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportSelection {
     TrialBalance(TrialBalanceSelection),
+    /// Functional stock through one period or date, or one period's activity.
+    /// Committed base valuations are replayed against their retained Rate laws.
+    FunctionalTrialBalance(TrialBalanceSelection),
     ExplainBalance {
         account: VId,
         period: String,
@@ -245,6 +252,10 @@ impl ReportSelection {
     fn is_canonical(&self) -> bool {
         match self {
             Self::TrialBalance(selection) => selection.is_canonical(),
+            Self::FunctionalTrialBalance(selection) => {
+                selection.is_canonical()
+                    && crate::functional_trial_balance::supported_selection(selection)
+            }
             Self::ExplainBalance { period, .. } => !period.is_empty() && period.len() <= 128,
             Self::OpenItems { .. } => true,
             Self::Statement(selection) | Self::FunctionalStatement(selection) => {
@@ -291,6 +302,9 @@ impl ReportSelection {
     fn normalize(self) -> Self {
         match self {
             Self::TrialBalance(selection) => Self::TrialBalance(selection.normalize()),
+            Self::FunctionalTrialBalance(selection) => {
+                Self::FunctionalTrialBalance(selection.normalize())
+            }
             Self::DimensionTrialBalance {
                 selection,
                 dimension,
@@ -317,7 +331,9 @@ impl ReportSelection {
     pub const fn uses_functional_valuations(&self) -> bool {
         matches!(
             self,
-            Self::FunctionalStatement(_) | Self::FunctionalConsolidation { .. }
+            Self::FunctionalStatement(_)
+                | Self::FunctionalConsolidation { .. }
+                | Self::FunctionalTrialBalance(_)
         )
     }
 
@@ -325,6 +341,7 @@ impl ReportSelection {
     pub const fn output_format(&self) -> &'static str {
         match self {
             Self::TrialBalance(_) => OUTPUT_FORMAT,
+            Self::FunctionalTrialBalance(_) => FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT,
             Self::ExplainBalance { .. } => "fa:balance-explanation:v1",
             Self::OpenItems { .. } => "fa:open-items:v1",
             Self::Statement(_) => "fa:statement:v1",
@@ -349,6 +366,10 @@ impl ReportSelection {
         match self {
             // V1 and V2 retain the original selector bytes without a new tag.
             Self::TrialBalance(selection) => selection.write(w),
+            Self::FunctionalTrialBalance(selection) => {
+                w.u8(8);
+                selection.write(w);
+            }
             Self::ExplainBalance { account, period } => {
                 w.u8(0).u128(account.0).str(period);
             }
@@ -424,6 +445,9 @@ impl ReportSelection {
             7 if version == 9 => Ok(Self::RegulatorySchedule(Box::new(
                 crate::statements::RegulatorySelection::read(r)?,
             ))),
+            8 if version == 10 => Ok(Self::FunctionalTrialBalance(TrialBalanceSelection::read(
+                r,
+            )?)),
             tag => Err(r.bad_tag("report selector", tag)),
         }
     }
@@ -438,6 +462,10 @@ impl ReportSelection {
             Self::TrialBalance(selection) => Ok(Ok(ReportOutput::TrialBalance(
                 selection.report(db, book, at)?,
             ))),
+            Self::FunctionalTrialBalance(selection) => Ok(
+                crate::functional_trial_balance::report_at(db, book, selection, at)?
+                    .map(|report| ReportOutput::FunctionalTrialBalance(Box::new(report))),
+            ),
             Self::ExplainBalance { account, period } => {
                 Ok(Ok(ReportOutput::ExplainBalance(Box::new(
                     fa_registers::explain_balance(db, book, *account, period, Some(at))?,
@@ -486,6 +514,7 @@ impl ReportSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportOutput {
     TrialBalance(TrialBalance),
+    FunctionalTrialBalance(Box<crate::functional_trial_balance::FunctionalTrialBalance>),
     ExplainBalance(Box<BalanceExplanation>),
     OpenItems(OpenItemsReport),
     Statement(Box<fa_statements::Statement>),
@@ -502,6 +531,7 @@ impl ReportOutput {
     pub fn known_at(&self) -> CommitSeq {
         match self {
             Self::TrialBalance(report) => report.known_at,
+            Self::FunctionalTrialBalance(report) => report.known_at,
             Self::DimensionTrialBalance(report) => report.trial_balance.known_at,
             Self::ExplainBalance(report) => report.known_at,
             Self::OpenItems(report) => report.known_at,
@@ -519,6 +549,7 @@ impl ReportOutput {
     fn normalize_known_at(&mut self, known_at: CommitSeq) {
         match self {
             Self::TrialBalance(report) => report.known_at = known_at,
+            Self::FunctionalTrialBalance(report) => report.known_at = known_at,
             Self::DimensionTrialBalance(report) => report.trial_balance.known_at = known_at,
             Self::ExplainBalance(report) => report.known_at = known_at,
             Self::OpenItems(report) => report.known_at = known_at,
@@ -535,6 +566,7 @@ impl ReportOutput {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, fa_model::EncodeError> {
         match self {
             Self::TrialBalance(report) => report.canonical_bytes(),
+            Self::FunctionalTrialBalance(report) => report.canonical_bytes(),
             Self::ExplainBalance(report) => report.canonical_bytes(),
             Self::OpenItems(report) => report.canonical_bytes(),
             Self::Statement(report) => report.canonical_bytes(),
@@ -706,7 +738,10 @@ fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static
     if matches!(selection, ReportSelection::ExplainBalance { .. }) {
         sources.push(REASON_CODES);
     }
-    if matches!(selection, ReportSelection::FunctionalStatement(_)) {
+    if matches!(
+        selection,
+        ReportSelection::FunctionalStatement(_) | ReportSelection::FunctionalTrialBalance(_)
+    ) {
         sources.extend([
             ("fx_laws", include_str!("../../../registries/fx_laws.toml")),
             (
@@ -1103,6 +1138,9 @@ impl ReportCertificate {
                 INSTANT_CERTIFICATE_FORMAT
             }
             ReportSelection::TrialBalance(_) => CERTIFICATE_FORMAT,
+            ReportSelection::FunctionalTrialBalance(_) => {
+                FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT
+            }
             ReportSelection::Statement(_) => STATEMENT_CERTIFICATE_FORMAT,
             ReportSelection::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT,
             ReportSelection::Consolidation { .. } => CONSOLIDATION_CERTIFICATE_FORMAT,
@@ -1147,6 +1185,7 @@ impl ReportCertificate {
             || self.format() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
             || self.format() == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
             || self.format() == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT
+            || self.format() == FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -1169,27 +1208,36 @@ impl ReportCertificate {
         }
         let decode = || -> Result<Self, fa_model::DecodeError> {
             let mut r = Reader::new(bytes);
-            let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
-            let version = if format == CERTIFICATE_FORMAT {
-                1
-            } else if format == INSTANT_CERTIFICATE_FORMAT {
-                2
-            } else if format == REPORT_CERTIFICATE_FORMAT {
-                3
-            } else if format == STATEMENT_CERTIFICATE_FORMAT {
-                4
-            } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
-                5
-            } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
-                6
-            } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
-                7
-            } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
-                8
-            } else if format == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT {
-                9
+            // V10 is the first two-digit version. Preserve every earlier wire
+            // header and consume its exact length before reading framed fields.
+            let version = if bytes.starts_with(FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
+                r.fixed::<{ FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
+                    "certificate format",
+                )?;
+                10
             } else {
-                return Err(r.invalid("report certificate format"));
+                let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
+                if format == CERTIFICATE_FORMAT {
+                    1
+                } else if format == INSTANT_CERTIFICATE_FORMAT {
+                    2
+                } else if format == REPORT_CERTIFICATE_FORMAT {
+                    3
+                } else if format == STATEMENT_CERTIFICATE_FORMAT {
+                    4
+                } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
+                    5
+                } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
+                    6
+                } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
+                    7
+                } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
+                    8
+                } else if format == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT {
+                    9
+                } else {
+                    return Err(r.invalid("report certificate format"));
+                }
             };
             for (name, expected) in [("replay scope", REPLAY_SCOPE), ("authority", AUTHORITY)] {
                 if r.str(64, name)? != expected {
@@ -1732,6 +1780,7 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
         && (matches!(
             &certificate.selection,
             ReportSelection::FunctionalStatement(_)
+                | ReportSelection::FunctionalTrialBalance(_)
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
                 | ReportSelection::DimensionTrialBalance { .. }
@@ -2484,6 +2533,11 @@ fn unchanged_account_metadata<V: Vfs + Clone>(
     };
     let accounts: BTreeMap<VId, AccountMetadata> = match report {
         ReportOutput::TrialBalance(report) => trial_balance_metadata(report),
+        ReportOutput::FunctionalTrialBalance(report) => report
+            .accounts
+            .iter()
+            .map(|(vid, row)| (*vid, AccountMetadata::Complete(row.clone())))
+            .collect(),
         ReportOutput::DimensionTrialBalance(report) => {
             trial_balance_metadata(&report.trial_balance)
         }
@@ -2704,6 +2758,14 @@ pub(crate) fn selected(
             }
         }
         (
+            ReportSelection::FunctionalTrialBalance(_),
+            ReportOutput::FunctionalTrialBalance(report),
+        ) => {
+            if let Some(through) = report.effective_through {
+                return Ok(entry.proposal.effective_date <= through);
+            }
+        }
+        (
             ReportSelection::DimensionTrialBalance { .. },
             ReportOutput::DimensionTrialBalance(report),
         ) => {
@@ -2815,6 +2877,7 @@ pub(crate) fn selected(
     })?;
     Ok(match selection {
         ReportSelection::TrialBalance(TrialBalanceSelection::Activity(periods))
+        | ReportSelection::FunctionalTrialBalance(TrialBalanceSelection::Activity(periods))
         | ReportSelection::DimensionTrialBalance {
             selection: TrialBalanceSelection::Activity(periods),
             ..

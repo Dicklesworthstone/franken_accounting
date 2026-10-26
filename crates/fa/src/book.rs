@@ -3036,6 +3036,48 @@ impl Book {
         )))
     }
 
+    /// Functional-currency trial balance with its historical account metadata.
+    /// Select one period's activity, stock through one period end, or a civil date.
+    pub fn functional_trial_balance(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::FunctionalTrialBalance> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_trial_balance(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Certify exact retained functional valuations, original Rate evidence and
+    /// the selected journal prefix under current whole-book Read and Produce.
+    pub fn certify_functional_trial_balance(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_trial_balance(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Certify a functional trial balance at an instant resolved by retained
+    /// TimeEvidence; the certificate keeps the original tick brackets.
+    pub fn certify_functional_trial_balance_at_instant(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_trial_balance_at_instant(
+            &purposes, capability, selection, requested_utc_ns,
+        )))
+    }
+
     /// Record an import run (plan §9.3): the batch's documents and their
     /// receipts, and the run's `ImportControl` receipt, in one commit.
     /// `description` is sealed under the book key with fresh entropy.
@@ -6236,6 +6278,7 @@ impl ReadScope<'_> {
             // capability is refused, never filtered.
             ReportSelection::OpenItems { .. }
             | ReportSelection::FunctionalStatement(_)
+            | ReportSelection::FunctionalTrialBalance(_)
             | ReportSelection::Consolidation { .. }
             | ReportSelection::FunctionalConsolidation { .. }
             | ReportSelection::DimensionTrialBalance { .. } => self.authority.whole_book(seq),

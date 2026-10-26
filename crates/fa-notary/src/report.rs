@@ -112,7 +112,7 @@ pub fn assemble_with_registries(
     } else {
         &["account_types", "entry_classes", "units", "foundations"]
     };
-    if !(certificate.starts_with(b"fa:report-certificate:v4")
+    if !(certificate_format(certificate, b"fa:report-certificate:v4")
         || open_items_certificate(certificate)
         || explanation)
         || registries
@@ -148,6 +148,19 @@ fn explanation_certificate(certificate: &[u8]) -> bool {
     v3_certificate(certificate, "fa:balance-explanation:v1", 0)
 }
 
+// A version tag is followed by the framed replay scope. Matching only its
+// byte prefix would admit v10 as v1 (and future v40 as v4), even though the
+// portable interpreter does not support those report families.
+fn certificate_format(certificate: &[u8], format: &[u8]) -> bool {
+    let Some(fields) = certificate.strip_prefix(format) else {
+        return false;
+    };
+    let mut reader = Reader::new(fields);
+    reader
+        .str(64, "report scope")
+        .is_ok_and(|scope| scope == "fa-fold-over-prefix")
+}
+
 fn v3_certificate(certificate: &[u8], output: &str, selector: u8) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -179,12 +192,12 @@ fn assemble_inner(
 ) -> Outcome<Bundle> {
     let major = if registries.is_empty() { 1 } else { 2 };
     if !(major == 1
-        && (certificate.starts_with(b"fa:report-certificate:v1")
-            || certificate.starts_with(b"fa:report-certificate:v2")
-            || certificate.starts_with(b"fa:report-certificate:v4")
-            || certificate.starts_with(b"fa:report-certificate:v8"))
+        && (certificate_format(certificate, b"fa:report-certificate:v1")
+            || certificate_format(certificate, b"fa:report-certificate:v2")
+            || certificate_format(certificate, b"fa:report-certificate:v4")
+            || certificate_format(certificate, b"fa:report-certificate:v8"))
         || major == 2
-            && (certificate.starts_with(b"fa:report-certificate:v4")
+            && (certificate_format(certificate, b"fa:report-certificate:v4")
                 || open_items_certificate(certificate)
                 || explanation_certificate(certificate)))
     {
@@ -284,4 +297,36 @@ fn assemble_inner(
         bytes,
         digest: hash.finalize().0,
     }))
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn supported_version_headers_do_not_admit_later_decimal_versions() {
+        for version in [1, 2, 4, 8] {
+            let format = format!("fa:report-certificate:v{version}");
+            let mut writer = Writer::new();
+            writer.fixed(format.as_bytes()).str("fa-fold-over-prefix");
+            assert!(certificate_format(
+                &writer.finish().unwrap(),
+                format.as_bytes()
+            ));
+            for later in [version * 10, version * 10 + 1] {
+                let mut writer = Writer::new();
+                writer
+                    .fixed(format!("fa:report-certificate:v{later}").as_bytes())
+                    .str("fa-fold-over-prefix");
+                assert!(!certificate_format(
+                    &writer.finish().unwrap(),
+                    format.as_bytes()
+                ));
+            }
+        }
+        assert!(!certificate_format(
+            b"fa:report-certificate:v1",
+            b"fa:report-certificate:v1"
+        ));
+    }
 }

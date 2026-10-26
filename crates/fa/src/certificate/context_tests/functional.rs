@@ -1,5 +1,8 @@
 //! Real retained Rate documents and posted entries exercise the v5 closure.
 
+#[path = "functional_trial_balance.rs"]
+mod trial_balance;
+
 use super::*;
 use crate::certificate::{
     FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT, FUNCTIONAL_STATEMENT_OUTPUT_FORMAT, ReportCertificate,

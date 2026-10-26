@@ -73,6 +73,7 @@ pub mod equity_certificate;
 pub mod evidence_disclosure;
 pub mod external_subledger;
 pub mod findings;
+pub mod functional_trial_balance;
 pub mod fx;
 pub mod fx_revaluation;
 pub mod general_ledger;
@@ -136,8 +137,9 @@ pub use cash_flow_certificate::{
     MAX_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use certificate::{
-    CertificateStatus, CertifiedReport, CertifiedTrialBalance, ReportCertificate, ReportOutput,
-    ReportSelection, TrialBalanceSelection,
+    CertificateStatus, CertifiedReport, CertifiedTrialBalance,
+    FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT, FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT,
+    ReportCertificate, ReportOutput, ReportSelection, TrialBalanceSelection,
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use consolidation::FunctionalConsolidation;
@@ -234,6 +236,7 @@ pub use fa_statements::{
     StatementKind, StatementLine,
 };
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
+pub use functional_trial_balance::{FunctionalTrialBalance, FunctionalTrialBalanceCell};
 pub use fx::{
     FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, FxSettlementRequest,
     PreparedFxSettlement,
