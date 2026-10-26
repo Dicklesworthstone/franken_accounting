@@ -797,27 +797,53 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         }
     };
 
+    let engagements = book.engagements()?;
+    let active_audit_engagement = engagements.iter().find(|e| {
+        e.state == fa_journal::EngagementState::Open
+            && matches!(
+                e.profile.kind,
+                fa_journal::EngagementKind::Audit
+                    | fa_journal::EngagementKind::Examination
+                    | fa_journal::EngagementKind::Investigation
+            )
+    });
+
     // The next steps, from the state (the first is the most urgent).
     let mut steps = Vec::new();
     if accounts == 0 {
-        steps.push(write_step(
-            "fa chart import <chart.json> --json",
-            "the book has no accounts; install the chart",
+        steps.push(step(
+            "fa chart templates --json",
+            "the book has no accounts; inspect the embedded chart templates or install a chart with `fa chart import`",
         ));
     } else if periods.is_empty() {
+        let initial_year = match &book.context().calendar.kind {
+            fa_time::CalendarKind::Custom { years } => years.first().map_or(2026, |y| y.fiscal_year),
+            _ => 2026,
+        };
         steps.push(write_step(
-            "fa period create --fiscal-year <N> --json",
+            format!("fa period create --fiscal-year {initial_year} --json"),
             "entries post into periods; create the fiscal year's",
         ));
     } else if open.is_empty() {
-        let future = periods.iter().find(|p| p.state == PeriodState::Future);
-        steps.push(write_step(
-            format!(
-                "fa period open {} --json",
-                future.map_or("<code>", |p| p.code.as_str())
-            ),
-            "no period is open, so nothing can post",
-        ));
+        if let Some(future) = periods.iter().find(|p| p.state == PeriodState::Future) {
+            steps.push(write_step(
+                format!("fa period open {} --json", future.code),
+                "no period is open, so nothing can post",
+            ));
+        } else {
+            let next_year = periods
+                .iter()
+                .map(|p| p.fiscal_year)
+                .max()
+                .unwrap_or(2025)
+                .saturating_add(1);
+            steps.push(step(
+                "fa period list --json",
+                format!(
+                    "no period is open or future; inspect the closed periods or create the next fiscal year with `fa period create --fiscal-year {next_year} --json`"
+                ),
+            ));
+        }
     }
     // Failures first, then warnings that name their remedy.
     for check in derived
@@ -842,8 +868,26 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
                 crate::cli::hex(&certificate)
             ),
             format!(
-                "{open} open finding(s) await review; this run holds a {} one (fa finding review F:<vid> --action acknowledge|dismiss)",
+                "{open} open finding(s) await review; this run holds a {} one (review each with `fa finding review` and `--action acknowledge|dismiss`)",
                 open_findings[rank].0
+            ),
+        ));
+    }
+    if finding_runs == 0
+        && let Some(eng) = active_audit_engagement
+    {
+        let kind = eng.profile.kind.name();
+        let id = &eng.profile.engagement;
+        steps.push(step(
+            "fa jet --json",
+            format!(
+                "open {kind} engagement `{id}` has no recorded finding runs; run the journal-entry test battery"
+            ),
+        ));
+        steps.push(step(
+            "fa procedure list --json",
+            format!(
+                "open {kind} engagement `{id}` has no recorded finding runs; list the registered analytical procedures"
             ),
         ));
     }
@@ -886,10 +930,10 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
             // draft instead.
             draft: Some((
                 "resolve-holds",
-                "fa draft plan resolve-holds --intent <resolution.json> --json",
+                "fa draft plan resolve-holds --intent resolution.json --json",
             )),
             ..write_step(
-                "fa resolve --intent <resolution.json> --json",
+                "fa resolve --intent resolution.json --json",
                 format!(
                     "{pending_cells} register cell(s) carry reserved amounts: resolve the holds that are done"
                 ),
