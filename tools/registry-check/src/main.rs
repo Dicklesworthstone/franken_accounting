@@ -1377,6 +1377,20 @@ pub fn check_readme_agents_sync(
         }
     }
     aliases.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
+    // The global flags (`[global]`), which the CLI parser accepts before the
+    // verb as anywhere else (`fa --token t --book ./b period close …`).
+    let (global_value_flags, global_switches): (BTreeSet<String>, BTreeSet<String>) =
+        match verbs_doc.tables.get("global") {
+            Some(global) => (
+                req_str_array("verbs.toml", global, "flags")?
+                    .into_iter()
+                    .collect(),
+                req_str_array("verbs.toml", global, "switches")?
+                    .into_iter()
+                    .collect(),
+            ),
+            None => (BTreeSet::new(), BTreeSet::new()),
+        };
 
     let (above_tldr, _) = readme_text
         .split_once("\n## TL;DR\n")
@@ -1425,6 +1439,28 @@ pub fn check_readme_agents_sync(
             .skip(1)
             .map(str::to_string)
             .collect();
+        // Leading global flags are skipped: a value flag with its value (or
+        // `--flag=value`), a switch alone. An unregistered leading flag stays,
+        // and is refused below as the verb it would be read as.
+        while let Some(first) = words.first().cloned() {
+            let (name, inline) = match first.split_once('=') {
+                Some((name, _)) => (name.to_string(), true),
+                None => (first, false),
+            };
+            let take = if global_value_flags.contains(&name) {
+                if inline { 1 } else { 2 }
+            } else if global_switches.contains(&name) && !inline {
+                1
+            } else {
+                break;
+            };
+            words.drain(..take.min(words.len()));
+        }
+        if words.is_empty() {
+            return Err(format!(
+                "README.md:{pending_line}: command `{joined}` names no verb after its global flags (registries/verbs.toml:1)"
+            ));
+        }
         for (from, to) in &aliases {
             if words.len() >= from.len() && words[..from.len()] == from[..] {
                 let mut expanded = to.clone();
@@ -2217,6 +2253,33 @@ per_procedure_confusion = ["jet.round_amounts:90:0:0:1200"]
             err.contains("README.md:") && err.contains("conjure"),
             "unexpected error: {err}"
         );
+        // Global flags before the verb are skipped, as the CLI parser skips
+        // them; the verb after them is still checked, an unregistered leading
+        // flag is still refused, and a command of flags alone names no verb.
+        for (planted, needle) in [
+            ("fa --token t.token --book ./b conjure --json", "conjure"),
+            ("fa --bogus x period close FY2026-P03", "--bogus"),
+            ("fa --book ./b --json", "names no verb"),
+        ] {
+            let bad = readme_text.replacen(
+                "\n## TL;DR\n",
+                &format!("\n```bash\n{planted}\n```\n\n## TL;DR\n"),
+                1,
+            );
+            let err = check_readme_agents_sync(
+                &bad,
+                &agents_text,
+                &check_sh_text,
+                &verbs_text,
+                &known_markers,
+                &prefixes,
+            )
+            .expect_err(planted);
+            assert!(
+                err.contains("README.md:") && err.contains(needle),
+                "{planted}: unexpected error: {err}"
+            );
+        }
 
         // (c) Status date > 7 days from verdict date fails with file:line.
         let stale_readme = readme_text.replacen("Status (2026-", "Status (2025-", 1);
