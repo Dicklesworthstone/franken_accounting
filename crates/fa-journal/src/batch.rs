@@ -639,6 +639,8 @@ fn judge_retry<V: Vfs + Clone>(
     }
     let mut entries = Vec::with_capacity(batch.members().len());
     let mut publications = Vec::with_capacity(batch.members().len());
+    // Reused only while each member's transaction has the same basis.
+    let mut reconciliation = None;
     for (i, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
         match prepare_member(
             db,
@@ -648,6 +650,7 @@ fn judge_retry<V: Vfs + Clone>(
             admission,
             None,
             None,
+            &mut reconciliation,
         )? {
             Err(refusal) => return Ok(Err(member_refusal(i, refusal))),
             Ok(PostPreparation::AlreadyRecorded(posted)) => {
@@ -869,6 +872,9 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
     let ovid = outcome_vid(book, batch);
     let mut txn: Option<WriteTxn> = None;
     let mut tracker = TemplateByteTracker::default();
+    // Every member stages into one transaction, so the reconciliation
+    // history is verified once at its basis and shared (fa-rcw1).
+    let mut reconciliation = None;
     let mut members: Vec<BatchMember> = Vec::with_capacity(batch.members().len());
     let mut resolved = Vec::with_capacity(batch.members().len());
     let mut security_policy_epoch = None;
@@ -883,6 +889,7 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
             admission,
             txn.take(),
             Some(std::mem::take(&mut tracker)),
+            &mut reconciliation,
         )? {
             Err(refusal) => return Ok(Err(member_refusal(i, refusal))),
             // The member's identity is taken. Admission already ran for it,

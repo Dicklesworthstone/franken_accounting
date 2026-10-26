@@ -1073,7 +1073,7 @@ pub(crate) async fn post_admitted<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    match prepare_post_in(db, ctx, book, req, None, admission, None, None)? {
+    match prepare_post_in(db, ctx, book, req, None, admission, None, None, &mut None)? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Ok(posted)),
         Ok(PostPreparation::Ready(prepared)) => prepared.commit(db, ctx).await,
@@ -1113,7 +1113,7 @@ pub fn prepare_post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, Admission::Commit, None, None)
+    prepare_post_in(db, ctx, book, req, None, Admission::Commit, None, None, &mut None)
 }
 
 /// [`prepare_post`] for a dry run (plan §15.3): the same pipeline and
@@ -1126,7 +1126,17 @@ pub(crate) fn prepare_plan<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<PostPreparation> {
-    let prepared = prepare_post_in(db, ctx, book, req, None, Admission::Plan, None, None)?;
+    let prepared = prepare_post_in(
+        db,
+        ctx,
+        book,
+        req,
+        None,
+        Admission::Plan,
+        None,
+        None,
+        &mut None,
+    )?;
     if let Ok(PostPreparation::Ready(p)) = &prepared {
         let accounts = crate::register_capacity::accounts(
             std::iter::once(&p.entry.proposal)
@@ -1157,7 +1167,17 @@ pub(crate) fn prepare_recurring<V: asupersync::fs::Vfs + Clone>(
     req: PostRequest,
     token: crate::recurring::Executing,
 ) -> Outcome<PostPreparation> {
-    prepare_post_in(db, ctx, book, req, None, Admission::Recurring(token), None, None)
+    prepare_post_in(
+        db,
+        ctx,
+        book,
+        req,
+        None,
+        Admission::Recurring(token),
+        None,
+        None,
+        &mut None,
+    )
 }
 
 pub(crate) fn witness_recurring_executor<V: asupersync::fs::Vfs + Clone>(
@@ -1174,6 +1194,8 @@ pub(crate) fn witness_recurring_executor<V: asupersync::fs::Vfs + Clone>(
 /// the member reads every earlier member's staged effects as witnesses of
 /// the one commit. Any refusal or recorded outcome abandons the carried
 /// transaction, so nothing of the batch is staged.
+/// `reconciliation` is the batch's verified history at one basis (fa-rcw1).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -1182,6 +1204,7 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
     admission: Admission,
     carried: Option<WriteTxn>,
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
+    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
     if crate::revaluation::is_source_bound(&req.proposal) {
         if let Some(txn) = carried {
@@ -1195,7 +1218,17 @@ pub(crate) fn prepare_member<V: asupersync::fs::Vfs + Clone>(
         }
         return Ok(Err(crate::carrying::unsupported_batch()));
     }
-    prepare_post_in(db, ctx, book, req, None, admission, carried, carried_tracker)
+    prepare_post_in(
+        db,
+        ctx,
+        book,
+        req,
+        None,
+        admission,
+        carried,
+        carried_tracker,
+        reconciliation,
+    )
 }
 
 /// An exact amount as the book renders it ("500.00 USD") for refusal text,
@@ -1333,12 +1366,13 @@ pub(crate) fn reconciliation_citations<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     effective_date: fa_time::DateDay,
     legs: &[fa_model::LegPayload],
+    history: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<Vec<crate::bank::BankDecisionRef>> {
     let accounts = legs
         .iter()
         .map(|leg| ((leg.account_ref, leg.amount.unit), effective_date))
         .collect();
-    reconciliation_citations_for_accounts(txn, db, ctx, book, capability, &accounts)
+    reconciliation_citations_for_accounts(txn, db, ctx, book, capability, &accounts, history)
 }
 
 /// A migration activation can touch several dates. The earliest new effective
@@ -1350,6 +1384,7 @@ pub(crate) fn reconciliation_citations_for_accounts<V: asupersync::fs::Vfs + Clo
     book: &BookContext,
     capability: &Capability,
     account_dates: &BTreeMap<(VId, fa_money::UnitId), fa_time::DateDay>,
+    history: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<Vec<crate::bank::BankDecisionRef>> {
     if account_dates.is_empty() {
         return Ok(Ok(Vec::new()));
@@ -1360,10 +1395,11 @@ pub(crate) fn reconciliation_citations_for_accounts<V: asupersync::fs::Vfs + Clo
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let locks = match crate::bank::witness_reconciliation_locks(db, ctx, book, txn, &accounts)? {
-        Ok(locks) => locks,
-        Err(refusal) => return Ok(Err(refusal)),
-    };
+    let locks =
+        match crate::bank::witness_reconciliation_locks(db, ctx, book, txn, &accounts, history)? {
+            Ok(locks) => locks,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
     let mut citations = BTreeSet::new();
     for lock in locks {
         let Some(effective_date) = account_dates.get(&(lock.account, lock.unit)) else {
@@ -1613,6 +1649,8 @@ pub(crate) fn admit_accounts<V: asupersync::fs::Vfs + Clone>(
 /// The second member reads the first member's native transaction overlay,
 /// including released applications and limit-cell moves. No rehearsal
 /// transaction or substitute entry class participates in publication.
+/// `reconciliation` carries the verified reconciliation history from an
+/// earlier member of the same transaction; it is reused only at its basis.
 #[allow(clippy::too_many_arguments)]
 fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
@@ -1623,6 +1661,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     admission: Admission,
     carried: Option<WriteTxn>,
     carried_tracker: Option<crate::batch::TemplateByteTracker>,
+    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
 ) -> Outcome<PostPreparation> {
     let planning = matches!(admission, Admission::Plan);
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -3975,6 +4014,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         &req.capability,
         entry.proposal.effective_date,
         posted_legs,
+        reconciliation,
     )? {
         Ok(citations) => citations,
         Err(refusal) => {
@@ -5062,6 +5102,7 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         admission,
         None,
         None,
+        &mut None,
     )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => {
@@ -5099,6 +5140,7 @@ pub(crate) fn prepare_replacement_pair<V: asupersync::fs::Vfs + Clone>(
         admission,
         None,
         None,
+        &mut None,
     )?;
     if let Ok(PostPreparation::Ready(p)) = &prepared {
         let accounts = crate::register_capacity::accounts(
