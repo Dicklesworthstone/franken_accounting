@@ -735,6 +735,10 @@ fn every_plan_leaf_present_or_registered() {
         ),
         ("fa close run", "fa-4o0: the CloseRun task DAG"),
         ("fa close status", "fa-4o0: the CloseRun task DAG"),
+        (
+            "fa finding dismiss",
+            "fa-waow: today fa finding review --action dismiss; fa.findings is at its 7-tool cluster cap and MCP parity admits only host-only exclusions, so a CLI-only subcommand cannot land",
+        ),
         ("fa gen book", "fa-ykbp"),
         (
             "fa recon book-to-book",

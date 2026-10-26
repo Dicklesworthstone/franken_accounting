@@ -136,8 +136,6 @@ fn check_options(args: &Args, sub: &str) -> Result<(), Fail> {
             "--certificate",
             "--file",
         ],
-        // One finding's dismissal: its action is the subcommand.
-        "dismiss" => &["--note", "--dismissal-reason", "--previous", "--evidence"],
         "export" => &[
             "--certificate",
             "--known-at",
@@ -179,9 +177,9 @@ fn check_options(args: &Args, sub: &str) -> Result<(), Fail> {
             EXAMPLE,
         ));
     }
-    if args.switch("--yes") && !matches!(sub, "record" | "review" | "dismiss") {
+    if args.switch("--yes") && !matches!(sub, "record" | "review") {
         return Err(usage(
-            "--yes applies only to finding record, review or dismiss",
+            "--yes applies only to finding record or review",
             EXAMPLE,
         ));
     }
@@ -255,16 +253,6 @@ pub(crate) fn finding_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "list" => list(ctx, args),
         "show" => show(ctx, args),
         "review" => review(ctx, args),
-        // Plan §15.3 names `fa finding dismiss`: one finding's review whose
-        // action is dismiss, under every rule review applies.
-        "dismiss" => {
-            let mut review_args = args.clone();
-            review_args.positional[1] = "review".into();
-            review_args
-                .flags
-                .insert("--action".into(), vec!["dismiss".into()]);
-            review(ctx, &review_args)
-        }
         "export" => export(ctx, args),
         "replay" => replay(ctx, args),
         _ => Err(usage("finding needs a supported subcommand", EXAMPLE)),
