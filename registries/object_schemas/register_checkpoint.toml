@@ -1,0 +1,63 @@
+# Complete native-period register snapshots (plan §5.3; fa-9xf9).
+schema_version = 1
+name = "RegisterCheckpoint"
+owner = "fa_registers::checkpoint::Checkpoint"
+major = 1
+minor = 0
+externally_verifiable = false
+format = "fa:register-checkpoint:v1"
+definition_format = "fa:register-definition:native-period:v1"
+definition_domain = "fa:register-definition:v1"
+identity_domain = "fa:vid:register-checkpoint:v1"
+head_identity_domain = "fa:vid:register-checkpoint-head:v1"
+pointer_format = "fa:register-checkpoint-ref:v1"
+cells_domain = "fa:register-checkpoint-cells:v1"
+body_domain = "fa:register-checkpoint-body:v1"
+object_kind = 6
+storage_label = "RegisterCheckpoint"
+head_label = "RegisterState"
+head_property = "target_ref"
+max_checkpoint_bytes = 8388608
+max_distinct_cells = 100000
+
+# Definition = fixed(definition_format), book[16], trunk[16], str(period),
+# bytes(fold_digest_domain). definition_oid = H(definition_domain || definition).
+# Body = fixed(format), bytes(definition), definition_oid[32], u64 through,
+# opt(previous: u64 through + digest[32]), u64 distinct_cell_count, cells_root[32],
+# opt(u64 contribution_watermark), u64 posted_entries, fold_digest[32],
+# posted_legs_digest[32], list(holds: u64 seq + u128 entry + digest[32]),
+# u8(0) + posted_cells, u8(1) + pending_cells, body_digest[32].
+# Each cell list is in strict CellKey order: u128 account, u32 unit,
+# i128 debits, i128 credits, u64 entry_count. Its period comes from definition.
+# Holds are in strict (seq, entry) order and bounded by max_batch_entries.
+# Counts are u32 list lengths; integers are little endian; options use u8 tags.
+# cells_root binds definition_oid and BOTH tagged columns. body_digest binds
+# the complete preceding body including contribution counts, digests and holds.
+# Distinct cell_count counts the union of keys across both amount columns.
+# Decode admits byte/count bounds before allocations and checks all commitments.
+# This format bound does not waive the native WriteTxn/capsule admission limits.
+#
+# Root identity = low128(H(identity_domain || book || u64 period.len || period ||
+# u64 through || body_digest)). Root properties: BOOK_ID, FA_PAYLOAD (object
+# storage kind 6), FA_DIGEST (body_digest). Root/fragments preserve original birth.
+# Head identity uses head_identity_domain, book and length-prefixed period.
+# Head properties: BOOK_ID, EFFECTIVE_PERIOD, TARGET_REF. Its bounded pointer is
+# fixed(pointer_format), u64 through, digest[32]. Existing FARSv2 stays unchanged.
+# A checkpoint's predecessor must have a strictly earlier through frontier.
+# Root, fragments, head, mutable register cells and consumed cursor publish in
+# one transaction after the prepared basis/root and mutable state CAS agree.
+# Dropped/stale preparation never publishes a partial checkpoint. Explicit
+# literal repair starts a fresh reachable chain and preserves old immutable rows.
+#
+# Native reads observe checkpoint storage at their requested known_at, then
+# replay only an available exact suffix. Missing/corrupt/unavailable cache data
+# falls back to the literal journal fold. Missing disposable state can recover
+# from the separate head; a genuinely retired delta suffix cannot be recreated
+# from a checkpoint and still needs the full journal fold at this substrate pin.
+# Maintenance applies the replayable cadence decision, bounded by registered
+# commit retention floors; first publications, explicit repair and maintenance
+# of Opening/Closing periods force snapshots. This does not claim automatic
+# fiscal-close integration, day-floor scheduling or a daemon cadence guarantee.
+# Independent verification refolds EVERY reachable checkpoint at its through
+# frontier, rejecting coherently resealed wrong values as well as damaged bytes.
+# These snapshots are caches, never outsider proof of an opening balance (§13.1).

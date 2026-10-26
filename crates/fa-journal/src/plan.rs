@@ -260,11 +260,12 @@ fn retained_bytes_match<V: Vfs + Clone>(
 /// Labels whose commits are pure derived/certified metadata and never change
 /// any accounting, period, policy, capability, approval, evidence, or chart
 /// witness a `PostPlan` binds (fa-1nx).
-const METADATA_LABELS: [fgdb_delta_types::LabelId; 5] = [
+const METADATA_LABELS: [fgdb_delta_types::LabelId; 6] = [
     label::REGISTER,
     label::ACCUMULATOR_STATE,
     label::TRANSPARENCY_CHECKPOINT,
     label::REGISTER_STATE,
+    label::REGISTER_CHECKPOINT,
     label::CERTIFICATE,
 ];
 

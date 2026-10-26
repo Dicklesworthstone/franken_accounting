@@ -4,12 +4,13 @@
 //! advance owns no transaction and can be dropped; publication rejects a
 //! changed basis. Only new Entry payloads are decoded during advancement,
 //! plus the original Pending payload for each release. Leg mirrors are not
-//! inputs. Retired cursors rebuild from the authoritative journal.
+//! inputs. Complete immutable checkpoints can restore missing maintenance
+//! state; a genuinely retired suffix still requires the authoritative fold.
 //!
-//! RegisterState is mutable, disposable maintenance metadata, not a certified
-//! RegisterCheckpoint. This module does not yet maintain entity, open-item or
-//! availability projections. Native reports may use retained register snapshots
-//! and their exact tails, with the independent literal fold as the fallback.
+//! RegisterState and RegisterCheckpoint are disposable caches, not independent
+//! balance proofs. This module does not maintain entity, open-item or availability
+//! projections. Native reports use retained cells or complete checkpoints and
+//! their exact tails, with the independent literal fold as the fallback.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,8 +24,9 @@ use fgdb::{Database, WriteMismatchPolicy};
 use fgdb_crypto::Hasher;
 use fgdb_delta_types::{DeltaRow, ElementId, IndexError};
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
+use crate::checkpoint::{self, CheckpointRef};
 use crate::{Cell, CellKey, Fold, RegisterError};
 
 /// What one publication consumed. `through` is the input frontier, not the
@@ -42,6 +44,12 @@ pub struct Advance {
     pub legs_folded: u64,
     pub rebuilt: bool,
     pub wrote: bool,
+    /// A complete checkpoint published atomically with these cells, when due.
+    pub checkpoint: Option<CheckpointRef>,
+    /// Effective commit cadence after applying registered retention floors.
+    pub checkpoint_cadence: u64,
+    /// A durable snapshot restored when the disposable maintenance state was absent.
+    pub recovered_from: Option<CommitSeq>,
     pub fold: Fold,
     pub decision_card: fa_policy::DecisionCard,
     pub decision_card_digest: [u8; 32],
@@ -54,7 +62,9 @@ pub struct PreparedAdvance {
     book_id: Id128,
     basis: CommitSeq,
     basis_root: fgdb_types::ObjectId,
+    state: VId,
     expected_state: Option<CanonicalScalar>,
+    reset_checkpoint: bool,
     result: Advance,
 }
 
@@ -76,6 +86,37 @@ pub fn state_vid(book: Id128, period: &str) -> VId {
     let mut lo = [0; 16];
     lo.copy_from_slice(&h.finalize().0[..16]);
     VId(u128::from_le_bytes(lo))
+}
+
+/// Native identities cannot be resurrected after deletion. A retained
+/// checkpoint head can also hold the disposable FARS header if the original
+/// state row was lost; its independent TARGET_REF remains the archive locator.
+fn state_row_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    at: CommitSeq,
+) -> Result<Option<fgdb::VertexRow>, RegisterError> {
+    if let Some(row) = db.vertex_at(state_vid(book.book_id, period), at)? {
+        return Ok(Some(row));
+    }
+    Ok(db
+        .vertex_at(checkpoint::head_vid(book.book_id, period), at)?
+        .filter(|row| prop(row, property::FA_PAYLOAD).is_some()))
+}
+
+fn publication_state<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+) -> Result<VId, RegisterError> {
+    let primary = state_vid(book.book_id, period);
+    let head = checkpoint::head_vid(book.book_id, period);
+    if db.vertex(primary)?.is_none() && db.vertex(head)?.is_some() {
+        Ok(head)
+    } else {
+        Ok(primary)
+    }
 }
 
 fn drift(what: impl Into<String>) -> RegisterError {
@@ -198,7 +239,7 @@ fn load<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period: &str,
 ) -> Result<Option<(CommitSeq, Fold, CanonicalScalar)>, RegisterError> {
-    let Some(state) = db.vertex(state_vid(book.book_id, period))? else {
+    let Some(state) = state_row_at(db, book, period, db.frontier()?)? else {
         return Ok(None);
     };
     if state.labels != vec![label::REGISTER_STATE]
@@ -474,23 +515,31 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<PreparedAdvance, RegisterError> {
     let basis = db.frontier()?;
     crate::period_at(db, book, period, basis)?;
-    let (from, mut fold, expected_state) = match load(db, book, period)? {
-        Some((through, fold, payload)) => (through, fold, Some(payload)),
-        None => (CommitSeq::ORIGIN, empty(period)?, None),
+    let (from, mut fold, expected_state, recovered_from) = match load(db, book, period)? {
+        Some((through, fold, payload)) => (through, fold, Some(payload), None),
+        None => match checkpoint::load_latest(db, &ctx.query(), book, period, basis)? {
+            Some(checkpoint) => (
+                checkpoint.through,
+                checkpoint.fold,
+                None,
+                Some(checkpoint.through),
+            ),
+            None => (CommitSeq::ORIGIN, empty(period)?, None, None),
+        },
     };
     if let Err(error) = db.ensure_delta_window(&ctx.commit(), from).await {
         return match error {
             fgdb::RebuildError::Index {
                 error: IndexError::CursorRetired { .. },
                 ..
-            } => prepare_rebuild(db, book, period),
+            } => prepare_rebuild(db, book, period, false),
             other => Err(fgdb::WriteError::from(other).into()),
         };
     }
     let (entries_decoded, legs_folded) = match apply_tail(db, book, period, basis, from, &mut fold)?
     {
         Tail::Applied(decoded, legs) => (decoded, legs),
-        Tail::Rebuild => return prepare_rebuild(db, book, period),
+        Tail::Rebuild => return prepare_rebuild(db, book, period, false),
     };
     // Repeated calls after our own maintenance write must not manufacture
     // an endless stream of empty maintenance commits.
@@ -509,11 +558,14 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
         fold.entries,
     );
     let decision_card_digest = decision_card.digest().map_err(RegisterError::Encoding)?;
+    let checkpoint_cadence = checkpoint_cadence(db, book, &decision_card)?;
     Ok(PreparedAdvance {
         book_id: book.book_id,
         basis,
         basis_root: db.partition_root()?.0,
+        state: publication_state(db, book, period)?,
         expected_state,
+        reset_checkpoint: false,
         result: Advance {
             period: period.into(),
             from,
@@ -523,11 +575,44 @@ pub async fn prepare_advance<V: asupersync::fs::Vfs + Clone>(
             legs_folded,
             rebuilt: false,
             wrote,
+            checkpoint: None,
+            checkpoint_cadence,
+            recovered_from,
             fold,
             decision_card,
             decision_card_digest,
         },
     })
+}
+
+/// The replayable policy decision remains unchanged; retention is a hard
+/// upper bound on its chosen commit interval. Day floors are not converted
+/// to commits without a time model. Verification errors cannot relax a floor.
+fn checkpoint_cadence<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    card: &fa_policy::DecisionCard,
+) -> Result<u64, RegisterError> {
+    let mut cadence = u64::try_from(card.chosen.parameter)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| drift("checkpoint policy chose an invalid commit cadence"))?;
+    let retention = fa_journal::retention::verify_retention_policies(db, book.book_id)?;
+    if !retention.drifts.is_empty() {
+        return Err(drift(format!(
+            "cannot enforce checkpoint cadence with invalid retention policies: {}",
+            retention.drifts.join("; ")
+        )));
+    }
+    for active in retention.active_policies {
+        if let fa_journal::retention::RetentionFloor::Commits(floor) = active.policy.floor {
+            if floor == 0 {
+                return Err(drift("retention commit floor must be positive"));
+            }
+            cadence = cadence.min(floor);
+        }
+    }
+    Ok(cadence)
 }
 
 fn reject_entry_mutation<V: asupersync::fs::Vfs + Clone>(
@@ -632,7 +717,7 @@ fn servable_state<V: asupersync::fs::Vfs + Clone>(
     period: &str,
     basis: CommitSeq,
 ) -> Result<Option<(CommitSeq, Fold)>, RegisterError> {
-    let Some(state) = db.vertex_at(state_vid(book.book_id, period), basis)? else {
+    let Some(state) = state_row_at(db, book, period, basis)? else {
         return Ok(None);
     };
     let payload = match (
@@ -671,6 +756,27 @@ pub fn cursor<V: asupersync::fs::Vfs + Clone>(
     Ok(servable_state(db, book, period, db.frontier()?)?.map(|(through, _)| through))
 }
 
+/// Earliest point-addressed cache cursor a report may need. Reading a checkpoint
+/// head does not decode its full body. A damaged archive pointer cannot prevent
+/// a valid mutable cache from serving; the archive loader reports it if needed.
+pub fn cursor_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    period: &str,
+) -> Result<Option<CommitSeq>, RegisterError> {
+    let state = cursor(db, book, period)?;
+    let checkpoint = match checkpoint::latest_ref(db, cx, book, period, db.frontier()?) {
+        Ok(reference) => reference.map(|reference| reference.through),
+        Err(RegisterError::ProjectionDrift(_)) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(match (state, checkpoint) {
+        (Some(state), Some(checkpoint)) => Some(state.min(checkpoint)),
+        (state, checkpoint) => state.or(checkpoint),
+    })
+}
+
 /// A period's fold at a fixed snapshot, served from its maintained cells and
 /// the exact tail after their cursor, without writing (plan §5.3, fa-715).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -680,6 +786,8 @@ pub struct HeadFold {
     pub served_at: CommitSeq,
     /// Entry payloads decoded for the tail after `served_at`.
     pub tail_entries: usize,
+    /// The immutable snapshot actually consumed; `None` denotes mutable cells.
+    pub checkpoint: Option<CheckpointRef>,
 }
 
 /// Read `period`'s fold at the frontier from its maintained cells plus the
@@ -794,6 +902,59 @@ pub fn fold_at<V: asupersync::fs::Vfs + Clone>(
         fold,
         served_at: through,
         tail_entries,
+        checkpoint: None,
+    }))
+}
+
+/// Prefer the selected snapshot's maintained cells, then the nearest complete
+/// checkpoint visible at that same observation frontier. Only a retained exact
+/// tail can extend either cache. A missing/retired tail returns `None` for the
+/// literal journal fallback. Corrupt checkpoint data cannot supply a balance;
+/// independent register verification reports it while reads fold literally.
+pub fn fold_at_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    period: &str,
+    accounts: &[AccountRow],
+    known_at: CommitSeq,
+) -> Result<Option<HeadFold>, RegisterError> {
+    cx.checkpoint()
+        .map_err(fgdb::WriteTxnError::Interrupted)
+        .map_err(KernelError::from)?;
+    if let Some(fold) = fold_at(db, book, period, accounts, known_at)? {
+        return Ok(Some(fold));
+    }
+    let basis = crate::resolve_known_at(db, Some(known_at))?;
+    let checkpoint = match checkpoint::latest_before(db, cx, book, period, basis, basis) {
+        Ok(checkpoint) => checkpoint,
+        Err(RegisterError::ProjectionDrift(_))
+        | Err(RegisterError::Kernel(KernelError::Corrupt(_))) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let Some(checkpoint) = checkpoint else {
+        return Ok(None);
+    };
+    let reference = checkpoint.reference();
+    let mut fold = checkpoint.fold;
+    let tail_entries = if reference.through == basis {
+        0
+    } else {
+        match db.delta_since(reference.through) {
+            Ok(_) => {}
+            Err(fgdb::ReadError::DeltaCursorRetired { .. }) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        match apply_tail(db, book, period, basis, reference.through, &mut fold)? {
+            Tail::Applied(decoded, _) => decoded,
+            Tail::Rebuild => return Ok(None),
+        }
+    };
+    Ok(Some(HeadFold {
+        fold,
+        served_at: reference.through,
+        tail_entries,
+        checkpoint: Some(reference),
     }))
 }
 
@@ -801,9 +962,10 @@ fn prepare_rebuild<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     period: &str,
+    reset_checkpoint: bool,
 ) -> Result<PreparedAdvance, RegisterError> {
     let (fold, legs_folded) = crate::fold_period_counted(db, book, period, None)?;
-    prepare_fold(db, book, fold, legs_folded)
+    prepare_fold_inner(db, book, fold, legs_folded, reset_checkpoint)
 }
 
 /// Used only with a freshly computed or independently validated literal
@@ -814,8 +976,19 @@ pub(crate) fn prepare_fold<V: asupersync::fs::Vfs + Clone>(
     fold: Fold,
     legs_folded: u64,
 ) -> Result<PreparedAdvance, RegisterError> {
+    prepare_fold_inner(db, book, fold, legs_folded, true)
+}
+
+fn prepare_fold_inner<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: Fold,
+    legs_folded: u64,
+    reset_checkpoint: bool,
+) -> Result<PreparedAdvance, RegisterError> {
     let basis = db.frontier()?;
-    let state = db.vertex(state_vid(book.book_id, &fold.period))?;
+    let state_vid = publication_state(db, book, &fold.period)?;
+    let state = db.vertex(state_vid)?;
     if state
         .as_ref()
         .is_some_and(|row| row.labels.iter().any(|l| *l != label::REGISTER_STATE))
@@ -840,11 +1013,14 @@ pub(crate) fn prepare_fold<V: asupersync::fs::Vfs + Clone>(
         fold.entries,
     );
     let decision_card_digest = decision_card.digest().map_err(RegisterError::Encoding)?;
+    let checkpoint_cadence = checkpoint_cadence(db, book, &decision_card)?;
     Ok(PreparedAdvance {
         book_id: book.book_id,
         basis,
         basis_root: db.partition_root()?.0,
+        state: state_vid,
         expected_state,
+        reset_checkpoint,
         result: Advance {
             period: fold.period.clone(),
             from: CommitSeq::ORIGIN,
@@ -854,6 +1030,9 @@ pub(crate) fn prepare_fold<V: asupersync::fs::Vfs + Clone>(
             legs_folded,
             rebuilt: true,
             wrote: true,
+            checkpoint: None,
+            checkpoint_cadence,
+            recovered_from: None,
             fold,
             decision_card,
             decision_card_digest,
@@ -869,23 +1048,6 @@ pub async fn publish_advance<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     prepared: PreparedAdvance,
 ) -> Result<Advance, RegisterError> {
-    publish_advance_with_crash(db, ctx, book, prepared, None).await
-}
-
-/// [`publish_advance`], stopping the substrate's durable commit at
-/// `crash_at` (fa-0fl: the crash-point matrix of the barrier between
-/// consuming the journal's delta and publishing its cursor). It is the same
-/// code as the durable path up to the stopping instant: fgdb's
-/// `write_with_crash` with no point is its `write`. A crash point returns
-/// `Err`; drop the database and reopen to see what survived.
-#[doc(hidden)]
-pub async fn publish_advance_with_crash<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
-    book: &BookContext,
-    prepared: PreparedAdvance,
-    crash_at: Option<fgdb::CrashPoint>,
-) -> Result<Advance, RegisterError> {
     if prepared.book_id != book.book_id
         || prepared.basis != db.frontier()?
         || prepared.basis_root != db.partition_root()?.0
@@ -897,7 +1059,7 @@ pub async fn publish_advance_with_crash<V: asupersync::fs::Vfs + Clone>(
         return Ok(result);
     }
     let mut batch = crate::materialize_batch(db, book, &result.fold)?;
-    let state = state_vid(book.book_id, &result.period);
+    let state = prepared.state;
     batch.ensure_vertex(state, vec![label::REGISTER_STATE], Vec::new());
     batch.set_vertex_label(state, label::REGISTER_STATE, true);
     batch.set_vertex_property(
@@ -926,7 +1088,37 @@ pub async fn publish_advance_with_crash<V: asupersync::fs::Vfs + Clone>(
         scalar_bytes("register-state", payload)?,
         WriteMismatchPolicy::AbortWrite,
     );
-    result.published_at = db.write_with_crash(&ctx.commit(), batch, crash_at).await?;
+    // The immutable body, fragments, discoverable head, cells and cursor are
+    // one publication. A dropped/stale preparation cannot expose any of them.
+    let latest = if prepared.reset_checkpoint {
+        None
+    } else {
+        checkpoint::latest_ref(db, &ctx.query(), book, &result.period, prepared.basis)?
+    };
+    let boundary = matches!(
+        crate::period_at(db, book, &result.period, result.through)?.kind,
+        fa_time::PeriodKind::Opening | fa_time::PeriodKind::Closing
+    );
+    if prepared.reset_checkpoint
+        || boundary
+        || latest.as_ref().is_none_or(|checkpoint| {
+            result.through.0.saturating_sub(checkpoint.through.0) >= result.checkpoint_cadence
+        })
+    {
+        result.checkpoint = Some(
+            checkpoint::stage(
+                db,
+                &ctx.query(),
+                book,
+                &mut batch,
+                result.through,
+                &result.fold,
+                prepared.reset_checkpoint,
+            )?
+            .reference(),
+        );
+    }
+    result.published_at = db.write(&ctx.commit(), batch).await?;
     Ok(result)
 }
 
@@ -937,21 +1129,8 @@ pub async fn advance<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period: &str,
 ) -> Result<Advance, RegisterError> {
-    advance_with_crash(db, ctx, book, period, None).await
-}
-
-/// [`advance`] with its publication stopped at `crash_at` (fa-0fl); see
-/// [`publish_advance_with_crash`].
-#[doc(hidden)]
-pub async fn advance_with_crash<V: asupersync::fs::Vfs + Clone>(
-    db: &mut Database<V>,
-    ctx: &PurposeContexts,
-    book: &BookContext,
-    period: &str,
-    crash_at: Option<fgdb::CrashPoint>,
-) -> Result<Advance, RegisterError> {
     let prepared = prepare_advance(db, ctx, book, period).await?;
-    publish_advance_with_crash(db, ctx, book, prepared, crash_at).await
+    publish_advance(db, ctx, book, prepared).await
 }
 
 /// Discard the cached values and atomically replace them by a literal fold.
@@ -962,6 +1141,6 @@ pub async fn rebuild<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period: &str,
 ) -> Result<Advance, RegisterError> {
-    let prepared = prepare_rebuild(db, book, period)?;
+    let prepared = prepare_rebuild(db, book, period, true)?;
     publish_advance(db, ctx, book, prepared).await
 }

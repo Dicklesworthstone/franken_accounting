@@ -539,6 +539,15 @@ fn a_query_only_reads() {
         ),
         ("MATCH (r:Register) RETURN r", "register cache"),
         ("MATCH (r:Leg|RegisterState) RETURN r", "register cache"),
+        ("MATCH (r:RegisterCheckpoint) RETURN r", "register cache"),
+        (
+            "MATCH (r:Leg|RegisterCheckpoint) RETURN r",
+            "register cache",
+        ),
+        (
+            "MATCH (r:Entry&RegisterCheckpoint) RETURN r",
+            "register cache",
+        ),
         ("MATCH (__fa_entry:Entry) RETURN __fa_entry", "__fa_"),
         ("OPTIONAL MATCH (a:Account) RETURN a", "begins with MATCH"),
         ("MATCH (a:Account)", "returns nothing"),

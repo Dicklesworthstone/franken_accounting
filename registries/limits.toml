@@ -129,3 +129,14 @@ value = 64
 [[limit]]
 name = "max_bank_predecessor_depth"
 value = 4096
+
+# Complete native-period snapshots. Each cell carries exact posted/pending
+# amounts, while unresolved holds remain bounded by max_batch_entries.
+# The byte limit is independent of the distinct-key limit and does not waive
+# the native transaction's own capsule/row admission limits.
+[[limit]]
+name = "max_register_checkpoint_bytes"
+value = 8388608
+[[limit]]
+name = "max_register_checkpoint_cells"
+value = 100000

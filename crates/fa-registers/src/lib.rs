@@ -20,6 +20,7 @@
 
 pub mod assertion;
 pub mod availability;
+pub mod checkpoint;
 pub mod entity;
 pub mod explain;
 pub mod fx;
@@ -45,7 +46,7 @@ use fa_time::{DateDay, PeriodKind};
 use fgdb::{Database, VertexRow, WriteBatch};
 use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
 pub use availability::{
     AccountAvailability, AvailabilityDrift, AvailabilityVerification, verify_availability,
@@ -73,8 +74,8 @@ pub use lots::{
     fold_lots_from_open_items, lots,
 };
 pub use maintainer::{
-    Advance, HeadFold, PreparedAdvance, advance, fold_at, head_fold, prepare_advance,
-    publish_advance, rebuild,
+    Advance, HeadFold, PreparedAdvance, advance, fold_at, fold_at_with_context, head_fold,
+    prepare_advance, publish_advance, rebuild,
 };
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
@@ -644,6 +645,9 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
         && db
             .vertex(maintainer::state_vid(book.book_id, &fold.period))?
             .is_none()
+        && db
+            .vertex(checkpoint::head_vid(book.book_id, &fold.period))?
+            .is_none()
         && materialize_batch(db, book, fold)?.is_empty()
     {
         return Ok(db.frontier()?);
@@ -970,6 +974,76 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
     Ok(result)
 }
 
+/// Verify the maintained cells and every checkpoint reachable from their
+/// current checkpoint pointer. Each snapshot is independently refolded from
+/// immutable journal entries at its own processed prefix; intact checksums
+/// alone do not establish that a cache contains the right amounts or history.
+///
+/// A broken checkpoint chain is reported as projection drift. Verification
+/// never edits checkpoints or the journal; explicit rebuilding replaces the
+/// damaged derived chain with a fresh independently computed snapshot.
+pub fn verify_period_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    period_code: &str,
+) -> Result<Verification, RegisterError> {
+    let mut result = verify_period(db, book, period_code)?;
+    let at = db.frontier()?;
+    let mut next = match checkpoint::load_latest(db, cx, book, period_code, at) {
+        Ok(value) => value,
+        Err(RegisterError::ProjectionDrift(message))
+        | Err(RegisterError::Kernel(KernelError::Corrupt(message))) => {
+            result
+                .projection_errors
+                .push(format!("register checkpoint chain: {message}"));
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    let mut visited = BTreeSet::new();
+    while let Some(snapshot) = next {
+        if !visited.insert(snapshot.body_digest) {
+            result
+                .projection_errors
+                .push("register checkpoint chain repeats a snapshot".into());
+            break;
+        }
+        let truth = fold_period_at(db, book, period_code, Some(snapshot.through))?;
+        if snapshot.fold != truth {
+            result.projection_errors.push(format!(
+                "register checkpoint at {} disagrees with its independently refolded journal prefix",
+                snapshot.through.0,
+            ));
+        }
+        next = match snapshot.previous {
+            None => None,
+            Some(previous) if previous.through >= snapshot.through => {
+                result
+                    .projection_errors
+                    .push("register checkpoint predecessors are not strictly earlier".into());
+                break;
+            }
+            Some(previous) => match checkpoint::load(db, cx, book, period_code, previous, at) {
+                Ok(value) => Some(value),
+                Err(RegisterError::ProjectionDrift(message))
+                | Err(RegisterError::Kernel(KernelError::Corrupt(message))) => {
+                    result
+                        .projection_errors
+                        .push(format!("register checkpoint chain: {message}"));
+                    break;
+                }
+                Err(error) => return Err(error),
+            },
+        };
+    }
+    if !result.is_green() {
+        result.cache_status = CacheStatus::Corrupt;
+        result.verified_through = None;
+    }
+    Ok(result)
+}
+
 fn verify_projection<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1245,6 +1319,30 @@ pub fn trial_balance_served_at<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<(TrialBalance, Served), RegisterError> {
+    trial_balance_served_at_inner(db, None, book, periods, known_at)
+}
+
+/// A trial balance at one recorded prefix, using durable register checkpoints
+/// and their exact tails when available. Loading checkpoint objects uses the
+/// caller's query context. A missing or damaged cache falls back to the same
+/// authoritative journal fold as [`trial_balance_served_at`].
+pub fn trial_balance_served_at_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    trial_balance_served_at_inner(db, Some(cx), book, periods, known_at)
+}
+
+fn trial_balance_served_at_inner<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: Option<&QueryCx>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let selected = select_periods(db, book, periods, seq)?;
     let mut through = None;
@@ -1257,7 +1355,7 @@ pub fn trial_balance_served_at<V: asupersync::fs::Vfs + Clone>(
         through = Some(through.map_or(DateDay(end), |d: DateDay| d.max(DateDay(end))));
     }
     let maintained = match through {
-        Some(day) => maintained_sums(db, book, day, seq)?,
+        Some(day) => maintained_sums(db, cx, book, day, seq)?,
         None => Err("no period was selected".to_string()),
     };
     match maintained {
@@ -1285,6 +1383,7 @@ type ServedPeriods = Vec<(String, CommitSeq, usize)>;
 /// servable cells.
 fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: Option<&QueryCx>,
     book: &BookContext,
     day: DateDay,
     seq: CommitSeq,
@@ -1310,7 +1409,7 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
                 day.render()
             )));
         }
-        let Some(head) = maintainer::fold_at(db, book, &period.code, &accounts, seq)? else {
+        let Some(head) = maintained_fold_at(db, cx, book, &period.code, &accounts, seq)? else {
             if period_has_postings_at(db, period.vid, seq)? {
                 return Ok(Err(unservable(&period.code)));
             }
@@ -1320,6 +1419,20 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
         served.push((period.code, head.served_at, head.tail_entries));
     }
     Ok(Ok((sums, served)))
+}
+
+fn maintained_fold_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: Option<&QueryCx>,
+    book: &BookContext,
+    period: &str,
+    accounts: &[AccountRow],
+    known_at: CommitSeq,
+) -> Result<Option<HeadFold>, RegisterError> {
+    match cx {
+        Some(cx) => maintainer::fold_at_with_context(db, cx, book, period, accounts, known_at),
+        None => maintainer::fold_at(db, book, period, accounts, known_at),
+    }
 }
 
 /// Why maintained cells could not answer for a period with postings, and
@@ -1368,13 +1481,37 @@ pub fn period_activity_served_at<V: asupersync::fs::Vfs + Clone>(
     periods: &[String],
     known_at: Option<CommitSeq>,
 ) -> Result<(TrialBalance, Served), RegisterError> {
+    period_activity_served_at_inner(db, None, book, periods, known_at)
+}
+
+/// Period activity at one recorded prefix, using durable register checkpoints
+/// and exact tails through the caller's query context. Unavailable derived
+/// state never changes the report: the authoritative literal fold is the
+/// fallback, with the serving choice returned separately.
+pub fn period_activity_served_at_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    period_activity_served_at_inner(db, Some(cx), book, periods, known_at)
+}
+
+fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: Option<&QueryCx>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     let selected = select_periods(db, book, periods, seq)?;
     let (accounts, _) = report_metadata_at(db, seq)?;
     let mut sums = ColumnSums::new();
     let mut served = Vec::new();
     for code in &selected {
-        match maintainer::fold_at(db, book, code, &accounts, seq)? {
+        match maintained_fold_at(db, cx, book, code, &accounts, seq)? {
             Some(head) => {
                 add_cells(&mut sums, &head.fold)?;
                 served.push((code.clone(), head.served_at, head.tail_entries));
