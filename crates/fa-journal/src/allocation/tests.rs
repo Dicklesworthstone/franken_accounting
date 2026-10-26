@@ -217,6 +217,11 @@ fn schema_registry_matches_the_live_posting_format() {
         integer("entry_schema_minor"),
         i128::from(ALLOCATION_SCHEMA_MINOR)
     );
+    // A writer seals only the minors it knows (fa-hoi5): the posting rides a
+    // tag the entry model registers at that minor, never a newer minor's
+    // unknown tag.
+    assert!(integer("entry_schema_minor") <= i128::from(fa_model::entry::SCHEMA_MINOR));
+    assert!(fa_model::entry::KNOWN_EXTENSION_TAGS.contains(&ALLOCATION_EXTENSION));
     assert_eq!(integer("max_targets"), MAX_POSTING_TARGETS as i128);
     assert_eq!(
         integer("document_kind"),
