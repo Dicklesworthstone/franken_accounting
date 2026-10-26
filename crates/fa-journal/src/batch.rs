@@ -756,22 +756,21 @@ pub async fn post_batch<V: Vfs + Clone>(
     capability: Capability,
     batch: PostBatch,
 ) -> Outcome<BatchPosted> {
-    post_batch_in(db, ctx, book, capability, batch, None, &mut None).await
+    post_batch_in(db, ctx, book, capability, batch, None, None).await
 }
 
-/// [`post_batch`] for the long-lived owner of `db`, which keeps the verified
-/// reconciliation history between writes so the batch checks only the
-/// commits since the last (fa-rcw1). `reconciliation` must only ever travel
-/// with this `db`.
-pub async fn post_batch_with_reconciliation<V: Vfs + Clone>(
+/// [`post_batch`] for the long-lived owner of `db`, which keeps `carried`
+/// between its writes so the batch checks only the commits since the last
+/// (fa-rcw1). `carried` must only ever travel with this `db`.
+pub async fn post_batch_carrying<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     capability: Capability,
     batch: PostBatch,
-    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+    carried: &mut crate::post::CarriedHistory,
 ) -> Outcome<BatchPosted> {
-    post_batch_in(db, ctx, book, capability, batch, None, reconciliation).await
+    post_batch_in(db, ctx, book, capability, batch, None, Some(carried)).await
 }
 
 /// [`post_batch`] through the substrate's production crash-point seam
@@ -787,7 +786,7 @@ pub async fn post_batch_with_crash<V: Vfs + Clone>(
     batch: PostBatch,
     crash_at: Option<fgdb::CrashPoint>,
 ) -> Outcome<BatchPosted> {
-    post_batch_in(db, ctx, book, capability, batch, crash_at, &mut None).await
+    post_batch_in(db, ctx, book, capability, batch, crash_at, None).await
 }
 
 async fn post_batch_in<V: Vfs + Clone>(
@@ -797,7 +796,7 @@ async fn post_batch_in<V: Vfs + Clone>(
     capability: Capability,
     batch: PostBatch,
     crash_at: Option<fgdb::CrashPoint>,
-    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+    carried: Option<&mut crate::post::CarriedHistory>,
 ) -> Outcome<BatchPosted> {
     if let Err(refusal) = authorize_members(db, book, &capability, &batch, Admission::Commit)? {
         return Ok(Err(refusal));
@@ -816,7 +815,7 @@ async fn post_batch_in<V: Vfs + Clone>(
         &capabilities,
         &batch,
         Admission::Commit,
-        reconciliation,
+        carried,
     )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(BatchStage::Recorded(posted)) => return Ok(Ok(posted)),
@@ -874,11 +873,12 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
     batch: &PostBatch,
     admission: Admission,
 ) -> Outcome<BatchStage> {
-    stage_batch_with(db, ctx, book, capabilities, batch, admission, &mut None)
+    stage_batch_with(db, ctx, book, capabilities, batch, admission, None)
 }
 
-/// [`stage_batch`] with the owner's verified reconciliation history, which
-/// every member shares and which is left verified at the batch's basis.
+/// [`stage_batch`] with the owner's carried history: every member shares its
+/// reconciliation history, and the batch's capacity admission answers from
+/// its summary where that proves the effects fit (fa-rcw1).
 fn stage_batch_with<V: Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
@@ -886,8 +886,13 @@ fn stage_batch_with<V: Vfs + Clone>(
     capabilities: &[Capability],
     batch: &PostBatch,
     admission: Admission,
-    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+    carried: Option<&mut crate::post::CarriedHistory>,
 ) -> Outcome<BatchStage> {
+    let mut fresh = None;
+    let (reconciliation, capacity) = match carried {
+        Some(carried) => (&mut carried.reconciliation, Some(&mut carried.capacity)),
+        None => (&mut fresh, None),
+    };
     ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
     if capabilities.len() != batch.members().len() {
         return Err(KernelError::Corrupt(
@@ -1060,9 +1065,19 @@ fn stage_batch_with<V: Vfs + Clone>(
     txn.write_ordered(db, vec![stage])?;
     let accounts = crate::register_capacity::accounts(resolved.iter().map(|e| &e.proposal));
     let staged = members.iter().map(|m| m.entry_ref.vid);
-    if let Err(refusal) =
-        crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts, staged)?
-    {
+    let admitted = match capacity {
+        Some(history) => crate::register_capacity::admit_carried(
+            &txn,
+            db,
+            ctx,
+            book.book_id,
+            &accounts,
+            staged,
+            history,
+        )?,
+        None => crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts, staged)?,
+    };
+    if let Err(refusal) = admitted {
         txn.abort();
         return Ok(Err(refusal));
     }

@@ -389,7 +389,7 @@ impl PreparedPost {
         db: &mut Database<V>,
         ctx: &PurposeContexts,
     ) -> Outcome<Posted> {
-        self.commit_with_crash(db, ctx, None).await
+        self.commit_in(db, ctx, None, None).await
     }
 
     /// [`Self::commit`] through the substrate's production crash-point seam
@@ -402,6 +402,19 @@ impl PreparedPost {
         db: &mut Database<V>,
         ctx: &PurposeContexts,
         crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<Posted> {
+        self.commit_in(db, ctx, crash_at, None).await
+    }
+
+    /// `capacity` is the owner's carried register-capacity summary, which
+    /// admits the post without a book scan where it proves the effects fit
+    /// (fa-rcw1), or `None` to admit by the book scan alone.
+    async fn commit_in<V: asupersync::fs::Vfs + Clone>(
+        self,
+        db: &mut Database<V>,
+        ctx: &PurposeContexts,
+        crash_at: Option<fgdb::CrashPoint>,
+        capacity: Option<&mut Option<crate::register_capacity::CapacityHistory>>,
     ) -> Outcome<Posted> {
         let commit = ctx.commit();
         commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -439,14 +452,25 @@ impl PreparedPost {
             return Ok(Err(policy::refusal(&d)));
         }
         if paired_reversal.is_none() && entry.proposal.class != EntryClass::RESOLUTION {
-            if let Err(refusal) = crate::register_capacity::admit_addition(
-                &txn,
-                db,
-                ctx,
-                std::iter::empty(),
-                entry_ref.vid,
-                &entry,
-            )? {
+            let admitted = match capacity {
+                Some(history) => crate::register_capacity::admit_addition_carried(
+                    &txn,
+                    db,
+                    ctx,
+                    entry_ref.vid,
+                    &entry,
+                    history,
+                )?,
+                None => crate::register_capacity::admit_addition(
+                    &txn,
+                    db,
+                    ctx,
+                    std::iter::empty(),
+                    entry_ref.vid,
+                    &entry,
+                )?,
+            };
+            if let Err(refusal) = admitted {
                 txn.abort();
                 return Ok(Err(refusal));
             }
@@ -459,14 +483,26 @@ impl PreparedPost {
                 .iter()
                 .map(|m| m.entry_ref.vid)
                 .chain(std::iter::once(entry_ref.vid));
-            if let Err(refusal) = crate::register_capacity::admit(
-                &txn,
-                db,
-                ctx,
-                entry.proposal.book_id,
-                &accounts,
-                staged,
-            )? {
+            let admitted = match capacity {
+                Some(history) => crate::register_capacity::admit_carried(
+                    &txn,
+                    db,
+                    ctx,
+                    entry.proposal.book_id,
+                    &accounts,
+                    staged,
+                    history,
+                )?,
+                None => crate::register_capacity::admit(
+                    &txn,
+                    db,
+                    ctx,
+                    entry.proposal.book_id,
+                    &accounts,
+                    staged,
+                )?,
+            };
+            if let Err(refusal) = admitted {
                 txn.abort();
                 return Ok(Err(refusal));
             }
@@ -1059,21 +1095,45 @@ pub async fn post<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
 ) -> Outcome<Posted> {
-    post_admitted(db, ctx, book, req, Admission::Commit, &mut None).await
+    post_admitted(db, ctx, book, req, Admission::Commit, None).await
 }
 
-/// [`post`] for the long-lived owner of `db`, which keeps the verified
-/// reconciliation history between posts so each one checks only the commits
-/// since the last (fa-rcw1). `reconciliation` must only ever travel with
-/// this `db`: it is a fact about one database's own committed prefix.
-pub async fn post_with_reconciliation<V: asupersync::fs::Vfs + Clone>(
+/// The verified history a long-lived book carries between its own writes,
+/// so each write checks only the commits since the last instead of the whole
+/// book (fa-rcw1): the reconciliation history, and the register-capacity
+/// summary. Each part is bound to one database's committed prefix by its
+/// Chronicle marker and is only ever carried forward on that database;
+/// where either cannot stand for the full check, the full check runs.
+#[derive(Clone, Debug, Default)]
+pub struct CarriedHistory {
+    pub(crate) reconciliation: Option<crate::bank::ReconciliationHistory>,
+    pub(crate) capacity: Option<crate::register_capacity::CapacityHistory>,
+}
+
+impl CarriedHistory {
+    /// The reconciliation history verified at the last write, if any.
+    #[must_use]
+    pub fn reconciliation(&self) -> Option<&crate::bank::ReconciliationHistory> {
+        self.reconciliation.as_ref()
+    }
+
+    /// The register-capacity summary at the last write, if any.
+    #[must_use]
+    pub fn capacity(&self) -> Option<&crate::register_capacity::CapacityHistory> {
+        self.capacity.as_ref()
+    }
+}
+
+/// [`post`] for the long-lived owner of `db`, which keeps `carried` between
+/// its writes (fa-rcw1). `carried` must only ever travel with this `db`.
+pub async fn post_carrying<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     req: PostRequest,
-    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+    carried: &mut CarriedHistory,
 ) -> Outcome<Posted> {
-    post_admitted(db, ctx, book, req, Admission::Commit, reconciliation).await
+    post_admitted(db, ctx, book, req, Admission::Commit, Some(carried)).await
 }
 
 /// [`post`] under `admission`; only fa-journal makes the tokens other
@@ -1084,8 +1144,13 @@ pub(crate) async fn post_admitted<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: PostRequest,
     admission: Admission,
-    reconciliation: &mut Option<crate::bank::ReconciliationHistory>,
+    carried: Option<&mut CarriedHistory>,
 ) -> Outcome<Posted> {
+    let mut fresh = None;
+    let (reconciliation, capacity) = match carried {
+        Some(carried) => (&mut carried.reconciliation, Some(&mut carried.capacity)),
+        None => (&mut fresh, None),
+    };
     if let Err(refusal) = authorize_request(db, book, &req, admission)? {
         return Ok(Err(refusal));
     }
@@ -1110,7 +1175,7 @@ pub(crate) async fn post_admitted<V: asupersync::fs::Vfs + Clone>(
     )? {
         Err(refusal) => Ok(Err(refusal)),
         Ok(PostPreparation::AlreadyRecorded(posted)) => Ok(Ok(posted)),
-        Ok(PostPreparation::Ready(prepared)) => prepared.commit(db, ctx).await,
+        Ok(PostPreparation::Ready(prepared)) => prepared.commit_in(db, ctx, None, capacity).await,
     }
 }
 

@@ -13,6 +13,24 @@ use crate::genesis::UnitPolicy;
 use crate::limit::BalanceLimit;
 use crate::refusal::KernelError;
 
+/// The Chronicle marker of the commit at `at`, when its batch is retained.
+/// Markers chain to their predecessor, so two databases whose markers at
+/// `at` agree have the same committed prefix through `at` (fa-rcw1: a
+/// carried history is only ever extended on the database it describes).
+pub(crate) fn marker_at<V: asupersync::fs::Vfs + Clone>(
+    db: &fgdb::Database<V>,
+    at: CommitSeq,
+) -> Result<Option<fgdb_types::MarkerRef>, KernelError> {
+    let Some(before) = at.0.checked_sub(1) else {
+        return Ok(None);
+    };
+    Ok(db
+        .delta_since(CommitSeq(before))?
+        .next()
+        .filter(|batch| batch.commit_seq() == at)
+        .map(|batch| batch.commit_marker_identity()))
+}
+
 pub fn prop(row: &VertexRow, key: PropertyKeyId) -> Option<&CanonicalScalar> {
     row.props.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
 }

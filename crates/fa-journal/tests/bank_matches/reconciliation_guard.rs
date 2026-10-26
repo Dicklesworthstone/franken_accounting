@@ -10,9 +10,9 @@ use fa_journal::bank::{
 };
 use fa_journal::migration::read_run;
 use fa_journal::post::{PostPreparation, prepare_post};
-use fa_journal::post_with_reconciliation;
 use fa_journal::refusal::{code, exit};
 use fa_journal::rows::{edge_id, reversal_vid};
+use fa_journal::{CarriedHistory, post_carrying};
 
 fn request(proposal: EntryPayload, capability: Capability) -> PostRequest {
     PostRequest {
@@ -86,16 +86,14 @@ fn after_statement(h: &Harness, key: &[u8]) -> PostRequest {
     later
 }
 
-fn post_carrying(
+fn post_through(
     h: &mut Harness,
     request: PostRequest,
-    history: &mut Option<ReconciliationHistory>,
+    carried: &mut CarriedHistory,
 ) -> Result<Posted, Refusal> {
     let cx = h.cx();
     h.runtime
-        .block_on(post_with_reconciliation(
-            &mut h.db, &cx, &h.book, request, history,
-        ))
+        .block_on(post_carrying(&mut h.db, &cx, &h.book, request, carried))
         .unwrap()
 }
 
@@ -453,10 +451,13 @@ fn a_carried_reconciliation_history_never_crosses_to_another_database() {
 fn posting_with_a_carried_history_still_meets_a_new_close() {
     let mut h = Harness::new();
     let (import, _, _) = confirmed_source(&mut h);
-    let mut history = None;
+    let mut carried = CarriedHistory::default();
     let plain = after_statement(&h, b"carried-before");
-    post_carrying(&mut h, plain, &mut history).unwrap();
-    assert!(history.is_some(), "a post leaves its verified history");
+    post_through(&mut h, plain, &mut carried).unwrap();
+    assert!(
+        carried.reconciliation().is_some(),
+        "a post leaves its verified history"
+    );
 
     let recorded = close(&mut h, import);
     let head = h.head();
@@ -464,19 +465,19 @@ fn posting_with_a_carried_history_still_meets_a_new_close() {
         h.entry_payload(&[500], "late receipt", b"carried-late"),
         Capability::embedded(OWNER, &["post"]).unwrap(),
     );
-    let refusal = post_carrying(&mut h, late.clone(), &mut history).unwrap_err();
+    let refusal = post_through(&mut h, late.clone(), &mut carried).unwrap_err();
     assert_eq!(
         (refusal.code, refusal.exit),
         (code::CAPABILITY, exit::SAFETY)
     );
     assert_eq!(h.head(), head, "the refused post changes no native rows");
-    let admitted = post_carrying(
+    let admitted = post_through(
         &mut h,
         PostRequest {
             capability: cap(OWNER),
             ..late
         },
-        &mut history,
+        &mut carried,
     )
     .unwrap();
     assert!(cites(
@@ -491,7 +492,7 @@ fn posting_with_a_carried_history_still_meets_a_new_close() {
         Capability::embedded(OWNER, &["post"]).unwrap(),
     );
     assert_eq!(
-        post_carrying(&mut h, again, &mut history).unwrap_err().code,
+        post_through(&mut h, again, &mut carried).unwrap_err().code,
         code::CAPABILITY
     );
 }

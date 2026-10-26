@@ -33,7 +33,7 @@ use crate::import::bank::{
 };
 use crate::import::{BankImportManifest, BankImportWitness, RunReceipt};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{AccountRow, book_root, edge_id, scalar_bytes, scalar_text};
+use crate::rows::{AccountRow, book_root, edge_id, marker_at, scalar_bytes, scalar_text};
 
 const CASH_FOLD_DOMAIN: &[u8] = b"fa:bank-reconciled-cash-fold:v1";
 
@@ -1060,21 +1060,6 @@ impl ReconciliationHistory {
     pub fn verified_at(&self) -> CommitSeq {
         self.at
     }
-}
-
-/// The Chronicle marker of the commit at `at`, when its batch is retained.
-fn marker_at<V: Vfs + Clone>(
-    db: &Database<V>,
-    at: CommitSeq,
-) -> Result<Option<MarkerRef>, KernelError> {
-    let Some(before) = at.0.checked_sub(1) else {
-        return Ok(None);
-    };
-    Ok(db
-        .delta_since(CommitSeq(before))?
-        .next()
-        .filter(|batch| batch.commit_seq() == at)
-        .map(|batch| batch.commit_marker_identity()))
 }
 
 /// `history` carried forward to `at` without a replay from sequence zero, or

@@ -126,10 +126,10 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     entropy: Entropy,
     /// Signs this book's transparency checkpoints (derived from its keys).
     signer: fa_notary::SigningKey,
-    /// The reconciliation history verified at the last write's basis, carried
-    /// forward so each post checks only the commits since (fa-rcw1). Bound
-    /// to `db`'s own committed prefix by its Chronicle marker.
-    reconciliation: Option<fa_journal::bank::ReconciliationHistory>,
+    /// The verified history carried between this book's own writes, so each
+    /// post checks only the commits since the last (fa-rcw1). Bound to `db`'s
+    /// own committed prefix by its Chronicle markers.
+    carried: fa_journal::CarriedHistory,
 }
 
 /// Borrow the exact certificate being exported while sharing its native
@@ -208,7 +208,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             },
             entropy,
             signer: keys.checkpoint_signing_key(),
-            reconciliation: None,
+            carried: fa_journal::CarriedHistory::default(),
         })
     }
 
@@ -263,7 +263,7 @@ impl<V: Vfs + Clone> AsyncBook<V> {
             },
             entropy,
             signer: keys.checkpoint_signing_key(),
-            reconciliation: None,
+            carried: fa_journal::CarriedHistory::default(),
         })
     }
 }
@@ -2221,14 +2221,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
 
     pub async fn post(&mut self, cx: &PurposeContexts, req: PostRequest) -> Outcome<Posted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(fa_journal::post_with_reconciliation(
-            &mut self.db,
-            cx,
-            &self.context,
-            req,
-            &mut self.reconciliation,
+        Ok(
+            fa_journal::post_carrying(&mut self.db, cx, &self.context, req, &mut self.carried)
+                .await?,
         )
-        .await?)
     }
 
     /// Post a correction: the exact Reversal of a target and its corrected
@@ -2451,13 +2447,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
     ) -> Outcome<fa_journal::BatchPosted> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
-        Ok(fa_journal::post_batch_with_reconciliation(
+        Ok(fa_journal::post_batch_carrying(
             &mut self.db,
             cx,
             &self.context,
             capability.clone(),
             batch,
-            &mut self.reconciliation,
+            &mut self.carried,
         )
         .await?)
     }
@@ -2800,7 +2796,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 context: self.context.clone(),
                 entropy,
                 signer: keys.checkpoint_signing_key(),
-                reconciliation: None,
+                carried: fa_journal::CarriedHistory::default(),
             },
             map,
         )))
@@ -2840,7 +2836,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 context: self.context.clone(),
                 entropy,
                 signer: keys.checkpoint_signing_key(),
-                reconciliation: None,
+                carried: fa_journal::CarriedHistory::default(),
             },
             rehearsal,
         )))
@@ -2889,7 +2885,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 context: self.context.clone(),
                 entropy,
                 signer: keys.checkpoint_signing_key(),
-                reconciliation: None,
+                carried: fa_journal::CarriedHistory::default(),
             },
             map,
             entries,

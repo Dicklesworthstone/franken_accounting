@@ -83,8 +83,7 @@ pub use attestation::{
 };
 pub use batch::{
     BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
-    post_batch, post_batch_with_crash, post_batch_with_reconciliation, read_outcome,
-    request_digest,
+    post_batch, post_batch_carrying, post_batch_with_crash, read_outcome, request_digest,
 };
 pub use blob::BlobStore;
 pub use carrying::{
@@ -186,9 +185,9 @@ pub use policy::{
     security_policy_epoch,
 };
 pub use post::{
-    Capability, PostPreparation, PostRequest, Posted, PreparedPost, decide_admissibility_cell,
-    explain_entry_lineage, post, post_replacement_pair, post_with_reconciliation, prepare_post,
-    superseded_by,
+    Capability, CarriedHistory, PostPreparation, PostRequest, Posted, PreparedPost,
+    decide_admissibility_cell, explain_entry_lineage, post, post_carrying, post_replacement_pair,
+    prepare_post, superseded_by,
 };
 pub use production::{
     BatesRange, ExhibitMarkedOutcome, Produced, ProducedDocument, ProducedRange, ProductionOpened,
@@ -207,6 +206,7 @@ pub use redaction::{
     read_document_for_with, redacted_view_vid,
 };
 pub use refusal::{FieldChange, KernelError, Locus, Refusal, RefusalDetail, Why, exit};
+pub use register_capacity::CapacityHistory;
 pub use retention::{
     ActiveRetentionPolicy, RETENTION_CADENCE_EXCEEDS_FLOOR, RETENTION_FLOOR_ACTIVE,
     RETENTION_POLICY_DOMAIN, RETENTION_POLICY_VERSION, RetentionActivationRequest, RetentionFloor,

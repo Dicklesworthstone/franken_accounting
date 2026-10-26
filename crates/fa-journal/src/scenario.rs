@@ -1027,7 +1027,7 @@ pub async fn materialize_into<V: asupersync::fs::Vfs + Clone>(
         } else {
             crate::post::Admission::Commit
         };
-        match crate::post::post_admitted(&mut target, ctx, book, req, admission, &mut None).await? {
+        match crate::post::post_admitted(&mut target, ctx, book, req, admission, None).await? {
             Ok(posted) => entries.push(posted.entry_ref().vid),
             Err(refusal) => return Ok(Err(MaterializeRefusal::Intent(i, refusal))),
         }

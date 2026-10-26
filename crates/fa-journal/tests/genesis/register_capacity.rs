@@ -672,3 +672,155 @@ fn replacement_capacity_refusal_keeps_the_entire_pair_unpublished() {
     assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
     assert_leg_projections(&h);
 }
+
+fn post_carried(
+    h: &mut Harness,
+    req: PostRequest,
+    carried: &mut fa_journal::CarriedHistory,
+) -> Result<Posted, Refusal> {
+    let ctx = h.ctx();
+    let db = &mut h.db;
+    let book = &h.book;
+    h.runtime
+        .block_on(async move { fa_journal::post_carrying(db, &ctx, book, req, carried).await })
+        .expect("kernel")
+}
+
+fn post_batch_carried(
+    h: &mut Harness,
+    batch: fa_intents::PostBatch,
+    carried: &mut fa_journal::CarriedHistory,
+) -> Result<fa_journal::BatchPosted, Refusal> {
+    let ctx = h.ctx();
+    let db = &mut h.db;
+    let book = &h.book;
+    let cap = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    h.runtime
+        .block_on(async move {
+            fa_journal::post_batch_carrying(db, &ctx, book, cap, batch, carried).await
+        })
+        .expect("kernel")
+}
+
+#[test]
+fn carried_capacity_admits_and_refuses_as_the_scan_does() {
+    let mut h = harness();
+    let mut carried = fa_journal::CarriedHistory::default();
+    for (amount, key) in [
+        (i128::MAX - 1, b"carried-cap-minus-one".as_slice()),
+        (1, b"carried-at-cap".as_slice()),
+    ] {
+        let req = h.request(
+            h.proposal(h.rent_legs(amount), key, EntryClass::ORIGINAL),
+            &["post"],
+        );
+        post_carried(&mut h, req, &mut carried).expect("representable gross cell");
+        assert!(
+            carried.capacity().is_some_and(|s| s.summarized()),
+            "an ordinary book stays summarized"
+        );
+    }
+    // One more cent overflows the posted debit column: the carried path
+    // refuses with exactly the scan's refusal, and publishes nothing.
+    let head = h.db.frontier().unwrap();
+    let over = h.proposal(h.rent_legs(1), b"carried-over", EntryClass::ORIGINAL);
+    let scanned = h.post(h.request(over.clone(), &["post"])).unwrap_err();
+    let req = h.request(over.clone(), &["post"]);
+    let refusal = post_carried(&mut h, req, &mut carried).unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit, &refusal.message),
+        (scanned.code, scanned.exit, &scanned.message),
+        "{refusal}"
+    );
+    assert_eq!(refusal.code, "FA-REF-198");
+    assert_eq!(h.db.frontier().unwrap(), head, "nothing was published");
+    // The opposite gross columns still have room, answered by the summary.
+    let mut corrected = over;
+    for leg in &mut corrected.legs {
+        leg.side = leg.side.flipped();
+    }
+    corrected.unit_totals = EntryPayload::fold_unit_totals(&corrected.legs).unwrap();
+    let req = h.request(corrected, &["post"]);
+    post_carried(&mut h, req, &mut carried).expect("opposite gross columns fit");
+    assert!(carried.capacity().is_some_and(|s| s.summarized()));
+    assert_leg_projections(&h);
+}
+
+#[test]
+fn carried_capacity_follows_a_released_hold() {
+    let mut h = harness();
+    let mut carried = fa_journal::CarriedHistory::default();
+    let req = h.request(
+        h.pending(h.rent_legs(i128::MAX), b"carried-hold"),
+        &["post"],
+    );
+    let hold = post_carried(&mut h, req, &mut carried).unwrap();
+    let target = committed(&hold).unwrap().0;
+    h.transition(
+        &h.april.clone(),
+        PeriodTransition::Open,
+        b"open-april-carried",
+    )
+    .unwrap();
+    let mut next = h.pending(h.rent_legs(1), b"carried-next");
+    next.effective_date = DateDay::from_ymd(2026, 4, 1).unwrap();
+    let mut release = h.resolution_voids(target, b"carried-release");
+    release.effective_date = next.effective_date;
+    let batch = h.batch(b"carried-replace", vec![next, release]);
+    post_batch_carried(&mut h, batch, &mut carried)
+        .expect("the released hold is absent from the final pending sum");
+
+    // A full hold again overflows the pending column (1 + MAX). Carried over
+    // the release, the summary still stands for the book: the release is
+    // folded before the new hold, so no column passes MAX on the way.
+    let head = h.db.frontier().unwrap();
+    let mut too_large = h.pending(h.rent_legs(i128::MAX), b"carried-too-large");
+    too_large.effective_date = DateDay::from_ymd(2026, 4, 1).unwrap();
+    let scanned = h.post(h.request(too_large.clone(), &["post"])).unwrap_err();
+    let req = h.request(too_large, &["post"]);
+    let refusal = post_carried(&mut h, req, &mut carried).unwrap_err();
+    assert_eq!(
+        (refusal.code, &refusal.message),
+        (scanned.code, &scanned.message),
+        "{refusal}"
+    );
+    assert_eq!(refusal.code, "FA-REF-198");
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert!(
+        carried.capacity().is_some_and(|s| s.summarized()),
+        "the summary carried over the release"
+    );
+}
+
+#[test]
+fn a_carried_capacity_summary_never_crosses_to_another_database() {
+    // Two books that diverge at one commit and stand at one frontier: `full`
+    // is near the posted-debit cap, `open` holds two cents.
+    let mut full = harness();
+    for (amount, key) in [
+        (i128::MAX - 5, b"cross-near-cap".as_slice()),
+        (1, b"cross-one".as_slice()),
+    ] {
+        full.post(full.request(
+            full.proposal(full.rent_legs(amount), key, EntryClass::ORIGINAL),
+            &["post"],
+        ))
+        .unwrap();
+    }
+    let mut open = harness();
+    let mut carried = fa_journal::CarriedHistory::default();
+    for key in [b"cross-pad-a".as_slice(), b"cross-pad-b".as_slice()] {
+        let req = open.request(
+            open.proposal(open.rent_legs(1), key, EntryClass::ORIGINAL),
+            &["post"],
+        );
+        post_carried(&mut open, req, &mut carried).unwrap();
+    }
+    assert_eq!(open.db.frontier().unwrap(), full.db.frontier().unwrap());
+    // `open`'s summary handed to `full`: five more cents overflow `full`'s
+    // column, so the post must still be refused.
+    let over = full.proposal(full.rent_legs(5), b"cross-over", EntryClass::ORIGINAL);
+    let req = full.request(over, &["post"]);
+    let refusal = post_carried(&mut full, req, &mut carried).unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-198", "{refusal}");
+}
