@@ -254,7 +254,15 @@ fn dimension_reports_export_historical_stock_activity_as_of_and_empty_selections
         assert_eq!(verified.certificate_digest, certificate.digest);
         assert_eq!(verified.known_at, certificate.known_at.0);
         if name == "current" {
-            assert_eq!(verified.checked_records as u64, certificate.journal_leaves);
+            // The bundle carries every leaf of the checkpoint's prefix: the
+            // current report's journal entries and the fixture's one
+            // document receipt, an evidence leaf since fa-va02. A report
+            // certificate's journal counts entries only.
+            assert_eq!(
+                verified.checked_records as u64,
+                certificate.journal_leaves + 1,
+                "{name}"
+            );
         } else {
             assert!(verified.checked_records as u64 > certificate.journal_leaves);
         }
