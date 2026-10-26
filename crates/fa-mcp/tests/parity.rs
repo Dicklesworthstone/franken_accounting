@@ -973,6 +973,7 @@ fn company_statement_mcp_transports_inline_reviews_and_preserves_operation_autho
         fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
     assert_eq!(parsed.flag("--definition"), Some("company-income"));
     assert_eq!(parsed.flag("--scale-digits"), Some("3"));
+    assert!(!parsed.switch("--functional"));
     assert_eq!(
         fa_cli::cli::bound_command_ops("statement", &parsed)
             .unwrap()
@@ -980,6 +981,33 @@ fn company_statement_mcp_transports_inline_reviews_and_preserves_operation_autho
             .map(|op| op.name())
             .collect::<Vec<_>>(),
         ["read", "produce"]
+    );
+    let mut functional = args.clone();
+    functional["functional"] = json!(true);
+    let invocation = tool.invocation(&mcp, reg, &functional).unwrap();
+    let parsed =
+        fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert!(parsed.switch("--functional"));
+    assert_eq!(parsed.flag("--compare"), Some("FY2026-P02"));
+    assert_eq!(parsed.flag("--scale-digits"), Some("3"));
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("statement", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read", "produce"]
+    );
+    functional["certify"] = json!(false);
+    let plain = tool.invocation(&mcp, reg, &functional).unwrap();
+    let parsed = fa_cli::args::parse(&plain.argv, &reg.value_flags(), &reg.switches()).unwrap();
+    assert_eq!(
+        fa_cli::cli::bound_command_ops("statement", &parsed)
+            .unwrap()
+            .iter()
+            .map(|op| op.name())
+            .collect::<Vec<_>>(),
+        ["read"]
     );
     for argument in ["as", "grant", "yes", "book", "plan_out", "certificate_out"] {
         let mut rejected = args.clone();

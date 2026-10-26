@@ -130,6 +130,50 @@ Period selection remains explicit: new periods are not discovered automatically.
 Historical checkpoints, cadence policies, functional-value maintenance, other
 register families and the remaining cached report reads are unfinished.
 
+### Approved company statement layouts
+
+Company balance sheets and income statements can use an editable TOML layout.
+Generate a template, give it a company-specific name and version, and edit its
+account mappings and formula lines. Lint reports missing or multiply mapped
+accounts. A saved review binds the exact layout, its effective date and the
+accounting schema; activation requires two independent Human approvers, neither
+of whom is the preparer.
+
+```bash
+fa statement template --definition income-statement --out company-income.toml --json
+# Edit the template's name to company-income and configure its mappings.
+fa statement lint --file company-income.toml --book ./books/acme --json
+fa statement define --file company-income.toml --from 2026-01-01 --key company-income-v1 \
+  --plan-out company-income.plan --book ./books/acme --json
+# Each reviewer approves the emitted proposal_digest with their own issued Human token.
+fa approve --proposal <proposal-digest> --token reviewer-a.token --book ./books/acme --json
+fa approve --proposal <proposal-digest> --token reviewer-b.token --book ./books/acme --json
+fa statement activate --plan company-income.plan --approval <approval-a-vid> \
+  --approval <approval-b-vid> --book ./books/acme --json
+fa statement custom --definition company-income --for FY2026-P03 --compare FY2026-P02 \
+  --functional --certify --book ./books/acme --json
+```
+
+Without `--functional`, amounts remain separated by native unit. With it, both
+columns use the book's historical functional currency and exact retained base
+amounts, verified against their original Rate documents and valuation laws.
+Unvalued foreign entries are refused; the report never chooses a current rate
+or posts a new valuation. Add `--scale-digits 2 --rounding HalfEven
+--residual-line rounding --residual-label "Presentation rounding"` to divide the
+functional mantissas by 100 with explicit residual rows. The scale is a mantissa
+divisor, so choose it according to the registered currency scale.
+
+Certification retains both exact and rounded output. Native custom reports use
+v11 certificates; functional custom reports use v12. Replay keeps the original
+approved layout, reporting basis and historical Rate evidence after later
+postings or layout activations. Certificate status reports relevant later
+activity. These are native replay certificates; portable independent custom
+report verification remains unsupported. The MCP statement tool accepts the
+same `functional`, comparative and presentation options and transports review
+source inline. Embedded callers use `Book::functional_custom_statement` or
+`Book::certify_functional_custom_statement` to prepare historical reads under
+current authority.
+
 ### Timed holds and scheduled reversals
 
 The CLI and MCP accept the kernel's timed accounting inputs. A Pending intent

@@ -10,8 +10,7 @@ use crate::json::{Json, obj, s};
 
 const DEFINE: &str = "fa statement define --file layout.toml --from 2026-01-01 --key layout-v1 --plan-out layout.plan";
 const ACTIVATE: &str = "fa statement activate --plan layout.plan --approval <vid> --approval <vid>";
-const REPORT: &str =
-    "fa statement custom --definition <name> --for FY2026-P03 [--compare FY2025-P03] [--certify]";
+const REPORT: &str = "fa statement custom --definition <name> --for FY2026-P03 [--compare FY2025-P03] [--functional] [--certify]";
 
 pub(crate) fn command(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional[1].as_str() {
@@ -256,11 +255,12 @@ fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--residual-line",
             "--residual-label",
         ],
-        &["--certify"],
+        &["--certify", "--functional"],
         REPORT,
     )?;
     let name = args.require("--definition", "the activated company layout's name")?;
     let period = args.require("--for", "the current fiscal period")?;
+    let functional = args.switch("--functional");
     let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
     let cap = ctx.capability(
         args,
@@ -313,7 +313,7 @@ fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         definition: active.definition,
         activation: active.activation,
         activated_at: active.recorded_at,
-        functional: false,
+        functional,
         periods: vec![period.into()],
         comparative: args
             .flag("--compare")
@@ -326,13 +326,22 @@ fn report(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     ctx.out.known_at(at);
     ctx.out.effective(format!("period:{period}"));
     let (report, certificate) = if certify {
-        let certified = book.certify_custom_statement(&cap, selection, Some(at))??;
+        let certified = if functional {
+            book.certify_functional_custom_statement(&cap, selection, Some(at))??
+        } else {
+            book.certify_custom_statement(&cap, selection, Some(at))??
+        };
         let fa::ReportOutput::CustomStatement(report) = certified.report else {
             return Err(Fail::Internal(
                 "custom statement certificate returned another family".into(),
             ));
         };
         (*report, Some(certified.certificate))
+    } else if functional {
+        (
+            book.functional_custom_statement(&cap, selection, Some(at))??,
+            None,
+        )
     } else {
         (book.custom_statement(&cap, selection, Some(at))??, None)
     };
@@ -397,10 +406,11 @@ type Rendered = (
 );
 
 fn presentation(book: &Book, report: &CustomStatementReport) -> Result<Rendered, Fail> {
+    let functional = report.functional_unit.is_some();
     let exact = crate::cli::statement_presentation_basis(
         &report.statement,
         &book.context().units,
-        report.functional_unit.is_some(),
+        functional,
     )?;
     let mut fields = vec![
         ("definition", s(&report.statement.definition_name)),
