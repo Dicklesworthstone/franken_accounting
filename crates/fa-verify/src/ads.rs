@@ -597,36 +597,21 @@ pub(crate) fn judge(
             continue;
         }
         if envelope.class == CLASS_MIGRATION {
-            // A migration chunk counts only when its run makes it visible.
-            // A verified balance over one of its cells, cut off on or after
-            // its day, decides that from the run bodies it carries (only the
-            // migration-aware format verifies such a cell): its fold reads
-            // the chunk exactly when it is visible.
-            let covering: Vec<&crate::balance::Balance> = balances
+            let read = balances
                 .iter()
-                .filter(|balance| {
-                    legs.iter().any(|leg| {
-                        (leg.account, leg.unit) == (balance.claim.account, balance.claim.unit)
-                    }) && balance
-                        .claim
-                        .effective_through
-                        .is_none_or(|through| through >= day)
-                })
-                .collect();
-            if covering.is_empty() {
-                out.failures.push(format!(
-                    "a migration chunk recorded at {} is in scope, and no verified balance over its cells proves whether its run makes it visible",
-                    envelope.commit_seq
-                ));
-                continue;
-            }
-            if !covering
-                .iter()
-                .any(|balance| balance.contributing.contains(&leaf))
-            {
+                .map(|balance| (&balance.claim, balance.contributing.as_slice()));
+            match chunk_visibility(leaf, day, &legs, read) {
+                Some(true) => {}
                 // Its run hides it: the export selects it no more than the
                 // fold does.
-                continue;
+                Some(false) => continue,
+                None => {
+                    out.failures.push(format!(
+                        "a migration chunk recorded at {} is in scope, and no verified balance over its cells proves whether its run makes it visible",
+                        envelope.commit_seq
+                    ));
+                    continue;
+                }
             }
         }
         proven.entry(envelope.commit_seq).or_default().push(Proven {
@@ -709,6 +694,36 @@ pub(crate) fn judge(
     }
     out.units = units.by_code.into_iter().collect();
     out
+}
+
+/// Whether the migration chunk at `leaf`, effective on `day`, with `legs`
+/// counts (fa-mv0f). A verified balance over one of its cells, cut off on or
+/// after its day, decides that from the run bodies it carries, and only the
+/// migration-aware format verifies such a cell: its fold reads the chunk
+/// exactly when the chunk's run makes it visible. So the answer is
+/// `Some(true)` when such a balance read it, `Some(false)` when such
+/// balances exist and none read it (its run hides it), and `None` when none
+/// covers it, so that its visibility is not proven.
+fn chunk_visibility<'a>(
+    leaf: u64,
+    day: i32,
+    legs: &[Leg],
+    balances: impl IntoIterator<Item = (&'a crate::BalanceClaim, &'a [u64])>,
+) -> Option<bool> {
+    let mut covered = false;
+    for (claim, contributing) in balances {
+        let covers = legs
+            .iter()
+            .any(|leg| (leg.account, leg.unit) == (claim.account, claim.unit))
+            && claim.effective_through.is_none_or(|through| through >= day);
+        if covers {
+            if contributing.contains(&leaf) {
+                return Some(true);
+            }
+            covered = true;
+        }
+    }
+    covered.then_some(false)
 }
 
 /// The registered account type names (`account_types.toml`, tags 1..=8),
@@ -1067,6 +1082,74 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn migration_chunks_follow_their_runs_visibility() {
+        let (cash, revenue, usd, day) = (7u128, 9u128, 1u32, 100);
+        let legs = [
+            Leg {
+                debit: true,
+                account: cash,
+                unit: usd,
+                mantissa: 5,
+            },
+            Leg {
+                debit: false,
+                account: revenue,
+                unit: usd,
+                mantissa: 5,
+            },
+        ];
+        let claim = |account, effective_through| crate::BalanceClaim {
+            account,
+            unit: usd,
+            effective_through,
+            debits: 0,
+            credits: 0,
+        };
+        let cash_after = claim(cash, Some(120));
+        // A covering balance read the chunk: its run makes it visible.
+        assert_eq!(
+            chunk_visibility(3, day, &legs, [(&cash_after, &[1u64, 3][..])]),
+            Some(true)
+        );
+        // Covering, but not read: its run hides it.
+        assert_eq!(
+            chunk_visibility(3, day, &legs, [(&cash_after, &[1u64][..])]),
+            Some(false)
+        );
+        // A balance over its other cell decides it as well.
+        let revenue_all = claim(revenue, None);
+        assert_eq!(
+            chunk_visibility(
+                3,
+                day,
+                &legs,
+                [(&cash_after, &[][..]), (&revenue_all, &[3u64][..])]
+            ),
+            Some(true)
+        );
+        // Planted: a balance over another account, another unit, or cut off
+        // before the chunk's day proves nothing about it.
+        let other = claim(11, None);
+        let euro = crate::BalanceClaim {
+            unit: 2,
+            ..claim(cash, None)
+        };
+        let early = claim(cash, Some(day - 1));
+        for (balance, why) in [
+            (&other, "another account"),
+            (&euro, "another unit"),
+            (&early, "cut off before its day"),
+        ] {
+            assert_eq!(
+                chunk_visibility(3, day, &legs, [(balance, &[3u64][..])]),
+                None,
+                "{why}"
+            );
+        }
+        assert_eq!(chunk_visibility(3, day, &legs, std::iter::empty()), None);
     }
 
     #[test]
