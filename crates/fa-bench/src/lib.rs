@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bundle;
 pub mod driver;
 pub mod post;
 pub mod rebuild;

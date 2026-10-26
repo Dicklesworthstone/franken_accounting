@@ -3,7 +3,8 @@
 //! (beads `fa-tu58`, `fa-i5s`), and reports each §17 benchmark as measured or
 //! unmeasured. No §17 benchmark is reported measured yet (fa-e75k, fa-ykbp):
 //! `fa-bench sample <workload>` times the real workloads' raw samples
-//! (register rebuild, single-entry post, batched post), with no incumbent
+//! (register rebuild, single-entry post, batched post, bundle production
+//! and offline verification), with no incumbent
 //! and so no §17 verdict; `--incumbent` drives one bench against one.
 
 #![forbid(unsafe_code)]
@@ -18,7 +19,7 @@ use fa_bench::{
 
 fn usage() {
     eprintln!(
-        "usage: fa-bench [--smoke] [--bench <name>] [--verify-manifests] [--verify-op-costs] [--json]\n       fa-bench --bench <name> --incumbent <previous fa-bench> [--worker-class <class>] [--legs <n>] [--dir <new dir>] [--rounds <n>] [--json]\n       fa-bench sample register_rebuild --legs <even count> [--rounds <n>] [--seed <n>]\n       fa-bench sample single_entry_post|batched_post --dir <new dir> [--rounds <n>] [--seed <n>]"
+        "usage: fa-bench [--smoke] [--bench <name>] [--verify-manifests] [--verify-op-costs] [--json]\n       fa-bench --bench <name> --incumbent <previous fa-bench> [--worker-class <class>] [--legs|--entries <n>] [--dir <new dir>] [--rounds <n>] [--json]\n       fa-bench sample register_rebuild --legs <even count> [--rounds <n>] [--seed <n>]\n       fa-bench sample bundle_production_and_verify --entries <n> [--rounds <n>] [--seed <n>]\n       fa-bench sample single_entry_post|batched_post --dir <new dir> [--rounds <n>] [--seed <n>]"
     );
 }
 
@@ -35,7 +36,7 @@ fn sample(args: &[String]) -> ExitCode {
         usage();
         return ExitCode::from(2);
     };
-    let mut legs = None;
+    let mut scale = None;
     let mut dir = None;
     let mut rounds = 10;
     let mut seed = 42;
@@ -51,7 +52,7 @@ fn sample(args: &[String]) -> ExitCode {
                 .map_err(|_| format!("{flag} takes a non-negative integer, not `{value}`"))
         };
         let parsed = match flag.as_str() {
-            "--legs" => number().map(|n| legs = Some(n)),
+            "--legs" | "--entries" => number().map(|n| scale = Some(n)),
             "--rounds" => number().map(|n| rounds = n),
             "--seed" => number().map(|n| seed = n),
             "--dir" => {
@@ -59,7 +60,7 @@ fn sample(args: &[String]) -> ExitCode {
                 Ok(())
             }
             other => Err(format!(
-                "sample takes --legs, --dir, --rounds and --seed, not `{other}`"
+                "sample takes --legs, --entries, --dir, --rounds and --seed, not `{other}`"
             )),
         };
         if let Err(why) = parsed {
@@ -68,7 +69,7 @@ fn sample(args: &[String]) -> ExitCode {
         }
     }
     let request = SampleArgs {
-        legs,
+        scale,
         dir: dir.as_deref(),
         rounds,
         seed,
@@ -108,7 +109,8 @@ fn main() -> ExitCode {
             "--json" => json = true,
             "--verify-manifests" => verify_manifests_only = true,
             "--verify-op-costs" => verify_op_costs_only = true,
-            "--bench" | "--incumbent" | "--worker-class" | "--legs" | "--rounds" | "--dir" => {
+            "--bench" | "--incumbent" | "--worker-class" | "--legs" | "--entries" | "--rounds"
+            | "--dir" => {
                 let Some(val) = args.next() else {
                     eprintln!("fa-bench: {arg} requires a value");
                     usage();
@@ -125,7 +127,7 @@ fn main() -> ExitCode {
                     "--incumbent" => incumbent = Some(val.clone()),
                     "--worker-class" => worker_class = Some(val.clone()),
                     "--dir" => dir = Some(std::path::PathBuf::from(&val)),
-                    "--legs" => match number() {
+                    "--legs" | "--entries" => match number() {
                         Ok(n) => scale = Some(n),
                         Err(why) => {
                             eprintln!("fa-bench: {why}");

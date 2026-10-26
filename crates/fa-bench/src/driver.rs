@@ -24,14 +24,15 @@ pub enum Scale {
     PerRound(u64),
 }
 
-/// A §17 bench `fa-bench sample` runs: its workload, the engine counter that
-/// witnesses it, the work it states, and whether it writes to a directory.
+/// A §17 bench `fa-bench sample` runs: its workload, the counter that
+/// witnesses it, the work it states, and the flag that sets a fixed scale
+/// (a per-round bench writes a directory book named by `--dir` instead).
 pub struct Sampled {
     pub bench_name: &'static str,
     pub workload: &'static str,
     pub counter: &'static str,
     pub scale: Scale,
-    pub disk: bool,
+    pub scale_flag: Option<&'static str>,
 }
 
 /// Every §17 bench with a real workload.
@@ -41,21 +42,28 @@ pub const SAMPLED: &[Sampled] = &[
         workload: "single_entry_post",
         counter: "entries_committed",
         scale: Scale::PerRound(1),
-        disk: true,
+        scale_flag: None,
     },
     Sampled {
         bench_name: "batched_post",
         workload: "batched_post",
         counter: "entries_committed",
         scale: Scale::PerRound(crate::post::BATCH_ENTRIES),
-        disk: true,
+        scale_flag: None,
     },
     Sampled {
         bench_name: "register_rebuild_10m",
         workload: "register_rebuild",
         counter: "legs_folded",
         scale: Scale::Fixed(10_000_000),
-        disk: false,
+        scale_flag: Some("--legs"),
+    },
+    Sampled {
+        bench_name: "bundle_production_and_verify",
+        workload: "bundle_production_and_verify",
+        counter: "entries_verified",
+        scale: Scale::Fixed(10_000),
+        scale_flag: Some("--entries"),
     },
 ];
 
@@ -79,8 +87,10 @@ pub struct SampleRun {
 
 /// What `fa-bench sample <workload>` was asked to do.
 pub struct SampleArgs<'a> {
-    /// Legs in the book (register_rebuild).
-    pub legs: Option<u64>,
+    /// A fixed-scale workload's scale: legs in the book for
+    /// register_rebuild (`--legs`), posted entries for
+    /// bundle_production_and_verify (`--entries`).
+    pub scale: Option<u64>,
     /// The new directory a disk workload creates its book in.
     pub dir: Option<&'a Path>,
     pub rounds: u64,
@@ -107,9 +117,27 @@ pub fn run_sample(
     let mut samples_us = Vec::new();
     let mut counted = 0u64;
     let stated = match sampled.scale {
+        Scale::Fixed(_) if workload == "bundle_production_and_verify" => {
+            let entries = args
+                .scale
+                .ok_or("bundle_production_and_verify needs --entries <count>")?;
+            let mut book = crate::bundle::build(entries, args.seed).map_err(|e| e.to_string())?;
+            for _ in 0..args.rounds {
+                let run = book.produce_and_verify().map_err(|e| e.to_string())?;
+                if run.entries_verified < entries {
+                    return Err(format!(
+                        "a verified bundle carried {} entries of the {entries} posted; no sample is drawn from it",
+                        run.entries_verified
+                    ));
+                }
+                counted = run.entries_verified;
+                samples_us.push(run.elapsed_us);
+            }
+            entries
+        }
         Scale::Fixed(_) => {
             let legs = args
-                .legs
+                .scale
                 .ok_or("register_rebuild needs --legs <even count>")?;
             let mut book = crate::rebuild::build(legs, args.seed).map_err(|e| e.to_string())?;
             for _ in 0..args.rounds {
@@ -308,11 +336,11 @@ pub fn drive(request: &Drive<'_>) -> Result<BenchOutcome, BenchError> {
     };
     let (candidate_args, incumbent_args, stated) = match workload.scale {
         Scale::Fixed(stated) => {
-            let legs = vec![
-                "--legs".to_string(),
+            let scale = vec![
+                workload.scale_flag.unwrap_or("--legs").to_string(),
                 request.scale.unwrap_or(stated).to_string(),
             ];
-            (common(legs.clone()), common(legs), stated)
+            (common(scale.clone()), common(scale), stated)
         }
         Scale::PerRound(per_round) => {
             let Some(dir) = request.dir else {
@@ -386,10 +414,14 @@ mod tests {
     }
 
     #[test]
-    fn the_sampled_benches_are_the_write_path_and_the_rebuild() {
+    fn the_sampled_benches_are_the_write_path_the_rebuild_and_bundles() {
         assert_eq!(
             sampled("FA-BENCH-06").map(|s| s.workload),
             Some("register_rebuild")
+        );
+        assert_eq!(
+            sampled("FA-BENCH-11").map(|s| (s.scale, s.scale_flag)),
+            Some((Scale::Fixed(10_000), Some("--entries")))
         );
         assert_eq!(
             sampled("FA-BENCH-01").map(|s| (s.workload, s.scale)),
@@ -414,8 +446,8 @@ mod tests {
 
     #[test]
     fn a_sample_refuses_what_it_cannot_run() {
-        let args = |legs, dir| SampleArgs {
-            legs,
+        let args = |scale, dir| SampleArgs {
+            scale,
             dir,
             rounds: 1,
             seed: 1,
@@ -434,6 +466,11 @@ mod tests {
             run_sample("single_entry_post", &args(None, None))
                 .unwrap_err()
                 .contains("--dir")
+        );
+        assert!(
+            run_sample("bundle_production_and_verify", &args(None, None))
+                .unwrap_err()
+                .contains("--entries")
         );
     }
 }
