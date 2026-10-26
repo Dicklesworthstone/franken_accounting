@@ -26,7 +26,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a sequence-selected native v1 trial-balance or v4 statement certificate and a checkpoint at or after its known-at; preserve the complete historical schema and migration bodies",
+        "use a native v1/v2 trial-balance or v4 statement certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema and migration bodies",
     )
 }
 
@@ -52,7 +52,9 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
         .map(|bodies| needed.into_iter().zip(bodies).collect()))
 }
 
-/// Package an already replayed, sequence-selected native trial balance or statement.
+/// Package an already replayed native trial balance or statement. For an
+/// instant-selected certificate, the facade supplies its observed time frontier
+/// as `known_at` so the complete upper-tick closure is retained as well.
 /// Legacy v1 statements require the recipient to supply the complete unit-ID
 /// universe; use `assemble_with_registries` for an authenticated registry closure.
 /// The facade performs current authority and retained-history
@@ -73,7 +75,7 @@ pub fn assemble(
     assemble_inner(journal, checkpoint, certificate, known_at, bodies, &[])
 }
 
-/// Package a sequence-selected native statement with the exact canonical
+/// Package a native statement with the exact canonical
 /// registry documents bound by its source certificate. The facade verifies
 /// their closure and the book's complete unit table before calling this API.
 /// V2 appends a list of (registry name, canonical registry document) frames;
@@ -122,17 +124,18 @@ fn assemble_inner(
     let major = if registries.is_empty() { 1 } else { 2 };
     if !(major == 1
         && (certificate.starts_with(b"fa:report-certificate:v1")
+            || certificate.starts_with(b"fa:report-certificate:v2")
             || certificate.starts_with(b"fa:report-certificate:v4"))
         || major == 2 && certificate.starts_with(b"fa:report-certificate:v4"))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1 trial balance or v4 statement",
+            "offline report bundles require a native v1/v2 trial balance or v4 statement",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
     {
         return Ok(Err(refused(
-            "the checkpoint must authenticate a complete prefix through the report's known-at",
+            "the checkpoint must authenticate a complete prefix through the report's known-at and any retained time frontier",
         )));
     }
     let prefix = journal.prefix_proof()?;

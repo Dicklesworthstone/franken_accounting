@@ -70,8 +70,10 @@
 //! hold the documents each entry's own evidence list cites (no events,
 //! rules, approvals, supplemental evidence or attestations); there are no
 //! redacted views, register cells, statements, certificates or findings.
-//! The receipt's `time_evidence_oid` is absent until TimeEvidence
-//! is bound — a registered interim, as on the checkpoint.
+//! The facade's detached receipt carries the checkpoint's authenticated
+//! TimeEvidence reference, when present. It names the observation within the
+//! covered prefix, not a newly asserted physical production timestamp; later
+//! ticks never change a production against an older checkpoint.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -712,7 +714,8 @@ pub struct ReceiptBody {
     pub producer_principal: VId,
     pub produced_at_seq: CommitSeq,
     pub capability_commitment: [u8; 32],
-    /// Absent until TimeEvidence is bound (a registered interim).
+    /// The checkpoint's retained-prefix TimeEvidence Entry digest, when
+    /// available; not an assertion of an exact physical production instant.
     pub time_evidence_oid: Option<Oid>,
 }
 

@@ -4,6 +4,214 @@
 
 use super::*;
 
+fn tick(book: &mut Book, ns: u64, monotonic_ok: bool) {
+    let (runtime, root) = Book::runtime_and_root().unwrap();
+    let capability = Capability::embedded(PRINCIPAL, &["witness"]).unwrap();
+    runtime
+        .block_on(book.record_tick(&root, ns, monotonic_ok, &capability))
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
+fn instant_reports_export_the_original_tick_frontier_and_verify_offline() {
+    let mut fixture = Fixture::new(0xec);
+    let base = fa_time::UtcInstant::parse("2026-01-15T00:00:00Z")
+        .unwrap()
+        .unix_ns();
+    tick(&mut fixture.book, base + 100, false);
+    fixture.transfer(
+        day(2026, 1, 15),
+        b"first-tick-bucket",
+        fixture.usd,
+        ("1000", "4000"),
+        150,
+    );
+    let balance = fa::TrialBalanceSelection::Periods(vec![JANUARY.into()]);
+    let statement = StatementSelection {
+        definition: StatementDefinition::embedded("income-statement").unwrap(),
+        periods: vec![JANUARY.into()],
+        comparative: Vec::new(),
+    };
+    let mut certificates = vec![
+        fixture
+            .book
+            .certify_trial_balance_at_instant(balance.clone(), base + 105)
+            .unwrap()
+            .unwrap()
+            .certificate,
+        fixture
+            .book
+            .certify_statement_at_instant(statement.clone(), base + 105)
+            .unwrap()
+            .unwrap()
+            .certificate,
+    ];
+    let original_known_at = certificates[0].known_at;
+    assert!(certificates.iter().all(|certificate| {
+        certificate
+            .time_selection
+            .as_ref()
+            .unwrap()
+            .resolution
+            .upper
+            .is_none()
+    }));
+    tick(&mut fixture.book, base + 110, true);
+    let capability = Capability::embedded(PRINCIPAL, &["read", "produce", "witness"]).unwrap();
+    let earlier_checkpoint = fixture
+        .book
+        .checkpoint(PRINCIPAL, &capability)
+        .unwrap()
+        .unwrap();
+    fixture.transfer(
+        day(2026, 1, 15),
+        b"later-tick-bucket",
+        fixture.usd,
+        ("1000", "4000"),
+        900,
+    );
+    tick(&mut fixture.book, base + 120, true);
+    certificates.extend([
+        fixture
+            .book
+            .certify_trial_balance_at_instant(balance, base + 105)
+            .unwrap()
+            .unwrap()
+            .certificate,
+        fixture
+            .book
+            .certify_statement_at_instant(statement, base + 105)
+            .unwrap()
+            .unwrap()
+            .certificate,
+    ]);
+    assert_eq!(certificates[0].output, certificates[2].output);
+    assert_eq!(certificates[1].output, certificates[3].output);
+    let head = fixture.book.head().unwrap();
+    let refusal = fixture
+        .book
+        .produce_report_bundle(
+            PRINCIPAL,
+            &capability,
+            Some(earlier_checkpoint.checkpoint.checkpoint.body.state_oid),
+            &certificates[2],
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_notary::code::SCOPE_UNSUPPORTED);
+    assert_eq!(fixture.book.head().unwrap(), head);
+    for certificate in &certificates {
+        let produced = produce(&mut fixture.book, certificate);
+        let key = fixture.book.checkpoint_public_key();
+        let verified = fa_verify::report::verify_report_expected(
+            &produced.bundle.bytes,
+            &[key],
+            None,
+            Some(&produced.receipt),
+            Some(&certificate.digest),
+        )
+        .unwrap();
+        assert_eq!(verified.output, certificate.output);
+        assert_eq!(verified.known_at, original_known_at.0);
+        let time = verified.time_selection.unwrap();
+        let retained = certificate.time_selection.as_ref().unwrap();
+        assert_eq!(time.frontier, retained.resolution.frontier);
+        assert_eq!(time.lower_entry, retained.lower_entry.0);
+        assert_eq!(time.upper_entry, retained.upper_entry.map(|id| id.0));
+        assert_eq!(time.source_grade(), "uncorroborated_daemon_clock");
+        let command = fa_verify::cli::run(
+            &[
+                "report".into(),
+                "bundle".into(),
+                "--key".into(),
+                key.iter().map(|byte| format!("{byte:02x}")).collect(),
+                "--receipt".into(),
+                "receipt".into(),
+                "--json".into(),
+            ],
+            &|path| match path {
+                "bundle" => Ok(produced.bundle.bytes.clone()),
+                "receipt" => Ok(produced.receipt.clone()),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("unexpected input {path}"),
+                )),
+            },
+        );
+        assert_eq!(command.exit, 0, "{}", command.stdout);
+        assert!(
+            command
+                .stdout
+                .contains("\"scope\":\"authenticated_tick_bucket\"")
+        );
+        assert!(
+            command
+                .stdout
+                .contains("\"source_grade\":\"uncorroborated_daemon_clock\"")
+        );
+        assert!(
+            command
+                .stdout
+                .contains("\"external_utc_accuracy\":\"not_judged\"")
+        );
+    }
+}
+
+#[test]
+fn instant_report_production_refuses_unauthenticated_opening_date_policy() {
+    let units = UnitRegistry::embedded().unwrap();
+    let usd = units.lookup("USD").unwrap();
+    let mut book = Book::create_memory(
+        BookKeys::for_development(0xed),
+        BookSpec {
+            book_id: Id128([0xed; 16]),
+            name: "Opening-date instant export refusal".into(),
+            base_unit: usd,
+            calendar: FiscalCalendar::monthly("opening-policy", 1, 0).unwrap(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: Some(day(2026, 1, 1)),
+        },
+        Entropy::deterministic(0xed),
+    )
+    .unwrap();
+    let schema = Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap();
+    book.install_chart(
+        &[account("1000", "Cash", AccountType::ASSET)],
+        PRINCIPAL,
+        day(2026, 1, 1),
+        b"opening-policy-chart",
+        &schema,
+    )
+    .unwrap()
+    .unwrap();
+    book.create_periods(2026, PRINCIPAL, &schema)
+        .unwrap()
+        .unwrap();
+    let instant = fa_time::UtcInstant::parse("2026-01-15T00:00:00Z")
+        .unwrap()
+        .unix_ns();
+    tick(&mut book, instant, true);
+    let certificate = book
+        .certify_trial_balance_at_instant(
+            fa::TrialBalanceSelection::AsOf(day(2026, 1, 15)),
+            instant,
+        )
+        .unwrap()
+        .unwrap()
+        .certificate;
+    let capability = Capability::embedded(PRINCIPAL, &["read", "produce", "witness"]).unwrap();
+    let before = book.head().unwrap();
+    let refusal = book
+        .produce_report_bundle(PRINCIPAL, &capability, None, &certificate)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, fa_notary::code::SCOPE_UNSUPPORTED);
+    assert!(refusal.message.contains("opening-date admission"));
+    assert_eq!(book.head().unwrap(), before);
+}
+
 fn unit_ids(book: &Book) -> Vec<u32> {
     book.context().units.iter().map(|(id, _)| id.0).collect()
 }
@@ -424,9 +632,15 @@ fn atomic_pending_resolutions_export_and_replay_as_one_accounting_frontier() {
                 .unwrap();
             let fulfilled = if at == before { 0 } else { 300 };
             if name == "balance-sheet" {
-                assert_eq!(amounts(&certified.statement, "assets", usd), [1_000 + fulfilled, 1_000]);
+                assert_eq!(
+                    amounts(&certified.statement, "assets", usd),
+                    [1_000 + fulfilled, 1_000]
+                );
             } else {
-                assert_eq!(amounts(&certified.statement, "net_income", usd), [fulfilled, 0]);
+                assert_eq!(
+                    amounts(&certified.statement, "net_income", usd),
+                    [fulfilled, 0]
+                );
             }
             let produced = produce(&mut fixture.book, &certified.certificate);
             verify(&fixture.book, &produced, &certified.certificate);

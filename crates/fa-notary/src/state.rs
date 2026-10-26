@@ -45,7 +45,10 @@ use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Outcome, Refusal, exit};
 use fa_journal::rows::{book_root, bytes, edge_id, prop};
 use fa_model::symbols::{label, property, relation};
-use fa_model::{DecodeError, EncodeError, Id128, Oid, Reader, Writer};
+use fa_model::{
+    ControlKind, ControlPayload, DecodeError, EncodeError, EntryClass, EntryOrigin, Id128, Oid,
+    Reader, Writer, entry_vid,
+};
 use fgdb::{Database, QueryError, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxnError};
 use fgdb_crypto::Hasher;
 use fgdb_gql::{GqlParameters, GqlQueryPolicy};
@@ -55,7 +58,7 @@ use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 use crate::checkpoint::{
     CheckpointBody, SignError, TransparencyCheckpoint, checkpoint_oid, checkpoint_vid,
 };
-use crate::journal::{Journal, LeafKinds};
+use crate::journal::{Journal, LeafKinds, Record};
 use crate::scope::{ScopeIndex, ScopeRequest};
 use crate::sign::CheckpointSigner;
 use crate::tree::Digest;
@@ -312,14 +315,81 @@ fn chain_commitment<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// The latest TimeEvidence actually contained in this retained prefix. The
+/// signed reference is the complete Entry envelope's content digest, not its
+/// mutable root mirror or a caller-supplied clock reading. An uncorroborated
+/// observation remains uncorroborated in that authenticated payload; it must
+/// not be silently replaced by an older, more favorable observation. Every
+/// time candidate must be valid: a newer tick cannot hide a malformed earlier
+/// one, and a TimeTick payload under another class must never be skipped.
+fn prefix_time_evidence(journal: &Journal) -> Result<Option<Oid>, KernelError> {
+    let mut latest = None;
+    for leaf in journal
+        .leaves
+        .iter()
+        .filter(|leaf| leaf.envelope.is_entry())
+    {
+        let Some(Record::Entry(entry)) = leaf.authenticated_record()? else {
+            return Err(KernelError::Corrupt(
+                "checkpoint TimeEvidence is not its authenticated journal leaf".into(),
+            ));
+        };
+        let proposal = &entry.proposal;
+        let is_tick = matches!(proposal.control, Some(ControlPayload::TimeTick { .. }));
+        if proposal.class != EntryClass::TIME_CONTROL && !is_tick {
+            continue;
+        }
+        if proposal.class != EntryClass::TIME_CONTROL {
+            return Err(KernelError::Corrupt(
+                "checkpoint TimeEvidence class differs from its TimeTick payload".into(),
+            ));
+        }
+        let Some(ControlPayload::TimeTick {
+            observed_utc_ns,
+            source: fa_journal::sweep::SOURCE_DAEMON_CLOCK,
+            ..
+        }) = proposal.control
+        else {
+            return Err(KernelError::Corrupt(
+                "checkpoint TimeEvidence is not an admitted TimeTick".into(),
+            ));
+        };
+        if proposal.book_id != journal.book_id
+            || proposal.branch_id != journal.branch_id
+            || leaf.envelope.commit_seq > journal.through_seq
+            || leaf.vid
+                != entry_vid(
+                    journal.book_id,
+                    &proposal.principal_ref.0.to_le_bytes(),
+                    &proposal.idempotency_key,
+                )
+            || !matches!(
+                proposal.origin,
+                EntryOrigin::Control { control_kind: ControlKind::TIME_TICK, spec_body_digest }
+                    if spec_body_digest == fgdb_crypto::hash(&observed_utc_ns.to_le_bytes()).0
+            )
+        {
+            return Err(KernelError::Corrupt(
+                "checkpoint TimeEvidence identity, coordinate or origin differs from its tick"
+                    .into(),
+            ));
+        }
+        latest = Some(Oid(entry.entry_digest));
+    }
+    Ok(latest)
+}
+
 /// The checkpoint the journal prefix of `state` (journaled as `state_oid`)
-/// and the book's signer reproduce.
+/// and the book's signer reproduce. Historical checkpoints without a time
+/// binding keep their exact bytes. New checkpoints always bind the prefix's
+/// latest TimeEvidence when one exists; declared bindings are re-derived.
 fn expected_checkpoint<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     ctx: &PurposeContexts,
     book: &BookContext,
     journal: &Journal,
     state_oid: &Oid,
+    bind_time_evidence: bool,
     signer: &dyn CheckpointSigner,
 ) -> Result<TransparencyCheckpoint, KernelError> {
     let body = CheckpointBody {
@@ -328,7 +398,11 @@ fn expected_checkpoint<V: asupersync::fs::Vfs + Clone>(
         scope_index_root: ScopeIndex::of(journal).root(),
         substrate_chain_commitment: chain_commitment(db, ctx, book, journal.through_seq)?,
         witness_policy_oid: None,
-        time_evidence_oid: None,
+        time_evidence_oid: if bind_time_evidence {
+            prefix_time_evidence(journal)?
+        } else {
+            None
+        },
     };
     TransparencyCheckpoint::sign(body, &[signer]).map_err(|e| match e {
         SignError::Encode(e) => KernelError::Model(fa_model::EntryError::Encode(e)),
@@ -381,6 +455,35 @@ fn load_checkpoint<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// A checkpoint is published beside its state once. In particular, accepting
+/// historical unbound checkpoints must not let a later rewrite masquerade as
+/// that old form by stripping a TimeEvidence reference and re-signing it.
+fn load_unchanged_checkpoint<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    state: &StoredState,
+    at: CommitSeq,
+) -> Result<Result<StoredCheckpoint, String>, KernelError> {
+    let current = match load_checkpoint(db, &state.oid, at)? {
+        Ok(checkpoint) => checkpoint,
+        Err(finding) => return Ok(Err(finding)),
+    };
+    let published = match load_checkpoint(db, &state.oid, state.recorded_at)? {
+        Ok(checkpoint) => checkpoint,
+        Err(finding) => {
+            return Ok(Err(format!(
+                "the checkpoint was not published beside its state: {finding}"
+            )));
+        }
+    };
+    if current != published {
+        return Ok(Err(format!(
+            "the checkpoint is not what was originally published at sequence {}",
+            state.recorded_at.0
+        )));
+    }
+    Ok(Ok(current))
+}
+
 /// The refusal for a checkpoint the journal and the book's key do not
 /// reproduce.
 fn checkpoint_invalid(message: String) -> Refusal {
@@ -393,10 +496,11 @@ fn checkpoint_invalid(message: String) -> Refusal {
     )
 }
 
-/// The stored checkpoint of the journaled `state`, after recomputing it —
-/// statement, scope-index root, chain commitment, and the signature (Ed25519
-/// is deterministic) — and comparing byte for byte. Refused (FA-REF-127,
-/// exit 8) when the store holds anything else.
+/// The stored checkpoint of the journaled `state`, after checking that its
+/// original publication remains unchanged and recomputing it — statement,
+/// scope-index root, chain commitment, declared TimeEvidence, and signature
+/// (Ed25519 is deterministic) — byte for byte. Refused (FA-REF-127, exit 8)
+/// when the store holds anything else.
 pub fn stored_checkpoint<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     ctx: &PurposeContexts,
@@ -408,11 +512,19 @@ pub fn stored_checkpoint<V: asupersync::fs::Vfs + Clone>(
         Ok(j) => j,
         Err(r) => return Ok(Err(r)),
     };
-    let stored = match load_checkpoint(db, &state.oid, db.frontier()?)? {
+    let stored = match load_unchanged_checkpoint(db, state, db.frontier()?)? {
         Ok(s) => s,
         Err(finding) => return Ok(Err(checkpoint_invalid(finding))),
     };
-    let expected = expected_checkpoint(db, ctx, book, &journal, &state.oid, signer)?;
+    let expected = expected_checkpoint(
+        db,
+        ctx,
+        book,
+        &journal,
+        &state.oid,
+        stored.checkpoint.body.time_evidence_oid.is_some(),
+        signer,
+    )?;
     if stored.checkpoint != expected {
         return Ok(Err(checkpoint_invalid(format!(
             "the checkpoint of the state through {} is not what the journal and the book's key reproduce",
@@ -632,11 +744,18 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
                 ))));
             }
         };
-        let finding = match load_checkpoint(db, &stored_prev.oid, through)? {
+        let finding = match load_unchanged_checkpoint(db, stored_prev, through)? {
             Err(finding) => Some(finding),
             Ok(stored_cp) => {
-                let expected =
-                    expected_checkpoint(db, ctx, book, &prev_journal, &stored_prev.oid, signer)?;
+                let expected = expected_checkpoint(
+                    db,
+                    ctx,
+                    book,
+                    &prev_journal,
+                    &stored_prev.oid,
+                    stored_cp.checkpoint.body.time_evidence_oid.is_some(),
+                    signer,
+                )?;
                 (stored_cp.checkpoint != expected).then(|| {
                     "the last checkpoint is not what the journal and the book's key reproduce"
                         .to_string()
@@ -702,7 +821,7 @@ pub async fn checkpoint<V: asupersync::fs::Vfs + Clone>(
     }
 
     // The signed checkpoint beside the state, in the same transaction.
-    let cp = expected_checkpoint(db, ctx, book, &journal, &oid, signer)?;
+    let cp = expected_checkpoint(db, ctx, book, &journal, &oid, true, signer)?;
     let cp_bytes = cp.canonical_bytes().map_err(fa_model::EntryError::Encode)?;
     let cp_oid = checkpoint_oid(&cp_bytes);
     let cvid = checkpoint_vid(&oid);
@@ -859,14 +978,20 @@ pub fn verify_accumulator<V: asupersync::fs::Vfs + Clone>(
                         if let Err(refusal) = journal.verify_unchanged_at(db, at)? {
                             Some(refusal.message)
                         } else {
-                            match load_checkpoint(db, &s.oid, at)? {
+                            match load_unchanged_checkpoint(db, s, at)? {
                                 Err(f) => Some(f),
                                 Ok(stored_cp) => {
                                     let expected = expected_checkpoint(
-                                        db, ctx, book, &journal, &s.oid, signer,
+                                        db,
+                                        ctx,
+                                        book,
+                                        &journal,
+                                        &s.oid,
+                                        stored_cp.checkpoint.body.time_evidence_oid.is_some(),
+                                        signer,
                                     )?;
                                     (stored_cp.checkpoint != expected).then(|| {
-                                        "its checkpoint is not what the journal and the book's key reproduce (signature, scope-index root, chain commitment, or statement)".to_string()
+                                        "its checkpoint is not what the journal and the book's key reproduce (signature, scope-index root, chain commitment, TimeEvidence, or statement)".to_string()
                                     })
                                 }
                             }

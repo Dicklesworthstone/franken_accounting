@@ -3117,6 +3117,95 @@ fn certificate_tick(book: &mut Book, ns: u64, monotonic_ok: bool) -> fa_journal:
 }
 
 #[test]
+fn production_receipts_bind_the_selected_checkpoint_time_evidence() {
+    let (mut book, _, _, _) = certified_fixture();
+    let principal = VId(1);
+    let producer = Capability::embedded(principal, &["produce", "read"]).unwrap();
+    let witness = Capability::embedded(principal, &["witness"]).unwrap();
+    let first_tick = certificate_tick(&mut book, 1_000, true);
+    let certified = book
+        .certify_trial_balance(
+            crate::TrialBalanceSelection::Periods(vec!["FY2026-P03".into()]),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let first = book.checkpoint(principal, &witness).unwrap().unwrap();
+    let prefix = fa_notary::BundleRequest {
+        scope: fa_notary::BundleScope::Prefix,
+        balances: Vec::new(),
+        inline_documents: false,
+    };
+    let produce = |book: &mut Book, state, expected_time| {
+        let at = book.head().unwrap();
+        let keys = [book.checkpoint_public_key()];
+        let bundle = book
+            .produce_bundle(principal, &producer, Some(state), &prefix)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let verified =
+            fa_verify::verify_bundle(&bundle.bundle.bytes, &keys, Some(&bundle.receipt)).unwrap();
+        assert!(verified.verified(), "{:#?}", verified.checks);
+        let receipt = verified.receipt.unwrap();
+        assert_eq!(receipt.produced_at_seq, at.0);
+        assert_eq!(receipt.time_evidence_oid, Some(expected_time));
+        assert_eq!(
+            bundle.checkpoint.checkpoint.body.time_evidence_oid,
+            Some(Oid(expected_time))
+        );
+
+        let report = book
+            .produce_report_bundle(principal, &producer, Some(state), &certified.certificate)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let verified_report = fa_verify::report::verify_report(
+            &report.bundle.bytes,
+            &keys,
+            None,
+            Some(&report.receipt),
+        )
+        .unwrap();
+        let receipt = verified_report.receipt.unwrap();
+        assert_eq!(receipt.produced_at_seq, at.0);
+        assert_eq!(receipt.time_evidence_oid, Some(expected_time));
+        assert_eq!(
+            verified_report.checkpoint.time_evidence_oid,
+            Some(expected_time)
+        );
+        (bundle, report)
+    };
+    let (original, original_report) = produce(
+        &mut book,
+        first.stored.oid,
+        first_tick.entry_ref.entry_digest,
+    );
+
+    // Later observations do not rewrite an older prefix's authenticated time.
+    // The production sequence advances, while both content bundles remain exact.
+    let later_tick = certificate_tick(&mut book, 1_100, false);
+    let (historical, historical_report) = produce(
+        &mut book,
+        first.stored.oid,
+        first_tick.entry_ref.entry_digest,
+    );
+    assert_eq!(historical.bundle, original.bundle);
+    assert_eq!(historical_report.bundle, original_report.bundle);
+    assert_ne!(historical.receipt, original.receipt);
+    assert_ne!(historical_report.receipt, original_report.receipt);
+
+    // A new checkpoint binds the actual latest tick, including its explicit
+    // uncorroborated flag. Carrying that digest does not upgrade its evidence.
+    let latest = book.checkpoint(principal, &witness).unwrap().unwrap();
+    produce(
+        &mut book,
+        latest.stored.oid,
+        later_tick.entry_ref.entry_digest,
+    );
+}
+
+#[test]
 fn instant_certificates_keep_their_original_frontier_and_tick_brackets() {
     use crate::{ReportCertificate, TrialBalanceSelection};
     let (mut book, usd, day, _) = certified_fixture();

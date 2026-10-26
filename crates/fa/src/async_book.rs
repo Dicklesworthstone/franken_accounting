@@ -3570,7 +3570,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         if certificate.book_id != self.context.book_id
-            || certificate.time_selection.is_some()
             || !matches!(
                 &certificate.selection,
                 crate::ReportSelection::TrialBalance(_) | crate::ReportSelection::Statement(_)
@@ -3579,9 +3578,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's sequence-selected native trial-balance or statement certificate",
+                "offline report production requires this book's native trial-balance or statement certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify a native fa tb or fa statement report using HEAD or a recorded sequence, then produce its C:<oid> against a checkpoint covering that sequence",
+                "certify a native fa tb or fa statement report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
             )));
         }
         if let Err(refusal) = self
@@ -3592,6 +3591,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         if let Err(refusal) = self.replay_report(cx, certificate)? {
             return Ok(Err(refusal));
+        }
+        let closure_frontier = certificate
+            .time_selection
+            .as_ref()
+            .map_or(certificate.known_at, |time| {
+                CommitSeq(time.resolution.frontier)
+            });
+        if certificate.time_selection.is_some()
+            && self.query(cx, |db, _| {
+                Ok(
+                    fa_journal::genesis::read_book_spec_at(db, closure_frontier)?
+                        .is_some_and(|spec| spec.opening_date.is_some()),
+                )
+            })?
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "instant report bundles cannot yet authenticate the book's opening-date admission policy",
+                "plan §7.1a, §13.3 (book-genesis policy is outside the checkpoint's record prefix)",
+                "certify the report at its resolved recorded sequence before producing an offline report bundle",
+            )));
         }
         let registries = if matches!(&certificate.selection, crate::ReportSelection::Statement(_)) {
             match crate::certificate::offline_statement_registries(certificate, &self.context.units)
@@ -3632,6 +3653,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Some(Err(refusal)) => return Ok(Err(refusal)),
             Some(Ok(basis)) => basis,
         };
+        if certificate.time_selection.is_some()
+            && journal.leaves.iter().any(|leaf| {
+                leaf.envelope.is_entry()
+                    && leaf.envelope.commit_seq <= closure_frontier
+                    && matches!(
+                        leaf.envelope.class,
+                        EntryClass::MIGRATION | EntryClass::MIGRATION_CONTROL
+                    )
+            })
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "instant report bundles cannot yet authenticate migration-genesis admission",
+                "plan §7.1a, §8.6, §13.3 (migration-genesis policy must not be inferred)",
+                "certify the report at its resolved recorded sequence before producing an offline report bundle",
+            )));
+        }
         let bodies = match self.query(cx, |db, _| {
             Ok(fa_notary::report::run_bodies(
                 db,
@@ -3650,7 +3689,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &journal,
                 &checkpoint,
                 &bytes,
-                certificate.known_at,
+                closure_frontier,
                 &bodies,
                 registries,
             ),
@@ -3658,7 +3697,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &journal,
                 &checkpoint,
                 &bytes,
-                certificate.known_at,
+                closure_frontier,
                 &bodies,
             ),
         }?;
@@ -3672,7 +3711,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 producer_principal: principal,
                 produced_at_seq: at,
                 capability_commitment: commitment,
-                time_evidence_oid: None,
+                time_evidence_oid: checkpoint.checkpoint.body.time_evidence_oid,
             },
             &self.signer,
         )
@@ -3829,7 +3868,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 producer_principal: principal,
                 produced_at_seq: at,
                 capability_commitment: commitment,
-                time_evidence_oid: None,
+                time_evidence_oid: checkpoint.checkpoint.body.time_evidence_oid,
             },
             &self.signer,
         )
