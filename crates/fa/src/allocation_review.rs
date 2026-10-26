@@ -18,7 +18,7 @@ use core::fmt;
 use asupersync::fs::Vfs;
 use fa_intents::{IntentError, PostIntent, PostPlan};
 use fa_journal::{AllocationPosting, Refusal, exit};
-use fa_model::limits::{MAX_DIMENSIONS_PER_LEG, MAX_ENTRY_BYTES};
+use fa_model::limits::{MAX_DIMENSIONS_PER_LEG, MAX_ENTRY_BYTES, MAX_EXTENSION_BYTES};
 use fa_model::{
     ApprovalRef, DecodeError, EncodeError, EntryPayload, Id128, Reader, Writer, domain_digest,
 };
@@ -34,11 +34,13 @@ use crate::{AsyncBook, Book, BookError, Outcome};
 
 const MAGIC: &[u8; 16] = b"FA-ALLOC-REVIEW\0";
 const VERSION: u16 = 1;
+const CELL_VERSION: u16 = 2;
 const MAX_INTENT_BYTES: usize = MAX_ENTRY_BYTES + 32;
-/// One bounded sealed intent, its explicit driver instruction, and framing.
+/// One bounded sealed intent, its complete driver basis (including target
+/// dimensions), and framing.
 /// A hex transport must separately account for its expansion.
 pub const MAX_ALLOCATION_REVIEW_BYTES: usize =
-    MAX_ENTRY_BYTES + MAX_ALLOCATION_REQUEST_BYTES + 20 * MAX_DIMENSIONS_PER_LEG + 256;
+    MAX_ENTRY_BYTES + MAX_EXTENSION_BYTES + 256;
 
 #[derive(Debug)]
 pub enum AllocationReviewError {
@@ -191,22 +193,31 @@ impl AllocationReview {
     /// are retained and cross-checked; only the intent is handed to the kernel.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, AllocationReviewError> {
         self.validate()?;
-        let request = self.posting.request.canonical_bytes()?;
         let intent = self.intent.canonical_bytes()?;
         let mut w = Writer::new();
-        w.fixed(MAGIC)
-            .u16(VERSION)
-            .u16(0)
-            .u128(self.posting.source.0)
-            .u8(match self.posting.source_side {
-                Side::Debit => 0,
-                Side::Credit => 1,
-            })
-            .list(&self.posting.dimensions, |w, (dimension, value)| {
-                w.u32(*dimension).u128(value.0);
-            })
-            .bytes(&request)
-            .bytes(&intent);
+        if self.posting.target_cells.is_empty() {
+            // Keep the original v1 transport byte-for-byte for shared cells.
+            let request = self.posting.request.canonical_bytes()?;
+            w.fixed(MAGIC)
+                .u16(VERSION)
+                .u16(0)
+                .u128(self.posting.source.0)
+                .u8(match self.posting.source_side {
+                    Side::Debit => 0,
+                    Side::Credit => 1,
+                })
+                .list(&self.posting.dimensions, |w, (dimension, value)| {
+                    w.u32(*dimension).u128(value.0);
+                })
+                .bytes(&request);
+        } else {
+            // The exact v2 basis is the only representation of target cells.
+            w.fixed(MAGIC)
+                .u16(CELL_VERSION)
+                .u16(0)
+                .bytes(&self.posting.basis_bytes()?);
+        }
+        w.bytes(&intent);
         let bytes = w.finish()?;
         bounded(&bytes)?;
         Ok(bytes)
@@ -218,37 +229,45 @@ impl AllocationReview {
     pub fn decode(bytes: &[u8]) -> Result<Self, AllocationReviewError> {
         bounded(bytes)?;
         let mut r = Reader::new(bytes);
-        if r.fixed::<16>("allocation_review.magic")? != *MAGIC
-            || r.u16("allocation_review.major")? != VERSION
+        if r.fixed::<16>("allocation_review.magic")? != *MAGIC {
+            return Err(AllocationReviewError::Invalid("unsupported review format"));
+        }
+        let version = r.u16("allocation_review.major")?;
+        if !matches!(version, VERSION | CELL_VERSION)
             || r.u16("allocation_review.minor")? != 0
         {
             return Err(AllocationReviewError::Invalid("unsupported review format"));
         }
-        let source = VId(r.u128("allocation_review.source")?);
-        let source_side = match r.u8("allocation_review.side")? {
-            0 => Side::Debit,
-            1 => Side::Credit,
-            _ => return Err(AllocationReviewError::Invalid("unknown source side")),
-        };
-        let dimensions = r.list(
-            MAX_DIMENSIONS_PER_LEG,
-            "allocation_review.dimensions",
-            |r| Ok((r.u32("dimension.id")?, VId(r.u128("dimension.value")?))),
-        )?;
-        let request = AllocationRequest::decode(
-            r.bytes(MAX_ALLOCATION_REQUEST_BYTES, "allocation_review.request")?,
-        )?;
-        let intent = PostIntent::decode(r.bytes(MAX_INTENT_BYTES, "allocation_review.intent")?)?;
-        r.finish()?;
-        let review = Self {
-            posting: AllocationPosting {
+        let posting = if version == VERSION {
+            let source = VId(r.u128("allocation_review.source")?);
+            let source_side = match r.u8("allocation_review.side")? {
+                0 => Side::Debit,
+                1 => Side::Credit,
+                _ => return Err(AllocationReviewError::Invalid("unknown source side")),
+            };
+            let dimensions = r.list(
+                MAX_DIMENSIONS_PER_LEG,
+                "allocation_review.dimensions",
+                |r| Ok((r.u32("dimension.id")?, VId(r.u128("dimension.value")?))),
+            )?;
+            let request = AllocationRequest::decode(
+                r.bytes(MAX_ALLOCATION_REQUEST_BYTES, "allocation_review.request")?,
+            )?;
+            AllocationPosting {
                 source,
                 source_side,
                 dimensions,
                 request,
-            },
-            intent,
+                target_cells: Vec::new(),
+            }
+        } else {
+            AllocationPosting::decode_basis(
+                r.bytes(MAX_EXTENSION_BYTES, "allocation_review.basis")?,
+            )?
         };
+        let intent = PostIntent::decode(r.bytes(MAX_INTENT_BYTES, "allocation_review.intent")?)?;
+        r.finish()?;
+        let review = Self { posting, intent };
         if review.canonical_bytes()?.as_slice() != bytes {
             return Err(AllocationReviewError::Invalid("noncanonical review bytes"));
         }
@@ -258,7 +277,11 @@ impl AllocationReview {
     /// Content identity, not a signature or native object-store identifier.
     pub fn digest(&self) -> Result<[u8; 32], AllocationReviewError> {
         Ok(domain_digest(
-            b"fa:allocation-review:v1",
+            if self.posting.target_cells.is_empty() {
+                b"fa:allocation-review:v1"
+            } else {
+                b"fa:allocation-review:v2"
+            },
             &[&self.canonical_bytes()?],
         ))
     }

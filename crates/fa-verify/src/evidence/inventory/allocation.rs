@@ -22,7 +22,7 @@ use crate::evidence::{EvidenceCitation, EvidenceError};
 use crate::{Checkpoint, Inclusion};
 use core::fmt;
 
-pub use basis::{AllocationBasis, AllocationTarget};
+pub use basis::{AllocationBasis, AllocationTarget, AllocationTargetCell};
 
 /// Existing entry extension ceiling minus its fixed record framing.
 pub const MAX_BASIS_BYTES: usize = 64 * 1024 - 84;
@@ -125,7 +125,7 @@ pub fn verify_allocation_for(
     let shares = basis.shares()?;
     let (inclusion, proposal) = authenticated_entry(proof, checkpoint, expected_entry_digest)?;
     let law_digest = law_digest(basis.law);
-    let basis_digest = basis_digest(expected_basis);
+    let basis_digest = basis_digest(basis.version(), expected_basis);
     let driver = entry::verify(proposal, checkpoint, expected_basis, &basis, &shares)?;
     Ok(VerifiedAllocation {
         inclusion,
@@ -148,10 +148,14 @@ fn law_digest(law: u16) -> [u8; 32] {
         ],
     )
 }
-fn basis_digest(bytes: &[u8]) -> [u8; 32] {
+fn basis_digest(version: u16, bytes: &[u8]) -> [u8; 32] {
     // The public callers have admitted the <=64 KiB bound before this cast.
     crate::blake3::hash_parts(
-        b"fa:allocation-basis:v1",
+        if version == 2 {
+            b"fa:allocation-basis:v2"
+        } else {
+            b"fa:allocation-basis:v1"
+        },
         &[&(bytes.len() as u32).to_le_bytes(), bytes],
     )
 }

@@ -9328,8 +9328,10 @@ pub(crate) fn emit_post_plan(
                 .transpose()?
                 .map_or_else(String::new, |amount| format!("; functional {amount}"));
             human_legs.push(format!(
-                "  {ordinal}: {side} {} ({}) {amount}{base}",
-                account.code, account.name
+                "  {ordinal}: {side} {} ({}) {amount}{base}{}",
+                account.code,
+                account.name,
+                plan_dimensions_text(&leg.dimension_set)
             ));
             Ok(obj(vec![
                 ("ordinal", Json::Int(ordinal as i128)),
@@ -9337,6 +9339,7 @@ pub(crate) fn emit_post_plan(
                 ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
                 ("side", s(side)),
                 ("amount", s(amount)),
+                ("dimensions", plan_dimensions_json(&leg.dimension_set)),
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
@@ -9503,8 +9506,8 @@ pub(crate) fn emit_post_plan(
         for grant in args.flag_all("--grant") {
             command.push_str(&format!(" --grant {}", quoted(grant)));
         }
-        if proposal.base_totals.is_some()
-            && proposal.class != EntryClass::REVERSAL
+        if ((proposal.base_totals.is_some() && proposal.class != EntryClass::REVERSAL)
+            || args.positional.first().is_some_and(|verb| verb == "allocate"))
             && !args.flag_all("--grant").contains(&"read")
         {
             command.push_str(" --grant 'read'");
@@ -9731,9 +9734,10 @@ fn emit_replacement_plan(
                 .ok_or_else(|| Fail::Internal("an admitted correction account is absent".into()))?;
             let amount = render_amount(leg.amount, &book.context().units)?;
             human.push_str(&format!(
-                "\n  {} {} {amount}",
+                "\n  {} {} {amount}{}",
                 side_name(leg.side),
-                account.code
+                account.code,
+                plan_dimensions_text(&leg.dimension_set)
             ));
             legs.push(obj(vec![
                 ("ordinal", Json::Int(ordinal as i128)),
@@ -9741,6 +9745,7 @@ fn emit_replacement_plan(
                 ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
                 ("side", s(side_name(leg.side))),
                 ("amount", s(amount)),
+                ("dimensions", plan_dimensions_json(&leg.dimension_set)),
             ]));
         }
         members.push(obj(vec![
@@ -10556,16 +10561,27 @@ fn parse_allocation_method(doc: &Json, book_id: Id128) -> Result<AllocationMetho
                 Some(r) => parse_rounding_law(r)?,
                 None => fa_money::RoundingLaw::HalfEven,
             };
-            let recipient_code = doc
+            let recipient = doc
                 .get("recipient")
                 .or_else(|| doc.get("residual_account"))
-                .and_then(Json::as_str)
                 .ok_or_else(|| {
                     usage(
-                        "allocation method pro_rata: `recipient` (or `residual_account`) must be a string",
-                        "recipient: \"6099\" (target account code that receives the rounding residual)",
+                        "allocation method pro_rata requires a residual recipient",
+                        "recipient: \"6099\", or {\"account\":\"6100\",\"dimensions\":{\"cost_center\":\"SALES\"}}",
                     )
                 })?;
+            let recipient_code = match recipient {
+                Json::Str(code) => code.as_str(),
+                Json::Obj(_) => req_str(recipient, "account", "allocation recipient")?,
+                _ => {
+                    return Err(usage(
+                        "allocation recipient must name an account or a complete target cell",
+                        "recipient: \"6099\", or {\"account\":\"6100\",\"dimensions\":{\"cost_center\":\"SALES\"}}",
+                    ));
+                }
+            };
+            // Dimensional destinations are resolved after the ordered target
+            // list is parsed, so an ambiguous account never selects a cell.
             let recipient = account_vid(book_id, recipient_code).0;
             Ok(AllocationMethod::ProRataResidualToNamed {
                 rounding,
@@ -10588,13 +10604,20 @@ fn allocation_method_name(method: AllocationMethod) -> &'static str {
     }
 }
 
+struct ParsedAllocationTargets {
+    method: AllocationMethod,
+    targets: Vec<AllocationTarget>,
+    cells: Vec<fa::AllocationTargetCell>,
+}
+
 fn parse_allocation_targets(
     doc: &Json,
     book_id: Id128,
     method: AllocationMethod,
     units: &fa_money::UnitRegistry,
     unit: fa_money::UnitId,
-) -> Result<Vec<AllocationTarget>, Fail> {
+    source_dimensions: &[(u32, VId)],
+) -> Result<ParsedAllocationTargets, Fail> {
     let targets_arr = doc
         .get("targets")
         .and_then(Json::as_arr)
@@ -10604,11 +10627,38 @@ fn parse_allocation_targets(
                 "targets: [{\"account\": \"5100\", \"basis\": 60}, {\"account\": \"5200\", \"basis\": 40}]",
             )
         })?;
+    if targets_arr.len() > fa_journal::allocation::MAX_POSTING_TARGETS {
+        return Err(usage(
+            "allocation has more than 1024 targets",
+            "split the allocation into separately reviewed postings",
+        ));
+    }
+    let recipient = doc.get("recipient").or_else(|| doc.get("residual_account"));
+    let dimensional = targets_arr
+        .iter()
+        .any(|target| target.get("dimensions").is_some() || target.get("dims").is_some())
+        || matches!(recipient, Some(Json::Obj(_)));
     let mut out = Vec::with_capacity(targets_arr.len());
+    let mut cells = Vec::new();
     for (i, item) in targets_arr.iter().enumerate() {
         let what = format!("targets[{i}]");
         let account_code = req_str(item, "account", &what)?;
-        let id = account_vid(book_id, account_code).0;
+        let account = account_vid(book_id, account_code);
+        let id = if dimensional {
+            let cell = fa::AllocationTargetCell {
+                account,
+                dimensions: if item.get("dimensions").is_some() || item.get("dims").is_some() {
+                    parse_allocation_dimensions(item, &what, book_id)?
+                } else {
+                    source_dimensions.to_vec()
+                },
+            };
+            let id = cell.identity()?;
+            cells.push(cell);
+            id
+        } else {
+            account.0
+        };
         let basis_val = item
             .get("basis")
             .or_else(|| item.get("weight"))
@@ -10657,22 +10707,88 @@ fn parse_allocation_targets(
         };
         out.push(AllocationTarget { id, basis });
     }
-    Ok(out)
+    let method = match method {
+        AllocationMethod::ProRataResidualToNamed {
+            rounding,
+            recipient: account,
+        } if dimensional => {
+            let matches: Vec<_> = match recipient {
+                Some(recipient_doc @ Json::Obj(_)) => {
+                    let cell = fa::AllocationTargetCell {
+                        account: VId(account),
+                        dimensions: if recipient_doc.get("dimensions").is_some()
+                            || recipient_doc.get("dims").is_some()
+                        {
+                            parse_allocation_dimensions(recipient_doc, "recipient", book_id)?
+                        } else {
+                            source_dimensions.to_vec()
+                        },
+                    };
+                    cells
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, target)| **target == cell)
+                        .map(|(i, _)| i)
+                        .collect()
+                }
+                _ => cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| cell.account.0 == account)
+                    .map(|(i, _)| i)
+                    .collect(),
+            };
+            let [index] = matches.as_slice() else {
+                return Err(usage(
+                    "allocation residual recipient must identify exactly one declared target cell",
+                    "use recipient: {\"account\":\"6100\",\"dimensions\":{\"cost_center\":\"SALES\"}} when an account has multiple targets",
+                ));
+            };
+            AllocationMethod::ProRataResidualToNamed {
+                rounding,
+                recipient: out[*index].id,
+            }
+        }
+        method => method,
+    };
+    Ok(ParsedAllocationTargets {
+        method,
+        targets: out,
+        cells,
+    })
 }
 
-fn parse_allocation_dimensions(doc: &Json) -> Result<Vec<(u32, VId)>, Fail> {
-    let Some(dims) = doc.get("dimensions") else {
+fn parse_allocation_dimensions(
+    doc: &Json,
+    what: &str,
+    book_id: Id128,
+) -> Result<Vec<(u32, VId)>, Fail> {
+    if doc.get("dimensions").is_some() && doc.get("dims").is_some() {
+        return Err(usage(
+            format!("{what}: dimensions and dims name the same field"),
+            "supply just one dimension set",
+        ));
+    }
+    let Some(dims) = doc.get("dimensions").or_else(|| doc.get("dims")) else {
         return Ok(Vec::new());
     };
+    if matches!(dims, Json::Obj(_)) {
+        let wrapper = obj(vec![("dimensions", dims.clone())]);
+        let mut dimensions = crate::dimension::leg_dimensions(&wrapper, what, book_id)?;
+        dimensions.sort_by_key(|(id, _)| *id);
+        return Ok(dimensions);
+    }
     let Some(arr) = dims.as_arr() else {
         return Err(usage(
-            "allocation `dimensions` must be an array",
-            "dimensions: [{\"dimension\": 1, \"value\": \"<32-hex-vid>\"}]",
+            format!(
+                "{what}: dimensions must be an object of value codes or an array of dimension identities"
+            ),
+            "dimensions: {\"cost_center\":\"ENG\"}, or [{\"dimension\": 1, \"value\": \"<32-hex-vid>\"}]",
         ));
     };
     let mut out = Vec::with_capacity(arr.len());
     for (i, item) in arr.iter().enumerate() {
-        let what = format!("dimensions[{i}]");
+        let what = format!("{what}.dimensions[{i}]");
         let dim = match item.get("dimension") {
             Some(Json::Int(n)) => u32::try_from(*n).map_err(|_| {
                 usage(
@@ -10691,7 +10807,46 @@ fn parse_allocation_dimensions(doc: &Json) -> Result<Vec<(u32, VId)>, Fail> {
         let vid = parse_vid(val_s, &format!("{what}.value"))?;
         out.push((dim, vid));
     }
+    out.sort_by_key(|(id, _)| *id);
+    if out.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(usage(
+            format!("{what}: dimensions names a dimension twice"),
+            "an allocation cell carries one value of each dimension",
+        ));
+    }
     Ok(out)
+}
+
+pub(crate) fn plan_dimensions_json(dimensions: &[(u32, VId)]) -> Json {
+    Json::Arr(
+        dimensions
+            .iter()
+            .map(|(dimension, value)| {
+                obj(vec![
+                    ("dimension", Json::Int(i128::from(*dimension))),
+                    ("value", s(format!("{:032x}", value.0))),
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn plan_dimensions_text(dimensions: &[(u32, VId)]) -> String {
+    if dimensions.is_empty() {
+        return String::new();
+    }
+    format!(
+        " [{}]",
+        dimensions
+            .iter()
+            .map(|(dimension, value)| format!(
+                "{}={:032x}",
+                crate::dimension::code_of(*dimension),
+                value.0
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn render_proposal_legs(
@@ -10718,8 +10873,10 @@ fn render_proposal_legs(
             let amount = render_amount(leg.amount, &book.context().units)?;
             let side = side_name(leg.side);
             human_legs.push(format!(
-                "  {ordinal}: {side} {} ({}) {amount}",
-                account.code, account.name
+                "  {ordinal}: {side} {} ({}) {amount}{}",
+                account.code,
+                account.name,
+                plan_dimensions_text(&leg.dimension_set)
             ));
             Ok(obj(vec![
                 ("ordinal", Json::Int(ordinal as i128)),
@@ -10727,6 +10884,7 @@ fn render_proposal_legs(
                 ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
                 ("side", s(side)),
                 ("amount", s(amount)),
+                ("dimensions", plan_dimensions_json(&leg.dimension_set)),
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
@@ -10925,7 +11083,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let key = req_str(&doc, "idempotency_key", "allocation intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
     let method = parse_allocation_method(&doc, book_ctx.book_id)?;
-    let dimensions = parse_allocation_dimensions(&doc)?;
+    let dimensions = parse_allocation_dimensions(&doc, "allocation intent", book_ctx.book_id)?;
     let review_mode = args.flag("--review-out").is_some() || args.switch("--review-only");
     if review_mode && args.switch("--dry-run") {
         return Err(usage(
@@ -10956,15 +11114,22 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?,
             None => book.spec()?.base_unit,
         };
-        let targets =
-            parse_allocation_targets(&doc, book_ctx.book_id, method, &book_ctx.units, unit)?;
+        let parsed = parse_allocation_targets(
+            &doc,
+            book_ctx.book_id,
+            method,
+            &book_ctx.units,
+            unit,
+            &dimensions,
+        )?;
         let bal_req = BalanceAllocationRequest {
             source: source_vid,
             period: period.clone(),
             unit,
             dimensions,
-            method,
-            targets,
+            method: parsed.method,
+            targets: parsed.targets,
+            target_cells: parsed.cells,
         };
         let prepared = book.prepare_balance_allocation(&bal_req, &capability)??;
         let driver_ev = if review_mode {
@@ -11078,16 +11243,23 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
         };
-        let targets =
-            parse_allocation_targets(&doc, book_ctx.book_id, method, &book_ctx.units, total.unit)?;
+        let parsed = parse_allocation_targets(
+            &doc,
+            book_ctx.book_id,
+            method,
+            &book_ctx.units,
+            total.unit,
+            &dimensions,
+        )?;
         let posting = AllocationPosting {
             source: source_vid,
             source_side,
             dimensions,
+            target_cells: parsed.cells,
             request: AllocationRequest {
                 total,
-                method,
-                targets,
+                method: parsed.method,
+                targets: parsed.targets,
             },
         };
         let driver_ev = if review_mode {
@@ -12409,15 +12581,6 @@ fn statement_lint(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let report = book.lint_statement(definition, at, &cap)??;
     ctx.out.at_book(&book)?;
-    render_statement_lint(ctx, &report, at)
-}
-
-pub(crate) fn render_statement_lint(
-    ctx: &mut Ctx<'_>,
-    report: &fa::StatementLintReport,
-    at: CommitSeq,
-) -> Result<(), Fail> {
-    let definition = &report.definition_name;
     let strings = |items: &[String]| Json::Arr(items.iter().map(s).collect());
     let clean = report.is_clean();
     let human = if clean {

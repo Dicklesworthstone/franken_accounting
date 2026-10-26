@@ -325,6 +325,10 @@ fn leg_preview(
                         "amount",
                         s(render_amount(leg.amount, &book.context().units)?),
                     ),
+                    (
+                        "dimensions",
+                        crate::cli::plan_dimensions_json(&leg.dimension_set),
+                    ),
                 ]))
             })
             .collect::<Result<Vec<_>, Fail>>()?,

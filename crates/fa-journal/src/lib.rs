@@ -75,7 +75,7 @@ pub use account_role::{
     AccountRoleControl, AccountRoleRecorded, AccountRoleSpec, AccountRoles, account_roles_at,
     record_account_role, role_control,
 };
-pub use allocation::AllocationPosting;
+pub use allocation::{AllocationPosting, AllocationTargetCell};
 pub use attestation::{
     AttestationClaim, Attested, confirmation_received_by, confirmed_vid, exhibit_mark_vid,
     read_attestation, record_confirmation, record_manual_assertion, record_representation,

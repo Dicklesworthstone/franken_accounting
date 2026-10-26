@@ -3133,7 +3133,15 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // The driver citation above is witnessed under the same transaction.
     // Zero shares omit journal legs, not account legality or dependencies.
     if let Some(basis) = &allocation
-        && let Err(refusal) = crate::allocation::witness_targets(&txn, db, book, basis)?
+        && let Err(refusal) = crate::allocation::witness_targets(
+            &txn,
+            db,
+            book,
+            basis,
+            proposal,
+            &req.capability,
+            scope.as_ref(),
+        )?
     {
         txn.abort();
         return Ok(Err(refusal));

@@ -40,25 +40,35 @@ pub(super) fn verify(
             "allocation leg count differs from recomputed nonzero vector",
         ));
     }
-    let expected = core::iter::once((basis.source, basis.total, basis.source_debit)).chain(
-        basis
-            .targets
+    let expected = core::iter::once(Ok::<_, AllocationError>((
+        basis.source,
+        basis.total,
+        basis.source_debit,
+        basis.dimensions.as_slice(),
+    )))
+    .chain(
+        shares
             .iter()
-            .zip(shares)
+            .enumerate()
             .filter(|(_, share)| **share != 0)
-            .map(|(target, share)| {
-                (
-                    target.account,
+            .map(|(index, share)| {
+                let (account, dimensions) = basis
+                    .target_cell(index)
+                    .ok_or(invalid("allocation target has no destination cell"))?;
+                Ok((
+                    account,
                     *share,
                     if *share < 0 {
                         basis.source_debit
                     } else {
                         !basis.source_debit
                     },
-                )
+                    dimensions,
+                ))
             }),
     );
-    for (ordinal, (account, amount, side)) in expected.enumerate() {
+    for (ordinal, expected) in expected.enumerate() {
+        let (account, amount, side, dimensions) = expected?;
         let actual_side = debit(r.u8("leg.side")?)?;
         let actual_account = r.u128("leg.account")?;
         let unit = r.u32("leg.unit")?;
@@ -73,7 +83,7 @@ pub(super) fn verify(
         if r.present("leg.base_amount")? {
             return Err(invalid("allocation cannot carry FX valuation"));
         }
-        if read_dimensions(&mut r)? != basis.dimensions
+        if read_dimensions(&mut r)?.as_slice() != dimensions
             || r.present("leg.memo")?
             || r.u32("leg.settles")? != 0
         {
@@ -164,10 +174,10 @@ pub(super) fn verify(
     r.finish("allocation entry")?;
     let mut r = Reader::new(record);
     if r.fixed::<14>("allocation.record.magic")? != *b"FA-ALLOC-POST\0"
-        || r.u16("allocation.record.version")? != 1
+        || r.u16("allocation.record.version")? != basis.version()
         || r.bytes(super::MAX_BASIS_BYTES, "allocation.record.basis")? != expected_bytes
         || r.fixed::<32>("allocation.record.law_digest")? != law_digest(basis.law)
-        || r.fixed::<32>("allocation.record.basis_digest")? != basis_digest(expected_bytes)
+        || r.fixed::<32>("allocation.record.basis_digest")? != basis_digest(basis.version(), expected_bytes)
     {
         return Err(AllocationError::BasisMismatch);
     }
