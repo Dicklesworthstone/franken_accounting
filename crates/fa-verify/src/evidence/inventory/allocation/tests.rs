@@ -52,8 +52,10 @@ fn erased(w: &mut Writer) {
 fn proposal(bytes: &[u8], shares: &[i128], citations: &[EvidenceCitation]) -> Vec<u8> {
     let b = AllocationBasis::decode(bytes).unwrap();
     let mut w = Writer::default();
+    // Allocation entries are written at the registered extensions minor (1)
+    // since 752c2f08c.
     w.u16(1)
-        .u16(2)
+        .u16(1)
         .fixed(&BOOK)
         .fixed(&[0; 16])
         .u16(9)
