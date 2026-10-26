@@ -69,7 +69,7 @@ fn make_adapter(book: &Path, grants: &[&str]) -> Adapter {
     Adapter::new(ServerConfig {
         book: Some(book.to_path_buf()),
         principal: "cpa-local".into(),
-        profile: LaunchProfile::Human,
+        profile: LaunchProfile::Preparer,
         grants: grants.iter().map(|g| (*g).into()).collect(),
         clusters: vec!["fa.findings".into()],
         ..ServerConfig::default()
