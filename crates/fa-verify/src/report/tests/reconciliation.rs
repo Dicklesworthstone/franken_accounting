@@ -4,8 +4,7 @@
 //! supply the already authenticated checkpoint at the replay boundary.
 use super::*;
 use crate::report::{
-    VerifiedAgingReconciliation, VerifiedAgingReconciliationRow,
-    reconciliation as comparison,
+    VerifiedAgingReconciliation, VerifiedAgingReconciliationRow, reconciliation as comparison,
 };
 
 fn stock_rows(debits: i128, credits: i128, pending: i128) -> Vec<ReportRow> {
@@ -34,13 +33,25 @@ fn stock_output(known_at: u64, cutoff: i32, rows: &[ReportRow]) -> Vec<u8> {
     w.u64(known_at).u8(1).i32(cutoff).u8(0).count(rows.len());
     let mut totals: BTreeMap<u32, [i128; 4]> = BTreeMap::new();
     for row in rows {
-        w.u128(row.account).bytes(row.code.as_bytes()).bytes(row.name.as_bytes())
-            .u8(row.account_type).u32(row.unit).i128(row.debits).i128(row.credits)
-            .i128(row.debits_pending).i128(row.credits_pending);
+        w.u128(row.account)
+            .bytes(row.code.as_bytes())
+            .bytes(row.name.as_bytes())
+            .u8(row.account_type)
+            .u32(row.unit)
+            .i128(row.debits)
+            .i128(row.credits)
+            .i128(row.debits_pending)
+            .i128(row.credits_pending);
         let total = totals.entry(row.unit).or_insert([0; 4]);
         for (index, amount) in [
-            row.debits, row.credits, row.debits_pending, row.credits_pending,
-        ].into_iter().enumerate() {
+            row.debits,
+            row.credits,
+            row.debits_pending,
+            row.credits_pending,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             total[index] = total[index].checked_add(amount).unwrap();
         }
     }
@@ -57,15 +68,23 @@ fn control(source: &crate::report::Certificate<'_>, cutoff: i32, rows: &[ReportR
     let output = stock_output(source.known_at, cutoff, rows);
     let mut w = Writer::default();
     w.fixed(crate::report::CERTIFICATE_FORMAT)
-        .bytes(b"fa-fold-over-prefix").bytes(b"embedded-owner")
+        .bytes(b"fa-fold-over-prefix")
+        .bytes(b"embedded-owner")
         .bytes(b"fa:trial-balance:v1")
-        .fixed(&source.book).fixed(&source.branch).u64(source.known_at)
-        .u8(1).i32(cutoff).fixed(&source.registry_digest)
-        .fixed(&source.journal_root).u64(source.leaves).count(7);
+        .fixed(&source.book)
+        .fixed(&source.branch)
+        .u64(source.known_at)
+        .u8(1)
+        .i32(cutoff)
+        .fixed(&source.registry_digest)
+        .fixed(&source.journal_root)
+        .u64(source.leaves)
+        .count(7);
     for _ in 0..7 {
         w.bytes(b"opaque native control read");
     }
-    w.bytes(&output).fixed(&hash_parts(b"fa:report-output:v1", &[&output]));
+    w.bytes(&output)
+        .fixed(&hash_parts(b"fa:report-output:v1", &[&output]));
     let digest = hash_parts(crate::report::CERTIFICATE_FORMAT, &[&w.buf]);
     w.fixed(&digest);
     w.buf
@@ -83,28 +102,42 @@ fn comparison_output(report: &VerifiedAgingReconciliation) -> Vec<u8> {
     // Independent fixture encoder, including every exact native output field.
     let a = &report.account;
     let mut w = Writer::default();
-    w.bytes(b"fa:aging-control-reconciliation:v1").fixed(&report.book_id)
-        .u64(report.known_at).i32(report.effective_through).u128(a.account)
-        .bytes(a.code.as_bytes()).bytes(a.name.as_bytes()).u8(a.account_type)
-        .u8(a.normal_balance).u8(u8::from(a.is_leaf)).u64(a.created_at)
+    w.bytes(b"fa:aging-control-reconciliation:v1")
+        .fixed(&report.book_id)
+        .u64(report.known_at)
+        .i32(report.effective_through)
+        .u128(a.account)
+        .bytes(a.code.as_bytes())
+        .bytes(a.name.as_bytes())
+        .u8(a.account_type)
+        .u8(a.normal_balance)
+        .u8(u8::from(a.is_leaf))
+        .u64(a.created_at)
         .count(report.rows.len());
     for row in &report.rows {
-        w.u32(row.unit_id).i128(row.posted_debits).i128(row.posted_credits)
-            .i128(row.pending_debits).i128(row.pending_credits)
-            .i128(row.open_debits).i128(row.open_credits).u64(row.open_item_count)
-            .i128(row.posted_net).i128(row.open_net).i128(row.difference);
+        w.u32(row.unit_id)
+            .i128(row.posted_debits)
+            .i128(row.posted_credits)
+            .i128(row.pending_debits)
+            .i128(row.pending_credits)
+            .i128(row.open_debits)
+            .i128(row.open_credits)
+            .u64(row.open_item_count)
+            .i128(row.posted_net)
+            .i128(row.open_net)
+            .i128(row.difference);
     }
     w.u8(u8::from(report.rows.iter().all(|row| row.difference == 0)));
     w.buf
 }
 
-fn comparison_report(
-    aging: VerifiedAging,
-    controls: &[ReportRow],
-) -> VerifiedAgingReconciliation {
+fn comparison_report(aging: VerifiedAging, controls: &[ReportRow]) -> VerifiedAgingReconciliation {
     let account = displayed("1000");
-    let selected: Vec<_> = controls.iter().filter(|row| row.account == account.account)
-        .cloned().collect();
+    let selected: Vec<_> = controls
+        .iter()
+        .filter(|row| row.account == account.account)
+        .cloned()
+        .collect();
     let mut report = VerifiedAgingReconciliation {
         book_id: BOOK,
         known_at: aging.known_at,
@@ -116,20 +149,31 @@ fn comparison_report(
         aging_certificate_digest: [0; 32],
         control_certificate_digest: [0; 32],
     };
-    let units: BTreeSet<_> = report.control_rows.iter().map(|row| row.unit)
-        .chain(report.aging.totals.iter().map(|row| row.unit_id)).collect();
+    let units: BTreeSet<_> = report
+        .control_rows
+        .iter()
+        .map(|row| row.unit)
+        .chain(report.aging.totals.iter().map(|row| row.unit_id))
+        .collect();
     for unit_id in units {
         let control = report.control_rows.iter().find(|row| row.unit == unit_id);
-        let open = report.aging.totals.iter().find(|row| row.unit_id == unit_id);
+        let open = report
+            .aging
+            .totals
+            .iter()
+            .find(|row| row.unit_id == unit_id);
         let posted_debits = control.map_or(0, |row| row.debits);
         let posted_credits = control.map_or(0, |row| row.credits);
         let open_debits = open.map_or(0, |row| row.amounts.debits);
         let open_credits = open.map_or(0, |row| row.amounts.credits);
         report.rows.push(VerifiedAgingReconciliationRow {
-            unit_id, posted_debits, posted_credits,
+            unit_id,
+            posted_debits,
+            posted_credits,
             pending_debits: control.map_or(0, |row| row.debits_pending),
             pending_credits: control.map_or(0, |row| row.credits_pending),
-            open_debits, open_credits,
+            open_debits,
+            open_credits,
             open_item_count: open.map_or(0, |row| row.amounts.item_count),
             posted_net: posted_debits - posted_credits,
             open_net: open_debits - open_credits,
@@ -147,13 +191,22 @@ fn wrap_comparison(aging_bundle: &[u8], control: &[u8], output: &[u8]) -> (Vec<u
     let aging = r.bytes(MAX_REPORT_BUNDLE_BYTES, "aging").unwrap();
     let rest = &aging_bundle[aging_bundle.len() - r.remaining()..];
     let mut body = Writer::default();
-    body.bytes(b"fa:aging-reconciliation-certificate:v1").u128(PRINCIPAL)
-        .fixed(&[8; 32]).bytes(aging).bytes(control).bytes(output);
+    body.bytes(b"fa:aging-reconciliation-certificate:v1")
+        .u128(PRINCIPAL)
+        .fixed(&[8; 32])
+        .bytes(aging)
+        .bytes(control)
+        .bytes(output);
     let length = (body.buf.len() as u32).to_le_bytes();
     let pin = hash_parts(b"fa:aging-reconciliation-digest:v1", &[&length, &body.buf]);
     body.fixed(&pin);
     let mut bundle = Writer::default();
-    bundle.bytes(REPORT_BUNDLE_FORMAT).u16(2).u16(0).bytes(&body.buf).fixed(rest);
+    bundle
+        .bytes(REPORT_BUNDLE_FORMAT)
+        .u16(2)
+        .u16(0)
+        .bytes(&body.buf)
+        .fixed(rest);
     (bundle.buf, pin)
 }
 
@@ -162,13 +215,21 @@ fn fixture(
     source: &VerifiedOpenItems,
     mut expected: VerifiedAgingReconciliation,
     controls: &[ReportRow],
-) -> (Vec<u8>, SignedCheckpoint, [u8; 32], VerifiedAgingReconciliation) {
+) -> (
+    Vec<u8>,
+    SignedCheckpoint,
+    [u8; 32],
+    VerifiedAgingReconciliation,
+) {
     let (native, anchor, source_pin) = pack(records, expected.known_at, source);
     let native_certificate = certificate(native_source(&native)).unwrap();
     let control = control(&native_certificate, expected.effective_through, controls);
     expected.aging.source_certificate_digest = source_pin;
     let (aging, aging_pin) = wrap(
-        &native, expected.effective_through, BOUNDS, &expected_bytes(&expected.aging),
+        &native,
+        expected.effective_through,
+        BOUNDS,
+        &expected_bytes(&expected.aging),
     );
     expected.aging_certificate_digest = aging_pin;
     expected.control_certificate_digest = certificate(&control).unwrap().digest;
@@ -185,21 +246,54 @@ fn verify_comparison(
 }
 
 fn historical_fixture(
-    known_at: u64, cutoff: i32, open: i128, bucket: usize, live: Option<bool>,
-) -> (Vec<u8>, SignedCheckpoint, [u8; 32], VerifiedAgingReconciliation) {
+    known_at: u64,
+    cutoff: i32,
+    open: i128,
+    bucket: usize,
+    live: Option<bool>,
+) -> (
+    Vec<u8>,
+    SignedCheckpoint,
+    [u8; 32],
+    VerifiedAgingReconciliation,
+) {
     let (records, source, invoice, receipt) = sample(known_at);
-    let applications = live.map(|live| VerifiedApplication {
-        entry: receipt, ordinal: 0, amount: 40, recorded_at: 4, live,
-    }).into_iter().collect();
-    let aging = expected_one(known_at, cutoff, VerifiedAgedOpenItem {
-        item: item(invoice, 0, "1000", true, 3, 100, 100 - open, 0, open, applications),
-        age_days: (cutoff - 10) as u64, bucket,
-    });
+    let applications = live
+        .map(|live| VerifiedApplication {
+            entry: receipt,
+            ordinal: 0,
+            amount: 40,
+            recorded_at: 4,
+            live,
+        })
+        .into_iter()
+        .collect();
+    let aging = expected_one(
+        known_at,
+        cutoff,
+        VerifiedAgedOpenItem {
+            item: item(
+                invoice,
+                0,
+                "1000",
+                true,
+                3,
+                100,
+                100 - open,
+                0,
+                open,
+                applications,
+            ),
+            age_days: (cutoff - 10) as u64,
+            bucket,
+        },
+    );
     let receipt_visible = known_at >= 4 && cutoff >= 40;
     let reversal_visible = known_at >= 5 && cutoff >= 70;
     let controls = stock_rows(
         100 + if reversal_visible { 40 } else { 0 },
-        if receipt_visible { 40 } else { 0 }, 0,
+        if receipt_visible { 40 } else { 0 },
+        0,
     );
     let expected = comparison_report(aging, &controls);
     fixture(&records, &source, expected, &controls)
@@ -208,9 +302,12 @@ fn historical_fixture(
 #[test]
 fn both_complete_sources_replay_at_the_same_historical_cutoff() {
     for (at, cutoff, open, bucket, live) in [
-        (3, 30, 100, 1, None), (4, 30, 100, 1, None),
-        (5, 30, 100, 1, None), (4, 45, 60, 2, Some(true)),
-        (5, 45, 60, 2, Some(true)), (5, 90, 100, 3, Some(false)),
+        (3, 30, 100, 1, None),
+        (4, 30, 100, 1, None),
+        (5, 30, 100, 1, None),
+        (4, 45, 60, 2, Some(true)),
+        (5, 45, 60, 2, Some(true)),
+        (5, 90, 100, 3, Some(false)),
     ] {
         let (bytes, anchor, pin, expected) = historical_fixture(at, cutoff, open, bucket, live);
         let verified = verify_comparison(&bytes, anchor, &pin)
@@ -225,9 +322,15 @@ fn both_complete_sources_replay_at_the_same_historical_cutoff() {
 
 fn empty_aging(at: u64, cutoff: i32) -> VerifiedAging {
     VerifiedAging {
-        book_id: BOOK, known_at: at, effective_through: cutoff,
-        account_filter: Some(account_id("1000")), source_certificate_digest: [0; 32],
-        bands: conventional_bands(), items: vec![], cells: vec![], totals: vec![],
+        book_id: BOOK,
+        known_at: at,
+        effective_through: cutoff,
+        account_filter: Some(account_id("1000")),
+        source_certificate_digest: [0; 32],
+        bands: conventional_bands(),
+        items: vec![],
+        cells: vec![],
+        totals: vec![],
     }
 }
 
@@ -268,22 +371,37 @@ fn pending_columns_are_separate_and_later_legless_release_is_historical() {
     let pending_legs = [leg("1000", true, 75), leg("3000", false, 75)];
     let (hold, identity) = posting(2, 3, b"reconciliation-hold", &pending_legs, None, None);
     let (release, _) = dated(
-        posting(3, 4, b"reconciliation-release", &[], None,
-            Some((identity, hold.envelope.record_digest))),
+        posting(
+            3,
+            4,
+            b"reconciliation-release",
+            &[],
+            None,
+            Some((identity, hold.envelope.record_digest)),
+        ),
         40,
     );
     records.extend([hold, release]);
     let source = report(Some(account_id("1000")), vec![]);
     for at in [3, 4] {
-        let controls = if at == 3 { stock_rows(0, 0, 75) } else { vec![] };
+        let controls = if at == 3 {
+            stock_rows(0, 0, 75)
+        } else {
+            vec![]
+        };
         let expected = comparison_report(empty_aging(at, 30), &controls);
         let (bytes, anchor, pin, expected) = fixture(&records, &source, expected, &controls);
-        let actual = verify_comparison(&bytes, anchor, &pin).unwrap()
-            .aging_reconciliation.unwrap();
+        let actual = verify_comparison(&bytes, anchor, &pin)
+            .unwrap()
+            .aging_reconciliation
+            .unwrap();
         assert_eq!(actual, expected);
         assert!(actual.is_reconciled());
         if at == 3 {
-            assert_eq!((actual.rows[0].posted_net, actual.rows[0].pending_debits), (0, 75));
+            assert_eq!(
+                (actual.rows[0].posted_net, actual.rows[0].pending_debits),
+                (0, 75)
+            );
         } else {
             assert!(actual.rows.is_empty());
         }
@@ -301,20 +419,25 @@ fn only_the_outer_recipient_pin_authenticates_the_complete_question() {
     ] {
         assert_ne!(pin, wrong);
         assert_eq!(
-            verify_comparison(&bytes, anchor.clone(), &wrong).unwrap_err().predicate,
+            verify_comparison(&bytes, anchor.clone(), &wrong)
+                .unwrap_err()
+                .predicate,
             "recipient_certificate",
         );
     }
     assert_eq!(
         verify_report_with(&bytes, &[], None, None, None, |_, _| Ok(anchor.clone()))
-            .unwrap_err().predicate,
+            .unwrap_err()
+            .predicate,
         "report_input_authority",
     );
     let mut legacy = bytes.clone();
     let major = 4 + REPORT_BUNDLE_FORMAT.len();
     legacy[major..major + 2].copy_from_slice(&1u16.to_le_bytes());
     assert_eq!(
-        verify_comparison(&legacy, anchor, &pin).unwrap_err().predicate,
+        verify_comparison(&legacy, anchor, &pin)
+            .unwrap_err()
+            .predicate,
         "registry_closure",
     );
 }
@@ -327,9 +450,17 @@ fn split(bundle: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     r.u16("minor").unwrap();
     r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate").unwrap();
     let mut aging_bundle = Writer::default();
-    aging_bundle.bytes(REPORT_BUNDLE_FORMAT).u16(2).u16(0).bytes(outer.aging)
+    aging_bundle
+        .bytes(REPORT_BUNDLE_FORMAT)
+        .u16(2)
+        .u16(0)
+        .bytes(outer.aging)
         .fixed(&bundle[bundle.len() - r.remaining()..]);
-    (aging_bundle.buf, outer.control.to_vec(), outer.output.to_vec())
+    (
+        aging_bundle.buf,
+        outer.control.to_vec(),
+        outer.output.to_vec(),
+    )
 }
 
 #[test]
@@ -352,8 +483,14 @@ fn recomputed_outer_digests_cannot_launder_different_source_questions() {
         let control = control(&source, cutoff, &stock_rows(100, 40, 0));
         let (forged, pin) = wrap_comparison(&aging_bundle, &control, &output);
         assert_eq!(
-            verify_comparison(&forged, anchor.clone(), &pin).unwrap_err().predicate,
-            if forged_field == 5 { "registry_closure" } else { "reconciliation_selection" },
+            verify_comparison(&forged, anchor.clone(), &pin)
+                .unwrap_err()
+                .predicate,
+            if forged_field == 5 {
+                "registry_closure"
+            } else {
+                "reconciliation_selection"
+            },
         );
     }
 }
@@ -370,10 +507,14 @@ fn both_control_output_and_comparison_output_are_recomputed_not_trusted() {
     let forged_control = control(&source, 45, &forged_rows);
     let forged_expected = comparison_report(expected.aging.clone(), &forged_rows);
     let (forged, pin) = wrap_comparison(
-        &aging_bundle, &forged_control, &comparison_output(&forged_expected),
+        &aging_bundle,
+        &forged_control,
+        &comparison_output(&forged_expected),
     );
     assert_eq!(
-        verify_comparison(&forged, anchor.clone(), &pin).unwrap_err().predicate,
+        verify_comparison(&forged, anchor.clone(), &pin)
+            .unwrap_err()
+            .predicate,
         "report_recomputation",
     );
     let mut forged_output = output;
@@ -381,7 +522,9 @@ fn both_control_output_and_comparison_output_are_recomputed_not_trusted() {
     forged_output[last] = 0; // Original comparison reconciles.
     let (forged, pin) = wrap_comparison(&aging_bundle, &control_bytes, &forged_output);
     assert_eq!(
-        verify_comparison(&forged, anchor, &pin).unwrap_err().predicate,
+        verify_comparison(&forged, anchor, &pin)
+            .unwrap_err()
+            .predicate,
         "report_recomputation",
     );
 }
@@ -393,7 +536,9 @@ fn forged_account_metadata_and_missing_record_bytes_are_rejected() {
     expected.account.name = "Forged historical name".into();
     let (forged, pin) = wrap_comparison(&aging_bundle, &control, &comparison_output(&expected));
     assert_eq!(
-        verify_comparison(&forged, anchor.clone(), &pin).unwrap_err().predicate,
+        verify_comparison(&forged, anchor.clone(), &pin)
+            .unwrap_err()
+            .predicate,
         "report_recomputation",
     );
     let mut missing = bytes.clone();
@@ -411,7 +556,9 @@ fn forged_account_metadata_and_missing_record_bytes_are_rejected() {
     missing[payload_frame..payload_frame + 4].copy_from_slice(&0u32.to_le_bytes());
     let outer = comparison::decode(native_source(&bytes)).unwrap();
     assert_eq!(
-        verify_comparison(&missing, anchor, &outer.digest).unwrap_err().predicate,
+        verify_comparison(&missing, anchor, &outer.digest)
+            .unwrap_err()
+            .predicate,
         "record_derivation",
     );
 }
@@ -422,20 +569,56 @@ fn discrepancy_is_data_and_native_units_never_offset_each_other() {
     // do not claim such sources have passed complete-prefix authentication.
     let mut aging = empty_aging(5, 45);
     aging.totals = vec![
-        VerifiedAgingTotal { account: account_id("1000"), unit_id: 1,
-            amounts: VerifiedAgingAmounts { debits: 60, credits: 0, item_count: 1 } },
-        VerifiedAgingTotal { account: account_id("1000"), unit_id: 7,
-            amounts: VerifiedAgingAmounts { debits: 80, credits: 0, item_count: 1 } },
+        VerifiedAgingTotal {
+            account: account_id("1000"),
+            unit_id: 1,
+            amounts: VerifiedAgingAmounts {
+                debits: 60,
+                credits: 0,
+                item_count: 1,
+            },
+        },
+        VerifiedAgingTotal {
+            account: account_id("1000"),
+            unit_id: 7,
+            amounts: VerifiedAgingAmounts {
+                debits: 80,
+                credits: 0,
+                item_count: 1,
+            },
+        },
     ];
-    let mut controls = vec![stock_rows(100, 0, 9).remove(0), stock_rows(40, 0, 0).remove(0)];
+    let mut controls = vec![
+        stock_rows(100, 0, 9).remove(0),
+        stock_rows(40, 0, 0).remove(0),
+    ];
     controls[1].unit = 7;
     let expected = comparison_report(aging.clone(), &controls);
-    assert_eq!(expected.rows.iter().map(|r| r.difference).collect::<Vec<_>>(), [40, -40]);
+    assert_eq!(
+        expected
+            .rows
+            .iter()
+            .map(|r| r.difference)
+            .collect::<Vec<_>>(),
+        [40, -40]
+    );
     let output = comparison_output(&expected);
-    let certificate = comparison::Certificate { aging: &[], control: &[], output: &output, digest: [0; 32] };
+    let certificate = comparison::Certificate {
+        aging: &[],
+        control: &[],
+        output: &output,
+        digest: [0; 32],
+    };
     let (actual, actual_bytes) = comparison::replay(
-        &certificate, [0; 32], [0; 32], displayed("1000"), aging, controls, &[1, 7],
-    ).unwrap();
+        &certificate,
+        [0; 32],
+        [0; 32],
+        displayed("1000"),
+        aging,
+        controls,
+        &[1, 7],
+    )
+    .unwrap();
     assert_eq!(actual, expected);
     assert_eq!(actual_bytes, output);
     assert!(!actual.is_reconciled());
@@ -446,12 +629,33 @@ fn discrepancy_is_data_and_native_units_never_offset_each_other() {
 fn comparison_difference_overflow_is_a_typed_failure() {
     let mut aging = empty_aging(5, 45);
     aging.totals = vec![VerifiedAgingTotal {
-        account: account_id("1000"), unit_id: 1,
-        amounts: VerifiedAgingAmounts { debits: 0, credits: i128::MAX, item_count: 1 },
+        account: account_id("1000"),
+        unit_id: 1,
+        amounts: VerifiedAgingAmounts {
+            debits: 0,
+            credits: i128::MAX,
+            item_count: 1,
+        },
     }];
     let control = stock_rows(i128::MAX, 0, 0).remove(0);
-    let certificate = comparison::Certificate { aging: &[], control: &[], output: &[], digest: [0; 32] };
-    assert_eq!(comparison::replay(
-        &certificate, [0; 32], [0; 32], displayed("1000"), aging, vec![control], &[1],
-    ).unwrap_err().predicate, "exact_arithmetic");
+    let certificate = comparison::Certificate {
+        aging: &[],
+        control: &[],
+        output: &[],
+        digest: [0; 32],
+    };
+    assert_eq!(
+        comparison::replay(
+            &certificate,
+            [0; 32],
+            [0; 32],
+            displayed("1000"),
+            aging,
+            vec![control],
+            &[1],
+        )
+        .unwrap_err()
+        .predicate,
+        "exact_arithmetic"
+    );
 }

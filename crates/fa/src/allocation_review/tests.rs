@@ -323,10 +323,25 @@ fn dimensional_review_preserves_same_account_cells_and_has_an_exact_v2_layout() 
     let restored = AllocationReview::decode(&expected).unwrap();
     assert_eq!(restored, original);
     assert_eq!(restored.proposal().legs.len(), 3);
-    assert!(restored.proposal().legs.iter().all(|leg| leg.account_ref == VId(10)));
-    assert_eq!(restored.proposal().legs[0].dimension_set, vec![(3, VId(100))]);
-    assert_eq!(restored.proposal().legs[1].dimension_set, vec![(3, VId(200))]);
-    assert_eq!(restored.proposal().legs[2].dimension_set, vec![(3, VId(201))]);
+    assert!(
+        restored
+            .proposal()
+            .legs
+            .iter()
+            .all(|leg| leg.account_ref == VId(10))
+    );
+    assert_eq!(
+        restored.proposal().legs[0].dimension_set,
+        vec![(3, VId(100))]
+    );
+    assert_eq!(
+        restored.proposal().legs[1].dimension_set,
+        vec![(3, VId(200))]
+    );
+    assert_eq!(
+        restored.proposal().legs[2].dimension_set,
+        vec![(3, VId(201))]
+    );
     assert_eq!(restored.proposal().legs[1].amount.mantissa, 60);
     assert_eq!(restored.proposal().legs[2].amount.mantissa, 40);
     assert_eq!(
@@ -347,7 +362,10 @@ fn destination_only_changes_invalidate_review_and_proposal_identity() {
     );
     assert!(AllocationReview::from_proposal(changed.clone(), original.proposal().clone()).is_err());
     let alternative = review(changed);
-    assert_ne!(alternative.proposal_digest().unwrap(), original.proposal_digest().unwrap());
+    assert_ne!(
+        alternative.proposal_digest().unwrap(),
+        original.proposal_digest().unwrap()
+    );
     assert!(matches!(
         alternative.verify_for(&original.digest().unwrap()),
         Err(AllocationReviewError::Mismatch)
@@ -359,7 +377,10 @@ fn dimensional_review_refuses_downgraded_versions_truncation_and_trailing_bytes(
     let original = review(cell_posting(1, &[1, 1]));
     let bytes = original.canonical_bytes().unwrap();
     for cut in 0..bytes.len() {
-        assert!(AllocationReview::decode(&bytes[..cut]).is_err(), "cut {cut}");
+        assert!(
+            AllocationReview::decode(&bytes[..cut]).is_err(),
+            "cut {cut}"
+        );
     }
     let mut downgraded = bytes.clone();
     downgraded[16..18].copy_from_slice(&1_u16.to_le_bytes());

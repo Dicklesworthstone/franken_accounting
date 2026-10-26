@@ -38,8 +38,8 @@ mod dimension;
 mod explain;
 mod metadata;
 mod open_items;
-mod registry;
 mod reconciliation;
+mod registry;
 mod roll_forward;
 mod statement;
 mod temporal;
@@ -58,8 +58,8 @@ pub use open_items::{
     OpenItemBalanceLimit, OpenItemUnitPolicy, VerifiedApplication, VerifiedOpenItem,
     VerifiedOpenItemAccount, VerifiedOpenItems,
 };
-pub use registry::Reason as ExplanationReason;
 pub use reconciliation::{VerifiedAgingReconciliation, VerifiedAgingReconciliationRow};
+pub use registry::Reason as ExplanationReason;
 pub use roll_forward::{
     RollForwardAccount, RollForwardBucket, RollForwardMovement, RollForwardRow, VerifiedRollForward,
 };
@@ -1043,19 +1043,24 @@ fn verify_report_with_inputs(
             receipt,
         });
     }
-    let TrialBalanceReplay { effective_through: through, activity, periods, rows, output } =
-        replay_trial_balance(
-            &cert,
-            &schema,
-            dimension.as_ref(),
-            &dimension_history,
-            envelopes,
-            &records,
-            &legs,
-            &infos,
-            &resolved,
-            &visible_migrations,
-        )?;
+    let TrialBalanceReplay {
+        effective_through: through,
+        activity,
+        periods,
+        rows,
+        output,
+    } = replay_trial_balance(
+        &cert,
+        &schema,
+        dimension.as_ref(),
+        &dimension_history,
+        envelopes,
+        &records,
+        &legs,
+        &infos,
+        &resolved,
+        &visible_migrations,
+    )?;
     if let Some(certificate) = &roll_forward {
         let (roll_forward, output) = roll_forward::replay(
             certificate,

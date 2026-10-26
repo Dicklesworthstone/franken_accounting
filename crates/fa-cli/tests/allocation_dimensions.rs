@@ -48,7 +48,11 @@ fn run(book: &Path, args: &[&str]) -> (i32, Json) {
         .unwrap_or_else(|error| panic!("args={args:?}: {error}\n{stdout}\n{stderr}"));
     let event = json::parse(lines[0]).unwrap();
     let code = output.status.code().unwrap_or(-1);
-    assert_eq!(text(&event, "event") == "error", code != 0, "{stdout}\n{stderr}");
+    assert_eq!(
+        text(&event, "event") == "error",
+        code != 0,
+        "{stdout}\n{stderr}"
+    );
     (code, event)
 }
 
@@ -90,7 +94,10 @@ impl Fixture {
             }
         };
         let book = dir.join("book");
-        ok(&book, &["book", "create", "--name", "Department allocation"]);
+        ok(
+            &book,
+            &["book", "create", "--name", "Department allocation"],
+        );
         let chart = write(
             &dir,
             "chart.json",
@@ -108,7 +115,10 @@ impl Fixture {
             let value = get(&recorded, "value");
             dimensions.insert(
                 name.to_string(),
-                (integer(value, "dimension_id"), text(value, "vid").to_string()),
+                (
+                    integer(value, "dimension_id"),
+                    text(value, "vid").to_string(),
+                ),
             );
         }
         ok(&book, &["dimension", "require", "cost_center", "6100"]);
@@ -116,7 +126,13 @@ impl Fixture {
         let evidence = ok(
             &book,
             &[
-                "document", "add", &bill, "--kind", "Invoice", "--grade", "HumanUpload",
+                "document",
+                "add",
+                &bill,
+                "--kind",
+                "Invoice",
+                "--grade",
+                "HumanUpload",
             ],
         );
         let seed = write(
@@ -124,12 +140,28 @@ impl Fixture {
             "seed.json",
             r#"{"effective_date":"2026-03-05","idempotency_key":"shared-rent","legs":[{"side":"debit","account":"6100","amount":"100.00 USD","dimensions":{"cost_center":"SHARED"}},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
         );
-        ok(&book, &["post", "--intent", &seed, "--evidence", text(&evidence, "oid")]);
-        Self { dir, book, dimensions }
+        ok(
+            &book,
+            &[
+                "post",
+                "--intent",
+                &seed,
+                "--evidence",
+                text(&evidence, "oid"),
+            ],
+        );
+        Self {
+            dir,
+            book,
+            dimensions,
+        }
     }
 
     fn head(&self) -> i128 {
-        integer(get(&ok(&self.book, &["book", "info"]), "coordinate"), "known_at")
+        integer(
+            get(&ok(&self.book, &["book", "info"]), "coordinate"),
+            "known_at",
+        )
     }
 
     fn allocation(&self, key: &str, source: &str, method: &str, targets: &str) -> String {
@@ -145,7 +177,10 @@ impl Fixture {
     fn review(&self, key: &str, intent: &str) -> (Json, String) {
         let path = self.dir.join(format!("{key}.review")).display().to_string();
         let before = self.head();
-        let event = ok(&self.book, &["allocate", "--intent", intent, "--review-out", &path]);
+        let event = ok(
+            &self.book,
+            &["allocate", "--intent", intent, "--review-out", &path],
+        );
         assert_eq!(self.head(), before, "review must publish nothing");
         (event, path)
     }
@@ -159,14 +194,25 @@ impl Fixture {
         );
         ok(
             &self.book,
-            &["document", "add", &path, "--kind", "Workpaper", "--grade", "HumanUpload"],
+            &[
+                "document",
+                "add",
+                &path,
+                "--kind",
+                "Workpaper",
+                "--grade",
+                "HumanUpload",
+            ],
         );
     }
 
     fn assert_dimensions(&self, leg: &Json, value: &str) {
         let dimensions = get(leg, "dimensions").as_arr().unwrap();
         assert_eq!(dimensions.len(), 1);
-        assert_eq!(integer(&dimensions[0], "dimension"), self.dimensions[value].0);
+        assert_eq!(
+            integer(&dimensions[0], "dimension"),
+            self.dimensions[value].0
+        );
         assert_eq!(text(&dimensions[0], "value"), self.dimensions[value].1);
     }
 
@@ -213,8 +259,14 @@ fn dimensional_allocation_review_approval_plan_and_exact_retry_preserve_destinat
     let approved = ok(
         &f.book,
         &[
-            "allocate", "approve", "--review", &path, "--digest",
-            text(&review, "review_digest"), "--as", "controller",
+            "allocate",
+            "approve",
+            "--review",
+            &path,
+            "--digest",
+            text(&review, "review_digest"),
+            "--as",
+            "controller",
         ],
     );
 
@@ -225,21 +277,40 @@ fn dimensional_allocation_review_approval_plan_and_exact_retry_preserve_destinat
     let first = posting.target_cells[0].dimensions.clone();
     posting.target_cells[0].dimensions = posting.target_cells[1].dimensions.clone();
     posting.target_cells[1].dimensions = first;
-    for (target, cell) in posting.request.targets.iter_mut().zip(&posting.target_cells) {
+    for (target, cell) in posting
+        .request
+        .targets
+        .iter_mut()
+        .zip(&posting.target_cells)
+    {
         target.id = cell.identity().unwrap();
     }
     let mut template = original.proposal().clone();
-    let old_driver = original.posting().driver_evidence(template.book_id).unwrap();
+    let old_driver = original
+        .posting()
+        .driver_evidence(template.book_id)
+        .unwrap();
     template.evidence.retain(|evidence| *evidence != old_driver);
-    template.evidence.push(posting.driver_evidence(template.book_id).unwrap());
+    template
+        .evidence
+        .push(posting.driver_evidence(template.book_id).unwrap());
     template.evidence.sort_unstable();
     template.legs.clear();
     template.unit_totals.clear();
     template.extensions.clear();
     let changed = fa::AllocationReview::new(posting, template).unwrap();
-    assert_eq!(changed.proposal().description, original.proposal().description);
-    assert_eq!(changed.proposal().idempotency_key, original.proposal().idempotency_key);
-    assert_ne!(changed.proposal_digest().unwrap(), original.proposal_digest().unwrap());
+    assert_eq!(
+        changed.proposal().description,
+        original.proposal().description
+    );
+    assert_eq!(
+        changed.proposal().idempotency_key,
+        original.proposal().idempotency_key
+    );
+    assert_ne!(
+        changed.proposal_digest().unwrap(),
+        original.proposal_digest().unwrap()
+    );
     let changed_path = write(&f.dir, "swapped.review", changed.canonical_bytes().unwrap());
     let changed_digest = hex(&changed.digest().unwrap());
     f.import_driver(&changed_path, "swapped");
@@ -247,9 +318,14 @@ fn dimensional_allocation_review_approval_plan_and_exact_retry_preserve_destinat
     let (code, refusal) = run(
         &f.book,
         &[
-            "allocate", "--review", &changed_path, "--digest",
-            &changed_digest, "--approval",
-            text(&approved, "approval_vid"), "--dry-run",
+            "allocate",
+            "--review",
+            &changed_path,
+            "--digest",
+            &changed_digest,
+            "--approval",
+            text(&approved, "approval_vid"),
+            "--dry-run",
         ],
     );
     assert_ne!(code, 0, "{}", refusal.render());
@@ -260,22 +336,37 @@ fn dimensional_allocation_review_approval_plan_and_exact_retry_preserve_destinat
     let plan = ok(
         &f.book,
         &[
-            "allocate", "--review", &path, "--digest", text(&review, "review_digest"),
-            "--approval", text(&approved, "approval_vid"), "--dry-run",
-            "--plan-out", &plan_path,
+            "allocate",
+            "--review",
+            &path,
+            "--digest",
+            text(&review, "review_digest"),
+            "--approval",
+            text(&approved, "approval_vid"),
+            "--dry-run",
+            "--plan-out",
+            &plan_path,
         ],
     );
     assert!(
-        get(&plan, "next_actions").render().contains("--grant 'read'"),
+        get(&plan, "next_actions")
+            .render()
+            .contains("--grant 'read'"),
         "allocation commit guidance must preserve its read/post capability"
     );
     let planned_legs = get(&plan, "legs").as_arr().unwrap();
     f.assert_dimensions(&planned_legs[1], "ENG");
     f.assert_dimensions(&planned_legs[2], "SALES");
     let before = f.head();
-    let committed = ok(&f.book, &["commit", "--plan", &plan_path, "--grant", "read"]);
+    let committed = ok(
+        &f.book,
+        &["commit", "--plan", &plan_path, "--grant", "read"],
+    );
     assert_eq!(f.head(), before + 1);
-    let retry = ok(&f.book, &["commit", "--plan", &plan_path, "--grant", "read"]);
+    let retry = ok(
+        &f.book,
+        &["commit", "--plan", &plan_path, "--grant", "read"],
+    );
     assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
     assert_eq!(text(&retry, "vid"), text(&committed, "vid"));
     assert_eq!(f.head(), before + 1);
@@ -299,15 +390,26 @@ fn balance_derived_allocation_keeps_source_and_target_dimension_cells_separate()
     let approved = ok(
         &f.book,
         &[
-            "allocate", "approve", "--review", &path, "--digest",
-            text(&review, "review_digest"), "--as", "controller",
+            "allocate",
+            "approve",
+            "--review",
+            &path,
+            "--digest",
+            text(&review, "review_digest"),
+            "--as",
+            "controller",
         ],
     );
     ok(
         &f.book,
         &[
-            "allocate", "--review", &path, "--digest", text(&review, "review_digest"),
-            "--approval", text(&approved, "approval_vid"),
+            "allocate",
+            "--review",
+            &path,
+            "--digest",
+            text(&review, "review_digest"),
+            "--approval",
+            text(&approved, "approval_vid"),
         ],
     );
     f.assert_cell("SHARED", "100.00 USD", "100.00 USD");
@@ -338,9 +440,16 @@ fn dimensional_residual_recipient_is_explicit_and_target_dimensions_are_never_ig
         targets,
     );
     let before = f.head();
-    let (code, refused) = run(&f.book, &["allocate", "--intent", &ambiguous, "--review-only"]);
+    let (code, refused) = run(
+        &f.book,
+        &["allocate", "--intent", &ambiguous, "--review-only"],
+    );
     assert_eq!(code, 2, "{}", refused.render());
-    assert!(refused.render().contains("exactly one declared target cell"));
+    assert!(
+        refused
+            .render()
+            .contains("exactly one declared target cell")
+    );
     assert_eq!(f.head(), before);
     let explicit = f.allocation(
         "explicit-residual",
@@ -355,9 +464,21 @@ fn dimensional_residual_recipient_is_explicit_and_target_dimensions_are_never_ig
     f.assert_dimensions(&legs[1], "SALES");
 
     for (key, targets, expected_exit) in [
-        ("malformed-dimensions", r#"[{"account":"6100","weight":1,"dimensions":"ENG"}]"#, 2),
-        ("duplicate-cell", r#"[{"account":"6100","weight":1,"dimensions":{"cost_center":"ENG"}},{"account":"6100","weight":1,"dimensions":{"cost_center":"ENG"}}]"#, 2),
-        ("source-cell", r#"[{"account":"6100","weight":1,"dimensions":{"cost_center":"SHARED"}}]"#, 2),
+        (
+            "malformed-dimensions",
+            r#"[{"account":"6100","weight":1,"dimensions":"ENG"}]"#,
+            2,
+        ),
+        (
+            "duplicate-cell",
+            r#"[{"account":"6100","weight":1,"dimensions":{"cost_center":"ENG"}},{"account":"6100","weight":1,"dimensions":{"cost_center":"ENG"}}]"#,
+            2,
+        ),
+        (
+            "source-cell",
+            r#"[{"account":"6100","weight":1,"dimensions":{"cost_center":"SHARED"}}]"#,
+            2,
+        ),
     ] {
         let intent = f.allocation(
             key,

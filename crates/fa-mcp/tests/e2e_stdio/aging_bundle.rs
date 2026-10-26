@@ -212,7 +212,6 @@ fn retained_effective_date_aging_exports_and_recomputes_independently_over_stdio
     );
 }
 
-
 #[test]
 fn reconciliation_bundle_binds_an_independent_request_and_both_sources_over_stdio() {
     let dir = tmp("aging-reconciliation-bundle");
@@ -318,10 +317,9 @@ fn reconciliation_bundle_binds_an_independent_request_and_both_sources_over_stdi
         json!(["aging_reconciled", "report_certificate"])
     );
     assert_eq!(envelope["authority"]["profile"], json!("agent"));
-    let certificate = fa::AgingReconciliationCertificate::decode(&unhex(
-        certified[1]["bytes"].as_str().unwrap(),
-    ))
-    .unwrap();
+    let certificate =
+        fa::AgingReconciliationCertificate::decode(&unhex(certified[1]["bytes"].as_str().unwrap()))
+            .unwrap();
     assert_eq!(
         fa_verify::blake3::hex(certificate.digest()),
         certified[1]["oid"].as_str().unwrap()
@@ -375,10 +373,7 @@ fn reconciliation_bundle_binds_an_independent_request_and_both_sources_over_stdi
         "a different cutoff must not be exported as this request: {output}"
     );
     let mut original_bundle = None;
-    for input in [
-        locator,
-        certified[1]["bytes"].as_str().unwrap().to_string(),
-    ] {
+    for input in [locator, certified[1]["bytes"].as_str().unwrap().to_string()] {
         let (error, output, metadata) = call_tool(
             &mut producer,
             "fa_notary_bundle",

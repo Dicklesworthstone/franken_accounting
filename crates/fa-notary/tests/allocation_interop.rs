@@ -239,7 +239,12 @@ fn with_target_dimensions(mut posting: AllocationPosting) -> AllocationPosting {
             dimensions: vec![(1, VId(55)), (9, VId(100 + index as u128))],
         })
         .collect();
-    for (target, cell) in posting.request.targets.iter_mut().zip(&posting.target_cells) {
+    for (target, cell) in posting
+        .request
+        .targets
+        .iter_mut()
+        .zip(&posting.target_cells)
+    {
         target.id = cell.identity().unwrap();
     }
     if let AllocationMethod::ProRataResidualToNamed { rounding, .. } = posting.request.method {
@@ -276,7 +281,10 @@ fn actual_v2_producer_cells_verify_independently_for_all_laws_and_rounding_modes
             example.source_side = side;
             let verified = compare(&example);
             assert_eq!(verified.basis.version(), 2);
-            assert_eq!(verified.basis.target_cells.len(), example.target_cells.len());
+            assert_eq!(
+                verified.basis.target_cells.len(),
+                example.target_cells.len()
+            );
             for (index, cell) in example.target_cells.iter().enumerate() {
                 let dimensions: Vec<_> = cell
                     .dimensions
@@ -294,11 +302,7 @@ fn actual_v2_producer_cells_verify_independently_for_all_laws_and_rounding_modes
 
 #[test]
 fn producer_resealing_does_not_hide_a_destination_dimension_change() {
-    let example = with_target_dimensions(posting(
-        100,
-        AllocationMethod::LargestRemainder,
-        &[3, 2],
-    ));
+    let example = with_target_dimensions(posting(100, AllocationMethod::LargestRemainder, &[3, 2]));
     let bytes = example.basis_bytes().unwrap();
     let mut changed = example.proposal(template(&example)).unwrap();
     changed.legs[1].dimension_set = changed.legs[2].dimension_set.clone();

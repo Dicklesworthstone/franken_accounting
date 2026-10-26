@@ -1050,7 +1050,6 @@ fn functional_trial_balance_mcp_preserves_scope_time_and_certificate_authority()
     );
 }
 
-
 #[test]
 fn reconciliation_bundle_keeps_the_request_separate_from_certificate_stdin() {
     let (mcp, reg) = embedded();
@@ -1097,6 +1096,9 @@ fn reconciliation_bundle_keeps_the_request_separate_from_certificate_stdin() {
         json!({"certificate": "abcd", "expect": expected, "out": "/outside-launch-root/report.fab"}),
         json!({"certificate": "abcd", "expect": expected, "grant": ["produce"]}),
     ] {
-        assert!(tool.invocation(&mcp, reg, &arguments).is_err(), "{arguments:?}");
+        assert!(
+            tool.invocation(&mcp, reg, &arguments).is_err(),
+            "{arguments:?}"
+        );
     }
 }

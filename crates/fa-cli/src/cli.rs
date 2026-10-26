@@ -9507,7 +9507,10 @@ pub(crate) fn emit_post_plan(
             command.push_str(&format!(" --grant {}", quoted(grant)));
         }
         if ((proposal.base_totals.is_some() && proposal.class != EntryClass::REVERSAL)
-            || args.positional.first().is_some_and(|verb| verb == "allocate"))
+            || args
+                .positional
+                .first()
+                .is_some_and(|verb| verb == "allocate"))
             && !args.flag_all("--grant").contains(&"read")
         {
             command.push_str(" --grant 'read'");

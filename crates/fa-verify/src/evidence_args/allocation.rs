@@ -149,9 +149,9 @@ fn render(report: &VerifiedAllocation, json: bool) -> Result<String, Failure> {
     let basis = &report.basis;
     let cells = (0..basis.targets.len())
         .map(|index| {
-            basis.target_cell(index).ok_or_else(|| {
-                Failure::verification("allocation target has no destination cell")
-            })
+            basis
+                .target_cell(index)
+                .ok_or_else(|| Failure::verification("allocation target has no destination cell"))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let output = if !json {
@@ -171,7 +171,8 @@ fn render(report: &VerifiedAllocation, json: bool) -> Result<String, Failure> {
             "Source dimensions {}.\n",
             dimensions_text(&basis.dimensions)
         ));
-        for (index, (share, (account, dimensions))) in report.shares.iter().zip(&cells).enumerate() {
+        for (index, (share, (account, dimensions))) in report.shares.iter().zip(&cells).enumerate()
+        {
             let posting = if *share == 0 {
                 "NoLeg"
             } else {

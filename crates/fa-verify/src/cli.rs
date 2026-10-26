@@ -1848,9 +1848,7 @@ fn open_items_checks(report: &crate::report::VerifiedOpenItems) -> Vec<Check> {
     checks
 }
 
-fn reconciliation_checks(
-    report: &crate::report::VerifiedAgingReconciliation,
-) -> Vec<Check> {
+fn reconciliation_checks(report: &crate::report::VerifiedAgingReconciliation) -> Vec<Check> {
     let mut checks = vec![
         Check::pass(
             "aging_reconciliation",
@@ -1862,11 +1860,26 @@ fn reconciliation_checks(
                 ("account", s(format!("{:032x}", report.account.account))),
                 ("reconciled", Json::Bool(report.is_reconciled())),
                 ("units", n(report.rows.len() as u64)),
-                ("aging_certificate_digest", h(&report.aging_certificate_digest)),
-                ("control_certificate_digest", h(&report.control_certificate_digest)),
-                ("scope", s("selected-account consistency at one recorded prefix and effective cutoff")),
-                ("comparison", s("posted debit net minus open debit net, separately per native unit")),
-                ("pending", s("reported separately; excluded from the comparison")),
+                (
+                    "aging_certificate_digest",
+                    h(&report.aging_certificate_digest),
+                ),
+                (
+                    "control_certificate_digest",
+                    h(&report.control_certificate_digest),
+                ),
+                (
+                    "scope",
+                    s("selected-account consistency at one recorded prefix and effective cutoff"),
+                ),
+                (
+                    "comparison",
+                    s("posted debit net minus open debit net, separately per native unit"),
+                ),
+                (
+                    "pending",
+                    s("reported separately; excluded from the comparison"),
+                ),
                 ("external_subledger", s("not judged")),
             ],
         ),
@@ -2391,15 +2404,26 @@ mod tests {
             known_at: 9,
             effective_through: 40,
             account: VerifiedReportAccount {
-                account: 9, code: "ar".into(), name: "Receivable".into(),
-                account_type: 1, normal_balance: 0, is_leaf: true,
+                account: 9,
+                code: "ar".into(),
+                name: "Receivable".into(),
+                account_type: 1,
+                normal_balance: 0,
+                is_leaf: true,
                 unit_policy: OpenItemUnitPolicy::AnyCurrency,
-                limit: None, created_at: 2,
+                limit: None,
+                created_at: 2,
             },
             aging: VerifiedAging {
-                book_id: [3; 16], known_at: 9, effective_through: 40,
-                account_filter: Some(9), source_certificate_digest: [4; 32],
-                bands: vec![], items: vec![], cells: vec![], totals: vec![],
+                book_id: [3; 16],
+                known_at: 9,
+                effective_through: 40,
+                account_filter: Some(9),
+                source_certificate_digest: [4; 32],
+                bands: vec![],
+                items: vec![],
+                cells: vec![],
+                totals: vec![],
             },
             control_rows: vec![],
             rows: vec![VerifiedAgingReconciliationRow {
@@ -2419,10 +2443,19 @@ mod tests {
             control_certificate_digest: [6; 32],
         };
         let checks = reconciliation_checks(&report);
-        assert_eq!(checks.iter().map(|check| check.name).collect::<Vec<_>>(), [
-            "aging_reconciliation", "aging_reconciliation_account", "aging_reconciliation_row",
-        ]);
-        assert!(checks.iter().all(|check| matches!(check.verdict, Verdict::Pass)));
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "aging_reconciliation",
+                "aging_reconciliation_account",
+                "aging_reconciliation_row",
+            ]
+        );
+        assert!(
+            checks
+                .iter()
+                .all(|check| matches!(check.verdict, Verdict::Pass))
+        );
         let mut json = String::new();
         for check in checks {
             check.json().write(&mut json);
@@ -2440,7 +2473,6 @@ mod tests {
             assert!(json.contains(&expected), "{expected}: {json}");
         }
     }
-
 
     #[test]
     fn balance_explanation_renders_exact_history_and_authenticated_provenance() {

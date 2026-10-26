@@ -180,15 +180,14 @@ pub use fa_journal::closing::{
 };
 pub use fa_journal::{
     AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, AllocationTargetCell,
-    DocumentEvidenceSummary,
-    EventRow, EvidenceExplanation, ExhibitMarkedOutcome, ExternalIdRow, InstantSelection,
-    InstrumentRow, LegalEntityRow, LineageEdgeSummary, LineageEntrySummary, LineageReport,
-    ManualAssertionSummary, NetPosition, NettingLaw, PartyRow, PeriodBalance, PeriodCheck,
-    PeriodHistoryVerification, PeriodTransitionRecord, PeriodVerification, ReaControlRecorded,
-    ReaSnapshot, RecordedExhibit, RelatedPartyHit, RelationshipRow, ReviewedSummary,
-    RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode,
-    RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine, TrialBalanceLine,
-    UploadRequest, UsageVerification,
+    DocumentEvidenceSummary, EventRow, EvidenceExplanation, ExhibitMarkedOutcome, ExternalIdRow,
+    InstantSelection, InstrumentRow, LegalEntityRow, LineageEdgeSummary, LineageEntrySummary,
+    LineageReport, ManualAssertionSummary, NetPosition, NettingLaw, PartyRow, PeriodBalance,
+    PeriodCheck, PeriodHistoryVerification, PeriodTransitionRecord, PeriodVerification,
+    ReaControlRecorded, ReaSnapshot, RecordedExhibit, RelatedPartyHit, RelationshipRow,
+    ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest,
+    RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine,
+    TrialBalanceLine, UploadRequest, UsageVerification,
 };
 pub use fa_model::{
     EventKind, EventResource, EventSpec, InstrumentKind, InstrumentSpec, PartyKind, PartySpec,

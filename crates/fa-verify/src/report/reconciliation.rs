@@ -1,9 +1,8 @@
 //! Independent aging-to-control comparison over two sources authenticated by
 //! the same complete journal prefix. A nonzero difference is verified data.
 use super::{
-    Certificate as NativeCertificate, MAX_REPORT_BUNDLE_BYTES, ReportError, ReportRow,
-    Selection, VerifiedAging, VerifiedAgingAmounts, VerifiedReportAccount, aging,
-    failed, hash_parts,
+    Certificate as NativeCertificate, MAX_REPORT_BUNDLE_BYTES, ReportError, ReportRow, Selection,
+    VerifiedAging, VerifiedAgingAmounts, VerifiedReportAccount, aging, failed, hash_parts,
 };
 use crate::codec::{Reader, Writer};
 use std::collections::{BTreeMap, BTreeSet};
@@ -66,11 +65,17 @@ pub(super) fn recognizes(bytes: &[u8]) -> bool {
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     if bytes.len() > MAX_REPORT_BUNDLE_BYTES {
-        return Err(failed("bounded_input", "reconciliation certificate exceeds 64 MiB"));
+        return Err(failed(
+            "bounded_input",
+            "reconciliation certificate exceeds 64 MiB",
+        ));
     }
     let mut r = Reader::new(bytes);
     if r.bytes(64, "reconciliation.format")? != CERTIFICATE_FORMAT {
-        return Err(failed("supported_report", "unsupported reconciliation certificate format"));
+        return Err(failed(
+            "supported_report",
+            "unsupported reconciliation certificate format",
+        ));
     }
     r.u128("reconciliation.producer")?;
     r.fixed::<32>("reconciliation.capability_commitment")?;
@@ -87,7 +92,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "reconciliation certificate bytes differ from their commitment",
         ));
     }
-    Ok(Certificate { aging, control, output, digest })
+    Ok(Certificate {
+        aging,
+        control,
+        output,
+        digest,
+    })
 }
 
 /// Bind both questions before trusting either source's selector or registry.
@@ -131,7 +141,10 @@ pub(super) fn bind(
 
 fn subtract(left: i128, right: i128) -> Result<i128, ReportError> {
     left.checked_sub(right).ok_or_else(|| {
-        failed("exact_arithmetic", "reconciliation net or difference overflow")
+        failed(
+            "exact_arithmetic",
+            "reconciliation net or difference overflow",
+        )
     })
 }
 
@@ -151,15 +164,27 @@ pub(super) fn replay(
         ));
     }
     let mut controls = BTreeMap::new();
-    for row in control_rows.into_iter().filter(|row| row.account == account.account) {
+    for row in control_rows
+        .into_iter()
+        .filter(|row| row.account == account.account)
+    {
         if row.code != account.code
             || row.name != account.name
             || row.account_type != account.account_type
-            || [row.debits, row.credits, row.debits_pending, row.credits_pending]
-                .iter().any(|amount| *amount < 0)
+            || [
+                row.debits,
+                row.credits,
+                row.debits_pending,
+                row.credits_pending,
+            ]
+            .iter()
+            .any(|amount| *amount < 0)
             || controls.insert(row.unit, row).is_some()
         {
-            return Err(failed("reconciliation_sources", "invalid or repeated control account row"));
+            return Err(failed(
+                "reconciliation_sources",
+                "invalid or repeated control account row",
+            ));
         }
     }
     let mut opens = BTreeMap::new();
@@ -169,14 +194,20 @@ pub(super) fn replay(
             || total.amounts.credits < 0
             || opens.insert(total.unit_id, &total.amounts).is_some()
         {
-            return Err(failed("reconciliation_sources", "invalid or repeated aging account total"));
+            return Err(failed(
+                "reconciliation_sources",
+                "invalid or repeated aging account total",
+            ));
         }
     }
     let selected_units: BTreeSet<_> = controls.keys().chain(opens.keys()).copied().collect();
     let mut rows = Vec::with_capacity(selected_units.len());
     for unit_id in selected_units {
         if units.binary_search(&unit_id).is_err() {
-            return Err(failed("registry_closure", "reconciliation uses an unregistered native unit"));
+            return Err(failed(
+                "registry_closure",
+                "reconciliation uses an unregistered native unit",
+            ));
         }
         let control = controls.get(&unit_id);
         let empty = VerifiedAgingAmounts::default();

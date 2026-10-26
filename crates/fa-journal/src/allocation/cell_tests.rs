@@ -39,7 +39,11 @@ fn same_account_destinations_keep_separate_dimensions_and_balanced_amounts() {
     assert!(legs.iter().all(|leg| leg.account_ref == VId(10)));
     assert_eq!(
         legs.iter()
-            .map(|leg| (side_tag(leg.side), leg.amount.mantissa, leg.dimension_set.clone()))
+            .map(|leg| (
+                side_tag(leg.side),
+                leg.amount.mantissa,
+                leg.dimension_set.clone()
+            ))
             .collect::<Vec<_>>(),
         [
             (1, 100, vec![(7, VId(100))]),
@@ -98,7 +102,10 @@ fn cell_identity_and_driver_bind_destinations_even_when_amounts_are_unchanged() 
         basis.request.execute().unwrap().shares(),
         changed.request.execute().unwrap().shares()
     );
-    assert_ne!(basis.basis_digest().unwrap(), changed.basis_digest().unwrap());
+    assert_ne!(
+        basis.basis_digest().unwrap(),
+        changed.basis_digest().unwrap()
+    );
     assert_ne!(
         basis.driver_evidence(Id128([1; 16])).unwrap(),
         changed.driver_evidence(Id128([1; 16])).unwrap()

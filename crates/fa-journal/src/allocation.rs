@@ -83,11 +83,7 @@ pub struct AllocationPosting {
 
 impl AllocationPosting {
     fn version(&self) -> u16 {
-        if self.target_cells.is_empty() {
-            1
-        } else {
-            2
-        }
+        if self.target_cells.is_empty() { 1 } else { 2 }
     }
 
     fn basis_domain(&self) -> &'static [u8] {
@@ -201,10 +197,7 @@ impl AllocationPosting {
     }
 
     pub fn basis_digest(&self) -> Result<[u8; 32], Refusal> {
-        Ok(domain_digest(
-            self.basis_domain(),
-            &[&self.basis_bytes()?],
-        ))
+        Ok(domain_digest(self.basis_domain(), &[&self.basis_bytes()?]))
     }
 
     /// A registry identity, not a claim that a native object store holds it.
@@ -272,7 +265,10 @@ impl AllocationPosting {
                         ))
                     },
                 )?;
-                Ok(AllocationTargetCell { account, dimensions })
+                Ok(AllocationTargetCell {
+                    account,
+                    dimensions,
+                })
             })
             .map_err(structure)?
         } else {

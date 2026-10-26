@@ -177,7 +177,8 @@ pub(super) fn verify(
         || r.u16("allocation.record.version")? != basis.version()
         || r.bytes(super::MAX_BASIS_BYTES, "allocation.record.basis")? != expected_bytes
         || r.fixed::<32>("allocation.record.law_digest")? != law_digest(basis.law)
-        || r.fixed::<32>("allocation.record.basis_digest")? != basis_digest(basis.version(), expected_bytes)
+        || r.fixed::<32>("allocation.record.basis_digest")?
+            != basis_digest(basis.version(), expected_bytes)
     {
         return Err(AllocationError::BasisMismatch);
     }

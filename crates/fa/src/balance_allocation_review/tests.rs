@@ -313,7 +313,12 @@ fn compound_review_preserves_v2_destination_cells_separately_from_source_dimensi
             dimensions: vec![(1, VId(42))],
         },
     ];
-    for (target, cell) in posting.request.targets.iter_mut().zip(&posting.target_cells) {
+    for (target, cell) in posting
+        .request
+        .targets
+        .iter_mut()
+        .zip(&posting.target_cells)
+    {
         target.id = cell.identity().unwrap();
     }
     let mut template = original.review().proposal().clone();
@@ -330,6 +335,12 @@ fn compound_review_preserves_v2_destination_cells_separately_from_source_dimensi
     assert_eq!(restored.request().targets, posting.request.targets);
     assert_eq!(restored.source_digest(), [9; 32]);
     assert_eq!(restored.source_period(), "FY2026-P03");
-    assert_eq!(restored.review().proposal().legs[1].dimension_set, vec![(1, VId(41))]);
-    assert_eq!(restored.review().proposal().legs[2].dimension_set, vec![(1, VId(42))]);
+    assert_eq!(
+        restored.review().proposal().legs[1].dimension_set,
+        vec![(1, VId(41))]
+    );
+    assert_eq!(
+        restored.review().proposal().legs[2].dimension_set,
+        vec![(1, VId(42))]
+    );
 }

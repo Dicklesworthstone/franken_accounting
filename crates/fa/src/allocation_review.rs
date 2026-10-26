@@ -39,8 +39,7 @@ const MAX_INTENT_BYTES: usize = MAX_ENTRY_BYTES + 32;
 /// One bounded sealed intent, its complete driver basis (including target
 /// dimensions), and framing.
 /// A hex transport must separately account for its expansion.
-pub const MAX_ALLOCATION_REVIEW_BYTES: usize =
-    MAX_ENTRY_BYTES + MAX_EXTENSION_BYTES + 256;
+pub const MAX_ALLOCATION_REVIEW_BYTES: usize = MAX_ENTRY_BYTES + MAX_EXTENSION_BYTES + 256;
 
 #[derive(Debug)]
 pub enum AllocationReviewError {
@@ -233,9 +232,7 @@ impl AllocationReview {
             return Err(AllocationReviewError::Invalid("unsupported review format"));
         }
         let version = r.u16("allocation_review.major")?;
-        if !matches!(version, VERSION | CELL_VERSION)
-            || r.u16("allocation_review.minor")? != 0
-        {
+        if !matches!(version, VERSION | CELL_VERSION) || r.u16("allocation_review.minor")? != 0 {
             return Err(AllocationReviewError::Invalid("unsupported review format"));
         }
         let posting = if version == VERSION {

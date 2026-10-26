@@ -147,9 +147,7 @@ impl<'a> ReportBundleCertificate<'a> {
             Self::Native(certificate) => certificate,
             Self::Aging(certificate) => certificate.source(),
             Self::RollForward(certificate) => certificate.source_certificate(),
-            Self::AgingReconciliation { certificate, .. } => {
-                certificate.aging_source().source()
-            }
+            Self::AgingReconciliation { certificate, .. } => certificate.aging_source().source(),
         }
     }
 }
@@ -3820,9 +3818,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )? {
                     return Ok(Err(refusal));
                 }
-                if reconciliation.control_source().registry_digest
-                    != certificate.registry_digest
-                {
+                if reconciliation.control_source().registry_digest != certificate.registry_digest {
                     return Ok(Err(fa_journal::Refusal::new(
                         fa_notary::code::SCOPE_UNSUPPORTED,
                         fa_journal::exit::REFUSAL,
@@ -3861,10 +3857,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             ReportBundleCertificate::RollForward(_)
                 | ReportBundleCertificate::AgingReconciliation { .. }
         ) || matches!(
-                &certificate.selection,
-                crate::ReportSelection::OpenItems { .. }
-                    | crate::ReportSelection::ExplainBalance { .. }
-            );
+            &certificate.selection,
+            crate::ReportSelection::OpenItems { .. }
+                | crate::ReportSelection::ExplainBalance { .. }
+        );
         let registries = if requires_registry_closure
             || matches!(&certificate.selection, crate::ReportSelection::Statement(_))
         {

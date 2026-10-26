@@ -172,11 +172,7 @@ impl AllocationBasis {
 
     /// Retained wire version. A v2 driver always carries its nonempty cell map.
     pub fn version(&self) -> u16 {
-        if self.target_cells.is_empty() {
-            1
-        } else {
-            2
-        }
+        if self.target_cells.is_empty() { 1 } else { 2 }
     }
 
     /// Resolve an ordered arithmetic target to its actual posting destination.
@@ -194,20 +190,24 @@ impl AllocationBasis {
     fn validate_target_cells(&self) -> Result<(), AllocationError> {
         validate_dimensions(&self.dimensions)?;
         if self.target_cells.is_empty() {
-            if self.targets.iter().any(|target| target.account == self.source) {
+            if self
+                .targets
+                .iter()
+                .any(|target| target.account == self.source)
+            {
                 return Err(invalid("a v1 target cannot be the source account"));
             }
             return Ok(());
         }
-        if self.target_cells.len() != self.targets.len()
-            || self.target_cells.len() > MAX_TARGETS
-        {
+        if self.target_cells.len() != self.targets.len() || self.target_cells.len() > MAX_TARGETS {
             return Err(invalid("destination cells must match the ordered targets"));
         }
         let mut cells = BTreeSet::new();
         for (target, cell) in self.targets.iter().zip(&self.target_cells) {
             if target.account != cell.identity()? {
-                return Err(invalid("target identity does not bind its destination cell"));
+                return Err(invalid(
+                    "target identity does not bind its destination cell",
+                ));
             }
             if (cell.account == self.source && cell.dimensions == self.dimensions)
                 || !cells.insert((cell.account, cell.dimensions.clone()))
@@ -373,9 +373,7 @@ impl AllocationBasis {
 }
 
 fn validate_dimensions(dimensions: &[(u32, u128)]) -> Result<(), AllocationError> {
-    if dimensions.len() > 64
-        || dimensions.windows(2).any(|pair| pair[0].0 >= pair[1].0)
-    {
+    if dimensions.len() > 64 || dimensions.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(invalid("dimensions must be distinct and ascending"));
     }
     Ok(())

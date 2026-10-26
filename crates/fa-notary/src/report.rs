@@ -169,7 +169,14 @@ pub fn assemble_reconciliation_with_registries(
             "portable reconciliation requires an aging source and a sequence-selected AsOf trial-balance control",
         )));
     }
-    assemble_with_registries(journal, checkpoint, certificate, known_at, bodies, registries)
+    assemble_with_registries(
+        journal,
+        checkpoint,
+        certificate,
+        known_at,
+        bodies,
+        registries,
+    )
 }
 
 /// The v3 tag and literal output format must agree; neither v3 selector may
@@ -288,18 +295,14 @@ fn roll_forward_certificate(certificate: &[u8]) -> bool {
 fn reconciliation_certificate(certificate: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        if reader.bytes(64, "reconciliation format")?
-            != b"fa:aging-reconciliation-certificate:v1"
-        {
+        if reader.bytes(64, "reconciliation format")? != b"fa:aging-reconciliation-certificate:v1" {
             return Ok(false);
         }
         reader.u128("reconciliation producer")?;
         reader.fixed::<32>("reconciliation capability")?;
         let aging = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "reconciliation aging")?;
         let control = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "reconciliation control")?;
-        if !aging_certificate(aging)
-            || !certificate_format(control, b"fa:report-certificate:v1")
-        {
+        if !aging_certificate(aging) || !certificate_format(control, b"fa:report-certificate:v1") {
             return Ok(false);
         }
         let mut control = Reader::new(control);
@@ -447,17 +450,31 @@ mod format_tests {
     fn native_header(version: u8, output: &str, selector: u8) -> Vec<u8> {
         let mut w = Writer::new();
         w.fixed(format!("fa:report-certificate:v{version}").as_bytes())
-            .str("fa-fold-over-prefix").str("embedded-owner").str(output)
-            .fixed(&[3; 16]).fixed(&[0; 16]).u64(9).u8(selector).i32(30);
+            .str("fa-fold-over-prefix")
+            .str("embedded-owner")
+            .str(output)
+            .fixed(&[3; 16])
+            .fixed(&[0; 16])
+            .u64(9)
+            .u8(selector)
+            .i32(30);
         w.finish().unwrap()
     }
 
     fn reconciliation_header(source: &[u8], control: &[u8]) -> Vec<u8> {
         let mut aging = Writer::new();
-        aging.bytes(b"fa:aging-certificate:v1").u128(7).fixed(&[9; 32]).bytes(source);
+        aging
+            .bytes(b"fa:aging-certificate:v1")
+            .u128(7)
+            .fixed(&[9; 32])
+            .bytes(source);
         let mut outer = Writer::new();
-        outer.bytes(b"fa:aging-reconciliation-certificate:v1")
-            .u128(7).fixed(&[8; 32]).bytes(&aging.finish().unwrap()).bytes(control);
+        outer
+            .bytes(b"fa:aging-reconciliation-certificate:v1")
+            .u128(7)
+            .fixed(&[8; 32])
+            .bytes(&aging.finish().unwrap())
+            .bytes(control);
         outer.finish().unwrap()
     }
 
@@ -476,13 +493,17 @@ mod format_tests {
             native_header(10, "fa:functional-trial-balance:v1", 1),
             native_header(1, "fa:open-items:v1", 1),
         ] {
-            assert!(!reconciliation_certificate(&reconciliation_header(&source, &wrong)));
+            assert!(!reconciliation_certificate(&reconciliation_header(
+                &source, &wrong
+            )));
         }
         let explanation = native_header(3, "fa:balance-explanation:v1", 0);
-        assert!(!reconciliation_certificate(&reconciliation_header(&explanation, &control)));
+        assert!(!reconciliation_certificate(&reconciliation_header(
+            &explanation,
+            &control
+        )));
         assert!(!reconciliation_certificate(&outer[..outer.len() - 1]));
     }
-
 
     #[test]
     fn roll_forward_routing_requires_its_exact_sequence_trunk_closing_source() {

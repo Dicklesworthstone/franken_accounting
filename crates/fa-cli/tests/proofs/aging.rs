@@ -442,9 +442,15 @@ fn reconciliation_export_requires_an_independent_exact_request_before_success() 
     );
     assert_eq!(missing.0, 2, "{}", missing.1.render());
     for expected in [
-        format!(r#"{{"kind":"aging-reconciliation","account":"4000","through":"2026-03-31","known_at":{known_at},"buckets":[0,30]}}"#),
-        format!(r#"{{"kind":"aging-reconciliation","account":"1000","through":"2026-03-30","known_at":{known_at},"buckets":[0,30]}}"#),
-        format!(r#"{{"kind":"aging-reconciliation","account":"1000","through":"2026-03-31","known_at":{known_at},"buckets":[0,60]}}"#),
+        format!(
+            r#"{{"kind":"aging-reconciliation","account":"4000","through":"2026-03-31","known_at":{known_at},"buckets":[0,30]}}"#
+        ),
+        format!(
+            r#"{{"kind":"aging-reconciliation","account":"1000","through":"2026-03-30","known_at":{known_at},"buckets":[0,30]}}"#
+        ),
+        format!(
+            r#"{{"kind":"aging-reconciliation","account":"1000","through":"2026-03-31","known_at":{known_at},"buckets":[0,60]}}"#
+        ),
         reconciliation_expectation(known_at - 1),
     ] {
         let (exit, refused) = run(

@@ -101,7 +101,11 @@ fn produce(
         .unwrap();
     assert_eq!(produced.bundle.bytes, repeated.bundle.bytes);
     assert_eq!(produced.receipt, repeated.receipt);
-    assert_eq!(book.head().unwrap(), before, "reconciliation export is a read");
+    assert_eq!(
+        book.head().unwrap(),
+        before,
+        "reconciliation export is a read"
+    );
     let mut reader = fa_model::Reader::new(&produced.bundle.bytes);
     assert_eq!(
         reader.bytes(64, "bundle format").unwrap(),
@@ -138,7 +142,10 @@ fn verify(
     assert_eq!(verified.output, certificate.output());
     assert_eq!(verified.certificate_digest, *certificate.digest());
     assert_eq!(verified.known_at, native.known_at().0);
-    assert_eq!(verified.effective_through, Some(native.effective_through().0));
+    assert_eq!(
+        verified.effective_through,
+        Some(native.effective_through().0)
+    );
     assert_eq!(verified.scope, "recomputation");
     assert_eq!(verified.unit_universe_source, "authenticated-registry");
     assert!(verified.receipt.is_some());
@@ -221,8 +228,15 @@ fn verify(
             ),
         );
     }
-    assert_eq!(reconciliation.control_rows.len(), native.control_rows().len());
-    for (actual, expected) in reconciliation.control_rows.iter().zip(native.control_rows()) {
+    assert_eq!(
+        reconciliation.control_rows.len(),
+        native.control_rows().len()
+    );
+    for (actual, expected) in reconciliation
+        .control_rows
+        .iter()
+        .zip(native.control_rows())
+    {
         assert_eq!(actual.account, expected.account.0);
         assert_eq!(actual.code, expected.code);
         assert_eq!(actual.name, expected.name);
@@ -252,10 +266,22 @@ fn reconciliation_bundle_recomputes_turnover_residuals_pending_and_native_units(
     let mut fixture = Fixture::new(0x88);
     let (usd, jpy) = (fixture.usd, fixture.jpy);
     let first = fixture
-        .transfer(day(2026, 1, 1), b"reconcile-first", usd, ("1000", "4000"), 10_000)
+        .transfer(
+            day(2026, 1, 1),
+            b"reconcile-first",
+            usd,
+            ("1000", "4000"),
+            10_000,
+        )
         .entry_ref();
     let second = fixture
-        .transfer(day(2026, 1, 2), b"reconcile-second", usd, ("1000", "4000"), 6_000)
+        .transfer(
+            day(2026, 1, 2),
+            b"reconcile-second",
+            usd,
+            ("1000", "4000"),
+            6_000,
+        )
         .entry_ref();
     let receipt = collect(
         &mut fixture,
@@ -291,9 +317,21 @@ fn reconciliation_bundle_recomputes_turnover_residuals_pending_and_native_units(
         disposition: None,
     });
     fixture.commit(pending);
-    fixture.transfer(day(2026, 1, 3), b"reconcile-jpy", jpy, ("1000", "4000"), 1_200);
+    fixture.transfer(
+        day(2026, 1, 3),
+        b"reconcile-jpy",
+        jpy,
+        ("1000", "4000"),
+        1_200,
+    );
     // The complete control source also includes accounts outside the comparison.
-    fixture.transfer(day(2026, 2, 1), b"reconcile-other", usd, ("6000", "2000"), 123);
+    fixture.transfer(
+        day(2026, 2, 1),
+        b"reconcile-other",
+        usd,
+        ("6000", "2000"),
+        123,
+    );
     let expected = request(&fixture.book, "1000", day(2026, 2, 28));
     let certified = certify(&fixture.book, &expected);
     let produced = produce(&mut fixture.book, &certified.certificate, &expected);
@@ -302,17 +340,40 @@ fn reconciliation_bundle_recomputes_turnover_residuals_pending_and_native_units(
     assert!(report.is_reconciled());
     assert_eq!(report.rows.len(), 2);
     let usd_row = report.rows.iter().find(|row| row.unit_id == usd.0).unwrap();
-    assert_eq!((usd_row.posted_debits, usd_row.posted_credits), (16_000, 10_500));
+    assert_eq!(
+        (usd_row.posted_debits, usd_row.posted_credits),
+        (16_000, 10_500)
+    );
     assert_eq!((usd_row.pending_debits, usd_row.pending_credits), (700, 0));
     assert_eq!((usd_row.open_debits, usd_row.open_credits), (6_000, 500));
-    assert_eq!((usd_row.posted_net, usd_row.open_net, usd_row.difference), (5_500, 5_500, 0));
+    assert_eq!(
+        (usd_row.posted_net, usd_row.open_net, usd_row.difference),
+        (5_500, 5_500, 0)
+    );
     assert_eq!(usd_row.open_item_count, 2);
     let jpy_row = report.rows.iter().find(|row| row.unit_id == jpy.0).unwrap();
-    assert_eq!((jpy_row.posted_net, jpy_row.open_net, jpy_row.difference), (1_200, 1_200, 0));
-    assert!(!report.aging.items.iter().any(|row| row.item.entry == second.vid.0));
-    let partial = report.aging.items.iter().find(|row| row.item.entry == first.vid.0).unwrap();
+    assert_eq!(
+        (jpy_row.posted_net, jpy_row.open_net, jpy_row.difference),
+        (1_200, 1_200, 0)
+    );
+    assert!(
+        !report
+            .aging
+            .items
+            .iter()
+            .any(|row| row.item.entry == second.vid.0)
+    );
+    let partial = report
+        .aging
+        .items
+        .iter()
+        .find(|row| row.item.entry == first.vid.0)
+        .unwrap();
     assert_eq!(partial.item.applications.len(), 1);
-    assert_eq!(partial.item.applications[0].entry, receipt.entry_ref().vid.0);
+    assert_eq!(
+        partial.item.applications[0].entry,
+        receipt.entry_ref().vid.0
+    );
     assert_eq!(partial.item.applications[0].amount, 4_000);
     assert!(partial.item.applications[0].live);
 }
@@ -332,7 +393,13 @@ fn reconciliation_bundle_replays_original_sources_after_backdating_reversal_and_
     let mut fixture = Fixture::at(seed, Some(&directory));
     let usd = fixture.usd;
     let first = fixture
-        .transfer(day(2026, 1, 1), b"reconcile-history", usd, ("1000", "4000"), 10_000)
+        .transfer(
+            day(2026, 1, 1),
+            b"reconcile-history",
+            usd,
+            ("1000", "4000"),
+            10_000,
+        )
         .entry_ref();
     let receipt = collect(
         &mut fixture,
@@ -355,7 +422,13 @@ fn reconciliation_bundle_replays_original_sources_after_backdating_reversal_and_
     let produced = produce(&mut fixture.book, &certified.certificate, &expected);
     let verified = verify(&fixture.book, &certified, &produced);
     let report = verified.aging_reconciliation.unwrap();
-    assert!(!report.aging.items.iter().any(|row| row.item.entry == later.entry_ref().vid.0));
+    assert!(
+        !report
+            .aging
+            .items
+            .iter()
+            .any(|row| row.item.entry == later.entry_ref().vid.0)
+    );
     assert_eq!(report.rows[0].posted_net, 5_500);
     assert_eq!(report.rows[0].open_net, 5_500);
     let invoice = report
@@ -390,7 +463,11 @@ fn reconciliation_bundle_replays_original_sources_after_backdating_reversal_and_
     assert_eq!(reopened.bundle.bytes, produced.bundle.bytes);
     assert_eq!(reopened.receipt, produced.receipt);
     verify(&book, &certified, &reopened);
-    assert_eq!(book.head().unwrap(), head, "reopened export hydrates history without writing");
+    assert_eq!(
+        book.head().unwrap(),
+        head,
+        "reopened export hydrates history without writing"
+    );
 }
 
 #[test]
@@ -479,15 +556,30 @@ fn repaired_false_comparison(
 fn reconciliation_export_requires_current_authority_exact_question_and_replayed_output() {
     let mut fixture = Fixture::new(0x8b);
     let usd = fixture.usd;
-    fixture.transfer(day(2026, 1, 1), b"reconcile-admission", usd, ("1000", "4000"), 100);
+    fixture.transfer(
+        day(2026, 1, 1),
+        b"reconcile-admission",
+        usd,
+        ("1000", "4000"),
+        100,
+    );
     let expected = request(&fixture.book, "1000", day(2026, 1, 31));
     let certified = certify(&fixture.book, &expected);
     let capability = Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap();
     let before = fixture.book.head().unwrap();
     assert!(
-        fixture.book.produce_aging_reconciliation_bundle(
-            PRINCIPAL, &capability, None, &certified.certificate, &expected,
-        ).unwrap().unwrap().is_none(),
+        fixture
+            .book
+            .produce_aging_reconciliation_bundle(
+                PRINCIPAL,
+                &capability,
+                None,
+                &certified.certificate,
+                &expected,
+            )
+            .unwrap()
+            .unwrap()
+            .is_none(),
         "a valid report without a recorded checkpoint has no portable bundle"
     );
     assert_eq!(fixture.book.head().unwrap(), before);
@@ -503,16 +595,32 @@ fn reconciliation_export_requires_current_authority_exact_question_and_replayed_
         capability.clone().expiring_at(before),
     ] {
         assert!(
-            fixture.book.produce_aging_reconciliation_bundle(
-                PRINCIPAL, &denied, None, &certified.certificate, &expected,
-            ).unwrap().is_err()
+            fixture
+                .book
+                .produce_aging_reconciliation_bundle(
+                    PRINCIPAL,
+                    &denied,
+                    None,
+                    &certified.certificate,
+                    &expected,
+                )
+                .unwrap()
+                .is_err()
         );
         assert_eq!(fixture.book.head().unwrap(), before);
     }
     assert!(
-        fixture.book.produce_aging_reconciliation_bundle(
-            VId(99), &capability, None, &certified.certificate, &expected,
-        ).unwrap().is_err()
+        fixture
+            .book
+            .produce_aging_reconciliation_bundle(
+                VId(99),
+                &capability,
+                None,
+                &certified.certificate,
+                &expected,
+            )
+            .unwrap()
+            .is_err()
     );
     for changed in [
         fa::AgingReconciliationRequest {
@@ -537,17 +645,27 @@ fn reconciliation_export_requires_current_authority_exact_question_and_replayed_
         },
     ] {
         assert!(
-            fixture.book.produce_aging_reconciliation_bundle(
-                PRINCIPAL, &capability, None, &certified.certificate, &changed,
-            ).unwrap().is_err()
+            fixture
+                .book
+                .produce_aging_reconciliation_bundle(
+                    PRINCIPAL,
+                    &capability,
+                    None,
+                    &certified.certificate,
+                    &changed,
+                )
+                .unwrap()
+                .is_err()
         );
         assert_eq!(fixture.book.head().unwrap(), before);
     }
     let forged = repaired_false_comparison(&certified.certificate);
     assert!(
-        fixture.book.produce_aging_reconciliation_bundle(
-            PRINCIPAL, &capability, None, &forged, &expected,
-        ).unwrap().is_err(),
+        fixture
+            .book
+            .produce_aging_reconciliation_bundle(PRINCIPAL, &capability, None, &forged, &expected,)
+            .unwrap()
+            .is_err(),
         "a repaired outer digest does not establish the comparison"
     );
     for wrong_pin in [
@@ -562,7 +680,8 @@ fn reconciliation_export_requires_current_authority_exact_question_and_replayed_
                 None,
                 Some(&produced.receipt),
                 Some(wrong_pin),
-            ).is_err(),
+            )
+            .is_err(),
             "neither native source identifies the outer comparison"
         );
     }

@@ -64,31 +64,26 @@ fn proposal(bytes: &[u8], shares: &[i128], citations: &[EvidenceCitation]) -> Ve
     erased(&mut w);
     w.u8(0)
         .count(1 + shares.iter().filter(|share| **share != 0).count());
-    let vector = core::iter::once((
-        b.source,
-        b.total,
-        b.source_debit,
-        b.dimensions.as_slice(),
-    ))
-    .chain(
-        shares
-            .iter()
-            .enumerate()
-            .filter(|(_, share)| **share != 0)
-            .map(|(i, share)| {
-                let (account, dimensions) = b.target_cell(i).unwrap();
-                (
-                    account,
-                    *share,
-                    if *share < 0 {
-                        b.source_debit
-                    } else {
-                        !b.source_debit
-                    },
-                    dimensions,
-                )
-            }),
-    );
+    let vector = core::iter::once((b.source, b.total, b.source_debit, b.dimensions.as_slice()))
+        .chain(
+            shares
+                .iter()
+                .enumerate()
+                .filter(|(_, share)| **share != 0)
+                .map(|(i, share)| {
+                    let (account, dimensions) = b.target_cell(i).unwrap();
+                    (
+                        account,
+                        *share,
+                        if *share < 0 {
+                            b.source_debit
+                        } else {
+                            !b.source_debit
+                        },
+                        dimensions,
+                    )
+                }),
+        );
     for (account, share, debit, dimensions) in vector {
         w.u8(u8::from(!debit))
             .u128(account)
@@ -507,7 +502,10 @@ fn dimension_only_entry_changes_refuse_even_after_repairing_outer_hashes() {
     let mut p = proposal(&bytes, &[60, 40], &[citation(&bytes)]);
     // First occurrence is the first destination leg, before any record/citation.
     let value = 101u128.to_le_bytes();
-    let offset = p.windows(value.len()).position(|window| window == value.as_slice()).unwrap();
+    let offset = p
+        .windows(value.len())
+        .position(|window| window == value.as_slice())
+        .unwrap();
     p[offset..offset + value.len()].copy_from_slice(&102u128.to_le_bytes());
     let (full, checkpoint, digest) = proof(&p, true);
     assert_eq!(
@@ -539,9 +537,9 @@ fn cell_order_identity_and_exact_source_exclusion_are_independently_checked() {
         vec![(10, vec![(3, 1), (2, 2)]), (10, vec![(2, 102)])],
         vec![(10, vec![(2, 1), (2, 2)]), (10, vec![(2, 102)])],
     ] {
-        assert!(AllocationBasis::decode(&dimensional_basis(
-            1, 0, 100, &[3, 2], &cells, false
-        )).is_err());
+        assert!(
+            AllocationBasis::decode(&dimensional_basis(1, 0, 100, &[3, 2], &cells, false)).is_err()
+        );
     }
 }
 
@@ -552,7 +550,10 @@ fn changed_destination_basis_cannot_replace_the_recipient_expectation() {
     let p = proposal(&bytes, &[60, 40], &[citation(&bytes)]);
     let (full, checkpoint, digest) = proof(&p, true);
     let changed = dimensional_basis(
-        1, 0, 100, &[3, 2],
+        1,
+        0,
+        100,
+        &[3, 2],
         &[(10, vec![(2, 103)]), (10, vec![(2, 102)])],
         false,
     );
@@ -588,7 +589,10 @@ fn v2_framing_bounds_and_record_version_are_checked() {
     assert!(AllocationBasis::decode(&changed).is_err());
     let p = proposal(&bytes, &[60, 40], &[citation(&bytes)]);
     let marker = b"FA-ALLOC-POST\0";
-    let offset = p.windows(marker.len()).position(|window| window == marker.as_slice()).unwrap();
+    let offset = p
+        .windows(marker.len())
+        .position(|window| window == marker.as_slice())
+        .unwrap();
     for version in [1u16, 3] {
         let mut changed = p.clone();
         changed[offset + marker.len()..offset + marker.len() + 2]
