@@ -66,6 +66,7 @@ struct StagedTransition {
     control_entry: VId,
     proposal: EntryPayload,
     proposal_digest: [u8; 32],
+    approvals: Vec<ApprovalRef>,
     minted: Vec<(EntryRef, EntryRef)>,
     blocked: Vec<(EntryRef, String)>,
 }
@@ -143,6 +144,7 @@ impl PreparedTransition {
             control_entry,
             proposal,
             proposal_digest,
+            approvals,
             minted,
             blocked,
         } = match self.state {
@@ -186,20 +188,40 @@ impl PreparedTransition {
             }
             Err(WriteTxnError::Write(
                 fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-            )) => match db.vertex(control_entry)? {
-                Some(row) => recorded_proposal_or_conflict(
-                    db,
-                    &book,
-                    &row,
-                    &period,
-                    transition,
-                    &proposal,
-                    &proposal_digest,
-                ),
-                None => Err(KernelError::Corrupt(
-                    "identity spent but no live row".into(),
-                )),
-            },
+            )) => {
+                // A concurrent winner may name a period this capability
+                // cannot observe. Its next retry can judge metadata scope;
+                // this identity-race fallback must not load its payload.
+                if capability.is_scoped() {
+                    return Ok(Err(crate::outcome::key_conflict()));
+                }
+                match db.vertex(control_entry)? {
+                    Some(row) => recorded_proposal_or_conflict(
+                        db,
+                        &book,
+                        &row,
+                        &period,
+                        transition,
+                        &proposal,
+                        &proposal_digest,
+                        &approvals,
+                    ),
+                    None => {
+                        let key = fa_model::intent_outcome_vid(
+                            book.book_id,
+                            &proposal.principal_ref.0.to_le_bytes(),
+                            &proposal.idempotency_key,
+                        );
+                        if db.vertex(key)?.is_some() {
+                            Ok(Err(crate::outcome::key_conflict()))
+                        } else {
+                            Err(KernelError::Corrupt(
+                                "identity spent but no live row".into(),
+                            ))
+                        }
+                    }
+                }
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -405,6 +427,7 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     reason_code: u16,
     idempotency_key: &[u8],
     description: &Erasable<String>,
+    approvals: &[ApprovalRef],
 ) -> Outcome<Transitioned> {
     let period_code = period.code.as_str();
     let stored = match crate::rows::prop(row, property::FA_PAYLOAD) {
@@ -468,9 +491,19 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
         description.clone(),
     );
     let candidate_digest = candidate.proposal_digest()?;
-    recorded_proposal_or_conflict(db, book, row, period_code, t, &candidate, &candidate_digest)
+    recorded_proposal_or_conflict(
+        db,
+        book,
+        row,
+        period_code,
+        t,
+        &candidate,
+        &candidate_digest,
+        approvals,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recorded_proposal_or_conflict<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -479,6 +512,7 @@ fn recorded_proposal_or_conflict<V: asupersync::fs::Vfs + Clone>(
     t: PeriodTransition,
     proposal: &EntryPayload,
     proposal_digest: &[u8; 32],
+    approvals: &[ApprovalRef],
 ) -> Outcome<Transitioned> {
     let stored = match crate::rows::prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => fa_model::Entry::decode(b.as_slice())?,
@@ -500,8 +534,11 @@ fn recorded_proposal_or_conflict<V: asupersync::fs::Vfs + Clone>(
             "resubmit the identical transition to get the recorded outcome, or use a new idempotency key",
         )
     };
-    if stored.proposal.class != EntryClass::PERIOD_CONTROL {
+    if stored.proposal.class != EntryClass::PERIOD_CONTROL || stored.approvals != approvals {
         return Ok(Err(conflict()));
+    }
+    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+        return Ok(Err(crate::outcome::key_conflict()));
     }
     let Some(ControlPayload::PeriodTransition {
         period_ref,
@@ -855,19 +892,17 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
     capability: &Capability,
     approvals: &[ApprovalRef],
 ) -> Outcome<Transitioned> {
-    if t == PeriodTransition::Open {
-        if let Err(refusal) = admit_transition(db, book, period_code, t, principal_ref, capability)?
-        {
-            return Ok(Err(refusal));
-        }
-        if let Err(refusal) = policy::capability_admitted(db, book, capability)? {
-            return Ok(Err(refusal));
-        }
-        // Opening can mint due cash reversals. Their cutoff guard needs the
-        // same retained reconciliation history as the ordinary post path.
-        if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
-            return Ok(Err(refusal));
-        }
+    if let Err(refusal) = admit_transition(db, book, period_code, t, principal_ref, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    // Common-key admission verifies a recovered legacy coverage marker.
+    // Opening additionally needs the retained cash-reconciliation history
+    // for due scheduled reversals. Hydrate only after the caller is admitted.
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
     }
     match prepare_transition(
         db,
@@ -883,73 +918,8 @@ pub async fn transition_period<V: asupersync::fs::Vfs + Clone>(
         approvals,
     )? {
         Ok(prepared) => prepared.commit(db, ctx).await,
-        // An identical retry finds the period already moved (FA-INV-09,
-        // fa-l93 D13). The refusal came after authorization, so the caller
-        // may see the recorded outcome of its own request.
-        Err(refusal) if refusal.code == code::TRANSITION => Ok(recorded_transition(
-            db,
-            book,
-            period_code,
-            t,
-            principal_ref,
-            reason_code,
-            idempotency_key,
-        )?
-        .ok_or(refusal)),
         Err(refusal) => Ok(Err(refusal)),
     }
-}
-
-/// The recorded outcome of this exact request, when the control entry at
-/// its identity (principal, key) moved `period_code` along `t` with the
-/// same reason, dated as the period law dates it; `None` otherwise (the
-/// caller's refusal stands).
-fn recorded_transition<V: asupersync::fs::Vfs + Clone>(
-    db: &Database<V>,
-    book: &BookContext,
-    period_code: &str,
-    t: PeriodTransition,
-    principal_ref: VId,
-    reason_code: u16,
-    idempotency_key: &[u8],
-) -> Result<Option<Transitioned>, KernelError> {
-    let evid = entry_vid(
-        book.book_id,
-        &principal_ref.0.to_le_bytes(),
-        idempotency_key,
-    );
-    let Some((entry, recorded_at)) = crate::post::read_entry(db, evid)? else {
-        return Ok(None);
-    };
-    let Some(ControlPayload::PeriodTransition {
-        period_ref,
-        from,
-        to,
-        reason_code: recorded_reason,
-        ..
-    }) = &entry.proposal.control
-    else {
-        return Ok(None);
-    };
-    let (Some(from), Some(to)) = (PeriodState::from_tag(*from), PeriodState::from_tag(*to)) else {
-        return Ok(None);
-    };
-    let same = period_ref.code == period_code
-        && entry.proposal.principal_ref == principal_ref
-        && *recorded_reason == reason_code
-        && policy::calendar_period(book, period_code)
-            .is_some_and(|p| entry.proposal.effective_date == transition_date(&p, from))
-        && transition(from, t).ok() == Some(to);
-    Ok(same.then(|| Transitioned {
-        period: period_code.to_string(),
-        from,
-        to,
-        recorded_at,
-        control_entry: evid,
-        minted: Vec::new(),
-        blocked: Vec::new(),
-        already_recorded: true,
-    }))
 }
 
 /// Capability and coordinate admission shared by preparation and the async
@@ -1001,8 +971,8 @@ fn admit_transition<V: asupersync::fs::Vfs + Clone>(
 /// Stage the production transition without publishing it. Its witnesses
 /// remain pinned while another prepared operation is allowed to commit;
 /// [`PreparedTransition::commit`] validates those original witnesses.
-/// Opening a period may mint scheduled reversals and therefore requires
-/// retained history from sequence zero; [`transition_period`] loads it.
+/// Recovered legacy-key coverage and scheduled reversals require retained
+/// native history; [`transition_period`] loads it after authority admission.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
     db: &mut Database<V>,
@@ -1038,6 +1008,27 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
         &principal_ref.0.to_le_bytes(),
         idempotency_key,
     );
+    // Admission above authorizes the requested period, not an existing
+    // same-key Entry. Judge its reach from scalar metadata before reading
+    // either its outcome claim or its canonical payload.
+    if capability.is_scoped()
+        && txn.vertex_has_label(db, evid, label::ENTRY)?.is_some()
+        && !policy::entry_in_scope_by_metadata(&txn, db, book, capability, None, evid)?
+    {
+        txn.abort();
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        principal_ref,
+        idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     let epoch = policy::epoch_witness(&txn, db)?;
 
     let Some(row) = txn.vertex(db, pvid)? else {
@@ -1082,6 +1073,7 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
                 reason_code,
                 idempotency_key,
                 &description,
+                approvals,
             )? {
                 Ok(recorded) => Ok(Ok(PreparedTransition {
                     state: PreparedTransitionState::AlreadyRecorded { basis, recorded },
@@ -1105,12 +1097,26 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
             reason_code,
             idempotency_key,
             &description,
+            approvals,
         )? {
             Ok(recorded) => Ok(Ok(PreparedTransition {
                 state: PreparedTransitionState::AlreadyRecorded { basis, recorded },
             })),
             Err(r) => Ok(Err(r)),
         };
+    }
+
+    // A legacy target-derived entry may have no modern claim. Only the
+    // authenticated complete recovery can prove this common key was unused;
+    // an ordinary transition never scans or rewrites old journal history.
+    let outcome = fa_model::intent_outcome_vid(
+        book.book_id,
+        &principal_ref.0.to_le_bytes(),
+        idempotency_key,
+    );
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(&txn, db, book, outcome)? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
 
     // A fresh transition names a reason its scope registers (fa-cvg).
@@ -1157,6 +1163,7 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
 
     let mut batch = WriteBatch::new(relation::IN_PERIOD);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         pvid,
         property::STATE,
@@ -1203,6 +1210,7 @@ pub fn prepare_transition<V: asupersync::fs::Vfs + Clone>(
             control_entry: evid,
             proposal,
             proposal_digest,
+            approvals: approvals.to_vec(),
             minted,
             blocked,
         })),

@@ -839,7 +839,7 @@ pub fn measure_kernel_op_witness(op_id: &str) -> Result<OpCount, BenchError> {
                 witnesses: 1,
                 cas_moves: 1,
                 edges_written: 1,
-                vertices_written: 1,
+                vertices_written: 2, // PeriodControl and its atomic common-key IntentOutcome
                 transactions: 1,
             })
         }

@@ -2,9 +2,10 @@
 //!
 //! Entry identity still enforces target uniqueness. These immutable claims
 //! additionally reserve (book, principal, key), shared with atomic batches.
-//! Migration retains its declared run-scoped keys. Dedicated control writers
-//! have not migrated to this protocol. Existing normal-key control entries
-//! are still checked by point lookup before a posting takes their key.
+//! Migration retains its declared run-scoped keys. Period and time controls
+//! also reserve the common key; their pre-protocol normal-key entries remain valid
+//! retry anchors. Other dedicated control writers have not migrated. Existing
+//! normal-key controls are checked before a posting takes their key.
 
 mod keys;
 mod rebuild;
@@ -206,7 +207,28 @@ pub(crate) fn witness_key<V: Vfs + Clone>(
     if !covered_class(proposal.class) {
         return Ok(Ok(false));
     }
-    let ovid = entry_outcome_vid(proposal);
+    witness_named_key(
+        txn,
+        db,
+        proposal.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        expected_entry,
+    )
+}
+
+/// A dedicated control admits its named scope before observing this opaque
+/// key. Its normal Entry identity remains the legacy retry anchor; a batch or
+/// target-derived posting at the common key conflicts without payload reads.
+pub(crate) fn witness_named_key<V: Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: Id128,
+    principal: VId,
+    key: &[u8],
+    expected_entry: VId,
+) -> Outcome<bool> {
+    let ovid = intent_outcome_vid(book, &principal.0.to_le_bytes(), key);
     match txn.vertex_has_label(db, ovid, label::INTENT_OUTCOME)? {
         None => return Ok(Ok(false)),
         Some(false) => return Ok(Err(key_conflict())),
@@ -230,10 +252,7 @@ pub(crate) fn witness_key<V: Vfs + Clone>(
         return Ok(Err(key_conflict()));
     }
     let claim = claim_of(&row)?;
-    if claim.book != proposal.book_id
-        || claim.principal != proposal.principal_ref
-        || claim.entry.vid != expected_entry
-    {
+    if claim.book != book || claim.principal != principal || claim.entry.vid != expected_entry {
         return Ok(Err(key_conflict()));
     }
     Ok(Ok(true))
@@ -593,6 +612,30 @@ pub fn stage_entry(
     if !covered_class(entry.proposal.class) {
         return Ok(None);
     }
+    stage_claim(batch, entry, vid).map(Some)
+}
+
+/// Period and time controls retain their normal-key Entry identity, including
+/// old immutable entries that predate these common-key claims. Do not broaden
+/// `covered_class`: historical coverage authenticates monetary posting keys,
+/// and an old control's absence of a claim must not invalidate its exact retry.
+pub(crate) fn stage_control(
+    batch: &mut WriteBatch,
+    entry: &Entry,
+    vid: VId,
+) -> Result<(), KernelError> {
+    if !matches!(
+        entry.proposal.class,
+        EntryClass::PERIOD_CONTROL | EntryClass::TIME_CONTROL
+    ) {
+        return Err(KernelError::Corrupt(
+            "control outcome claim requires a PeriodControl or TimeControl entry".into(),
+        ));
+    }
+    stage_claim(batch, entry, vid).map(|_| ())
+}
+
+fn stage_claim(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<[u8; 32], KernelError> {
     let claim = EntryClaim::new(entry, vid, None)?;
     let encoded = claim.canonical_bytes()?;
     let digest = domain_digest(b"fa:entry-outcome:v1", &[&encoded]);
@@ -601,7 +644,38 @@ pub fn stage_entry(
         vec![label::INTENT_OUTCOME],
         claim_properties(&claim)?,
     );
-    Ok(Some(digest))
+    Ok(digest)
+}
+
+/// A legacy normal-key control is its own immutable key reservation. When a
+/// common claim exists, it must be the original claim published with that
+/// exact entry; neither an unrelated batch nor a copied claim can supply it.
+pub(crate) fn verify_control_recorded<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !matches!(
+        entry.proposal.class,
+        EntryClass::PERIOD_CONTROL | EntryClass::TIME_CONTROL
+    ) || !original(db, row)?
+    {
+        return Ok(false);
+    }
+    let outcome = entry_outcome_vid(&entry.proposal);
+    let Some(claim_row) = db.vertex(outcome)? else {
+        // A deleted modern claim is not a legacy control. The authentic
+        // publication must itself predate the common-key claim protocol.
+        return Ok(db.vertex_at(outcome, row.created_at)?.is_none());
+    };
+    if !is_entry_claim(&claim_row) {
+        return Ok(false);
+    }
+    Ok(
+        claim_of(&claim_row)? == EntryClaim::new(entry, row.vid, None)?
+            && original(db, &claim_row)?
+            && claim_row.created_at == row.created_at,
+    )
 }
 
 /// A concurrent newly published winner must have its original atomic claim.

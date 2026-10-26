@@ -681,6 +681,14 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
         return Ok(Err(policy::refusal(&d)));
     }
+    if let Err(refusal) = policy::capability_admitted(db, book, &req.capability)? {
+        return Ok(Err(refusal));
+    }
+    // Reopened books may need their retained native history hydrated to
+    // authenticate recovered outcome coverage. Admission precedes that read.
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let prev_corroborated = latest_corroborated_tick(db, None)?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
@@ -694,9 +702,34 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
         &req.principal_ref.0.to_le_bytes(),
         &req.idempotency_key,
     );
+    // TimeEvidence shares the same scoped key as postings and atomic batches.
+    // A target-derived reversal/resolution or an outer batch can reserve this
+    // key without creating the ordinary Entry identity checked below.
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        req.principal_ref,
+        &req.idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         return recorded_tick(db, &row, &req, book);
+    }
+    // An exact legacy retry above remains readable. A new tick must prove
+    // that an old target-derived posting did not already consume its key.
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&initial_proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let (witnessed, latest) = tick_witness(&txn, db)?;
     if let Some(corr) = prev_corroborated
@@ -756,6 +789,7 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     };
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         book_root(),
         property::LATEST_TICK,
@@ -781,6 +815,12 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
             Some(row) => recorded_tick(db, &row, &req, book),
+            None if db
+                .vertex(crate::outcome::entry_outcome_vid(&initial_proposal))?
+                .is_some() =>
+            {
+                Ok(Err(crate::outcome::key_conflict()))
+            }
             None => Err(KernelError::Corrupt(
                 "identity spent but no live row".into(),
             )),
@@ -805,6 +845,9 @@ fn recorded_tick<V: asupersync::fs::Vfs + Clone>(
         Err(r) => Ok(Err(r)),
         Ok(posted) => {
             let stored = decode_entry(row)?;
+            if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+                return Ok(Err(crate::outcome::key_conflict()));
+            }
             let Some(ControlPayload::TimeTick {
                 observed_utc_ns, ..
             }) = stored.proposal.control
