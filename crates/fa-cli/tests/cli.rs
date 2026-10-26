@@ -9856,6 +9856,23 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "list"]).0, 0);
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
+    // fa-9ccl: an exhibit label on the produced document, in the open matter.
+    assert_eq!(
+        run(
+            true,
+            &[
+                "exhibit",
+                "mark",
+                &ev,
+                "--label",
+                "EVT-1",
+                "--matter",
+                "events-matter"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["document", "show", &ev]).0, 0);
     // Audit engagements (fa-zgn): open, propose, pass, list and show.
     assert_eq!(
@@ -9986,6 +10003,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["search", "rent"]).0, 0);
+    // fa-qip: the index rebuilt from the journal equals the one searched.
+    assert_eq!(run(true, &["verify", "search"]).0, 0);
+    // fa-gpd4: a host sweep with nothing due still reports what it swept.
+    assert_eq!(run(true, &["sweep", "now"]).0, 0);
     assert_eq!(
         run(true, &["diff", "--from", "HEAD", "--period", "FY2026-P03"]).0,
         0
