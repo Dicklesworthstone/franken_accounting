@@ -134,7 +134,7 @@ mod tests {
         let doc = render(book, f4, &|_| None).expect("F4 renders");
         assert_eq!(
             doc.to_string(),
-            r#"{"class":"Original","effective_date":"2001-06-30","idempotency_key":"wc-pilot-F4","description":"line costs to CIP (pilot fixture)","legs":[{"side":"debit","account":"1500","amount":"560000000.00 USD"},{"side":"credit","account":"6100","amount":"560000000.00 USD"}]}"#
+            r#"{"class":"Original","effective_date":"2001-06-30","idempotency_key":"wc-pilot-F4","description":"line costs to CIP (pilot fixture)","legs":[{"side":"debit","account":"1500","amount":"560000000.00 USD"},{"side":"credit","account":"6100","amount":"186666666.67 USD"},{"side":"credit","account":"6110","amount":"186666666.67 USD"},{"side":"credit","account":"6120","amount":"186666666.66 USD"}]}"#
         );
         // Every key is one the CLI's intent reader accepts
         // (crates/fa-cli/src/cli.rs post_timing FIELDS), and legs carry
@@ -181,8 +181,8 @@ mod tests {
             legs.iter()
                 .filter_map(|l| l.get("side").and_then(Json::as_str))
                 .collect::<Vec<_>>(),
-            ["credit", "debit"],
-            "delta-F4 negates F4: Cr 1500 at ordinal 0, Dr 6100 at ordinal 1"
+            ["credit", "debit", "debit", "debit"],
+            "delta-F4 negates F4: Cr 1500 at ordinal 0, Dr 6100, 6110 and 6120 at ordinals 1-3"
         );
     }
 }
