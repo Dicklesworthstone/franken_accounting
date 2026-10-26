@@ -1401,3 +1401,124 @@ fn statement_presented_in_units_foots_with_an_explicit_residual_line() {
         assert_eq!(text(&events[0], "event"), "error");
     }
 }
+
+/// fa-doa9: the FFIEC 041 RC/RI and FR Y-9C HC schedules partition the
+/// shipped us-bank-call-report chart. `fa statement lint` maps every covered
+/// leaf to exactly one schedule line, including the leaves the earlier
+/// two-digit convention misplaced:
+/// - noninterest-bearing balances (1110) are RCON0081, not RCON0071;
+/// - the allowance (1430) is RCON3123, subtracted, not added to loans;
+/// - federal funds purchased (2210) are other liabilities, not deposits;
+/// - common stock (3200) and surplus (3300) land on their lines;
+/// - interest on balances due (4140) and realized AFS gains (4620) have
+///   their own RI lines.
+/// Planted negative: a revenue leaf the RI schedule has no line for (4630) is
+/// reported unmapped, and the lint is not clean.
+#[test]
+fn call_report_schedules_partition_the_bank_template() {
+    let dir = temporary();
+    let book = dir.join("book");
+    ok(&book, &["book", "create", "--name", "Call report"]);
+    ok(
+        &book,
+        &["chart", "import", "--template", "us-bank-call-report"],
+    );
+    let lint = |book: &Path, definition: &str| -> Json {
+        let events = ok(book, &["statement", "lint", "--definition", definition]);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(text(&events[0], "event"), "statement_lint");
+        data(&events[0]).clone()
+    };
+    let count = |value: &Json, key: &str| match value.get(key) {
+        Some(Json::Int(n)) => *n,
+        other => panic!("{key}: {other:?}"),
+    };
+    let line_of = |value: &Json, account: &str| -> String {
+        array(value, "mappings")
+            .iter()
+            .find(|m| text(m, "account") == account)
+            .map(|m| text(m, "line").to_string())
+            .unwrap_or_default()
+    };
+    for (definition, expected) in [
+        (
+            "ffiec_041_schedule_rc_2026q1",
+            &[
+                ("1110", "RCON0081"),
+                ("1120", "RCON0071"),
+                ("1220", "RCON1773"),
+                ("1410", "RCON2122"),
+                ("1430", "RCON3123"),
+                ("1310", "RCON2145"),
+                ("2110", "RCON2200"),
+                ("2210", "RCON2930"),
+                ("2400", "RCON3190"),
+                ("3200", "RCON3230"),
+                ("3300", "RCON3839"),
+                ("3400", "RCON3632"),
+            ][..],
+        ),
+        (
+            "fr_y9c_schedule_hc_2026q1",
+            &[("1110", "BHCK0081"), ("2210", "BHCK2930")][..],
+        ),
+        (
+            "ffiec_041_schedule_ri_2026q1",
+            &[
+                ("4110", "RIAD4010"),
+                ("4140", "RIAD4115"),
+                ("4150", "RIAD4065"),
+                ("4170", "RIAD4020"),
+                ("4520", "RIAD4079"),
+                ("4610", "RIAD3521"),
+                ("4620", "RIAD3196"),
+                ("5220", "RIAD4180"),
+                ("5240", "RIAD4200"),
+                ("5400", "RIADJJ33"),
+                ("5710", "RIAD4093"),
+                ("5900", "RIAD4302"),
+            ][..],
+        ),
+    ] {
+        let report = lint(&book, definition);
+        assert_eq!(
+            report.get("clean"),
+            Some(&Json::Bool(true)),
+            "{definition}: {report:?}"
+        );
+        assert!(count(&report, "covered_leaves") > 0, "{definition}");
+        assert_eq!(
+            count(&report, "mapped_leaves"),
+            count(&report, "covered_leaves"),
+            "{definition}"
+        );
+        for (account, line) in expected {
+            assert_eq!(line_of(&report, account), *line, "{definition}: {account}");
+        }
+    }
+
+    // Planted: a revenue leaf the RI schedule has no line for.
+    let extra = dir.join("extra.json");
+    std::fs::write(
+        &extra,
+        r#"{"code":"4630","name":"Unrealized gains on equity securities","type":"Revenue","unit":"USD"}"#,
+    )
+    .unwrap();
+    ok(
+        &book,
+        &[
+            "chart",
+            "open",
+            extra.to_str().unwrap(),
+            "--opened",
+            "2026-01-01",
+        ],
+    );
+    let report = lint(&book, "ffiec_041_schedule_ri_2026q1");
+    assert_eq!(report.get("clean"), Some(&Json::Bool(false)), "{report:?}");
+    let unmapped: Vec<&str> = array(&report, "unmapped_leaves")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(unmapped, ["4630"], "{report:?}");
+}
