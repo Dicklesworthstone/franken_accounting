@@ -230,3 +230,21 @@ fn the_write_path_samples_and_a_driven_run_measure_end_to_end() {
     assert!(base.join("candidate").join("store").exists());
     assert!(base.join("incumbent").join("store").exists());
 }
+
+#[test]
+fn a_bundle_sample_counts_what_fa_verify_verified() {
+    let (code, stdout, stderr) = fa_bench(&[
+        "sample",
+        "bundle_production_and_verify",
+        "--entries",
+        "50",
+        "--rounds",
+        "2",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let run = parse_samples_line(stdout.trim()).expect("bench_samples line");
+    // The 50 posted entries and the book's control entries before them.
+    assert!(run.counted > 50, "{stdout}");
+    assert_eq!(run.samples_us.len(), 2);
+    assert!(stdout.contains("\"stated\":50,\"witness\":{\"counter\":\"entries_verified\""));
+}
