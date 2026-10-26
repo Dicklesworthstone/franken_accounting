@@ -104,7 +104,8 @@ commands:
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,...]               independently recompute native or dimension-filtered
-                                                trial balances, statements, open items, or balance explanations.
+                                                trial balances, statements, open items, balance explanations,
+                                                or effective-date aging.
                                                 V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
@@ -1317,7 +1318,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         .ok_or_else(|| {
                             usage(
                                 format!("`--expect {raw}` is not 64 hex characters"),
-                                "pass the independently selected native report certificate digest",
+                                "pass the independently selected report certificate digest (the outer certificate for aging)",
                             )
                         })
                 })
@@ -1379,6 +1380,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 "report_mode",
                                 s(if report.explanation.is_some() {
                                     "balance_explanation"
+                                } else if report.aging.is_some() {
+                                    "effective_date_aging"
                                 } else if report.open_items.is_some() {
                                     "open_items"
                                 } else if report.activity {
@@ -1392,6 +1395,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 "rows",
                                 n(if let Some(explanation) = &report.explanation {
                                     explanation.contributions.len()
+                                } else if let Some(aging) = &report.aging {
+                                    aging.items.len()
                                 } else if let Some(open_items) = &report.open_items {
                                     open_items.items.len()
                                 } else if let Some(statement) = &report.statement {
@@ -1467,6 +1472,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(explanation) = &report.explanation {
                         checks.extend(explanation_checks(explanation));
+                    }
+                    if let Some(aging) = &report.aging {
+                        checks.extend(aging_checks(aging));
                     }
                     for row in &report.rows {
                         checks.push(Check::pass(
@@ -1821,6 +1829,124 @@ fn open_items_checks(report: &crate::report::VerifiedOpenItems) -> Vec<Check> {
                 ],
             ));
         }
+    }
+    checks
+}
+
+fn aging_checks(report: &crate::report::VerifiedAging) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "aging_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("effective_through", day(Some(report.effective_through))),
+            (
+                "account_filter",
+                report
+                    .account_filter
+                    .map_or(Json::Null, |id| s(format!("{id:032x}"))),
+            ),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "age_basis",
+                s("civil days since effective date; no contractual due date inferred"),
+            ),
+            (
+                "selection",
+                s("effective cutoff before settlement and reversal netting"),
+            ),
+            (
+                "amount_basis",
+                s("native units; separate debit and credit totals"),
+            ),
+            (
+                "producer_authorization",
+                s("not judged; saved capability bytes grant no current authority"),
+            ),
+        ],
+    )];
+    for (index, band) in report.bands.iter().enumerate() {
+        checks.push(Check::pass(
+            "aging_band",
+            "recomputation",
+            vec![
+                ("bucket", n(index as u64)),
+                ("lower_inclusive", n(band.lower_inclusive)),
+                (
+                    "upper_inclusive",
+                    band.upper_inclusive.map_or(Json::Null, n),
+                ),
+            ],
+        ));
+    }
+    for aged in &report.items {
+        let item = &aged.item;
+        checks.push(Check::pass(
+            "aging_item",
+            "recomputation",
+            vec![
+                ("entry", s(format!("{:032x}", item.entry))),
+                ("ordinal", n(u64::from(item.ordinal))),
+                ("account", s(format!("{:032x}", item.account))),
+                ("unit", n(u64::from(item.unit_id))),
+                ("side", s(if item.debit { "debit" } else { "credit" })),
+                ("effective_date", day(Some(item.effective_date))),
+                ("recorded_at", n(item.recorded_at)),
+                ("original", s(item.original.to_string())),
+                ("applied", s(item.applied.to_string())),
+                ("applied_out", s(item.applied_out.to_string())),
+                ("open", s(item.open.to_string())),
+                ("age_days", n(aged.age_days)),
+                ("bucket", n(aged.bucket as u64)),
+                ("applications", n(item.applications.len() as u64)),
+            ],
+        ));
+        for application in &item.applications {
+            checks.push(Check::pass(
+                "aging_application",
+                "recomputation",
+                vec![
+                    ("target_entry", s(format!("{:032x}", item.entry))),
+                    ("target_ordinal", n(u64::from(item.ordinal))),
+                    ("entry", s(format!("{:032x}", application.entry))),
+                    ("ordinal", n(u64::from(application.ordinal))),
+                    ("amount", s(application.amount.to_string())),
+                    ("recorded_at", n(application.recorded_at)),
+                    ("live", Json::Bool(application.live)),
+                ],
+            ));
+        }
+    }
+    for cell in &report.cells {
+        checks.push(Check::pass(
+            "aging_cell",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", cell.account))),
+                ("unit", n(u64::from(cell.unit_id))),
+                ("bucket", n(cell.bucket as u64)),
+                ("debits", s(cell.amounts.debits.to_string())),
+                ("credits", s(cell.amounts.credits.to_string())),
+                ("item_count", n(cell.amounts.item_count)),
+            ],
+        ));
+    }
+    for total in &report.totals {
+        checks.push(Check::pass(
+            "aging_total",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", total.account))),
+                ("unit", n(u64::from(total.unit_id))),
+                ("debits", s(total.amounts.debits.to_string())),
+                ("credits", s(total.amounts.credits.to_string())),
+                ("item_count", n(total.amounts.item_count)),
+            ],
+        ));
     }
     checks
 }
@@ -2192,6 +2318,86 @@ mod tests {
         ] {
             assert!(json.contains(&expected), "{expected}: {json}");
         }
+    }
+
+    #[test]
+    fn aging_renders_effective_age_bands_exact_totals_and_undone_applications() {
+        use crate::report::*;
+        let amounts = VerifiedAgingAmounts {
+            debits: i128::MAX,
+            credits: 0,
+            item_count: 1,
+        };
+        let report = VerifiedAging {
+            book_id: [3; 16],
+            known_at: 9,
+            effective_through: 40,
+            account_filter: Some(9),
+            source_certificate_digest: [4; 32],
+            bands: vec![VerifiedAgingBand {
+                lower_inclusive: 0,
+                upper_inclusive: None,
+            }],
+            items: vec![VerifiedAgedOpenItem {
+                item: VerifiedOpenItem {
+                    entry: 1,
+                    ordinal: 0,
+                    account: 9,
+                    unit_id: 1,
+                    debit: true,
+                    effective_date: 10,
+                    recorded_at: 3,
+                    original: i128::MAX,
+                    applied: 0,
+                    applied_out: 0,
+                    open: i128::MAX,
+                    applications: vec![VerifiedApplication {
+                        entry: 2,
+                        ordinal: 1,
+                        amount: 40,
+                        recorded_at: 4,
+                        live: false,
+                    }],
+                },
+                age_days: 30,
+                bucket: 0,
+            }],
+            cells: vec![VerifiedAgingCell {
+                account: 9,
+                unit_id: 1,
+                bucket: 0,
+                amounts: amounts.clone(),
+            }],
+            totals: vec![VerifiedAgingTotal {
+                account: 9,
+                unit_id: 1,
+                amounts,
+            }],
+        };
+        let checks = aging_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "aging_parameters",
+                "aging_band",
+                "aging_item",
+                "aging_application",
+                "aging_cell",
+                "aging_total",
+            ]
+        );
+        let render = |index: usize| {
+            let mut rendered = String::new();
+            Json::Obj(checks[index].detail.clone()).write(&mut rendered);
+            rendered
+        };
+        assert!(render(0).contains("no contractual due date inferred"));
+        assert!(render(1).contains("\"upper_inclusive\":null"));
+        assert!(render(2).contains(&format!("\"open\":\"{}\"", i128::MAX)));
+        assert!(render(2).contains("\"age_days\":30"));
+        assert!(render(3).contains("\"live\":false"));
+        assert!(render(4).contains(&format!("\"debits\":\"{}\"", i128::MAX)));
+        assert!(render(5).contains("\"credits\":\"0\""));
     }
 
     #[test]
