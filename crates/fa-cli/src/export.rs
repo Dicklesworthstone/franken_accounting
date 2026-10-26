@@ -265,6 +265,21 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     let journal = selected.ok_or_else(|| Fail::Internal("export selection is missing".into()))?;
+    // One account's proof is its scope-index run: it holds no migration
+    // run's lifecycle controls and no balance, so fa-verify cannot decide
+    // whether a migration entry in it counts (fa-mv0f), and refuses it.
+    let chunks = journal
+        .entries
+        .iter()
+        .filter(|e| e.class == fa_model::EntryClass::MIGRATION)
+        .count();
+    if with_proofs && account.is_some() && chunks > 0 {
+        ctx.out.warn(format!(
+            "this account's extract holds {chunks} migration {} whose run visibility its account bundle cannot prove, so fa-verify ads will refuse {}; the whole-chart extract (no --account) carries the balances that prove it",
+            if chunks == 1 { "entry" } else { "entries" },
+            if chunks == 1 { "it" } else { "them" },
+        ));
+    }
     let files = render_files(format, &journal)?;
     let total: usize = files.iter().map(|f| f.content.len()).sum();
     let max_inline = crate::verbs::registry()

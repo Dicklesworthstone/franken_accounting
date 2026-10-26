@@ -519,6 +519,11 @@ struct AdsPackage {
 
 impl AdsPackage {
     fn export(fixture: &Fixture) -> Self {
+        Self::export_with(fixture, &[]).0
+    }
+
+    /// [`Self::export`] with `extra` arguments, and the envelope's warnings.
+    fn export_with(fixture: &Fixture, extra: &[&str]) -> (Self, Vec<String>) {
         let out = fixture.path.parent().unwrap().join("ads");
         let output = Command::new(env!("CARGO_BIN_EXE_fa"))
             .arg("--book")
@@ -526,6 +531,7 @@ impl AdsPackage {
             .args(["export", "ads", "--as-of", "2026-12-31", "--out"])
             .arg(&out)
             .args(["--with-proofs", "--json"])
+            .args(extra)
             .env_remove("FA_BOOK")
             .output()
             .unwrap();
@@ -533,6 +539,13 @@ impl AdsPackage {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(0), "{stdout}\n{stderr}");
         let line = json::parse(stdout.lines().next().unwrap()).unwrap();
+        let warnings = match line.get("warnings") {
+            Some(Json::Arr(items)) => items
+                .iter()
+                .map(|w| w.as_str().unwrap().to_string())
+                .collect(),
+            other => panic!("warnings: {other:?}\n{stdout}"),
+        };
         let hex = line
             .get("data")
             .and_then(|data| data.get("proof"))
@@ -541,7 +554,7 @@ impl AdsPackage {
             .unwrap()
             .to_string();
         let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap();
-        Self {
+        let package = Self {
             key: (0..32)
                 .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
                 .collect::<Vec<_>>()
@@ -553,7 +566,8 @@ impl AdsPackage {
             tb: read("Trial_Balance.txt"),
             bundle: std::fs::read(out.join("ADS_Proof.fab")).unwrap(),
             receipt: std::fs::read(out.join("ADS_Proof.receipt")).unwrap(),
-        }
+        };
+        (package, warnings)
     }
 
     fn verify(&self, gl: &str) -> fa_verify::ads::AdsReport {
@@ -616,5 +630,42 @@ fn proved_ads_extracts_count_a_chunk_exactly_when_its_run_was_finalized() {
             .any(|f| f.contains("is no proven entry")),
         "{:?}",
         smuggled.failures
+    );
+}
+
+/// fa-mv0f: one account's proved extract over a migrated account is refused
+/// offline, naming what its bundle lacks. The account's scope-index run holds
+/// that account's entries only: no lifecycle control of the migration run and
+/// no balance, so nothing in it decides whether the run makes the chunk
+/// visible. The export says so when it writes the package. The whole-chart
+/// extract of the same book verifies (the test above).
+#[test]
+fn an_account_extract_over_a_migrated_account_is_refused_naming_what_its_bundle_lacks() {
+    let fixture = Fixture::new();
+    let mut book = fixture.open();
+    let run = fixture.stage(&mut book);
+    Fixture::terminal(&mut book, run, kind::FINALIZE);
+    Fixture::checkpoint(&mut book);
+    drop(book);
+    let (package, warnings) = AdsPackage::export_with(&fixture, &["--account", "1000"]);
+    assert!(
+        !AdsPackage::migration_rows(&package.gl).is_empty(),
+        "{}",
+        package.gl
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("1 migration entry") && w.contains("(no --account)")),
+        "{warnings:?}"
+    );
+    let report = package.verify(&package.gl);
+    assert!(!report.verified());
+    assert!(
+        report.failures.iter().any(|f| f.contains(
+            "an account bundle carries neither its run's lifecycle controls nor a migration-aware balance"
+        )),
+        "{:?}",
+        report.failures
     );
 }
