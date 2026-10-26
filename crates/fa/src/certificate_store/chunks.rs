@@ -86,7 +86,7 @@ impl Manifest {
     }
 }
 
-pub(super) fn fragment_vid(book: Id128, digest: &[u8; 32], index: u32) -> VId {
+pub(crate) fn fragment_vid(book: Id128, digest: &[u8; 32], index: u32) -> VId {
     let hash = domain_digest(FRAGMENT_DOMAIN, &[&book.0, digest, &index.to_le_bytes()]);
     let mut low = [0_u8; 16];
     low.copy_from_slice(&hash[..16]);

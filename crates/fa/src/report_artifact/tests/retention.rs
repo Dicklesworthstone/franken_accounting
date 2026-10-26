@@ -313,7 +313,13 @@ fn fragmented_outer_artifacts_have_one_birth_and_cannot_be_rewritten_or_repaired
     assert!(rows.iter().all(|row| row.created_at == receipt.recorded_at));
     h = reopen(h);
     assert_eq!(read(&h, artifact.digest()).unwrap(), artifact);
-    let part = rows.iter().find(|row| row.vid != root).unwrap();
+    // The artifact's own first fragment. The same commit also stores the
+    // book's registry epoch under the Certificate label (08840cadc), so not
+    // every non-root row is part of this artifact.
+    let first =
+        crate::certificate_store::fragment_vid(h.book.context().book_id, artifact.digest(), 0);
+    assert_ne!(first, root, "a fragment is never the artifact root");
+    let part = rows.iter().find(|row| row.vid == first).unwrap();
     let mut batch = WriteBatch::new(relation::DERIVED_FROM);
     batch.set_vertex_property(
         part.vid,

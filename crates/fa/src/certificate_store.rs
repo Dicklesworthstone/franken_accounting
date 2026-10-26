@@ -36,6 +36,8 @@ use crate::report_artifact::ValidatedArtifact;
 use crate::{BookError, Outcome, ReportArtifact, ReportArtifactFamily};
 
 mod chunks;
+#[cfg(test)]
+pub(crate) use chunks::fragment_vid;
 
 /// Inline vertex-row threshold. One fragment is the same size, so a
 /// historical test can still recognize a certificate that no longer fits
