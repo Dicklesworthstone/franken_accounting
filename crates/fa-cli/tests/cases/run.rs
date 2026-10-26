@@ -276,6 +276,9 @@ pub struct BookRun<'c> {
     pub lines: Vec<String>,
     /// A setup failure: every row of the variant reads FAIL with it.
     pub failure: Option<String>,
+    /// Whether a batch reads each member back to map its legs (a property
+    /// micro-book maps native leg ordinals itself, A5a).
+    pub map_batch_legs: bool,
 }
 
 impl<'c> BookRun<'c> {
@@ -309,6 +312,7 @@ impl<'c> BookRun<'c> {
             steps: Vec::new(),
             lines: Vec::new(),
             failure: None,
+            map_batch_legs: true,
         }
     }
 
@@ -1427,7 +1431,9 @@ impl<'c> BookRun<'c> {
                 &it.id,
             );
             self.vids.insert(it.id.clone(), vid.to_string());
-            self.map_legs(seq, &it.id, vid);
+            if self.map_batch_legs {
+                self.map_legs(seq, &it.id, vid);
+            }
         }
         if call.exit != 0 {
             self.lines.push(reproduce(&call));
@@ -1858,4 +1864,26 @@ pub fn run_files(
     let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
     let o = run_case(&CaseFiles { id, files: &refs }, verbs);
     if o.ok { Ok(o) } else { Err(Box::new(o)) }
+}
+
+/// One variant of a loaded case, built and replayed in a fresh retained
+/// directory, with no rows evaluated: the property tests read its runs
+/// directly (A5a). Every step record carries `branch_class`; batch members
+/// are not read back (a cited leg's native ordinal is its fixture ordinal).
+pub fn build_book<'c>(
+    case: &'c Case,
+    stem: &str,
+    branch_class: &str,
+    texts: &'c [(&'c str, &'c str)],
+) -> BookRun<'c> {
+    let book = case.books.get(stem).expect("the variant");
+    let work = tmp(&format!("{}-{stem}", case.header.id));
+    let mut run = BookRun::new(case, book, work, texts);
+    run.map_batch_legs = false;
+    run.build();
+    run.replay();
+    for s in &mut run.steps {
+        s.branch_class = Some(branch_class.to_string());
+    }
+    run
 }

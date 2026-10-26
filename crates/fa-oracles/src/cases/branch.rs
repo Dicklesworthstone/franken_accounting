@@ -1009,18 +1009,28 @@ pub struct Witness {
 /// witnesses.
 #[must_use]
 pub fn witnesses(case_id: &str, expectation_id: &str, cell: &Cell, n: usize) -> Vec<Witness> {
-    let key = cell.key.join(",");
-    let mut s = Stream::from_parts(&[
-        case_id.as_bytes(),
-        expectation_id.as_bytes(),
-        key.as_bytes(),
-    ]);
+    let mut s = Stream::new(witness_seed(case_id, expectation_id, cell));
     (0..n)
         .map(|index| Witness {
             index,
             values: cell.parts.iter().map(|p| draw(&mut s, p)).collect(),
         })
         .collect()
+}
+
+/// A cell's witness seed: SHA-256(case id ‖ 0x00 ‖ expectation id ‖ 0x00 ‖
+/// the cell key joined by `,`), which a failing property test prints.
+#[must_use]
+pub fn witness_seed(case_id: &str, expectation_id: &str, cell: &Cell) -> [u8; 32] {
+    let key = cell.key.join(",");
+    let mut bytes = Vec::new();
+    for (i, part) in [case_id, expectation_id, key.as_str()].iter().enumerate() {
+        if i > 0 {
+            bytes.push(0);
+        }
+        bytes.extend_from_slice(part.as_bytes());
+    }
+    crate::sha256::digest(&bytes)
 }
 
 /// A draw from `0..=hi` (0 when `hi` is not positive).
