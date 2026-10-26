@@ -6905,15 +6905,14 @@ fn portable_post_plan_retains_requested_and_resolved_balancing_legs() {
         }),
     );
     let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
-    let mut proposal = h.proposal(h.rent_legs(1_000), b"plan-balancing", EntryClass::ORIGINAL);
-    proposal.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
-    proposal.extensions.push((
-        fa_model::entry::BALANCING_EXTENSION,
-        limit::balancing_bytes(1, 1_000),
-    ));
+    let proposal = balancing_proposal(
+        h.proposal(h.rent_legs(1_000), b"plan-balancing", EntryClass::ORIGINAL),
+        1,
+    )
+    .unwrap();
     let basis = h.db.frontier().unwrap();
     let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
-    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let plan = h.post_plan(h.request(proposal.clone(), &["post"])).unwrap();
     assert_eq!(plan.intent().proposal().legs[0].amount.mantissa, 1_000);
     assert_eq!(plan.proposal().legs[0].amount.mantissa, 700);
     assert_eq!(plan.proposal().legs[1].amount.mantissa, 700);
@@ -6931,6 +6930,130 @@ fn portable_post_plan_retains_requested_and_resolved_balancing_legs() {
     let retry = h.publish_plan(plan, &capability).unwrap();
     assert_eq!(retry.entry_ref(), posted.entry_ref());
     assert_eq!(h.db.frontier().unwrap(), posted.recorded_at());
+
+    // The retained request remains retryable through ordinary posting even
+    // after its first execution consumed the entire available amount.
+    let retry = h.post(h.request(proposal, &["post"])).unwrap();
+    assert!(matches!(retry, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry.entry_ref(), posted.entry_ref());
+    for (requested, leg) in [(999, 1), (1_000, 0)] {
+        let changed = balancing_proposal(
+            h.proposal(
+                h.rent_legs(requested),
+                b"plan-balancing",
+                EntryClass::ORIGINAL,
+            ),
+            leg,
+        )
+        .unwrap();
+        let refusal = h.post(h.request(changed, &["post"])).unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-032", "{refusal}");
+    }
+    assert_eq!(h.db.frontier().unwrap(), posted.recorded_at());
+}
+
+#[test]
+fn balancing_post_plan_refuses_changed_availability_and_replans_exactly() {
+    let mut h = harness_configured(
+        Vec::new(),
+        None,
+        Some(BalanceLimit {
+            lower: Some(-700),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    );
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = balancing_proposal(
+        h.proposal(
+            h.rent_legs(1_000),
+            b"changing-balancing",
+            EntryClass::ORIGINAL,
+        ),
+        1,
+    )
+    .unwrap();
+    let plan = h.post_plan(h.request(proposal.clone(), &["post"])).unwrap();
+    assert_eq!(plan.proposal().legs[1].amount.mantissa, 700);
+    h.post(h.request(
+        h.proposal(h.rent_legs(100), b"intervening-spend", EntryClass::ORIGINAL),
+        &["post"],
+    ))
+    .unwrap();
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let refusal = h.publish_plan(plan, &capability).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    assert_eq!(plan.intent().proposal().legs[1].amount.mantissa, 1_000);
+    assert_eq!(plan.proposal().legs[1].amount.mantissa, 600);
+    let posted = h.publish_plan(plan, &capability).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal.legs[1].amount.mantissa, 600);
+
+    // An exhausted allowance refuses; saturation cannot create a zero entry.
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let proposal = balancing_proposal(
+        h.proposal(h.rent_legs(1), b"empty-balancing", EntryClass::ORIGINAL),
+        1,
+    )
+    .unwrap();
+    let refusal = h.post_plan(h.request(proposal, &["post"])).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-090", exit::REFUSAL));
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+}
+
+#[test]
+fn balancing_post_plan_requires_approval_of_the_resolved_effects() {
+    let mut h = harness_configured(
+        Vec::new(),
+        None,
+        Some(BalanceLimit {
+            lower: Some(-700),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    );
+    let march = h.march.clone();
+    h.transition(&march, PeriodTransition::Close, b"close-balancing-approval")
+        .unwrap();
+    let capability = Capability::embedded(PRINCIPAL, &["post", "post_closed"]).unwrap();
+    let proposal = balancing_proposal(
+        h.proposal(
+            h.rent_legs(1_000),
+            b"approved-balancing",
+            EntryClass::ADJUSTING,
+        ),
+        1,
+    )
+    .unwrap();
+    let wrong_approval = h.approve_transition(proposal.proposal_digest().unwrap());
+    let mut request = h.request(proposal.clone(), &["post", "post_closed"]);
+    request.approvals = vec![wrong_approval];
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let refusal = h.post_plan(request.clone()).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-016", exit::SAFETY));
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+
+    let mut resolved = proposal;
+    resolved.legs = h.rent_legs(700);
+    resolved.unit_totals = EntryPayload::fold_unit_totals(&resolved.legs).unwrap();
+    let approval = h.approve_transition(resolved.proposal_digest().unwrap());
+    request.approvals = vec![approval];
+    let plan = h.post_plan(request).unwrap();
+    assert_eq!(plan.proposal(), &resolved);
+    assert_eq!(plan.approvals(), &[approval]);
+    let posted = h.publish_plan(plan, &capability).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal, resolved);
+    assert_eq!(entry.approvals, vec![approval]);
 }
 
 #[test]

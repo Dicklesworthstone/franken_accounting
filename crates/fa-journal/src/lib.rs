@@ -154,8 +154,8 @@ pub use legal_hold::{
     release_legal_hold,
 };
 pub use limit::{
-    BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,
-    post_balancing,
+    BalanceLimit, Balanced, LimitCell, LimitScope, balancing_proposal, cell_account,
+    limit_cell_vid, period_cell_vid, post_balancing,
 };
 pub use migration::{
     PeriodBalance, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState,
