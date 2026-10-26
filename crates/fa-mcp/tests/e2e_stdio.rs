@@ -5431,7 +5431,7 @@ fn error_shape_matches_appendix_d() {
 
 #[test]
 fn fa_orient_next_offers_audit_program_matching_cli_next() {
-    let dir = temp_dir("orient-next-eng");
+    let dir = tmp("orient-next-eng");
     let book = dir.join("book");
     let b = book.display().to_string();
     cli_data(&[
@@ -5495,7 +5495,7 @@ fn fa_orient_next_offers_audit_program_matching_cli_next() {
         ));
     }
 
-    let mut mcp = Mcp::start_with(&book, &["--cluster", "fa.orient", "--grant", "read"]);
+    let mut mcp = Mcp::start(&book);
     mcp.discover();
     let (is_error, text, result) = call_tool(&mut mcp, "fa_orient_next", json!({}));
     assert!(!is_error, "{text}");
