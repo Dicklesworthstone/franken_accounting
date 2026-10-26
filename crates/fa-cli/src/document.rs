@@ -23,10 +23,19 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::args::{Args, nearest};
 use crate::cli::{
-    Ctx, Fail, build_proposal_from_intent, hex, parse_json, read_plan_bytes, unhandled, usage,
-    write_post_plan,
+    Ctx, Fail, build_proposal_from_intent, hex, parse_json, read_plan_bytes, restore_post_review,
+    unhandled, usage, write_post_plan,
 };
 use crate::proof::write_new;
+
+const MANUAL_REVIEW_EXAMPLE: &str = "fa document attest manual --review <file|hex|-> --digest <review_digest> --reason <name|code> --statement <text> --json";
+
+/// Where `fa document attest manual` takes its proposal from: a retained
+/// `fa post` review (fa-kokk), or an intent it seals afresh.
+enum ManualSource<'a> {
+    Review(Box<PostIntent>),
+    Intent(&'a str),
+}
 
 const ADD_EXAMPLE: &str = "fa document add invoice.pdf --kind Invoice --mime application/pdf --grade HumanUpload --book <dir> --json";
 const EVIDENCE_EXAMPLE: &str = r#""evidence": ["<document oid hex>"] or [{"document_oid": "<hex>", "doc_commit": "<hex>", "role": "Source"}], or --evidence <oid>"#;
@@ -1709,7 +1718,34 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         Some("manual") => {
-            let intent_path = args.require("--intent", "entry.json (or - for stdin)")?;
+            // `--review` restores the sealed proposal `fa post --review-only |
+            // --review-out` retained, so the assertion binds the same
+            // proposal_digest an approval binds (fa-kokk); `--intent` seals a
+            // fresh proposal of its own.
+            let source = match args.flag("--review") {
+                Some(_) => {
+                    for flag in ["--intent", "--plan-out"] {
+                        if args.flag(flag).is_some() {
+                            return Err(usage(
+                                format!(
+                                    "a restored review supplies the complete unchanged proposal; it takes no {flag}"
+                                ),
+                                MANUAL_REVIEW_EXAMPLE,
+                            ));
+                        }
+                    }
+                    ManualSource::Review(Box::new(restore_post_review(ctx, args)?))
+                }
+                None if args.flag("--digest").is_some() => {
+                    return Err(usage(
+                        "--digest names a review; it requires --review",
+                        MANUAL_REVIEW_EXAMPLE,
+                    ));
+                }
+                None => {
+                    ManualSource::Intent(args.require("--intent", "entry.json (or - for stdin)")?)
+                }
+            };
             let reason_text = args.require("--reason", "NoDocumentIssued")?;
             let statement = args.require(
                 "--statement",
@@ -1732,19 +1768,25 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         )
                     })?
             };
-            let who = ctx.principal(args);
             let capability = ctx.capability(args, &["post"])?;
-            let text = ctx.files.read_text(intent_path)?;
-            let doc = parse_json(intent_path, &text)?;
-            let mut book = ctx.books.open(args)?;
-            let proposal = build_proposal_from_intent(
-                &ctx.out,
-                &mut book,
-                args,
-                &doc,
-                who,
-                capability.clone(),
-            )?;
+            let (mut book, proposal) = match source {
+                ManualSource::Review(review) => (ctx.books.open(args)?, review.proposal().clone()),
+                ManualSource::Intent(intent_path) => {
+                    let who = ctx.principal(args);
+                    let text = ctx.files.read_text(intent_path)?;
+                    let doc = parse_json(intent_path, &text)?;
+                    let mut book = ctx.books.open(args)?;
+                    let proposal = build_proposal_from_intent(
+                        &ctx.out,
+                        &mut book,
+                        args,
+                        &doc,
+                        who,
+                        capability.clone(),
+                    )?;
+                    (book, proposal)
+                }
+            };
             let proposal_digest = proposal
                 .proposal_digest()
                 .map_err(fa_journal::KernelError::Model)
@@ -1779,8 +1821,13 @@ fn attest_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("holds", Json::Null),
                 ],
                 &format!(
-                    "recorded ManualAssertion attestation {vid_hex} for proposal {subj_hex} at {}",
-                    attested.recorded_at.0
+                    "recorded ManualAssertion attestation {vid_hex} for proposal {subj_hex} at {}{}",
+                    attested.recorded_at.0,
+                    if args.flag("--review").is_some() {
+                        "; post the same review with fa post --review <file|hex> --digest <review_digest> --approval <vid>"
+                    } else {
+                        ""
+                    }
                 ),
             );
             Ok(())
