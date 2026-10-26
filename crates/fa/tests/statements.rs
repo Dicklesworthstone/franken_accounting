@@ -9,6 +9,8 @@ mod explanation_bundle;
 mod open_items_bundle;
 #[path = "statements/report_bundle.rs"]
 mod report_bundle;
+#[path = "statements/roll_forward_bundle.rs"]
+mod roll_forward_bundle;
 
 use std::path::Path;
 

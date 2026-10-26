@@ -1,5 +1,5 @@
 //! Portable native and dimension-filtered trial balances, statements, open
-//! items, balance explanations and effective-date aging over a payload-complete checkpoint.
+//! items, balance explanations, aging and roll-forwards over a payload-complete checkpoint.
 //!
 //! This is the linear complete-prefix fallback from plan §13.1/§13.3. The
 //! independent verifier derives selectors from every record, reconstructs the
@@ -33,7 +33,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement or effective-date aging certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, effective-date aging or roll-forward certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -60,7 +60,7 @@ pub fn run_bodies<V: asupersync::fs::Vfs + Clone>(
 }
 
 /// Package an already replayed native or dimension-filtered trial balance, or
-/// statement. Open items, balance explanations and aging require the authenticated registry closure in
+/// statement. Open items, balance explanations, aging and roll-forwards require the authenticated registry closure in
 /// `assemble_with_registries`. For an instant-selected certificate, the facade
 /// supplies its observed time frontier
 /// as `known_at` so the complete upper-tick closure is retained as well.
@@ -84,14 +84,16 @@ pub fn assemble(
     assemble_inner(journal, checkpoint, certificate, known_at, bodies, &[])
 }
 
-/// Package a native statement, open-item report, balance explanation or aging with
+/// Package a native statement, open-item report, balance explanation, aging or roll-forward with
 /// the exact canonical registry documents bound by its source certificate.
 /// The facade verifies their closure and the book's complete unit table before
 /// calling this API. Open items pass `check_open_items_scope`; explanations
 /// pass `check_explanation_scope` and append their original reason-code
 /// registry as the fifth document. Aging retains its outer certificate after
 /// replaying the cutoff, buckets and output; its nested OpenItems source needs
-/// four documents. No v1 fallback serves either v3 selector or aging.
+/// four documents. Roll-forwards retain their outer schedule and a sequence-
+/// selected native closing-stock source with the same exact four documents.
+/// No v1 fallback serves either v3 selector or composed schedule.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -117,6 +119,7 @@ pub fn assemble_with_registries(
     if !(certificate_format(certificate, b"fa:report-certificate:v4")
         || open_items_certificate(certificate)
         || aging_certificate(certificate)
+        || roll_forward_certificate(certificate)
         || explanation)
         || registries
             .iter()
@@ -127,7 +130,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for statements, open items and aging, five including reason_codes for balance explanations",
+            "native reports require their exact canonical registry profile in closure order: four documents for statements, open items, aging and roll-forwards, five including reason_codes for balance explanations",
         )));
     }
     assemble_inner(
@@ -203,6 +206,56 @@ fn aging_certificate(certificate: &[u8]) -> bool {
     header().unwrap_or(false)
 }
 
+/// Route only a sequence-selected trunk closing-stock source. The facade and
+/// independent verifier still validate the full source and outer output; this
+/// header check cannot stand in for replay or authenticate a certificate.
+fn roll_forward_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "roll-forward format")? != b"fa:roll-forward-certificate:v1" {
+            return Ok(false);
+        }
+        let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "roll-forward source")?;
+        if !certificate_format(source, b"fa:report-certificate:v1") {
+            return Ok(false);
+        }
+        let mut native = Reader::new(source);
+        native.fixed::<{ b"fa:report-certificate:v1".len() }>("report format")?;
+        native.str(128, "report scope")?;
+        native.str(128, "report authority")?;
+        if native.str(128, "report output format")? != "fa:trial-balance:v1" {
+            return Ok(false);
+        }
+        native.fixed::<16>("report book")?;
+        if native.fixed::<16>("report branch")? != [0; 16] {
+            return Ok(false);
+        }
+        native.u64("report known-at")?;
+        if native.u8("report selector")? != 1 {
+            return Ok(false);
+        }
+        let through = native.i32("report effective-through")?;
+        let accounts = reader.count(4096, "roll-forward accounts")?;
+        if accounts == 0 {
+            return Ok(false);
+        }
+        for _ in 0..accounts {
+            reader.u128("roll-forward account")?;
+        }
+        let units = reader.count(4096, "roll-forward units")?;
+        if units == 0 {
+            return Ok(false);
+        }
+        for _ in 0..units {
+            reader.u32("roll-forward unit")?;
+        }
+        reader.str(256, "roll-forward label")?;
+        let from = reader.i32("roll-forward from")?;
+        Ok(from <= through && reader.i32("roll-forward through")? == through)
+    };
+    header().unwrap_or(false)
+}
+
 fn assemble_inner(
     journal: &Journal,
     checkpoint: &StoredCheckpoint,
@@ -221,10 +274,11 @@ fn assemble_inner(
             && (certificate_format(certificate, b"fa:report-certificate:v4")
                 || open_items_certificate(certificate)
                 || explanation_certificate(certificate)
-                || aging_certificate(certificate)))
+                || aging_certificate(certificate)
+                || roll_forward_certificate(certificate)))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report, balance explanation or effective-date aging with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report, balance explanation, effective-date aging or roll-forward with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -324,6 +378,55 @@ fn assemble_inner(
 #[cfg(test)]
 mod format_tests {
     use super::*;
+
+    #[test]
+    fn roll_forward_routing_requires_its_exact_sequence_trunk_closing_source() {
+        let source = |version: u8, branch: [u8; 16], selector: u8, through: i32| {
+            let mut writer = Writer::new();
+            writer
+                .fixed(format!("fa:report-certificate:v{version}").as_bytes())
+                .str("fa-fold-over-prefix")
+                .str("native read certificate")
+                .str("fa:trial-balance:v1")
+                .fixed(&[1; 16])
+                .fixed(&branch)
+                .u64(7)
+                .u8(selector)
+                .i32(through);
+            writer.finish().unwrap()
+        };
+        let wrapper = |source: &[u8], through: i32| {
+            let mut writer = Writer::new();
+            writer
+                .bytes(b"fa:roll-forward-certificate:v1")
+                .bytes(source)
+                .list(&[1_u128], |writer, account| {
+                    writer.u128(*account);
+                })
+                .list(&[0_u32], |writer, unit| {
+                    writer.u32(*unit);
+                })
+                .str("Lead schedule")
+                .i32(0)
+                .i32(through);
+            writer.finish().unwrap()
+        };
+        // Routing recognizes the supported header; these fixtures deliberately
+        // do not claim to be complete or verified accounting certificates.
+        let valid = source(1, [0; 16], 1, 31);
+        assert!(roll_forward_certificate(&wrapper(&valid, 31)));
+        assert!(!roll_forward_certificate(&valid));
+        for invalid in [
+            source(10, [0; 16], 1, 31),
+            source(2, [0; 16], 1, 31),
+            source(1, [1; 16], 1, 31),
+            source(1, [0; 16], 0, 31),
+            source(1, [0; 16], 2, 31),
+        ] {
+            assert!(!roll_forward_certificate(&wrapper(&invalid, 31)));
+        }
+        assert!(!roll_forward_certificate(&wrapper(&valid, 30)));
+    }
 
     #[test]
     fn supported_version_headers_do_not_admit_later_decimal_versions() {

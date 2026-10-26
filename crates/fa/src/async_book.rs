@@ -128,6 +128,25 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     signer: fa_notary::SigningKey,
 }
 
+/// Borrow the exact certificate being exported while sharing its native
+/// source closure. A composed report always keeps its outer bytes and digest.
+#[derive(Clone, Copy)]
+enum ReportBundleCertificate<'a> {
+    Native(&'a crate::ReportCertificate),
+    Aging(&'a crate::AgingCertificate),
+    RollForward(&'a crate::RollForwardCertificate),
+}
+
+impl<'a> ReportBundleCertificate<'a> {
+    fn source(self) -> &'a crate::ReportCertificate {
+        match self {
+            Self::Native(certificate) => certificate,
+            Self::Aging(certificate) => certificate.source(),
+            Self::RollForward(certificate) => certificate.source_certificate(),
+        }
+    }
+}
+
 impl<V: Vfs + Clone> AsyncBook<V> {
     /// Create `<dir>/store` and use `<dir>/blobs` for external documents.
     /// The caller supplies the runtime, filesystem, keys and entropy.
@@ -3619,8 +3638,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         state: Option<fa_model::Oid>,
         certificate: &crate::ReportCertificate,
     ) -> Outcome<Option<ProducedBundle>> {
-        self.produce_report_bundle_inner(cx, principal, capability, state, certificate, None)
-            .await
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::Native(certificate),
+        )
+        .await
     }
 
     /// Export an effective-date aging schedule and its native OpenItems source
@@ -3641,8 +3666,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             principal,
             capability,
             state,
-            certificate.source(),
-            Some(certificate),
+            ReportBundleCertificate::Aging(certificate),
+        )
+        .await
+    }
+
+    /// Export an exact account lead schedule over one authenticated prefix.
+    /// Its explicit account/unit/date selection, opening stock, every posted
+    /// movement and closing stock remain bound by the outer certificate.
+    /// Current whole-book read and produce precede any history observation.
+    pub async fn produce_roll_forward_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::RollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::RollForward(certificate),
         )
         .await
     }
@@ -3653,14 +3699,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         principal: VId,
         capability: &fa_policy::Capability,
         state: Option<fa_model::Oid>,
-        certificate: &crate::ReportCertificate,
-        aging: Option<&crate::AgingCertificate>,
+        report: ReportBundleCertificate<'_>,
     ) -> Outcome<Option<ProducedBundle>> {
+        let certificate = report.source();
         cx.query().checkpoint().map_err(BookError::Context)?;
         let reach = fa_policy::Reach {
-            observes: capability
-                .known_at_pin()
-                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            // Roll-forward certificate replay requires unpinned head authority.
+            // Enforce that boundary before restoring any report history.
+            observes: match report {
+                ReportBundleCertificate::RollForward(_) => fa_policy::Observes::Head,
+                _ => capability
+                    .known_at_pin()
+                    .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            },
             ..fa_policy::Reach::whole_book(true)
         };
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
@@ -3699,17 +3750,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        let replayed = if let Some(aging) = aging {
-            if let Err(refusal) =
-                self.replay_effective_date_aging(cx, principal, capability, aging)?
-            {
-                return Ok(Err(refusal));
+        let replayed = match report {
+            ReportBundleCertificate::Native(certificate) => {
+                match self.replay_report(cx, certificate)? {
+                    Ok(report) => Some(report),
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
             }
-            None
-        } else {
-            match self.replay_report(cx, certificate)? {
-                Ok(report) => Some(report),
-                Err(refusal) => return Ok(Err(refusal)),
+            ReportBundleCertificate::Aging(certificate) => {
+                if let Err(refusal) =
+                    self.replay_effective_date_aging(cx, principal, capability, certificate)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::RollForward(certificate) => {
+                if let Err(refusal) =
+                    self.replay_roll_forward(cx, principal, capability, certificate)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
             }
         };
         let closure_frontier = certificate
@@ -3734,11 +3796,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "certify the report at its resolved recorded sequence before producing an offline report bundle",
             )));
         }
-        let requires_registry_closure = matches!(
-            &certificate.selection,
-            crate::ReportSelection::OpenItems { .. }
-                | crate::ReportSelection::ExplainBalance { .. }
-        );
+        let requires_registry_closure = matches!(report, ReportBundleCertificate::RollForward(_))
+            || matches!(
+                &certificate.selection,
+                crate::ReportSelection::OpenItems { .. }
+                    | crate::ReportSelection::ExplainBalance { .. }
+            );
         let registries = if requires_registry_closure
             || matches!(&certificate.selection, crate::ReportSelection::Statement(_))
         {
@@ -3839,14 +3902,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(bodies) => bodies,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let bytes = match aging {
-            Some(aging) => match aging.canonical_bytes() {
+        let bytes = match report {
+            ReportBundleCertificate::Native(certificate) => certificate
+                .canonical_bytes()
+                .map_err(|error| KernelError::Model(error.into()))?,
+            ReportBundleCertificate::Aging(certificate) => match certificate.canonical_bytes() {
                 Ok(bytes) => bytes,
                 Err(refusal) => return Ok(Err(refusal)),
             },
-            None => certificate
-                .canonical_bytes()
-                .map_err(|error| KernelError::Model(error.into()))?,
+            ReportBundleCertificate::RollForward(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
         };
         let assembled = match registries.as_deref() {
             Some(registries) => fa_notary::report::assemble_with_registries(

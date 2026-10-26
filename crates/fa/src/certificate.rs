@@ -841,7 +841,25 @@ fn registry_digest(selection: &ReportSelection) -> Result<[u8; 32], Refusal> {
     )
 }
 
-/// Canonical registry inputs carried by native statements, open items and explanations.
+/// The registry-bearing native profiles, including the exact closing-stock
+/// source nested inside a roll-forward. This does not admit bare trial balances
+/// into registry bundles: their portable routing remains unchanged.
+fn offline_registry_profile(certificate: &ReportCertificate) -> bool {
+    matches!(
+        &certificate.selection,
+        ReportSelection::Statement(_)
+            | ReportSelection::OpenItems { .. }
+            | ReportSelection::ExplainBalance { .. }
+    ) || (certificate.branch_id == Id128::TRUNK
+        && certificate.time_selection.is_none()
+        && matches!(
+            &certificate.selection,
+            ReportSelection::TrialBalance(TrialBalanceSelection::AsOf(_))
+        ))
+}
+
+/// Canonical registry inputs carried by native statements, open items,
+/// explanations and a roll-forward's sequence-selected closing-stock source.
 /// The closure must be the one this certificate actually names. A historical
 /// or custom book unit table cannot be replaced by the executable's defaults:
 /// native statements render zero-valued lines for every book unit as well.
@@ -849,14 +867,9 @@ pub(crate) fn offline_report_registries(
     certificate: &ReportCertificate,
     units: &fa_money::UnitRegistry,
 ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
-    if !matches!(
-        &certificate.selection,
-        ReportSelection::Statement(_)
-            | ReportSelection::OpenItems { .. }
-            | ReportSelection::ExplainBalance { .. }
-    ) {
+    if !offline_registry_profile(certificate) {
         return Err(invalid(
-            "portable report registries require a native statement, open-item or balance-explanation certificate",
+            "portable report registries require a native statement, open-item, balance-explanation or sequence-selected closing-stock certificate",
         ));
     }
     let sources = report_registries(&certificate.selection);
@@ -900,14 +913,9 @@ pub(crate) fn offline_report_registries_at<V: Vfs + Clone>(
     book: &BookContext,
     certificate: &ReportCertificate,
 ) -> Outcome<Vec<(String, Vec<u8>)>> {
-    if !matches!(
-        &certificate.selection,
-        ReportSelection::Statement(_)
-            | ReportSelection::OpenItems { .. }
-            | ReportSelection::ExplainBalance { .. }
-    ) {
+    if !offline_registry_profile(certificate) {
         return Ok(Err(invalid(
-            "portable report registries require a native statement, open-item or balance-explanation certificate",
+            "portable report registries require a native statement, open-item, balance-explanation or sequence-selected closing-stock certificate",
         )));
     }
     match registry_epoch::resolve(db, cx, book, certificate)? {
@@ -3543,6 +3551,59 @@ mod tests {
                 .code,
             code::CERTIFICATE_REGISTRY_UNAVAILABLE
         );
+    }
+
+    #[test]
+    fn offline_roll_forward_source_keeps_exact_units_and_narrow_stock_profile() {
+        let mut certificate = wire_fixture(
+            ReportSelection::TrialBalance(TrialBalanceSelection::AsOf(DateDay(20_000))),
+            None,
+        );
+        certificate.registry_digest = registry_digest(&certificate.selection).unwrap();
+        let units = fa_money::UnitRegistry::embedded().unwrap();
+        let documents = offline_report_registries(&certificate, &units).unwrap();
+        assert_eq!(
+            documents
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["account_types", "entry_classes", "units", "foundations"]
+        );
+        let mut subset = fa_money::UnitRegistry::empty();
+        subset
+            .register(units.iter().next().unwrap().1.clone())
+            .unwrap();
+        assert_eq!(
+            offline_report_registries(&certificate, &subset)
+                .unwrap_err()
+                .code,
+            fa_notary::code::SCOPE_UNSUPPORTED
+        );
+        let mut changed = fa_money::UnitRegistry::empty();
+        for (id, unit) in units.iter() {
+            let mut unit = unit.clone();
+            if id.0 == 0 {
+                unit.scale = 3;
+            }
+            changed.register(unit).unwrap();
+        }
+        assert_eq!(
+            offline_report_registries(&certificate, &changed)
+                .unwrap_err()
+                .code,
+            fa_notary::code::SCOPE_UNSUPPORTED
+        );
+        let mut branch = certificate.clone();
+        branch.branch_id = Id128([2; 16]);
+        assert!(offline_report_registries(&branch, &units).is_err());
+        for selection in [
+            TrialBalanceSelection::Periods(vec!["FY2026-P03".into()]),
+            TrialBalanceSelection::Activity(vec!["FY2026-P03".into()]),
+        ] {
+            let mut other = certificate.clone();
+            other.selection = ReportSelection::TrialBalance(selection);
+            assert!(offline_report_registries(&other, &units).is_err());
+        }
     }
 
     #[test]

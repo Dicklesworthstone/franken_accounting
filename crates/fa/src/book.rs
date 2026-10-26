@@ -4464,6 +4464,28 @@ impl Book {
         )))
     }
 
+    /// Produce a portable account lead schedule for `fa-verify report`.
+    /// Replays the complete roll-forward at its historical recorded prefix
+    /// under current whole-book read/produce authority. The signed complete
+    /// prefix and exact four-registry closure let a recipient reconstruct
+    /// opening balances, every posted movement and closing balances; even
+    /// offsetting movements remain independently checkable. The outer
+    /// roll-forward certificate is preserved and bound by the signed receipt.
+    /// Sequence-selected trunk certificates are supported. Returns `None`
+    /// when the selected recorded checkpoint is unavailable.
+    pub fn produce_roll_forward_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::RollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_roll_forward_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the
