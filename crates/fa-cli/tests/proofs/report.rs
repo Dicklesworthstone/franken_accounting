@@ -519,3 +519,141 @@ fn dimension_controls_keep_certificate_status_and_offline_recomputation() {
     assert_eq!(verified.output, certificate.output);
     assert_eq!(verified.rows.len(), 2);
 }
+
+fn certify_open_items(f: &Fixture, known_at: u64) -> (String, fa::ReportCertificate) {
+    let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+        .arg("--book")
+        .arg(&f.book)
+        .args([
+            "open-items",
+            "--account",
+            "1000",
+            "--as-known-at",
+            &known_at.to_string(),
+            "--certify",
+            "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .output()
+        .expect("certify account-filtered open items");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events: Vec<_> = stdout
+        .lines()
+        .map(|line| {
+            fa_cli::verbs::registry().unwrap().check_line(line).unwrap();
+            json::parse(line).unwrap()
+        })
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(text(&events[0], "event"), "open_items");
+    assert_eq!(text(&events[1], "event"), "report_certificate");
+    let certificate = fa::ReportCertificate::decode(&unhex(text(&events[1], "bytes"))).unwrap();
+    assert_eq!(certificate.known_at.0, known_at);
+    assert!(matches!(
+        &certificate.selection,
+        fa::ReportSelection::OpenItems { account: Some(_) }
+    ));
+    (format!("C:{}", text(&events[1], "oid")), certificate)
+}
+
+#[test]
+fn historical_open_items_export_by_oid_and_hex_stdin_recomputes_after_reversal() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    let original = f.post("open-items-original", "2026-03-10", "12.34", &evidence);
+    let historical = certify_open_items(&f, f.head());
+    ok(
+        &f.book,
+        &[
+            "reverse",
+            text(&original, "vid"),
+            "--reason",
+            "WrongAccount",
+        ],
+    );
+    f.post("open-items-later", "2026-03-11", "2.00", &evidence);
+    let current = certify_open_items(&f, f.head());
+    let checkpoint = f.checkpoint();
+    let before = f.head();
+
+    // One authenticated checkpoint covers both the historical open item
+    // and its later reversal. Each certificate retains its own known-at.
+    for ((locator, certificate), expected_open) in [(historical, 1234), (current, 200)] {
+        let by_oid = ok(
+            &f.book,
+            &[
+                "bundle",
+                "produce",
+                "--certificate",
+                &locator,
+                "--state",
+                text(&checkpoint, "oid"),
+            ],
+        );
+        let certificate_hex = fa_verify::blake3::hex(&certificate.canonical_bytes().unwrap());
+        let mut child = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&f.book)
+            .args([
+                "bundle",
+                "produce",
+                "--certificate",
+                "-",
+                "--state",
+                text(&checkpoint, "oid"),
+                "--json",
+            ])
+            .env_remove("FA_BOOK")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("produce open-items bundle from certificate hex on stdin");
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), certificate_hex.as_bytes())
+            .unwrap();
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        let by_hex = parse_line(&stdout, &stderr);
+        assert_eq!(bytes(&by_oid), bytes(&by_hex));
+
+        for produced in [by_oid, by_hex] {
+            assert_eq!(text(&produced, "scope"), "report");
+            let key: [u8; 32] = unhex(text(&produced, "checkpoint_public_key"))
+                .try_into()
+                .unwrap();
+            let verified = fa_verify::report::verify_report(
+                &bytes(&produced),
+                &[key],
+                None,
+                Some(&unhex(text(&produced, "receipt"))),
+            )
+            .expect("independent open-items recomputation from only exported bytes");
+            assert_eq!(verified.output, certificate.output);
+            assert_eq!(verified.certificate_digest, certificate.digest);
+            assert_eq!(verified.known_at, certificate.known_at.0);
+            assert_eq!(verified.unit_universe_source, "authenticated-registry");
+            assert!(verified.rows.is_empty());
+            assert!(verified.statement.is_none());
+            let open_items = verified.open_items.as_ref().expect("open-items result");
+            assert_eq!(
+                open_items.items.len(),
+                1,
+                "the account filter excludes revenue"
+            );
+            assert_eq!(open_items.items[0].open, expected_open);
+        }
+    }
+    assert_eq!(
+        f.head(),
+        before,
+        "both export transports preserve the book frontier"
+    );
+}

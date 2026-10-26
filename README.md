@@ -319,6 +319,35 @@ fa open-items --account 1000 --as-known-at 42 \
 fa replay cash-items.cert --book ./books/acme --json
 ```
 
+An open-items certificate can also be verified outside the book. Publish a
+checkpoint covering its recorded sequence, export the retained certificate or
+its saved file, and give the recipient the bundle, signed receipt and trusted
+checkpoint public key:
+
+```bash
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate cash-items.cert --book ./books/acme \
+  --out cash-items.fab --receipt-out cash-items.receipt --json
+fa-verify report cash-items.fab --key <trusted-checkpoint-public-key> \
+  --receipt cash-items.receipt
+```
+
+The independent verifier reconstructs each live item's original amount, incoming
+and outgoing applications, remaining open amount and complete application history,
+including undone applications and item liveness through reversal chains. It reproduces
+zero-open items and historical account metadata as well. An account filter limits
+the output; the complete authenticated journal prefix is still supplied and
+checked. Version-2 open-item bundles bind all four canonical registry documents
+and require a valid receipt or an independently retained certificate digest
+(`--expect`). They never fall back to unauthenticated unit definitions.
+
+The current portable format cannot authenticate implicit legal-entity defaults
+from BookSpec or resolve legacy key-derived replacement identities. Export refuses
+settlements whose source and target rely on different implicit/explicit dimension
+representations, and reports that need an ambiguous legacy replacement identity.
+Identical dimension representations and current target-derived replacements are
+supported; native replay of the original certificate remains available.
+
 Instant-selected certificates also retain their requested instant, observed frontier,
 and tick identities. Replay uses those saved brackets even after later ticks or
 postings arrive. An open upper bracket is explicit; this is a clock-observation
@@ -326,7 +355,8 @@ bucket, without a claim about the physical instant of each commit. The same
 instant selector is available on `open-items` and `explain balance`. Ticks are
 journaled through the library API and by `fad serve --bootstrap-system`.
 
-Native trial-balance and statement certificates selected by an instant can
+Native trial-balance, dimension-filtered trial-balance, statement and open-item
+certificates selected by an instant can
 also be exported with `fa bundle produce --certificate C:<oid>`. The selected
 checkpoint must cover the certificate's retained time frontier, which can be
 later than its accounting sequence. `fa-verify report` reconstructs the exact
@@ -379,7 +409,7 @@ Certification writes a metadata object and advances the book frontier; it posts
 no accounting entry and does not change balances. Uncertified reports, replay and
 status do not publish anything.
 
-First retention of a native trial-balance or statement certificate archives its
+First retention of a native trial-balance, statement or open-item certificate archives its
 producing registry sources when the executable holds that closure and its unit
 definitions cover the book's exact units. The immutable `RegistryEpoch` is written
 in the same transaction as the certificate. Replay can resolve that saved closure
@@ -387,7 +417,7 @@ after a compatible foundation-pin or provenance change. It still verifies every
 native read certificate and recomputes the complete historical output byte for byte.
 Account-type and entry-class semantics must remain supported, every book unit
 must retain its exact meaning, and unknown schema majors refuse. Portable native
-statement bundles carry the archived canonical registry documents. An idempotent
+statement and open-item bundles carry the archived canonical registry documents. An idempotent
 retry of an already retained certificate does not backfill a missing epoch.
 Reports with unmatched custom unit tables and historical FX/consolidation laws
 keep their existing replay requirements.

@@ -4,7 +4,7 @@
 
 use super::*;
 
-fn tick(book: &mut Book, ns: u64, monotonic_ok: bool) {
+pub(super) fn tick(book: &mut Book, ns: u64, monotonic_ok: bool) {
     let (runtime, root) = Book::runtime_and_root().unwrap();
     let capability = Capability::embedded(PRINCIPAL, &["witness"]).unwrap();
     runtime
@@ -216,7 +216,7 @@ fn unit_ids(book: &Book) -> Vec<u32> {
     book.context().units.iter().map(|(id, _)| id.0).collect()
 }
 
-fn produce(book: &mut Book, certificate: &ReportCertificate) -> fa::ProducedBundle {
+pub(super) fn produce(book: &mut Book, certificate: &ReportCertificate) -> fa::ProducedBundle {
     let capability = Capability::embedded(PRINCIPAL, &["read", "produce", "witness"]).unwrap();
     let checkpoint = book.checkpoint(PRINCIPAL, &capability).unwrap().unwrap();
     let state = checkpoint.checkpoint.checkpoint.body.state_oid;
@@ -861,15 +861,16 @@ fn native_offline_income_excludes_real_closing_but_keeps_source_reversals_and_ad
     verify(&fixture.book, &produced, &certified.certificate);
 }
 
-fn reseal(certificate: &mut ReportCertificate) {
+pub(super) fn reseal(certificate: &mut ReportCertificate) {
     certificate.output_digest =
         fa_verify::blake3::hash_parts(b"fa:report-output:v1", &[&certificate.output]);
     let body = certificate.canonical_bytes().unwrap();
-    assert!(body.starts_with(fa::certificate::STATEMENT_CERTIFICATE_FORMAT));
-    certificate.digest = fa_verify::blake3::hash_parts(
-        fa::certificate::STATEMENT_CERTIFICATE_FORMAT,
-        &[&body[..body.len() - 32]],
+    let format = &body[..fa::certificate::REPORT_CERTIFICATE_FORMAT.len()];
+    assert!(
+        format == fa::certificate::STATEMENT_CERTIFICATE_FORMAT
+            || format == fa::certificate::REPORT_CERTIFICATE_FORMAT
     );
+    certificate.digest = fa_verify::blake3::hash_parts(format, &[&body[..body.len() - 32]]);
     // Keep each negative vector internally consistent, so a malformed
     // certificate checksum cannot mask the authority or recomputation checks.
     assert_eq!(
@@ -878,7 +879,7 @@ fn reseal(certificate: &mut ReportCertificate) {
     );
 }
 
-fn replace_certificate(bundle: &[u8], certificate: &ReportCertificate) -> Vec<u8> {
+pub(super) fn replace_certificate(bundle: &[u8], certificate: &ReportCertificate) -> Vec<u8> {
     let domain_len = u32::from_le_bytes(bundle[..4].try_into().unwrap()) as usize;
     let at = 4 + domain_len + 4;
     let old_len = u32::from_le_bytes(bundle[at..at + 4].try_into().unwrap()) as usize;
