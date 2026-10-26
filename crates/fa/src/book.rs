@@ -1507,6 +1507,33 @@ impl Book {
         )))
     }
 
+    /// Rehearse this owner's retained draft members without publishing them.
+    /// Returns their resolved entries, or `None` for an empty open draft.
+    pub fn preview_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Option<fa_journal::DraftPreview>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.preview_draft(
+            &purposes, capability, name,
+        )))
+    }
+
+    /// Original resolved draft entries for dependent request construction.
+    /// Retained targets remain readable by the owner after discard or drift;
+    /// preparing a new append still revalidates the complete draft.
+    pub fn draft_entries(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Vec<fa_model::Entry>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.draft_entries(
+            &purposes, capability, name,
+        )))
+    }
+
     /// Promote the draft `name`: its intents post to trunk as one batch,
     /// each admitted again under current policy.
     pub fn promote_draft(

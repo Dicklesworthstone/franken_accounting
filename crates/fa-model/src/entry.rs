@@ -98,7 +98,11 @@ pub const DRAFT_BODY_EXTENSION: u16 = 8;
 /// post_intent ‖ bytes capability`: the intent's canonical bytes and the
 /// planner's capability, which its promotion replays. Version 2 appends the
 /// exact resolved Entry digest `[32]` reviewed in ordered draft rehearsal;
-/// version 1 has no such binding and keeps its original encoding.
+/// version 3 also appends `bytes resolved_entry`, preserving the original
+/// target for dependent retries after discard or availability drift. Empty
+/// resolved bytes denote the Entry exactly sealed from the retained proposal
+/// and approvals (no plan certificate), verified against the retained digest.
+/// Versions 1 and 2 keep their original encoding.
 pub const DRAFT_INTENT_EXTENSION: u16 = 9;
 /// Extension tag 10, `fa:scenario-body:v1` (plan §15.2, Appendix B
 /// `ForkScenario`, bead fa-k07b): a scenario's immutable body on its
