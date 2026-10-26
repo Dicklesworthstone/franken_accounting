@@ -126,6 +126,36 @@ stub_of = "SRC-TK-S"
 grade = "AgentUpload"
 reviewed_by = "tk-second-reader"
 
+[[document]]
+id = "DOC-PH-F-A"
+stub_of = "placeholder:F-A"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-X1"
+stub_of = "placeholder:F-X1"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-X2"
+stub_of = "placeholder:F-X2"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-S1"
+stub_of = "placeholder:F-S1"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-S2"
+stub_of = "placeholder:F-S2"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
 [[intent]]
 id = "F-Aa"
 fact = "F-A"
@@ -133,7 +163,7 @@ class = "Original"
 principal = "tk-preparer-1"
 effective_date = "2020-12-31"
 memo = "synthetic (fixture)"
-evidence = "DOC-A"
+evidence = "DOC-PH-F-A"
 idempotency_key = "tk-f-aa"
 
 [[intent]]
@@ -143,7 +173,7 @@ class = "Original"
 principal = "tk-preparer-1"
 effective_date = "2020-12-31"
 memo = "synthetic (fixture)"
-evidence = "DOC-X"
+evidence = "DOC-PH-F-X1"
 idempotency_key = "tk-f-x1a"
 
 [[intent]]
@@ -153,7 +183,7 @@ class = "Original"
 principal = "tk-preparer-1"
 effective_date = "2020-12-31"
 memo = "synthetic (fixture)"
-evidence = "DOC-X"
+evidence = "DOC-PH-F-X2"
 idempotency_key = "tk-f-x2a"
 
 [[intent]]
@@ -163,7 +193,7 @@ class = "Original"
 principal = "tk-preparer-1"
 effective_date = "2020-12-31"
 memo = "synthetic (fixture)"
-evidence = "DOC-S"
+evidence = "DOC-PH-F-S1"
 idempotency_key = "tk-f-s1a"
 
 [[intent]]
@@ -173,7 +203,7 @@ class = "Original"
 principal = "tk-preparer-1"
 effective_date = "2020-12-31"
 memo = "synthetic (fixture)"
-evidence = "DOC-S"
+evidence = "DOC-PH-F-S2"
 idempotency_key = "tk-f-s2a"
 
 [[intent]]
@@ -332,3 +362,13 @@ rationale = "synthetic fixture: the restating filing's date determines the case"
 attribute = "effective_date"
 rule = "reporting_period_last_day"
 rationale = "synthetic fixture: every entry is effective on its period's last day"
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "synthetic fixture: each documented entry cites a placeholder reviewed by tk-second-reader; a filing's stub is provenance, never evidence (K-EVID)"
+
+[[default]]
+attribute = "reason"
+rule = "WrongAccount"
+rationale = "synthetic fixture: the restatement corrects the account, never a legal conclusion (K-REASON)"

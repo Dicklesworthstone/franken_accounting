@@ -809,7 +809,12 @@ fn case_scoped_check_runs_only_on_its_case() {
             "K-TAUT",
             "K-ORACLE",
             "K-VINTAGE",
-            "K-TIER"
+            "K-TIER",
+            "K-ASSERT",
+            "K-ERRRATE",
+            "K-NAMES",
+            "K-EVID",
+            "K-REASON"
         ]
     );
     case.header.id = "xbrl".into();
