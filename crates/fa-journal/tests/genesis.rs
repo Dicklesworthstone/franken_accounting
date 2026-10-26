@@ -53,6 +53,8 @@ mod register_capacity;
 mod scheduled_admission_tests;
 #[path = "genesis/subledger.rs"]
 mod subledger_tests;
+#[path = "genesis/time_outcome_keys.rs"]
+mod time_outcome_keys;
 
 #[path = "genesis/outcome_recovery.rs"]
 mod outcome_recovery_tests;
@@ -678,8 +680,21 @@ fn harness_configured_coverage(
     h.add_document(&source)
         .expect("the fixture document is admitted");
     h.evidence = vec![source.evidence_ref(ROLE_SOURCE)];
-    h.transition(&march, PeriodTransition::Open, b"open-march")
-        .expect("march opens");
+    if coverage {
+        h.transition(&march, PeriodTransition::Open, b"open-march")
+            .expect("march opens");
+    } else {
+        // This fixture represents an original pre-protocol book. The current
+        // transition writer correctly requires authenticated legacy key
+        // coverage before adding a fresh control, so retain the old writer's
+        // original Entry and period projection directly, without a claim.
+        outcome_key_tests::write_legacy_transition(
+            &mut h,
+            &march,
+            PeriodTransition::Open,
+            b"open-march",
+        );
+    }
     h
 }
 

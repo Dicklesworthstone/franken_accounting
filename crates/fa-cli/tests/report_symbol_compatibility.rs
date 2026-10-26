@@ -487,7 +487,7 @@ struct Saved {
 }
 
 #[test]
-fn checkpointed_prefix_books_certify_and_replay_native_reports_with_only_issued_read() {
+fn checkpointed_prefix_books_require_produce_to_retain_and_read_to_replay_native_reports() {
     let fixture = Fixture::new();
     let selected = fixture.selected.0.to_string();
     let mut saved = Vec::new();
@@ -526,6 +526,24 @@ fn checkpointed_prefix_books_certify_and_replay_native_reports_with_only_issued_
         } else {
             None
         };
+        for flag in ["--certify", "--certificate-out"] {
+            let file = format!("{name}-refused.certificate");
+            let mut refused = args.clone();
+            refused.push(flag);
+            if flag == "--certificate-out" {
+                refused.push(&file);
+            }
+            fixture.compact();
+            let before = fixture.head();
+            let (status, events) = fixture.run(&refused);
+            assert_eq!(status, 7, "{name} {flag}: {events:?}");
+            assert_eq!(events.len(), 1);
+            assert_eq!(text(data(&events[0]), "refusal_id"), "FA-REF-011");
+            assert!(text(data(&events[0]), "message").contains("produce"));
+            assert_eq!(fixture.head(), before);
+            assert!(!fixture.dir.join(&file).exists());
+        }
+        *args.last_mut().unwrap() = PRODUCER;
         let certificate = fixture.certify(name, &args, fixture.selected, "native");
         assert_eq!(text(&certificate.original, "event"), event);
         let report = data(&certificate.original);
@@ -588,19 +606,23 @@ fn checkpointed_prefix_books_certify_and_replay_native_reports_with_only_issued_
         "132.00 USD"
     );
 
-    let token = CapabilityToken::decode(&std::fs::read(fixture.dir.join(READER)).unwrap()).unwrap();
-    fixture.ok(&[
-        "capability",
-        "revoke",
-        "--commitment",
-        &hex(&token.capability().commitment().unwrap()),
-        "--grant",
-        "issue_capability",
-        "--yes",
-    ]);
-    for (name, command) in [
+    for name in [READER, PRODUCER] {
+        let token =
+            CapabilityToken::decode(&std::fs::read(fixture.dir.join(name)).unwrap()).unwrap();
+        fixture.ok(&[
+            "capability",
+            "revoke",
+            "--commitment",
+            &hex(&token.capability().commitment().unwrap()),
+            "--grant",
+            "issue_capability",
+            "--yes",
+        ]);
+    }
+    for (name, token, command) in [
         (
             "revoked-cert",
+            PRODUCER,
             vec![
                 "tb",
                 "--period",
@@ -613,6 +635,7 @@ fn checkpointed_prefix_books_certify_and_replay_native_reports_with_only_issued_
         ),
         (
             "revoked-replay",
+            READER,
             vec![
                 "replay",
                 saved[0].file.as_str(),
@@ -624,7 +647,7 @@ fn checkpointed_prefix_books_certify_and_replay_native_reports_with_only_issued_
         fixture.compact();
         let before = fixture.head();
         let mut args = command;
-        args.extend(["--token", READER]);
+        args.extend(["--token", token]);
         let (status, events) = fixture.run(&args);
         assert_eq!(status, 7, "{name}: {events:?}");
         assert_eq!(events.len(), 1);

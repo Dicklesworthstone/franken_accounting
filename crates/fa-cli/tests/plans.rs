@@ -1744,7 +1744,7 @@ fn inline_period_plan_survives_independent_approval_and_exact_stdin_commit() {
 }
 
 #[test]
-fn certification_does_not_invalidate_plans_while_accounting_writes_do_and_read_op_is_required() {
+fn certification_preserves_plans_and_requires_read_and_produce() {
     let f = Fixture::new();
     let intent_a = f.intent("plan-across-certify", "15.00");
     let before = head(&f.book);
@@ -1771,29 +1771,31 @@ fn certification_does_not_invalidate_plans_while_accounting_writes_do_and_read_o
     let after_cert = head(&f.book);
     assert_eq!(after_cert, before + 1);
 
-    // Retaining a certificate without `read` is refused (FA-REF-011, exit 7).
-    let no_read_authority = LaunchAuthority::new(
-        f.book.clone(),
-        None,
-        "operator",
-        LaunchProfile::Preparer,
-        &["post"],
-    )
-    .expect("post-only launch authority");
+    // Retaining a certificate requires both operations, even on an exact retry.
     let certify_argv = ["tb", "--period", "FY2026-P03", "--certify", "--json"].map(str::to_string);
-    let (code, certify_out) = fa_with_authority(
-        &certify_argv,
-        Files {
-            cwd: None,
-            stdin: Stdin::Process,
-        },
-        &no_read_authority,
-        true,
-    );
-    assert_eq!(code, 7, "{certify_out:?}");
-    let refused_cert = json::parse(certify_out.stdout.trim()).expect("refusal json");
-    assert_eq!(text(&refused_cert, "refusal_id"), "FA-REF-011");
-    assert_eq!(head(&f.book), after_cert);
+    for operations in [&["produce"][..], &["read"][..]] {
+        let insufficient_authority = LaunchAuthority::new(
+            f.book.clone(),
+            None,
+            "operator",
+            LaunchProfile::Preparer,
+            operations,
+        )
+        .expect("single-operation launch authority");
+        let (code, certify_out) = fa_with_authority(
+            &certify_argv,
+            Files {
+                cwd: None,
+                stdin: Stdin::Process,
+            },
+            &insufficient_authority,
+            true,
+        );
+        assert_eq!(code, 7, "{operations:?}: {certify_out:?}");
+        let refused_cert = json::parse(certify_out.stdout.trim()).expect("refusal json");
+        assert_eq!(text(&refused_cert, "refusal_id"), "FA-REF-011");
+        assert_eq!(head(&f.book), after_cert);
+    }
 
     // The outstanding plan still commits and its exact retry succeeds.
     let (code, committed) = run(

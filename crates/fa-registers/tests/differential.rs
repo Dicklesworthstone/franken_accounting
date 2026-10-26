@@ -978,6 +978,253 @@ fn a_drifted_register_cell_is_never_served() {
     );
 }
 
+/// Historical reports read the register version that existed at their
+/// coordinate, not the current maintained state. A cross-period partial
+/// resolution releases the whole reservation only at its own recorded time.
+#[test]
+fn historical_maintained_reports_pin_cells_tail_and_pending_resolution() {
+    let (mut k, mut oracle, periods) = setup();
+    let (march, april) = (periods[2].clone(), periods[3].clone());
+    open_period(&mut k, &mut oracle, &march, 73_000);
+    open_period(&mut k, &mut oracle, &april, 73_001);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let in_march = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let in_april = DateDay::from_ymd(2026, 4, 10).unwrap();
+    let selection = vec![march.clone()];
+    let mut refs = Vec::new();
+    for (class, amount, key) in [("Original", 500, "initial"), ("Pending", 80, "hold")] {
+        let intent = maintenance_intent(class, in_march, amount, key);
+        refs.push(
+            kernel_post(&mut k, &intent, usd, &refs)
+                .unwrap()
+                .entry_ref(),
+        );
+    }
+    let first = maintain(&mut k, &march);
+    let mut snapshots = Vec::new();
+    for step in 0..3 {
+        if step == 1 {
+            let intent = maintenance_intent("Original", in_march, 7, "tail");
+            refs.push(
+                kernel_post(&mut k, &intent, usd, &refs)
+                    .unwrap()
+                    .entry_ref(),
+            );
+        } else if step == 2 {
+            let mut resolution = maintenance_intent("Resolution", in_april, 60, "partial");
+            resolution.resolves = Some(Resolve {
+                target: 1,
+                posts: Some(vec![0, 1]),
+            });
+            refs.push(
+                kernel_post(&mut k, &resolution, usd, &refs)
+                    .unwrap()
+                    .entry_ref(),
+            );
+        }
+        let at = k.db.frontier().unwrap();
+        snapshots.push((
+            at,
+            trial_balance_at(&k.db, &k.book, &selection, Some(at)).unwrap(),
+            period_activity(&k.db, &k.book, &selection, Some(at)).unwrap(),
+        ));
+    }
+    assert_eq!(
+        snapshots[0].1.pending_unit_totals.get(&usd.0),
+        Some(&(80, 80))
+    );
+    assert_eq!(
+        snapshots[1].1.pending_unit_totals.get(&usd.0),
+        Some(&(80, 80))
+    );
+    assert_eq!(
+        snapshots[2].1.pending_unit_totals.get(&usd.0),
+        Some(&(0, 0))
+    );
+    maintain(&mut k, &march);
+    maintain(&mut k, &april);
+    let late = maintenance_intent("Original", in_march, 888, "later-backdated");
+    kernel_post(&mut k, &late, usd, &refs).unwrap();
+    maintain(&mut k, &march);
+    let head = k.db.frontier().unwrap();
+    for (tail, (at, stock, activity)) in snapshots.into_iter().enumerate() {
+        for (actual, expected) in [
+            (
+                fa_registers::trial_balance_served_at(&k.db, &k.book, &selection, Some(at))
+                    .unwrap(),
+                stock,
+            ),
+            (
+                fa_registers::period_activity_served_at(&k.db, &k.book, &selection, Some(at))
+                    .unwrap(),
+                activity,
+            ),
+        ] {
+            let (report, served) = actual;
+            assert_eq!(
+                report.canonical_bytes().unwrap(),
+                expected.canonical_bytes().unwrap()
+            );
+            assert_eq!(report, expected, "snapshot {}: {served:?}", at.0);
+            assert_eq!(served.tail_length(), Some(tail), "{served:?}");
+            assert!(matches!(
+                served,
+                fa_registers::Served::Maintained(ref rows)
+                    if rows == &vec![(march.clone(), first.through, tail)]
+            ));
+        }
+    }
+    assert_eq!(
+        k.db.frontier().unwrap(),
+        head,
+        "historical reads never publish"
+    );
+}
+
+/// A later cache cannot serve an earlier unmaintained snapshot. Conversely,
+/// later postings cannot make a historically empty period appear populated.
+#[test]
+fn historical_maintained_reports_use_literal_fallback_before_cache_publication() {
+    let (mut k, mut oracle, periods) = setup();
+    let march = periods[2].clone();
+    open_period(&mut k, &mut oracle, &march, 74_000);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let in_march = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let selection = vec![march.clone()];
+    let empty_at = k.db.frontier().unwrap();
+    let empty = trial_balance_at(&k.db, &k.book, &selection, Some(empty_at)).unwrap();
+    kernel_post(
+        &mut k,
+        &maintenance_intent("Original", in_march, 123, "uncached"),
+        usd,
+        &[],
+    )
+    .unwrap();
+    let uncached_at = k.db.frontier().unwrap();
+    let uncached = trial_balance_at(&k.db, &k.book, &selection, Some(uncached_at)).unwrap();
+    maintain(&mut k, &march);
+    let (report, served) =
+        fa_registers::trial_balance_served_at(&k.db, &k.book, &selection, Some(empty_at)).unwrap();
+    assert_eq!(report, empty);
+    assert_eq!(served.tail_length(), Some(0));
+    let (report, served) =
+        fa_registers::trial_balance_served_at(&k.db, &k.book, &selection, Some(uncached_at))
+            .unwrap();
+    assert_eq!(report, uncached);
+    assert!(matches!(served, fa_registers::Served::Literal(_)));
+    let (report, served) =
+        fa_registers::period_activity_served_at(&k.db, &k.book, &selection, Some(uncached_at))
+            .unwrap();
+    assert_eq!(
+        report,
+        period_activity(&k.db, &k.book, &selection, Some(uncached_at)).unwrap()
+    );
+    assert!(matches!(served, fa_registers::Served::Literal(_)));
+    let future = CommitSeq(k.db.frontier().unwrap().0.checked_add(1).unwrap());
+    assert!(matches!(
+        fa_registers::trial_balance_served_at(&k.db, &k.book, &selection, Some(future)),
+        Err(fa_registers::RegisterError::InvalidSelection(_))
+    ));
+    assert!(matches!(
+        fa_registers::period_activity_served_at(&k.db, &k.book, &selection, Some(future)),
+        Err(fa_registers::RegisterError::InvalidSelection(_))
+    ));
+}
+
+/// Corruption is evaluated at the selected snapshot: an earlier intact
+/// cache remains usable, and repairing the current cache does not make a
+/// historically damaged version authoritative.
+#[test]
+fn historical_maintained_reports_fall_back_on_snapshot_corruption() {
+    use fa_model::symbols::{property, relation};
+
+    let (mut k, mut oracle, periods) = setup();
+    let march = periods[2].clone();
+    open_period(&mut k, &mut oracle, &march, 75_000);
+    let usd = k.book.units.lookup("USD").unwrap();
+    let in_march = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let selection = vec![march.clone()];
+    kernel_post(
+        &mut k,
+        &maintenance_intent("Original", in_march, 500, "intact"),
+        usd,
+        &[],
+    )
+    .unwrap();
+    maintain(&mut k, &march);
+    let intact_at = k.db.frontier().unwrap();
+    let intact = trial_balance_at(&k.db, &k.book, &selection, Some(intact_at)).unwrap();
+    let account = account_vid(k.book.book_id, "6000");
+    let cell = fa_registers::register_vid(
+        k.book.book_id,
+        &fa_registers::CellKey {
+            account,
+            unit_id: usd.0,
+            period: march.clone(),
+        },
+    );
+    let ctx = k.ctx();
+    let mut snapshots = Vec::new();
+    for damaged_state in [false, true] {
+        let mut write = WriteBatch::new(relation::IN_PERIOD);
+        if damaged_state {
+            write.set_vertex_property(
+                fa_registers::maintainer::state_vid(k.book.book_id, &march),
+                property::FA_DIGEST,
+                Some(rows::scalar_bytes("digest", vec![0; 32]).unwrap()),
+            );
+        } else {
+            write.set_vertex_property(
+                cell,
+                property::DEBITS_POSTED,
+                Some(rows::scalar_bytes("debits", 501i128.to_le_bytes().to_vec()).unwrap()),
+            );
+        }
+        k.runtime
+            .block_on(k.db.write(&ctx.commit(), write))
+            .unwrap();
+        snapshots.push(k.db.frontier().unwrap());
+        k.runtime
+            .block_on(fa_registers::rebuild(&mut k.db, &ctx, &k.book, &march))
+            .unwrap();
+    }
+    // Later metadata must not change a historical report's account names.
+    let mut write = WriteBatch::new(relation::IN_BOOK);
+    write.set_vertex_property(
+        account,
+        property::NAME,
+        Some(rows::scalar_text("name", "Later name").unwrap()),
+    );
+    k.runtime
+        .block_on(k.db.write(&ctx.commit(), write))
+        .unwrap();
+    let (report, served) =
+        fa_registers::trial_balance_served_at(&k.db, &k.book, &selection, Some(intact_at)).unwrap();
+    assert_eq!(report, intact);
+    assert_eq!(served.tail_length(), Some(0));
+    for at in snapshots {
+        let literal = trial_balance_at(&k.db, &k.book, &selection, Some(at)).unwrap();
+        let (report, served) =
+            fa_registers::trial_balance_served_at(&k.db, &k.book, &selection, Some(at)).unwrap();
+        assert_eq!(
+            report.canonical_bytes().unwrap(),
+            literal.canonical_bytes().unwrap()
+        );
+        assert!(
+            matches!(served, fa_registers::Served::Literal(_)),
+            "{served:?}"
+        );
+        let literal = period_activity(&k.db, &k.book, &selection, Some(at)).unwrap();
+        let (report, served) =
+            fa_registers::period_activity_served_at(&k.db, &k.book, &selection, Some(at)).unwrap();
+        assert_eq!(report, literal);
+        assert!(
+            matches!(served, fa_registers::Served::Literal(_)),
+            "{served:?}"
+        );
+    }
+}
+
 #[test]
 fn incremental_registers_reject_stale_or_foreign_preparation_and_recover_after_reopen() {
     let chart: Vec<ChartRow> = ACCOUNTS

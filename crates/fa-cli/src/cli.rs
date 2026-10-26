@@ -11546,7 +11546,8 @@ fn prepare_certificate_history(
     Ok(())
 }
 
-/// Legacy native reports and certificates keep their Read-only admission contract.
+/// Preparing native report history requires Read; retaining a resulting
+/// certificate separately requires Produce.
 /// Full history can be loaded only by a current whole-book reader. A scoped
 /// caller keeps the existing evaluation path without loading additional data;
 /// this adapter does not manufacture a scoped native-history capability.
@@ -11565,7 +11566,7 @@ pub(crate) fn prepare_native_certificate_history(
 }
 
 pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    // A dimension-filtered report is its own uncertified literal fold
+    // A dimension-filtered report is its own literal fold
     // (fa-ficc); it refuses the flags of every other mode.
     if args.flag("--dimension").is_some() {
         return crate::dimension::tb(ctx, args);
@@ -11599,7 +11600,7 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let certify_cap = if !args.switch("--summary")
         && (args.switch("--certify") || args.flag("--certificate-out").is_some())
     {
-        Some(ctx.capability(args, &["read"])?)
+        Some(ctx.capability(args, &["read", "produce"])?)
     } else {
         None
     };
@@ -12430,7 +12431,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     let who = ctx.principal(args);
     let capability = ctx.capability(
         args,
-        if functional && certify {
+        if certify {
             &["read", "produce"]
         } else {
             &["read"]
@@ -14932,10 +14933,16 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let who = ctx.principal(args);
-    let read_cap = ctx.capability(args, &["read"])?;
-    let certify_cap = if args.flag("--as-of").is_none()
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
-    {
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let read_cap = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let certify_cap = if args.flag("--as-of").is_none() && certify {
         Some(read_cap.clone())
     } else {
         None
@@ -19756,8 +19763,16 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "fa explain balance 1000 --period FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>",
     )?;
     let who = ctx.principal(args);
-    let read_cap = ctx.capability(args, &["read"])?;
-    let certify_cap = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let read_cap = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let certify_cap = if certify {
         Some(read_cap.clone())
     } else {
         None

@@ -528,31 +528,6 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         &mut mcp,
         "fa_read_statement",
         json!({
-            "name": "balance-sheet", "for": "FY2026-P03", "compare": "FY2026-P02", "certify": true,
-        }),
-    );
-    assert!(!error, "{output}");
-    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
-    assert_eq!(certified.as_array().unwrap().len(), 2);
-    assert_eq!(certified[0]["columns"].as_array().unwrap().len(), 2);
-    assert_eq!(certified[1]["file"], JsonValue::Null);
-    let replay_oid = format!("C:{}", certified[1]["oid"].as_str().unwrap());
-    for certificate in [
-        replay_oid,
-        certified[1]["bytes"].as_str().unwrap().to_string(),
-    ] {
-        let (error, replay, _) = call_tool(
-            &mut mcp,
-            "fa_read_replay",
-            json!({"certificate": certificate}),
-        );
-        assert!(!error, "{replay}");
-        assert_eq!(replay, certified[0].to_string());
-    }
-    let (error, output, _) = call_tool(
-        &mut mcp,
-        "fa_read_statement",
-        json!({
             "name": "balance-sheet", "for": "FY2026-P03", "certificate_out": null,
         }),
     );
@@ -593,7 +568,24 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "{output}"
     );
     // The default reader cannot acquire produce authority from a certify flag.
+    let before_refusals = cli_data(&["book", "info", "--book", &b, "--json"]);
     for (tool, args) in [
+        (
+            "fa_read_trial_balance",
+            json!({"period": "FY2026-P03", "certify": true}),
+        ),
+        (
+            "fa_read_statement",
+            json!({"name": "balance-sheet", "for": "FY2026-P03", "certify": true}),
+        ),
+        (
+            "fa_read_explain_balance",
+            json!({"account": "1000", "period": "FY2026-P03", "certify": true}),
+        ),
+        (
+            "fa_read_open_items",
+            json!({"account": "1000", "certify": true}),
+        ),
         (
             "fa_read_trial_balance",
             json!({"period": "FY2026-P03", "summary": true, "certify": true}),
@@ -613,6 +605,11 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
         assert!(output.contains("produce"), "{output}");
     }
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_refusals,
+        "refused report publication must not advance the frontier"
+    );
     assert_eq!(mcp.finish(), 0);
 
     let mut producer = Mcp::start_with(
@@ -627,6 +624,31 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         ],
     );
     producer.discover();
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_statement",
+        json!({
+            "name": "balance-sheet", "for": "FY2026-P03", "compare": "FY2026-P02", "certify": true,
+        }),
+    );
+    assert!(!error, "{output}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(certified.as_array().unwrap().len(), 2);
+    assert_eq!(certified[0]["columns"].as_array().unwrap().len(), 2);
+    assert_eq!(certified[1]["file"], JsonValue::Null);
+    let replay_oid = format!("C:{}", certified[1]["oid"].as_str().unwrap());
+    for certificate in [
+        replay_oid,
+        certified[1]["bytes"].as_str().unwrap().to_string(),
+    ] {
+        let (error, replay, _) = call_tool(
+            &mut producer,
+            "fa_read_replay",
+            json!({"certificate": certificate}),
+        );
+        assert!(!error, "{replay}");
+        assert_eq!(replay, certified[0].to_string());
+    }
     for (tool, family, event_name, args) in [
         (
             "fa_read_trial_balance",
@@ -1044,7 +1066,21 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
 
     // This parity test deliberately uses the trusted Preparer template;
     // default Agent behavior is exercised separately below.
-    let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    let launch = [
+        "--profile",
+        "preparer",
+        "--principal",
+        "operator",
+        "--grant",
+        "read",
+        "--grant",
+        "post",
+        "--grant",
+        "verify",
+        "--grant",
+        "produce",
+    ];
+    let mut mcp = Mcp::start_with(&book, &launch);
     mcp.discover();
 
     // tools/list: exactly the registry's default-surface wire names (plan
@@ -1166,7 +1202,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         envelope["authority"],
         json!({
             "posture": "mcp-launch-config", "principal": "operator", "profile": "preparer",
-            "ops": ["read", "post", "verify"],
+            "ops": ["read", "post", "verify", "produce"],
         })
     );
     assert!(envelope["coordinate"]["known_at"].is_number(), "{envelope}");
@@ -1849,7 +1885,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // fa-1nx: an Agent session certifying a trial balance between a Preparer's
     // dry-run plan and commit advances raw known_at without moving the
     // accounting frontier, so the Preparer's plan still commits cleanly.
-    let mut agent_certifier = Mcp::start(&book);
+    let mut agent_certifier = Mcp::start_with(&book, &["--grant", "read", "--grant", "produce"]);
     agent_certifier.discover();
     let (is_error, cert_text, _) = call_tool(
         &mut agent_certifier,
@@ -2140,8 +2176,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(code, 0);
     let plan_file = dir.join("mcp.plan.hex");
     std::fs::write(&plan_file, &encoded).unwrap();
-    let mut reopened =
-        Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    let mut reopened = Mcp::start_with(&book, &launch);
     reopened.discover();
     let before_retry = cli_data(&["book", "info", "--book", &b, "--json"]);
     for arguments in [
@@ -2504,9 +2539,26 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
     let init = mcp.discover();
     assert!(init["instructions"].as_str().unwrap().contains("mcp-agent"));
 
-    // Real Agent reads and immutable report retention remain usable.
-    let (error, text, result) = call_tool(
+    // The default Agent can read, but cannot acquire Produce from a tool
+    // argument. A separately granted producer retains the report that this
+    // default session can subsequently replay.
+    let before_certify = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let (error, text, _) = call_tool(
         &mut mcp,
+        "fa_read_trial_balance",
+        json!({"period": "FY2026-P03", "certify": true}),
+    );
+    assert!(error, "a default Agent has no Produce authority: {text}");
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-011");
+    assert!(text.contains("produce"), "{text}");
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_certify
+    );
+    let mut producer = Mcp::start_with(&book, &["--grant", "read", "--grant", "produce"]);
+    producer.discover();
+    let (error, text, result) = call_tool(
+        &mut producer,
         "fa_read_trial_balance",
         json!({"period": "FY2026-P03", "certify": true}),
     );
@@ -2514,7 +2566,8 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
     let certified: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
     let envelope: JsonValue =
         fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(envelope["authority"], authority);
+    assert_eq!(envelope["authority"]["ops"], json!(["read", "produce"]));
+    assert_eq!(producer.finish(), 0);
     let (error, replayed, result) = call_tool(
         &mut mcp,
         "fa_read_replay",

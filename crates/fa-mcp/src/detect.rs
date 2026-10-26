@@ -1413,13 +1413,17 @@ mod tests {
         ok_post["intent"]["description"] = json!("all");
         assert!(broadcast_scope(&post, &mcp, reg, &ok_post).is_none());
         // A verb that can write (a report's --certify retains a certificate)
-        // is judged by the call's own [[bound]] ops. A trial balance reads
-        // (a plain --certify binds `read` alone), and so does an uncertified
+        // is judged by the call's own [[bound]] ops. A plain trial balance reads,
+        // and so does an uncertified
         // GL detail, even with a wildcard account, which the shape rules
         // alone would have taken for a write. The same GL view certified
         // binds read + produce, so its wildcard is a broadcast write.
         let tb = tool("fa_read_trial_balance");
         assert!(broadcast_scope(&tb, &mcp, reg, &json!({"period": "all"})).is_none());
+        assert!(
+            broadcast_scope(&tb, &mcp, reg, &json!({"period": "all", "certify": true})).is_some(),
+            "retaining a native trial balance is a write"
+        );
         let gl = tool("fa_proof_gl");
         let read = json!({"view": "detail", "account": "*"});
         assert!(broadcast_scope(&gl, &mcp, reg, &read).is_none());

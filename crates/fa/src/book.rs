@@ -3917,8 +3917,8 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, certificate)))
     }
 
-    /// Persist a certificate lazily after verifying current `read` authority
-    /// for this book (fa-1nx).
+    /// Persist a certificate lazily after verifying current `read` and
+    /// `produce` authority for this book (fa-mg2j).
     pub fn retain_certificate_authorized(
         &mut self,
         certificate: &crate::ReportCertificate,

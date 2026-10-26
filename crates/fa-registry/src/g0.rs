@@ -833,7 +833,7 @@ impl ClaimsLintConfig {
 // The 19 Appendix G classes plus the registered native accounting extensions.
 // Require their identities, not merely a row count: an unrelated class cannot
 // replace an existing operation's cost contract.
-const REQUIRED_OPERATION_CLASS_IDS: [&str; 27] = [
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 28] = [
     "balance_read_at_watermark",
     "certified_report",
     "single_entry_post",
@@ -846,6 +846,7 @@ const REQUIRED_OPERATION_CLASS_IDS: [&str; 27] = [
     "effect_manifest_closure",
     "draft_promotion",
     "period_transition",
+    "time_evidence_tick",
     "close_run_execute",
     "restatement_case_post",
     "register_maintenance_flush",
@@ -2838,7 +2839,7 @@ mod tests {
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);
-        assert_eq!(op_costs.classes.len(), 27);
+        assert_eq!(op_costs.classes.len(), 28);
         assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
@@ -3059,8 +3060,8 @@ mod tests {
         // period_transition fails. LimitCell is registered on every posting
         // class (fa-vz7e); a period transition moves none.
         let bad_hot_obj = OPERATION_COSTS_TOML.replacen(
-            "id = \"period_transition\"\nname = \"Period transition\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication updating Period state mirror and journaling 1 PeriodControl entry\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 PeriodControl entry\"\nhot_object_exceptions = []",
-            "id = \"period_transition\"\nname = \"Period transition\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication updating Period state mirror and journaling 1 PeriodControl entry\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 PeriodControl entry\"\nhot_object_exceptions = [\"LimitCell\"]",
+            "id = \"period_transition\"\nname = \"Period transition\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication updating Period state mirror and journaling 1 PeriodControl entry with its common-key IntentOutcome\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 PeriodControl entry + 1 IntentOutcome\"\nhot_object_exceptions = []",
+            "id = \"period_transition\"\nname = \"Period transition\"\nsubstrate_class = \"Autocommit write, fused arm\"\nsubstrate_transactions = \"1\"\ntoday_posture = \"One publication updating Period state mirror and journaling 1 PeriodControl entry with its common-key IntentOutcome\"\ntoday_transactions = 1\nbarrier_count = 2\ntoday_barrier_count = 2\nderived_objects = \"1 PeriodControl entry + 1 IntentOutcome\"\nhot_object_exceptions = [\"LimitCell\"]",
             1,
         );
         let err = OperationCosts::parse(&bad_hot_obj).expect_err("unscoped hot object");
