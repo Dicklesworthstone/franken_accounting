@@ -21,6 +21,8 @@ mod cells;
 mod evaluate;
 #[path = "cases/invariance.rs"]
 mod invariance;
+#[path = "cases/reads.rs"]
+mod reads;
 #[path = "cases/run.rs"]
 mod run;
 

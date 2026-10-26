@@ -1,0 +1,33 @@
+# Reads fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "R-1"
+provenance = "synthetic"
+reason = "a 1,000.00 Original entry on 1100, posted and read back"
+discipline = "never cited by a case; the R row's posted value"
+
+[[fact]]
+id = "P-1"
+provenance = "synthetic"
+reason = "a published 1100 balance of 1,000.00 that the book's entries must reach"
+discipline = "never cited by a case; the T row's published value"
+
+[[value]]
+fact = "R-1"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 0
+value = "100000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "P-1"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 0
+value = "100000"
+unit = "USD"
+precision = 0

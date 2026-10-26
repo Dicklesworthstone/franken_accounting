@@ -35,6 +35,9 @@ pub const HARNESS_VERBS: &[(&str, Option<&str>)] = &[
     ("finding", Some("record")),
     ("finding", Some("list")),
     ("tb", None),
+    // A7b: certified reads and kernel balance assertions.
+    ("explain", Some("balance")),
+    ("assert-balance", None),
 ];
 
 /// The entries of `verbs` that a registry's (name, subcommands) rows do not

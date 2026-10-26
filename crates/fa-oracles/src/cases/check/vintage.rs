@@ -45,6 +45,11 @@ const fn roles(kind: TKind) -> (&'static [&'static str], &'static str) {
 
 #[must_use]
 pub fn check(cx: &Context<'_>) -> CheckReport {
+    // A harness_selftest case has no sources (A8a), so it pins no vintage:
+    // exempt by kind, as from K-BASIS.
+    if let Some(r) = super::branch::selftest_exempt(cx, "K-VINTAGE") {
+        return r;
+    }
     let case = cx.case;
     let reads = case.expectations.as_ref().map(t_reads).unwrap_or_default();
     let mut r = CheckReport::new("K-VINTAGE", reads.len());

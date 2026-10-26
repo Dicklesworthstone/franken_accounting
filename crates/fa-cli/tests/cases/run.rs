@@ -301,6 +301,10 @@ pub struct BookRun<'c> {
     pub filler: Option<FillerVariant>,
     /// The most members one filler chunk posts (`max_batch_entries`, A7c).
     pub chunk_max: usize,
+    /// Each T and R row's certified read, by `<expectation>/<target>` (A7b).
+    pub reads: BTreeMap<String, super::reads::Read>,
+    /// Each `assert_balance` step's calls, by its `ref` (A7b).
+    pub assertions: BTreeMap<String, super::reads::Assertion>,
 }
 
 impl<'c> BookRun<'c> {
@@ -339,10 +343,12 @@ impl<'c> BookRun<'c> {
             chunk_max: filler::max_batch_entries()
                 .unwrap_or(8190)
                 .min(FILLER_CHUNK),
+            reads: BTreeMap::new(),
+            assertions: BTreeMap::new(),
         }
     }
 
-    fn fail(&mut self, why: String) {
+    pub(crate) fn fail(&mut self, why: String) {
         if self.failure.is_none() {
             self.failure = Some(why);
         }
@@ -885,6 +891,7 @@ impl<'c> BookRun<'c> {
                 }
                 Some(StepKind::EventRecord) => self.event_record(step),
                 Some(StepKind::FillerBatch) => self.filler_batch(step),
+                Some(StepKind::AssertBalance) => self.assert_balance(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -1746,6 +1753,8 @@ impl<'c> BookRun<'c> {
                 call.exit
             ))
         });
+        // The history's end is also where every T and R row reads (A7b).
+        self.reads();
     }
 
     /// The trial balance of each period (plan §3.3 step 7); a failure here

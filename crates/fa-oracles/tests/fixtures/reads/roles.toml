@@ -1,0 +1,21 @@
+# Reads fixture roles: labels only (plan §2.8); no person stands behind them.
+
+[[role]]
+label = "selftest-preparer-1"
+kind = "harness"
+description = "prepares the fixture's synthetic entries"
+
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "runs the fixture book's period transitions"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "reviews the fixture's placeholder documents"
+
+[[role]]
+label = "case-reconciler-1"
+kind = "harness"
+description = "records the fixture's balance assertions"
