@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use fa_oracles::cases::book::{BookVariant, StepKind};
+use fa_oracles::cases::book::{BookVariant, StepDef, StepKind, VariantKind};
 use fa_oracles::cases::check::{self, Verdict};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::CASES;
@@ -169,7 +169,29 @@ fn s<T: ToString>(v: T) -> String {
 
 /// `REPRODUCE fa --book <retained dir> <exact argv>`.
 pub fn reproduce(call: &Call) -> String {
-    format!("REPRODUCE fa {}", call.argv.join(" "))
+    let argv: Vec<String> = call
+        .argv
+        .iter()
+        .map(|a| {
+            if a.contains(char::is_whitespace) || a.contains('\'') {
+                format!("'{}'", a.replace('\'', "'\\''"))
+            } else {
+                a.clone()
+            }
+        })
+        .collect();
+    let mut line = format!("REPRODUCE fa {}", argv.join(" "));
+    // What the call observed, as a shell comment so the argv stays runnable.
+    if call.exit != 0 {
+        line.push_str(&format!("  # exit={}", call.exit));
+        if let Some(r) = call.refusal_id() {
+            line.push_str(&format!(" refusal={r}"));
+        }
+        if let Some(e) = call.event("error").and_then(|o| o.error.as_ref()) {
+            line.push_str(&format!(": {}", e.message.replace('\n', " ")));
+        }
+    }
+    line
 }
 
 /// One recorded finding run.
@@ -179,6 +201,34 @@ pub struct FindingRun {
     /// Each recorded finding's `finding` object (severity, statistic,
     /// cites, narrative).
     pub findings: Vec<Json>,
+    /// Each finding's vid, in the same order.
+    pub finding_vids: Vec<String>,
+}
+
+/// The provenance engagement every citation stub is filed in (plan §2.7).
+pub const PROVENANCE: &str = "provenance";
+
+/// `minor` minor units of `unit` at its registered scale (`0.01 USD`).
+pub fn minor_amount(unit: &str, minor: u32) -> String {
+    let scale = fa_registry::units_embedded()
+        .ok()
+        .and_then(|units| units.into_iter().find(|u| u.code == unit).map(|u| u.scale))
+        .unwrap_or(2);
+    if scale == 0 {
+        format!("{minor} {unit}")
+    } else {
+        let width = usize::from(scale);
+        let p = 10u32.pow(u32::from(scale));
+        format!("{}.{:0width$} {unit}", minor / p, minor % p)
+    }
+}
+
+/// The generated statement of a manual assertion over `fact` (A7a): fixed
+/// text and the fact id, never free text.
+pub fn assertion_statement(fact: &str) -> String {
+    format!(
+        "reconstruction placeholder: the record describes this document ({fact}); its bytes are not public"
+    )
 }
 
 /// The state one book variant's run carries.
@@ -380,25 +430,26 @@ impl<'c> BookRun<'c> {
         )]);
         let periods_file = self.write("periods.json", periods_json.to_string().as_bytes());
         let header = &self.book.book;
-        let created = self.setup(
-            "book",
-            "book",
-            vec![
-                s("book"),
-                s("create"),
-                s("--name"),
-                self.case.header.id.clone(),
-                s("--base-unit"),
-                header.base_unit.clone(),
-                s("--calendar"),
-                s("custom"),
-                s("--periods"),
-                periods_file,
-                s("--opening-date"),
-                header.opening_date.clone(),
-                s("--json"),
-            ],
-        );
+        let mut args = vec![
+            s("book"),
+            s("create"),
+            s("--name"),
+            self.case.header.id.clone(),
+            s("--base-unit"),
+            header.base_unit.clone(),
+            s("--calendar"),
+            s("custom"),
+            s("--periods"),
+            periods_file,
+            s("--opening-date"),
+            header.opening_date.clone(),
+        ];
+        // A1b's optional `[book] entities`, `<code>[:<name>]` each.
+        for e in header.entities.iter().flatten() {
+            args.extend([s("--entity"), e.clone()]);
+        }
+        args.push(s("--json"));
+        let created = self.setup("book", "book", args);
         self.book_id = created.and_then(|c| c.str_field("book_created", "book_id"));
         for fy in years.keys() {
             self.setup(
@@ -415,7 +466,137 @@ impl<'c> BookRun<'c> {
         }
         self.map_periods();
         self.chart();
+        self.parties();
         self.documents();
+        self.engagement();
+    }
+
+    /// `fa party add` per `[[party]]` (its `id` as the party code), then
+    /// `fa party relate` per relation token, and per `[book]` entity
+    /// relation.
+    fn parties(&mut self) {
+        let book = self.book;
+        for p in &book.parties {
+            let doc = Json::Object(vec![
+                ("code".into(), Json::Str(p.id.clone())),
+                ("kind".into(), Json::Str(p.kind.clone())),
+                ("name".into(), Json::Str(p.label.clone())),
+            ]);
+            let file = self.write(&format!("party-{}.json", p.id), doc.to_string().as_bytes());
+            self.setup(
+                &p.id,
+                "party",
+                vec![s("party"), s("add"), file, s("--json")],
+            );
+        }
+        let relations = book
+            .parties
+            .iter()
+            .flat_map(|p| p.relations.iter().map(move |r| (p.id.as_str(), r)))
+            .chain(
+                book.book
+                    .relations
+                    .iter()
+                    .map(|e| (e.from.as_str(), &e.relation)),
+            );
+        for (from, r) in relations {
+            let mut args = vec![
+                s("party"),
+                s("relate"),
+                from.to_string(),
+                r.to.clone(),
+                s("--kind"),
+                s(r.kind.as_str()),
+                s("--basis"),
+                r.basis.clone(),
+                s("--valid-from"),
+                r.valid_from.clone(),
+            ];
+            if let Some(to) = &r.valid_to {
+                args.extend([s("--valid-to"), to.clone()]);
+            }
+            if let Some((n, d)) = r.pct {
+                args.extend([s("--pct"), format!("{n}/{d}")]);
+            }
+            args.push(s("--json"));
+            self.setup(&format!("{from}->{}", r.to), "party", args);
+        }
+    }
+
+    /// Whether `stub_of` names a citation stub (a source or fact id).
+    fn is_citation_stub(&self, stub_of: &str) -> bool {
+        self.case.sources.iter().any(|x| x.id == stub_of)
+            || self.case.facts.iter().any(|f| f.id == stub_of)
+    }
+
+    /// The provenance engagement (§2.7), opened when the variant has a
+    /// citation stub or an `engagement_file` step: no materiality judged,
+    /// all three figures stated as zero in the base unit, then every
+    /// citation stub filed in it.
+    fn engagement(&mut self) {
+        if self.failure.is_some() {
+            return;
+        }
+        let stubs: Vec<String> = self
+            .book
+            .documents
+            .iter()
+            .filter(|d| self.is_citation_stub(&d.stub_of))
+            .map(|d| d.id.clone())
+            .collect();
+        let filing_steps = self
+            .book
+            .steps
+            .iter()
+            .any(|s| s.step_kind() == Some(StepKind::EngagementFile));
+        if stubs.is_empty() && !filing_steps {
+            return;
+        }
+        // Plan §2.7 states all three figures as zero; `fa engagement open`
+        // refuses that (FA-REF-100: performance and overall are positive).
+        // The stated, never judged, rendering is the smallest positive
+        // figure, one minor unit, so no misstatement is judged immaterial,
+        // and a clearly-trivial threshold of zero.
+        let unit = self.book.book.base_unit.clone();
+        let (one, zero) = (minor_amount(&unit, 1), minor_amount(&unit, 0));
+        let mut args = vec![
+            s("engagement"),
+            s("open"),
+            s(PROVENANCE),
+            s("--kind"),
+            s("investigation"),
+        ];
+        for code in self.periods.values() {
+            args.extend([s("--period"), code.clone()]);
+        }
+        for (flag, value) in [
+            ("--overall", &one),
+            ("--performance", &one),
+            ("--clearly-trivial", &zero),
+        ] {
+            args.extend([s(flag), value.clone()]);
+        }
+        args.push(s("--json"));
+        if self.setup(PROVENANCE, "engagement", args).is_none() {
+            return;
+        }
+        for id in stubs {
+            let Some(oid) = self.documents.get(&id).cloned() else {
+                continue;
+            };
+            self.setup(
+                &id,
+                "engagement",
+                vec![
+                    s("engagement"),
+                    s("file"),
+                    s(PROVENANCE),
+                    s("--document"),
+                    oid,
+                    s("--json"),
+                ],
+            );
+        }
     }
 
     /// Maps each `[[period]]` label to the book's code by its dates (the
@@ -621,13 +802,21 @@ impl<'c> BookRun<'c> {
                     }
                 }
                 Some(StepKind::Intent) => self.post(step.seq, &step.reference),
+                Some(StepKind::Allocate) => self.allocate(step.seq, &step.reference),
+                Some(StepKind::Batch) if self.book.kind != VariantKind::Ledger => {
+                    self.batch(step.seq, &step.reference);
+                }
+                Some(StepKind::PeriodLock) => self.period_lock(step),
                 Some(StepKind::FindingRecord) => {
                     let procedure = step
                         .reference
                         .split_once('@')
                         .map_or(step.reference.as_str(), |(p, _)| p);
-                    self.finding_record(step.seq, procedure, step.principal.as_deref());
+                    let params = step.params.clone().unwrap_or_default();
+                    self.finding_record(step.seq, procedure, step.principal.as_deref(), &params);
                 }
+                Some(StepKind::EngagementFile) => self.engagement_file(step),
+                Some(StepKind::EventRecord) => self.event_record(step),
                 _ => {
                     if !self.unrun_steps.contains(&step.kind) {
                         self.unrun_steps.push(step.kind.clone());
@@ -656,6 +845,14 @@ impl<'c> BookRun<'c> {
             }
         };
         let file = self.write(&format!("{intent_id}.json"), doc.to_string().as_bytes());
+        if let Some(code) = it
+            .evidence
+            .as_deref()
+            .and_then(|e| e.strip_prefix("manual_assertion:"))
+        {
+            self.post_manually_asserted(seq, it, file, code);
+            return;
+        }
         let mut args = vec![
             s("post"),
             s("--intent"),
@@ -680,6 +877,473 @@ impl<'c> BookRun<'c> {
             self.map_legs(seq, intent_id, &vid);
         }
         self.posts.insert(intent_id.to_string(), call);
+    }
+
+    /// An intent whose evidence is `manual_assertion:<code>`: one sealed
+    /// proposal, asserted with `fa document attest manual --plan-out` and
+    /// committed with `fa commit --plan`. A second `fa post --intent` would
+    /// reseal it, and the assertion would no longer cover it.
+    fn post_manually_asserted(
+        &mut self,
+        seq: i128,
+        it: &fa_oracles::cases::book::IntentDef,
+        file: String,
+        code: &str,
+    ) {
+        let plan = self.work.join(format!("{}.plan", it.id));
+        let attest = self.call(
+            seq,
+            &it.id,
+            "document",
+            vec![
+                s("document"),
+                s("attest"),
+                s("manual"),
+                s("--intent"),
+                file,
+                s("--reason"),
+                code.to_string(),
+                s("--statement"),
+                assertion_statement(&it.fact),
+                s("--plan-out"),
+                plan.display().to_string(),
+                s("--as"),
+                it.principal.clone(),
+                s("--json"),
+            ],
+        );
+        if attest.exit != 0 {
+            self.lines.push(reproduce(&attest));
+            self.posts.insert(it.id.clone(), attest);
+            return;
+        }
+        let call = self.call(
+            seq,
+            &it.id,
+            "commit",
+            vec![
+                s("commit"),
+                s("--plan"),
+                plan.display().to_string(),
+                s("--as"),
+                it.principal.clone(),
+                s("--json"),
+            ],
+        );
+        if let Some(vid) = call.str_field("plan_committed", "vid") {
+            self.bind(
+                &vid,
+                format!("${}", it.id),
+                "plan_committed.vid",
+                seq,
+                &it.id,
+            );
+            self.vids.insert(it.id.clone(), vid.clone());
+            self.map_legs(seq, &it.id, &vid);
+        }
+        self.posts.insert(it.id.clone(), call);
+    }
+
+    /// The book code of the `[[period]]` containing `day`.
+    fn period_of(&self, day: &str) -> Option<String> {
+        self.book
+            .periods
+            .iter()
+            .find(|p| p.contains(day))
+            .and_then(|p| self.periods.get(&p.code).cloned())
+    }
+
+    /// One approval of `digest` by `label`: the only place the runner
+    /// produces an approval (A7a; fa-z46b will change what a second
+    /// principal is). Returns the approval vid.
+    fn approve_as(&mut self, seq: i128, label: &str, digest: &str) -> Option<String> {
+        let call = self.call(
+            seq,
+            label,
+            "approve",
+            vec![
+                s("approve"),
+                s("--proposal"),
+                digest.to_string(),
+                s("--as"),
+                label.to_string(),
+                s("--json"),
+            ],
+        );
+        let vid = call.str_field("approved", "approval_vid");
+        match &vid {
+            Some(v) => {
+                let n = self
+                    .placeholders
+                    .iter()
+                    .filter(|p| p.1.starts_with("$APPROVAL_"))
+                    .count()
+                    + 1;
+                self.bind(
+                    v,
+                    format!("$APPROVAL_{n}"),
+                    "approved.approval_vid",
+                    seq,
+                    label,
+                );
+            }
+            None => self.lines.push(reproduce(&call)),
+        }
+        vid
+    }
+
+    /// `fa period lock` planned, approved by the step's `approvers` and
+    /// committed with their approvals.
+    fn period_lock(&mut self, step: &StepDef) {
+        let Some(code) = self.periods.get(&step.reference).cloned() else {
+            self.fail(format!(
+                "expected a created period for label {} (step {}) observed none",
+                step.reference, step.seq
+            ));
+            return;
+        };
+        let plan = self.work.join(format!("lock-{}.plan", step.seq));
+        let mut args = vec![
+            s("period"),
+            s("lock"),
+            code.clone(),
+            s("--reason"),
+            s("Scheduled"),
+            s("--plan-out"),
+            plan.display().to_string(),
+        ];
+        if let Some(p) = step.principal.as_deref() {
+            args.extend([s("--as"), p.to_string()]);
+        }
+        args.push(s("--json"));
+        let planned = self.call(step.seq, &step.reference, "period", args);
+        let Some(digest) = planned.str_field("period_planned", "proposal_digest") else {
+            self.lines.push(reproduce(&planned));
+            return;
+        };
+        let mut approvals = Vec::new();
+        for a in step.approvers.clone().unwrap_or_default() {
+            match self.approve_as(step.seq, &a, &digest) {
+                Some(v) => approvals.push(v),
+                None => return,
+            }
+        }
+        let mut args = vec![
+            s("period"),
+            s("lock"),
+            code,
+            s("--plan"),
+            plan.display().to_string(),
+        ];
+        for v in approvals {
+            args.extend([s("--approval"), v]);
+        }
+        if let Some(p) = step.principal.as_deref() {
+            args.extend([s("--as"), p.to_string()]);
+        }
+        args.push(s("--json"));
+        let call = self.call(step.seq, &step.reference, "period", args);
+        if call.exit != 0 {
+            self.lines.push(reproduce(&call));
+        }
+    }
+
+    /// An `engagement_file` step: a document by its oid, or `finding:<D>`,
+    /// every finding of that expectation's procedure run that cites one of
+    /// its targets' entries.
+    fn engagement_file(&mut self, step: &StepDef) {
+        let principal = step.principal.clone();
+        let file = |run: &mut Self, flag: &str, value: String| {
+            let mut args = vec![s("engagement"), s("file"), s(PROVENANCE), s(flag), value];
+            if let Some(p) = principal.as_deref() {
+                args.extend([s("--as"), p.to_string()]);
+            }
+            args.push(s("--json"));
+            let call = run.call(step.seq, &step.reference, "engagement", args);
+            if call.exit != 0 {
+                run.lines.push(reproduce(&call));
+            }
+        };
+        let Some(exp_id) = step.reference.strip_prefix("finding:") else {
+            let Some(oid) = self.documents.get(&step.reference).cloned() else {
+                self.fail(format!(
+                    "expected document {} to be added (step {}) observed none",
+                    step.reference, step.seq
+                ));
+                return;
+            };
+            file(self, "--document", oid);
+            return;
+        };
+        let case = self.case;
+        let Some(set) = case.expectations.as_ref() else {
+            return;
+        };
+        let Some(procedure) = set.get(exp_id).and_then(|e| e.fields.str("procedure")) else {
+            self.fail(format!(
+                "expected expectation {exp_id} with a procedure (step {}) observed none",
+                step.seq
+            ));
+            return;
+        };
+        let subjects: Vec<String> = set
+            .targets_of(exp_id)
+            .map(|t| evaluate::intent_of(self, &t.fact))
+            .collect();
+        let vids: Vec<String> = self
+            .runs
+            .get(procedure)
+            .map(|r| {
+                r.findings
+                    .iter()
+                    .zip(&r.finding_vids)
+                    .filter(|(f, _)| {
+                        let p = evaluate::project(self, f);
+                        subjects.iter().any(|s| p.entries.contains(s))
+                    })
+                    .map(|(_, v)| v.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for v in vids {
+            file(self, "--finding", v);
+        }
+    }
+
+    /// `fa event record` from the step's `[[event]]` row.
+    fn event_record(&mut self, step: &StepDef) {
+        let book = self.book;
+        let Some(ev) = book.events.iter().find(|e| e.id == step.reference) else {
+            self.fail(format!(
+                "expected an [[event]] {} (step {}) observed none",
+                step.reference, step.seq
+            ));
+            return;
+        };
+        let mut args = vec![
+            s("event"),
+            s("record"),
+            s("--code"),
+            ev.id.clone(),
+            s("--kind"),
+            ev.kind.clone(),
+            s("--occurred-on"),
+            ev.occurred_on.clone(),
+        ];
+        for d in &ev.evidence {
+            let Some(oid) = self.documents.get(d).cloned() else {
+                self.fail(format!(
+                    "expected evidence {d} of event {} to be added observed none",
+                    ev.id
+                ));
+                return;
+            };
+            args.extend([s("--evidence"), oid]);
+        }
+        for p in ev.participants.iter().flatten() {
+            args.extend([s("--participant"), p.clone()]);
+        }
+        if let (Some(label), Some(amount)) = (&ev.resource_label, &ev.resource_amount_literal) {
+            let unit = ev
+                .resource_unit
+                .clone()
+                .unwrap_or_else(|| book.book.base_unit.clone());
+            args.extend([s("--resource"), format!("{label}:{amount} {unit}")]);
+        }
+        if let Some(p) = step.principal.as_deref() {
+            args.extend([s("--as"), p.to_string()]);
+        }
+        args.push(s("--json"));
+        let call = self.call(step.seq, &step.reference, "event", args);
+        if call.exit != 0 {
+            self.lines.push(reproduce(&call));
+        }
+    }
+
+    /// An `allocate` step: the allocation JSON from the intent's
+    /// `allocation_*` fields, its law as `method` (never the CLI's default).
+    fn allocate(&mut self, seq: i128, intent_id: &str) {
+        let book = self.book;
+        let Some(it) = book.intents.iter().find(|i| i.id == intent_id) else {
+            self.fail(format!(
+                "expected an [[intent]] {intent_id} (step {seq}) observed none"
+            ));
+            return;
+        };
+        let (Some(law), Some(source)) = (&it.allocation_law, &it.allocation_source) else {
+            self.fail(format!(
+                "expected allocation_law and allocation_source on {intent_id} observed a rendering that would leave the CLI's default law"
+            ));
+            return;
+        };
+        let mut doc = vec![
+            ("source".to_string(), Json::Str(source.clone())),
+            (
+                "effective_date".into(),
+                Json::Str(it.effective_date.clone()),
+            ),
+            (
+                "idempotency_key".into(),
+                Json::Str(
+                    it.idempotency_key
+                        .clone()
+                        .unwrap_or_else(|| format!("case-{}", it.id)),
+                ),
+            ),
+            ("method".into(), Json::Str(law.clone())),
+            (
+                "targets".into(),
+                Json::Array(
+                    it.allocation_targets
+                        .iter()
+                        .flatten()
+                        .map(|t| Json::Object(vec![("account".into(), Json::Str(t.clone()))]))
+                        .collect(),
+                ),
+            ),
+        ];
+        if let Some(memo) = it.memo.as_deref().filter(|m| !m.is_empty()) {
+            doc.push(("description".into(), Json::Str(memo.to_string())));
+        }
+        let mut args = vec![s("allocate"), s("--intent")];
+        if let Some(total) = &it.allocation_total {
+            doc.push((
+                "total".into(),
+                Json::Str(format!("{total} {}", book.book.base_unit)),
+            ));
+            doc.push((
+                "source_side".into(),
+                Json::Str(it.allocation_source_side.clone().unwrap_or_default()),
+            ));
+        }
+        let file = self.write(
+            &format!("{intent_id}.alloc.json"),
+            Json::Object(doc).to_string().as_bytes(),
+        );
+        args.push(file);
+        if it.allocation_total.is_none() {
+            let Some(code) = self.period_of(&it.effective_date) else {
+                self.fail(format!(
+                    "expected a period containing {} for {intent_id} observed none",
+                    it.effective_date
+                ));
+                return;
+            };
+            args.extend([s("--period"), code]);
+        }
+        args.extend([s("--as"), it.principal.clone()]);
+        if let Some(e) = it.evidence.as_deref() {
+            match self.documents.get(e).cloned() {
+                Some(oid) => args.extend([s("--evidence"), oid]),
+                None => {
+                    self.fail(format!(
+                        "expected evidence {e} of {intent_id} to be added observed none"
+                    ));
+                    return;
+                }
+            }
+        }
+        args.push(s("--json"));
+        let call = self.call(seq, intent_id, "allocate", args);
+        if call.exit != 0 {
+            self.lines.push(reproduce(&call));
+        }
+        if let Some(vid) = call.str_field("posted", "vid") {
+            self.bind(&vid, format!("${intent_id}"), "posted.vid", seq, intent_id);
+            self.vids.insert(intent_id.to_string(), vid);
+        }
+        self.posts.insert(intent_id.to_string(), call);
+    }
+
+    /// A `batch` step over the intent range `A..B` (file order), posted as
+    /// one `PostBatch` whose members carry their own evidence.
+    fn batch(&mut self, seq: i128, range: &str) {
+        let book = self.book;
+        let Some((a, b)) = range.split_once("..") else {
+            self.fail(format!(
+                "expected an intent range A..B (step {seq}) observed {range}"
+            ));
+            return;
+        };
+        let pos = |id: &str| book.intents.iter().position(|i| i.id == id);
+        let (Some(pa), Some(pb)) = (pos(a), pos(b)) else {
+            self.fail(format!(
+                "expected intents {a} and {b} (step {seq}) observed none"
+            ));
+            return;
+        };
+        let members = &book.intents[pa..=pb];
+        let vids = self.vids.clone();
+        let mut rendered = Vec::new();
+        for it in members {
+            let doc = match intent_json::render(book, it, &|t| vids.get(t).cloned()) {
+                Ok(Json::Object(mut fields)) => {
+                    if let Some(oid) = it.evidence.as_deref().and_then(|e| self.documents.get(e)) {
+                        fields.push(("evidence".into(), Json::Array(vec![Json::Str(oid.clone())])));
+                    }
+                    Json::Object(fields)
+                }
+                Ok(other) => other,
+                Err(e) => {
+                    self.fail(format!(
+                        "expected intent {} to render (step {seq}) observed {e:?}",
+                        it.id
+                    ));
+                    return;
+                }
+            };
+            rendered.push(doc);
+        }
+        let key = format!("case-batch-{}-{seq}", self.case.header.id);
+        let doc = Json::Object(vec![
+            ("idempotency_key".into(), Json::Str(key)),
+            ("intents".into(), Json::Array(rendered)),
+        ]);
+        let file = self.write(&format!("batch-{seq}.json"), doc.to_string().as_bytes());
+        let principal = members
+            .first()
+            .map(|i| i.principal.clone())
+            .unwrap_or_default();
+        let call = self.call(
+            seq,
+            range,
+            "batch",
+            vec![
+                s("batch"),
+                s("--intent"),
+                file,
+                s("--as"),
+                principal,
+                s("--json"),
+            ],
+        );
+        let posted = call.array_field("batch_posted", "members");
+        for m in &posted {
+            let (Some(i), Some(vid)) = (
+                m.get("index").and_then(Json::as_int),
+                m.get("vid").and_then(Json::as_str),
+            ) else {
+                continue;
+            };
+            let Some(it) = usize::try_from(i).ok().and_then(|i| members.get(i)) else {
+                continue;
+            };
+            self.bind(
+                vid,
+                format!("${}", it.id),
+                "batch_posted.members.vid",
+                seq,
+                &it.id,
+            );
+            self.vids.insert(it.id.clone(), vid.to_string());
+            self.map_legs(seq, &it.id, vid);
+        }
+        if call.exit != 0 {
+            self.lines.push(reproduce(&call));
+        }
+        for it in members {
+            self.posts.insert(it.id.clone(), call.clone());
+        }
     }
 
     /// Reads the posted entry back and maps its legs, in order, to the
@@ -743,7 +1407,13 @@ impl<'c> BookRun<'c> {
     /// `fa finding record` at the head (a `pre_case` read on a variant with
     /// no `[[case]]` is the head at the step), then `fa finding list` of the
     /// run's certificate.
-    fn finding_record(&mut self, seq: i128, procedure: &str, principal: Option<&str>) {
+    fn finding_record(
+        &mut self,
+        seq: i128,
+        procedure: &str,
+        principal: Option<&str>,
+        params: &[String],
+    ) {
         let mut args = vec![
             s("finding"),
             s("record"),
@@ -751,6 +1421,10 @@ impl<'c> BookRun<'c> {
             s("--known-at"),
             s(self.head),
         ];
+        // A1b's `params`, one `--param <name>=<integer>` each.
+        for p in params {
+            args.extend([s("--param"), p.clone()]);
+        }
         if let Some(p) = principal {
             args.extend([s("--as"), p.to_string()]);
         }
@@ -791,13 +1465,27 @@ impl<'c> BookRun<'c> {
             self.lines.push(reproduce(&listed));
             return;
         }
-        let findings = listed
-            .array_field("finding_list", "findings")
+        let rows = listed.array_field("finding_list", "findings");
+        let findings = rows
             .iter()
             .filter_map(|r| r.get("finding").cloned())
             .collect();
-        self.runs
-            .insert(procedure.to_string(), FindingRun { version, findings });
+        let finding_vids = rows
+            .iter()
+            .filter_map(|r| {
+                r.get("finding_vid")
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        self.runs.insert(
+            procedure.to_string(),
+            FindingRun {
+                version,
+                findings,
+                finding_vids,
+            },
+        );
     }
 
     /// The SELF row's read: `fa procedure run jet.self_sourced_evidence`.
@@ -1000,15 +1688,28 @@ pub fn run_planted(
         .iter()
         .find(|c| c.id == case_id)
         .expect("a committed case");
-    let mut files: Vec<(&str, String)> = case
-        .files
-        .iter()
-        .map(|(p, t)| (*p, (*t).to_string()))
-        .collect();
+    run_files(case_id, case.files, edits, verbs)
+}
+
+/// `files` (a committed case's or a runner fixture's) copied, `edits`
+/// applied in order, and run as case `id` with `verbs`: `Err` when the
+/// run is not ok.
+///
+/// # Panics
+///
+/// As [`run_planted`].
+pub fn run_files(
+    id: &str,
+    files: &[(&str, &str)],
+    edits: &[PlantedEdit],
+    verbs: &[(&str, Option<&str>)],
+) -> Result<RunOutcome, Box<RunOutcome>> {
+    let mut files: Vec<(&str, String)> =
+        files.iter().map(|(p, t)| (*p, (*t).to_string())).collect();
     for e in edits {
         assert!(
             files.iter().any(|(p, _)| *p == e.file),
-            "planted edit names no file `{}` of {case_id}",
+            "planted edit names no file `{}` of {id}",
             e.file
         );
         let entry = files
@@ -1025,12 +1726,6 @@ pub fn run_planted(
         entry.1 = entry.1.replacen(e.old, e.new, 1);
     }
     let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
-    let o = run_case(
-        &CaseFiles {
-            id: case_id,
-            files: &refs,
-        },
-        verbs,
-    );
+    let o = run_case(&CaseFiles { id, files: &refs }, verbs);
     if o.ok { Ok(o) } else { Err(Box::new(o)) }
 }

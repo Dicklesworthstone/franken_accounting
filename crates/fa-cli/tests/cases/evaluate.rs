@@ -207,7 +207,7 @@ pub fn rows(run: &BookRun<'_>) -> Vec<Evaluated> {
 
 /// The fact or intent `subject` as the intent id it posted as, when that is
 /// unambiguous.
-fn intent_of(run: &BookRun<'_>, subject: &str) -> String {
+pub fn intent_of(run: &BookRun<'_>, subject: &str) -> String {
     if run.book.intents.iter().any(|i| i.id == subject) {
         return subject.to_string();
     }
@@ -236,12 +236,12 @@ fn expected_cite(run: &BookRun<'_>, cite: &str) -> String {
 /// A finding's typed cites projected (§5.2 rule 1): the cited entry to its
 /// intent, legs to `<intent>#<[[leg]] ordinal>`, accounts to codes. An
 /// unmapped handle projects to `?<kind>`, never to a storage identifier.
-struct Projected {
-    entries: BTreeSet<String>,
-    cites: BTreeSet<String>,
+pub struct Projected {
+    pub entries: BTreeSet<String>,
+    pub cites: BTreeSet<String>,
 }
 
-fn project(run: &BookRun<'_>, finding: &Json) -> Projected {
+pub fn project(run: &BookRun<'_>, finding: &Json) -> Projected {
     let mut p = Projected {
         entries: BTreeSet::new(),
         cites: BTreeSet::new(),
@@ -586,16 +586,36 @@ fn self_row(run: &BookRun<'_>) -> Evaluated {
         .filter(|d| d.reviewed_by.as_deref().is_some_and(|r| !r.is_empty()))
         .map(|d| d.id.as_str())
         .collect();
+    // Postings whose only document is a reviewed stub are cited at Medium.
+    // An Allocation also cites the driver workpaper `fa allocate` uploads
+    // under its poster's default grade (HumanUpload for a Human, not
+    // self-sourced: `ensure_allocation_driver_imported`), so it is outside
+    // the procedure's population and the row claims nothing of it.
+    let cites_reviewed = |i: &&fa_oracles::cases::book::IntentDef| {
+        run.vids.contains_key(&i.id) && i.evidence.as_deref().is_some_and(|d| reviewed.contains(d))
+    };
     let expected: BTreeSet<String> = run
         .book
         .intents
         .iter()
-        .filter(|i| run.vids.contains_key(&i.id))
-        .filter(|i| i.evidence.as_deref().is_some_and(|d| reviewed.contains(d)))
+        .filter(cites_reviewed)
+        .filter(|i| i.class != "Allocation")
+        .map(|i| i.id.clone())
+        .collect();
+    let allocations: BTreeSet<String> = run
+        .book
+        .intents
+        .iter()
+        .filter(cites_reviewed)
+        .filter(|i| i.class == "Allocation")
         .map(|i| i.id.clone())
         .collect();
     row.projection.push(("entries".into(), joined(&expected)));
     row.projection.push(("severity".into(), "Medium".into()));
+    if !allocations.is_empty() {
+        row.projection
+            .push(("outside".into(), joined(&allocations)));
+    }
     let mut fails = Vec::new();
     match &run.self_run {
         None => fails.push("expected a procedure run observed none".into()),

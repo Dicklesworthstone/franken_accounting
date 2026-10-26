@@ -19,7 +19,7 @@ mod run;
 use fa_oracles::cases::harness_verbs::HARNESS_VERBS;
 use fa_oracles::json::{self, Json};
 
-use run::{PlantedEdit, fa, outcome, run_case, run_planted};
+use run::{PlantedEdit, RunOutcome, fa, outcome, run_case, run_files, run_planted};
 
 const SELFTEST: &str = "_selftest";
 
@@ -305,6 +305,9 @@ fn _selftest_neg_wrong_refusal_id() {
     let argv: Vec<String> = o.lines[at - 1]
         .strip_prefix("REPRODUCE fa ")
         .expect("a REPRODUCE line above the row")
+        .split("  # ")
+        .next()
+        .unwrap_or_default()
         .split(' ')
         .map(str::to_string)
         .collect();
@@ -384,5 +387,165 @@ fn planted_edit_missing_from_the_copy_is_refused() {
             new: "refusal = \"FA-REF-010\"",
         }],
         HARNESS_VERBS,
+    );
+}
+
+/// The runner fixture (`crates/fa-oracles/tests/fixtures/runner_ext/`):
+/// one of each extension step kind on a synthetic book.
+const RUNNER_EXT: [(&str, &str); 5] = [
+    (
+        "case.toml",
+        include_str!("../../fa-oracles/tests/fixtures/runner_ext/case.toml"),
+    ),
+    (
+        "roles.toml",
+        include_str!("../../fa-oracles/tests/fixtures/runner_ext/roles.toml"),
+    ),
+    (
+        "facts.toml",
+        include_str!("../../fa-oracles/tests/fixtures/runner_ext/facts.toml"),
+    ),
+    (
+        "books/native.toml",
+        include_str!("../../fa-oracles/tests/fixtures/runner_ext/books/native.toml"),
+    ),
+    (
+        "expectations.toml",
+        include_str!("../../fa-oracles/tests/fixtures/runner_ext/expectations.toml"),
+    ),
+];
+
+/// The runner fixture's run, shared by its tests.
+fn runner_ext() -> &'static RunOutcome {
+    static RUN: std::sync::OnceLock<RunOutcome> = std::sync::OnceLock::new();
+    RUN.get_or_init(
+        || match run_files("runner_ext", &RUNNER_EXT, &[], HARNESS_VERBS) {
+            Ok(o) => o,
+            Err(o) => *o,
+        },
+    )
+}
+
+/// The logged step whose argv runs `verb` (and `sub`, when given).
+fn steps_of<'o>(
+    o: &'o RunOutcome,
+    verb: &str,
+    sub: Option<&str>,
+) -> Vec<&'o fa_oracles::cases::log::StepRecord> {
+    o.steps
+        .iter()
+        .filter(|s| {
+            s.argv_redacted.get(2).map(String::as_str) == Some(verb)
+                && sub.is_none_or(|x| s.argv_redacted.get(3).map(String::as_str) == Some(x))
+        })
+        .collect()
+}
+
+/// The A1b step kinds beyond the core history run through their registered
+/// verbs, each logging its verb and a zero exit: allocate (its rendered
+/// `method` the intent's `allocation_law`), a manual-assertion post (attest
+/// manual, then commit), batch, event_record, the provenance engagement and
+/// a `finding:` filing of the D row's findings, and a period lock planned,
+/// approved through approve_as and committed.
+#[test]
+fn extension_step_kinds_run_through_their_verbs() {
+    let o = runner_ext();
+    let text = o.text();
+    assert!(o.ok, "{text}");
+    assert!(!text.contains("REPRODUCE"), "{text}");
+    for (verb, sub) in [
+        ("party", Some("add")),
+        ("allocate", None),
+        ("document", Some("attest")),
+        ("commit", None),
+        ("batch", None),
+        ("event", Some("record")),
+        ("engagement", Some("open")),
+        ("engagement", Some("file")),
+        ("approve", None),
+        ("period", Some("lock")),
+    ] {
+        let steps = steps_of(o, verb, sub);
+        assert!(!steps.is_empty(), "no `{verb} {sub:?}` step:\n{text}");
+        for s in steps {
+            assert_eq!(s.exit, 0, "{:?}\n{text}", s.argv_redacted);
+        }
+    }
+    // The allocation's rendered method is its law, never the CLI default.
+    let work = o.books["native"].parent().expect("the variant's work dir");
+    let alloc =
+        std::fs::read_to_string(work.join("S-2.alloc.json")).expect("the rendered allocation");
+    let doc = json::parse(&alloc).expect("JSON");
+    assert_eq!(
+        doc.get("method").and_then(Json::as_str),
+        Some("EqualSplitResidualFirst"),
+        "{alloc}"
+    );
+    // The manual assertion's statement is generated from the fact id.
+    let attest = steps_of(o, "document", Some("attest"))
+        .into_iter()
+        .find(|s| s.argv_redacted.get(4).map(String::as_str) == Some("manual"))
+        .expect("the attest manual step");
+    assert!(
+        attest
+            .argv_redacted
+            .contains(&run::assertion_statement("S-3")),
+        "{:?}",
+        attest.argv_redacted
+    );
+    // The finding: filing filed the D row's finding, by its vid.
+    assert!(
+        steps_of(o, "engagement", Some("file"))
+            .iter()
+            .any(|s| s.argv_redacted.contains(&"--finding".to_string())),
+        "{text}"
+    );
+    // The lock cites the approval approve_as produced.
+    let locks = steps_of(o, "period", Some("lock"));
+    let commit = locks.last().expect("the lock commit");
+    assert!(
+        commit.argv_redacted.contains(&"$APPROVAL_1".to_string())
+            && commit.binds.iter().any(|(p, _)| p == "$APPROVAL_1"),
+        "{:?} {:?}",
+        commit.argv_redacted,
+        commit.binds
+    );
+}
+
+#[test]
+fn finding_record_step_params_are_passed_as_param_flags() {
+    let o = runner_ext();
+    let record = steps_of(o, "finding", Some("record"));
+    let argv = &record.first().expect("a finding record step").argv_redacted;
+    let at = argv.iter().position(|a| a == "--param").expect("--param");
+    assert_eq!(
+        argv.get(at + 1).map(String::as_str),
+        Some("round_power=3"),
+        "{argv:?}"
+    );
+}
+
+/// A planted allocation intent without its law is refused at load, before
+/// any `fa` invocation: the runner never lets the CLI choose a default law.
+#[test]
+fn allocation_intent_without_its_law_is_refused_before_any_fa_invocation() {
+    let o = run_files(
+        "runner_ext",
+        &RUNNER_EXT,
+        &[PlantedEdit {
+            file: "books/native.toml",
+            old: "allocation_law = \"EqualSplitResidualFirst\"\n",
+            new: "",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("an allocation without its law fails the run");
+    assert!(o.steps.is_empty() && o.books.is_empty(), "{}", o.text());
+    assert!(
+        o.lines
+            .iter()
+            .any(|l| l.starts_with("FAIL runner_ext load ") && l.contains("allocation_law")),
+        "{}",
+        o.text()
     );
 }

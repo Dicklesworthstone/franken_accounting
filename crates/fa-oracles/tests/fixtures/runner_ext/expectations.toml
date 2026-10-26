@@ -1,0 +1,25 @@
+# Runner fixture expectations: the D row whose findings the engagement_file step files.
+
+[[expectation]]
+id = "runner_ext-D-01"
+type = "D"
+book_variant = "native"
+statement_template = "D.detection"
+basis = ["S-1"]
+granularity = "journal_entry"
+capabilities = ["procedure:jet.round_amounts@1"]
+procedure = "jet.round_amounts"
+version = 1
+
+[[target]]
+expectation = "runner_ext-D-01"
+fact = "S-1"
+basis = ["S-1"]
+cite = ["S-1#0", "S-1#1"]
+cite_status = "S"
+severity = "Medium"
+severity_status = "S"
+statistic_name = "round_legs"
+statistic_value = "2"
+statistic_scale = 0
+statistic_status = "S"

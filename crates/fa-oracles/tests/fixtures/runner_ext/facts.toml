@@ -1,0 +1,37 @@
+# Runner fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "S-1"
+provenance = "synthetic"
+reason = "a round-amount Original entry, the D row's target"
+discipline = "never cited by a case; exercises the runner's post, finding record and engagement filing"
+
+[[fact]]
+id = "S-2"
+provenance = "synthetic"
+reason = "an equal-split allocation of an expense"
+discipline = "never cited by a case; exercises the runner's allocate step"
+
+[[fact]]
+id = "S-3"
+provenance = "synthetic"
+reason = "an entry whose document is described but not public"
+discipline = "never cited by a case; exercises the runner's manual-assertion post"
+
+[[fact]]
+id = "S-4"
+provenance = "synthetic"
+reason = "the first of two batched entries"
+discipline = "never cited by a case; exercises the runner's batch step"
+
+[[fact]]
+id = "S-5"
+provenance = "synthetic"
+reason = "the second of two batched entries"
+discipline = "never cited by a case; exercises the runner's batch step"
+
+[[fact]]
+id = "S-6"
+provenance = "synthetic"
+reason = "a recorded business event"
+discipline = "never cited by a case; exercises the runner's event_record step"
