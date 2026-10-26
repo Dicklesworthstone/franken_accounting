@@ -3054,6 +3054,22 @@ fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std
             Some("2026-03-31"),
             "{out}"
         );
+        if format == "xbrl" {
+            let xbrl_xml = std::fs::read_to_string(&path).expect("read exported xbrl");
+            assert!(
+                xbrl_xml.contains("<xbrli:startDate>2026-01-01</xbrli:startDate>")
+                    && xbrl_xml.contains("<xbrli:endDate>2026-03-31</xbrli:endDate>"),
+                "fa export xbrl must emit a duration context for income-statement activity: {xbrl_xml}"
+            );
+            assert!(
+                xbrl_xml.contains("<xbrli:instant>2026-03-31</xbrli:instant>"),
+                "fa export xbrl must emit an instant context for balance-sheet stocks: {xbrl_xml}"
+            );
+            assert!(
+                !xbrl_xml.contains("CurrentPeriodNetIncome"),
+                "fa export xbrl must not emit non-US-GAAP CurrentPeriodNetIncome: {xbrl_xml}"
+            );
+        }
         exported.push((format, path));
     }
 

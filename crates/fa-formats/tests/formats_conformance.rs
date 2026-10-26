@@ -594,6 +594,7 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
     let bs_linkbase = XbrlCalculationLinkbase::standard_balance_sheet();
     let bs_instance = XbrlInstance {
         entity_identifier: "ACME-CORP".to_owned(),
+        period_start: None,
         period_end: "2026-03-31".to_owned(),
         facts: vec![
             XbrlFact {
@@ -650,6 +651,7 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
     let is_linkbase = XbrlCalculationLinkbase::standard_income_statement();
     let is_instance = XbrlInstance {
         entity_identifier: "ACME-CORP".to_owned(),
+        period_start: Some("2026-01-01".to_owned()),
         period_end: "2026-03-31".to_owned(),
         facts: vec![
             XbrlFact {

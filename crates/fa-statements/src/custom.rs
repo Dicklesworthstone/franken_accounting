@@ -1324,6 +1324,11 @@ impl StatementXbrlMapping {
     }
 
     /// Standard US-GAAP concept mapping for FrankenAccounting's built-in type-level Balance Sheet.
+    ///
+    /// Element names are cited from the published FASB US-GAAP Financial Reporting Taxonomy
+    /// (`http://fasb.org/us-gaap/2026`, Statement of Financial Position — Classified `104000`):
+    /// - `unclosed_earnings` binds to `us-gaap:RetainedEarningsAccumulatedDeficit`
+    ///   (`xbrli:monetaryItemType`, `xbrli:periodType="instant"`, `xbrli:balance="credit"`).
     pub fn us_gaap_type_level_balance_sheet() -> Self {
         let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
             line_code: line_code.into(),
@@ -1351,7 +1356,7 @@ impl StatementXbrlMapping {
                 ),
                 b(
                     "unclosed_earnings",
-                    "us-gaap:CurrentPeriodNetIncome",
+                    "us-gaap:RetainedEarningsAccumulatedDeficit",
                     XbrlBalanceSide::Credit,
                 ),
                 b(

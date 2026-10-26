@@ -43,7 +43,6 @@
   <!-- Balance Sheet: Stockholders' Equity & Total L+E -->
   <xs:element id="us-gaap_CommonStockValue" name="CommonStockValue" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
   <xs:element id="us-gaap_RetainedEarningsAccumulatedDeficit" name="RetainedEarningsAccumulatedDeficit" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
-  <xs:element id="us-gaap_CurrentPeriodNetIncome" name="CurrentPeriodNetIncome" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
   <xs:element id="us-gaap_StockholdersEquity" name="StockholdersEquity" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
   <xs:element id="us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest" name="StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
   <xs:element id="us-gaap_LiabilitiesAndStockholdersEquity" name="LiabilitiesAndStockholdersEquity" type="xbrli:monetaryItemType" substitutionGroup="xbrli:item" xbrli:balance="credit" xbrli:periodType="instant" nillable="true"/>
