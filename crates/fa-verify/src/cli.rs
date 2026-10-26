@@ -1444,9 +1444,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                 ("value", s(&dimension.value)),
                                 (
                                     "included_values",
-                                    Json::List(
-                                        dimension.values.iter().map(|value| s(value)).collect(),
-                                    ),
+                                    Json::List(dimension.values.iter().map(s).collect()),
                                 ),
                                 (
                                     "selection",
