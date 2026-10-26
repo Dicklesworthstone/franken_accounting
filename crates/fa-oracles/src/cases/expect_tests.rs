@@ -803,3 +803,40 @@ fn known_at_pre_case_resolves_before_case_open_or_at_the_step() {
         .expect("the step");
     assert_eq!(frontier(book, KnownAt::PreCase, at), at);
 }
+
+/// A5b (§2.6 rule 9): a `rel_rule` outside rel.rs's closed list is refused
+/// at load, as is a role the registry does not list; a Rel component without
+/// its rule, and a rule on a target with no Rel component, are refused too.
+#[test]
+fn rel_rule_outside_the_closed_list_is_refused() {
+    const RULE: &str = "rel_rule = \"min_vid_debit_leg{fixed_asset}\"\n";
+    let e = refused_exp(
+        &edited(RULE, "rel_rule = \"median_vid_debit_leg{fixed_asset}\"\n"),
+        LoadErrorKind::UnknownValue,
+        "`median_vid_debit_leg` is outside the closed list (min_vid_debit_leg, max_vid_debit_leg)",
+    );
+    assert_eq!(e.row.as_deref(), Some("F9"));
+    refused_exp(
+        &edited(RULE, "rel_rule = \"min_vid_debit_leg{fixed_assets}\"\n"),
+        LoadErrorKind::UnknownValue,
+        "`fixed_assets` is not a role of registries/account_roles.toml",
+    );
+    refused_exp(
+        &edited(RULE, ""),
+        LoadErrorKind::MissingField,
+        "a Rel(account_vid_order) component names its `rel_rule`",
+    );
+    refused_exp(
+        &edited(
+            "cite_status = \"Sd\"\nseverity = \"High\"",
+            "cite_status = \"Sd\"\nrel_rule = \"max_vid_debit_leg{fixed_asset}\"\nseverity = \"High\"",
+        ),
+        LoadErrorKind::UnknownField,
+        "on a target with no Rel(…) component",
+    );
+    // The listed maximum rule loads.
+    loads(
+        &edited(RULE, "rel_rule = \"max_vid_debit_leg{fixed_asset}\"\n"),
+        "max_vid_debit_leg is listed",
+    );
+}

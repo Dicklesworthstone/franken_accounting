@@ -428,6 +428,9 @@ const EXP: &[(&str, Kind, &[ExpectationType])] = &[
     ("known_at", Kind::Str, ALL),
     ("procedure", Kind::Str, &[E::D, E::N]),
     ("version", Kind::Int, &[E::D, E::N]),
+    // A D whose targets are every documented or Δ entry its run's findings
+    // cite (A5b): an unexpected cite fails the row.
+    ("closed_cites", Kind::Bool, &[E::D]),
     ("population", Kind::Str, &[E::D, E::N]),
     ("population_basis", Kind::Strs, &[E::D, E::N]),
     ("intent", Kind::Str, &[E::P]),
@@ -482,6 +485,8 @@ const TARGET: &[(&str, Kind, &[ExpectationType])] = &[
     ("statistic_value", Kind::Str, &[E::D, E::N]),
     ("statistic_scale", Kind::Int, &[E::D, E::N]),
     ("statistic_status", Kind::Str, &[E::D]),
+    // A5b: the relational rule of a `Rel(…)` component (rel.rs).
+    ("rel_rule", Kind::Str, &[E::D]),
     ("read_verb", Kind::Str, &[E::T, E::R]),
     ("read_target", Kind::Str, &[E::T, E::R]),
     ("read_coordinate", Kind::Str, &[E::T, E::R]),
@@ -1838,6 +1843,7 @@ impl<'a> Check<'a, '_> {
                     _ => {}
                 }
             }
+            self.rel_rule(f, row);
             for c in f.strs("cite").unwrap_or(&[]) {
                 let ok = match c.split_once('#') {
                     Some((subject, ordinal)) => {
@@ -1856,6 +1862,41 @@ impl<'a> Check<'a, '_> {
         }
         if exp.kind == E::N {
             self.n_target(exp, t);
+        }
+    }
+
+    /// A D target with a `Rel(…)` component names the code's selection rule
+    /// in `rel_rule`, from the closed list of [`super::rel`]; a target with
+    /// no Rel component names none (A5b, §2.6 rule 9). A rule outside the
+    /// list, or a role the registry does not list, is refused, so a
+    /// misspelled rule never loads as an untested one.
+    fn rel_rule(&mut self, f: &Fields, row: &str) {
+        let rel = ["cite_status", "severity_status", "statistic_status"]
+            .iter()
+            .any(|k| matches!(f.str(k).and_then(Status::parse), Some(Status::Rel(_))));
+        match (rel, f.str("rel_rule")) {
+            (true, None) => self.push(
+                f.line,
+                row,
+                LoadErrorKind::MissingField,
+                "a Rel(account_vid_order) component names its `rel_rule`".into(),
+            ),
+            (false, Some(r)) => self.push(
+                f.line,
+                row,
+                LoadErrorKind::UnknownField,
+                format!("`rel_rule = \"{r}\"` on a target with no Rel(…) component"),
+            ),
+            (true, Some(r)) => {
+                let roles = fa_registry::account_roles::AccountRoles::embedded()
+                    .map(|r| r.rows.into_iter().map(|row| row.name).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let names: Vec<&str> = roles.iter().map(String::as_str).collect();
+                if let Err(why) = super::rel::RelRule::parse(r, &names) {
+                    self.push(f.line, row, LoadErrorKind::UnknownValue, why);
+                }
+            }
+            (false, None) => {}
         }
     }
 
