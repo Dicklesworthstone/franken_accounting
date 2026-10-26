@@ -88,18 +88,6 @@ pub struct CaseHeader {
     pub decisions: Vec<Decision>,
 }
 
-const HEADER_FIELDS: [&str; 10] = [
-    "id",
-    "letter",
-    "title",
-    "version",
-    "kind",
-    "scope",
-    "claims",
-    "capabilities",
-    "pinned_commit",
-    "variants",
-];
 const DECISION_FIELDS: [&str; 5] = ["id", "outcome", "facts", "sources", "reason"];
 
 fn extension_keys(extensions: &[CaseExtension], case: &str, table: &str) -> Vec<&'static str> {
