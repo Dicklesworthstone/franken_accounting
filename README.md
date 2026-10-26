@@ -452,6 +452,51 @@ exportable; its portable result is the lead schedule with all movement citations
 MCP uses `fa_proof_gl` with `view: "roll-forward"`, then `fa_notary_bundle` with
 the retained `C:<oid>` or complete certificate bytes.
 
+Direct cash-flow and account-rule cash-flow certificates use that same portable
+path. A policy states the selected cash accounts and the treatment of non-cash
+counterparts. For example, `cash-policy.json` can assign account `4000` to
+operating cash flow:
+
+```json
+{"name":"operating-cash-v1","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"}],"overrides":[]}
+```
+
+```bash
+fa gl cash-flow --account 1000 --unit USD \
+  --from 2026-01-01 --to 2026-03-31 --policy cash-policy.json \
+  --certify --certificate-out cash-flow.cert --book ./books/acme --json
+fa checkpoint create --grant witness --book ./books/acme --json
+fa bundle produce --certificate cash-flow.cert --book ./books/acme \
+  --out cash-flow.fab --receipt-out cash-flow.receipt --json
+fa-verify report cash-flow.fab --key <trusted-checkpoint-public-key> \
+  --receipt cash-flow.receipt --json
+```
+
+The recipient reconstructs the complete general ledger, including running
+balances, then classifies every selected cash leg exactly once. Gross inflows
+and outflows net opposing legs within one entry, unit and activity; a refund or
+reversal in a separate entry retains its actual direction. Internal transfers
+must cancel inside one entry and unit across distinct selected cash accounts.
+Each unit independently reconciles opening cash plus activity to closing cash,
+including explicitly selected zero units.
+
+For account-rule policies, the verifier reads all original same-unit counterpart
+legs, validates every rule against the historical chart, and reproduces each
+classification and its decision basis. Mixed or unmapped counterparts require
+an explicit override. The exact policy, including unused rules and overrides,
+is bound by the **outer policy certificate**; its nested direct cash report or
+roll-forward digest cannot replace that pin. Explicit direct assignments also
+export, with their own outer cash certificate. These are checks of the declared
+classification and arithmetic, without a policy-approval or accounting-treatment
+judgment. Split and indirect cash-flow certificates retain their existing native
+replay paths and are not yet supported by this portable profile.
+
+MCP passes the policy object inline to `fa_proof_gl` with `view: "cash-flow"` and
+`certify: true`, then exports its retained ID or complete bytes through
+`fa_notary_bundle`. Both cash profiles use sequence-selected trunk history and
+the complete four-document historical registry closure under whole-book read
+and produce authority.
+
 An aging-to-control reconciliation can be exported as one independently verifiable
 workpaper. Choose the account, effective cutoff, recorded sequence and bucket bounds
 before receiving the artifact, then supply that same request when exporting it:

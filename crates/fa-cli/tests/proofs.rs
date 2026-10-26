@@ -5,6 +5,8 @@
 
 #[path = "proofs/aging.rs"]
 mod aging;
+#[path = "proofs/cash_flow.rs"]
+mod cash_flow;
 #[path = "proofs/dimension_report.rs"]
 mod dimension_report;
 #[path = "proofs/explanation_report.rs"]

@@ -943,6 +943,14 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 let certificate = fa::RollForwardCertificate::decode(&bytes)?;
                 book.produce_roll_forward_bundle(principal, &capability, state, &certificate)??
             }
+            fa::ReportArtifactFamily::CashFlow => {
+                let certificate = fa::CashFlowCertificate::decode(&bytes)?;
+                book.produce_cash_flow_bundle(principal, &capability, state, &certificate)??
+            }
+            fa::ReportArtifactFamily::PolicyCashFlow => {
+                let certificate = fa::cash_flow_policy::CashFlowPolicyCertificate::decode(&bytes)?;
+                book.produce_cash_flow_policy_bundle(principal, &capability, state, &certificate)??
+            }
             _ => {
                 return Err(fa_journal::Refusal::new(
                     fa::notary_code::SCOPE_UNSUPPORTED,
@@ -952,7 +960,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native, effective-date aging, roll-forward or aging reconciliation certificate; replay other report families against their original retained book",
+                    "use a supported native report, effective-date aging, aging reconciliation, roll-forward, direct cash-flow or policy cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }

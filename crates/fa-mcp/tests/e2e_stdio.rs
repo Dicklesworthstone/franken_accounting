@@ -22,6 +22,8 @@ use fastmcp_rust::{JsonValue, json};
 
 #[path = "e2e_stdio/aging_bundle.rs"]
 mod aging_bundle;
+#[path = "e2e_stdio/cash_flow_bundle.rs"]
+mod cash_flow_bundle;
 #[path = "e2e_stdio/draft_review.rs"]
 mod draft_review;
 #[path = "e2e_stdio/explanation_bundle.rs"]
