@@ -219,6 +219,131 @@ async fn hold(fixture: &mut Fixture, cx: &PurposeContexts, key: &[u8], timeout: 
 }
 
 #[test]
+fn checkpoint_binds_preceding_tick_without_sweeping_or_postponing_timers() {
+    lab(181, |root| async move {
+        let mut fixture = fixture(&root, 181).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let secret = [181; 32];
+        let principal = fa_model::principal_vid("timed-human-witness");
+        let issuer = Capability::embedded(VId(1), &["issue_capability", "witness"]).unwrap();
+        let issued = Capability::new(principal, Profile::Human, &[Op::Witness], issuer.holder())
+            .unwrap()
+            .holder_bound(fa_model::domain_digest(
+                b"fa:capability-possession:v1",
+                &[&secret],
+            ));
+        fixture
+            .book
+            .issue_capability(
+                &cx,
+                issuer,
+                issued.clone(),
+                DateDay::from_ymd(2026, 3, 15).unwrap(),
+                b"issue-timed-human-witness",
+                "Witness the timed checkpoint",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let token =
+            fa_cli::authority::CapabilityToken::new("timed-human-witness", issued, secret).unwrap();
+        let authority = fa_cli::authority::LaunchAuthority::from_operator_token(
+            std::path::PathBuf::from("/books/timed-witness"),
+            None,
+            &token,
+        )
+        .unwrap();
+        assert!(authority.can_confirm());
+        let mut work =
+            TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
+        let scheduled = work.deadline();
+        let startup = work
+            .command_observation(&root, &mut fixture.book, Ok(observation(&root, 1_000)))
+            .await;
+        assert!(matches!(
+            startup,
+            Err(TimedError::Refused(ref refusal))
+                if refusal.code == fa_journal::refusal::code::TICK_UNCORROBORATED
+        ));
+        hold(&mut fixture, &cx, b"command-must-not-sweep", 5).await;
+        advance(&root, 10).await;
+        let ticked = work
+            .command_observation(&root, &mut fixture.book, Ok(observation(&root, 1_010)))
+            .await
+            .unwrap();
+        assert!(!ticked.already_recorded);
+        assert_eq!(work.cycles, 0, "a command observation is not a timed cycle");
+        assert_eq!(work.deadline(), scheduled);
+        assert_eq!(fixture.book.due_holds(&cx).unwrap().len(), 1);
+
+        let checkpoint = fixture
+            .book
+            .checkpoint(&cx, authority.principal_vid(), authority.capability())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(checkpoint.stored.state.through_seq, ticked.recorded_at);
+        assert!(checkpoint.stored.recorded_at > ticked.recorded_at);
+        assert_eq!(
+            checkpoint.checkpoint.checkpoint.body.time_evidence_oid,
+            Some(Oid(ticked.entry_ref.entry_digest))
+        );
+        assert_eq!(fixture.book.due_holds(&cx).unwrap().len(), 1);
+
+        let before_retry = fixture.book.head(&cx).unwrap();
+        assert!(matches!(
+            work.command_observation(&root, &mut fixture.book, Ok(observation(&root, 1_010)))
+                .await,
+            Err(TimedError::StaleTick)
+        ));
+        assert_eq!(fixture.book.head(&cx).unwrap(), before_retry);
+        assert_eq!(work.deadline(), scheduled);
+    })
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
+fn critical_command_uses_the_kernels_committed_corroboration_grade() {
+    lab(182, |root| async move {
+        let mut fixture = fixture(&root, 182).await;
+        let cx = PurposeContexts::narrow_runtime_root(&root);
+        let mut work =
+            TimedWork::bootstrap_for_book(&root, fixture.book.context().book_id, POLICY).unwrap();
+        let _ = work
+            .command_observation(&root, &mut fixture.book, Ok(observation(&root, 1_000)))
+            .await;
+        // Locally corroborated elapsed time can still exceed the kernel's
+        // retained maximum gap. The command must consume the latter verdict.
+        let gap = fa_model::limits::MAX_CLOCK_SKEW_NS + 1;
+        advance(&root, gap).await;
+        let result = work
+            .command_observation(
+                &root,
+                &mut fixture.book,
+                Ok(observation(&root, 1_000 + gap)),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(TimedError::Refused(ref refusal))
+                if refusal.code == fa_journal::refusal::code::TICK_UNCORROBORATED
+        ));
+        assert_eq!(work.last_tick_monotonic_ok, Some(false));
+        let tick = fixture.book.latest_tick(&cx).unwrap().unwrap();
+        assert_ne!(
+            fixture
+                .book
+                .corroborated_tick_at(&cx, fixture.book.head(&cx).unwrap())
+                .unwrap(),
+            Some(tick)
+        );
+    })
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
 fn daemon_cycle_records_real_ticks_and_bounds_both_kinds_of_effects() {
     lab(71, |root| async move {
         let mut fixture = fixture(&root, 71).await;
@@ -512,7 +637,7 @@ struct Fragmented {
 }
 
 impl crate::Service for Fragmented {
-    fn handle(&mut self, request: Request) -> (Response, crate::Next) {
+    async fn handle(&mut self, _cx: &Cx, request: Request) -> (Response, crate::Next) {
         self.seen = request.argv;
         assert_eq!(request.op, WireOp::Stop);
         (

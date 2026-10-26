@@ -10,7 +10,8 @@ mod procedure;
 pub(crate) use expectations::{
     aging_expectation_json, cash_flow_expectation_json, equity_expectation_json,
     external_feed_expectation_json, indirect_expectation_json, policy_cash_flow_expectation_json,
-    portfolio_expectation_json, reconciliation_expectation_json, split_cash_flow_expectation_json,
+    portfolio_expectation_json, reconciliation_bundle_expectation, reconciliation_expectation_json,
+    split_cash_flow_expectation_json,
 };
 
 use std::io::Read;
@@ -42,7 +43,7 @@ fn certificate_invalid(message: impl Into<String>) -> Fail {
 
 /// A comparison or trace may reach earlier sources than its final displayed
 /// coordinate. Prepare that actual retained prefix, never a sentinel cutoff.
-fn prepare_artifact_history(
+pub(crate) fn prepare_artifact_history(
     book: &mut Book,
     principal: VId,
     capability: &Capability,
@@ -128,7 +129,7 @@ fn certificate_digest(text: &str) -> Result<Option<[u8; 32]>, Fail> {
 /// Resolve a retained digest, or a file/stdin containing canonical binary or hex.
 /// A bare 64-hex argument is a digest; prefix a filename with ./ if it has
 /// that shape. Bound file/stdin reads before allocating for them.
-fn read_certificate_bytes(
+pub(crate) fn read_certificate_bytes(
     book: &Book,
     files: &Files,
     path: &str,
@@ -249,7 +250,7 @@ pub(crate) fn certificate_input<T>(
 
 /// Save an optional external copy, then retain the immutable certificate in
 /// the book. The copy is written only for a capability the retention admits
-/// (holder, read, book, expiry and revocation at the head), so a refused
+/// (holder, read, produce, book, expiry and revocation at the head), so a refused
 /// retention leaves no host file. A duplicate certificate reuses its original
 /// recorded sequence. The metadata write advances the book frontier, never
 /// the accounting fold.
@@ -260,6 +261,16 @@ pub(crate) fn retain_report_certificate(
     certificate: &ReportCertificate,
     capability: &fa_journal::Capability,
 ) -> Result<(Vec<u8>, RetainedCertificate), Fail> {
+    fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
+        .and_then(|()| {
+            fa_policy::require(
+                capability,
+                fa_policy::Op::Produce,
+                "retaining a report certificate",
+            )
+        })
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.admit_current(capability)??;
     let bytes = certificate
         .canonical_bytes()
         .map_err(|e| Fail::Internal(format!("encode report certificate: {e}")))?;
@@ -275,9 +286,6 @@ pub(crate) fn retain_report_certificate(
                 "use --certify to receive the complete certificate as hex on stdout",
             ));
         }
-        fa_policy::admit_read(capability, capability.holder(), book.context().book_id)
-            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
-        book.admit_current(capability)??;
         crate::cli::write_new_output_file(files, path, &bytes, "certificate", "--certificate-out")?;
     }
     let retained = book.retain_certificate_authorized(certificate, capability)??;
@@ -1113,6 +1121,12 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ReportOutput::FunctionalStatement(report),
                 ReportSelection::FunctionalStatement(_),
             ) => crate::cli::render_functional_statement(&ctx.out, &book, report, Some(&digest))?,
+            (
+                ReportOutput::FunctionalTrialBalance(report),
+                ReportSelection::FunctionalTrialBalance(_),
+            ) => {
+                crate::fx::render_functional_trial_balance(&ctx.out, &book, report, Some(&digest))?
+            }
             (ReportOutput::Consolidation(report), ReportSelection::Consolidation { .. }) => {
                 crate::consolidate::render_consolidation(&ctx.out, &book, report, Some(&digest))?
             }
@@ -1140,6 +1154,19 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 },
                 Some(&digest),
             )?,
+            (
+                ReportOutput::RegulatorySchedule(report),
+                ReportSelection::RegulatorySchedule(selection),
+            ) => crate::regulatory::render_regulatory_schedule(
+                &ctx.out,
+                &book,
+                &selection.schedule,
+                report,
+                Some(&digest),
+            )?,
+            (ReportOutput::CustomStatement(report), ReportSelection::CustomStatement(_)) => {
+                crate::custom_statement::render(&ctx.out, &book, report, Some(&digest))?
+            }
             _ => {
                 return Err(certificate_invalid(
                     "replayed report kind differs from the retained certificate selector",
@@ -1393,6 +1420,7 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
     ctx.out.known_at(checked_at);
     match &certificate.selection {
         ReportSelection::TrialBalance(selection)
+        | ReportSelection::FunctionalTrialBalance(selection)
         | ReportSelection::DimensionTrialBalance { selection, .. } => {
             ctx.out.effective(match selection {
                 TrialBalanceSelection::AsOf(day) => format!("as-of:{day}"),
@@ -1405,6 +1433,12 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         }
         ReportSelection::OpenItems { .. } => {}
         ReportSelection::Statement(selection) | ReportSelection::FunctionalStatement(selection) => {
+            ctx.out.effective(periods_selector(&selection.periods));
+        }
+        ReportSelection::RegulatorySchedule(selection) => {
+            ctx.out.effective(periods_selector(&selection.periods));
+        }
+        ReportSelection::CustomStatement(selection) => {
             ctx.out.effective(periods_selector(&selection.periods));
         }
         ReportSelection::Consolidation { period }

@@ -9,10 +9,11 @@
 //!   `fa:draft-body:v1`: its book, name and owner) and creates the vertex with
 //!   `state = Open`.
 //! - **Plan** (`Open → Open`) journals one intent (extension 9
-//!   `fa:draft-intent:v1`: the `PostIntent`'s canonical bytes and the
-//!   planner's capability). The intent is rehearsed through the real posting
-//!   pipeline first ([`crate::plan::plan_post`]); one the kernel would refuse
-//!   never enters the draft. Its identity derives from the draft and the
+//!   `fa:draft-intent:v3`: the `PostIntent`'s canonical bytes, the planner's
+//!   capability, and the resolved Entry with its digest). The entire ordered draft is
+//!   rehearsed through the real batch pipeline first; each intent sees its
+//!   predecessors' effects. Previously reviewed effects must still match.
+//!   Its identity derives from the draft and the
 //!   intent's key, so a retry is its recorded outcome.
 //! - **Promote** (`Open → Promoted`) replays the planned intents to trunk in
 //!   one `PostBatch`, in planning order, in the same transaction as the
@@ -23,7 +24,8 @@
 //!   period law, ceilings, scope, revocation, evidence — except the Agent's
 //!   trunk denial, which the promoter's authority answers
 //!   ([`crate::post::Admission::Promote`]). The promoted entries keep the
-//!   planner as their principal and point at the draft by `IN_CASE`.
+//!   planner as their principal and point at the draft by `IN_CASE`. Their
+//!   exact Entry digests must match the reviewed effects retained at Plan.
 //! - **Discard** (`Open → Discarded`) closes the draft; nothing is deleted.
 //!
 //! Every record moves or witnesses `state` in its own transaction, so a
@@ -31,11 +33,11 @@
 //! first-committer-wins conflict. Nothing in a draft is a trunk entry until
 //! its promotion commits.
 
-use fa_intents::{PostBatch, PostIntent, PostPlan};
+use fa_intents::{PostBatch, PostIntent};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, Id128,
-    Reader, TypedRef, Writer, domain_digest, draft_vid, entry_mirrors, entry_vid,
+    ControlKind, ControlPayload, Entry, EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable,
+    Id128, Reader, TypedRef, Writer, domain_digest, draft_vid, entry_mirrors, entry_vid,
 };
 use fa_policy::{Capability, Denial, Intent, Op};
 use fa_time::DateDay;
@@ -61,8 +63,12 @@ pub use rehearsal::{
 /// u128 owner_principal` (extension 8).
 pub const DRAFT_BODY_VERSION: u16 = 1;
 /// Canonical bytes of a planned intent: `u16 version ‖ bytes post_intent ‖
-/// bytes capability` (extension 9).
-pub const DRAFT_INTENT_VERSION: u16 = 1;
+/// bytes capability ‖ resolved_entry_digest[32] ‖ bytes resolved_entry`
+/// (extension 9). Empty resolved bytes losslessly denote the Entry sealed
+/// from the already retained exact proposal and approvals, with no plan
+/// certificate. Version 1 omits both resolved fields; version 2 retains only
+/// the digest. Historical versions remain readable with their original bytes.
+pub const DRAFT_INTENT_VERSION: u16 = 3;
 /// A draft name's bound, in bytes.
 pub const MAX_DRAFT_NAME_BYTES: usize = 128;
 const DRAFT_BODY_DOMAIN: &[u8] = b"fa:draft-body:v1";
@@ -178,23 +184,87 @@ pub struct PlannedIntent {
     pub intent: PostIntent,
     /// The planner's capability, under which the promotion replays it.
     pub capability: Capability,
+    /// The exact Entry rehearsed when this intent entered its ordered draft.
+    /// Historical v1 draft records and scenario records have no such binding.
+    pub resolved_entry_digest: Option<[u8; 32]>,
+    /// Exact reviewed Entry retained by v3 for dependencies after discard or
+    /// availability drift; never authority to bypass new append validation.
+    pub resolved_entry: Option<Entry>,
 }
 
-fn intent_bytes(intent: &PostIntent, capability: &Capability) -> Result<Vec<u8>, KernelError> {
+fn intent_bytes(
+    intent: &PostIntent,
+    capability: &Capability,
+    resolved_entry_digest: Option<[u8; 32]>,
+    resolved_entry: Option<&Entry>,
+) -> Result<Vec<u8>, KernelError> {
+    if let Some(entry) = resolved_entry {
+        check_retained_entry(intent, resolved_entry_digest, entry)?;
+    }
+    let resolved_bytes = resolved_entry
+        .map(|entry| {
+            let original = intent
+                .proposal()
+                .clone()
+                .seal(intent.approvals().to_vec(), None)?;
+            if *entry == original {
+                Ok(Vec::new())
+            } else {
+                entry.encode()
+            }
+        })
+        .transpose()?;
     let intent = intent.canonical_bytes().map_err(intent_error)?;
     let capability = capability
         .canonical_bytes()
         .map_err(|e| KernelError::Corrupt(format!("capability bytes: {e}")))?;
     let mut w = Writer::with_capacity(8 + intent.len() + capability.len());
-    w.u16(DRAFT_INTENT_VERSION)
-        .bytes(&intent)
-        .bytes(&capability);
+    w.u16(if resolved_entry.is_some() {
+        DRAFT_INTENT_VERSION
+    } else if resolved_entry_digest.is_some() {
+        2
+    } else {
+        1
+    })
+    .bytes(&intent)
+    .bytes(&capability);
+    if let Some(digest) = resolved_entry_digest {
+        w.fixed(&digest);
+    }
+    if let Some(bytes) = resolved_bytes {
+        w.bytes(&bytes);
+    }
     Ok(w.finish()?)
 }
 
-fn decode_intent(bytes: &[u8]) -> Result<(PostIntent, Capability), KernelError> {
+type DecodedIntent = (PostIntent, Capability, Option<[u8; 32]>, Option<Entry>);
+
+fn check_retained_entry(
+    intent: &PostIntent,
+    digest: Option<[u8; 32]>,
+    entry: &Entry,
+) -> Result<(), KernelError> {
+    let request =
+        crate::limit::request_form(&entry.proposal)?.unwrap_or_else(|| entry.proposal.clone());
+    let original =
+        crate::limit::request_form(intent.proposal())?.unwrap_or_else(|| intent.proposal().clone());
+    if digest != Some(entry.entry_digest)
+        || entry.approvals != intent.approvals()
+        || entry.plan_certificate.is_some()
+        || request != original
+    {
+        return Err(KernelError::Corrupt(
+            "draft retained Entry does not bind its original request, approvals and reviewed digest"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn decode_intent(bytes: &[u8]) -> Result<DecodedIntent, KernelError> {
     let mut r = Reader::new(bytes);
-    if r.u16("draft_intent.version").map_err(decode)? != DRAFT_INTENT_VERSION {
+    let version = r.u16("draft_intent.version").map_err(decode)?;
+    if !(1..=DRAFT_INTENT_VERSION).contains(&version) {
         return Err(KernelError::Corrupt(
             "unsupported draft intent version".into(),
         ));
@@ -209,8 +279,44 @@ fn decode_intent(bytes: &[u8]) -> Result<(PostIntent, Capability), KernelError> 
             .map_err(decode)?,
     )
     .map_err(|e| KernelError::Corrupt(format!("draft intent capability: {e}")))?;
+    let resolved_entry_digest = if version >= 2 {
+        Some(
+            r.fixed("draft_intent.resolved_entry_digest")
+                .map_err(decode)?,
+        )
+    } else {
+        None
+    };
+    let resolved_entry = if version == DRAFT_INTENT_VERSION {
+        let bytes = r
+            .bytes(
+                fa_model::limits::MAX_ENTRY_BYTES,
+                "draft_intent.resolved_entry",
+            )
+            .map_err(decode)?;
+        let original = intent
+            .proposal()
+            .clone()
+            .seal(intent.approvals().to_vec(), None)?;
+        let entry = if bytes.is_empty() {
+            original
+        } else {
+            let entry = Entry::decode(bytes)?;
+            if entry == original {
+                return Err(KernelError::Corrupt(
+                    "draft retained Entry repeats the original instead of its canonical empty encoding"
+                        .into(),
+                ));
+            }
+            entry
+        };
+        check_retained_entry(&intent, resolved_entry_digest, &entry)?;
+        Some(entry)
+    } else {
+        None
+    };
     r.finish().map_err(decode)?;
-    Ok((intent, capability))
+    Ok((intent, capability, resolved_entry_digest, resolved_entry))
 }
 
 fn decode(e: fa_model::DecodeError) -> KernelError {
@@ -262,12 +368,86 @@ pub struct DraftRecorded {
     pub already_recorded: bool,
 }
 
+/// One member's original request and exact resolved effects in an ordered
+/// draft rehearsal. It carries no authority to publish a trunk entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftPreviewMember {
+    pub intent: PostIntent,
+    pub capability_commitment: [u8; 32],
+    pub entry: Entry,
+    pub period: String,
+}
+
+/// A zero-write rehearsal of the complete draft in planning order, optionally
+/// including a candidate being appended. This is not a portable single-entry PostPlan:
+/// later members may depend on earlier members' staged effects. Promotion
+/// revalidates the retained per-member Entry digests in one transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftPreview {
+    draft: VId,
+    principal: VId,
+    snapshot_seq: CommitSeq,
+    members: Vec<DraftPreviewMember>,
+    effects_digest: [u8; 32],
+}
+
+impl DraftPreview {
+    #[must_use]
+    pub fn draft(&self) -> VId {
+        self.draft
+    }
+
+    #[must_use]
+    pub fn principal(&self) -> VId {
+        self.principal
+    }
+
+    #[must_use]
+    pub fn snapshot_seq(&self) -> CommitSeq {
+        self.snapshot_seq
+    }
+
+    #[must_use]
+    pub fn members(&self) -> &[DraftPreviewMember] {
+        &self.members
+    }
+
+    #[must_use]
+    pub fn effects_digest(&self) -> [u8; 32] {
+        self.effects_digest
+    }
+
+    pub fn digest(&self) -> Result<[u8; 32], KernelError> {
+        let mut w = Writer::new();
+        w.u128(self.draft.0)
+            .u128(self.principal.0)
+            .u64(self.snapshot_seq.0)
+            .fixed(&self.effects_digest);
+        let bindings = self
+            .members
+            .iter()
+            .map(|member| {
+                Ok((
+                    member.intent.digest().map_err(intent_error)?,
+                    member.capability_commitment,
+                    member.entry.entry_digest,
+                    member.period.as_str(),
+                ))
+            })
+            .collect::<Result<Vec<_>, KernelError>>()?;
+        w.list(&bindings, |w, (request, capability, entry, period)| {
+            w.fixed(request).fixed(capability).fixed(entry).str(period);
+        });
+        Ok(domain_digest(b"fa:draft-preview:v1", &[&w.finish()?]))
+    }
+}
+
 /// A recorded Plan: the record, and the rehearsal it passed (absent on a
 /// recorded retry, which rehearses nothing).
 #[derive(Clone, Debug)]
 pub struct DraftPlanned {
     pub recorded: DraftRecorded,
-    pub plan: Option<PostPlan>,
+    pub plan: Option<DraftPreview>,
 }
 
 /// A recorded promotion.
@@ -724,8 +904,255 @@ pub async fn open_draft<V: asupersync::fs::Vfs + Clone>(
     finish(db, ctx, book, txn, &proposal, draft, evid).await
 }
 
+fn changed_effects(name: &str, index: usize, reason: &str) -> Refusal {
+    Refusal::new(
+        code::PLAN_INVALIDATED,
+        exit::CONFLICT,
+        format!("draft `{name}` member {index}: {reason}; nothing was recorded"),
+        "plan §15.2 (promotion preserves the ordered draft's reviewed effects)",
+        "review current availability and open a new draft with the intended effects",
+    )
+    .at("member", index)
+}
+
+fn check_resolved_members(
+    name: &str,
+    planned: &[PlannedIntent],
+    resolved: &[EntryRef],
+) -> Result<(), Refusal> {
+    if planned.len() != resolved.len() {
+        return Err(changed_effects(name, 0, "the reviewed membership changed"));
+    }
+    for (index, (planned, resolved)) in planned.iter().zip(resolved).enumerate() {
+        match planned.resolved_entry_digest {
+            Some(digest) if digest != resolved.entry_digest => {
+                return Err(changed_effects(
+                    name,
+                    index,
+                    "the resolved entry differs from its reviewed effects",
+                ));
+            }
+            None if planned
+                .intent
+                .proposal()
+                .extensions
+                .iter()
+                .any(|(tag, _)| *tag == fa_model::entry::BALANCING_EXTENSION) =>
+            {
+                return Err(changed_effects(
+                    name,
+                    index,
+                    "a historical balancing request has no retained reviewed effects",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    view: &DraftView,
+    candidate: Option<(PostIntent, &Capability)>,
+) -> Outcome<DraftPreview> {
+    let mut members: Vec<_> = view.intents.iter().map(|i| i.intent.clone()).collect();
+    let mut capabilities: Vec<_> = view.intents.iter().map(|i| i.capability.clone()).collect();
+    if let Some((intent, capability)) = candidate {
+        members.push(intent);
+        capabilities.push(capability.clone());
+    }
+    let batch = match PostBatch::new(promotion_key(view.vid), members) {
+        Ok(batch) => batch,
+        Err(error) => {
+            return Ok(Err(usage(
+                format!(
+                    "draft `{}` does not form one batch: {error}",
+                    view.body.name
+                ),
+                "plan compatible intents into one draft in execution order",
+            )));
+        }
+    };
+    // Every retained planner is admitted before loading native history; a
+    // caller's authority cannot replace a previous member's capability.
+    for (intent, capability) in batch.members().iter().zip(&capabilities) {
+        if let Err(d) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
+            return Ok(Err(denial(&d)));
+        }
+        let request = crate::post::PostRequest {
+            proposal: intent.proposal().clone(),
+            approvals: intent.approvals().to_vec(),
+            capability: capability.clone(),
+            plan_certificate: None,
+        };
+        if let Err(refusal) = crate::post::authorize_request(db, book, &request, Admission::Plan)? {
+            return Ok(Err(refusal));
+        }
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
+    let staged = match stage_batch(db, ctx, book, &capabilities, &batch, Admission::Plan)? {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(BatchStage::Recorded(_)) => {
+            return Err(KernelError::Corrupt(format!(
+                "draft `{}` is open but its promotion batch is already recorded",
+                view.body.name
+            )));
+        }
+        Ok(BatchStage::Staged(staged)) => staged,
+    };
+    if let Err(refusal) = check_resolved_members(
+        &view.body.name,
+        &view.intents,
+        &staged.entries[..view.intents.len()],
+    ) {
+        staged.txn.abort();
+        return Ok(Err(refusal));
+    }
+    let mut members = Vec::with_capacity(batch.members().len());
+    for (((intent, capability), entry), period) in batch
+        .members()
+        .iter()
+        .zip(&capabilities)
+        .zip(staged.prepared_entries())
+        .zip(&staged.periods)
+    {
+        members.push(DraftPreviewMember {
+            intent: intent.clone(),
+            capability_commitment: capability
+                .commitment()
+                .map_err(|e| KernelError::Corrupt(format!("draft capability: {e}")))?,
+            entry: entry.clone(),
+            period: period.clone(),
+        });
+    }
+    let preview = DraftPreview {
+        draft: view.vid,
+        principal: view.body.owner,
+        snapshot_seq: staged.txn.basis(),
+        members,
+        effects_digest: staged.txn.staged_effect_digest()?.0,
+    };
+    staged.txn.abort();
+    Ok(Ok(preview))
+}
+
+/// Current planning authority and ownership precede member-history access.
+fn owned_draft<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    name: &str,
+) -> Outcome<DraftView> {
+    if let Err(refusal) = check_name(name) {
+        return Ok(Err(refusal));
+    }
+    if let Err(d) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None) {
+        return Ok(Err(denial(&d)));
+    }
+    if let Err(refusal) = admit(db, book, capability, Kind::Plan)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    let vid = draft_vid(book.book_id, name);
+    let Some(row) = db.vertex(vid)? else {
+        return Ok(Err(unknown(name)));
+    };
+    if !row.labels.contains(&label::DRAFT_SET) {
+        return Err(KernelError::Corrupt(format!(
+            "draft identity {:032x} holds a vertex that is not a DraftSet",
+            vid.0
+        )));
+    }
+    let body = draft_row_body(&row)?;
+    if body.owner != capability.holder() {
+        return Ok(Err(Refusal::new(
+            code::CAPABILITY,
+            exit::SAFETY,
+            format!("only the owner may prepare further intents for draft `{name}`"),
+            "plan §15.2 (a draft is its owner's intent log)",
+            "open your own draft with `fa draft new <name>`",
+        )));
+    }
+    Ok(Ok(view_of(db, &ctx.query(), &row)?))
+}
+
+/// Rehearse the retained members of the owner's open draft without appending
+/// a Plan record or publishing any entry. Every member runs under its own
+/// original capability and must retain its reviewed Entry digest. An empty
+/// open draft returns `None`; a closed or drifted draft refuses. To construct
+/// dependent retries from original reviewed targets, use [`draft_entries`].
+pub async fn preview_draft<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    name: &str,
+) -> Outcome<Option<DraftPreview>> {
+    let view = match owned_draft(db, ctx, book, capability, name)? {
+        Ok(view) => view,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if view.state != DraftState::Open {
+        return Ok(Err(not_open(&view.body, view.state)));
+    }
+    if view.intents.is_empty() {
+        return Ok(Ok(None));
+    }
+    Ok(preview_ordered(db, ctx, book, &view, None).await?.map(Some))
+}
+
+/// Original resolved entries retained with the owner's planned requests.
+/// Reading them does not rehearse against current availability or reopen a
+/// closed draft. They let a dependent request reconstruct the same target on
+/// an exact retry; `plan_into_draft` still decides recorded retry versus new
+/// append, and revalidates every new append through the ordered pipeline.
+///
+/// Historical v1/v2 drafts have no complete retained Entry. For those, an
+/// open draft must pass the current ordered preview before its targets can be
+/// returned. A digest alone is never presented as a reconstructed entry.
+pub async fn draft_entries<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    name: &str,
+) -> Outcome<Vec<Entry>> {
+    let view = match owned_draft(db, ctx, book, capability, name)? {
+        Ok(view) => view,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if let Some(entries) = view
+        .intents
+        .iter()
+        .map(|planned| planned.resolved_entry.clone())
+        .collect::<Option<Vec<_>>>()
+    {
+        return Ok(Ok(entries));
+    }
+    if view.state != DraftState::Open {
+        return Ok(Err(not_open(&view.body, view.state)));
+    }
+    Ok(preview_ordered(db, ctx, book, &view, None)
+        .await?
+        .map(|preview| {
+            preview
+                .members
+                .into_iter()
+                .map(|member| member.entry)
+                .collect()
+        }))
+}
+
 /// Plan `intent` into the open draft `name` (plan §15.2 `plan_in_draft`):
-/// rehearse it through the real posting pipeline, then journal it as one
+/// rehearse the whole ordered draft through the real batch pipeline, then journal one
 /// Plan record. Only the draft's owner plans into it; the intent is the
 /// owner's, on trunk, under a key no other intent in the draft holds.
 pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
@@ -780,8 +1207,8 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
             "open your own draft with `fa draft new <name>`",
         )));
     }
-    let extension = intent_bytes(&intent, &req.capability)?;
-    let proposal = record_proposal(
+    let extension = intent_bytes(&intent, &req.capability, None, None)?;
+    let mut proposal = record_proposal(
         book,
         &view.body,
         Kind::Plan,
@@ -860,14 +1287,39 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
             "promote this draft, then plan the rest into a new one",
         )));
     }
-    // Rehearse (plan §15.3): every posting law at the head; nothing staged.
-    let plan =
-        match crate::plan::plan_post_with_history(db, ctx, book, req.capability.clone(), intent)
-            .await?
-        {
-            Err(refusal) => return Ok(Err(refusal)),
-            Ok(plan) => plan,
-        };
+    // Rehearse (plan §15.3): each member sees its predecessors' effects.
+    let plan = match preview_ordered(
+        db,
+        ctx,
+        book,
+        &view,
+        Some((intent.clone(), &req.capability)),
+    )
+    .await?
+    {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(plan) => plan,
+    };
+    let resolved_entry = &plan
+        .members()
+        .last()
+        .ok_or_else(|| KernelError::Corrupt("a draft preview has no candidate".into()))?
+        .entry;
+    proposal.extensions = vec![(
+        fa_model::entry::DRAFT_INTENT_EXTENSION,
+        intent_bytes(
+            &intent,
+            &req.capability,
+            Some(resolved_entry.entry_digest),
+            Some(resolved_entry),
+        )?,
+    )];
+    if proposal.validate().is_err() {
+        return Ok(Err(usage(
+            "the reviewed Plan record is not a valid DraftControl entry",
+            "reduce the intent's size before planning it into a draft",
+        )));
+    }
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
@@ -1051,6 +1503,10 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         }
         Ok(BatchStage::Staged(staged)) => staged,
     };
+    if let Err(refusal) = check_resolved_members(name, &view.intents, &staged.entries) {
+        staged.txn.abort();
+        return Ok(Err(refusal));
+    }
     // The promoter's authority is witnessed in the promotion's own
     // transaction, as is the draft's Open state.
     if let Err(r) = capability_witness(&staged.txn, db, book, &req.capability)? {
@@ -1080,8 +1536,19 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
     }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let draft = view.vid;
+    let mirrors = entry_mirrors(&entry)?;
+    staged
+        .template_tracker
+        .create_vertex(relation::IN_CASE, evid, 1, &mirrors);
+    staged.template_tracker.set_vertex_property(
+        relation::IN_CASE,
+        draft,
+        property::STATE,
+        Some(DraftState::Open.scalar()),
+        Some(DraftState::Promoted.scalar()),
+    );
     let mut in_case = WriteBatch::new(relation::IN_CASE);
-    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.create_vertex(evid, vec![label::ENTRY], mirrors);
     in_case.compare_and_set_vertex_property(
         draft,
         property::STATE,
@@ -1089,9 +1556,11 @@ pub async fn promote_draft<V: asupersync::fs::Vfs + Clone>(
         DraftState::Promoted.scalar(),
         WriteMismatchPolicy::AbortWrite,
     );
+    staged.template_tracker.add_edge(relation::IN_CASE, &[]);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, draft), evid, draft, vec![]);
     for promoted in &staged.entries {
         let v = promoted.vid;
+        staged.template_tracker.add_edge(relation::IN_CASE, &[]);
         in_case.add_edge(edge_id(relation::IN_CASE, v, draft), v, draft, vec![]);
     }
     staged.txn.write(db, in_case)?;
@@ -1215,12 +1684,15 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
                         e.src.0
                     )));
                 };
-                let (intent, capability) = decode_intent(ext)?;
+                let (intent, capability, resolved_entry_digest, resolved_entry) =
+                    decode_intent(ext)?;
                 intents.push(PlannedIntent {
                     record: e.src,
                     recorded_at,
                     intent,
                     capability,
+                    resolved_entry_digest,
+                    resolved_entry,
                 });
             }
             (f, t)
@@ -1278,6 +1750,139 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn codec_intent() -> PostIntent {
+        use fa_model::{LegPayload, Oid, SealKey};
+        use fa_money::{Amount, Side, UnitRegistry};
+
+        let unit = UnitRegistry::with_defaults().lookup("USD").unwrap();
+        let legs = vec![
+            LegPayload::simple(Side::Debit, VId(1), Amount::new(unit, 100)),
+            LegPayload::simple(Side::Credit, VId(2), Amount::new(unit, 100)),
+        ];
+        let proposal = EntryPayload {
+            schema_minor: fa_model::entry::SCHEMA_MINOR,
+            book_id: Id128([7; 16]),
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ORIGINAL,
+            effective_date: DateDay::from_ymd(2026, 3, 15).unwrap(),
+            document_date: None,
+            description: Erasable::seal(
+                &"retained draft codec".to_string(),
+                None,
+                &SealKey([1; 32]),
+                [2; 32],
+                [3; 24],
+            ),
+            effective_period: None,
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: None,
+            idempotency_key: b"retained-entry".to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: Oid([4; 32]),
+                intent_kind: 1,
+            },
+            principal_ref: VId(7),
+            session_ref: None,
+            evidence: Vec::new(),
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        PostIntent::new(proposal, Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn draft_intent_versions_keep_canonical_bytes_and_v3_deduplicates_exact_entries() {
+        let intent = codec_intent();
+        let capability = Capability::embedded(VId(7), &["post"]).unwrap();
+        let entry = intent.proposal().clone().seal(Vec::new(), None).unwrap();
+        for version in [1, 2, 3] {
+            let digest = (version >= 2).then_some(entry.entry_digest);
+            let resolved = (version == 3).then_some(&entry);
+            let bytes = intent_bytes(&intent, &capability, digest, resolved).unwrap();
+            assert_eq!(&bytes[..2], &u16::to_le_bytes(version));
+            let (read_intent, read_cap, read_digest, read_entry) = decode_intent(&bytes).unwrap();
+            assert_eq!(read_intent, intent);
+            assert_eq!(read_cap, capability);
+            assert_eq!(read_digest, digest);
+            assert_eq!(read_entry.as_ref(), resolved);
+            assert_eq!(
+                intent_bytes(&read_intent, &read_cap, read_digest, read_entry.as_ref()).unwrap(),
+                bytes
+            );
+            if version == 3 {
+                let old = intent_bytes(&intent, &capability, digest, None).unwrap();
+                assert_eq!(bytes.len(), old.len() + 4);
+                assert_eq!(&bytes[bytes.len() - 4..], &[0; 4]);
+            }
+        }
+    }
+
+    #[test]
+    fn retained_draft_entry_codec_rejects_tampering_noncanonical_and_unrelated_entries() {
+        let original = codec_intent();
+        let capability = Capability::embedded(VId(7), &["post"]).unwrap();
+        let intent = PostIntent::new(
+            crate::limit::balancing_proposal(original.proposal().clone(), 1).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut proposal = intent.proposal().clone();
+        for leg in &mut proposal.legs {
+            leg.amount.mantissa = 40;
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        let entry = proposal.seal(Vec::new(), None).unwrap();
+        let bytes =
+            intent_bytes(&intent, &capability, Some(entry.entry_digest), Some(&entry)).unwrap();
+        let decoded = decode_intent(&bytes).unwrap();
+        assert_eq!(decoded.3.as_ref(), Some(&entry));
+        assert_eq!(
+            intent_bytes(&decoded.0, &decoded.1, decoded.2, decoded.3.as_ref()).unwrap(),
+            bytes
+        );
+        for end in 0..bytes.len() {
+            assert!(decode_intent(&bytes[..end]).is_err(), "truncation at {end}");
+        }
+        let mut changed = bytes.clone();
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        assert!(decode_intent(&changed).is_err());
+        let encode_raw = |digest: [u8; 32], resolved: &[u8]| {
+            let mut w = Writer::new();
+            w.u16(3)
+                .bytes(&intent.canonical_bytes().unwrap())
+                .bytes(&capability.canonical_bytes().unwrap())
+                .fixed(&digest)
+                .bytes(resolved);
+            w.finish().unwrap()
+        };
+        assert!(decode_intent(&encode_raw([0; 32], &entry.encode().unwrap())).is_err());
+        assert!(decode_intent(&encode_raw(entry.entry_digest, &[])).is_err());
+        let duplicate = intent.proposal().clone().seal(Vec::new(), None).unwrap();
+        assert!(
+            decode_intent(&encode_raw(
+                duplicate.entry_digest,
+                &duplicate.encode().unwrap()
+            ))
+            .is_err()
+        );
+        let mut unrelated = entry.proposal.clone();
+        unrelated.idempotency_key = b"different-request".to_vec();
+        let unrelated = unrelated.seal(Vec::new(), None).unwrap();
+        assert!(
+            decode_intent(&encode_raw(
+                unrelated.entry_digest,
+                &unrelated.encode().unwrap()
+            ))
+            .is_err()
+        );
+    }
 
     #[test]
     fn draft_bodies_round_trip_and_bind_every_field() {

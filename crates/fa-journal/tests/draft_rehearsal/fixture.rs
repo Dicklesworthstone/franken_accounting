@@ -232,6 +232,15 @@ impl Harness {
         capability: Capability,
         intent: PostIntent,
     ) -> DraftPlanned {
+        self.try_plan(name, capability, intent).unwrap()
+    }
+
+    pub(super) fn try_plan(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        intent: PostIntent,
+    ) -> Result<DraftPlanned, Refusal> {
         let request = self.request(capability);
         let ctx = self.ctx();
         self.runtime
@@ -244,13 +253,171 @@ impl Harness {
                 request,
             ))
             .unwrap()
-            .unwrap()
+    }
+
+    /// Write the authentic historical v1 Plan format, whose writer rehearsed
+    /// only its new member. This fixture creates original immutable bytes;
+    /// it never edits a journaled entry to manufacture an old version.
+    pub(super) fn legacy_plan(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        intent: PostIntent,
+    ) -> DraftRecorded {
+        self.historical_plan(name, capability, intent, false)
+    }
+
+    pub(super) fn legacy_digest_plan(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        intent: PostIntent,
+    ) -> DraftRecorded {
+        self.historical_plan(name, capability, intent, true)
+    }
+
+    fn historical_plan(
+        &mut self,
+        name: &str,
+        capability: Capability,
+        intent: PostIntent,
+        retain_digest: bool,
+    ) -> DraftRecorded {
+        let ctx = self.ctx();
+        plan_post(
+            &mut self.db,
+            &ctx,
+            &self.book,
+            capability.clone(),
+            intent.clone(),
+        )
+        .unwrap()
+        .expect("the historical writer admitted this member individually");
+        let view = self.draft(name);
+        assert_eq!(view.state, DraftState::Open);
+        assert_eq!(view.body.owner, capability.holder());
+        let mut w = fa_model::Writer::new();
+        w.u16(if retain_digest { 2 } else { 1 })
+            .bytes(&intent.canonical_bytes().unwrap())
+            .bytes(&capability.canonical_bytes().unwrap());
+        if retain_digest {
+            w.fixed(&member_ref(&intent).entry_digest);
+        }
+        let proposal = EntryPayload {
+            schema_minor: fa_model::entry::SCHEMA_MINOR,
+            book_id: self.book.book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::DRAFT_CONTROL,
+            effective_date: day(),
+            document_date: None,
+            description: sealed(&self.book, "draft control"),
+            effective_period: None,
+            legs: Vec::new(),
+            control: Some(fa_model::ControlPayload::LifecycleTransition {
+                object_ref: view.vid,
+                from: 1,
+                to: 1,
+                proof_refs: Vec::new(),
+                reason_code: 0,
+            }),
+            unit_totals: Vec::new(),
+            base_totals: None,
+            idempotency_key: fa_model::domain_digest(
+                b"fa:draft-record-key:v1",
+                &[
+                    &[1],
+                    &view.vid.0.to_le_bytes(),
+                    &intent.proposal().idempotency_key,
+                ],
+            )
+            .to_vec(),
+            origin: EntryOrigin::Control {
+                control_kind: fa_model::ControlKind::DRAFT_TRANSITION,
+                spec_body_digest: view.body.digest().unwrap(),
+            },
+            principal_ref: capability.holder(),
+            session_ref: None,
+            evidence: Vec::new(),
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: vec![(fa_model::entry::DRAFT_INTENT_EXTENSION, w.finish().unwrap())],
+            tags: Vec::new(),
+        };
+        let evid = entry_vid(
+            self.book.book_id,
+            &capability.holder().0.to_le_bytes(),
+            &proposal.idempotency_key,
+        );
+        let entry = proposal.seal(Vec::new(), None).unwrap();
+        let mut batch = WriteBatch::new(relation::IN_CASE);
+        batch.create_vertex(
+            evid,
+            vec![label::ENTRY],
+            fa_model::entry_mirrors(&entry).unwrap(),
+        );
+        batch.add_edge(
+            edge_id(relation::IN_CASE, evid, view.vid),
+            evid,
+            view.vid,
+            Vec::new(),
+        );
+        self.write(batch);
+        DraftRecorded {
+            draft: view.vid,
+            control_entry: evid,
+            recorded_at: self.head(),
+            already_recorded: false,
+        }
     }
 
     pub(super) fn draft(&self, name: &str) -> DraftView {
         read_draft(&self.db, &self.ctx().query(), &self.book, name)
             .unwrap()
             .unwrap()
+    }
+
+    pub(super) fn preview(
+        &mut self,
+        name: &str,
+        capability: &Capability,
+    ) -> Result<Option<DraftPreview>, Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(preview_draft(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                capability,
+                name,
+            ))
+            .unwrap()
+    }
+
+    pub(super) fn retained_entries(
+        &mut self,
+        name: &str,
+        capability: &Capability,
+    ) -> Result<Vec<fa_model::Entry>, Refusal> {
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(draft_entries(
+                &mut self.db,
+                &ctx,
+                &self.book,
+                capability,
+                name,
+            ))
+            .unwrap()
+    }
+
+    pub(super) fn discard(&mut self, name: &str) {
+        let request = self.request(agent());
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(discard_draft(&mut self.db, &ctx, &self.book, name, request))
+            .unwrap()
+            .unwrap();
     }
 
     pub(super) fn approve(&mut self, proposal: &EntryPayload, principal: VId) -> ApprovalRef {
@@ -268,11 +435,14 @@ impl Harness {
     }
 
     pub(super) fn promote(&mut self, name: &str) -> DraftPromoted {
+        self.try_promote(name).unwrap()
+    }
+
+    pub(super) fn try_promote(&mut self, name: &str) -> Result<DraftPromoted, Refusal> {
         let request = self.request(Capability::embedded(APPROVER, &["approve", "read"]).unwrap());
         let ctx = self.ctx();
         self.runtime
             .block_on(promote_draft(&mut self.db, &ctx, &self.book, name, request))
-            .unwrap()
             .unwrap()
     }
 

@@ -17,7 +17,8 @@ mod certificate;
 mod native;
 
 pub use certificate::{
-    CertifiedIndirectCashFlow, INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, IndirectCashFlowCertificate,
+    CertifiedIndirectCashFlow, INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT,
+    INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2, IndirectCashFlowCertificate,
     MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
 };
 
@@ -29,12 +30,14 @@ use fa_money::wide::U256;
 use fa_statements::Statement;
 use fgdb_types::QueryCx;
 
-use crate::general_ledger::{
-    CashFlow, CashFlowDefinition, GeneralLedger, MAX_GENERAL_LEDGER_LINES,
+use crate::general_ledger::{GeneralLedger, MAX_GENERAL_LEDGER_LINES};
+use crate::{
+    BookError, CashFlowBasis, CashFlowBasisDefinition, CashFlowBasisKind, Outcome,
+    RollForwardRequest,
 };
-use crate::{BookError, Outcome, RollForwardRequest};
 
 pub const INDIRECT_CASH_FLOW_FORMAT: &str = "fa:indirect-cash-flow:v1";
+pub const INDIRECT_CASH_FLOW_FORMAT_V2: &str = "fa:indirect-cash-flow:v2";
 pub const MAX_INDIRECT_CASH_FLOW_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PERIODS: usize = 256;
 
@@ -76,7 +79,9 @@ pub struct IndirectCashFlowDefinition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndirectCashFlowRequest {
     pub cash: RollForwardRequest,
-    pub cash_definition: CashFlowDefinition,
+    /// Keep the full explicit, policy or split classification for reconciliation
+    /// and independently expected replay, including its original provenance.
+    pub cash_definition: CashFlowBasisDefinition,
     /// Exactly all historical periods intersecting the cash interval. The
     /// interval must cover whole periods without gaps, including special periods.
     pub income_periods: Vec<String>,
@@ -113,7 +118,7 @@ pub struct IndirectCashFlowUnit {
 /// Private construction: financial inputs originate in native reads or replay.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndirectCashFlow {
-    cash: CashFlow,
+    cash: CashFlowBasis,
     income: Statement,
     non_cash_source: Option<GeneralLedger>,
     definition: IndirectCashFlowDefinition,
@@ -123,7 +128,7 @@ pub struct IndirectCashFlow {
 
 impl IndirectCashFlow {
     #[must_use]
-    pub fn cash(&self) -> &CashFlow {
+    pub fn cash(&self) -> &CashFlowBasis {
         &self.cash
     }
     #[must_use]
@@ -147,11 +152,24 @@ impl IndirectCashFlow {
         &self.units
     }
 
+    /// Existing explicit classifications retain their exact v1 encoding. Policy
+    /// and split bases use v2, which binds the family and its full native output.
+    #[must_use]
+    pub fn format(&self) -> &'static str {
+        match self.cash.kind() {
+            CashFlowBasisKind::Explicit => INDIRECT_CASH_FLOW_FORMAT,
+            CashFlowBasisKind::Policy | CashFlowBasisKind::Split => INDIRECT_CASH_FLOW_FORMAT_V2,
+        }
+    }
+
     /// Exact bounded output, including all source transcripts and adjustment
     /// decisions. These are report bytes, not a standalone authenticity proof.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut out = Bytes::default();
-        out.string(INDIRECT_CASH_FLOW_FORMAT)?;
+        out.string(self.format())?;
+        if self.cash.kind() != CashFlowBasisKind::Explicit {
+            out.add(&[self.cash.kind() as u8])?;
+        }
         out.blob(&self.cash.canonical_bytes()?)?;
         out.blob(
             &self
@@ -370,7 +388,7 @@ fn outcome<T>(result: Result<T, Error>) -> Outcome<T> {
 }
 
 fn project(
-    cash: CashFlow,
+    cash: CashFlowBasis,
     income: Statement,
     non_cash_source: Option<GeneralLedger>,
     definition: &IndirectCashFlowDefinition,

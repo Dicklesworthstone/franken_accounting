@@ -574,3 +574,322 @@ fn bare_fa_detects_book_and_daemon() {
         "bare fa wrote nothing"
     );
 }
+
+fn find_angle_token(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] == b'<'
+            && let Some(rel_end) = s[i + 1..].find('>')
+            && rel_end > 0
+        {
+            let token = &s[i..=i + 1 + rel_end];
+            if !token.chars().any(char::is_whitespace) {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+fn check_no_placeholder_tokens(branch: &str, actions: &[(String, String)]) -> Result<(), String> {
+    for (command, why) in actions {
+        if let Some(tok) = find_angle_token(command) {
+            return Err(format!(
+                "branch `{branch}` emitted placeholder token `{tok}` in command `{command}`"
+            ));
+        }
+        if let Some(tok) = find_angle_token(why) {
+            return Err(format!(
+                "branch `{branch}` emitted placeholder token `{tok}` in why `{why}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_actions(triage: &Json, next: &Json) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for action in rows(triage, "next_actions") {
+        out.push((
+            text(action, "command").to_string(),
+            text(action, "why").to_string(),
+        ));
+    }
+    if let Some(cmd) = data(next).get("command").and_then(Json::as_str) {
+        out.push((cmd.to_string(), text(data(next), "why").to_string()));
+    }
+    for action in rows(next, "next_actions") {
+        out.push((
+            text(action, "command").to_string(),
+            text(action, "why").to_string(),
+        ));
+    }
+    out
+}
+
+#[test]
+fn open_investigation_engagement_offers_jet_and_procedure_list() {
+    let f = Fixture::new("inv-eng");
+    f.ok(&[
+        "engagement",
+        "open",
+        "FY2026-inv",
+        "--kind",
+        "investigation",
+        "--period",
+        "FY2026-P01",
+        "--overall",
+        "50000.00 USD",
+        "--performance",
+        "37500.00 USD",
+        "--clearly-trivial",
+        "2500.00 USD",
+    ]);
+    let triage = f.ok(&["triage"]);
+    let actions: Vec<(&str, &str)> = rows(&triage, "next_actions")
+        .iter()
+        .map(|a| (text(a, "command"), text(a, "why")))
+        .collect();
+    let jet = actions
+        .iter()
+        .find(|(c, _)| *c == "fa jet --json")
+        .unwrap_or_else(|| panic!("expected fa jet --json in {actions:?}"));
+    assert!(jet.1.contains("FY2026-inv"), "{jet:?}");
+    let proc_list = actions
+        .iter()
+        .find(|(c, _)| *c == "fa procedure list --json")
+        .unwrap_or_else(|| panic!("expected fa procedure list --json in {actions:?}"));
+    assert!(proc_list.1.contains("FY2026-inv"), "{proc_list:?}");
+
+    // Review and litigation engagements do not trigger the audit program offer.
+    let f_lit = Fixture::new("lit-eng");
+    f_lit.ok(&[
+        "engagement",
+        "open",
+        "FY2026-lit",
+        "--kind",
+        "litigation",
+        "--period",
+        "FY2026-P01",
+        "--overall",
+        "50000.00 USD",
+        "--performance",
+        "37500.00 USD",
+        "--clearly-trivial",
+        "2500.00 USD",
+    ]);
+    let lit_triage = f_lit.ok(&["triage"]);
+    let lit_cmds: Vec<&str> = rows(&lit_triage, "next_actions")
+        .iter()
+        .map(|a| text(a, "command"))
+        .collect();
+    assert!(!lit_cmds.contains(&"fa jet --json"), "{lit_cmds:?}");
+    assert!(
+        !lit_cmds.contains(&"fa procedure list --json"),
+        "{lit_cmds:?}"
+    );
+}
+
+#[test]
+fn same_book_without_an_engagement_offers_no_audit_step() {
+    let f = Fixture::new("no-eng");
+    let triage = f.ok(&["triage"]);
+    let actions: Vec<&str> = rows(&triage, "next_actions")
+        .iter()
+        .map(|a| text(a, "command"))
+        .collect();
+    assert!(!actions.contains(&"fa jet --json"), "{actions:?}");
+    assert!(
+        !actions.contains(&"fa procedure list --json"),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn audit_steps_disappear_once_a_finding_run_exists() {
+    let f = Fixture::new("eng-with-run");
+    f.ok(&[
+        "engagement",
+        "open",
+        "FY2026-audit",
+        "--kind",
+        "audit",
+        "--period",
+        "FY2026-P01",
+        "--overall",
+        "50000.00 USD",
+        "--performance",
+        "37500.00 USD",
+        "--clearly-trivial",
+        "2500.00 USD",
+    ]);
+    f.post("saturday", "2026-01-10", "100.00 USD");
+    f.ok(&["finding", "record", "jet.weekend", "--as", "investigator"]);
+    let triage = f.ok(&["triage"]);
+    let actions: Vec<&str> = rows(&triage, "next_actions")
+        .iter()
+        .map(|a| text(a, "command"))
+        .collect();
+    assert!(!actions.contains(&"fa jet --json"), "{actions:?}");
+    assert!(
+        !actions.contains(&"fa procedure list --json"),
+        "{actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|c| c.starts_with("fa finding list --certificate C:")),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn all_closed_book_offers_period_list_and_names_the_next_fiscal_year() {
+    let f = Fixture::new("all-closed");
+    let listed = f.ok(&["period", "list"]);
+    for period in rows(data(&listed), "periods") {
+        let code = text(period, "code");
+        let state = text(period, "state");
+        if state.eq_ignore_ascii_case("future") {
+            f.ok(&["period", "open", code]);
+        }
+        f.ok(&["period", "close", code, "--reason", "Scheduled", "--yes"]);
+    }
+    let triage = f.ok(&["triage"]);
+    let actions: Vec<(&str, &str)> = rows(&triage, "next_actions")
+        .iter()
+        .map(|a| (text(a, "command"), text(a, "why")))
+        .collect();
+    let period_list = actions
+        .iter()
+        .find(|(c, _)| *c == "fa period list --json")
+        .unwrap_or_else(|| panic!("expected fa period list --json in {actions:?}"));
+    assert!(
+        period_list
+            .1
+            .contains("fa period create --fiscal-year 2027 --json"),
+        "{period_list:?}"
+    );
+}
+
+#[test]
+fn no_triage_branch_emits_a_placeholder_token() {
+    // 1. No chart.
+    let root = temporary("no-placeholders");
+    let run = |args: &[&str]| -> Json {
+        let mut full = vec!["--book", "book"];
+        full.extend_from_slice(args);
+        let (exit, line) = run_in(&root, &[], &full);
+        assert_eq!(exit, 0, "{args:?}: {line:?}");
+        line
+    };
+    run(&["book", "create", "--name", "No Placeholder Co"]);
+    let triage = run(&["triage"]);
+    let next = run(&["next"]);
+    check_no_placeholder_tokens("no_chart", &collect_actions(&triage, &next)).unwrap();
+
+    // 2. No fiscal year.
+    std::fs::write(
+        root.join("chart.json"),
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    run(&["chart", "import", "chart.json"]);
+    let triage = run(&["triage"]);
+    let next = run(&["next"]);
+    check_no_placeholder_tokens("no_fiscal_year", &collect_actions(&triage, &next)).unwrap();
+
+    // 3. No Open period, with Future periods.
+    run(&["period", "create", "--fiscal-year", "2026"]);
+    let triage = run(&["triage"]);
+    let next = run(&["next"]);
+    check_no_placeholder_tokens("no_open_with_future", &collect_actions(&triage, &next)).unwrap();
+
+    // 4. All Closed (no Open and no Future period).
+    let listed = run(&["period", "list"]);
+    for period in rows(data(&listed), "periods") {
+        let code = text(period, "code");
+        run(&["period", "open", code]);
+        run(&["period", "close", code, "--reason", "Scheduled", "--yes"]);
+    }
+    let triage = run(&["triage"]);
+    let next = run(&["next"]);
+    check_no_placeholder_tokens("all_closed", &collect_actions(&triage, &next)).unwrap();
+
+    // 5. Open engagement + pending resolutions (both owner and Agent).
+    let f = Fixture::new("holds-and-eng");
+    f.ok(&[
+        "engagement",
+        "open",
+        "FY2026-inv",
+        "--kind",
+        "investigation",
+        "--period",
+        "FY2026-P01",
+        "--overall",
+        "50000.00 USD",
+        "--performance",
+        "37500.00 USD",
+        "--clearly-trivial",
+        "2500.00 USD",
+    ]);
+    std::fs::write(
+        f.root.join("hold.json"),
+        r#"{"class":"Pending","effective_date":"2026-01-12","idempotency_key":"hold-1","legs":[{"side":"debit","account":"1000","amount":"20.00 USD"},{"side":"credit","account":"3000","amount":"20.00 USD"}]}"#,
+    )
+    .unwrap();
+    f.ok(&["post", "--intent", "hold.json", "--evidence", &f.evidence]);
+    let triage = f.ok(&["triage"]);
+    let next = f.ok(&["next"]);
+    check_no_placeholder_tokens(
+        "engagement_and_pending_resolutions_owner",
+        &collect_actions(&triage, &next),
+    )
+    .unwrap();
+
+    f.ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "agent",
+        "--profile",
+        "agent",
+        "--out",
+        "agent.token",
+        "--grant",
+        "issue_capability",
+        "--op",
+        "read",
+        "--grant",
+        "read",
+        "--op",
+        "post",
+        "--grant",
+        "post",
+    ]);
+    let agent_triage = f.ok(&["--token", "agent.token", "triage"]);
+    let agent_next = f.ok(&["--token", "agent.token", "next"]);
+    check_no_placeholder_tokens(
+        "engagement_and_pending_resolutions_agent",
+        &collect_actions(&agent_triage, &agent_next),
+    )
+    .unwrap();
+
+    // 6. Populated book (findings, drafts, register lag).
+    let pop = Fixture::populated("pop-no-placeholders");
+    let triage = pop.ok(&["triage"]);
+    let next = pop.ok(&["next"]);
+    check_no_placeholder_tokens("populated", &collect_actions(&triage, &next)).unwrap();
+}
+
+#[test]
+fn restored_placeholder_fails_the_any_token_test() {
+    let restored = vec![(
+        "fa chart import <chart.json> --json".to_string(),
+        "the book has no accounts; install the chart".to_string(),
+    )];
+    let err = check_no_placeholder_tokens("no_chart", &restored)
+        .expect_err("restored placeholder must fail the any-token test");
+    assert!(err.contains("no_chart"), "{err}");
+    assert!(err.contains("<chart.json>"), "{err}");
+}

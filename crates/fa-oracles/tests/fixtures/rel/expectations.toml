@@ -1,0 +1,27 @@
+# Rel fixture expectations: expense.capitalization@2 cites the minimum-VId fixed-asset account of
+# R-1 and capitalizes that leg (crates/fa-lantern/src/cutoff.rs:1086-1110). Both are relational to
+# account-VId order: the rule is stated, and the runner judges it from each run's book id.
+
+[[expectation]]
+id = "rel-D-01"
+type = "D"
+book_variant = "native"
+statement_template = "D.detection"
+basis = ["R-1"]
+granularity = "journal_entry"
+capabilities = ["procedure:expense.capitalization@2"]
+procedure = "expense.capitalization"
+version = 2
+
+[[target]]
+expectation = "rel-D-01"
+fact = "R-1"
+basis = ["R-1"]
+admitted_cell = ["evidence_attached=placeholder_reviewed"]
+cite_status = "Rel(account_vid_order)"
+rel_rule = "min_vid_debit_leg{fixed_asset}"
+severity = "High"
+severity_status = "S"
+statistic_name = "capitalized_expense_amount"
+statistic_scale = 2
+statistic_status = "Rel(account_vid_order)"

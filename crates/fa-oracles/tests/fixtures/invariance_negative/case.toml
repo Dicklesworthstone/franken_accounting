@@ -1,0 +1,13 @@
+# Invariance negative fixture (fa-yugf.25, A11a): a D row on numbers.round_amount_density, whose
+# finding moves with the book's population, run under a test-only tier table that declares it L.
+# The witness must catch the false declaration. For fa-cli's tests/cases.rs; never copied to cases/;
+# claims nothing.
+id = "invariance_negative"
+title = "Invariance negative fixture: a population-relative procedure declared tier L"
+version = 1
+kind = "harness_selftest"
+scope = "the invariance witness catching a tier row the code contradicts"
+claims = []
+capabilities = ["verb:batch", "procedure:numbers.round_amount_density@1"]
+pinned_commit = "8af46bde3"
+variants = ["native"]

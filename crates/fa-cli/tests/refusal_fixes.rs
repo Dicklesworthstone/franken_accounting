@@ -217,6 +217,32 @@ fn invoice_base() -> Json {
     )
 }
 
+/// A balanced April rent entry, key `april-base`.
+fn april_rent_base() -> Json {
+    intent(
+        "april-base",
+        "2026-04-05",
+        vec![
+            leg("debit", "6000", "7.00 USD"),
+            leg("credit", "1000", "7.00 USD"),
+        ],
+    )
+}
+
+/// A 7.00 USD March hold (`class = Pending`), key `hold`.
+fn hold_base() -> Json {
+    let mut entry = intent(
+        "hold",
+        "2026-03-05",
+        vec![
+            leg("debit", "6000", "7.00 USD"),
+            leg("credit", "1000", "7.00 USD"),
+        ],
+    );
+    set_field(&mut entry, "class", "Pending");
+    entry
+}
+
 fn post(intent: Json) -> Request {
     Request::Post {
         intent,
@@ -999,26 +1025,850 @@ const MORE_CASES: &[Case] = &[
         // stands refused.
         steps: &[("FA-REF-052", Apply::Inform)],
     },
+    Case {
+        name: "reverse-pending-target",
+        entities: &[],
+        setup: &[],
+        base: Some(hold_base),
+        prepare: None,
+        trigger: |g| {
+            Request::Argv(argv(&[
+                "reverse",
+                g.vid.as_deref().expect("hold vid"),
+                "--reason",
+                "Duplicate",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-050", Apply::Inform)],
+    },
+    Case {
+        name: "reversal-before-target-period",
+        entities: &[],
+        setup: &[],
+        base: Some(april_rent_base),
+        prepare: None,
+        trigger: |g| {
+            Request::Argv(argv(&[
+                "reverse",
+                g.vid.as_deref().expect("april vid"),
+                "--reason",
+                "Duplicate",
+                "--effective",
+                "2026-03-10",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-053", Apply::FieldChange)],
+    },
+    Case {
+        name: "resolve-posted-target",
+        entities: &[],
+        setup: &[],
+        base: Some(rent_base),
+        prepare: None,
+        trigger: |g| Request::Post {
+            intent: Json::Obj(vec![
+                ("class".into(), Json::Str("Resolution".into())),
+                (
+                    "resolves".into(),
+                    Json::Str(g.vid.clone().expect("rent vid")),
+                ),
+                ("disposition".into(), Json::Str("voids".into())),
+                ("effective_date".into(), Json::Str("2026-03-10".into())),
+                ("idempotency_key".into(), Json::Str("void-posted".into())),
+                ("description".into(), Json::Str("void-posted".into())),
+            ]),
+            extra: argv(&["--yes"]),
+        },
+        steps: &[("FA-REF-060", Apply::Inform)],
+    },
+    Case {
+        name: "resolution-exceeds-reserved",
+        entities: &[],
+        setup: &[],
+        base: Some(hold_base),
+        prepare: None,
+        trigger: |g| {
+            post(Json::Obj(vec![
+                ("class".into(), Json::Str("Resolution".into())),
+                (
+                    "resolves".into(),
+                    Json::Str(g.vid.clone().expect("hold vid")),
+                ),
+                ("disposition".into(), Json::Str("posts".into())),
+                ("amount".into(), Json::Str("10.00 USD".into())),
+                ("effective_date".into(), Json::Str("2026-03-10".into())),
+                ("idempotency_key".into(), Json::Str("resolve-hold".into())),
+                ("description".into(), Json::Str("resolve-hold".into())),
+            ]))
+        },
+        steps: &[("FA-REF-061", Apply::FieldChange)],
+    },
+    Case {
+        name: "already-resolved",
+        entities: &[],
+        setup: &[],
+        base: Some(hold_base),
+        prepare: Some(|g| Request::Post {
+            intent: Json::Obj(vec![
+                ("class".into(), Json::Str("Resolution".into())),
+                (
+                    "resolves".into(),
+                    Json::Str(g.vid.clone().expect("hold vid")),
+                ),
+                ("disposition".into(), Json::Str("voids".into())),
+                ("effective_date".into(), Json::Str("2026-03-10".into())),
+                ("idempotency_key".into(), Json::Str("first-void".into())),
+                ("description".into(), Json::Str("first-void".into())),
+            ]),
+            extra: argv(&["--yes"]),
+        }),
+        trigger: |g| Request::Post {
+            intent: Json::Obj(vec![
+                ("class".into(), Json::Str("Resolution".into())),
+                (
+                    "resolves".into(),
+                    Json::Str(g.vid.clone().expect("hold vid")),
+                ),
+                ("disposition".into(), Json::Str("voids".into())),
+                ("effective_date".into(), Json::Str("2026-03-11".into())),
+                ("idempotency_key".into(), Json::Str("second-void".into())),
+                ("description".into(), Json::Str("second-void".into())),
+            ]),
+            extra: argv(&["--yes"]),
+        },
+        steps: &[("FA-REF-062", Apply::Inform)],
+    },
+    Case {
+        name: "settle-pending-target",
+        entities: &[],
+        setup: &[],
+        base: Some(hold_base),
+        prepare: None,
+        trigger: |g| {
+            let vid = g.vid.clone().expect("hold vid");
+            let mut settle = leg("credit", "1200", "7.00 USD");
+            if let Json::Obj(fields) = &mut settle {
+                fields.push((
+                    "settles".into(),
+                    Json::Arr(vec![Json::Obj(vec![
+                        ("entry".into(), Json::Str(vid)),
+                        ("ordinal".into(), Json::Int(0)),
+                        ("amount".into(), Json::Str("7.00 USD".into())),
+                    ])]),
+                ));
+            }
+            post(intent(
+                "settle-hold",
+                "2026-03-12",
+                vec![leg("debit", "1000", "7.00 USD"), settle],
+            ))
+        },
+        steps: &[("FA-REF-070", Apply::Inform)],
+    },
+    Case {
+        name: "settle-bad-ordinal",
+        entities: &[],
+        setup: &[],
+        base: Some(invoice_base),
+        prepare: None,
+        trigger: |g| {
+            let vid = g.vid.clone().expect("invoice vid");
+            let mut settle = leg("credit", "1200", "100.00 USD");
+            if let Json::Obj(fields) = &mut settle {
+                fields.push((
+                    "settles".into(),
+                    Json::Arr(vec![Json::Obj(vec![
+                        ("entry".into(), Json::Str(vid)),
+                        ("ordinal".into(), Json::Int(9)),
+                        ("amount".into(), Json::Str("100.00 USD".into())),
+                    ])]),
+                ));
+            }
+            post(intent(
+                "settle-ordinal",
+                "2026-03-12",
+                vec![leg("debit", "1000", "100.00 USD"), settle],
+            ))
+        },
+        steps: &[("FA-REF-071", Apply::FieldChange)],
+    },
+    Case {
+        name: "reverse-with-live-applications",
+        entities: &[],
+        setup: &[],
+        base: Some(invoice_base),
+        prepare: Some(|g| {
+            let vid = g.vid.clone().expect("invoice vid");
+            let mut settle = leg("credit", "1200", "40.00 USD");
+            if let Json::Obj(fields) = &mut settle {
+                fields.push((
+                    "settles".into(),
+                    Json::Arr(vec![Json::Obj(vec![
+                        ("entry".into(), Json::Str(vid)),
+                        ("ordinal".into(), Json::Int(0)),
+                        ("amount".into(), Json::Str("40.00 USD".into())),
+                    ])]),
+                ));
+            }
+            post(intent(
+                "partial-receipt",
+                "2026-03-12",
+                vec![leg("debit", "1000", "40.00 USD"), settle],
+            ))
+        }),
+        trigger: |g| {
+            Request::Argv(argv(&[
+                "reverse",
+                g.vid.as_deref().expect("invoice vid"),
+                "--reason",
+                "Duplicate",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-073", Apply::Inform)],
+    },
+    Case {
+        name: "unknown-document",
+        entities: &[],
+        setup: &[],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "document",
+                "show",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-081", Apply::Inform)],
+    },
+    Case {
+        name: "proof-without-checkpoint",
+        entities: &[],
+        setup: &[],
+        base: Some(rent_base),
+        prepare: None,
+        trigger: |g| {
+            Request::Argv(argv(&[
+                "proof",
+                "inclusion",
+                "--entry",
+                g.vid.as_deref().expect("rent vid"),
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-145", Apply::Alternative(0))],
+    },
+    Case {
+        name: "not-issued-to-recipient",
+        entities: &[],
+        setup: &[],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--as-issued-to",
+                "board",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-173", Apply::Inform)],
+    },
+    Case {
+        name: "unknown-engagement",
+        entities: &[],
+        setup: &[],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "engagement",
+                "show",
+                "no-such-engagement",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-180", Apply::Inform)],
+    },
+    Case {
+        name: "unknown-adjustment",
+        entities: &[],
+        setup: &[&[
+            "engagement",
+            "open",
+            "fy26-audit",
+            "--kind",
+            "audit",
+            "--period",
+            "FY2026-P03",
+            "--overall",
+            "1000.00 USD",
+            "--performance",
+            "750.00 USD",
+            "--clearly-trivial",
+            "50.00 USD",
+            "--json",
+        ]],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "adjustment",
+                "pass",
+                "--engagement",
+                "fy26-audit",
+                "--proposal",
+                "9",
+                "--reason",
+                "ClearlyTrivial",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-184", Apply::Inform)],
+    },
+    Case {
+        name: "reclassification-exceeds-remaining",
+        entities: &[],
+        setup: &[],
+        base: Some(rent_base),
+        prepare: None,
+        trigger: |g| {
+            Request::Argv(argv(&[
+                "reclass",
+                g.vid.as_deref().expect("rent vid"),
+                "--from",
+                "6000",
+                "--to",
+                "6050",
+                "--amount",
+                "10.00 USD",
+                "--reason",
+                "WrongAccount",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-185", Apply::FieldChange)],
+    },
+    Case {
+        name: "query-profile-unknown-period",
+        entities: &[],
+        setup: &[],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "query",
+                "MATCH (e:Entry) FOR PERIOD 'FY2026-P99' RETURN e",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-188", Apply::Inform)],
+    },
+    Case {
+        name: "documentation-completion-after-window",
+        entities: &[],
+        setup: &[&[
+            "engagement",
+            "open",
+            "fy26-audit",
+            "--kind",
+            "audit",
+            "--period",
+            "FY2026-P03",
+            "--overall",
+            "1000.00 USD",
+            "--performance",
+            "750.00 USD",
+            "--clearly-trivial",
+            "50.00 USD",
+            "--json",
+        ]],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "engagement",
+                "complete",
+                "fy26-audit",
+                "--report-release",
+                "2026-04-15",
+                "--completion-date",
+                "2026-05-31",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-190", Apply::FieldChange)],
+    },
+    Case {
+        name: "carry-forward-self",
+        entities: &[],
+        setup: &[&[
+            "engagement",
+            "open",
+            "fy26-audit",
+            "--kind",
+            "audit",
+            "--period",
+            "FY2026-P03",
+            "--overall",
+            "1000.00 USD",
+            "--performance",
+            "750.00 USD",
+            "--clearly-trivial",
+            "50.00 USD",
+            "--json",
+        ]],
+        base: None,
+        prepare: None,
+        trigger: |_| {
+            Request::Argv(argv(&[
+                "engagement",
+                "carry-forward",
+                "fy26-audit",
+                "--from",
+                "fy26-audit",
+                "--json",
+            ]))
+        },
+        steps: &[("FA-REF-191", Apply::Inform)],
+    },
+];
+
+/// Catalog codes not triggered by the single-command CLI harness, with the
+/// exact reason each belongs outside the single-step CLI fixture loop.
+const UNTRIGGERED_WITH_REASON: &[(&str, &str)] = &[
+    (
+        "FA-REF-008",
+        "multi-principal SoD workflow (preparer vs approver)",
+    ),
+    (
+        "FA-REF-012",
+        "multi-principal approval collection over proposal digest",
+    ),
+    (
+        "FA-REF-013",
+        "Agent-profile token / MCP session confinement",
+    ),
+    (
+        "FA-REF-014",
+        "issued capability token past CommitSeq expiry",
+    ),
+    (
+        "FA-REF-015",
+        "issued capability token per-leg amount ceiling",
+    ),
+    (
+        "FA-REF-016",
+        "approval digest mismatch against modified proposal",
+    ),
+    ("FA-REF-017", "unknown approval vertex citation"),
+    (
+        "FA-REF-018",
+        "concurrent writer lease held by another process / fad",
+    ),
+    ("FA-REF-019", "library-level unregistered policy activation"),
+    (
+        "FA-REF-020",
+        "ambiguous civil date shared with opening/adjustment/closing period",
+    ),
+    (
+        "FA-REF-022",
+        "approval recorded under an older security policy epoch",
+    ),
+    ("FA-REF-023", "revoked capability token"),
+    (
+        "FA-REF-030",
+        "concurrent first-committer-wins transaction race",
+    ),
+    ("FA-REF-031", "concurrent period transition race"),
+    ("FA-REF-033", "sealed field opened with non-matching key"),
+    (
+        "FA-REF-034",
+        "dry-run plan committed after intervening book advancement",
+    ),
+    (
+        "FA-REF-041",
+        "CLI preflight validates period transition reason before kernel",
+    ),
+    (
+        "FA-REF-051",
+        "CLI reverse derives exact side-swap legs from target",
+    ),
+    (
+        "FA-REF-080",
+        "CLI post requires --evidence flag or event citation at preflight",
+    ),
+    (
+        "FA-REF-082",
+        "CLI resolves document commitment directly from book store",
+    ),
+    ("FA-REF-083", "document intake bounds / MIME preflight"),
+    (
+        "FA-REF-084",
+        "CLI preflight restricts --grade to HumanUpload|AgentUpload",
+    ),
+    (
+        "FA-REF-085",
+        "store corruption / document commitment drift (exit 8)",
+    ),
+    (
+        "FA-REF-086",
+        "multi-principal Reviewed attestation over AgentUpload evidence",
+    ),
+    (
+        "FA-REF-087",
+        "CLI document attach resolves target EntryRef from book",
+    ),
+    (
+        "FA-REF-088",
+        "Appendix H R-ERASE interim posture (erasure tombstones absent)",
+    ),
+    ("FA-REF-090", "account lower_bound availability breach"),
+    ("FA-REF-091", "account upper_bound availability breach"),
+    ("FA-REF-092", "i128 register capacity ceiling"),
+    (
+        "FA-REF-093",
+        "CLI preflight validates --balancing leg index and shape",
+    ),
+    (
+        "FA-REF-094",
+        "daemon / library TimeEvidence monotonic clock rollback",
+    ),
+    (
+        "FA-REF-095",
+        "timed Pending hold without prior TimeEvidence tick",
+    ),
+    ("FA-REF-096", "timed Pending hold deadline u64 overflow"),
+    (
+        "FA-REF-097",
+        "manual Posts resolution after committed tick passed deadline",
+    ),
+    (
+        "FA-REF-098",
+        "library-only Expires disposition (CLI restricts disposition to posts|voids)",
+    ),
+    ("FA-REF-099", "library-only ScheduleCancel control entry"),
+    (
+        "FA-REF-100",
+        "library-only EntryPayload structural invariant check",
+    ),
+    (
+        "FA-REF-101",
+        "library-only control payload submitted to post",
+    ),
+    ("FA-REF-102", "class not yet admitted by direct post"),
+    ("FA-REF-103", "library-only EntryPayload book_id mismatch"),
+    (
+        "FA-REF-110",
+        "attestation subject unknown or class disallows ManualAssertion",
+    ),
+    (
+        "FA-REF-111",
+        "multi-principal self-review SoD check on AgentUpload",
+    ),
+    (
+        "FA-REF-112",
+        "CLI preflight validates manual assertion reason code",
+    ),
+    (
+        "FA-REF-113",
+        "store corruption / attestation payload drift (exit 8)",
+    ),
+    ("FA-REF-114", "broken document custody chain"),
+    (
+        "FA-REF-115",
+        "import run receipt OID list mismatch (exit 8)",
+    ),
+    ("FA-REF-116", "missing document blob in store (exit 5)"),
+    ("FA-REF-117", "erasure blocked by active legal hold"),
+    (
+        "FA-REF-118",
+        "release of unknown or already-released legal hold",
+    ),
+    ("FA-REF-119", "custody transfer by non-custodian principal"),
+    (
+        "FA-REF-120",
+        "inclusion proof requested for entry after checkpoint frontier",
+    ),
+    (
+        "FA-REF-121",
+        "store corruption / accumulator chain drift (exit 8)",
+    ),
+    ("FA-REF-122", "concurrent checkpoint compare-and-set race"),
+    (
+        "FA-REF-123",
+        "concurrent aggregate basis race during checkpoint",
+    ),
+    (
+        "FA-REF-124",
+        "consistency proof over non-extending accumulator states (exit 8)",
+    ),
+    ("FA-REF-125", "proof requested at sequence beyond book head"),
+    (
+        "FA-REF-126",
+        "library-only unsupported ScopeIndexComplete predicate",
+    ),
+    (
+        "FA-REF-127",
+        "corrupt checkpoint state recomputation failure (exit 8)",
+    ),
+    (
+        "FA-REF-128",
+        "bundle inline documents requested without privileged capability",
+    ),
+    (
+        "FA-REF-129",
+        "bundle exceeds standalone verifier size / balance count limit",
+    ),
+    (
+        "FA-REF-130",
+        "migration chunk staged into finalized or abandoned MigrationRun",
+    ),
+    (
+        "FA-REF-131",
+        "migration finalize trial-balance tie-out mismatch",
+    ),
+    (
+        "FA-REF-132",
+        "migration chunk dated outside declared run periods",
+    ),
+    (
+        "FA-REF-133",
+        "balance proof over unfinalized staged migration history",
+    ),
+    (
+        "FA-REF-134",
+        "scratch replay over unsupported non-accounting commit history",
+    ),
+    (
+        "FA-REF-135",
+        "scratch replay SeqMap verification failure (exit 8)",
+    ),
+    (
+        "FA-REF-140",
+        "assert-balance value disagrees with journal fold",
+    ),
+    ("FA-REF-141", "legal hold cites unknown subject vertex"),
+    (
+        "FA-REF-142",
+        "unprivileged read of governed document without derived redacted view",
+    ),
+    (
+        "FA-REF-143",
+        "corrupt redacted view commitment proof (exit 8)",
+    ),
+    (
+        "FA-REF-144",
+        "sweep under uncorroborated TimeEvidence tick (monotonic_ok = false)",
+    ),
+    ("FA-REF-146", "proof export exceeds inline transport limit"),
+    (
+        "FA-REF-150",
+        "corrupt or tampered report certificate replay (exit 8)",
+    ),
+    (
+        "FA-REF-152",
+        "statement definition mapping partition / period check",
+    ),
+    ("FA-REF-153", "internal unwinding panic handler (exit 5)"),
+    ("FA-REF-154", "library-only unregistered raw UnitId"),
+    ("FA-REF-155", "key file permissions not 0600 (exit 4)"),
+    ("FA-REF-156", "unissued capability token file"),
+    (
+        "FA-REF-159",
+        "certificate replay under mismatched embedded registry digest (exit 4)",
+    ),
+    ("FA-REF-160", "library-only unpaired Replacement entry"),
+    (
+        "FA-REF-161",
+        "AS ORIGINALLY REPORTED on period with neither issuance nor lock",
+    ),
+    (
+        "FA-REF-165",
+        "bank statement import predecessor continuity mismatch",
+    ),
+    (
+        "FA-REF-166",
+        "shared daily capability gross-debit ceiling exceeded",
+    ),
+    (
+        "FA-REF-167",
+        "store corruption / daily usage cell refold mismatch (exit 8)",
+    ),
+    (
+        "FA-REF-168",
+        "bank match confirmation ambiguity or occupied line/leg",
+    ),
+    (
+        "FA-REF-169",
+        "store corruption / bank match confirmation drift (exit 8)",
+    ),
+    (
+        "FA-REF-171",
+        "production reassigns Bates range of already-produced document",
+    ),
+    (
+        "FA-REF-172",
+        "statement issuance cites uncertified or mismatched period certificate",
+    ),
+    (
+        "FA-REF-174",
+        "AS REPORTED IN cites certificate that does not report the period",
+    ),
+    (
+        "FA-REF-176",
+        "out-of-order RestatementCase lifecycle transition",
+    ),
+    (
+        "FA-REF-177",
+        "case rehearsal diff certificate missing affected period or closed scenario",
+    ),
+    (
+        "FA-REF-178",
+        "case-bound entry posted outside Approved RestatementCase",
+    ),
+    (
+        "FA-REF-179",
+        "case disclosure document lacks independent Reviewed attestation",
+    ),
+    ("FA-REF-181", "adjustment proposal already booked or passed"),
+    (
+        "FA-REF-182",
+        "booked adjustment entry legs or period differ from proposal",
+    ),
+    (
+        "FA-REF-183",
+        "proposed adjustment dated outside engagement scope_periods",
+    ),
+    (
+        "FA-REF-186",
+        "concurrent period state change during post (FCW witness)",
+    ),
+    (
+        "FA-REF-187",
+        "Revision entry in case scenario fails Revises delta shape",
+    ),
+    (
+        "FA-REF-189",
+        "GQL query aggregates or compares amounts across mixed units",
+    ),
+    (
+        "FA-REF-192",
+        "external subledger feed lacks independently reviewed detail workpaper",
+    ),
+    (
+        "FA-REF-193",
+        "PDF text extraction on image/scan without text layer",
+    ),
+    (
+        "FA-REF-194",
+        "consolidation missing ownership stake, role, or intercompany counterpart",
+    ),
+    (
+        "FA-REF-195",
+        "dimension value outside valid_from..valid_to window",
+    ),
+    (
+        "FA-REF-196",
+        "Canon rule static type/unit/balance check failure",
+    ),
+    (
+        "FA-REF-197",
+        "Restatement entry in case scenario fails Restates delta shape",
+    ),
+    (
+        "FA-REF-198",
+        "gross native/functional activity exceeds register_capacity",
+    ),
+    (
+        "FA-REF-199",
+        "retention cut inside active RetentionPolicy floor",
+    ),
+    (
+        "FA-REF-200",
+        "register checkpoint cadence exceeds active RetentionPolicy floor",
+    ),
+    (
+        "FA-REF-201",
+        "batch canonical LogicalDeltaTemplate exceeds max_batch_template_bytes (14,439,152 B)",
+    ),
 ];
 
 #[test]
 fn every_triggerable_fix_executes() {
+    let reg = registry().expect("verbs.toml");
+    let catalog = fa_registry::refusal_catalog::RefusalCatalog::embedded().expect("catalog");
+    for row in &catalog.rows {
+        let mut spans: Vec<&str> = row
+            .fix
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|s| s.starts_with("fa "))
+            .collect();
+        if row.fix.starts_with("fa ") {
+            spans.push(&row.fix);
+        }
+        for span in spans {
+            let words: Vec<String> = span
+                .split_whitespace()
+                .skip(1)
+                .map(|w| w.trim_end_matches([',', ';', ')']).to_string())
+                .collect();
+            if words
+                .first()
+                .is_some_and(|w| !w.starts_with('<') && !w.starts_with('-'))
+            {
+                assert!(
+                    fix_verb(reg, &words).is_some(),
+                    "catalog row {} ({}) fix {:?} names an unregistered verb in {:?}",
+                    row.code,
+                    row.name,
+                    row.fix,
+                    span
+                );
+            }
+        }
+    }
     let mut covered = BTreeSet::new();
     for case in CASES.iter().chain(MORE_CASES) {
         covered.extend(execute(case));
     }
-    let catalog = fa_registry::refusal_catalog::RefusalCatalog::embedded().expect("catalog");
+    let documented: BTreeSet<&str> = UNTRIGGERED_WITH_REASON.iter().map(|(c, _)| *c).collect();
+    assert_eq!(
+        documented.len(),
+        UNTRIGGERED_WITH_REASON.len(),
+        "duplicate code in UNTRIGGERED_WITH_REASON"
+    );
+    for code in &covered {
+        assert!(
+            !documented.contains(code),
+            "{code} is both triggered by a case and listed in UNTRIGGERED_WITH_REASON"
+        );
+    }
     let untriggered: Vec<&str> = catalog
         .rows
         .iter()
         .map(|r| r.code.as_str())
         .filter(|c| !covered.contains(c))
         .collect();
+    for code in &untriggered {
+        assert!(
+            documented.contains(code),
+            "catalog code {code} is neither triggered by a case nor documented in UNTRIGGERED_WITH_REASON"
+        );
+    }
     println!(
-        "fix executability: {} of {} catalog codes triggered and their fixes applied: {covered:?}; not yet triggered by any case: {}",
+        "fix executability: {} of {} catalog codes triggered and their fixes applied: {covered:?}; {} documented non-single-step codes",
         covered.len(),
         catalog.rows.len(),
-        untriggered.join(" ")
+        untriggered.len(),
     );
 }
 

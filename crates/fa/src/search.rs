@@ -41,6 +41,26 @@ pub struct SearchResults {
     pub hits: Vec<SearchHit>,
 }
 
+/// Verification of the search index rebuilt at `known_at` (`fa verify search`;
+/// plan §9, bead fa-qip).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchVerification {
+    /// The frontier the index was rebuilt and verified at.
+    pub known_at: CommitSeq,
+    /// How many entries carried searchable text.
+    pub entries: usize,
+    /// How many documents carried searchable text.
+    pub documents: usize,
+    /// How many findings carried searchable text.
+    pub findings: usize,
+    /// Total searchable records (`entries + documents + findings`).
+    pub records: usize,
+    /// The corpus hash (`SEARCH_CORPUS_DOMAIN`) from [`fa_docket::search::SearchVerificationReceipt`].
+    pub corpus_hash: [u8; 32],
+    /// The index manifest's digest (`SEARCH_MANIFEST_FORMAT`) from [`fa_docket::search::SearchVerificationReceipt`].
+    pub index_digest: [u8; 32],
+}
+
 fn search_error(error: SearchError) -> BookError {
     match error {
         SearchError::Input(message) => {
@@ -140,6 +160,75 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 records: records.len(),
                 index_digest,
                 hits: index.search(query, kind),
+            })
+        })
+    }
+
+    /// Rebuild the full search index at `known_at` (the head when `None`) over
+    /// every visible entry and the caller's `documents_and_findings`, and verify
+    /// that [`QuillLexicalIndex::verify_against_journal`] produces the identical
+    /// corpus hash and manifest digest (`fa verify search`; plan §9, bead fa-qip).
+    pub fn verify_search(
+        &self,
+        cx: &PurposeContexts,
+        known_at: Option<CommitSeq>,
+        documents_and_findings: &[SearchIndexableRecord],
+    ) -> Result<SearchVerification, BookError> {
+        self.query(cx, |db, book| {
+            let seq = fa_registers::resolve_known_at(db, known_at)?;
+            let key = &book.seal_key;
+            let mut records = Vec::new();
+            for (vid, entry, recorded_at) in fa_registers::entries_at(db, book, seq)? {
+                let proposal = &entry.proposal;
+                let mut text = proposal
+                    .description
+                    .open(key, limits::MAX_DESCRIPTION_BYTES)
+                    .unwrap_or_default();
+                for leg in &proposal.legs {
+                    if let Some(memo) = leg
+                        .memo
+                        .as_ref()
+                        .and_then(|memo| memo.open(key, limits::MAX_MEMO_BYTES).ok())
+                    {
+                        text.push('\n');
+                        text.push_str(&memo);
+                    }
+                }
+                if text.trim().is_empty() {
+                    continue;
+                }
+                records.push(SearchIndexableRecord {
+                    id: SearchRecordId::Entry(vid),
+                    recorded_at: recorded_at.0,
+                    subject_ref: None,
+                    text,
+                });
+            }
+            let entries = records.len();
+            let documents = documents_and_findings
+                .iter()
+                .filter(|r| matches!(r.id, SearchRecordId::Document(_)))
+                .count();
+            let findings = documents_and_findings
+                .iter()
+                .filter(|r| matches!(r.id, SearchRecordId::Finding(_)))
+                .count();
+            records.extend(documents_and_findings.iter().cloned());
+            let live_keys = BTreeSet::new();
+            let (index, _) =
+                QuillLexicalIndex::rebuild_deterministic(book.book_id, seq.0, &records, &live_keys)
+                    .map_err(search_error)?;
+            let receipt = index
+                .verify_against_journal(&records, &live_keys)
+                .map_err(search_error)?;
+            Ok(SearchVerification {
+                known_at: seq,
+                entries,
+                documents,
+                findings,
+                records: receipt.indexed_record_count as usize,
+                corpus_hash: receipt.corpus_hash.0,
+                index_digest: receipt.manifest_digest.0,
             })
         })
     }

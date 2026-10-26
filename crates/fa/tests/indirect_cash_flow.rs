@@ -7,7 +7,7 @@ use fa::indirect_cash_flow::{
     AdjustmentCategory, AdjustmentSign, IndirectCashFlowAdjustment, IndirectCashFlowDefinition,
     IndirectCashFlowRequest,
 };
-use fa::{AsyncBook, BookKeys, Capability, Entropy, RollForwardRequest};
+use fa::{AsyncBook, BookKeys, Capability, CashFlowBasisDefinition, Entropy, RollForwardRequest};
 use fa_journal::{AccountSpec, BookSpec, Document, PostRequest, UnitPolicy};
 use fa_model::{
     AccountType, EntryClass, EntryOrigin, EntryPayload, EvidenceRef, Id128, LegPayload, Oid,
@@ -27,9 +27,22 @@ fn day(n: u8) -> DateDay {
 fn cap(ops: &[&str]) -> Capability {
     Capability::embedded(PRINCIPAL, ops).unwrap()
 }
+fn explicit_definition(definition: &CashFlowBasisDefinition) -> &CashFlowDefinition {
+    let CashFlowBasisDefinition::Explicit(definition) = definition else {
+        panic!("this fixture requires an explicit cash definition");
+    };
+    definition
+}
+fn explicit_definition_mut(definition: &mut CashFlowBasisDefinition) -> &mut CashFlowDefinition {
+    let CashFlowBasisDefinition::Explicit(definition) = definition else {
+        panic!("this fixture requires an explicit cash definition");
+    };
+    definition
+}
 struct Harness {
     runtime: Runtime,
     root: Cx,
+    vfs: MemVfs,
     book: AsyncBook<MemVfs>,
     usd: UnitId,
     jpy: UnitId,
@@ -57,7 +70,7 @@ impl Harness {
         let mut book = runtime
             .block_on(AsyncBook::create_with_vfs(
                 &cx,
-                vfs,
+                vfs.clone(),
                 Path::new("indirect-cash-book"),
                 BookKeys::for_development(124),
                 spec,
@@ -142,6 +155,7 @@ impl Harness {
         Self {
             runtime,
             root,
+            vfs,
             book,
             usd,
             jpy,
@@ -158,6 +172,9 @@ impl Harness {
         self.book.head(&self.cx()).unwrap()
     }
     fn post(&mut self, date: u8, key: &[u8], unit: UnitId, parts: &[(&str, Side, i128)]) {
+        self.post_on(day(date), key, unit, parts);
+    }
+    fn post_on(&mut self, date: DateDay, key: &[u8], unit: UnitId, parts: &[(&str, Side, i128)]) {
         let cx = self.cx();
         let legs: Vec<_> = parts
             .iter()
@@ -170,7 +187,7 @@ impl Harness {
             book_id: self.book.context().book_id,
             branch_id: Id128::TRUNK,
             class: EntryClass::ORIGINAL,
-            effective_date: day(date),
+            effective_date: date,
             document_date: None,
             description: self
                 .book
@@ -354,7 +371,7 @@ impl Harness {
         };
         IndirectCashFlowRequest {
             cash,
-            cash_definition,
+            cash_definition: CashFlowBasisDefinition::Explicit(cash_definition),
             income_periods: vec!["FY2026-OPEN".into(), "FY2026-P01".into()],
             definition,
         }
@@ -438,7 +455,9 @@ fn large_integer_amounts_and_permutations_preserve_exact_canonical_bytes() {
         30 * k
     );
     request.cash.units.reverse();
-    request.cash_definition.assignments.reverse();
+    explicit_definition_mut(&mut request.cash_definition)
+        .assignments
+        .reverse();
     request.definition.adjustments.reverse();
     let permuted = h
         .book
@@ -463,8 +482,10 @@ fn wrong_sign_missing_adjustment_invented_leg_and_cash_leg_all_refuse() {
     let mut invented = original.clone();
     invented.definition.adjustments[0].entry_digest = [0; 32];
     let mut cash = original.clone();
-    cash.definition.adjustments[0].entry_digest = cash.cash_definition.assignments[0].entry_digest;
-    cash.definition.adjustments[0].leg_index = cash.cash_definition.assignments[0].leg_index;
+    cash.definition.adjustments[0].entry_digest =
+        explicit_definition(&cash.cash_definition).assignments[0].entry_digest;
+    cash.definition.adjustments[0].leg_index =
+        explicit_definition(&cash.cash_definition).assignments[0].leg_index;
     let mut duplicate = original.clone();
     duplicate
         .definition
@@ -578,3 +599,6 @@ fn opposing_currency_residuals_do_not_cancel_and_current_authority_is_required()
 
 #[path = "indirect_cash_flow/certificates.rs"]
 mod certificates;
+
+#[path = "indirect_cash_flow/bases.rs"]
+mod bases;

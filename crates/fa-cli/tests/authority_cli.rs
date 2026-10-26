@@ -283,9 +283,54 @@ fn handlers_cannot_add_operations_omitted_from_the_launch_grant() {
 }
 
 #[test]
-fn derived_report_certification_requires_produce_before_any_book_or_output_observation() {
+fn report_certification_requires_produce_before_any_book_or_output_observation() {
     let reader = authority(LaunchProfile::Agent, &["read"]);
     for argv in [
+        vec!["tb", "--period", "FY2026-P03", "--certify", "--json"],
+        vec![
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--dimension",
+            "cost_center=not-created",
+            "--certificate-out",
+            "unwritten.cert",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "balance-sheet",
+            "--for",
+            "FY2026-P03",
+            "--certify",
+            "--json",
+        ],
+        vec![
+            "statement",
+            "income-statement",
+            "--for",
+            "FY2026-P03",
+            "--certificate-out",
+            "unwritten.cert",
+            "--json",
+        ],
+        vec![
+            "explain",
+            "balance",
+            "1000",
+            "--period",
+            "FY2026-P03",
+            "--certify",
+            "--json",
+        ],
+        vec![
+            "open-items",
+            "--account",
+            "1200",
+            "--certificate-out",
+            "unwritten.cert",
+            "--json",
+        ],
         vec![
             "tb",
             "--summary",
@@ -694,7 +739,10 @@ fn only_an_actual_read_authorized_inline_period_plan_can_reach_the_book() {
 
 #[test]
 fn bound_handlers_refuse_file_paths_before_observing_the_book() {
-    let authority = authority(LaunchProfile::Preparer, &[]);
+    let authority = authority(
+        LaunchProfile::Preparer,
+        &["read", "post", "verify", "produce"],
+    );
     let target = authority.book().parent().unwrap().join("preserve.txt");
     std::fs::write(&target, "preserve this host file").unwrap();
     let path = target.to_str().unwrap();

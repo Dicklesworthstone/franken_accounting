@@ -1,8 +1,22 @@
 use super::*;
 use crate::{
-    CashFlowActivity, CashFlowAssignment, CashFlowDefinition, IndirectCashFlowDefinition,
-    IndirectCashFlowRequest, ReportArtifactExpectation,
+    CashFlowActivity, CashFlowAssignment, CashFlowBasisDefinition, CashFlowDefinition,
+    IndirectCashFlowDefinition, IndirectCashFlowRequest, ReportArtifactExpectation,
 };
+
+fn explicit_definition(definition: &CashFlowBasisDefinition) -> &CashFlowDefinition {
+    let CashFlowBasisDefinition::Explicit(definition) = definition else {
+        panic!("this fixture requires an explicit cash definition");
+    };
+    definition
+}
+
+fn explicit_definition_mut(definition: &mut CashFlowBasisDefinition) -> &mut CashFlowDefinition {
+    let CashFlowBasisDefinition::Explicit(definition) = definition else {
+        panic!("this fixture requires an explicit cash definition");
+    };
+    definition
+}
 
 struct CashFixture {
     direct: ReportArtifact,
@@ -63,7 +77,7 @@ impl CashFixture {
             .unwrap();
         let expected = IndirectCashFlowRequest {
             cash: request,
-            cash_definition: definition,
+            cash_definition: CashFlowBasisDefinition::Explicit(definition),
             income_periods,
             definition: IndirectCashFlowDefinition {
                 name: "No operating income or adjustments".into(),
@@ -77,7 +91,7 @@ impl CashFixture {
                 PRINCIPAL,
                 &cap(&["read", "produce"]),
                 &expected.cash,
-                &expected.cash_definition,
+                explicit_definition(&expected.cash_definition),
             )
             .unwrap()
             .unwrap();
@@ -105,7 +119,7 @@ impl CashFixture {
         match family {
             ReportArtifactFamily::CashFlow => ReportArtifactExpectation::CashFlow {
                 request: &self.expected.cash,
-                definition: &self.expected.cash_definition,
+                definition: explicit_definition(&self.expected.cash_definition),
             },
             ReportArtifactFamily::IndirectCashFlow => {
                 ReportArtifactExpectation::IndirectCashFlow(&self.expected)
@@ -168,7 +182,7 @@ fn matching_digest_never_replaces_independent_cash_scope_or_classification() {
     }
     for mutate in 0..4 {
         let mut request = fixture.expected.cash.clone();
-        let mut definition = fixture.expected.cash_definition.clone();
+        let mut definition = explicit_definition(&fixture.expected.cash_definition).clone();
         match mutate {
             0 => request.known_at = None,
             1 => request.label.push_str(" changed"),
@@ -310,11 +324,12 @@ fn retained_cash_artifacts_still_require_independent_classifications_on_every_re
         );
         assert_eq!(h.head(), before);
         let mut wrong = fixture.expected.clone();
-        wrong.cash_definition.assignments[0].activity = CashFlowActivity::Investing;
+        explicit_definition_mut(&mut wrong.cash_definition).assignments[0].activity =
+            CashFlowActivity::Investing;
         let wrong = if artifact.family() == ReportArtifactFamily::CashFlow {
             ReportArtifactExpectation::CashFlow {
                 request: &wrong.cash,
-                definition: &wrong.cash_definition,
+                definition: explicit_definition(&wrong.cash_definition),
             }
         } else {
             ReportArtifactExpectation::IndirectCashFlow(&wrong)
@@ -410,7 +425,7 @@ fn policy_and_split_cash_artifacts_retain_full_definitions_and_replay_original_h
     let mut h = Harness::new(85);
     let fixture = CashFixture::new(&h);
     let request = &fixture.expected.cash;
-    let assignment = &fixture.expected.cash_definition.assignments[0];
+    let assignment = &explicit_definition(&fixture.expected.cash_definition).assignments[0];
     let policy = CashFlowPolicy {
         name: "Funding policy".into(),
         cash_accounts: vec![h.id("1000").0],

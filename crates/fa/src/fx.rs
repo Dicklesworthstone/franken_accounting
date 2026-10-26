@@ -93,6 +93,101 @@ fn average_date(proposal: &EntryPayload, calendar: &FiscalCalendar) -> Result<Da
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Read one functional trial balance with its historical display accounts.
+    /// Like the existing functional folds, this uses committed base amounts;
+    /// it does not require the original Rate bodies to remain disclosed. Use
+    /// certification to independently verify those retained valuation sources.
+    pub async fn functional_trial_balance(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::FunctionalTrialBalance> {
+        let at = match self
+            .prepare_functional_report(cx, capability.holder(), capability, known_at, false)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let result = self.query(cx, |db, book| {
+            crate::certificate::context_at(db, book, at)?;
+            fa_journal::entry_history::verify_entry_history(db, cx, book, Some(at))?;
+            crate::functional_trial_balance::report_at(db, book, &selection, at)
+        })?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, capability.holder(), capability, Some(at), false)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Certify one functional stock or activity trial balance under current
+    /// whole-book Read and Produce authority. Every original Rate document and
+    /// registered valuation is independently replayed before output is sealed.
+    pub async fn certify_functional_trial_balance(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let at = match self
+            .prepare_functional_report(cx, capability.holder(), capability, known_at, true)
+            .await?
+        {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !crate::functional_trial_balance::supported_selection(&selection) {
+            return Ok(Err(crate::functional_trial_balance::invalid_selection()));
+        }
+        let result = self.certify_report(
+            cx,
+            crate::ReportSelection::FunctionalTrialBalance(selection),
+            Some(at),
+        )?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, capability.holder(), capability, Some(at), true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
+    /// Certify the original TimeEvidence brackets as well as the resolved
+    /// functional trial-balance prefix. Replay never substitutes today's clock.
+    pub async fn certify_functional_trial_balance_at_instant(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedReport> {
+        if let Err(refusal) = self
+            .prepare_functional_report(cx, capability.holder(), capability, None, true)
+            .await?
+        {
+            return Ok(Err(refusal));
+        }
+        if !crate::functional_trial_balance::supported_selection(&selection) {
+            return Ok(Err(crate::functional_trial_balance::invalid_selection()));
+        }
+        let result = self.certify_report_at_instant(
+            cx,
+            crate::ReportSelection::FunctionalTrialBalance(selection),
+            requested_utc_ns,
+        )?;
+        if let Err(refusal) =
+            self.admit_functional_report(cx, capability.holder(), capability, None, true)?
+        {
+            return Ok(Err(refusal));
+        }
+        Ok(result)
+    }
+
     fn authorize_fx_read(
         &self,
         cx: &PurposeContexts,

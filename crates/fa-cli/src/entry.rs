@@ -175,8 +175,9 @@ pub fn fa_with_env_token(
 /// `fa --token <file>` (plan §14.2, bead fa-r3q): act as the holder of an
 /// issued capability token instead of the embedded owner. The token fixes
 /// the principal and its journaled capability, so `--as` and `--grant` are
-/// refused beside it; the session then runs exactly as a token-bound MCP
-/// session does, directly under the writer lease or through the book's fad.
+/// refused beside it. An explicit Human operator token may confirm commands;
+/// tokens admitted by MCP keep its restricted posture on both the direct and
+/// daemon routes.
 fn fa_with_token(
     argv: &[String],
     parsed: &args::Args,
@@ -230,7 +231,7 @@ fn fa_with_token(
     // Host paths are confined to the working directory the holder runs
     // `fa` in (relative paths only, fa-yha's containment rule): the session
     // reads and writes no file the same OS user could not already reach.
-    let authority = match LaunchAuthority::from_token(dir, keys, &token)
+    let authority = match LaunchAuthority::from_operator_token(dir, keys, &token)
         .and_then(|authority| authority.with_files(std::env::current_dir().ok()))
     {
         Ok(authority) => authority,
@@ -241,8 +242,8 @@ fn fa_with_token(
                     fa_journal::refusal::code::CAPABILITY,
                     fa_journal::exit::SAFETY,
                     message,
-                    "plan §14.2–§14.4 (a token-bound session stays within its launch template)",
-                    "ask the issuer for a token within the agent or preparer ceiling",
+                    "plan §14.2–§14.4 (exact issued authority and operator kind)",
+                    "use an agent/preparer token, or a Human-operator token explicitly granting approve, close, reopen or witness; the issuer must authorize the requested operations",
                 ),
                 capture,
             );
@@ -318,6 +319,9 @@ pub fn fa_with_authority(
         "--profile",
         "--token",
     ] {
+        if flag == "--yes" && authority.can_confirm() {
+            continue;
+        }
         if parsed.flag(flag).is_some() || parsed.switch(flag) {
             return cli::usage_error_with_authority(
                 argv,

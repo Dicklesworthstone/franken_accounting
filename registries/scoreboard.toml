@@ -654,11 +654,11 @@ gate = "Genesis"
 criterion = "crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover"
 evidence_class = "lab-campaign"
 probe_kind = "lab-campaign"
+artifact = "FA-ART-LAB-02"
 argv = ["genesis_all_barriers_crash_recover"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-0fl"
+expected = "works"
+expected_exit = 0
+expected_event = "lab_campaign_ok"
 
 [[gate_criterion]]
 id = "GEN-07"
@@ -750,7 +750,7 @@ gate = "G1"
 criterion = "registers verified by fold on every fixture"
 evidence_class = "differential"
 probe_kind = "differential"
-argv = ["g1_registers_verified_every_fixture"]
+argv = ["g1_registers_verified_every_fixture", "{book}"]
 expected = "works"
 expected_exit = 0
 expected_event = "differential_ok"
@@ -785,11 +785,10 @@ gate = "G1"
 criterion = "the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar"
 evidence_class = "cli"
 probe_kind = "cli"
-argv = ["g1_polish_bar_suite"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-nmk4"
+argv = ["g1_polish_bar_suite", "{book}", "{polish_intent}", "{doc_oid}"]
+expected = "works"
+expected_exit = 0
+expected_event = "polish_bar_ok"
 
 [[gate_criterion]]
 id = "G1-07"
@@ -834,10 +833,9 @@ criterion = "supersession netting and restatement cases with diff certificates"
 evidence_class = "cli"
 probe_kind = "cli"
 argv = ["g2_restatement_cases_with_diff_certificates"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-75j4"
+expected = "works"
+expected_exit = 0
+expected_event = "restatement_cases_ok"
 
 [[gate_criterion]]
 id = "G2-04"
@@ -845,11 +843,11 @@ gate = "G2"
 criterion = "two-phase entries with expiry sweeps under lab"
 evidence_class = "lab-campaign"
 probe_kind = "lab-campaign"
+artifact = "FA-ART-LAB-03"
 argv = ["g2_two_phase_expiry_sweeps_lab"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-0fl"
+expected = "works"
+expected_exit = 0
+expected_event = "lab_campaign_ok"
 
 [[gate_criterion]]
 id = "G2-05"
@@ -990,10 +988,9 @@ criterion = "ADS/SAF-T exports with proofs"
 evidence_class = "cli"
 probe_kind = "cli"
 argv = ["g3_ads_saft_exports_with_proofs"]
-expected = "absent"
-expected_exit = 2
-expected_event = "error"
-bead = "fa-2q91"
+expected = "works"
+expected_exit = 0
+expected_event = "exports_with_proofs_ok"
 
 [[gate_criterion]]
 id = "G3-07"

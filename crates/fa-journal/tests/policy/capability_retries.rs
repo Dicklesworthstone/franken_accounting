@@ -1,0 +1,466 @@
+//! Authenticate the retained capability event before acknowledging a retry.
+
+use super::*;
+
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    Issue,
+    Revoke,
+}
+
+#[derive(Clone)]
+struct Request {
+    kind: Kind,
+    capability: Capability,
+    target: Capability,
+    day: DateDay,
+    key: Vec<u8>,
+    description: Erasable<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Recorded {
+    vid: VId,
+    at: CommitSeq,
+    already: bool,
+}
+
+fn text(h: &Harness, value: &str, salt: u8) -> Erasable<String> {
+    Erasable::seal(
+        &value.to_owned(),
+        None,
+        &h.book.seal_key,
+        [salt; 32],
+        [salt; 24],
+    )
+}
+
+fn request(h: &Harness, kind: Kind) -> Request {
+    Request {
+        kind,
+        capability: human(PREPARER, &["issue_capability", "post", "read"]),
+        target: Capability::new(ALICE, Profile::Human, &[Op::Post], PREPARER)
+            .unwrap()
+            .holder_bound(possession_digest(&[120; 32])),
+        day: DateDay::from_ymd(2026, 3, 1).unwrap(),
+        key: b"capability-original-key".to_vec(),
+        description: text(h, "capability event", 121),
+    }
+}
+
+fn execute(h: &mut Harness, request: &Request) -> Result<Result<Recorded, Refusal>, KernelError> {
+    let ctx = h.ctx();
+    match request.kind {
+        Kind::Issue => h
+            .runtime
+            .block_on(issue_capability(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                IssuanceRequest {
+                    capability: request.capability.clone(),
+                    issued: request.target.clone(),
+                    effective_date: request.day,
+                    idempotency_key: request.key.clone(),
+                    description: request.description.clone(),
+                },
+            ))
+            .map(|result| {
+                result.map(|outcome| Recorded {
+                    vid: outcome.control_entry,
+                    at: outcome.recorded_at,
+                    already: outcome.already_recorded,
+                })
+            }),
+        Kind::Revoke => h
+            .runtime
+            .block_on(revoke_capability(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                RevocationRequest {
+                    capability: request.capability.clone(),
+                    revoked: request.target.commitment().unwrap(),
+                    effective_date: request.day,
+                    idempotency_key: request.key.clone(),
+                    description: request.description.clone(),
+                },
+            ))
+            .map(|result| {
+                result.map(|outcome| Recorded {
+                    vid: outcome.control_entry,
+                    at: outcome.recorded_at,
+                    already: outcome.already_recorded,
+                })
+            }),
+    }
+}
+
+fn write(h: &mut Harness, batch: WriteBatch) {
+    let ctx = h.ctx();
+    h.runtime
+        .block_on(h.db.write(&ctx.commit(), batch))
+        .unwrap();
+}
+
+fn assert_conflict(h: &mut Harness, request: &Request) {
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let refusal = execute(h, request).unwrap().unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn original_capability_keys_bind_semantics_and_resealed_retries_return_the_original_result() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut h = harness();
+        let original = request(&h, kind);
+        let before = h.db.frontier().unwrap();
+        let count = h.db.vertices().unwrap().len();
+        let first = execute(&mut h, &original).unwrap().unwrap();
+        assert_eq!(first.at.0, before.0 + 1);
+        assert!(!first.already);
+        assert_eq!(h.db.vertices().unwrap().len(), count + 1);
+        let expected = Recorded {
+            already: true,
+            ..first
+        };
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        assert_eq!(execute(&mut h, &original).unwrap().unwrap(), expected);
+        let mut changed = original.clone();
+        changed.description = text(&h, "a different request", 122);
+        assert_conflict(&mut h, &changed);
+        let mut changed = original.clone();
+        changed.day = DateDay::from_ymd(2026, 3, 2).unwrap();
+        assert_conflict(&mut h, &changed);
+        let mut resealed = original;
+        resealed.description = text(&h, "capability event", 123);
+        assert_eq!(execute(&mut h, &resealed).unwrap().unwrap(), expected);
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn a_new_key_observes_the_authenticated_existing_capability_target_without_republishing() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut h = harness();
+        let mut next = request(&h, kind);
+        let first = execute(&mut h, &next).unwrap().unwrap();
+        next.key = b"another-request-key".to_vec();
+        next.day = DateDay::from_ymd(2026, 3, 2).unwrap();
+        next.description = text(&h, "observe the existing target", 124);
+        if matches!(kind, Kind::Revoke) {
+            next.capability = human(BOB, &["issue_capability"]);
+        }
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        assert_eq!(
+            execute(&mut h, &next).unwrap().unwrap(),
+            Recorded {
+                already: true,
+                ..first
+            },
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn an_original_issuance_key_cannot_switch_its_recorded_issuer_capability() {
+    let mut h = harness();
+    let mut next = request(&h, Kind::Issue);
+    execute(&mut h, &next).unwrap().unwrap();
+    next.capability = human(PREPARER, &["issue_capability", "post"]);
+    assert_conflict(&mut h, &next);
+}
+
+#[test]
+fn a_target_identity_requires_the_right_control_and_its_empty_acceptance_envelope() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut producer = harness();
+        let original = request(&producer, kind);
+        let first = execute(&mut producer, &original).unwrap().unwrap();
+        let (entry, _) = read_entry(&producer.db, first.vid).unwrap().unwrap();
+        for damage in [
+            "kind",
+            "commitment",
+            "caveats",
+            "origin",
+            "book",
+            "branch",
+            "label",
+            "mirror",
+            "approvals",
+            "plan",
+        ] {
+            let mut h = harness();
+            let mut altered = entry.proposal.clone();
+            let mut approvals = Vec::new();
+            let mut plan = None;
+            match damage {
+                "kind" => {
+                    let Some(ControlPayload::CapabilityEvent { kind, .. }) = &mut altered.control
+                    else {
+                        panic!("capability event")
+                    };
+                    *kind = 2;
+                }
+                "commitment" => {
+                    let Some(ControlPayload::CapabilityEvent { commitment, .. }) =
+                        &mut altered.control
+                    else {
+                        panic!("capability event")
+                    };
+                    *commitment = [125; 32];
+                }
+                "caveats" => {
+                    let Some(ControlPayload::CapabilityEvent { caveats_digest, .. }) =
+                        &mut altered.control
+                    else {
+                        panic!("capability event")
+                    };
+                    *caveats_digest = [126; 32];
+                }
+                "origin" => {
+                    let EntryOrigin::Control {
+                        spec_body_digest, ..
+                    } = &mut altered.origin
+                    else {
+                        panic!("capability control origin")
+                    };
+                    // Keep the class-compatible kind so sealing reaches the
+                    // retained-origin authentication this fixture exercises.
+                    *spec_body_digest = [127; 32];
+                }
+                "book" => altered.book_id = Id128([128; 16]),
+                "branch" => altered.branch_id = Id128([129; 16]),
+                "approvals" => {
+                    approvals.push(h.approve(BOB, entry.proposal_digest).unwrap().approval())
+                }
+                "plan" => plan = Some(Oid([130; 32])),
+                _ => (),
+            }
+            let altered = altered.seal(approvals, plan).unwrap();
+            let mut props = fa_model::entry_mirrors(&altered).unwrap();
+            if damage == "mirror" {
+                props
+                    .iter_mut()
+                    .find(|(key, _)| *key == property::CLASS)
+                    .unwrap()
+                    .1 = CanonicalScalar::Int(255);
+            }
+            let mut batch = WriteBatch::new(relation::IN_BOOK);
+            batch.create_vertex(
+                first.vid,
+                vec![if damage == "label" {
+                    label::ACCOUNT
+                } else {
+                    label::ENTRY
+                }],
+                props,
+            );
+            write(&mut h, batch);
+            assert_conflict(&mut h, &original);
+            let mut another_key = original.clone();
+            another_key.key = b"different-key-cannot-bless-bad-row".to_vec();
+            assert_conflict(&mut h, &another_key);
+        }
+    }
+}
+
+#[test]
+fn an_issuance_result_binds_its_canonical_body_and_recorded_issuer() {
+    let mut producer = harness();
+    let original = request(&producer, Kind::Issue);
+    let first = execute(&mut producer, &original).unwrap().unwrap();
+    let (entry, _) = read_entry(&producer.db, first.vid).unwrap().unwrap();
+    for damage in ["body", "issuer"] {
+        let mut h = harness();
+        let mut altered = entry.proposal.clone();
+        if damage == "body" {
+            altered.extensions[0].1 = original
+                .target
+                .clone()
+                .expiring_at(CommitSeq(500))
+                .canonical_bytes()
+                .unwrap();
+        } else {
+            altered.principal_ref = BOB;
+        }
+        let altered = altered.seal(Vec::new(), None).unwrap();
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        batch.create_vertex(
+            first.vid,
+            vec![label::ENTRY],
+            fa_model::entry_mirrors(&altered).unwrap(),
+        );
+        write(&mut h, batch);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let result = execute(&mut h, &original);
+        if damage == "body" {
+            assert!(matches!(result, Err(KernelError::Corrupt(_))));
+        } else {
+            assert_eq!(result.unwrap().unwrap_err().code, "FA-REF-032");
+        }
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn a_rewritten_capability_entry_cannot_supply_a_new_original_outcome() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut h = harness();
+        let mut next = request(&h, kind);
+        let first = execute(&mut h, &next).unwrap().unwrap();
+        let (entry, _) = read_entry(&h.db, first.vid).unwrap().unwrap();
+        next.description = text(&h, "rewritten capability event", 131);
+        let mut altered = entry.proposal;
+        altered.description = next.description.clone();
+        let altered = altered.seal(Vec::new(), None).unwrap();
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        for (key, value) in fa_model::entry_mirrors(&altered).unwrap() {
+            batch.set_vertex_property(first.vid, key, Some(value));
+        }
+        write(&mut h, batch);
+        assert_conflict(&mut h, &next);
+        next.key = b"a-new-key-does-not-legitimize-rewriting".to_vec();
+        assert_conflict(&mut h, &next);
+    }
+}
+
+#[test]
+fn capability_retry_admission_precedes_observing_a_malformed_target() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut h = harness();
+        let original = request(&h, kind);
+        let commitment = original.target.commitment().unwrap();
+        let vid = match kind {
+            Kind::Issue => issuance_vid(h.book.book_id, &commitment),
+            Kind::Revoke => revocation_vid(h.book.book_id, &commitment),
+        };
+        let mut batch = WriteBatch::new(relation::IN_BOOK);
+        batch.create_vertex(
+            vid,
+            vec![label::ENTRY],
+            vec![(
+                property::FA_PAYLOAD,
+                CanonicalScalar::bytes(vec![0xff; 8]).unwrap(),
+            )],
+        );
+        write(&mut h, batch);
+        h.revoke(
+            &human(CAROL, &["issue_capability"]),
+            &original.capability,
+            b"revoke-retry-observer",
+        )
+        .unwrap();
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        for (capability, code) in [
+            (human(PREPARER, &["read"]), "FA-REF-011"),
+            (
+                original
+                    .capability
+                    .clone()
+                    .for_books(&[Id128([132; 16])])
+                    .unwrap(),
+                "FA-REF-011",
+            ),
+            (original.capability.clone().expiring_at(head), "FA-REF-014"),
+            (original.capability.clone(), "FA-REF-023"),
+        ] {
+            let mut denied = original.clone();
+            denied.capability = capability;
+            let refusal = execute(&mut h, &denied).unwrap().unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), (code, exit::SAFETY));
+        }
+        let mut admitted = original;
+        admitted.capability = human(PREPARER, &["issue_capability", "post"]);
+        assert!(
+            execute(&mut h, &admitted).is_err(),
+            "an admitted observer reaches the malformed target"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+#[test]
+fn capability_results_retain_their_original_coordinates_after_durable_reopen() {
+    for kind in [Kind::Issue, Kind::Revoke] {
+        let mut h = harness();
+        let ctx = h.ctx();
+        let keys = DatabaseKeys::new([133; 32], DatabaseSecurityNamespaceId([134; 32]), [135; 32]);
+        let vfs = ctx.commit().with_restriction(MemVfs::new).unwrap();
+        h.db = h
+            .runtime
+            .block_on(Database::create_with_vfs(
+                &ctx.commit(),
+                vfs.clone(),
+                vfs.database_dir(),
+                keys.clone(),
+            ))
+            .unwrap();
+        let spec = BookSpec {
+            book_id: h.book.book_id,
+            name: "Durable capability retry".into(),
+            base_unit: h.usd,
+            calendar: h.book.calendar.clone(),
+            time_zone_policy: None,
+            entities: Vec::new(),
+            opening_date: None,
+        };
+        h.runtime
+            .block_on(create_book(
+                &mut h.db,
+                &ctx,
+                &spec,
+                &h.book.units,
+                &h.book.symbols,
+            ))
+            .unwrap();
+        let original = request(&h, kind);
+        let first = execute(&mut h, &original).unwrap().unwrap();
+        let original_row = h.db.vertex(first.vid).unwrap().unwrap();
+        let mut unrelated = WriteBatch::new(relation::IN_BOOK);
+        unrelated.create_vertex(VId(136), vec![label::DOCUMENT], vec![]);
+        write(&mut h, unrelated);
+        let empty = h
+            .runtime
+            .block_on(Database::open_memory(&ctx.commit(), keys.clone()))
+            .unwrap();
+        drop(std::mem::replace(&mut h.db, empty));
+        h.db = h
+            .runtime
+            .block_on(Database::open_with_vfs(
+                &ctx.commit(),
+                vfs.clone(),
+                vfs.database_dir(),
+                keys,
+            ))
+            .unwrap();
+        assert!(matches!(
+            h.db.delta_since(CommitSeq(0)),
+            Err(fgdb::ReadError::DeltaCursorRetired { .. })
+        ));
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        assert_eq!(
+            execute(&mut h, &original).unwrap().unwrap(),
+            Recorded {
+                already: true,
+                ..first
+            }
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert_eq!(h.db.vertex(first.vid).unwrap().unwrap(), original_row);
+    }
+}

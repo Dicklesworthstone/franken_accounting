@@ -417,7 +417,7 @@ fn ponzi_and_distribution_preserve_investor_margins() {
         assert_eq!(r.findings.len(), 2, "{:?}", r.findings);
         assert_eq!(of(&r.findings, "INV-A")[0].1, 3_000, "{}", procedure.id());
         assert_eq!(of(&r.findings, "INV-B")[0].1, 6_000, "{}", procedure.id());
-        assert!(r.findings.iter().all(|f| f.version == 3));
+        assert!(r.findings.iter().all(|f| f.version == 4));
     }
 
     // A subscription whose 40 of cash covers only part of A's 20 and B's 30
@@ -552,4 +552,87 @@ fn units_and_partial_settlements_do_not_leak() {
         .statistic
         .scale;
     assert_eq!(jpy_scale, 0, "B's exposure is stated in JPY");
+}
+
+/// fa-yugf.83 (H2, AN-401): a party is an investor only through an investor
+/// movement, one whose contra leg is on an Equity account or one holding the
+/// `investor_capital` role, as the registry summary says. A vendor's refund
+/// (Dr cash 50.00 / Cr Rent, naming VEND-R) brings cash in from the vendor,
+/// but the vendor never invested. It is not in the population: it gets no
+/// net-investment finding and no distribution share, while INV-A's figures
+/// are unchanged and a 90.00 pool is INV-A's alone. Version 3 kept every
+/// party with attributed cash in, so it gave VEND-R a 50.00 net-equity claim
+/// and a third of the pool.
+#[test]
+fn ponzi_vendor_refund_party_is_never_an_investor() {
+    let mut h = harness();
+    let mut snapshot = h.snapshot();
+    snapshot.coordinate.effective_through = None;
+    let investor = party(&h, &mut snapshot, "INV-A");
+    let vendor = party(&h, &mut snapshot, "VEND-R");
+    let subscription = entry(
+        &mut h,
+        1301,
+        day(2026, 1, 10),
+        None,
+        &[
+            ("1000", Side::Debit, 10_000, None, None),
+            ("2000", Side::Credit, 10_000, Some(investor), None),
+        ],
+    );
+    let refund = entry(
+        &mut h,
+        1302,
+        day(2026, 2, 10),
+        None,
+        &[
+            ("1000", Side::Debit, 5_000, None, None),
+            ("6000", Side::Credit, 5_000, Some(vendor), None),
+        ],
+    );
+    snapshot.entries = vec![subscription, refund];
+    assign(
+        &h,
+        &mut snapshot,
+        &[("1000", "cash"), ("2000", "investor_capital")],
+    );
+
+    let r = run_over(&snapshot, &h.book, &PonziNetInvestment::new().unwrap()).unwrap();
+    println!("ponzi with a vendor refund: {:?}", r.findings);
+    assert!(
+        of(&r.findings, "VEND-R").is_empty(),
+        "the refunding vendor is no investor: {:?}",
+        r.findings
+    );
+    let a = of(&r.findings, "INV-A");
+    assert_eq!(a.len(), 1, "{:?}", r.findings);
+    assert_eq!((a[0].0, a[0].1), ("net_equity_claim", 10_000));
+    assert_eq!(r.findings.len(), 1, "{:?}", r.findings);
+    assert!(r.findings.iter().all(|f| f.version == 4));
+
+    for procedure in [
+        Box::new(DistributionProRata::with(
+            Params::defaults(DistributionProRata::ID)
+                .unwrap()
+                .set("distributable_pool", 9_000)
+                .unwrap(),
+        )) as Box<dyn Procedure>,
+        Box::new(DistributionRisingTide::with(
+            Params::defaults(DistributionRisingTide::ID)
+                .unwrap()
+                .set("distributable_pool", 9_000)
+                .unwrap(),
+        )),
+    ] {
+        let r = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap();
+        println!("{} with a vendor refund: {:?}", procedure.id(), r.findings);
+        assert!(
+            of(&r.findings, "VEND-R").is_empty(),
+            "{}: {:?}",
+            procedure.id(),
+            r.findings
+        );
+        assert_eq!(of(&r.findings, "INV-A")[0].1, 9_000, "{}", procedure.id());
+        assert!(r.findings.iter().all(|f| f.version == 4));
+    }
 }

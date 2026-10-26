@@ -2068,6 +2068,10 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     assert!(int(&initial, "entries_decoded").unwrap() > 0);
     let first_through = int(&initial, "through").unwrap();
     assert!(int(&initial, "recorded_at").unwrap() > first_through);
+    assert_eq!(int(&initial, "checkpoint_through"), Some(first_through));
+    assert_eq!(text(&initial, "checkpoint_digest").len(), 64);
+    assert_eq!(int(&initial, "checkpoint_cadence"), Some(1));
+    assert_eq!(initial.get("recovered_from"), Some(&Json::Null));
     // Follow the emitted next action after filling its documented selector;
     // a hint that omits the required period must fail through the real CLI.
     let envelope = robot_line(&initial_output);
@@ -2104,12 +2108,23 @@ fn register_advance_consumes_only_new_entries_and_refuses_damaged_cache() -> std
     assert_eq!(int(&current, "entries"), Some(2));
     assert_eq!(current.get("wrote"), Some(&Json::Bool(true)));
     assert_eq!(current.get("rebuilt"), Some(&Json::Bool(false)));
+    assert_eq!(
+        int(&current, "checkpoint_through"),
+        int(&current, "through")
+    );
+    assert_ne!(
+        text(&current, "checkpoint_digest"),
+        text(&initial, "checkpoint_digest")
+    );
     ok(&["verify", "registers", "--period", period, "--json"]);
     let balance_before = report(&book, &["tb", "--period", period, "--json"]);
     assert_cash_credits(&balance_before, "30.00 USD");
     let no_op = doc(&ok(&advance));
     assert_eq!(no_op.get("wrote"), Some(&Json::Bool(false)));
     assert_eq!(no_op.get("recorded_at"), Some(&Json::Null));
+    assert_eq!(no_op.get("checkpoint_through"), Some(&Json::Null));
+    assert_eq!(no_op.get("checkpoint_digest"), Some(&Json::Null));
+    assert_eq!(no_op.get("recovered_from"), Some(&Json::Null));
     assert_eq!(int(&no_op, "entries_decoded"), Some(0));
     assert_eq!(int(&no_op, "from"), int(&current, "through"));
     assert_eq!(int(&no_op, "through"), int(&current, "through"));
@@ -3054,6 +3069,22 @@ fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std
             Some("2026-03-31"),
             "{out}"
         );
+        if format == "xbrl" {
+            let xbrl_xml = std::fs::read_to_string(&path).expect("read exported xbrl");
+            assert!(
+                xbrl_xml.contains("<xbrli:startDate>2026-01-01</xbrli:startDate>")
+                    && xbrl_xml.contains("<xbrli:endDate>2026-03-31</xbrli:endDate>"),
+                "fa export xbrl must emit a duration context for income-statement activity: {xbrl_xml}"
+            );
+            assert!(
+                xbrl_xml.contains("<xbrli:instant>2026-03-31</xbrli:instant>"),
+                "fa export xbrl must emit an instant context for balance-sheet stocks: {xbrl_xml}"
+            );
+            assert!(
+                !xbrl_xml.contains("CurrentPeriodNetIncome"),
+                "fa export xbrl must not emit non-US-GAAP CurrentPeriodNetIncome: {xbrl_xml}"
+            );
+        }
         exported.push((format, path));
     }
 
@@ -4645,11 +4676,10 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         args.extend(["approve", "--proposal", digest.as_str(), "--json"]);
         text(&doc(&ok(&args)), "approval_vid").to_string()
     };
-    // An issued token cannot approve on the CLI: a token-bound session stays
-    // within the Preparer ceiling, which holds no `approve` (FA-REF-011). So
-    // a CLI approval is never under an issued capability, and the
-    // session_lineage refusals over issued tokens live in the library test
-    // (fa restatement_case).
+    // An issued Human token holding `approve` approves on the CLI under its
+    // own journaled capability (ead3caec5). The controller issued it, so it
+    // shares a session lineage with the controller: the case refuses that
+    // pair as its dual control (FA-REF-008) and stays Rehearsed.
     let token = dir.join("delegate.token").display().to_string();
     ok(&[
         "capability",
@@ -4670,18 +4700,25 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         "approve",
         "--json",
     ]);
+    let delegate = approval(&["--token", &token]);
+    let controller = approval(&["--as", "controller"]);
+    let auditor = approval(&["--as", "auditor"]);
     let (code, out) = run(&[
-        "--token",
-        &token,
+        "case",
         "approve",
-        "--proposal",
-        &digest,
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &delegate,
         "--json",
     ]);
     assert_eq!(code, 7, "{out}");
-    assert!(out.contains("FA-REF-011"), "{out}");
-    let controller = approval(&["--as", "controller"]);
-    let auditor = approval(&["--as", "auditor"]);
+    assert!(out.contains("FA-REF-008"), "{out}");
+    assert!(out.contains("session lineage"), "{out}");
+    let case = doc(&ok(&["case", "show", "1", "--json"]));
+    let state = case.get("case").map(|c| text(c, "state").to_string());
+    assert_eq!(state.as_deref(), Some("Rehearsed"));
     // One approval is not dual control; the case stays Rehearsed.
     let (code, out) = run(&["case", "approve", "1", "--approval", &controller, "--json"]);
     assert_eq!(code, 7, "{out}");
@@ -4722,6 +4759,488 @@ fn a_restatement_case_restates_a_closed_period_from_the_cli() -> std::io::Result
         "restate",
         "--yes",
         "--json",
+    ]);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-178"), "{out}");
+    Ok(())
+}
+
+/// fa-yugf.93 (H13; plan §8.3): a PolicyChangeRetrospective case restates a
+/// Closed period from the CLI through the full case lifecycle, certifies and
+/// replays its statement diffs, discloses under a reviewed Disclosure document,
+/// and closes.
+#[test]
+fn a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli() -> std::io::Result<()>
+{
+    let dir = tmp("pcr-case")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Policy Recast Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2300","name":"Deferred revenue","type":"Liability","unit":"USD"},{"code":"4000","name":"Subscription revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let initial = write(
+        &dir,
+        "initial.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"sub-1","legs":[{"side":"debit","account":"1000","amount":"1000.00 USD"},{"side":"credit","account":"4000","amount":"1000.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &initial,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    let opened = ok(&[
+        "case",
+        "open",
+        "--kind",
+        "PolicyChangeRetrospective",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+        "--json",
+    ]);
+    let opened_case = doc(&opened).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&opened_case, "kind"), "PolicyChangeRetrospective");
+    assert_eq!(text(&opened_case, "state"), "Determined");
+
+    ok(&["scenario", "fork", "pcr", "--as", "analyst", "--json"]);
+    let recast = write(
+        &dir,
+        "recast.json",
+        &format!(
+            r#"{{"class":"Restatement","restates":"{target}","reason":"PolicyChange","idempotency_key":"pcr-rst","legs":[{{"side":"debit","account":"4000","amount":"250.00 USD"}},{{"side":"credit","account":"2300","amount":"250.00 USD"}}]}}"#
+        ),
+    );
+    ok(&[
+        "scenario", "run", "pcr", "--intent", &recast, "--as", "analyst", "--grant", "restate",
+        "--json",
+    ]);
+    let rehearsal = dir.join("pcr-rehearsal.cert").display().to_string();
+    ok(&[
+        "scenario",
+        "diff",
+        "pcr",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &rehearsal,
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "rehearse",
+        "1",
+        "--certificate",
+        &rehearsal,
+        "--json",
+    ]);
+    let digest = text(
+        &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
+        "digest",
+    )
+    .to_string();
+    let approval = |who: &str| {
+        text(
+            &doc(&ok(&[
+                "approve",
+                "--proposal",
+                &digest,
+                "--as",
+                who,
+                "--json",
+            ])),
+            "approval_vid",
+        )
+        .to_string()
+    };
+    let controller = approval("controller");
+    let auditor = approval("auditor");
+    ok(&[
+        "case",
+        "approve",
+        "1",
+        "--approval",
+        &controller,
+        "--approval",
+        &auditor,
+        "--json",
+    ]);
+    let out = ok(&["case", "post", "1", "--json"]);
+    let case = doc(&out).get("case").cloned().unwrap_or(Json::Null);
+    assert_eq!(text(&case, "state"), "Posted", "{out}");
+    assert_eq!(text(&case, "kind"), "PolicyChangeRetrospective", "{out}");
+    let entry = text(&arr(&case, "posted")[0], "entry").to_string();
+    let explained = ok(&["explain", "entry", &entry, "--json"]);
+    assert!(explained.contains("Restatement"), "{explained}");
+    let lineage = ok(&["explain", "lineage", &target, "--json"]);
+    assert!(lineage.contains(&entry), "{lineage}");
+    assert!(lineage.contains("Restates"), "{lineage}");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(
+        tb.contains("250.00 USD"),
+        "the closed March moves by the policy-change delta: {tb}"
+    );
+
+    // Statement diffs certify and replay.
+    let statement_diffs = |out: &str| -> Vec<Json> {
+        out.lines()
+            .filter(|l| l.contains("\"event\":\"statement_diff\""))
+            .map(|l| json::parse(l).unwrap_or(Json::Null))
+            .collect()
+    };
+    let data = |line: &Json| line.get("data").cloned().unwrap_or(Json::Null);
+    let certified = statement_diffs(&ok(&[
+        "case",
+        "diff",
+        "1",
+        "--statements",
+        "--certify",
+        "--json",
+    ]));
+    assert_eq!(certified.len(), 3, "{certified:?}");
+    for d in &certified {
+        let oid = d
+            .get("certificate")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(oid.len(), 64, "{d:?}");
+        let replayed = statement_diffs(&ok(&["replay", &format!("C:{oid}"), "--json"]));
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(data(&replayed[0]), data(d), "C:{oid} replays");
+    }
+
+    // Disclose with a reviewed Disclosure document and close the case.
+    let note_file = write(
+        &dir,
+        "note2.txt",
+        "Note 2: Retrospective adoption of ASC 606 across FY2026-P03.",
+    );
+    let added = doc(&ok(&[
+        "document",
+        "add",
+        &note_file,
+        "--kind",
+        "Disclosure",
+        "--grade",
+        "HumanUpload",
+        "--json",
+    ]));
+    let note_oid = text(&added, "oid").to_string();
+    ok(&[
+        "document", "attest", "review", &note_oid, "--as", "reviewer", "--json",
+    ]);
+    let disclosed = doc(&ok(&[
+        "case",
+        "disclose",
+        "1",
+        "--document",
+        &note_oid,
+        "--json",
+    ]));
+    assert_eq!(
+        disclosed.get("case").map(|c| text(c, "state")),
+        Some("Disclosed"),
+        "{disclosed:?}"
+    );
+    let closed = doc(&ok(&["case", "close", "1", "--json"]));
+    assert_eq!(
+        closed.get("case").map(|c| text(c, "state")),
+        Some("Closed"),
+        "{closed:?}"
+    );
+    Ok(())
+}
+
+/// fa-yugf.93 negative 1: a PolicyChangeRetrospective case approved with one
+/// approval is refused FA-REF-012 and remains Rehearsed.
+#[test]
+fn pcr_case_with_one_approval_is_refused_fa_ref_012() -> std::io::Result<()> {
+    let dir = tmp("pcr-one-approval")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "PCR One Approval Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "open",
+        "--kind",
+        "PolicyChangeRetrospective",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+        "--json",
+    ]);
+    ok(&["scenario", "fork", "pcr", "--as", "analyst", "--json"]);
+    let recast = write(
+        &dir,
+        "recast.json",
+        &format!(
+            r#"{{"class":"Restatement","restates":"{target}","reason":"PolicyChange","idempotency_key":"pcr-rst","legs":[{{"side":"debit","account":"6100","amount":"25.00 USD"}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#
+        ),
+    );
+    ok(&[
+        "scenario", "run", "pcr", "--intent", &recast, "--as", "analyst", "--grant", "restate",
+        "--json",
+    ]);
+    let rehearsal = dir.join("rehearsal.cert").display().to_string();
+    ok(&[
+        "scenario",
+        "diff",
+        "pcr",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &rehearsal,
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "rehearse",
+        "1",
+        "--certificate",
+        &rehearsal,
+        "--json",
+    ]);
+    let digest = text(
+        &doc(&ok(&["case", "approve", "1", "--dry-run", "--json"])),
+        "digest",
+    )
+    .to_string();
+    let controller = text(
+        &doc(&ok(&[
+            "approve",
+            "--proposal",
+            &digest,
+            "--as",
+            "controller",
+            "--json",
+        ])),
+        "approval_vid",
+    )
+    .to_string();
+    let (code, out) = run(&["case", "approve", "1", "--approval", &controller, "--json"]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-012"), "{out}");
+    let shown = doc(&ok(&["case", "show", "1", "--json"]));
+    assert_eq!(
+        shown.get("case").map(|c| text(c, "state")),
+        Some("Rehearsed"),
+        "{shown:?}"
+    );
+    Ok(())
+}
+
+/// fa-yugf.93 negative 2: a PolicyChangeRetrospective scenario intent naming
+/// `revises` instead of `restates` on its Restatement entry is refused (exit 2).
+#[test]
+fn pcr_intent_with_revises_instead_of_restates_is_refused() -> std::io::Result<()> {
+    let dir = tmp("pcr-revises")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "PCR Revises Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    ok(&[
+        "case",
+        "open",
+        "--kind",
+        "PolicyChangeRetrospective",
+        "--periods",
+        "FY2026-P03",
+        "--determined-on",
+        "2026-04-02",
+        "--authority",
+        &evidence,
+        "--json",
+    ]);
+    ok(&["scenario", "fork", "pcr", "--as", "analyst", "--json"]);
+    let misnamed = write(
+        &dir,
+        "misnamed.json",
+        &format!(
+            r#"{{"class":"Restatement","revises":"{target}","reason":"PolicyChange","idempotency_key":"pcr-bad","legs":[{{"side":"debit","account":"6100","amount":"25.00 USD"}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out) = run(&[
+        "scenario", "run", "pcr", "--intent", &misnamed, "--as", "analyst", "--grant", "restate",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains("`revises` names the target of a Revision only"),
+        "{out}"
+    );
+    Ok(())
+}
+
+/// fa-yugf.93 negative 3: posting a PolicyChangeRetrospective Restatement
+/// intent outside its case is refused FA-REF-178.
+#[test]
+fn pcr_restatement_outside_its_case_is_refused_fa_ref_178() -> std::io::Result<()> {
+    let dir = tmp("pcr-outside")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "PCR Outside Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6100","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    let expense = write(
+        &dir,
+        "expense.json",
+        r#"{"effective_date":"2026-03-16","idempotency_key":"exp","legs":[{"side":"debit","account":"6100","amount":"100.00 USD"},{"side":"credit","account":"1000","amount":"100.00 USD"}]}"#,
+    );
+    let out = ok(&[
+        "post",
+        "--intent",
+        &expense,
+        "--evidence",
+        &evidence,
+        "--json",
+    ]);
+    let target = field(&out, "vid").unwrap_or_default().to_string();
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    let recast = write(
+        &dir,
+        "recast.json",
+        &format!(
+            r#"{{"class":"Restatement","restates":"{target}","reason":"PolicyChange","idempotency_key":"pcr-rst","legs":[{{"side":"debit","account":"6100","amount":"25.00 USD"}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#
+        ),
+    );
+    let (code, out) = run(&[
+        "post", "--intent", &recast, "--grant", "restate", "--yes", "--json",
     ]);
     assert_eq!(code, 3, "{out}");
     assert!(out.contains("FA-REF-178"), "{out}");
@@ -5041,6 +5560,192 @@ fn an_approved_adjustment_posts_into_a_closed_period_from_a_sealed_review() -> s
     assert!(shown.contains("\"Adjusting\""), "{shown}");
     let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
     assert!(tb.contains("1.00 USD"), "{tb}");
+    Ok(())
+}
+
+/// `fa document attest manual --review <file> --digest <review_digest>`
+/// (fa-kokk): a ManualAssertion over the retained sealed proposal, the
+/// proposal_digest an approval binds, so one Adjusting entry in a Closed
+/// period carries both its second-principal approval and the assertion that
+/// meets its evidence minimum (registries/evidence_policy.toml: Adjusting
+/// admits a manual assertion). An assertion over another proposal of the same
+/// intent covers nothing.
+#[test]
+fn a_manual_assertion_over_a_sealed_review_meets_the_evidence_minimum_of_the_approved_post()
+-> std::io::Result<()> {
+    let dir = tmp("attest-review")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| -> (i32, String) {
+        let (code, out, err) = fa(Some(&book), args);
+        (code, format!("{out}{err}"))
+    };
+    let ok = |args: &[&str]| -> String {
+        let (code, out) = run(args);
+        assert_eq!(code, 0, "args={args:?}\n{out}");
+        out
+    };
+    ok(&["book", "create", "--name", "Assertion Co", "--json"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Bank fees","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    ok(&[
+        "period",
+        "close",
+        "FY2026-P03",
+        "--reason",
+        "Scheduled",
+        "--yes",
+        "--json",
+    ]);
+    // A bank charge shown only on the statement: no document exists to cite.
+    let adjustment = write(
+        &dir,
+        "fee.json",
+        r#"{"class":"Adjusting","effective_date":"2026-03-12","idempotency_key":"uninvoiced-fee","description":"Uninvoiced bank charge","legs":[{"side":"debit","account":"6000","amount":"4.00 USD"},{"side":"credit","account":"1000","amount":"4.00 USD"}]}"#,
+    );
+    let seal = |name: &str| -> (String, String, String) {
+        let path = dir.join(name).display().to_string();
+        let reviewed = doc(&ok(&[
+            "post",
+            "--intent",
+            &adjustment,
+            "--review-out",
+            &path,
+            "--json",
+        ]));
+        (
+            path,
+            text(&reviewed, "review_digest").to_string(),
+            text(&reviewed, "proposal_digest").to_string(),
+        )
+    };
+    let (review, review_digest, proposal_digest) = seal("fee.review");
+    // Sealing the same intent again gives another proposal (its description
+    // is sealed afresh), so another digest.
+    let (other, other_digest, other_proposal) = seal("fee-other.review");
+    assert_ne!(other_proposal, proposal_digest);
+
+    let approval = doc(&ok(&[
+        "approve",
+        "--proposal",
+        &proposal_digest,
+        "--as",
+        "independent-reviewer",
+        "--json",
+    ]));
+    let approval = text(&approval, "approval_vid").to_string();
+    let post_review = || {
+        run(&[
+            "post",
+            "--review",
+            &review,
+            "--digest",
+            &review_digest,
+            "--approval",
+            &approval,
+            "--grant",
+            "post_closed",
+            "--yes",
+            "--json",
+        ])
+    };
+    let attest = |path: &str, digest: &str| {
+        run(&[
+            "document",
+            "attest",
+            "manual",
+            "--review",
+            path,
+            "--digest",
+            digest,
+            "--reason",
+            "NoDocumentIssued",
+            "--statement",
+            "bank fee shown only on statement; no separate invoice issued",
+            "--json",
+        ])
+    };
+
+    // Approved but with no evidence: the evidence minimum refuses it.
+    let (code, out) = post_review();
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-080"), "{out}");
+
+    // Planted: an assertion over the other proposal of the same intent does
+    // not cover this one.
+    let (code, out) = attest(&other, &other_digest);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        field(&out, "subject"),
+        Some(other_proposal.as_str()),
+        "{out}"
+    );
+    let (code, out) = post_review();
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FA-REF-080"), "{out}");
+
+    // Usage errors: a review its digest does not name, a review beside an
+    // intent, and a digest with no review.
+    let (code, out) = attest(&review, &"00".repeat(32));
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = run(&[
+        "document",
+        "attest",
+        "manual",
+        "--review",
+        &review,
+        "--digest",
+        &review_digest,
+        "--intent",
+        &adjustment,
+        "--reason",
+        "NoDocumentIssued",
+        "--statement",
+        "x",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+    let (code, out) = run(&[
+        "document",
+        "attest",
+        "manual",
+        "--intent",
+        &adjustment,
+        "--digest",
+        &review_digest,
+        "--reason",
+        "NoDocumentIssued",
+        "--statement",
+        "x",
+        "--json",
+    ]);
+    assert_eq!(code, 2, "{out}");
+
+    // The assertion over this review's proposal: the same digest the
+    // approval binds.
+    let (code, out) = attest(&review, &review_digest);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(field(&out, "event"), Some("attestation_recorded"), "{out}");
+    assert_eq!(field(&out, "claim"), Some("ManualAssertion"), "{out}");
+    assert_eq!(
+        field(&out, "subject"),
+        Some(proposal_digest.as_str()),
+        "{out}"
+    );
+
+    // One entry now carries both.
+    let (code, posted) = post_review();
+    assert_eq!(code, 0, "{posted}");
+    let vid = field(&posted, "vid").unwrap_or_default().to_string();
+    let shown = ok(&["entry", "show", &vid, "--json"]);
+    assert!(shown.contains("\"Adjusting\""), "{shown}");
+    let tb = ok(&["tb", "--period", "FY2026-P03", "--json"]);
+    assert!(tb.contains("4.00 USD"), "{tb}");
     Ok(())
 }
 
@@ -7592,6 +8297,65 @@ fn applications_settle_open_items_and_reversals_reopen_them() -> std::io::Result
     );
     assert!(out.contains("\"live\":true"), "{out}");
 
+    // The same report as text CSV: the exact item, and its one application.
+    let items_csv = dir.join("open-items.csv");
+    let applications_csv = dir.join("applications.csv");
+    let (code, out, err) = fa(
+        Some(&book),
+        &[
+            "open-items",
+            "--account",
+            "1200",
+            "--csv-out",
+            items_csv.to_str().unwrap(),
+            "--applications-csv-out",
+            applications_csv.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let items = std::fs::read_to_string(&items_csv)?;
+    let rows: Vec<&str> = items.lines().collect();
+    assert!(
+        rows[0].starts_with("known_at,account_vid,account_code,account_name,"),
+        "{items}"
+    );
+    // Both legs on the receivable, zero-open items included: the invoice
+    // (original 500.00, applied 300.00, open 200.00) and the receipt's
+    // credit (300.00 applied out to the invoice, open 0).
+    assert_eq!(rows.len(), 3, "{items}");
+    let row = |vid: &str| {
+        rows.iter()
+            .find(|row| row.contains(vid))
+            .copied()
+            .unwrap_or_else(|| panic!("no row for {vid}: {items}"))
+    };
+    assert!(row(&inv_vid).contains(",1200,Receivable,"), "{items}");
+    assert!(row(&inv_vid).ends_with(",50000,30000,0,20000"), "{items}");
+    assert!(row(&rcpt_vid).ends_with(",30000,0,30000,0"), "{items}");
+    let applications = std::fs::read_to_string(&applications_csv)?;
+    let rows: Vec<&str> = applications.lines().collect();
+    assert_eq!(rows.len(), 2, "{applications}");
+    assert!(
+        rows[1].contains(&inv_vid) && rows[1].contains(&rcpt_vid),
+        "{applications}"
+    );
+    assert!(rows[1].ends_with(",30000,true"), "{applications}");
+    // An existing path is never overwritten.
+    let (code, out, _) = fa(
+        Some(&book),
+        &[
+            "open-items",
+            "--account",
+            "1200",
+            "--csv-out",
+            items_csv.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(std::fs::read_to_string(&items_csv)?, items);
+
     // Over-application is refused with the open amount; reversing the
     // invoice is refused while the receipt is applied.
     let over = write(
@@ -9172,6 +9936,23 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["production", "list"]).0, 0);
     assert_eq!(run(true, &["production", "show", "events-matter"]).0, 0);
     assert_eq!(run(true, &["production", "document", &ev]).0, 0);
+    // fa-9ccl: an exhibit label on the produced document, in the open matter.
+    assert_eq!(
+        run(
+            true,
+            &[
+                "exhibit",
+                "mark",
+                &ev,
+                "--label",
+                "EVT-1",
+                "--matter",
+                "events-matter"
+            ]
+        )
+        .0,
+        0
+    );
     assert_eq!(run(true, &["document", "show", &ev]).0, 0);
     // Audit engagements (fa-zgn): open, propose, pass, list and show.
     assert_eq!(
@@ -9302,6 +10083,10 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         0
     );
     assert_eq!(run(true, &["search", "rent"]).0, 0);
+    // fa-qip: the index rebuilt from the journal equals the one searched.
+    assert_eq!(run(true, &["verify", "search"]).0, 0);
+    // fa-gpd4: a host sweep with nothing due still reports what it swept.
+    assert_eq!(run(true, &["sweep", "now"]).0, 0);
     assert_eq!(
         run(true, &["diff", "--from", "HEAD", "--period", "FY2026-P03"]).0,
         0
@@ -11574,6 +12359,32 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         let mut argv = args.clone();
         argv.push("--json");
         let (code, out, err) = fa(Some(group.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+    }
+
+    // fa-doa9: a regulatory schedule needs the chart it maps by code.
+    let bank = dir.join("bank");
+    for args in [
+        vec!["book", "create", "--name", "Bank Co"],
+        vec!["chart", "import", "--template", "us-bank-call-report"],
+        vec!["period", "create", "--fiscal-year", "2026"],
+        vec![
+            "statement",
+            "regulatory",
+            "--form",
+            "041",
+            "--schedule",
+            "RC",
+            "--quarter",
+            "2026Q1",
+            "--for",
+            "FY2026-P03",
+        ],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(bank.as_path()), &argv);
         assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
         seen.extend(check_robot_output(&argv, code, &out));
     }
@@ -14151,7 +14962,6 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     );
     ok(&["chart", "import", &chart, "--json"]);
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
-    ok(&["period", "open", "FY2026-P03", "--json"]);
     let evidence = source_doc(&dir, &book);
     let intent = write(
         &dir,
@@ -14166,12 +14976,20 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
         &evidence,
         "--json",
     ];
+    // A period transition reserves the book's shared outcome key as a post
+    // does (4df0d52c0), so the first write that needs coverage here is the
+    // open: it is refused before anything is written and names the recovery.
+    let open = ["period", "open", "FY2026-P03", "--json"];
     let before = head();
-    let (code, out, err) = fa(Some(&book), &post);
+    let (code, out, err) = fa(Some(&book), &open);
     assert_eq!(code, 6, "{out}\n{err}");
     assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034");
     assert!(text(&doc(&out), "fix").contains("fa recover outcomes"));
-    assert_eq!(head(), before, "posting must not silently rebuild coverage");
+    assert_eq!(
+        head(),
+        before,
+        "a transition must not silently rebuild coverage"
+    );
 
     let dry_run = ["recover", "outcomes", "--dry-run", "--json"];
     let preview = ok(&dry_run);
@@ -14184,7 +15002,7 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(int(&planned, "basis"), Some(i128::from(before.0)));
     assert_eq!(ok(&dry_run), preview, "legacy preview is deterministic");
     assert_eq!(head(), before, "legacy preview publishes nothing");
-    assert_eq!(fa(Some(&book), &post).0, 6, "preview grants no coverage");
+    assert_eq!(fa(Some(&book), &open).0, 6, "preview grants no coverage");
     assert_eq!(head(), before);
 
     let basis = before.0.to_string();
@@ -14203,12 +15021,15 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(covered.get("already_covered"), Some(&Json::Bool(true)));
     assert_eq!(head(), recovered);
 
+    ok(&open);
+    let opened = head();
+    assert_eq!(opened.0, recovered.0 + 1);
     let posted = ok(&post);
     assert_eq!(field(&posted, "event"), Some("posted"));
     let entry_vid = field(&posted, "vid").unwrap();
     assert_eq!(entry_vid.len(), 32);
     let posted_at = head();
-    assert_eq!(posted_at.0, recovered.0 + 1);
+    assert_eq!(posted_at.0, opened.0 + 1);
     let retry = ok(&post);
     assert_eq!(field(&retry, "event"), Some("recorded"));
     assert_eq!(field(&retry, "vid"), Some(entry_vid));
@@ -15470,9 +16291,11 @@ fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
     ok(&["book", "create", "--name", "Triage Co", "--json"]);
     let (health, next) = next_of(&ok(&["triage", "--json"]));
     assert_eq!(health, "ok");
+    // Triage names runnable commands only, never a placeholder (fa-yugf.96,
+    // H16): with no accounts, the templates a chart can be installed from.
     assert_eq!(
         next.first().map(String::as_str),
-        Some("fa chart import <chart.json> --json")
+        Some("fa chart templates --json")
     );
     let chart = write(
         &dir,
@@ -15483,7 +16306,7 @@ fn triage_names_the_next_step_from_the_books_state() -> std::io::Result<()> {
     let (_, next) = next_of(&ok(&["triage", "--json"]));
     assert_eq!(
         next.first().map(String::as_str),
-        Some("fa period create --fiscal-year <N> --json")
+        Some("fa period create --fiscal-year 2026 --json")
     );
     ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
     let (_, next) = next_of(&ok(&["triage", "--json"]));
@@ -17462,6 +18285,12 @@ fn explain_entry_evidence_refusal_period_and_register_round_trip() -> std::io::R
     assert_eq!(field(&period_ex, "kind"), Some("Normal"));
     let period_doc = doc(&period_ex);
     assert_eq!(arr(&period_doc, "transitions").len(), 1);
+    // No clock journaled a tick in this book, so the open names none.
+    assert_eq!(
+        arr(&period_doc, "transitions")[0].get("recorded_after"),
+        Some(&Json::Null),
+        "{period_ex}"
+    );
     assert!(!arr(&period_doc, "admissible_classes").is_empty());
 
     // 4. Add a document, post an entry, attach a supplement, and reverse the entry.
@@ -17889,7 +18718,7 @@ fn verify_periods_reports_refolded_lifecycle_and_rejects_period_filters() -> std
         assert_eq!(text(&error, "class"), "usage");
         assert_eq!(
             text(&error, "message"),
-            "--as-known-at is supported only by verify periods, verify close, verify usage and verify fx-conversion"
+            "--as-known-at is supported only by verify periods, verify close, verify usage, verify fx-conversion and verify search"
         );
     }
     Ok(())

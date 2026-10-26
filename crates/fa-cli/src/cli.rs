@@ -134,6 +134,7 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("bundle", crate::proof::bundle_cmd),
     ("production", crate::production::production_cmd),
     ("produce", crate::production::produce_cmd),
+    ("exhibit", crate::production::exhibit_cmd),
     ("subledger", crate::subledger::subledger_cmd),
     ("party", crate::rea::party_cmd),
     ("instrument", crate::rea::instrument_cmd),
@@ -310,6 +311,8 @@ struct Said {
     issuer_authority: Option<Json>,
     /// The launch template is Agent: trunk plans are rehearsals (FA-REF-013).
     agent: bool,
+    /// An issued Human operator can confirm without releasing any binding.
+    can_confirm: bool,
     owner_principal: Option<String>,
     /// The branch a `--branch` read selected (`scenario:<name>`); trunk
     /// when absent.
@@ -472,12 +475,32 @@ impl Out {
             said.authority = authority.map(LaunchAuthority::envelope_json);
             said.agent =
                 authority.is_some_and(|a| a.profile() == crate::authority::LaunchProfile::Agent);
+            said.can_confirm = authority.is_some_and(LaunchAuthority::can_confirm);
         }
         self
     }
 
     fn is_bound(&self) -> bool {
         self.said.borrow().authority.is_some()
+    }
+
+    fn can_confirm(&self) -> bool {
+        let said = self.said.borrow();
+        said.authority.is_none() || said.can_confirm
+    }
+
+    fn authority_posture(&self) -> &'static str {
+        let said = self.said.borrow();
+        match said
+            .authority
+            .as_ref()
+            .and_then(|authority| authority.get("posture"))
+            .and_then(Json::as_str)
+        {
+            Some("issued-token") => "issued-token",
+            Some(_) => "mcp-launch-config",
+            None => "embedded-owner",
+        }
     }
 
     /// The launch-bound Agent template, whose trunk plans commit for no one.
@@ -1256,6 +1279,88 @@ pub fn run_for_daemon_bound(
     )
 }
 
+/// Admit a daemon command through the same parser, authority, confirmation and
+/// file-containment checks as execution, without invoking its handler. The
+/// returned flag requests a fresh TimeEvidence observation before a critical
+/// publication. Help, previews and ordinary reads never request one.
+///
+/// This is a preflight, not a permission token: execution repeats admission at
+/// the new frontier after the daemon's tick, including current revocations and
+/// capability expiry. No request supplies the daemon's clock or System authority.
+pub fn preflight_for_daemon(
+    argv: &[String],
+    book: &mut Book,
+    dir: PathBuf,
+    files_root: Option<PathBuf>,
+    client_cwd: Option<PathBuf>,
+    authority: Option<&LaunchAuthority>,
+) -> Result<bool, (u8, Captured)> {
+    let daemon_files = DaemonFiles {
+        book_dir: dir.clone(),
+        files_root,
+    };
+    let mut needs_tick = false;
+    let result = run_scoped_with(
+        argv,
+        Books::Held { book, dir },
+        Files {
+            cwd: client_cwd,
+            stdin: Stdin::Missing,
+        },
+        authority,
+        Some(daemon_files),
+        true,
+        |ctx, reg, args| {
+            dispatch_with(ctx, reg, args, |ctx, verb, args, _handler| {
+                if !needs_command_time_evidence(&verb.name, args) {
+                    return Ok(());
+                }
+                if let Some(authority) = &ctx.authority {
+                    ctx.books
+                        .admit_current_before_input(args, authority.capability())?;
+                }
+                // Checkpoint creation has no implicit owner grant. Preserve
+                // that check before the daemon journals anything on its behalf.
+                if verb.name == "checkpoint" {
+                    let capability = ctx.capability(args, &[])?;
+                    fa_policy::require(
+                        &capability,
+                        fa_policy::Op::Witness,
+                        "creating a checkpoint",
+                    )
+                    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+                }
+                needs_tick = true;
+                Ok(())
+            })
+        },
+    );
+    if result.0 == 0 {
+        Ok(needs_tick)
+    } else {
+        Err(result)
+    }
+}
+
+/// Only committed operations, after aliases and registered defaults resolve.
+/// A tick must precede planning the final publication, so a read-only preview
+/// never advances the very frontier it is meant to inspect.
+fn needs_command_time_evidence(verb: &str, args: &Args) -> bool {
+    let sub = args.positional.get(1).map(String::as_str);
+    match (verb, sub) {
+        ("checkpoint", Some("create")) => true,
+        ("period", Some("soft-close" | "close" | "lock")) => {
+            !args.switch("--dry-run") && args.flag("--plan-out").is_none()
+        }
+        ("close", Some("year-end")) => {
+            !post_plan_only(verb, args) && args.flag("--plan-out").is_none()
+        }
+        ("statement", Some("issue")) => !args.switch("--dry-run") && args.flag("--plan").is_some(),
+        ("schedule", Some("sweep")) => !args.switch("--dry-run"),
+        _ => false,
+    }
+}
+
 /// Run under the immutable authority supplied by the host. Hosts opening
 /// a directory should use [`crate::entry::fa_with_authority`] for the
 /// writer lease as well. This route never self-issues an owner capability.
@@ -1412,10 +1517,30 @@ fn correct_read_flags(argv: &[String], reg: &Registry) -> (Vec<String>, Vec<Stri
 fn run_scoped(
     argv: &[String],
     books: Books<'_>,
+    files: Files,
+    authority: Option<&LaunchAuthority>,
+    daemon_files: Option<DaemonFiles>,
+    capture: bool,
+) -> (u8, Captured) {
+    run_scoped_with(
+        argv,
+        books,
+        files,
+        authority,
+        daemon_files,
+        capture,
+        dispatch,
+    )
+}
+
+fn run_scoped_with(
+    argv: &[String],
+    books: Books<'_>,
     mut files: Files,
     authority: Option<&LaunchAuthority>,
     daemon_files: Option<DaemonFiles>,
     capture: bool,
+    dispatch: impl FnOnce(&mut Ctx<'_>, &Registry, &Args) -> Result<(), Fail>,
 ) -> (u8, Captured) {
     let reg = match registry() {
         Ok(r) => r,
@@ -1451,6 +1576,9 @@ fn run_scoped(
             "--token",
             "--issuer-token",
         ] {
+            if flag == "--yes" && authority.can_confirm() {
+                continue;
+            }
             if args.flags.contains_key(flag) || args.switch(flag) {
                 return usage_error_with_authority(
                     argv,
@@ -1663,6 +1791,17 @@ pub fn book_error(argv: &[String], error: BookError, capture: bool) -> (u8, Capt
     host_failure(argv, Fail::Book(error), capture)
 }
 
+/// A host-side book failure with the session binding preserved in the envelope.
+#[must_use]
+pub fn book_error_with_authority(
+    argv: &[String],
+    error: BookError,
+    authority: &LaunchAuthority,
+    capture: bool,
+) -> (u8, Captured) {
+    host_failure_with_authority(argv, Fail::Book(error), authority, capture)
+}
+
 /// A foundation failure (exit 5) raised by a host before any command runs.
 #[must_use]
 pub fn foundation_error(argv: &[String], message: String, capture: bool) -> (u8, Captured) {
@@ -1788,8 +1927,15 @@ fn finish(out: &Out, result: Result<(), Fail>) -> u8 {
         if out.is_bound() && r.fix.contains("--grant") {
             r.fix = "identity and authority are fixed when the server starts; ask the operator to start a server with the profile and operations you need".to_string();
         }
-        // A launch-bound session cannot add --yes or --grant.
-        if out.is_bound() && !r.rerun_args().is_empty() {
+        // Operator tokens may confirm with --yes, but no bound caller can
+        // add operations. MCP tokens cannot confirm at all.
+        if out.is_bound()
+            && (!out.can_confirm()
+                || r.rerun_args()
+                    .iter()
+                    .any(|arg| arg == "--grant" || arg.starts_with("--grant=")))
+            && !r.rerun_args().is_empty()
+        {
             r = r.rerun_with(Vec::new());
         }
         Failure {
@@ -1977,6 +2123,17 @@ pub fn version_metadata_json(binary: &str) -> Json {
 }
 
 fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> {
+    dispatch_with(ctx, reg, args, |ctx, _verb, args, handler| {
+        handler(ctx, args)
+    })
+}
+
+fn dispatch_with(
+    ctx: &mut Ctx<'_>,
+    reg: &Registry,
+    args: &Args,
+    execute: impl FnOnce(&mut Ctx<'_>, &Verb, &Args, Handler) -> Result<(), Fail>,
+) -> Result<(), Fail> {
     let out = &ctx.out;
     if args.switch("--version") {
         let text = version_text("fa");
@@ -2081,7 +2238,21 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
     // refused for that, never asked to confirm what it could not do. A
     // command the surface does not admit keeps the confirmation refusal,
     // which names how to prepare it instead.
-    let admitted = ctx.authority.is_none() || bound_command_rule(&verb.name, args).is_some();
+    // Period commit rows also serve Human operator tokens. They do not make
+    // independent confirmation available to MCP: retain its existing
+    // confirmation refusal and safe planning alternative before dispatch.
+    let restricted_period_commit = verb.name == "period"
+        && matches!(
+            args.positional.get(1).map(String::as_str),
+            Some("open" | "soft-close" | "close" | "lock" | "reopen")
+        )
+        && !period_plan_only(&verb.name, args)
+        && ctx
+            .authority
+            .as_ref()
+            .is_some_and(|authority| !authority.can_confirm());
+    let admitted = ctx.authority.is_none()
+        || (bound_command_rule(&verb.name, args).is_some() && !restricted_period_commit);
     if admitted {
         admit_bound_command(ctx, verb, args)?;
     }
@@ -2112,7 +2283,7 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
                 verb.name
             ))
         })?;
-    handler(ctx, args)
+    execute(ctx, verb, args, handler)
 }
 
 /// The current period planner returns before every publication. Only this
@@ -2265,7 +2436,10 @@ pub fn bound_command_admissible(
         .verb(verb)
         .filter(|v| !v.subcommands.is_empty())
         .and_then(|_| args.positional.get(1).map(String::as_str));
-    if !period_plan_only(verb, args) && !post_plan_only(verb, args) {
+    if !period_plan_only(verb, args)
+        && !post_plan_only(verb, args)
+        && !(authority.can_confirm() && confirmed(args))
+    {
         for d in reg.dangerous_for(verb, sub) {
             let applies = match &d.condition {
                 Condition::Always => true,
@@ -2275,10 +2449,17 @@ pub fn bound_command_admissible(
                 Condition::Voids | Condition::ExistingCells => false,
             };
             if applies {
-                return Err(format!(
-                    "`{}` requires independent confirmation unavailable over MCP (FA-REF-007)",
-                    command_name(verb, sub)
-                ));
+                return Err(if authority.can_confirm() {
+                    format!(
+                        "`{}` requires confirmation with --yes or its reviewed --plan (FA-REF-007)",
+                        command_name(verb, sub)
+                    )
+                } else {
+                    format!(
+                        "`{}` requires independent confirmation unavailable over MCP (FA-REF-007)",
+                        command_name(verb, sub)
+                    )
+                });
             }
         }
     }
@@ -2444,6 +2625,8 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         "--workpaper-out",
         "--review-out",
         "--receipt-out",
+        "--csv-out",
+        "--applications-csv-out",
     ] {
         if let Some(value) = args.flag(flag) {
             paths.push((flag, value, HostPath::Output));
@@ -2667,6 +2850,26 @@ pub(crate) fn confirmed(args: &Args) -> bool {
     args.switch("--yes") || args.flag("--plan").is_some()
 }
 
+fn quoted_argument(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+/// The token file is deliberately absent from bound argv and daemon frames.
+/// A literal placeholder fails closed until the holder supplies that same file;
+/// omitting --token could silently fall back to embedded-owner authority.
+fn operator_command(args: &Args, command: &str) -> String {
+    let mut command = format!("fa --token '<same-token-file>' {command}");
+    for flag in ["--book", "--keys"] {
+        if let Some(value) = args.flag(flag) {
+            command.push_str(&format!(" {flag} {}", quoted_argument(value)));
+        }
+    }
+    command.push_str(" --json");
+    command
+}
+
+const OPERATOR_PLAN_GUIDANCE: &str = "replace <same-token-file> with the original token file; reuse the same holder capability and forward data.bytes on stdin when --plan is -; attach the required independent approvals";
+
 fn command_name(verb: &str, subcommand: Option<&str>) -> String {
     match subcommand {
         Some(sub) => format!("fa {verb} {sub}"),
@@ -2759,7 +2962,7 @@ fn gate_from_argv(
     {
         return Ok(());
     }
-    if authority.is_none() && confirmed(args) {
+    if out.can_confirm() && confirmed(args) {
         // `--plan` is a file argument wherever it appears; only a bare
         // `--yes` can confirm nothing.
         if rows.peek().is_none() && args.switch("--yes") {
@@ -2782,10 +2985,10 @@ fn gate_from_argv(
             Condition::Voids | Condition::ExistingCells => false,
         };
         if applies {
-            return Err(if authority.is_some() {
-                unconfirmed_bound(d, args)
-            } else {
+            return Err(if out.can_confirm() {
                 unconfirmed(d, args)
+            } else {
+                unconfirmed_bound(d, args)
             });
         }
     }
@@ -2803,7 +3006,7 @@ pub(crate) fn gate(
     subcommand: Option<&str>,
     condition: &Condition,
 ) -> Result<(), Fail> {
-    if (!out.is_bound() && confirmed(args)) || post_plan_only(verb, args) {
+    if (out.can_confirm() && confirmed(args)) || post_plan_only(verb, args) {
         return Ok(());
     }
     let reg = registry()?;
@@ -2811,10 +3014,10 @@ pub(crate) fn gate(
         .dangerous_for(verb, subcommand)
         .find(|d| d.condition == *condition)
     {
-        Some(d) => Err(if out.is_bound() {
-            unconfirmed_bound(d, args)
-        } else {
+        Some(d) => Err(if out.can_confirm() {
             unconfirmed(d, args)
+        } else {
+            unconfirmed_bound(d, args)
         }),
         None => Err(Fail::Internal(format!(
             "`{}` gates `{}`, which verbs.toml [[dangerous]] does not list",
@@ -3239,10 +3442,10 @@ fn capability_model(
                 ),
                 (
                     "posture",
-                    s(if authority.is_some() {
-                        "mcp-launch-config"
-                    } else {
-                        "embedded-owner"
+                    s(match authority {
+                        Some(authority) if authority.issued().is_some() => "issued-token",
+                        Some(_) => "mcp-launch-config",
+                        None => "embedded-owner",
                     }),
                 ),
                 (
@@ -3251,11 +3454,28 @@ fn capability_model(
                         .map_or(fa_policy::Profile::Human, |a| a.capability().profile())
                         .name()),
                 ),
-                ("ceilings", Json::Arr(Vec::new())),
-                ("expires_at", Json::Null),
+                (
+                    "ceilings",
+                    Json::Arr(authority.map_or_else(Vec::new, |authority| {
+                        authority
+                            .capability()
+                            .ceilings()
+                            .iter()
+                            .map(|(unit, max)| s(format!("unit_id={}, max_mantissa={max}", unit.0)))
+                            .collect()
+                    })),
+                ),
+                (
+                    "expires_at",
+                    authority
+                        .and_then(|authority| authority.capability().expires_at())
+                        .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+                ),
                 (
                     "trust_boundary",
-                    s(if authority.is_some() {
+                    s(if authority.is_some_and(LaunchAuthority::can_confirm) {
+                        "The presented Human operator token fixes the principal, exact operations and caveats. The kernel checks current issuance, revocation and expiry. --yes or a reviewed --plan can confirm an admitted command, but cannot add rights or replace identity, book, keys or file containment. MCP rejects this operator token; tokens within its ceiling retain the restricted MCP posture on every route."
+                    } else if authority.is_some() {
                         "MCP binds one capability from trusted operator launch configuration: fixed principal, profile, operations, book and key path. Requests cannot choose identity, grants, confirmation or daemon routing. Launch configuration does not authenticate the operator; issued tokens and authenticated daemon sessions remain fa-v62/fa-r3q. The envelope lists this session's actual launch template and ops."
                     } else {
                         "embedded-owner posture: the calling process supplies --as and self-issues Human-profile operations per command with --grant, without ceilings or expiry. The fad argv route has the same owner posture for a same-uid peer; a request carrying an issued token (fa --token) is bound to that token's principal and journaled capability instead. MCP uses a separate launch binding: a launch-config session refuses the daemon route, a --token session presents its token to fad. The kernel evaluates supplied authority; it does not authenticate the operator."
@@ -3285,6 +3505,18 @@ fn robot_docs_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         _ => return Err(unhandled("robot-docs", topic.map(String::as_str))),
     };
     let text = match &ctx.authority {
+        Some(authority) if authority.can_confirm() => format!(
+            "This command is bound to Human operator `{}` under its issued token, with exact ops [{}]. Identity and grants cannot be overridden. --yes or a reviewed --plan confirms an admitted operation; scope, current issuance, expiry, revocation and independent approvals still apply. Direct and daemon commands use the same token, and file paths remain confined. MCP cannot bind this operator token.\n\n{}",
+            authority.principal(),
+            authority
+                .capability()
+                .ops()
+                .iter()
+                .map(|op| op.name())
+                .collect::<Vec<_>>()
+                .join(", "),
+            text
+        ),
         Some(authority) => format!(
             "This MCP server is bound at launch to principal `{}` under the `{}` template, with ops [{}]. Tool requests cannot override identity, grants, confirmation, book or keys. Dangerous commits require independent operator review until confirm_plan is available. The current daemon route cannot carry this authority and is refused. Launch configuration trusts the operator; it is not operator authentication. CLI --as/--grant/--yes examples below describe the operator's embedded-owner command line.\n\n{}",
             authority.principal(),
@@ -3456,8 +3688,8 @@ const GUIDE: &str = "fa robot-docs guide\n\
 11. Application: a leg may carry `settles: [{entry, ordinal, amount}]` to apply itself to an open item — the opposite side on the same account and unit, at most the item's open amount (FA-REF-072 names what is open). `fa open-items --account <code>` lists items with their applications. Reversing a receipt reopens the invoice (its applications are undone, never re-entered); an invoice with live applications cannot be reversed until its receipts are (FA-REF-073).\n\
 12. Corrections require a registered reason: `fa reverse <vid> --reason WrongAccount --json` derives the opposite legs and retains the target's date by default; --effective selects an explicit same-or-later admissible period. A Reversal passed to `fa post` likewise carries `reason`, for example \"WrongAmount\". `fa entry show <reversal vid> --json` reports the immutable supersession and its reason. Other requires a description; no reason code proves the explanation true.\n\
 13. Retain a report for replay: `fa tb --period FY2026-P03 --certify --json`, `fa explain balance 1000 --period FY2026-P03 --certify --json`, and `fa open-items --account 1000 --certify --json` retain the report's certificate in the book. Each emits its original report event followed by report_certificate, binding the selector, known-at, historical account metadata and native history. `fa replay C:<oid> --json` reproduces the original report, and `fa certificate status C:<oid> --json` names later relevant entries without changing it. --certificate-out report.cert also writes a new external copy, never overwriting one. File and complete inline hex remain accepted; MCP accepts the returned oid or bytes as certificate. Certification writes metadata, never accounting entries; uncertified reads do not write. Scope is fa-fold-over-prefix with embedded-owner authority.\n\
-14. Rehearse an entry before writing: add --dry-run to post, reverse, reserve or resolve. The actual posting laws run, their staged transaction is aborted, and one plan event returns the exact sealed proposal, native effects digest, snapshot and complete canonical bytes. --plan-out <new-file> saves a private binary copy without replacing a file. Review it, then `fa commit --plan <file|-> --json` with the same owner --as and --grant; stdin accepts the bytes hex string. MCP uses fa_post_commit_plan with plan set to that string and keeps its launch-bound capability unchanged: ordinary Preparer plans can commit, Agent trunk posting still refuses, and dangerous void commits remain unavailable until separate confirmation exists. A first commit atomically retains its graph Certificate and CITES edge; an exact retry returns plan_committed with already_recorded=true. Any intervening book publication invalidates this first same-snapshot plan and requires another dry run. Planning collects no new approvals and provides no draft or --balancing support. A dry-run void releases nothing; the owner explicitly confirms its exact artifact, while MCP must ask the operator to separately prepare and confirm a release. Public plan digests are data fields, never native object-store OIDs in the envelope.\n\
-15. An Agent (or anyone) works on a draft (plan §15.2): `fa draft new <name>`, then the same post, reverse, reserve or resolve command with --draft <name> (or `fa draft plan <name> --intent <file|->`). Each intent is rehearsed under every posting law and journaled into the draft; nothing reaches trunk. `fa draft show <name> --json` lists the planned intents and the entries a promotion will create. A principal holding approve who is not the draft's owner runs `fa draft promote <name> --yes`: every intent is admitted again against current trunk (period law, ceilings, revocation, evidence) and all post in one batch, or none do; the planner stays each entry's principal. `fa draft discard <name>` closes a draft without posting. Over MCP the fa.draft cluster is on demand (`fa-mcp --cluster fa.draft`); promotion is host-only.\n\
+14. Rehearse an entry before writing: add --dry-run to post, reverse, reserve or resolve. The actual posting laws run, their staged transaction is aborted, and one plan event returns the exact sealed proposal, native effects digest, snapshot and complete canonical bytes. --plan-out <new-file> saves a private binary copy without replacing a file. Review it, then `fa commit --plan <file|-> --json` with the same owner --as and --grant; stdin accepts the bytes hex string. MCP uses fa_post_commit_plan with plan set to that string and keeps its launch-bound capability unchanged: ordinary Preparer plans can commit, Agent trunk posting still refuses, and dangerous void commits remain unavailable until separate confirmation exists. A first commit atomically retains its graph Certificate and CITES edge; an exact retry returns plan_committed with already_recorded=true. Any intervening book publication invalidates this first same-snapshot plan and requires another dry run. --balancing works with --dry-run, --draft and --scenario: the request is retained and the preview shows its exact admitted amount; drafts retain the reviewed effects and refuse changed amounts on promotion. Planning collects no new approvals. A dry-run void releases nothing; the owner explicitly confirms its exact artifact, while MCP must ask the operator to separately prepare and confirm a release. Public plan digests are data fields, never native object-store OIDs in the envelope.\n\
+15. An Agent (or anyone) works on a draft (plan §15.2): `fa draft new <name>`, then the same post, reverse, reserve or resolve command with --draft <name> (or `fa draft plan <name> --intent <file|->`). Every append rehearses the whole ordered draft, so later intents can use earlier members' effects. The exact reviewed entries are retained; later members and --balancing requests see the staged availability. Nothing reaches trunk. `fa draft show <name> --json` lists the planned intents and the entries a promotion will create. A principal holding approve who is not the draft's owner runs `fa draft promote <name> --yes`: every intent is admitted again against current trunk (period law, ceilings, revocation, evidence) and its resolved entry must still match the retained review. All post in one batch, or none do; the planner stays each entry's principal. `fa draft discard <name>` closes a draft without posting. Over MCP the fa.draft cluster is on demand (`fa-mcp --cluster fa.draft`); promotion is host-only.\n\
 16. Correct an entry in one step: `fa reverse <vid> --reason WrongAmount --replace-with corrected.json --json` posts the exact reversal and the corrected entry together, both or neither, citing the target under one reason (event corrected). corrected.json is an ordinary entry intent (legs, optional effective_date and description); its date and period default to the target's.\n\
 17. Export for an auditor or another ledger: `fa export ads|saft|csv-gl|beancount|hledger|ndjson --period FY2026-P03 [--out <new path>] --json` writes what the trial balance folds (pending holds excluded) with its export coordinate certificate; ads writes four tables into a new directory. It needs read and produce. Over MCP the fa.io cluster is on demand.\n\
 18. Maintain the chart and the REA graph: `fa chart open <account.json> --opened <day>`, `fa chart close <code> --on <day>`, `fa chart promote <code> --on <day>`; `fa party add <party.json>`, `fa party relate <from> <to> --kind owns --basis equity_voting --valid-from <day> --pct 51/100`, `fa instrument add <instrument.json>`, `fa entity add <entity.json>` (a legal entity's jurisdiction, functional unit and life span; a code declared at book creation is lifted), `fa party bind <code> --external-id qbo:55`, `fa party identifiers <code> --identifier bank_account=<value>... --key <change-id>` (replaces the party's identifier set under a named change; values sealed, never echoed; host-only over MCP). Each is a journaled schema change (schema_change authority) and no date defaults to today. Events then name parties with --participant and instruments with --resource <label>:<amount>:<instrument>.\n\
@@ -3989,6 +4221,12 @@ fn book_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
 }
 
+/// The demo scenarios `fa_demo::Scenario::parse` accepts, as `a|b|c`: the
+/// usage text and every fix name exactly these, so they cannot drift.
+fn demo_scenarios() -> String {
+    fa_demo::SCENARIO_NAMES.join("|")
+}
+
 fn demo_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     match args.positional.get(1).map(String::as_str) {
@@ -3996,20 +4234,17 @@ fn demo_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             if args.flag_all("--scenario").len() > 1 {
                 return Err(usage(
                     "--scenario may be supplied only once",
-                    "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
+                    format!("--scenario {}", demo_scenarios()),
                 ));
             }
             if args.flag_all("--seed").len() > 1 {
                 return Err(usage("--seed may be supplied only once", "--seed 7"));
             }
-            let scenario_name = args.require(
-                "--scenario",
-                "retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
-            )?;
+            let scenario_name = args.require("--scenario", &demo_scenarios())?;
             let scenario = fa_demo::Scenario::parse(scenario_name).ok_or_else(|| {
                 usage(
                     format!("unknown demo scenario `{scenario_name}`"),
-                    "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing",
+                    format!("--scenario {}", demo_scenarios()),
                 )
             })?;
             let seed_raw = args.flag("--seed").unwrap_or("7");
@@ -4221,7 +4456,7 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
     if let Some(sc) = args.flag("--scenario") {
         fa_demo::Scenario::parse(sc).ok_or_else(|| UsageError {
             message: format!("unknown demo scenario `{sc}`"),
-            fix: "--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing".to_string(),
+            fix: format!("--scenario {}", demo_scenarios()),
         })?;
     }
     if let Some(sd) = args.flag("--seed") {
@@ -5025,6 +5260,25 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let given_reason = || {
                 reason.ok_or_else(|| Fail::Internal("only a period plan carries its reason".into()))
             };
+            let operator_plan_actions = |path: &str| {
+                if !out.is_bound() || !out.can_confirm() {
+                    return Vec::new();
+                }
+                let mut command = format!(
+                    "period {t} {} --plan {}",
+                    quoted_argument(code),
+                    quoted_argument(path)
+                );
+                if t == "reopen"
+                    && let Some(to) = args.flag("--to")
+                {
+                    command.push_str(&format!(" --to {}", quoted_argument(to)));
+                }
+                vec![(
+                    operator_command(args, &command),
+                    OPERATOR_PLAN_GUIDANCE.into(),
+                )]
+            };
             // A plan seals the description once (R4), so an approval
             // recorded by another principal, in another process, binds the
             // proposal the commit rebuilds from the plan's inputs. Plan files
@@ -5051,7 +5305,11 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         reversal_tick.map_or(String::new(), |t| format!("{:032x}", t.0))
                     )
                 };
-                out.event(
+                let actions = operator_plan_actions("-");
+                let guidance = actions
+                    .first()
+                    .map_or_else(String::new, |(command, why)| format!("\n{why}: {command}"));
+                out.event_with_actions(
                     "period_plan",
                     vec![
                         ("period", s(&plan.period_code)),
@@ -5067,7 +5325,8 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             reversal_tick.map_or(Json::Null, |t| s(format!("{:032x}", t.0))),
                         ),
                     ],
-                    &format!("{}: planned {} → {}; nothing was written.{mints} Approvals bind proposal {}. Commit authority and required approvals are checked separately.\nCanonical period plan bytes (hex):\n{encoded}", plan.period_code, plan.from.name(), plan.to.name(), hex(&digest)),
+                    &format!("{}: planned {} → {}; nothing was written.{mints} Approvals bind proposal {}. Commit authority and required approvals are checked separately.{guidance}\nCanonical period plan bytes (hex):\n{encoded}", plan.period_code, plan.from.name(), plan.to.name(), hex(&digest)),
+                    &actions,
                 );
                 return Ok(());
             }
@@ -5092,7 +5351,11 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .encode()
                     .map_err(|e| Fail::Internal(format!("plan encoding: {e}")))?;
                 write_post_plan(&ctx.files, path, &bytes)?;
-                out.event(
+                let actions = operator_plan_actions(path);
+                let guidance = actions
+                    .first()
+                    .map_or_else(String::new, |(command, why)| format!("\n{why}: {command}"));
+                out.event_with_actions(
                     "period_planned",
                     vec![
                         ("period", s(&plan.period_code)),
@@ -5102,12 +5365,13 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("plan", s(path)),
                     ],
                     &format!(
-                        "{}: planned {} → {}; approvals bind proposal {}; commit with --plan {path}",
+                        "{}: planned {} → {}; approvals bind proposal {}; commit with --plan {path}{guidance}",
                         plan.period_code,
                         plan.from.name(),
                         plan.to.name(),
                         hex(&digest)
                     ),
+                    &actions,
                 );
                 return Ok(());
             }
@@ -6219,12 +6483,6 @@ fn plan_document_into_draft(
             "drop --dry-run/--plan-out to plan into the draft, or drop --draft to rehearse only",
         ));
     }
-    if args.flag("--balancing").is_some() {
-        return Err(usage(
-            "a draft does not yet plan saturating --balancing requests",
-            "plan an intent with explicit amounts",
-        ));
-    }
     if doc.get("intents").is_some() {
         return Err(usage(
             "a batch document cannot be planned into a draft; the draft is its own batch",
@@ -6237,41 +6495,78 @@ fn plan_document_into_draft(
     let mut book = ctx.books.open_admitted(args, |book| {
         crate::fx::admit_intent_sources(book, &capability, doc)
     })?;
-    let BuiltPost { request: req, .. } =
-        build_post_request(out, &mut book, args, forced, doc, who, capability)?;
+    let earlier = batch_plan::draft_entries(&mut book, &capability, name, doc)?;
+    let BuiltPost { request: req, .. } = build_post_request_with_prior(
+        out, &mut book, args, forced, doc, who, capability, &earlier,
+    )?;
+    let req = prepare_balancing_request(args, req)?;
     let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
         usage(
             format!("cannot plan this entry: {e}"),
             "check the entry intent",
         )
     })?;
-    let p = intent.proposal();
-    let entry = fa_model::entry_vid(
-        book.context().book_id,
-        &p.principal_ref.0.to_le_bytes(),
-        &p.idempotency_key,
-    );
+    let entry = batch_plan::proposal_vid(intent.proposal())?;
     let planned = book.plan_into_draft(req.capability, name, intent)??;
     out.at_book(&book)?;
-    let (plan_digest, proposal_digest) = match &planned.plan {
-        Some(plan) => (
-            s(hex(&plan.digest().map_err(|e| {
-                Fail::Internal(format!("encode the draft plan: {e}"))
-            })?)),
-            s(hex(&plan.certificate().proposal_digest)),
-        ),
-        None => (Json::Null, Json::Null),
+    let (plan_digest, proposal_digest, balancing) = match &planned.plan {
+        Some(preview) => {
+            let member = preview.members().last().ok_or_else(|| {
+                Fail::Internal("an admitted draft preview has no appended member".into())
+            })?;
+            let balancing = fa_journal::limit::balancing_request(member.intent.proposal())
+                .map_err(|error| Fail::Internal(format!("draft balancing request: {error}")))?
+                .map(|(ordinal, requested)| {
+                    let leg = member
+                        .entry
+                        .proposal
+                        .legs
+                        .get(usize::from(ordinal))
+                        .ok_or_else(|| {
+                            Fail::Internal("an admitted draft lost its balancing leg".into())
+                        })?;
+                    Ok::<_, Fail>((
+                        render_amount(
+                            Amount::new(leg.amount.unit, requested),
+                            &book.context().units,
+                        )?,
+                        render_amount(leg.amount, &book.context().units)?,
+                    ))
+                })
+                .transpose()?;
+            (
+                s(hex(&preview.digest().map_err(|error| {
+                    Fail::Internal(format!("encode the ordered draft preview: {error}"))
+                })?)),
+                s(hex(&member.entry.proposal_digest)),
+                balancing,
+            )
+        }
+        None => (Json::Null, Json::Null, None),
     };
     let recorded = &planned.recorded;
     let mut fields = draft_record_fields(name, recorded);
     fields.push(("entry", s(format!("{:032x}", entry.0))));
     fields.push(("plan_digest", plan_digest));
     fields.push(("proposal_digest", proposal_digest));
+    fields.push((
+        "requested",
+        balancing
+            .as_ref()
+            .map_or(Json::Null, |(requested, _)| s(requested)),
+    ));
+    fields.push((
+        "moved",
+        balancing.as_ref().map_or(Json::Null, |(_, moved)| s(moved)),
+    ));
+    let balancing_detail = balancing.map_or(String::new(), |(requested, moved)| {
+        format!("; requested {requested}, reviewed {moved}")
+    });
     out.event(
         "draft_planned",
         fields,
         &format!(
-            "planned into draft {name} (entry {:032x} on promotion){}",
+            "planned into draft {name} (entry {:032x} on promotion){balancing_detail}{}",
             entry.0,
             if recorded.already_recorded {
                 "; already planned"
@@ -6307,12 +6602,6 @@ pub(crate) fn plan_document_into_scenario(
             "drop --dry-run/--plan-out to run the intent in the scenario, or drop --scenario to rehearse it on trunk",
         ));
     }
-    if args.flag("--balancing").is_some() {
-        return Err(usage(
-            "a scenario does not yet run saturating --balancing requests",
-            "run an intent with explicit amounts",
-        ));
-    }
     if doc.get("intents").is_some() {
         return Err(usage(
             "a batch document cannot run in a scenario yet; nothing was planned",
@@ -6331,6 +6620,7 @@ pub(crate) fn plan_document_into_scenario(
     })?;
     let BuiltPost { request: req, .. } =
         build_post_request(out, &mut book, args, forced, doc, who, capability)?;
+    let req = prepare_balancing_request(args, req)?;
     let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
         usage(
             format!("cannot run this entry in a scenario: {e}"),
@@ -7323,13 +7613,29 @@ pub(crate) fn check_post_planning_options(args: &Args) -> Result<(), Fail> {
             ));
         }
     }
-    if args.switch("--dry-run") && args.flag("--balancing").is_some() {
-        return Err(usage(
-            "--dry-run does not yet rehearse saturating --balancing requests",
-            "plan an intent with explicit amounts and no --balancing; the normal posting laws still apply",
-        ));
-    }
     Ok(())
+}
+
+fn balancing_leg(args: &Args) -> Result<Option<u16>, Fail> {
+    args.flag("--balancing")
+        .map(|value| {
+            value.parse::<u16>().map_err(|_| {
+                usage(
+                    format!("--balancing `{value}` is not a leg ordinal"),
+                    "--balancing 0 or --balancing 1 (the leg whose account's limit decides the amount)",
+                )
+            })
+        })
+        .transpose()
+}
+
+/// Preserve the requested amount in the intent. Availability is resolved by
+/// the posting kernel against its witnessed state, including scratch replays.
+fn prepare_balancing_request(args: &Args, mut req: PostRequest) -> Result<PostRequest, Fail> {
+    if let Some(leg) = balancing_leg(args)? {
+        req.proposal = fa_journal::balancing_proposal(req.proposal, leg)?;
+    }
+    Ok(req)
 }
 
 struct BuiltPost {
@@ -7378,6 +7684,8 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "prior_period_error",
         "fx",
         "external_subledger",
+        "obligation_maturity",
+        "valuation_adjustments",
     ];
     if let Some((field, _)) = fields
         .iter()
@@ -8242,6 +8550,8 @@ fn build_post_request_with_prior(
         .map_err(BookError::Kernel)?,
         None => proposal,
     };
+    let proposal = apply_valuation_adjustments(doc, &ctx, proposal)?;
+    let proposal = crate::obligation::declare_terms(book, doc, proposal)?;
     Ok(BuiltPost {
         request: PostRequest {
             proposal,
@@ -8253,6 +8563,145 @@ fn build_post_request_with_prior(
         typed_reversal,
         reversal_detail,
     })
+}
+
+/// The intent's `valuation_adjustments`, if any, as the proposal's extension
+/// 34 (plan §11.6, fa-8j3g): explicit dated valuation inputs, each naming its
+/// basis law and its applicability. The kernel validates the terms before the
+/// entry posts; `solvency.balance_sheet_test` applies and cites them.
+fn apply_valuation_adjustments(
+    doc: &Json,
+    ctx: &fa_journal::BookContext,
+    mut proposal: EntryPayload,
+) -> Result<EntryPayload, Fail> {
+    use fa_model::valuation::{
+        InlineValuationTerms, ValuationApplicabilityLaw, ValuationBasisLaw, ValuationSubject,
+    };
+
+    if let Some(raw_val) = doc.get("valuation_adjustments") {
+        let items = raw_val.as_arr().ok_or_else(|| {
+            usage(
+                "intent: `valuation_adjustments` must be an array",
+                "\"valuation_adjustments\": [{\"valuation_id\": \"VAL-1\", \"account\": \"1510\", \"basis_law\": \"signed_delta\", \"effective_date\": \"2026-04-30\", \"amount\": \"22.00 USD\"}]",
+            )
+        })?;
+        let mut terms = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let where_s = format!("valuation_adjustments[{i}]");
+            let valuation_id = req_str(item, "valuation_id", &where_s)?.to_string();
+            let subject = if let Some(inst_s) = item.get("instrument").and_then(Json::as_str) {
+                let carrying_code = req_str(item, "carrying_account", &where_s)?;
+                let inst_vid =
+                    if inst_s.len() == 32 && inst_s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        parse_vid(inst_s, "instrument")?
+                    } else {
+                        fa_model::instrument_vid(ctx.book_id, inst_s)
+                    };
+                ValuationSubject::Instrument {
+                    instrument: inst_vid,
+                    carrying_account: account_vid(ctx.book_id, carrying_code),
+                }
+            } else {
+                let acct_code = req_str(item, "account", &where_s)?;
+                ValuationSubject::Account(account_vid(ctx.book_id, acct_code))
+            };
+            let entity = match item.get("entity").and_then(Json::as_str) {
+                Some(e_code) => Some(
+                    if e_code.len() == 32 && e_code.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        parse_vid(e_code, "entity")?
+                    } else {
+                        fa_model::legal_entity_vid(ctx.book_id, e_code)
+                    },
+                ),
+                None => None,
+            };
+            // A valuation names its law; none is assumed.
+            let basis_s = req_str(item, "basis_law", &where_s)?;
+            let basis_law = match basis_s {
+                "signed_delta" | "SignedDelta" => ValuationBasisLaw::SignedDelta,
+                "absolute_signed_basis" | "AbsoluteSignedBasis" => {
+                    ValuationBasisLaw::AbsoluteSignedBasis
+                }
+                other => {
+                    return Err(usage(
+                        format!("{where_s}: unknown basis_law `{other}`"),
+                        "\"basis_law\": \"signed_delta\" | \"absolute_signed_basis\"",
+                    ));
+                }
+            };
+            let applicability = if let (Some(from_s), Some(to_s)) = (
+                item.get("effective_from").and_then(Json::as_str),
+                item.get("effective_through").and_then(Json::as_str),
+            ) {
+                let effective_from = DateDay::parse(from_s).map_err(|e| {
+                    usage(
+                        format!("{where_s}.effective_from `{from_s}`: {e:?}"),
+                        "effective_from: \"YYYY-MM-DD\"",
+                    )
+                })?;
+                let effective_through = DateDay::parse(to_s).map_err(|e| {
+                    usage(
+                        format!("{where_s}.effective_through `{to_s}`: {e:?}"),
+                        "effective_through: \"YYYY-MM-DD\"",
+                    )
+                })?;
+                ValuationApplicabilityLaw::EffectiveWindow {
+                    effective_from,
+                    effective_through,
+                }
+            } else {
+                let eff_s = req_str(item, "effective_date", &where_s)?;
+                let effective_date = DateDay::parse(eff_s).map_err(|e| {
+                    usage(
+                        format!("{where_s}.effective_date `{eff_s}`: {e:?}"),
+                        "effective_date: \"YYYY-MM-DD\"",
+                    )
+                })?;
+                ValuationApplicabilityLaw::ExactAsOf { effective_date }
+            };
+            let amt_s = req_str(item, "amount", &where_s)?;
+            let amt = Amount::parse(amt_s, &ctx.units).map_err(|e| {
+                usage(
+                    format!("{where_s}.amount `{amt_s}`: {e:?}"),
+                    "amount: \"22.00 USD\" (or \"-10.00 USD\")",
+                )
+            })?;
+            let supersedes = item
+                .get("supersedes")
+                .and_then(Json::as_str)
+                .map(str::to_string);
+            terms.push(InlineValuationTerms {
+                valuation_id,
+                subject,
+                entity,
+                unit: amt.unit,
+                basis_law,
+                applicability,
+                signed_amount: amt.mantissa,
+                supersedes,
+            });
+        }
+        // Canonical order is by valuation_id; the kernel refuses a repeat.
+        terms.sort_by(|a, b| a.valuation_id.cmp(&b.valuation_id));
+        let ext = InlineValuationTerms::to_extension(&terms).map_err(|e| {
+            usage(
+                format!("valuation_adjustments: {e}"),
+                "check valuation_adjustments fields",
+            )
+        })?;
+        fa_model::valuation::validate_terms(&ext.1).map_err(|(field, why)| {
+            usage(
+                format!("valuation_adjustments: {field} {why}"),
+                "\"valuation_adjustments\": [{\"valuation_id\": \"VAL-1\", \"account\": \"1510\", \"basis_law\": \"signed_delta\", \"effective_date\": \"2026-04-30\", \"amount\": \"22.00 USD\"}]",
+            )
+        })?;
+        proposal.schema_minor = proposal.schema_minor.max(fa_model::entry::EXTENSIONS_MINOR);
+        proposal.extensions.retain(|(t, _)| *t != ext.0);
+        proposal.extensions.push(ext);
+        proposal.extensions.sort_by_key(|(t, _)| *t);
+    }
+
+    Ok(proposal)
 }
 
 pub(crate) fn post_document(
@@ -8270,13 +8719,9 @@ pub(crate) fn post_document(
         return plan_document_into_draft(ctx, args, &name, forced, &doc);
     }
     let review_mode = args.switch("--review-only") || args.flag("--review-out").is_some();
-    if review_mode
-        && (args.switch("--dry-run")
-            || args.flag("--balancing").is_some()
-            || doc.get("intents").is_some())
-    {
+    if review_mode && (args.switch("--dry-run") || doc.get("intents").is_some()) {
         return Err(usage(
-            "a review seals one entry proposal for approval: no --dry-run, --balancing or batch; nothing was posted",
+            "a review seals one entry proposal for approval: no --dry-run or batch; nothing was posted",
             "fa post --intent entry.json --review-out review.bin (then fa approve --proposal <proposal_digest> --as <approver>)",
         ));
     }
@@ -8303,15 +8748,22 @@ pub(crate) fn post_document(
                 POST_REVIEW_EXAMPLE,
             ));
         }
-        let intent = PostIntent::new(req.proposal, Vec::new()).map_err(|e| {
+        let req = prepare_balancing_request(args, req)?;
+        let proposal = if balancing_leg(args)?.is_some() {
+            book.review_balancing(req.proposal, &req.capability)??
+        } else {
+            req.proposal
+        };
+        let intent = PostIntent::new(proposal, Vec::new()).map_err(|e| {
             usage(
                 format!("cannot seal this entry for review: {e}"),
                 "check the entry intent",
             )
         })?;
-        return emit_post_review(out, &ctx.files, args, &intent, &class_name);
+        return emit_post_review(out, &book, &ctx.files, args, &intent, &class_name);
     }
     if args.switch("--dry-run") {
+        let req = prepare_balancing_request(args, req)?;
         let intent = PostIntent::new(req.proposal, req.approvals).map_err(|e| {
             usage(
                 format!("cannot plan this entry: {e}"),
@@ -8324,15 +8776,7 @@ pub(crate) fn post_document(
     // `--balancing <leg>` (post and reserve): the leg moves at most what its
     // account's limit admits, decided inside the posting transaction; the
     // event names what was asked and what moved.
-    let balancing = match args.flag("--balancing") {
-        None => None,
-        Some(v) => Some(v.parse::<u16>().map_err(|_| {
-            usage(
-                format!("--balancing `{v}` is not a leg ordinal"),
-                "--balancing 0 or --balancing 1 (the leg whose account's limit decides the amount)",
-            )
-        })?),
-    };
+    let balancing = balancing_leg(args)?;
     let (posted, amounts) = match balancing {
         None => (book.post(req)??, None),
         Some(leg) => {
@@ -8379,6 +8823,7 @@ const POST_REVIEW_EXAMPLE: &str = "fa post --review <file|hex|-> --digest <revie
 /// Nothing is published.
 fn emit_post_review(
     out: &Out,
+    book: &Book,
     files: &Files,
     args: &Args,
     intent: &PostIntent,
@@ -8394,6 +8839,7 @@ fn emit_post_review(
         .proposal()
         .proposal_digest()
         .map_err(|e| Fail::Internal(format!("post proposal digest: {e}")))?;
+    let amounts = balancing_review_amounts(book, intent.proposal())?;
     if let Some(path) = args.flag("--review-out") {
         write_review_file(files, path, &bytes)?;
     }
@@ -8408,17 +8854,51 @@ fn emit_post_review(
             ("legs", Json::Int(intent.proposal().legs.len() as i128)),
             ("review_digest", s(hex(&review_digest))),
             ("proposal_digest", s(hex(&proposal_digest))),
+            ("requested", amounts.as_ref().map_or(Json::Null, |(requested, _)| s(requested))),
+            ("moved", amounts.as_ref().map_or(Json::Null, |(_, moved)| s(moved))),
             ("bytes", s(hex(&bytes))),
             ("file", args.flag("--review-out").map_or(Json::Null, s)),
         ],
         &format!(
-            "review {class_name} proposal {}; an approver records fa approve --proposal {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
+            "review {class_name} proposal {}{}; an approver records fa approve --proposal {} --as <approver>, then fa post --review <file|hex> --digest {} --approval <vid>; nothing was published",
             hex(&proposal_digest),
+            amounts.as_ref().map_or(String::new(), |(requested, moved)| format!(" (requested {requested}, reviewed movement {moved})")),
             hex(&proposal_digest),
             hex(&review_digest)
         ),
     );
     Ok(())
+}
+
+/// A balancing review carries the original request extension and the resolved
+/// legs the approver sees. No amount is recomputed in the surface.
+fn balancing_review_amounts(
+    book: &Book,
+    proposal: &EntryPayload,
+) -> Result<Option<(String, String)>, Fail> {
+    fa_journal::limit::balancing_request(proposal)
+        .map_err(|error| {
+            usage(
+                format!("invalid balancing review: {error}"),
+                POST_REVIEW_EXAMPLE,
+            )
+        })?
+        .map(|(ordinal, requested)| {
+            let leg = proposal.legs.get(usize::from(ordinal)).ok_or_else(|| {
+                usage(
+                    "balancing review lost its selected leg",
+                    POST_REVIEW_EXAMPLE,
+                )
+            })?;
+            Ok((
+                render_amount(
+                    Amount::new(leg.amount.unit, requested),
+                    &book.context().units,
+                )?,
+                render_amount(leg.amount, &book.context().units)?,
+            ))
+        })
+        .transpose()
 }
 
 /// `fa post --review <file|hex|-> --digest <review_digest> [--approval
@@ -8454,6 +8934,72 @@ fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             POST_REVIEW_EXAMPLE,
         ));
     }
+    let review = restore_post_review(ctx, args)?;
+    let digest = review
+        .proposal()
+        .proposal_digest()
+        .map_err(|e| Fail::Internal(format!("post proposal digest: {e}")))?;
+    let approvals = args
+        .flag_all("--approval")
+        .iter()
+        .map(|value| {
+            Ok(fa_model::ApprovalRef {
+                approval_vid: parse_vid(value, "--approval")?,
+                approved_digest: digest,
+            })
+        })
+        .collect::<Result<Vec<_>, Fail>>()?;
+    let class_name = review
+        .proposal()
+        .class
+        .name()
+        .unwrap_or("Entry")
+        .to_string();
+    // The sealed review retains the admitted amount; the kernel always receives
+    // the original request so idempotency still binds R and the selected leg.
+    // Approval references above bind the retained resolved digest, never R.
+    let request = fa_journal::limit::request_form(review.proposal()).map_err(|error| {
+        usage(
+            format!("invalid balancing review request: {error}"),
+            POST_REVIEW_EXAMPLE,
+        )
+    })?;
+    let balancing = request.is_some();
+    let intent = PostIntent::new(
+        request.unwrap_or_else(|| review.proposal().clone()),
+        approvals,
+    )
+    .map_err(|e| usage(format!("post review approvals: {e}"), POST_REVIEW_EXAMPLE))?;
+    // The capability `fa commit --plan` acts under, so a plan made here
+    // commits unchanged.
+    let capability = ctx.capability(args, &["post"])?;
+    let out = &ctx.out;
+    let mut book = ctx.books.open_admitted(args, |_| Ok(()))?;
+    let plan = book.plan(intent, &capability)??;
+    if balancing && plan.certificate().proposal_digest != digest {
+        return Err(Fail::Refusal(fa_journal::refusal::Refusal::new(
+            fa_journal::refusal::code::PLAN_INVALIDATED,
+            fa_journal::refusal::exit::CONFLICT,
+            "available balance changed the movement retained in this review; nothing was posted",
+            "plan §5.5 / §4.6 (approval and review bind the resolved effects)",
+            "create a fresh --balancing review, inspect its requested and moved amounts, then obtain approvals for its new proposal_digest",
+        )));
+    }
+    if args.switch("--dry-run") {
+        return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
+    }
+    let posted = book.commit_plan(plan, &capability)??;
+    out.at_book(&book)?;
+    let amounts = balancing_review_amounts(&book, review.proposal())?;
+    emit_posted(out, posted, &class_name, false, None, amounts)
+}
+
+/// Restores an unchanged `fa post` review from `--review <file|hex|->` and
+/// `--digest <review_digest>`: its bytes decode, hash to the digest, carry
+/// no approvals, and are not a closing review (fa-6f3g). `fa post --review`
+/// plans or posts it; `fa document attest manual --review` records a
+/// ManualAssertion over its proposal_digest (fa-kokk).
+pub(crate) fn restore_post_review(ctx: &Ctx<'_>, args: &Args) -> Result<PostIntent, Fail> {
     let expected = parse_digest(
         args.require("--digest", "<review_digest>")?,
         "review digest",
@@ -8478,40 +9024,7 @@ fn post_review(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "use the review's independently retained review_digest; a closing review is restored by fa close year-end --review",
         ));
     }
-    let digest = review
-        .proposal()
-        .proposal_digest()
-        .map_err(|e| Fail::Internal(format!("post proposal digest: {e}")))?;
-    let approvals = args
-        .flag_all("--approval")
-        .iter()
-        .map(|value| {
-            Ok(fa_model::ApprovalRef {
-                approval_vid: parse_vid(value, "--approval")?,
-                approved_digest: digest,
-            })
-        })
-        .collect::<Result<Vec<_>, Fail>>()?;
-    let class_name = review
-        .proposal()
-        .class
-        .name()
-        .unwrap_or("Entry")
-        .to_string();
-    let intent = PostIntent::new(review.proposal().clone(), approvals)
-        .map_err(|e| usage(format!("post review approvals: {e}"), POST_REVIEW_EXAMPLE))?;
-    // The capability `fa commit --plan` acts under, so a plan made here
-    // commits unchanged.
-    let capability = ctx.capability(args, &["post"])?;
-    let out = &ctx.out;
-    let mut book = ctx.books.open_admitted(args, |_| Ok(()))?;
-    let plan = book.plan(intent, &capability)??;
-    if args.switch("--dry-run") {
-        return emit_post_plan(out, &book, &ctx.files, args, &plan, &capability);
-    }
-    let posted = book.commit_plan(plan, &capability)??;
-    out.at_book(&book)?;
-    emit_posted(out, posted, &class_name, false, None, None)
+    Ok(review)
 }
 
 /// A plan is portable canonical bytes, never an authority token supplied by
@@ -8815,8 +9328,10 @@ pub(crate) fn emit_post_plan(
                 .transpose()?
                 .map_or_else(String::new, |amount| format!("; functional {amount}"));
             human_legs.push(format!(
-                "  {ordinal}: {side} {} ({}) {amount}{base}",
-                account.code, account.name
+                "  {ordinal}: {side} {} ({}) {amount}{base}{}",
+                account.code,
+                account.name,
+                plan_dimensions_text(&leg.dimension_set)
             ));
             Ok(obj(vec![
                 ("ordinal", Json::Int(ordinal as i128)),
@@ -8824,9 +9339,26 @@ pub(crate) fn emit_post_plan(
                 ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
                 ("side", s(side)),
                 ("amount", s(amount)),
+                ("dimensions", plan_dimensions_json(&leg.dimension_set)),
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
+    let balancing = fa_journal::limit::balancing_request(plan.intent().proposal())
+        .map_err(|error| Fail::Internal(format!("admitted plan balancing request: {error}")))?
+        .map(|(ordinal, requested)| {
+            let leg = proposal.legs.get(usize::from(ordinal)).ok_or_else(|| {
+                Fail::Internal("admitted balancing plan lost its selected leg".into())
+            })?;
+            Ok::<_, Fail>((
+                ordinal,
+                render_amount(
+                    Amount::new(leg.amount.unit, requested),
+                    &book.context().units,
+                )?,
+                render_amount(leg.amount, &book.context().units)?,
+            ))
+        })
+        .transpose()?;
     let valuation = if let Some(totals) = &proposal.base_totals {
         let unit = fa_money::UnitId(totals.unit_id);
         let law = fa::FxLawId::from_oid(&totals.fx_law_oid)
@@ -8944,18 +9476,22 @@ pub(crate) fn emit_post_plan(
             Disposition::Expires { .. } => "expires",
         });
     let bound = out.is_bound();
-    let authority_posture = if bound {
-        "mcp-launch-config"
-    } else {
-        "embedded-owner"
-    };
-    let bound_void = bound && disposition == Some("voids");
+    let authority_posture = out.authority_posture();
+    let bound_void = !out.can_confirm() && disposition == Some("voids");
     // An Agent's trunk plan is a rehearsal (plan §15.3): it binds the
     // Agent's capability, which commit_plan refuses (FA-REF-013), so no
     // commit is suggested; a Human principal posts the intent.
     let rehearsal = out.is_bound_agent();
-    let command = if bound {
+    let command = if !out.can_confirm() {
         "fa_post_commit_plan".to_string()
+    } else if bound {
+        operator_command(
+            args,
+            &format!(
+                "commit --plan {}",
+                quoted_argument(args.flag("--plan-out").unwrap_or("-"))
+            ),
+        )
     } else {
         let quoted = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
         let mut command = format!(
@@ -8970,8 +9506,11 @@ pub(crate) fn emit_post_plan(
         for grant in args.flag_all("--grant") {
             command.push_str(&format!(" --grant {}", quoted(grant)));
         }
-        if proposal.base_totals.is_some()
-            && proposal.class != EntryClass::REVERSAL
+        if ((proposal.base_totals.is_some() && proposal.class != EntryClass::REVERSAL)
+            || args
+                .positional
+                .first()
+                .is_some_and(|verb| verb == "allocate"))
             && !args.flag_all("--grant").contains(&"read")
         {
             command.push_str(" --grant 'read'");
@@ -8999,8 +9538,10 @@ pub(crate) fn emit_post_plan(
     let next_actions = if bound_void || rehearsal {
         Vec::new()
     } else {
-        vec![(command, if bound {
+        vec![(command, if !out.can_confirm() {
             "review this exact plan, then call fa_post_commit_plan with plan set to data.bytes in the same launch-bound session"
+        } else if bound {
+            OPERATOR_PLAN_GUIDANCE
         } else {
             "review this exact plan, then commit it with the same caller capability; when --plan is -, forward data.bytes on stdin"
         }.to_string())]
@@ -9017,6 +9558,11 @@ pub(crate) fn emit_post_plan(
         certificate_digest,
         human_legs.join("\n"),
     );
+    if let Some((ordinal, requested, moved)) = &balancing {
+        human.push_str(&format!(
+            "\nBalancing leg {ordinal}: requested {requested}, planned {moved}"
+        ));
+    }
     if let Some(disposition) = disposition {
         human.push_str(&format!("\nResolution disposition: {disposition}"));
     }
@@ -9093,6 +9639,18 @@ pub(crate) fn emit_post_plan(
             ("certificate_digest", s(certificate_digest)),
             ("plan_digest", s(plan_digest)),
             ("legs", Json::Arr(legs)),
+            (
+                "requested",
+                balancing
+                    .as_ref()
+                    .map_or(Json::Null, |(_, requested, _)| s(requested)),
+            ),
+            (
+                "moved",
+                balancing
+                    .as_ref()
+                    .map_or(Json::Null, |(_, _, moved)| s(moved)),
+            ),
             ("valuation", valuation),
             (
                 "resolves",
@@ -9179,9 +9737,10 @@ fn emit_replacement_plan(
                 .ok_or_else(|| Fail::Internal("an admitted correction account is absent".into()))?;
             let amount = render_amount(leg.amount, &book.context().units)?;
             human.push_str(&format!(
-                "\n  {} {} {amount}",
+                "\n  {} {} {amount}{}",
                 side_name(leg.side),
-                account.code
+                account.code,
+                plan_dimensions_text(&leg.dimension_set)
             ));
             legs.push(obj(vec![
                 ("ordinal", Json::Int(ordinal as i128)),
@@ -9189,6 +9748,7 @@ fn emit_replacement_plan(
                 ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
                 ("side", s(side_name(leg.side))),
                 ("amount", s(amount)),
+                ("dimensions", plan_dimensions_json(&leg.dimension_set)),
             ]));
         }
         members.push(obj(vec![
@@ -9237,8 +9797,16 @@ fn emit_replacement_plan(
     }
     let encoded = hex(&bytes);
     let rehearsal = out.is_bound_agent();
-    let command = if out.is_bound() {
+    let command = if !out.can_confirm() {
         "fa_post_commit_plan".to_string()
+    } else if out.is_bound() {
+        operator_command(
+            args,
+            &format!(
+                "commit --plan {}",
+                quoted_argument(args.flag("--plan-out").unwrap_or("-"))
+            ),
+        )
     } else {
         let quoted = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
         let mut command = format!(
@@ -9268,7 +9836,11 @@ fn emit_replacement_plan(
         Vec::new()
     } else {
         human.push_str(&format!("\nReview both entries, then {command}"));
-        vec![(command, "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin".into())]
+        vec![(command, if out.is_bound() && out.can_confirm() {
+            OPERATOR_PLAN_GUIDANCE
+        } else {
+            "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin"
+        }.into())]
     };
     if args.flag("--plan-out").is_none() {
         human.push_str(&format!(
@@ -9311,14 +9883,7 @@ fn emit_replacement_plan(
             ("bytes", s(encoded)),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
             ("scope", s("same-snapshot-replacement")),
-            (
-                "authority",
-                s(if out.is_bound() {
-                    "mcp-launch-config"
-                } else {
-                    "embedded-owner"
-                }),
-            ),
+            ("authority", s(out.authority_posture())),
         ],
         &human,
         &actions,
@@ -9348,7 +9913,7 @@ fn commit_replacement_cmd(
                 Ok(replanned) => Ok(fresh_replacement(replanned)?),
                 Err(replan) => Err(replan),
             };
-            return Err(stale_plan(refusal, replanned, ctx.out.is_bound()));
+            return Err(stale_plan(refusal, replanned, &ctx.out, args));
         }
         Err(refusal) => return Err(refusal.into()),
     };
@@ -9372,8 +9937,10 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.len() != 1 || args.flag_all("--plan").len() != 1 {
         return Err(usage(
             "commit requires exactly one --plan and no positional arguments",
-            if ctx.out.is_bound() {
+            if !ctx.out.can_confirm() {
                 "call fa_post_commit_plan with exactly one of plan or plan_file; this session's authority stays fixed"
+            } else if ctx.out.is_bound() {
+                "fa --token '<same-token-file>' commit --plan <file|-> --json; replace <same-token-file> with the original token file and keep the same book"
             } else {
                 "fa commit --plan <file|-> [--as <principal>] [--grant <op>]... --json"
             },
@@ -9410,7 +9977,7 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         plan.proposal().control.as_ref(),
         Some(ControlPayload::ReservationRelease)
     );
-    if ctx.out.is_bound() && voids {
+    if !ctx.out.can_confirm() && voids {
         gate(&ctx.out, args, "resolve", None, &Condition::Voids)?;
     }
     if plan.proposal().class == EntryClass::CLOSING {
@@ -9431,7 +9998,7 @@ fn commit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 Ok(replanned) => Ok(fresh_post(replanned)?),
                 Err(replan) => Err(replan),
             };
-            return Err(stale_plan(refusal, replanned, ctx.out.is_bound()));
+            return Err(stale_plan(refusal, replanned, &ctx.out, args));
         }
         Err(refusal) => return Err(refusal.into()),
     };
@@ -9549,16 +10116,23 @@ fn fresh_batch(
 fn stale_plan(
     mut refusal: Refusal,
     replanned: Result<(Vec<&'static str>, FreshPlan), Refusal>,
-    bound: bool,
+    out: &Out,
+    args: &Args,
 ) -> Fail {
     let detail = match replanned {
         Ok((changed, fresh)) => {
-            refusal.fix = if bound {
+            refusal.fix = if !out.can_confirm() {
                 "review detail.fresh_plan (detail.changed names what differs from the refused plan); to commit it unchanged, call fa_post_commit_plan with plan set to detail.fresh_plan.bytes"
+                    .to_string()
+            } else if out.is_bound() {
+                format!(
+                    "review detail.fresh_plan (detail.changed names what differs from the refused plan); pass detail.fresh_plan.bytes on stdin to {}; replace <same-token-file> with the original token file and reuse the same holder capability",
+                    operator_command(args, "commit --plan -")
+                )
             } else {
                 "review detail.fresh_plan (detail.changed names what differs from the refused plan); to commit it unchanged, pass its bytes: fa commit --plan - (the hex on stdin)"
-            }
-            .to_string();
+                    .to_string()
+            };
             obj(vec![
                 ("changed", Json::Arr(changed.into_iter().map(s).collect())),
                 (
@@ -9918,6 +10492,17 @@ fn admit_allocation(book: &Book, who: VId, capability: &Capability) -> Result<()
     Ok(())
 }
 
+/// Adds the allocation's driver evidence to the caller's, keeping the list
+/// strictly ascending as the entry codec requires (`EntryPayload::validate`,
+/// fa-model). The driver's oid depends on the book id, so appending it
+/// unsorted refused about half of all `fa allocate --evidence` calls.
+fn with_driver_evidence(evidence: &mut Vec<fa_model::EvidenceRef>, driver: fa_model::EvidenceRef) {
+    if !evidence.contains(&driver) {
+        evidence.push(driver);
+        evidence.sort_unstable();
+    }
+}
+
 /// The allocation basis is the entry's driver evidence. It is supplied under
 /// the caller's capability, so `post` authority on this book is checked
 /// before the document is observed or written, and its uploader and grade
@@ -9979,16 +10564,27 @@ fn parse_allocation_method(doc: &Json, book_id: Id128) -> Result<AllocationMetho
                 Some(r) => parse_rounding_law(r)?,
                 None => fa_money::RoundingLaw::HalfEven,
             };
-            let recipient_code = doc
+            let recipient = doc
                 .get("recipient")
                 .or_else(|| doc.get("residual_account"))
-                .and_then(Json::as_str)
                 .ok_or_else(|| {
                     usage(
-                        "allocation method pro_rata: `recipient` (or `residual_account`) must be a string",
-                        "recipient: \"6099\" (target account code that receives the rounding residual)",
+                        "allocation method pro_rata requires a residual recipient",
+                        "recipient: \"6099\", or {\"account\":\"6100\",\"dimensions\":{\"cost_center\":\"SALES\"}}",
                     )
                 })?;
+            let recipient_code = match recipient {
+                Json::Str(code) => code.as_str(),
+                Json::Obj(_) => req_str(recipient, "account", "allocation recipient")?,
+                _ => {
+                    return Err(usage(
+                        "allocation recipient must name an account or a complete target cell",
+                        "recipient: \"6099\", or {\"account\":\"6100\",\"dimensions\":{\"cost_center\":\"SALES\"}}",
+                    ));
+                }
+            };
+            // Dimensional destinations are resolved after the ordered target
+            // list is parsed, so an ambiguous account never selects a cell.
             let recipient = account_vid(book_id, recipient_code).0;
             Ok(AllocationMethod::ProRataResidualToNamed {
                 rounding,
@@ -10011,13 +10607,20 @@ fn allocation_method_name(method: AllocationMethod) -> &'static str {
     }
 }
 
+struct ParsedAllocationTargets {
+    method: AllocationMethod,
+    targets: Vec<AllocationTarget>,
+    cells: Vec<fa::AllocationTargetCell>,
+}
+
 fn parse_allocation_targets(
     doc: &Json,
     book_id: Id128,
     method: AllocationMethod,
     units: &fa_money::UnitRegistry,
     unit: fa_money::UnitId,
-) -> Result<Vec<AllocationTarget>, Fail> {
+    source_dimensions: &[(u32, VId)],
+) -> Result<ParsedAllocationTargets, Fail> {
     let targets_arr = doc
         .get("targets")
         .and_then(Json::as_arr)
@@ -10027,11 +10630,38 @@ fn parse_allocation_targets(
                 "targets: [{\"account\": \"5100\", \"basis\": 60}, {\"account\": \"5200\", \"basis\": 40}]",
             )
         })?;
+    if targets_arr.len() > fa_journal::allocation::MAX_POSTING_TARGETS {
+        return Err(usage(
+            "allocation has more than 1024 targets",
+            "split the allocation into separately reviewed postings",
+        ));
+    }
+    let recipient = doc.get("recipient").or_else(|| doc.get("residual_account"));
+    let dimensional = targets_arr
+        .iter()
+        .any(|target| target.get("dimensions").is_some() || target.get("dims").is_some())
+        || matches!(recipient, Some(Json::Obj(_)));
     let mut out = Vec::with_capacity(targets_arr.len());
+    let mut cells = Vec::new();
     for (i, item) in targets_arr.iter().enumerate() {
         let what = format!("targets[{i}]");
         let account_code = req_str(item, "account", &what)?;
-        let id = account_vid(book_id, account_code).0;
+        let account = account_vid(book_id, account_code);
+        let id = if dimensional {
+            let cell = fa::AllocationTargetCell {
+                account,
+                dimensions: if item.get("dimensions").is_some() || item.get("dims").is_some() {
+                    parse_allocation_dimensions(item, &what, book_id)?
+                } else {
+                    source_dimensions.to_vec()
+                },
+            };
+            let id = cell.identity()?;
+            cells.push(cell);
+            id
+        } else {
+            account.0
+        };
         let basis_val = item
             .get("basis")
             .or_else(|| item.get("weight"))
@@ -10080,22 +10710,88 @@ fn parse_allocation_targets(
         };
         out.push(AllocationTarget { id, basis });
     }
-    Ok(out)
+    let method = match method {
+        AllocationMethod::ProRataResidualToNamed {
+            rounding,
+            recipient: account,
+        } if dimensional => {
+            let matches: Vec<_> = match recipient {
+                Some(recipient_doc @ Json::Obj(_)) => {
+                    let cell = fa::AllocationTargetCell {
+                        account: VId(account),
+                        dimensions: if recipient_doc.get("dimensions").is_some()
+                            || recipient_doc.get("dims").is_some()
+                        {
+                            parse_allocation_dimensions(recipient_doc, "recipient", book_id)?
+                        } else {
+                            source_dimensions.to_vec()
+                        },
+                    };
+                    cells
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, target)| **target == cell)
+                        .map(|(i, _)| i)
+                        .collect()
+                }
+                _ => cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| cell.account.0 == account)
+                    .map(|(i, _)| i)
+                    .collect(),
+            };
+            let [index] = matches.as_slice() else {
+                return Err(usage(
+                    "allocation residual recipient must identify exactly one declared target cell",
+                    "use recipient: {\"account\":\"6100\",\"dimensions\":{\"cost_center\":\"SALES\"}} when an account has multiple targets",
+                ));
+            };
+            AllocationMethod::ProRataResidualToNamed {
+                rounding,
+                recipient: out[*index].id,
+            }
+        }
+        method => method,
+    };
+    Ok(ParsedAllocationTargets {
+        method,
+        targets: out,
+        cells,
+    })
 }
 
-fn parse_allocation_dimensions(doc: &Json) -> Result<Vec<(u32, VId)>, Fail> {
-    let Some(dims) = doc.get("dimensions") else {
+fn parse_allocation_dimensions(
+    doc: &Json,
+    what: &str,
+    book_id: Id128,
+) -> Result<Vec<(u32, VId)>, Fail> {
+    if doc.get("dimensions").is_some() && doc.get("dims").is_some() {
+        return Err(usage(
+            format!("{what}: dimensions and dims name the same field"),
+            "supply just one dimension set",
+        ));
+    }
+    let Some(dims) = doc.get("dimensions").or_else(|| doc.get("dims")) else {
         return Ok(Vec::new());
     };
+    if matches!(dims, Json::Obj(_)) {
+        let wrapper = obj(vec![("dimensions", dims.clone())]);
+        let mut dimensions = crate::dimension::leg_dimensions(&wrapper, what, book_id)?;
+        dimensions.sort_by_key(|(id, _)| *id);
+        return Ok(dimensions);
+    }
     let Some(arr) = dims.as_arr() else {
         return Err(usage(
-            "allocation `dimensions` must be an array",
-            "dimensions: [{\"dimension\": 1, \"value\": \"<32-hex-vid>\"}]",
+            format!(
+                "{what}: dimensions must be an object of value codes or an array of dimension identities"
+            ),
+            "dimensions: {\"cost_center\":\"ENG\"}, or [{\"dimension\": 1, \"value\": \"<32-hex-vid>\"}]",
         ));
     };
     let mut out = Vec::with_capacity(arr.len());
     for (i, item) in arr.iter().enumerate() {
-        let what = format!("dimensions[{i}]");
+        let what = format!("{what}.dimensions[{i}]");
         let dim = match item.get("dimension") {
             Some(Json::Int(n)) => u32::try_from(*n).map_err(|_| {
                 usage(
@@ -10114,7 +10810,46 @@ fn parse_allocation_dimensions(doc: &Json) -> Result<Vec<(u32, VId)>, Fail> {
         let vid = parse_vid(val_s, &format!("{what}.value"))?;
         out.push((dim, vid));
     }
+    out.sort_by_key(|(id, _)| *id);
+    if out.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(usage(
+            format!("{what}: dimensions names a dimension twice"),
+            "an allocation cell carries one value of each dimension",
+        ));
+    }
     Ok(out)
+}
+
+pub(crate) fn plan_dimensions_json(dimensions: &[(u32, VId)]) -> Json {
+    Json::Arr(
+        dimensions
+            .iter()
+            .map(|(dimension, value)| {
+                obj(vec![
+                    ("dimension", Json::Int(i128::from(*dimension))),
+                    ("value", s(format!("{:032x}", value.0))),
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn plan_dimensions_text(dimensions: &[(u32, VId)]) -> String {
+    if dimensions.is_empty() {
+        return String::new();
+    }
+    format!(
+        " [{}]",
+        dimensions
+            .iter()
+            .map(|(dimension, value)| format!(
+                "{}={:032x}",
+                crate::dimension::code_of(*dimension),
+                value.0
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn render_proposal_legs(
@@ -10141,8 +10876,10 @@ fn render_proposal_legs(
             let amount = render_amount(leg.amount, &book.context().units)?;
             let side = side_name(leg.side);
             human_legs.push(format!(
-                "  {ordinal}: {side} {} ({}) {amount}",
-                account.code, account.name
+                "  {ordinal}: {side} {} ({}) {amount}{}",
+                account.code,
+                account.name,
+                plan_dimensions_text(&leg.dimension_set)
             ));
             Ok(obj(vec![
                 ("ordinal", Json::Int(ordinal as i128)),
@@ -10150,6 +10887,7 @@ fn render_proposal_legs(
                 ("account_vid", s(format!("{:032x}", leg.account_ref.0))),
                 ("side", s(side)),
                 ("amount", s(amount)),
+                ("dimensions", plan_dimensions_json(&leg.dimension_set)),
             ]))
         })
         .collect::<Result<Vec<_>, Fail>>()?;
@@ -10348,7 +11086,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let key = req_str(&doc, "idempotency_key", "allocation intent")?;
     let description = doc.get("description").and_then(Json::as_str).unwrap_or("");
     let method = parse_allocation_method(&doc, book_ctx.book_id)?;
-    let dimensions = parse_allocation_dimensions(&doc)?;
+    let dimensions = parse_allocation_dimensions(&doc, "allocation intent", book_ctx.book_id)?;
     let review_mode = args.flag("--review-out").is_some() || args.switch("--review-only");
     if review_mode && args.switch("--dry-run") {
         return Err(usage(
@@ -10379,15 +11117,22 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })?,
             None => book.spec()?.base_unit,
         };
-        let targets =
-            parse_allocation_targets(&doc, book_ctx.book_id, method, &book_ctx.units, unit)?;
+        let parsed = parse_allocation_targets(
+            &doc,
+            book_ctx.book_id,
+            method,
+            &book_ctx.units,
+            unit,
+            &dimensions,
+        )?;
         let bal_req = BalanceAllocationRequest {
             source: source_vid,
             period: period.clone(),
             unit,
             dimensions,
-            method,
-            targets,
+            method: parsed.method,
+            targets: parsed.targets,
+            target_cells: parsed.cells,
         };
         let prepared = book.prepare_balance_allocation(&bal_req, &capability)??;
         let driver_ev = if review_mode {
@@ -10396,9 +11141,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ensure_allocation_driver_imported(&mut book, prepared.posting(), &capability)?
         };
         let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
-        if !evidence.contains(&driver_ev) {
-            evidence.push(driver_ev);
-        }
+        with_driver_evidence(&mut evidence, driver_ev);
         let template = EntryPayload {
             schema_minor: 0,
             book_id: book_ctx.book_id,
@@ -10503,16 +11246,23 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ));
             }
         };
-        let targets =
-            parse_allocation_targets(&doc, book_ctx.book_id, method, &book_ctx.units, total.unit)?;
+        let parsed = parse_allocation_targets(
+            &doc,
+            book_ctx.book_id,
+            method,
+            &book_ctx.units,
+            total.unit,
+            &dimensions,
+        )?;
         let posting = AllocationPosting {
             source: source_vid,
             source_side,
             dimensions,
+            target_cells: parsed.cells,
             request: AllocationRequest {
                 total,
-                method,
-                targets,
+                method: parsed.method,
+                targets: parsed.targets,
             },
         };
         let driver_ev = if review_mode {
@@ -10521,9 +11271,7 @@ fn allocate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ensure_allocation_driver_imported(&mut book, &posting, &capability)?
         };
         let mut evidence = document::parse_evidence(&doc, args, &mut book)?;
-        if !evidence.contains(&driver_ev) {
-            evidence.push(driver_ev);
-        }
+        with_driver_evidence(&mut evidence, driver_ev);
         let template = EntryPayload {
             schema_minor: 0,
             book_id: book_ctx.book_id,
@@ -11263,7 +12011,8 @@ fn prepare_certificate_history(
     Ok(())
 }
 
-/// Legacy native reports and certificates keep their Read-only admission contract.
+/// Preparing native report history requires Read; retaining a resulting
+/// certificate separately requires Produce.
 /// Full history can be loaded only by a current whole-book reader. A scoped
 /// caller keeps the existing evaluation path without loading additional data;
 /// this adapter does not manufacture a scoped native-history capability.
@@ -11282,7 +12031,7 @@ pub(crate) fn prepare_native_certificate_history(
 }
 
 pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    // A dimension-filtered report is its own uncertified literal fold
+    // A dimension-filtered report is its own literal fold
     // (fa-ficc); it refuses the flags of every other mode.
     if args.flag("--dimension").is_some() {
         return crate::dimension::tb(ctx, args);
@@ -11316,7 +12065,7 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let certify_cap = if !args.switch("--summary")
         && (args.switch("--certify") || args.flag("--certificate-out").is_some())
     {
-        Some(ctx.capability(args, &["read"])?)
+        Some(ctx.capability(args, &["read", "produce"])?)
     } else {
         None
     };
@@ -11835,6 +12584,15 @@ fn statement_lint(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let report = book.lint_statement(definition, at, &cap)??;
     ctx.out.at_book(&book)?;
+    render_statement_lint(ctx, &report, at)
+}
+
+pub(crate) fn render_statement_lint(
+    ctx: &mut Ctx<'_>,
+    report: &fa::StatementLintReport,
+    at: CommitSeq,
+) -> Result<(), Fail> {
+    let definition = &report.definition_name;
     let strings = |items: &[String]| Json::Arr(items.iter().map(s).collect());
     let clean = report.is_clean();
     let human = if clean {
@@ -11915,6 +12673,24 @@ fn statement_lint(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() == 2
+        && (matches!(
+            args.positional[1].as_str(),
+            "template" | "define" | "activate" | "custom"
+        ) || (args.positional[1] == "lint" && args.flag("--file").is_some()))
+    {
+        return crate::custom_statement::command(ctx, args);
+    }
+    if args.flag("--file").is_some()
+        || args.flag("--scale-digits").is_some()
+        || args.flag("--residual-line").is_some()
+        || args.flag("--residual-label").is_some()
+    {
+        return Err(usage(
+            "custom-definition options require statement define, activate, lint --file, or custom",
+            "fa statement custom --definition <name> --for <period>",
+        ));
+    }
     if args.positional.len() != 2 {
         return Err(usage(
             "statement needs a registered definition name, diff|trace, or issue|issuances",
@@ -11925,7 +12701,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     if functional
         && (matches!(
             args.positional[1].as_str(),
-            "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
+            "trace" | "issue" | "issuances" | "lint" | "regulatory" | "equity-roll-forward"
         ) || args.flag("--branch").is_some()
             || args.flag("--from-diff").is_some()
             || crate::issuance::view_flag(args).is_some())
@@ -11940,6 +12716,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         "issue" => return crate::issuance::issue(ctx, args),
         "issuances" => return crate::issuance::issuances(ctx, args),
         "lint" => return statement_lint(ctx, args),
+        "regulatory" => return crate::regulatory::statement_regulatory(ctx, args),
         "equity-roll-forward" => return statement_equity_roll_forward(ctx, args),
         _ => {}
     }
@@ -12147,7 +12924,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     let who = ctx.principal(args);
     let capability = ctx.capability(
         args,
-        if functional && certify {
+        if certify {
             &["read", "produce"]
         } else {
             &["read"]
@@ -14072,18 +14849,19 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.flag("--as-known-at").is_some()
         && !matches!(
             target,
-            Some("periods" | "close" | "usage" | "fx-conversion")
+            Some("periods" | "close" | "usage" | "fx-conversion" | "search")
         )
     {
         return Err(usage(
-            "--as-known-at is supported only by verify periods, verify close, verify usage and verify fx-conversion",
-            "select periods, close, usage or fx-conversion for historical verification, or omit --as-known-at",
+            "--as-known-at is supported only by verify periods, verify close, verify usage, verify fx-conversion and verify search",
+            "select periods, close, usage, fx-conversion or search for historical verification, or omit --as-known-at",
         ));
     }
     match target {
         Some("book") => verify_book(ctx, args),
         Some("export") => crate::export::verify_export(ctx, args),
         Some("fx-conversion") => verify_fx_conversion(ctx, args),
+        Some("search") => verify_search(ctx, args),
         Some("accumulator") => notary::verify_accumulator(ctx, args),
         Some("close") => crate::closing::verify_close(ctx, args),
         Some("usage") => {
@@ -14648,10 +15426,16 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 
 pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let who = ctx.principal(args);
-    let read_cap = ctx.capability(args, &["read"])?;
-    let certify_cap = if args.flag("--as-of").is_none()
-        && (args.switch("--certify") || args.flag("--certificate-out").is_some())
-    {
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let read_cap = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let certify_cap = if args.flag("--as-of").is_none() && certify {
         Some(read_cap.clone())
     } else {
         None
@@ -14765,6 +15549,35 @@ pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
         (book.open_items_report(account, known_at)?, None)
     };
     validate_open_items_report(&report, &book.context().units)?;
+    // The same report as text CSV (fa-registers' exact exporters): every
+    // item with its original, applied and open mantissas, and every
+    // application against those items, undone ones included. New files only,
+    // written after admission.
+    type Csv = fn(
+        &fa_registers::open_items::OpenItemsReport,
+    ) -> Result<String, fa_registers::RegisterError>;
+    let exporters: [(&str, Csv); 2] = [
+        (
+            "--csv-out",
+            fa_registers::open_items::OpenItemsReport::to_csv,
+        ),
+        (
+            "--applications-csv-out",
+            fa_registers::open_items::OpenItemsReport::applications_to_csv,
+        ),
+    ];
+    for (flag, render) in exporters {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("{flag} may be supplied only once"),
+                "fa open-items --help",
+            ));
+        }
+        if let Some(path) = args.flag(flag) {
+            let csv = render(&report).map_err(BookError::Registers)?;
+            write_new_output_file(&ctx.files, path, csv.as_bytes(), "open-items", flag)?;
+        }
+    }
     let retained = certificate
         .as_ref()
         .zip(certify_cap.as_ref())
@@ -15468,6 +16281,131 @@ pub(crate) fn validate_cash_flow_policy_fields(doc: &Json, indirect: bool) -> Re
     Ok(())
 }
 
+/// Validate the non-cash side of every indirect classification family.
+fn validate_indirect_adjustment_fields(doc: &Json) -> Result<(), Fail> {
+    let Some(value) = doc.get("adjustments") else {
+        return Ok(());
+    };
+    let Json::Arr(items) = value else {
+        return Err(usage(
+            "cash-flow policy 'adjustments' must be an array",
+            "provide explicit journal-leg adjustments with category, sign and reason",
+        ));
+    };
+    for item in items {
+        let Json::Obj(fields) = item else {
+            return Err(usage(
+                "each indirect adjustment must be a JSON object",
+                "provide entry_digest, leg_index, category, sign and reason",
+            ));
+        };
+        for (field, _) in fields {
+            if !["entry_digest", "leg_index", "category", "sign", "reason"]
+                .contains(&field.as_str())
+            {
+                return Err(usage(
+                    format!("unknown indirect adjustment field '{field}'"),
+                    "provide entry_digest, leg_index, category, sign and reason",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod indirect_cash_flow_basis_input_tests {
+    use super::*;
+
+    fn policy(text: &str) -> Json {
+        crate::json::parse(text).expect("test policy JSON")
+    }
+
+    #[test]
+    fn indirect_rule_and_split_shapes_retain_adjustment_fields() {
+        let rules = policy(
+            r#"{"name":"indirect","cash_policy":"cash-rules","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"}],"overrides":[],"adjustments":[]}"#,
+        );
+        let splits = policy(
+            r#"{"name":"indirect","cash_policy":"cash-splits","cash_accounts":["1000"],"splits":[{"entry_digest":"entry","leg_index":2,"reason":"Principal and interest","portions":[{"activity":"financing","amount":"100.00 USD"},{"activity":"operating","amount":"10.00 USD"}]}],"adjustments":[]}"#,
+        );
+        assert!(validate_cash_flow_rules_policy_fields(&rules, true).is_ok());
+        assert!(validate_cash_flow_split_policy_fields(&splits, true).is_ok());
+        assert!(validate_cash_flow_rules_policy_fields(&rules, false).is_err());
+        assert!(validate_cash_flow_split_policy_fields(&splits, false).is_err());
+    }
+
+    #[test]
+    fn indirect_cash_classification_families_are_exclusive() {
+        for text in [
+            r#"{"splits":[],"assignments":[],"adjustments":[]}"#,
+            r#"{"splits":[],"account_rules":[],"adjustments":[]}"#,
+            r#"{"splits":[],"overrides":[],"adjustments":[]}"#,
+        ] {
+            assert!(validate_cash_flow_split_policy_fields(&policy(text), true).is_err());
+        }
+        for text in [
+            r#"{"account_rules":[],"assignments":[],"adjustments":[]}"#,
+            r#"{"account_rules":[],"splits":[],"adjustments":[]}"#,
+        ] {
+            assert!(validate_cash_flow_rules_policy_fields(&policy(text), true).is_err());
+        }
+        assert!(
+            validate_cash_flow_policy_fields(
+                &policy(r#"{"assignments":[],"overrides":[],"adjustments":[]}"#),
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn richer_indirect_bases_reject_malformed_adjustments() {
+        for adjustments in [
+            r#"[{"entry_digest":"entry","leg_index":0,"category":"non_cash","sign":"debit_minus_credit","reason":"Depreciation","amout":"20.00 USD"}]"#,
+            r#"[7]"#,
+            r#"{}"#,
+        ] {
+            let rules = policy(&format!(
+                r#"{{"account_rules":[],"adjustments":{adjustments}}}"#
+            ));
+            let splits = policy(&format!(r#"{{"splits":[],"adjustments":{adjustments}}}"#));
+            assert!(validate_cash_flow_rules_policy_fields(&rules, true).is_err());
+            assert!(validate_cash_flow_split_policy_fields(&splits, true).is_err());
+        }
+    }
+
+    #[test]
+    fn richer_indirect_bases_reject_unknown_nested_classification_fields() {
+        let rules = policy(
+            r#"{"account_rules":[{"account":"4000","activty":"operating"}],"adjustments":[]}"#,
+        );
+        let overrides = policy(
+            r#"{"account_rules":[],"overrides":[{"entry_digest":"entry","leg_index":0,"activity":"operating","amount":"10.00 USD"}],"adjustments":[]}"#,
+        );
+        let splits = policy(
+            r#"{"splits":[{"entry_digest":"entry","leg_index":0,"reason":"Receipt","portions":[{"activity":"operating","amout":"20.00 USD"}]}],"adjustments":[]}"#,
+        );
+        assert!(validate_cash_flow_rules_policy_fields(&rules, true).is_err());
+        assert!(validate_cash_flow_rules_policy_fields(&overrides, true).is_err());
+        assert!(validate_cash_flow_split_policy_fields(&splits, true).is_err());
+    }
+
+    #[test]
+    fn explicit_indirect_shape_and_object_requirement_remain_strict() {
+        let explicit = policy(
+            r#"{"name":"indirect","cash_policy":"cash","cash_accounts":["1000"],"assignments":[{"entry_digest":"entry","leg_index":0,"activity":"operating"}],"adjustments":[{"entry_digest":"depreciation","leg_index":0,"category":"non_cash","sign":"debit_minus_credit","reason":"Depreciation"}]}"#,
+        );
+        assert!(validate_cash_flow_policy_fields(&explicit, true).is_ok());
+        for text in ["null", "[]", "42"] {
+            let doc = policy(text);
+            assert!(validate_cash_flow_policy_fields(&doc, true).is_err());
+            assert!(validate_cash_flow_rules_policy_fields(&doc, true).is_err());
+            assert!(validate_cash_flow_split_policy_fields(&doc, true).is_err());
+        }
+    }
+}
+
 pub(crate) fn parse_cash_flow_definition(
     doc: &Json,
     book_id: Id128,
@@ -15691,12 +16629,6 @@ pub(crate) fn validate_cash_flow_split_policy_fields(
     doc: &Json,
     indirect: bool,
 ) -> Result<(), Fail> {
-    if indirect {
-        return Err(usage(
-            "splits policies partition direct cash flow and cannot combine with --indirect",
-            "drop --indirect, or use an indirect policy with assignments and adjustments",
-        ));
-    }
     let check = |value: &Json, allowed: &[&str], context: &str| -> Result<(), Fail> {
         let Json::Obj(fields) = value else {
             return Err(usage(
@@ -15714,11 +16646,21 @@ pub(crate) fn validate_cash_flow_split_policy_fields(
         }
         Ok(())
     };
-    check(
-        doc,
-        &["name", "cash_accounts", "splits"],
-        "cash split policy",
-    )?;
+    let allowed: &[&str] = if indirect {
+        &[
+            "name",
+            "cash_policy",
+            "cash_accounts",
+            "splits",
+            "adjustments",
+        ]
+    } else {
+        &["name", "cash_accounts", "splits"]
+    };
+    check(doc, allowed, "cash split policy")?;
+    if indirect {
+        validate_indirect_adjustment_fields(doc)?;
+    }
     let Some(Json::Arr(splits)) = doc.get("splits") else {
         return Err(usage(
             "cash split policy requires an array `splits`",
@@ -15899,18 +16841,12 @@ pub(crate) fn cash_flow_split_rows_json(
 const RULES_POLICY_EXAMPLE: &str = r#"{"name":"cash-rules-v1","cash_accounts":["1000"],"account_rules":[{"account":"4000","activity":"operating"}],"overrides":[]}"#;
 
 /// A rule policy (fa-i9yn) is its own format: `account_rules` classify non-cash
-/// counterpart accounts and `overrides` fix whole cash legs. The direct and
-/// indirect formats refuse `account_rules`; this one refuses their fields.
+/// counterpart accounts and `overrides` fix whole cash legs. An indirect
+/// report adds its adjustment inputs while retaining this complete policy.
 pub(crate) fn validate_cash_flow_rules_policy_fields(
     doc: &Json,
     indirect: bool,
 ) -> Result<(), Fail> {
-    if indirect {
-        return Err(usage(
-            "account_rules policies classify direct cash flow; --indirect takes explicit assignments and adjustments",
-            "drop --indirect, or pass an indirect policy with assignments and adjustments",
-        ));
-    }
     let check = |value: &Json, allowed: &[&str], context: &str| -> Result<(), Fail> {
         let Json::Obj(fields) = value else {
             return Err(usage(
@@ -15928,11 +16864,22 @@ pub(crate) fn validate_cash_flow_rules_policy_fields(
         }
         Ok(())
     };
-    check(
-        doc,
-        &["name", "cash_accounts", "account_rules", "overrides"],
-        "cash-flow rule policy",
-    )?;
+    let allowed: &[&str] = if indirect {
+        &[
+            "name",
+            "cash_policy",
+            "cash_accounts",
+            "account_rules",
+            "overrides",
+            "adjustments",
+        ]
+    } else {
+        &["name", "cash_accounts", "account_rules", "overrides"]
+    };
+    check(doc, allowed, "cash-flow rule policy")?;
+    if indirect {
+        validate_indirect_adjustment_fields(doc)?;
+    }
     for (field, allowed) in [
         ("account_rules", &["account", "activity"][..]),
         ("overrides", &["entry_digest", "leg_index", "activity"][..]),
@@ -16121,6 +17068,76 @@ pub(crate) fn parse_indirect_cash_flow_definition(
         cash_policy,
         IndirectCashFlowDefinition { name, adjustments },
     ))
+}
+
+/// Preserve the selected native classification family. Split amounts retain
+/// their supplied currency until checked against the actual historical leg;
+/// that read fixes HEAD before the indirect reader observes income or adjustments.
+pub(crate) fn parse_indirect_cash_flow_basis(
+    doc: &Json,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+    request: &mut RollForwardRequest,
+    cash_policy_name: &str,
+    source_mismatch: fn(Refusal) -> Fail,
+) -> Result<fa::CashFlowBasisDefinition, Fail> {
+    let split = doc.get("splits").is_some();
+    let rules = doc.get("account_rules").is_some();
+    if split {
+        validate_cash_flow_split_policy_fields(doc, true)?;
+    } else if rules {
+        validate_cash_flow_rules_policy_fields(doc, true)?;
+    } else {
+        validate_cash_flow_policy_fields(doc, true)?;
+    }
+    let Json::Obj(fields) = doc else {
+        return Err(usage(
+            "cash-flow policy must be an object",
+            "pass a JSON policy",
+        ));
+    };
+    // The full document has already passed its family's strict validator.
+    // Reuse the direct parser with only the independent cash-basis fields.
+    let mut fields: Vec<_> = fields
+        .iter()
+        .filter(|(name, _)| !["name", "cash_policy", "adjustments"].contains(&name.as_str()))
+        .cloned()
+        .collect();
+    fields.push(("name".to_string(), s(cash_policy_name)));
+    let cash_doc = Json::Obj(fields);
+    if split {
+        let parsed = parse_cash_flow_splits(
+            &cash_doc,
+            book.context().book_id,
+            &request.accounts,
+            cash_policy_name,
+            &book.context().units,
+        )?;
+        let source = book.general_ledger(principal, capability, request)??;
+        request.known_at = Some(source.known_at());
+        Ok(fa::CashFlowBasisDefinition::Split(
+            parsed.bind_to_source(&source).map_err(source_mismatch)?,
+        ))
+    } else if rules {
+        Ok(fa::CashFlowBasisDefinition::Policy(
+            parse_cash_flow_rules_policy(
+                &cash_doc,
+                book.context().book_id,
+                &request.accounts,
+                cash_policy_name,
+            )?,
+        ))
+    } else {
+        Ok(fa::CashFlowBasisDefinition::Explicit(
+            parse_cash_flow_definition(
+                &cash_doc,
+                book.context().book_id,
+                &request.accounts,
+                cash_policy_name,
+            )?,
+        ))
+    }
 }
 
 /// Admit certification before observing report inputs or an external output
@@ -17514,13 +18531,15 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 }
                 let (cash_policy_name, indirect_def) =
                     parse_indirect_cash_flow_definition(&policy_doc, "indirect-cash-flow")?;
-                let mut cash_def = parse_cash_flow_definition(
+                let cash_def = parse_indirect_cash_flow_basis(
                     &policy_doc,
-                    book.context().book_id,
-                    &req.accounts,
+                    &book,
+                    who,
+                    &capability,
+                    &mut req,
                     &cash_policy_name,
+                    Fail::Refusal,
                 )?;
-                cash_def.name = cash_policy_name;
                 let mut request = IndirectCashFlowRequest {
                     cash: req,
                     cash_definition: cash_def,
@@ -17608,6 +18627,12 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     report.units().len(),
                     report.contributions().len()
                 );
+                // Split replay transport needs the original leg units. Check
+                // every complete expectation before retaining or writing bytes.
+                let expected = artifact
+                    .as_ref()
+                    .map(|_| notary::indirect_expectation_json(&request, report.cash(), units))
+                    .transpose()?;
                 let retained = artifact
                     .as_ref()
                     .map(|artifact| {
@@ -17626,7 +18651,7 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     "indirect_cash_flow",
                     vec![
                         ("policy", s(&report.definition().name)),
-                        ("cash_policy", s(&report.cash().definition().name)),
+                        ("cash_policy", s(report.cash().definition_name())),
                         ("label", s(source.label())),
                         ("known_at", Json::Int(i128::from(source.known_at().0))),
                         ("effective_from", s(source.effective_from().render())),
@@ -17642,15 +18667,17 @@ fn gl_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &human,
                     digest.as_deref(),
                 );
-                if let (Some(artifact), Some((bytes, retained))) = (artifact.as_ref(), retained) {
+                if let (Some(artifact), Some((bytes, retained)), Some(expected)) =
+                    (artifact.as_ref(), retained, expected)
+                {
                     notary::emit_report_artifact_for(
                         out,
                         args,
                         artifact,
-                        fa::INDIRECT_CASH_FLOW_FORMAT,
+                        report.format(),
                         &bytes,
                         &retained,
-                        &notary::indirect_expectation_json(&request),
+                        &expected,
                     );
                 }
                 Ok(())
@@ -19110,6 +20137,44 @@ fn explain_refusal_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     Ok(())
 }
 
+/// The latest corroborated TimeEvidence tick committed before `recorded_at`
+/// (plan §7.1a): the entry recorded at that sequence was recorded after the
+/// tick's observed UTC instant. fad journals one immediately before every
+/// close it performs; a prefix with no corroborated tick yields null, never
+/// a clock reading taken now.
+fn recorded_after_tick(book: &Book, recorded_at: CommitSeq) -> Result<Json, Fail> {
+    let Some(before) = recorded_at.0.checked_sub(1) else {
+        return Ok(Json::Null);
+    };
+    let Some(tick) = book.corroborated_tick_at(CommitSeq(before))? else {
+        return Ok(Json::Null);
+    };
+    let Some((entry, tick_seq)) = book.read_entry(tick.entry)? else {
+        return Err(Fail::Internal(format!(
+            "the corroborated tick {:032x} has no entry",
+            tick.entry.0
+        )));
+    };
+    let Some(fa_model::ControlPayload::TimeTick {
+        observed_utc_ns,
+        source,
+        monotonic_ok,
+    }) = entry.proposal.control
+    else {
+        return Err(Fail::Internal(format!(
+            "the corroborated tick {:032x} is not a TimeEvidence entry",
+            tick.entry.0
+        )));
+    };
+    Ok(obj(vec![
+        ("entry", s(format!("{:032x}", tick.entry.0))),
+        ("recorded_at", Json::Int(i128::from(tick_seq.0))),
+        ("observed_utc_ns", Json::Int(i128::from(observed_utc_ns))),
+        ("source", Json::Int(i128::from(source))),
+        ("monotonic_ok", Json::Bool(monotonic_ok)),
+    ]))
+}
+
 fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let out = &ctx.out;
     let example = "fa explain period FY2026-P01 --book <dir>";
@@ -19145,28 +20210,27 @@ fn explain_period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let reasons =
         ReasonCodes::embedded().map_err(|e| Fail::Internal(format!("reason_codes.toml: {e}")))?;
     let transitions_raw = book.period_transitions(code)?;
-    let transitions: Vec<Json> = transitions_raw
-        .iter()
-        .map(|t| {
-            let reason_name = reasons
-                .get(
-                    fa_journal::period::reason_scope_of(t.from, t.to),
-                    t.reason_code,
-                )
-                .map(|r| r.name.as_str());
-            obj(vec![
-                ("control_entry", s(format!("{:032x}", t.entry_vid.0))),
-                ("from", s(t.from.name())),
-                ("to", s(t.to.name())),
-                ("reason_code", Json::Int(i128::from(t.reason_code))),
-                ("reason", reason_name.map_or(Json::Null, s)),
-                ("principal", s(format!("{:032x}", t.principal_ref.0))),
-                ("approvals", Json::Int(t.approvals.len() as i128)),
-                ("effective_date", s(t.effective_date.render())),
-                ("recorded_at", Json::Int(i128::from(t.recorded_at.0))),
-            ])
-        })
-        .collect();
+    let mut transitions = Vec::with_capacity(transitions_raw.len());
+    for t in &transitions_raw {
+        let reason_name = reasons
+            .get(
+                fa_journal::period::reason_scope_of(t.from, t.to),
+                t.reason_code,
+            )
+            .map(|r| r.name.as_str());
+        transitions.push(obj(vec![
+            ("control_entry", s(format!("{:032x}", t.entry_vid.0))),
+            ("from", s(t.from.name())),
+            ("to", s(t.to.name())),
+            ("reason_code", Json::Int(i128::from(t.reason_code))),
+            ("reason", reason_name.map_or(Json::Null, s)),
+            ("principal", s(format!("{:032x}", t.principal_ref.0))),
+            ("approvals", Json::Int(t.approvals.len() as i128)),
+            ("effective_date", s(t.effective_date.render())),
+            ("recorded_at", Json::Int(i128::from(t.recorded_at.0))),
+            ("recorded_after", recorded_after_tick(&book, t.recorded_at)?),
+        ]));
+    }
 
     let classes = fa_registry::EntryClasses::embedded()
         .map_err(|e| Fail::Internal(format!("entry_classes.toml: {e}")))?;
@@ -19472,8 +20536,16 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "fa explain balance 1000 --period FY2026-P03 --as-originally-reported | --as-issued-to <audience> | --as-reported-in C:<oid>",
     )?;
     let who = ctx.principal(args);
-    let read_cap = ctx.capability(args, &["read"])?;
-    let certify_cap = if args.switch("--certify") || args.flag("--certificate-out").is_some() {
+    let certify = args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let read_cap = ctx.capability(
+        args,
+        if certify {
+            &["read", "produce"]
+        } else {
+            &["read"]
+        },
+    )?;
+    let certify_cap = if certify {
         Some(read_cap.clone())
     } else {
         None
@@ -19928,6 +21000,28 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         ("entries_decoded", Json::Int(advanced.entries_decoded as i128)),
                         ("rebuilt", Json::Bool(advanced.rebuilt)),
                         ("wrote", Json::Bool(advanced.wrote)),
+                        (
+                            "checkpoint_through",
+                            advanced.checkpoint.map_or(Json::Null, |checkpoint| {
+                                Json::Int(i128::from(checkpoint.through.0))
+                            }),
+                        ),
+                        (
+                            "checkpoint_digest",
+                            advanced.checkpoint.map_or(Json::Null, |checkpoint| {
+                                s(hex(&checkpoint.body_digest))
+                            }),
+                        ),
+                        (
+                            "checkpoint_cadence",
+                            Json::Int(i128::from(advanced.checkpoint_cadence)),
+                        ),
+                        (
+                            "recovered_from",
+                            advanced
+                                .recovered_from
+                                .map_or(Json::Null, |through| Json::Int(i128::from(through.0))),
+                        ),
                         ("cells", Json::Int(fold.cells.len() as i128)),
                         ("pending_cells", Json::Int(fold.pending.len() as i128)),
                         ("entries", Json::Int(fold.entries as i128)),
@@ -19948,6 +21042,8 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             "already current"
                         } else if advanced.rebuilt {
                             "rebuilt from journal"
+                        } else if advanced.recovered_from.is_some() {
+                            "recovered from checkpoint"
                         } else {
                             "advanced"
                         }
@@ -21981,6 +23077,118 @@ fn event_detail_json(ev: &fa_journal::EventRow, book: &Book) -> Result<Json, Fai
     ]))
 }
 
+fn gather_search_records(
+    book: &mut Book,
+    who: VId,
+    capability: &Capability,
+    known_at: Option<CommitSeq>,
+    wants: impl Fn(fa::SearchRecordKind) -> bool,
+) -> Result<Vec<fa::SearchIndexableRecord>, Fail> {
+    let mut records = Vec::new();
+    // Documents are read through this capability. One it sees only
+    // redacted, may not read, or that is erased contributes nothing; one
+    // that fails its own proof is drift and fails the search (exit 8).
+    if wants(fa::SearchRecordKind::Document) {
+        for summary in book.documents(known_at)?? {
+            let document = match book.read_document_for(capability, &summary.oid)? {
+                Ok(fa_journal::DocumentRead::Full(document)) => document,
+                Err(refusal) if refusal.exit == fa_journal::exit::VERIFICATION => {
+                    return Err(Fail::Refusal(refusal));
+                }
+                Ok(fa_journal::DocumentRead::Redacted(_)) | Err(_) => continue,
+            };
+            if let Some(text) = fa::document_search_text(&document) {
+                records.push(fa::SearchIndexableRecord {
+                    id: fa::SearchRecordId::Document(summary.oid),
+                    recorded_at: summary.recorded_at.0,
+                    subject_ref: None,
+                    text,
+                });
+            }
+        }
+    }
+    // Findings are the certified replays of every run recorded at the
+    // frontier, never a graph cache: a run that does not replay fails the
+    // search. Each finding is searched by its procedure and narrative.
+    if wants(fa::SearchRecordKind::Finding) {
+        let mut request = fa::findings::lookup::FindingRunPageRequest {
+            known_at,
+            after: None,
+            limit: fa::findings::lookup::MAX_FINDING_RUN_PAGE,
+        };
+        loop {
+            let page = book.finding_runs(who, capability, &request)??;
+            for run in &page.runs {
+                let recorded =
+                    book.read_findings_with_history(who, capability, &run.certificate_digest)??;
+                for (vid, finding) in recorded.finding_ids.iter().zip(&recorded.report.findings) {
+                    records.push(fa::SearchIndexableRecord {
+                        id: fa::SearchRecordId::Finding(*vid),
+                        recorded_at: recorded.recorded_at.0,
+                        subject_ref: None,
+                        text: format!("{}\n{}", finding.procedure, finding.narrative),
+                    });
+                }
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            request.after = Some(next);
+        }
+    }
+    Ok(records)
+}
+
+fn verify_search(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    const EXAMPLE: &str =
+        "fa verify search [--as-known-at HEAD|<seq>|<RFC3339>] --book <dir> --json";
+    if args.positional.len() != 2
+        || args.flag("--period").is_some()
+        || args.flag("--fiscal-year").is_some()
+    {
+        return Err(usage(
+            "verify search rebuilds and checks the full-text index at one recorded prefix and takes no period filter",
+            EXAMPLE,
+        ));
+    }
+    let who = ctx.principal(args);
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    let mut book = ctx.books.open_admitted(args, |book| {
+        admit_whole_book_read(
+            book,
+            &capability,
+            &[fa_policy::Op::Verify],
+            "verifying the full-text search index",
+        )
+    })?;
+    let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
+    let records = gather_search_records(&mut book, who, &capability, known_at, |_| true)?;
+    let v = book.verify_search(known_at, &records)?;
+    ctx.out.known_at(v.known_at);
+    ctx.out.event(
+        "search_verified",
+        vec![
+            ("known_at", Json::Int(i128::from(v.known_at.0))),
+            ("entries", Json::Int(v.entries as i128)),
+            ("documents", Json::Int(v.documents as i128)),
+            ("findings", Json::Int(v.findings as i128)),
+            ("records", Json::Int(v.records as i128)),
+            ("corpus_hash", s(hex(&v.corpus_hash))),
+            ("index_digest", s(hex(&v.index_digest))),
+        ],
+        &format!(
+            "search index verified from journal at {}: {} records ({} entries, {} documents, {} findings), manifest {}",
+            v.known_at.0,
+            v.records,
+            v.entries,
+            v.documents,
+            v.findings,
+            hex(&v.index_digest),
+        ),
+    );
+    Ok(())
+}
+
 /// `fa search <query> [--kind entry|document|finding|all]` (plan §9, fa-qip):
 /// rank the entries whose description or memos match the query, the
 /// documents whose text does, and the findings whose procedure or narrative
@@ -22035,58 +23243,7 @@ fn search_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         admit_whole_book_read(book, &capability, &[], "searching the journal")
     })?;
     let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-    let mut records = Vec::new();
-    // Documents are read through this capability. One it sees only
-    // redacted, may not read, or that is erased contributes nothing; one
-    // that fails its own proof is drift and fails the search (exit 8).
-    if wants(fa::SearchRecordKind::Document) {
-        for summary in book.documents(known_at)?? {
-            let document = match book.read_document_for(&capability, &summary.oid)? {
-                Ok(fa_journal::DocumentRead::Full(document)) => document,
-                Err(refusal) if refusal.exit == fa_journal::exit::VERIFICATION => {
-                    return Err(Fail::Refusal(refusal));
-                }
-                Ok(fa_journal::DocumentRead::Redacted(_)) | Err(_) => continue,
-            };
-            if let Some(text) = fa::document_search_text(&document) {
-                records.push(fa::SearchIndexableRecord {
-                    id: fa::SearchRecordId::Document(summary.oid),
-                    recorded_at: summary.recorded_at.0,
-                    subject_ref: None,
-                    text,
-                });
-            }
-        }
-    }
-    // Findings are the certified replays of every run recorded at the
-    // frontier, never a graph cache: a run that does not replay fails the
-    // search. Each finding is searched by its procedure and narrative.
-    if wants(fa::SearchRecordKind::Finding) {
-        let mut request = fa::findings::lookup::FindingRunPageRequest {
-            known_at,
-            after: None,
-            limit: fa::findings::lookup::MAX_FINDING_RUN_PAGE,
-        };
-        loop {
-            let page = book.finding_runs(who, &capability, &request)??;
-            for run in &page.runs {
-                let recorded =
-                    book.read_findings_with_history(who, &capability, &run.certificate_digest)??;
-                for (vid, finding) in recorded.finding_ids.iter().zip(&recorded.report.findings) {
-                    records.push(fa::SearchIndexableRecord {
-                        id: fa::SearchRecordId::Finding(*vid),
-                        recorded_at: recorded.recorded_at.0,
-                        subject_ref: None,
-                        text: format!("{}\n{}", finding.procedure, finding.narrative),
-                    });
-                }
-            }
-            let Some(next) = page.next_cursor else {
-                break;
-            };
-            request.after = Some(next);
-        }
-    }
+    let records = gather_search_records(&mut book, who, &capability, known_at, wants)?;
     let results = book.search(query, known_at, &records, kind)?;
     ctx.out.known_at(results.known_at);
     let shown = &results.hits[..results.hits.len().min(limit)];
@@ -22452,6 +23609,29 @@ fn event_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The driver evidence joins the caller's in ascending order, whichever
+    /// side of it the driver's oid falls on, and is never cited twice.
+    #[test]
+    fn allocation_driver_evidence_keeps_the_evidence_ascending() {
+        let ev = |b: u8| fa_model::EvidenceRef {
+            document_oid: Oid([b; 32]),
+            doc_commit: [0; 32],
+            role: 0,
+        };
+        for (caller, driver) in [
+            (vec![ev(0x10), ev(0xf0)], ev(0x00)),
+            (vec![ev(0x10)], ev(0x80)),
+        ] {
+            let mut evidence = caller.clone();
+            with_driver_evidence(&mut evidence, driver);
+            assert!(evidence.windows(2).all(|w| w[0] < w[1]), "{evidence:?}");
+            assert_eq!(evidence.len(), caller.len() + 1);
+        }
+        let mut evidence = vec![ev(0x10), ev(0x20)];
+        with_driver_evidence(&mut evidence, ev(0x20));
+        assert_eq!(evidence, [ev(0x10), ev(0x20)]);
+    }
 
     /// The trial balance's net is checked arithmetic: an in-range difference
     /// is exact, including a full-range negative, and one outside `i128` is

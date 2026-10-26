@@ -1,0 +1,7 @@
+# Sweep fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "S-1"
+provenance = "synthetic"
+reason = "an entry whose class and period state at commit the record does not state"
+discipline = "never cited by a case; the P table's target"

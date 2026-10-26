@@ -1,0 +1,142 @@
+# Fixture facts for tools/case-fetch's unittests (hash-first: no quote text).
+# FX-TRANSFER and FX-TA carry the values and scopes of binding_fixtures.toml's
+# F4 and W406-TA-2000 rows, so their values_sha256 are the Rust-side bytes' hashes.
+
+[[fact]]
+id = "FX-HEADING"
+provenance = "sourced"
+source = "SRC-FX-001"
+anchor_kind = "page"
+anchor = "p12:l12-12"
+quote_sha256 = "d9cc6bea97a46f52305a7466450a4e3ac78cea7558df2ec5015afc5af7720231"
+about_scope = "period:FY2001"
+granularity = "statement_line"
+
+[[fact]]
+id = "FX-LINE"
+provenance = "sourced"
+source = "SRC-FX-002"
+anchor_kind = "line"
+anchor = "l7-7"
+quote_sha256 = "c84bbb0b4a2527a199259537f6e40a823a6f17790374dd80004595c6017c16a1"
+about_scope = "entry:FX-TRANSFER"
+granularity = "journal_entry"
+
+[[fact]]
+id = "FX-PARA"
+provenance = "sourced"
+source = "SRC-FX-002"
+anchor_kind = "paragraph"
+anchor = "para29"
+quote_sha256 = "18cfcc85548f225f86409596e07efc277c882ed48f4f631db94ee544569b2f69"
+about_scope = "period:2001Q2"
+granularity = "journal_entry"
+
+[[fact]]
+id = "FX-TA"
+provenance = "sourced"
+source = "SRC-FX-003"
+anchor_kind = "table_cell"
+anchor = "Selected Financial Data|Total assets|2000"
+quote_sha256 = "bf2c2392b30c9bd6f5d9bb4317984017b01a988ad371a6ab1bf66f18d643725a"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+cell = "total_assets@2000-12-31"
+
+[[fact]]
+id = "FX-TRANSFER"
+provenance = "sourced"
+source = "SRC-FX-001"
+anchor_kind = "page"
+anchor = "p12:l3-5"
+quote_sha256 = "983130a69d94af6ce085b375a6d47940d32f6d37a5cb89fd7ea3dcecfe176d02"
+about_scope = "period:2001Q2"
+granularity = "journal_entry"
+
+[[fact]]
+id = "FX-XBRL"
+provenance = "sourced"
+source = "SRC-FX-004"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Assets|c-2022"
+quote_sha256 = "483a76fb89cdb7d67c8d07ca140477a9bf65b2be902418fd3bb6211a53fa62b7"
+about_scope = "period:FY2022"
+granularity = "xbrl_fact"
+cell = "total_assets@2022-12-31"
+
+[[fact]]
+id = "FX-XBRL-ADJ"
+provenance = "sourced"
+source = "SRC-FX-004"
+anchor_kind = "xbrl"
+anchor = "us-gaap:Assets|c-2022-adj"
+quote_sha256 = "dfa0e695f1224e6cbea3f8e0d6e3903fb5de181fe916ae632e04a3a360dd5f6f"
+about_scope = "period:FY2022"
+granularity = "xbrl_fact"
+cell = "total_assets:RestatementAdjustmentMember@2022-12-31"
+
+[[value]]
+fact = "FX-PARA"
+ordinal = 1
+literal = "July 17, 2001"
+rule = "date_literal"
+value = "2001-07-17"
+unit = ""
+
+[[value]]
+fact = "FX-PARA"
+ordinal = 2
+literal = "$560,000,000"
+rule = "scale"
+param = 0
+value = "56000000000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "FX-TA"
+ordinal = 1
+literal = "98,727"
+rule = "scale"
+param = 0
+value = "98727"
+unit = ""
+precision = 0
+
+[[value]]
+fact = "FX-TRANSFER"
+ordinal = 1
+literal = "$560 million"
+rule = "scale"
+param = 6
+value = "56000000000"
+unit = "USD"
+precision = 6
+
+[[value]]
+fact = "FX-TRANSFER"
+ordinal = 2
+literal = "July 17, 2001"
+rule = "date_literal"
+value = "2001-07-17"
+unit = ""
+
+[[value]]
+fact = "FX-XBRL"
+ordinal = 1
+literal = "1616334000"
+rule = "scale"
+param = 0
+value = "161633400000"
+unit = "USD"
+precision = 3
+
+[[value]]
+fact = "FX-XBRL-ADJ"
+ordinal = 1
+literal = "-12000000"
+rule = "scale"
+param = 0
+value = "-1200000000"
+unit = "USD"
+precision = 3

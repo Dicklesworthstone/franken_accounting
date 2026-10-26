@@ -1542,6 +1542,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         book,
         &req.capability,
         &activated_accounts,
+        &mut None,
     )? {
         Ok(citations) => citations,
         Err(refusal) => {
@@ -1555,8 +1556,18 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         RunState::Abandoned
     };
     let entry = proposal.clone().seal(req.approvals.clone(), None)?;
+    let mirrors = entry_mirrors(&entry)?;
+    let mut tracker = crate::batch::TemplateByteTracker::default();
     let mut in_run = WriteBatch::new(relation::IN_MIGRATION_RUN);
-    in_run.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    tracker.create_vertex(relation::IN_MIGRATION_RUN, evid, 1, &mirrors);
+    in_run.create_vertex(evid, vec![label::ENTRY], mirrors);
+    tracker.set_vertex_property(
+        relation::IN_MIGRATION_RUN,
+        run_vid,
+        property::STATE,
+        Some(RunState::Open.scalar()),
+        Some(to.scalar()),
+    );
     in_run.compare_and_set_vertex_property(
         run_vid,
         property::STATE,
@@ -1564,6 +1575,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         to.scalar(),
         WriteMismatchPolicy::AbortWrite,
     );
+    tracker.add_edge(relation::IN_MIGRATION_RUN, &[]);
     in_run.add_edge(
         edge_id(relation::IN_MIGRATION_RUN, evid, run_vid),
         evid,
@@ -1580,6 +1592,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
         // Every activation touches each affected account's endpoint even
         // when no close exists yet. A concurrently prepared close therefore
         // observes the same native conflict as an ordinary monetary posting.
+        tracker.add_edge(relation::CITES, &[]);
         affected.add_edge(
             edge_id(relation::CITES, evid, account),
             evid,
@@ -1590,6 +1603,17 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
     if !affected.is_empty() {
         batches.push(affected);
     }
+    for _ in 0..reconciliation.len() {
+        tracker.add_edge(relation::CITES, &[]);
+    }
+    if tracker.total_bytes() > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
+        txn.abort();
+        return Ok(Err(crate::batch::batch_byte_budget_refusal(
+            tracker.total_bytes(),
+            None,
+            tie.chunks.len(),
+        )));
+    }
     batches.extend(crate::post::reconciliation_edges(evid, &reconciliation));
     txn.write_ordered(db, batches)?;
     if control_kind == kind::FINALIZE {
@@ -1598,7 +1622,7 @@ pub async fn transition_run<V: asupersync::fs::Vfs + Clone>(
             .map(|(account, _)| *account)
             .collect();
         if let Err(refusal) =
-            crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts)?
+            crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts, [evid])?
         {
             txn.abort();
             return Ok(Err(refusal));

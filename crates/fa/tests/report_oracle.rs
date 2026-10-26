@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use fa::{
     AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest, Book, BookKeys,
-    Capability, CashFlowActivity, CashFlowAssignment, CashFlowDefinition, Entropy,
-    IndirectCashFlowAdjustment, IndirectCashFlowDefinition, IndirectCashFlowRequest,
+    Capability, CashFlowActivity, CashFlowAssignment, CashFlowBasisDefinition, CashFlowDefinition,
+    Entropy, IndirectCashFlowAdjustment, IndirectCashFlowDefinition, IndirectCashFlowRequest,
     RollForwardRequest,
 };
 use fa_journal::{AccountSpec, BookSpec, Document, LegalEntitySpec, PostRequest, UnitPolicy};
@@ -1394,7 +1394,7 @@ fn report_families_match_reference_oracle_across_multiseed_campaign_and_kill_pla
         // -------------------------------------------------------------------
         let icf_request = IndirectCashFlowRequest {
             cash: cash_rf_request,
-            cash_definition: cf_def,
+            cash_definition: CashFlowBasisDefinition::Explicit(cf_def),
             income_periods: vec![p2.code.clone()],
             definition: IndirectCashFlowDefinition {
                 name: format!("seed-{seed}-icf"),

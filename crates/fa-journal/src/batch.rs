@@ -215,9 +215,329 @@ fn outcome_of<V: Vfs + Clone>(
     Ok((body, row.created_at))
 }
 
+fn opt_scalar_len(value: Option<&CanonicalScalar>) -> usize {
+    match value {
+        None => 1,
+        Some(scalar) => 5 + scalar.encode().expect("canonical scalar").len(),
+    }
+}
+
+const fn bytes_scalar_encoded_len(raw_len: usize) -> usize {
+    1 + (raw_len / 8 + 1) * 9
+}
+
+/// Exact canonical `LogicalDeltaTemplate::canonical_bytes().len()` tracker for
+/// a staged substrate transaction (fa-gbkc).
+///
+/// Chronicle V1 capsules cap protected bytes at `MAX_PROTECTED_LEN_V1`
+/// (`56_403 * 256 = 14,439,168`), minus the 16-byte AEAD tag = `14,439,152`
+/// (`fa_model::limits::MAX_BATCH_TEMPLATE_BYTES`). Tracking the exact
+/// canonical template footprint as batch members and control edges are staged
+/// turns a commit-time foundation error (`CapsuleError::Recovery`, exit 5)
+/// into a deterministic `FA-REF-201` refusal (exit 3) naming the member and
+/// recommended split count before any write is published.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TemplateByteTracker {
+    fixed_relations: std::collections::BTreeSet<fgdb_delta_types::RelationId>,
+    fixed_row_bytes: usize,
+    created_vertices: std::collections::BTreeMap<
+        VId,
+        (
+            fgdb_delta_types::RelationId,
+            usize,
+            std::collections::BTreeMap<fgdb_delta_types::PropertyKeyId, usize>,
+        ),
+    >,
+    property_updates:
+        std::collections::BTreeMap<(VId, fgdb_delta_types::PropertyKeyId), PropertyUpdate>,
+}
+
+/// A staged property update: its relation, and the value before and after.
+type PropertyUpdate = (
+    fgdb_delta_types::RelationId,
+    Option<CanonicalScalar>,
+    Option<CanonicalScalar>,
+);
+
+impl TemplateByteTracker {
+    pub(crate) fn create_vertex(
+        &mut self,
+        relation: fgdb_delta_types::RelationId,
+        vid: VId,
+        labels_len: usize,
+        props: &[(fgdb_delta_types::PropertyKeyId, CanonicalScalar)],
+    ) {
+        self.create_vertex_lens(
+            relation,
+            vid,
+            labels_len,
+            props
+                .iter()
+                .map(|(k, v)| (*k, v.encode().expect("canonical scalar").len())),
+        );
+    }
+
+    pub(crate) fn create_vertex_lens(
+        &mut self,
+        relation: fgdb_delta_types::RelationId,
+        vid: VId,
+        labels_len: usize,
+        props: impl IntoIterator<Item = (fgdb_delta_types::PropertyKeyId, usize)>,
+    ) {
+        self.created_vertices
+            .insert(vid, (relation, labels_len, props.into_iter().collect()));
+    }
+
+    pub(crate) fn record_entry_outcome_claim(
+        &mut self,
+        relation: fgdb_delta_types::RelationId,
+        proposal: &fa_model::EntryPayload,
+    ) {
+        if crate::outcome::covered_class(proposal.class) {
+            let ovid = crate::outcome::entry_outcome_vid(proposal);
+            self.create_vertex_lens(
+                relation,
+                ovid,
+                1,
+                [
+                    (property::FA_PAYLOAD, bytes_scalar_encoded_len(134)),
+                    (property::TARGET_REF, bytes_scalar_encoded_len(16)),
+                ],
+            );
+        }
+    }
+
+    pub(crate) fn record_external_subledger(
+        &mut self,
+        relation: fgdb_delta_types::RelationId,
+        batch: &crate::external_subledger::ExternalSubledgerBatch,
+    ) {
+        let payload_len = 168 + batch.feed.len() + batch.batch_key.len();
+        self.create_vertex_lens(
+            relation,
+            batch.identity(),
+            1,
+            [
+                (property::FA_DIGEST, bytes_scalar_encoded_len(32)),
+                (property::FA_PAYLOAD, bytes_scalar_encoded_len(payload_len)),
+                (property::BOOK_ID, bytes_scalar_encoded_len(16)),
+                (property::TARGET_REF, bytes_scalar_encoded_len(16)),
+            ],
+        );
+    }
+
+    pub(crate) fn record_legs(
+        &mut self,
+        entry_vid: VId,
+        entry: &Entry,
+        book: &BookContext,
+    ) -> Result<(), KernelError> {
+        let applied_zero = crate::rows::mantissa_scalar("applied", 0)?;
+        for (i, leg) in entry.proposal.legs.iter().enumerate() {
+            let ordinal =
+                u16::try_from(i).map_err(|_| KernelError::Corrupt("more than u16 legs".into()))?;
+            let lvid = crate::rows::leg_vid(entry_vid, ordinal);
+            let mut mirrors =
+                fa_model::leg_mirrors(leg, ordinal, entry.proposal.effective_date, &book.units)?;
+            mirrors.push((property::APPLIED, applied_zero.clone()));
+            self.create_vertex(relation::HAS_LEG, lvid, 1, &mirrors);
+            self.add_edge(
+                relation::HAS_LEG,
+                &[(property::ORDINAL, CanonicalScalar::Int(i64::from(ordinal)))],
+            );
+            self.add_edge(relation::POSTS_TO, &[]);
+            self.add_edge(relation::IN_UNIT, &[]);
+            for (dimension, _) in &leg.dimension_set {
+                self.add_edge(
+                    relation::FOR,
+                    &[(
+                        property::DIMENSION_ID,
+                        CanonicalScalar::Int(i64::from(*dimension)),
+                    )],
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_limit_cell_move(
+        &mut self,
+        relation: fgdb_delta_types::RelationId,
+        cell: VId,
+        before: &crate::limit::LimitCell,
+        after: &crate::limit::LimitCell,
+    ) -> Result<(), KernelError> {
+        self.set_vertex_property(
+            relation,
+            cell,
+            property::GENERATION,
+            Some(CanonicalScalar::Int(before.generation)),
+            Some(CanonicalScalar::Int(after.generation)),
+        );
+        for (key, b, a) in [
+            (
+                property::DEBITS_POSTED,
+                before.debits_posted,
+                after.debits_posted,
+            ),
+            (
+                property::CREDITS_POSTED,
+                before.credits_posted,
+                after.credits_posted,
+            ),
+            (
+                property::DEBITS_PENDING,
+                before.debits_pending,
+                after.debits_pending,
+            ),
+            (
+                property::CREDITS_PENDING,
+                before.credits_pending,
+                after.credits_pending,
+            ),
+        ] {
+            self.set_vertex_property(
+                relation,
+                cell,
+                key,
+                Some(crate::rows::mantissa_scalar("limit.before", b)?),
+                Some(crate::rows::mantissa_scalar("limit.after", a)?),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_object_stage(
+        &mut self,
+        relation: fgdb_delta_types::RelationId,
+        bytes: &[u8],
+    ) {
+        if bytes.len() <= object::CHUNK_BYTES {
+            return;
+        }
+        self.fixed_relations.insert(relation);
+        for part in bytes.chunks(object::CHUNK_BYTES) {
+            self.fixed_row_bytes += 156 + bytes_scalar_encoded_len(part.len());
+        }
+    }
+
+    pub(crate) fn add_edge(
+        &mut self,
+        relation: fgdb_delta_types::RelationId,
+        props: &[(fgdb_delta_types::PropertyKeyId, CanonicalScalar)],
+    ) {
+        self.fixed_relations.insert(relation);
+        self.fixed_row_bytes += 75
+            + props
+                .iter()
+                .map(|(_, v)| 12 + v.encode().expect("canonical scalar").len())
+                .sum::<usize>();
+    }
+
+    pub(crate) fn set_vertex_property(
+        &mut self,
+        relation: fgdb_delta_types::RelationId,
+        vid: VId,
+        key: fgdb_delta_types::PropertyKeyId,
+        before: Option<CanonicalScalar>,
+        after: Option<CanonicalScalar>,
+    ) {
+        if let Some((_, _, props)) = self.created_vertices.get_mut(&vid) {
+            match after {
+                Some(value) => {
+                    props.insert(key, value.encode().expect("canonical scalar").len());
+                }
+                None => {
+                    props.remove(&key);
+                }
+            }
+            return;
+        }
+        self.property_updates
+            .entry((vid, key))
+            .and_modify(|(_, _, latest_after)| *latest_after = after.clone())
+            .or_insert((relation, before, after));
+    }
+
+    #[must_use]
+    pub(crate) fn total_bytes(&self) -> usize {
+        let mut relations = self.fixed_relations.clone();
+        let mut row_bytes = self.fixed_row_bytes;
+        for (relation, labels_len, props) in self.created_vertices.values() {
+            relations.insert(*relation);
+            row_bytes += 38 + 8 * labels_len + props.values().map(|len| 12 + len).sum::<usize>();
+        }
+        for (relation, before, after) in self.property_updates.values() {
+            if before != after {
+                relations.insert(*relation);
+                row_bytes += 30 + opt_scalar_len(before.as_ref()) + opt_scalar_len(after.as_ref());
+            }
+        }
+        if relations.is_empty() && row_bytes == 0 {
+            0
+        } else {
+            70 + 53 * relations.len() + row_bytes
+        }
+    }
+}
+
+pub(crate) fn batch_byte_budget_refusal(
+    bytes: usize,
+    member: Option<usize>,
+    total_members: usize,
+) -> Refusal {
+    let max_bytes = fa_model::limits::MAX_BATCH_TEMPLATE_BYTES;
+    let splits = bytes.div_ceil(max_bytes).max(2);
+    let per_batch = total_members.div_ceil(splits).max(1);
+    let message = match member {
+        Some(i) => format!(
+            "batch member {i} of {total_members} brings the batch's canonical LogicalDeltaTemplate to {bytes} bytes, exceeding max_batch_template_bytes ({max_bytes}); nothing in the batch was recorded"
+        ),
+        None => format!(
+            "batch canonical LogicalDeltaTemplate is {bytes} bytes ({total_members} members), exceeding max_batch_template_bytes ({max_bytes}); nothing in the batch was recorded"
+        ),
+    };
+    let mut refusal = Refusal::new(
+        code::BATCH_BYTE_BUDGET,
+        exit::REFUSAL,
+        message,
+        "registries/limits.toml max_batch_template_bytes (14439152); plan §5.8, §17",
+        format!(
+            "split the {total_members} entries into at least {splits} batches of at most {per_batch} entries each so each batch stays within {max_bytes} bytes"
+        ),
+    )
+    .at("template_bytes", bytes)
+    .at("max_batch_template_bytes", max_bytes)
+    .at("recommended_splits", splits);
+    if let Some(i) = member {
+        refusal = refusal.at("member", i);
+    }
+    refusal
+}
+
+/// [`stage_outcome_tracked`] without a byte budget; only tests stage this way.
+#[cfg(test)]
 fn stage_outcome(
     cx: &QueryCx,
     stage: &mut WriteBatch,
+    book: Id128,
+    vid: VId,
+    body: &OutcomeBody,
+) -> Result<(), KernelError> {
+    stage_outcome_tracked(
+        cx,
+        stage,
+        &mut TemplateByteTracker::default(),
+        book,
+        vid,
+        body,
+    )
+}
+
+fn stage_outcome_tracked(
+    cx: &QueryCx,
+    stage: &mut WriteBatch,
+    tracker: &mut TemplateByteTracker,
     book: Id128,
     vid: VId,
     body: &OutcomeBody,
@@ -245,6 +565,8 @@ fn stage_outcome(
         ObjectKind::IntentOutcome,
         &bytes,
     )?;
+    tracker.record_object_stage(relation::IN_BATCH, &bytes);
+    tracker.create_vertex(relation::IN_BATCH, vid, 1, &props);
     stage.create_vertex(vid, vec![label::INTENT_OUTCOME], props);
     Ok(())
 }
@@ -318,6 +640,8 @@ fn judge_retry<V: Vfs + Clone>(
     }
     let mut entries = Vec::with_capacity(batch.members().len());
     let mut publications = Vec::with_capacity(batch.members().len());
+    // Reused only while each member's transaction has the same basis.
+    let mut reconciliation = None;
     for (i, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
         match prepare_member(
             db,
@@ -326,6 +650,8 @@ fn judge_retry<V: Vfs + Clone>(
             member_request(intent, capability),
             admission,
             None,
+            None,
+            &mut reconciliation,
         )? {
             Err(refusal) => return Ok(Err(member_refusal(i, refusal))),
             Ok(PostPreparation::AlreadyRecorded(posted)) => {
@@ -482,10 +808,17 @@ pub(crate) struct StagedBatch {
     pub(crate) outcome: VId,
     pub(crate) entries: Vec<EntryRef>,
     pub(crate) periods: Vec<String>,
+    pub(crate) template_tracker: TemplateByteTracker,
     prepared: Vec<Entry>,
     security_policy_epoch: u64,
     /// A rehearsal can be retained and inspected, but never published.
     planning: bool,
+}
+
+impl StagedBatch {
+    pub(crate) fn prepared_entries(&self) -> &[Entry] {
+        &self.prepared
+    }
 }
 
 pub(crate) enum BatchStage {
@@ -539,13 +872,26 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
     }
     let ovid = outcome_vid(book, batch);
     let mut txn: Option<WriteTxn> = None;
+    let mut tracker = TemplateByteTracker::default();
+    // Every member stages into one transaction, so the reconciliation
+    // history is verified once at its basis and shared (fa-rcw1).
+    let mut reconciliation = None;
     let mut members: Vec<BatchMember> = Vec::with_capacity(batch.members().len());
     let mut resolved = Vec::with_capacity(batch.members().len());
     let mut security_policy_epoch = None;
     let planning = matches!(admission, Admission::Plan);
     for (i, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
         let request = member_request(intent, capability);
-        let prepared = match prepare_member(db, ctx, book, request, admission, txn.take())? {
+        let prepared = match prepare_member(
+            db,
+            ctx,
+            book,
+            request,
+            admission,
+            txn.take(),
+            Some(std::mem::take(&mut tracker)),
+            &mut reconciliation,
+        )? {
             Err(refusal) => return Ok(Err(member_refusal(i, refusal))),
             // The member's identity is taken. Admission already ran for it,
             // so the outcome may be observed: with a recorded outcome this is
@@ -589,7 +935,17 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         }
         security_policy_epoch = Some(epoch);
         resolved.push(prepared.entry().clone());
-        let (staged, member) = prepared.into_member(planning)?;
+        let (staged, member, next_tracker) = prepared.into_member(planning)?;
+        tracker = next_tracker;
+        let current_bytes = tracker.total_bytes();
+        if current_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
+            staged.abort();
+            return Ok(Err(batch_byte_budget_refusal(
+                current_bytes,
+                Some(i),
+                batch.members().len(),
+            )));
+        }
         // After the first member's admission, the outcome identity is a
         // witness: absent here, and a concurrent identical batch conflicts.
         // A recorded outcome whose first member is new is another request.
@@ -630,14 +986,34 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         entries: members.iter().map(|m| m.entry_ref).collect(),
     };
     let mut stage = WriteBatch::new(relation::IN_BATCH);
-    stage_outcome(&ctx.query(), &mut stage, book.book_id, ovid, &body)?;
+    stage_outcome_tracked(
+        &ctx.query(),
+        &mut stage,
+        &mut tracker,
+        book.book_id,
+        ovid,
+        &body,
+    )?;
     for m in &members {
         let evid = m.entry_ref.vid;
+        tracker.add_edge(relation::IN_BATCH, &[]);
         stage.add_edge(edge_id(relation::IN_BATCH, evid, ovid), evid, ovid, vec![]);
+    }
+    let total_bytes = tracker.total_bytes();
+    if total_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
+        txn.abort();
+        return Ok(Err(batch_byte_budget_refusal(
+            total_bytes,
+            Some(batch.members().len().saturating_sub(1)),
+            batch.members().len(),
+        )));
     }
     txn.write_ordered(db, vec![stage])?;
     let accounts = crate::register_capacity::accounts(resolved.iter().map(|e| &e.proposal));
-    if let Err(refusal) = crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts)? {
+    let staged = members.iter().map(|m| m.entry_ref.vid);
+    if let Err(refusal) =
+        crate::register_capacity::admit(&txn, db, ctx, book.book_id, &accounts, staged)?
+    {
         txn.abort();
         return Ok(Err(refusal));
     }
@@ -646,6 +1022,7 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
         outcome: ovid,
         entries: body.entries,
         periods: members.into_iter().map(|m| m.period).collect(),
+        template_tracker: tracker,
         prepared: resolved,
         security_policy_epoch: security_policy_epoch.ok_or_else(|| {
             KernelError::Corrupt("a validated batch has no security policy epoch".into())
@@ -693,8 +1070,18 @@ async fn commit_batch_with_crash<V: Vfs + Clone>(
         outcome: ovid,
         entries,
         periods,
+        template_tracker,
         ..
     } = *staged;
+    let total_bytes = template_tracker.total_bytes();
+    if total_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
+        txn.abort();
+        return Ok(Err(batch_byte_budget_refusal(
+            total_bytes,
+            Some(batch.members().len().saturating_sub(1)),
+            batch.members().len(),
+        )));
+    }
     let commit = ctx.commit();
     commit.checkpoint().map_err(WriteTxnError::Interrupted)?;
     for capability in capabilities {
@@ -800,6 +1187,7 @@ fn plan_retention(
     book: &BookContext,
     plan: &BatchPlan,
     entries: &[EntryRef],
+    tracker: &mut TemplateByteTracker,
 ) -> Result<WriteBatch, KernelError> {
     let digest = plan.certificate_digest().map_err(plan_codec)?;
     let cvid = crate::plan::plan_certificate_vid(book.book_id, &digest);
@@ -814,32 +1202,32 @@ fn plan_retention(
         ObjectKind::BatchPlan,
         &bytes,
     )?;
-    retention.create_vertex(
-        cvid,
-        vec![label::CERTIFICATE],
-        vec![
-            (
-                property::FA_PAYLOAD,
-                scalar_bytes(
-                    "batch plan",
-                    object::payload(ObjectKind::BatchPlan, &bytes)?,
-                )?,
-            ),
-            (
-                property::FA_DIGEST,
-                scalar_bytes("batch plan certificate digest", digest.to_vec())?,
-            ),
-            (
-                property::BOOK_ID,
-                scalar_bytes("batch plan book", book.book_id.0.to_vec())?,
-            ),
-        ],
-    );
+    tracker.record_object_stage(relation::CITES, &bytes);
+    let props = vec![
+        (
+            property::FA_PAYLOAD,
+            scalar_bytes(
+                "batch plan",
+                object::payload(ObjectKind::BatchPlan, &bytes)?,
+            )?,
+        ),
+        (
+            property::FA_DIGEST,
+            scalar_bytes("batch plan certificate digest", digest.to_vec())?,
+        ),
+        (
+            property::BOOK_ID,
+            scalar_bytes("batch plan book", book.book_id.0.to_vec())?,
+        ),
+    ];
+    tracker.create_vertex(relation::CITES, cvid, 1, &props);
+    retention.create_vertex(cvid, vec![label::CERTIFICATE], props);
     for vid in entries
         .iter()
         .map(|entry| entry.vid)
         .chain([outcome_vid(book, plan.batch())])
     {
+        tracker.add_edge(relation::CITES, &[]);
         retention.add_edge(edge_id(relation::CITES, vid, cvid), vid, cvid, vec![]);
     }
     Ok(retention)
@@ -887,6 +1275,7 @@ pub fn plan_batch<V: Vfs + Clone>(
         authentication: [0; 32],
     };
     certificate.authentication = plan_authentication(book, &certificate)?;
+    let member_count = batch.members().len();
     let plan = BatchPlan::new(
         batch,
         staged.prepared.clone(),
@@ -894,9 +1283,23 @@ pub fn plan_batch<V: Vfs + Clone>(
         certificate,
     )
     .map_err(plan_codec)?;
-    staged
-        .txn
-        .write_ordered(db, vec![plan_retention(ctx, book, &plan, &staged.entries)?])?;
+    let retention = plan_retention(
+        ctx,
+        book,
+        &plan,
+        &staged.entries,
+        &mut staged.template_tracker,
+    )?;
+    let total_bytes = staged.template_tracker.total_bytes();
+    if total_bytes > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES {
+        staged.txn.abort();
+        return Ok(Err(batch_byte_budget_refusal(
+            total_bytes,
+            Some(member_count.saturating_sub(1)),
+            member_count,
+        )));
+    }
+    staged.txn.write_ordered(db, vec![retention])?;
     staged.txn.abort();
     Ok(Ok(plan))
 }
@@ -1171,9 +1574,14 @@ pub async fn commit_batch_plan<V: Vfs + Clone>(
             "the batch certificate identity is already occupied",
         )));
     }
-    staged
-        .txn
-        .write_ordered(db, vec![plan_retention(ctx, book, &plan, &staged.entries)?])?;
+    let retention = plan_retention(
+        ctx,
+        book,
+        &plan,
+        &staged.entries,
+        &mut staged.template_tracker,
+    )?;
+    staged.txn.write_ordered(db, vec![retention])?;
     match commit_batch(
         db,
         ctx,
@@ -1341,5 +1749,448 @@ mod tests {
             read_outcome(&db, &cx.query(), vid),
             Err(KernelError::Corrupt(_))
         ));
+    }
+
+    fn setup_batch_test_book() -> (
+        asupersync::runtime::Runtime,
+        asupersync::Cx,
+        Database<MemVfs>,
+        BookContext,
+        fa_money::UnitId,
+        VId,
+        VId,
+        Vec<fa_model::EvidenceRef>,
+    ) {
+        use fa_model::{Erasable, SealKey, SymbolTable, account_vid};
+        use fa_money::UnitRegistry;
+        use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
+
+        let runtime = RuntimeBuilder::new().build().expect("runtime");
+        let root = runtime.request_cx_with_budget(Budget::INFINITE);
+        let ctx = PurposeContexts::narrow_runtime_root(&root);
+        let keys = DatabaseKeys::new(
+            [0x6a; 32],
+            DatabaseSecurityNamespaceId([0x6b; 32]),
+            [0x6c; 32],
+        );
+        let mut db = runtime
+            .block_on(async { Database::open_memory(&ctx.commit(), keys).await })
+            .expect("open");
+        let units = UnitRegistry::with_defaults();
+        let usd = units.lookup("USD").expect("USD");
+        let calendar = FiscalCalendar::monthly("cal", 1, 1).expect("calendar");
+        let book_id = Id128([0x19; 16]);
+        let spec = crate::genesis::BookSpec {
+            book_id,
+            name: "Batch Budget Co".into(),
+            base_unit: usd,
+            calendar: calendar.clone(),
+            time_zone_policy: Some(crate::genesis::TimeZonePolicy::Utc),
+            entities: Vec::new(),
+            opening_date: None,
+        };
+        let symbols = SymbolTable::compiled();
+        runtime
+            .block_on(async {
+                crate::genesis::create_book(&mut db, &ctx, &spec, &units, &symbols).await
+            })
+            .expect("create_book");
+        let book = BookContext {
+            book_id,
+            calendar,
+            units,
+            seal_key: SealKey([0x11; 32]),
+            symbols,
+        };
+        let principal = VId(7);
+        let chart = vec![
+            crate::genesis::AccountSpec {
+                code: "1000".into(),
+                name: "Cash".into(),
+                account_type: 1,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: crate::genesis::UnitPolicy::Single(usd),
+                parent_code: None,
+                limit: None,
+            },
+            crate::genesis::AccountSpec {
+                code: "6000".into(),
+                name: "Rent".into(),
+                account_type: 5,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: crate::genesis::UnitPolicy::Single(usd),
+                parent_code: None,
+                limit: None,
+            },
+        ];
+        let day = DateDay::from_ymd(2026, 3, 15).expect("day");
+        let schema_cap = Capability::embedded(principal, &["schema_change"]).expect("cap");
+        runtime
+            .block_on(async {
+                crate::genesis::install_chart(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    &chart,
+                    principal,
+                    day,
+                    b"chart-1",
+                    Erasable::seal(&"chart".to_string(), None, &book.seal_key, [5; 32], [6; 24]),
+                    &schema_cap,
+                )
+                .await
+            })
+            .expect("install_chart")
+            .expect("admitted");
+        let (_, periods) = runtime
+            .block_on(async {
+                crate::genesis::create_periods(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    2026,
+                    principal,
+                    Erasable::seal(
+                        &"periods".to_string(),
+                        None,
+                        &book.seal_key,
+                        [1; 32],
+                        [2; 24],
+                    ),
+                    &schema_cap,
+                )
+                .await
+            })
+            .expect("create_periods")
+            .expect("admitted");
+        let march = periods
+            .iter()
+            .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+            .expect("march")
+            .code
+            .clone();
+        let doc = crate::evidence::Document {
+            book_id,
+            kind: 1,
+            mime: "text/plain".into(),
+            grade: 3,
+            retrieved_by: principal,
+            bytes: b"INVOICE 2026-0315 Batch Budget Co fixture source document".to_vec(),
+        };
+        runtime
+            .block_on(async { crate::evidence::add_document(&mut db, &ctx, &book, &doc).await })
+            .expect("add_document")
+            .expect("admitted");
+        let evidence = vec![doc.evidence_ref(1)];
+        let open_cap = Capability::embedded(principal, &["close"]).expect("cap");
+        runtime
+            .block_on(async {
+                crate::period::transition_period(
+                    &mut db,
+                    &ctx,
+                    &book,
+                    &march,
+                    PeriodTransition::Open,
+                    principal,
+                    1,
+                    b"open-march",
+                    Erasable::seal(&"open".to_string(), None, &book.seal_key, [3; 32], [4; 24]),
+                    &open_cap,
+                    &[],
+                )
+                .await
+            })
+            .expect("open")
+            .expect("admitted");
+
+        (
+            runtime,
+            root,
+            db,
+            book,
+            usd,
+            account_vid(book_id, "1000"),
+            account_vid(book_id, "6000"),
+            evidence,
+        )
+    }
+
+    fn make_entry_intent(
+        book: &BookContext,
+        usd: fa_money::UnitId,
+        cash: VId,
+        rent: VId,
+        evidence: &[fa_model::EvidenceRef],
+        leg_pairs: usize,
+        key: &[u8],
+    ) -> fa_intents::PostIntent {
+        use fa_model::{EntryClass, EntryOrigin, EntryPayload, Erasable, LegPayload, Oid};
+        use fa_money::{Amount, Side};
+        use fa_time::DateDay;
+
+        let mut legs = Vec::with_capacity(leg_pairs * 2);
+        for _ in 0..leg_pairs {
+            legs.push(LegPayload::simple(
+                Side::Debit,
+                rent,
+                Amount::new(usd, 1_000),
+            ));
+            legs.push(LegPayload::simple(
+                Side::Credit,
+                cash,
+                Amount::new(usd, 1_000),
+            ));
+        }
+        let unit_totals = EntryPayload::fold_unit_totals(&legs).expect("totals");
+        fa_intents::PostIntent::new(
+            EntryPayload {
+                schema_minor: 0,
+                book_id: book.book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: DateDay::from_ymd(2026, 3, 15).expect("day"),
+                document_date: None,
+                description: Erasable::seal(
+                    &"batch member".to_string(),
+                    None,
+                    &book.seal_key,
+                    [0x22; 32],
+                    [0x33; 24],
+                ),
+                effective_period: None,
+                legs,
+                control: None,
+                unit_totals,
+                base_totals: None,
+                idempotency_key: key.to_vec(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([1; 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: VId(7),
+                session_ref: None,
+                evidence: evidence.to_vec(),
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            },
+            Vec::new(),
+        )
+        .expect("intent")
+    }
+
+    #[test]
+    fn template_byte_tracker_matches_substrate_canonical_delta_bytes() {
+        let (runtime, root, mut db, book, usd, cash, rent, evidence) = setup_batch_test_book();
+        let ctx = PurposeContexts::narrow_runtime_root(&root);
+        let cap = Capability::embedded(VId(7), &["post"]).expect("post cap");
+        let batch = PostBatch::new(
+            b"exact-byte-check".to_vec(),
+            vec![
+                make_entry_intent(&book, usd, cash, rent, &evidence, 1, b"m-0"),
+                make_entry_intent(&book, usd, cash, rent, &evidence, 3, b"m-1"),
+                make_entry_intent(&book, usd, cash, rent, &evidence, 5, b"m-2"),
+            ],
+        )
+        .expect("batch");
+        let basis = db.frontier().expect("frontier");
+        let staged = match stage_batch(
+            &mut db,
+            &ctx,
+            &book,
+            &vec![cap.clone(); 3],
+            &batch,
+            Admission::Commit,
+        )
+        .expect("kernel")
+        .expect("admitted")
+        {
+            BatchStage::Staged(staged) => staged,
+            BatchStage::Recorded(_) => panic!("expected fresh staged batch"),
+        };
+        let tracked_template_bytes = staged.template_tracker.total_bytes();
+        let posted = runtime
+            .block_on(commit_batch(
+                &mut db,
+                &ctx,
+                &book,
+                &vec![cap; 3],
+                &batch,
+                Admission::Commit,
+                staged,
+            ))
+            .expect("kernel")
+            .expect("committed");
+        assert!(!posted.already_recorded);
+        let deltas: Vec<_> = db.delta_since(basis).expect("delta_since").collect();
+        assert_eq!(deltas.len(), 1);
+        // LogicalDeltaBatch canonical encoding adds 8 bytes (CommitSeq) + 16 bytes (WriteId)
+        // to the LogicalDeltaTemplate canonical bytes.
+        assert_eq!(
+            deltas[0].canonical_bytes().expect("canonical_bytes").len(),
+            tracked_template_bytes + 24
+        );
+    }
+
+    #[test]
+    fn batch_exceeding_v1_capsule_ceiling_refuses_with_fa_ref_201_and_split_bound() {
+        let (runtime, root, mut db, book, usd, cash, rent, evidence) = setup_batch_test_book();
+        let ctx = PurposeContexts::narrow_runtime_root(&root);
+        let cap = Capability::embedded(VId(7), &["post"]).expect("post cap");
+
+        // Each 240-leg (120 debit/credit pair) entry is ~13.3 KB in vertex storage
+        // (< 16,384 B per-vertex limit), but contributes ~126 KB to LogicalDeltaTemplate.
+        // Measure the exact 1-entry and 2-entry template footprints to find the exact
+        // boundary count N where N entries fit <= MAX_BATCH_TEMPLATE_BYTES and N + 1 exceed it.
+        let probe_batch = PostBatch::new(
+            b"probe-batch".to_vec(),
+            vec![
+                make_entry_intent(&book, usd, cash, rent, &evidence, 120, b"probe-000"),
+                make_entry_intent(&book, usd, cash, rent, &evidence, 120, b"probe-001"),
+            ],
+        )
+        .expect("probe batch");
+        let two_entry_bytes = match stage_batch(
+            &mut db,
+            &ctx,
+            &book,
+            &vec![cap.clone(); 2],
+            &probe_batch,
+            Admission::Plan,
+        )
+        .expect("kernel")
+        .expect("probe staged")
+        {
+            BatchStage::Staged(staged) => {
+                let bytes = staged.template_tracker.total_bytes();
+                staged.txn.abort();
+                bytes
+            }
+            BatchStage::Recorded(_) => panic!("expected fresh probe"),
+        };
+        let one_probe = PostBatch::new(
+            b"probe-batch-1".to_vec(),
+            vec![make_entry_intent(
+                &book,
+                usd,
+                cash,
+                rent,
+                &evidence,
+                120,
+                b"probe-000",
+            )],
+        )
+        .expect("probe 1");
+        let one_entry_bytes = match stage_batch(
+            &mut db,
+            &ctx,
+            &book,
+            std::slice::from_ref(&cap),
+            &one_probe,
+            Admission::Plan,
+        )
+        .expect("kernel")
+        .expect("probe 1 staged")
+        {
+            BatchStage::Staged(staged) => {
+                let bytes = staged.template_tracker.total_bytes();
+                staged.txn.abort();
+                bytes
+            }
+            BatchStage::Recorded(_) => panic!("expected fresh probe 1"),
+        };
+        let per_additional_entry = two_entry_bytes - one_entry_bytes;
+        let fit_count = 1
+            + (fa_model::limits::MAX_BATCH_TEMPLATE_BYTES - one_entry_bytes) / per_additional_entry;
+        let over_count = fit_count + 1;
+        assert!(
+            over_count < 200 && over_count < fa_model::limits::MAX_BATCH_ENTRIES,
+            "over_count={over_count} must be well below MAX_BATCH_ENTRIES"
+        );
+
+        let over_entries: Vec<fa_intents::PostIntent> = (0..over_count)
+            .map(|i| {
+                make_entry_intent(
+                    &book,
+                    usd,
+                    cash,
+                    rent,
+                    &evidence,
+                    120,
+                    format!("over-{i:03}").as_bytes(),
+                )
+            })
+            .collect();
+        let over_batch =
+            PostBatch::new(b"over-capsule-batch".to_vec(), over_entries).expect("batch");
+        let basis = db.frontier().expect("frontier");
+
+        let plan_refusal = plan_batch(&mut db, &ctx, &book, cap.clone(), over_batch.clone())
+            .expect("kernel")
+            .expect_err("over-budget batch plan must refuse");
+        assert_eq!(plan_refusal.code, code::BATCH_BYTE_BUDGET);
+        assert_eq!(plan_refusal.exit, exit::REFUSAL);
+
+        let commit_refusal = runtime
+            .block_on(post_batch(&mut db, &ctx, &book, cap.clone(), over_batch))
+            .expect("kernel")
+            .expect_err("over-budget batch commit must refuse");
+        assert_eq!(commit_refusal.code, code::BATCH_BYTE_BUDGET);
+        assert_eq!(commit_refusal.exit, exit::REFUSAL);
+        let detail = commit_refusal.detail.as_ref().expect("detail");
+        assert!(
+            detail
+                .at
+                .contains(&("member", crate::refusal::Locus::Index(fit_count as u64))),
+            "at: {:?}",
+            detail.at
+        );
+        assert!(
+            detail.at.contains(&(
+                "max_batch_template_bytes",
+                crate::refusal::Locus::Index(fa_model::limits::MAX_BATCH_TEMPLATE_BYTES as u64),
+            )),
+            "at: {:?}",
+            detail.at
+        );
+        assert!(
+            detail
+                .at
+                .contains(&("recommended_splits", crate::refusal::Locus::Index(2))),
+            "at: {:?}",
+            detail.at
+        );
+        assert_eq!(
+            db.frontier().expect("frontier"),
+            basis,
+            "refused batch must leave book head unchanged"
+        );
+
+        // fit_count such entries fit <= MAX_BATCH_TEMPLATE_BYTES (14,439,152 B)
+        // and commit cleanly inside the V1 Chronicle capsule ceiling.
+        let fit_entries: Vec<fa_intents::PostIntent> = (0..fit_count)
+            .map(|i| {
+                make_entry_intent(
+                    &book,
+                    usd,
+                    cash,
+                    rent,
+                    &evidence,
+                    120,
+                    format!("fit-{i:03}").as_bytes(),
+                )
+            })
+            .collect();
+        let fit_batch = PostBatch::new(b"fit-capsule-batch".to_vec(), fit_entries).expect("batch");
+        let posted = runtime
+            .block_on(post_batch(&mut db, &ctx, &book, cap, fit_batch))
+            .expect("kernel")
+            .expect("fit_count-entry batch within MAX_BATCH_TEMPLATE_BYTES must commit");
+        assert_eq!(posted.entries.len(), fit_count);
+        assert!(!posted.already_recorded);
     }
 }

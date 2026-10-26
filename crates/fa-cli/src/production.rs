@@ -10,7 +10,9 @@
 //! only through its redacted view is listed as redacted and ships no bytes.
 
 use fa_journal::refusal::{Refusal, code, exit};
-use fa_journal::{ProducedDocument, ProductionProfile, ProductionView, RecordedRange};
+use fa_journal::{
+    ProducedDocument, ProductionProfile, ProductionView, RecordedExhibit, RecordedRange,
+};
 use fa_model::Oid;
 
 use crate::args::Args;
@@ -18,6 +20,7 @@ use crate::cli::{Ctx, Fail, control_date, hex, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
 const OPEN_EXAMPLE: &str = "fa production open <matter> --bates-prefix <PREFIX> [--start <n>] [--load-file dat] [--protective-order <oid>] --json";
+const EXHIBIT_EXAMPLE: &str = "fa exhibit mark <document> --label <label> --matter <matter> --json";
 const PRODUCE_EXAMPLE: &str = "fa produce --matter <matter> --document <oid>[:pages[:designation]]... --out <new-dir> [--withhold <oid>]... [--privilege <claims.json>] [--volume VOL001] --json";
 const BUNDLE_PRODUCE_EXAMPLE: &str = "fa produce --matter <matter> --bundle [--state <oid>|latest] [--account <code> --from YYYY-MM-DD --to YYYY-MM-DD | --entry <vid>...] [--balance <code>:<UNIT>[:YYYY-MM-DD]]... [--inline-documents] --out <new-dir> --json";
 const PRIVILEGE_EXAMPLE: &str = "--privilege claims.json: [{\"document\": \"<oid>\", \"date\": \"YYYY-MM-DD\", \"author\": \"...\", \"recipients\": [\"...\"], \"description\": \"...\", \"basis\": \"Attorney-client privilege\"}]";
@@ -133,6 +136,78 @@ pub(crate) fn range_json(
         ("produced_by", vid_hex(r.produced_by)),
     ]);
     obj(fields)
+}
+
+fn exhibit_json(e: &RecordedExhibit) -> Json {
+    obj(vec![
+        ("attestation", vid_hex(e.attestation)),
+        ("document", s(hex(&e.document.0))),
+        ("label", s(&e.label)),
+        ("signed_digest", s(hex(&e.signed_digest))),
+        ("recorded_at", seq(e.recorded_at)),
+        ("attested_by", vid_hex(e.attested_by)),
+    ])
+}
+
+pub(crate) fn exhibit_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    match args.positional.get(1).map(String::as_str) {
+        Some("mark") => mark_exhibit(ctx, args),
+        _ => Err(usage("exhibit has the subcommand mark", EXHIBIT_EXAMPLE)),
+    }
+}
+
+fn mark_exhibit(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    let doc_text = match args.positional.get(2) {
+        Some(value) if args.positional.len() == 3 => value.as_str(),
+        _ => {
+            return Err(usage(
+                "exhibit mark takes exactly one document oid",
+                EXHIBIT_EXAMPLE,
+            ));
+        }
+    };
+    let document = Oid(crate::document::hex32(
+        doc_text.strip_prefix("D:").unwrap_or(doc_text),
+        "the document oid",
+    )?);
+    let label = args.require("--label", "the exhibit label, for example Px-12")?;
+    if args.flag_all("--label").len() > 1 {
+        return Err(usage("--label is given once", EXHIBIT_EXAMPLE));
+    }
+    let matter = args.require("--matter", "the matter whose profile marks this exhibit")?;
+    if args.flag_all("--matter").len() > 1 {
+        return Err(usage("--matter is given once", EXHIBIT_EXAMPLE));
+    }
+    let capability = ctx.capability(args, &["produce"])?;
+    let mut book = ctx.books.open(args)?;
+    let marked = book.mark_exhibit(capability, matter, document, label)??;
+    ctx.out.at_book(&book)?;
+    ctx.out.event(
+        "exhibit_marked",
+        vec![
+            ("attestation", vid_hex(marked.attestation)),
+            ("matter", s(&marked.matter)),
+            ("document", s(hex(&marked.document.0))),
+            ("label", s(&marked.label)),
+            ("signed_digest", s(hex(&marked.signed_digest))),
+            ("recorded_at", seq(marked.recorded_at)),
+            ("already_recorded", Json::Bool(marked.already_recorded)),
+        ],
+        &format!(
+            "matter {}: exhibit {} -> {} ({}attestation {:032x}, record {})",
+            marked.matter,
+            marked.label,
+            hex(&marked.document.0),
+            if marked.already_recorded {
+                "was already marked; "
+            } else {
+                ""
+            },
+            marked.attestation.0,
+            marked.recorded_at.0
+        ),
+    );
+    Ok(())
 }
 
 fn open(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -275,6 +350,9 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             designation_name(r.range.designation)
         ));
     }
+    for e in &view.exhibits {
+        human.push(format!("  exhibit {}: {}", e.label, hex(&e.document.0)));
+    }
     ctx.out.event(
         "production_detail",
         vec![
@@ -287,6 +365,10 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         .map(|r| range_json(&view.profile, r, false))
                         .collect(),
                 ),
+            ),
+            (
+                "exhibits",
+                Json::Arr(view.exhibits.iter().map(exhibit_json).collect()),
             ),
         ],
         &human.join("\n"),

@@ -1,0 +1,35 @@
+# Twin gap fixture expectations: ponzi.net_investment@4 attributes cash-role legs only, so A's
+# net investment misses the 300.00 of principal B transferred to A without cash: the procedure's
+# value on G-A differs from A's sourced principal by exactly 300.00. C, with no transfer, is the
+# twin target, where the gap is 0 (the shape of M-N-01). Sourced values are fixture values.
+
+[[expectation]]
+id = "twins_gap-N-01"
+type = "N"
+book_variant = "native"
+statement_template = "N.exact_gap"
+basis = ["G-A", "G-C", "G-T"]
+kind = "exact_gap"
+target = "G-A"
+procedure = "ponzi.net_investment"
+version = 4
+mechanism = "crates/fa-lantern/src/cutoff.rs:2531"
+twin_kind = "mutation"
+twin_expect = "gap_zero"
+gap_amount = "300.00"
+gap_unit = "USD"
+twin_target = "G-C"
+
+[[target]]
+expectation = "twins_gap-N-01"
+fact = "G-A"
+statistic_name = "net_equity_claim"
+statistic_value = "130000"
+statistic_scale = 2
+
+[[target]]
+expectation = "twins_gap-N-01"
+fact = "G-C"
+statistic_name = "net_equity_claim"
+statistic_value = "50000"
+statistic_scale = 2

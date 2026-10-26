@@ -60,12 +60,14 @@ pub mod balance_allocation;
 pub mod balance_allocation_review;
 pub mod bank;
 pub mod book;
+pub mod cash_flow_basis;
 pub mod cash_flow_certificate;
 pub mod cash_flow_policy;
 pub mod cash_flow_split;
 pub mod certificate;
 mod certificate_store;
 pub mod consolidation;
+pub mod custom_statement;
 pub mod dimension;
 pub mod document_disclosure;
 pub mod draft_review;
@@ -73,6 +75,7 @@ pub mod equity_certificate;
 pub mod evidence_disclosure;
 pub mod external_subledger;
 pub mod findings;
+pub mod functional_trial_balance;
 pub mod fx;
 pub mod fx_revaluation;
 pub mod general_ledger;
@@ -97,6 +100,7 @@ pub mod settlement;
 pub mod settlement_group;
 pub mod settlement_group_review;
 pub mod settlement_review;
+pub mod statement_definition;
 pub mod statement_diff;
 pub mod statement_diff_workpaper;
 pub mod statement_trace;
@@ -131,16 +135,21 @@ pub use book::{
     Book, BookError, BookKeys, Entropy, Outcome, PLAN_BINDINGS, ProducedBundle, ReadScope,
     Replanned,
 };
+pub use cash_flow_basis::{
+    CashFlowBasis, CashFlowBasisCertificate, CashFlowBasisDefinition, CashFlowBasisKind,
+};
 pub use cash_flow_certificate::{
     CASH_FLOW_CERTIFICATE_FORMAT, CashFlowCertificate, CertifiedCashFlow,
     MAX_CASH_FLOW_CERTIFICATE_BYTES,
 };
 pub use certificate::{
-    CertificateStatus, CertifiedReport, CertifiedTrialBalance, ReportCertificate, ReportOutput,
-    ReportSelection, TrialBalanceSelection,
+    CertificateStatus, CertifiedReport, CertifiedTrialBalance,
+    FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT, FUNCTIONAL_TRIAL_BALANCE_OUTPUT_FORMAT,
+    ReportCertificate, ReportOutput, ReportSelection, TrialBalanceSelection,
 };
 pub use certificate_store::{MAX_INLINE_CERTIFICATE_BYTES, RetainedCertificate};
 pub use consolidation::FunctionalConsolidation;
+pub use custom_statement::{CustomStatementReport, CustomStatementSelection};
 pub use document_disclosure::{DisclosureAccess, DocumentDisclosureArtifact};
 pub use draft_review::{
     CertifiedDraftDiff, DRAFT_DIFF_CERTIFICATE_FORMAT, DRAFT_DIFF_OUTPUT_FORMAT, DraftDiff,
@@ -174,14 +183,15 @@ pub use fa_journal::closing::{
     YearEndCloseVerification,
 };
 pub use fa_journal::{
-    AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, DocumentEvidenceSummary,
-    EventRow, EvidenceExplanation, ExternalIdRow, InstantSelection, InstrumentRow, LegalEntityRow,
-    LineageEdgeSummary, LineageEntrySummary, LineageReport, ManualAssertionSummary, NetPosition,
-    NettingLaw, PartyRow, PeriodBalance, PeriodCheck, PeriodHistoryVerification,
-    PeriodTransitionRecord, PeriodVerification, ReaControlRecorded, ReaSnapshot, RelatedPartyHit,
-    RelationshipRow, ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk,
-    RunControlRequest, RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary,
-    TieOut, TieOutLine, TrialBalanceLine, UploadRequest, UsageVerification,
+    AccountEffectivity, AccountLifecycleRecorded, AllocationPosting, AllocationTargetCell,
+    DocumentEvidenceSummary, EventRow, EvidenceExplanation, ExhibitMarkedOutcome, ExternalIdRow,
+    InstantSelection, InstrumentRow, LegalEntityRow, LineageEdgeSummary, LineageEntrySummary,
+    LineageReport, ManualAssertionSummary, NetPosition, NettingLaw, PartyRow, PeriodBalance,
+    PeriodCheck, PeriodHistoryVerification, PeriodTransitionRecord, PeriodVerification,
+    ReaControlRecorded, ReaSnapshot, RecordedExhibit, RelatedPartyHit, RelationshipRow,
+    ReviewedSummary, RevocationRequest, Revoked, Run, RunBody, RunChunk, RunControlRequest,
+    RunControlled, RunMode, RunState, ScheduleVerification, SupplementSummary, TieOut, TieOutLine,
+    TrialBalanceLine, UploadRequest, UsageVerification,
 };
 pub use fa_model::{
     EventKind, EventResource, EventSpec, InstrumentKind, InstrumentSpec, PartyKind, PartySpec,
@@ -191,6 +201,7 @@ pub use fa_money::allocation::{
     AllocationMethod, AllocationOutcome, AllocationRequest, AllocationTarget,
 };
 pub use fa_notary::checkpoint::signer_key_id;
+pub use fa_notary::code as notary_code;
 pub use fa_notary::{
     AccumulatorVerification, BalanceRequest, BundleRequest, BundleScope, Checkpointed, LeafKinds,
     ScopeRequest, SigningKey, Statement as AccumulatorStatement,
@@ -216,13 +227,15 @@ pub use fa_statements::cash_flow::{
     EquityActivityKind, EquityMovement, EquityRollForward, EquityRollForwardUnit,
 };
 pub use fa_statements::custom::{
-    CustomStatementDefinition, PresentationRoundingSpec, PresentedStatement,
-    PresentedStatementLine, StatementLintReport, apply_presentation_rounding,
+    AccountSetExpr, CustomLineDefinition, CustomLineSource, CustomStatementDefinition,
+    PresentationRoundingSpec, PresentedStatement, PresentedStatementLine, StatementLintReport,
+    apply_presentation_rounding,
 };
 pub use fa_statements::markdown::{
     StatementMarkdownIr, TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec,
     render_statement_ir, render_trial_balance_ir,
 };
+pub use fa_statements::regulatory::RegulatoryScheduleDefinition;
 pub use fa_statements::render::{
     StatementRenderFormat, format_utc_epoch_iso8601, render_html, render_pdf, render_pdfa,
     render_svg, validate_pdfa2b,
@@ -232,6 +245,7 @@ pub use fa_statements::{
     StatementKind, StatementLine,
 };
 pub use findings::{RecordedFindings, finding_run_vid, finding_vid};
+pub use functional_trial_balance::{FunctionalTrialBalance, FunctionalTrialBalanceCell};
 pub use fx::{
     FX_RATE_MIME, FxLawId, FxRateDocument, FxRatePurpose, FxRateTerms, FxSettlementRequest,
     PreparedFxSettlement,
@@ -248,7 +262,8 @@ pub use general_ledger::{
 };
 pub use indirect_cash_flow::{
     AdjustmentCategory, AdjustmentSign, CertifiedIndirectCashFlow,
-    INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, INDIRECT_CASH_FLOW_FORMAT, IndirectCashFlow,
+    INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT, INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2,
+    INDIRECT_CASH_FLOW_FORMAT, INDIRECT_CASH_FLOW_FORMAT_V2, IndirectCashFlow,
     IndirectCashFlowAdjustment, IndirectCashFlowCertificate, IndirectCashFlowContribution,
     IndirectCashFlowDefinition, IndirectCashFlowRequest, IndirectCashFlowUnit,
     MAX_INDIRECT_CASH_FLOW_BYTES, MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
@@ -293,7 +308,7 @@ pub use scenario::{
     SCENARIO_DIFF_CERTIFICATE_FORMAT, SCENARIO_DIFF_OUTPUT_FORMAT, ScenarioBook, ScenarioDiff,
     ScenarioDiffCertificate, ScenarioDiffRow, ScenarioRun,
 };
-pub use search::{SearchResults, document_search_text};
+pub use search::{SearchResults, SearchVerification, document_search_text};
 pub use settlement::{PreparedSettlement, SettlementPostPlan, SettlementPostRequest};
 pub use settlement_group::{
     MAX_SETTLEMENT_GROUP_LEGS, MAX_SETTLEMENT_GROUP_TARGETS, PreparedSettlementGroup,
@@ -313,8 +328,8 @@ pub use statement_trace::{
     StatementPublication, StatementTrace, StatementTraceCertificate, StatementTraceRequest,
 };
 pub use statements::{
-    CertifiedStatement, StatementSelection, UncorrectedLine, UncorrectedStatement,
-    statement_definition_kind,
+    CertifiedStatement, RegulatorySelection, StatementSelection, UncorrectedLine,
+    UncorrectedStatement, statement_definition_kind,
 };
 pub use subledger::{
     NativeSubledger, NativeSubledgerKind, NativeSubledgerReconciliation, NativeSubledgerRecorded,

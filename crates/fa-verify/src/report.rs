@@ -1,4 +1,4 @@
-//! Independent recomputation of native trial balances and statements (plan §13.3).
+//! Independent recomputation of balances, statements, open items and aging (plan §13.3).
 //!
 //! Report bundles disclose the complete signed checkpoint prefix, including
 //! every payload that derives its selectors. The verifier reconstructs the
@@ -12,15 +12,70 @@
 //! explicitly treats the definition and unit list as report parameters, not
 //! authenticated registration or approval. Bundle version 2 carries the exact
 //! registry closure and requires a recipient certificate pin or signed production
-//! receipt to authenticate that definition and registry closure. Instant selections
-//! and functional-currency statements remain unsupported. The scope is accounting
+//! receipt to authenticate that definition and registry closure. Version 2 also
+//! supports native v3 OpenItems and ExplainBalance with complete history and
+//! historical account metadata. ExplainBalance also binds whole-period register
+//! commitments and committed evidence/lineage under its fifth reason-code registry.
+//! Effective-date AgingCertificate v1 wraps a complete v3 OpenItems source;
+//! its cutoff is applied before settlement/reversal netting, and its outer
+//! digest binds every age band and output row. AgingReconciliationCertificate v1
+//! additionally binds an independently recomputed stock trial balance at the
+//! same prefix and cutoff; nonzero per-unit differences are verified data.
+//! RollForwardCertificate v1 wraps a native as-of trial balance and recomputes
+//! opening, every classified posted movement, closing and exact leg citations.
+//! Direct CashFlowCertificate v1 further reproduces the complete general ledger,
+//! per-entry gross cash turnover and selected native-unit stocks. Its policy
+//! wrapper additionally derives every assignment from original counterpart legs
+//! and explicit overrides; economic classification and approval are not judged.
+//! Native v2 trial balances, v3 reports and v4
+//! statements can additionally prove their retained tick-bucket
+//! selection from the complete TimeControl history. Migrated/genesis-policy
+//! histories and functional-currency statements remain unsupported. Native v8
+//! dimension trial balances reconstruct declarations and closes from the signed
+//! journal, then fold only legs tagged with the authenticated value hierarchy.
+//! A filtered view need not balance across the selected legs. The scope is accounting
 //! recomputation, not economic truth, source-document authenticity, journaled
 //! registry activation, or database read attestations.
 
+mod aging;
+mod cash_flow;
+mod dimension;
+mod explain;
 mod metadata;
+mod open_items;
+mod reconciliation;
 mod registry;
+mod roll_forward;
 mod statement;
+mod temporal;
+pub use aging::{
+    VerifiedAgedOpenItem, VerifiedAging, VerifiedAgingAmounts, VerifiedAgingBand,
+    VerifiedAgingCell, VerifiedAgingTotal,
+};
+pub use cash_flow::{
+    CashFlowAccountRule, CashFlowActivity, CashFlowAssignment, CashFlowDecisionBasis,
+    CashFlowDefinition, CashFlowPolicy, CashFlowPolicyDecision, CashFlowSection, CashFlowUnit,
+    GeneralLedgerCell, GeneralLedgerLine, VerifiedCashFlow, VerifiedCashFlowPolicy,
+    VerifiedGeneralLedger,
+};
+pub use dimension::VerifiedDimensionSelection;
+pub use explain::{
+    ExplanationCell, ExplanationCellChange, ExplanationColumn, ExplanationContribution,
+    ExplanationEvidence, ExplanationSupersession, VerifiedBalanceExplanation,
+};
+pub(crate) use metadata::{DeclaredAccount, declared_chart};
+pub use open_items::VerifiedOpenItemAccount as VerifiedReportAccount;
+pub use open_items::{
+    OpenItemBalanceLimit, OpenItemUnitPolicy, VerifiedApplication, VerifiedOpenItem,
+    VerifiedOpenItemAccount, VerifiedOpenItems,
+};
+pub use reconciliation::{VerifiedAgingReconciliation, VerifiedAgingReconciliationRow};
+pub use registry::Reason as ExplanationReason;
+pub use roll_forward::{
+    RollForwardAccount, RollForwardBucket, RollForwardMovement, RollForwardRow, VerifiedRollForward,
+};
 pub use statement::{StatementColumn, StatementLine, StatementMapping, VerifiedStatement};
+pub use temporal::{TimeObservation, VerifiedInstantSelection};
 #[cfg(test)]
 mod tests;
 
@@ -38,7 +93,11 @@ use crate::tree::{leaf_hash, root_of};
 pub const REPORT_BUNDLE_FORMAT: &[u8] = b"fa:report-bundle:v1";
 pub const MAX_REPORT_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v1";
+const INSTANT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v2";
+const OPEN_ITEMS_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v3";
 const STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v4";
+const DIMENSION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v8";
+const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:dimension-trial-balance:v1";
 const OUTPUT_FORMAT: &[u8; 19] = b"fa:trial-balance:v1";
 const MAX_ROWS: usize = 1 << 20;
 
@@ -93,13 +152,31 @@ pub struct VerifiedReport {
     pub output_digest: [u8; 32],
     pub checkpoint: SignedCheckpoint,
     pub known_at: u64,
+    /// Complete authenticated tick-bucket resolution, when the report was
+    /// selected by an instant. This proves no external UTC or genesis policy.
+    pub time_selection: Option<VerifiedInstantSelection>,
     pub effective_through: Option<i32>,
     pub activity: bool,
     pub periods: Vec<String>,
     pub rows: Vec<ReportRow>,
     /// Present for independently reconstructed native financial statements.
     pub statement: Option<VerifiedStatement>,
-    /// Whether statement units are recipient parameters or come from a
+    /// Authenticated dimension hierarchy and exact values included in the fold.
+    pub dimension: Option<VerifiedDimensionSelection>,
+    /// Present for independently reconstructed native open-item reports.
+    pub open_items: Option<VerifiedOpenItems>,
+    /// Exact period cells, whole-period commitment, contributions and history.
+    pub explanation: Option<VerifiedBalanceExplanation>,
+    /// Present for independently reconstructed historical effective-date aging.
+    pub aging: Option<VerifiedAging>,
+    /// Both source folds and their selected-account consistency comparison.
+    pub aging_reconciliation: Option<VerifiedAgingReconciliation>,
+    /// Complete account/unit lead schedule with every classified posted leg.
+    pub roll_forward: Option<VerifiedRollForward>,
+    /// Complete direct cash flow, with independently derived policy decisions
+    /// when its outer certificate carries a counterpart policy.
+    pub cash_flow: Option<VerifiedCashFlow>,
+    /// Whether report units are recipient parameters or come from a
     /// certificate-bound registry authenticated by a receipt or independent pin.
     pub unit_universe_source: &'static str,
     /// Exact canonical report bytes, independently reconstructed.
@@ -114,12 +191,16 @@ enum Selection {
     AsOf(i32),
     Activity(Vec<String>),
     Statement(statement::Selection),
+    OpenItems(Option<u128>),
+    ExplainBalance { account: u128, period: String },
 }
 struct Certificate<'a> {
     book: [u8; 16],
     branch: [u8; 16],
     known_at: u64,
+    time_selection: Option<VerifiedInstantSelection>,
     selection: Selection,
+    dimension: Option<dimension::Selection>,
     registry_digest: [u8; 32],
     journal_root: [u8; 32],
     leaves: u64,
@@ -149,32 +230,39 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let mut r = Reader::new(bytes);
     let format = r.fixed::<24>("certificate.format")?;
     let statement = format == *STATEMENT_CERTIFICATE_FORMAT;
-    if format != *CERTIFICATE_FORMAT && !statement {
+    let instant = format == *INSTANT_CERTIFICATE_FORMAT;
+    let dimension = format == *DIMENSION_CERTIFICATE_FORMAT;
+    let open_items = format == *OPEN_ITEMS_CERTIFICATE_FORMAT;
+    if format != *CERTIFICATE_FORMAT && !statement && !instant && !dimension && !open_items {
         return Err(failed(
             "supported_report",
-            "expected a sequence-selected native v1 trial balance or v4 statement",
+            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, or v8 dimension trial balance",
         ));
     }
     for (field, expected) in [
         ("certificate.scope", "fa-fold-over-prefix"),
         ("certificate.authority", "embedded-owner"),
-        (
-            "certificate.output_format",
-            if statement {
-                "fa:statement:v1"
-            } else {
-                "fa:trial-balance:v1"
-            },
-        ),
     ] {
         if text(&mut r, 64, field)? != expected {
             return Err(failed("supported_report", field));
         }
     }
+    let output_format = text(&mut r, 64, "certificate.output_format")?;
     let book = r.fixed("certificate.book")?;
     let branch = r.fixed("certificate.branch")?;
     let known_at = r.u64("certificate.known_at")?;
     let selector = r.u8("certificate.selector")?;
+    let selector = if dimension {
+        if selector != 6 {
+            return Err(failed(
+                "supported_report",
+                "native v8 requires a dimension selector",
+            ));
+        }
+        r.u8("certificate.dimension.selection")?
+    } else {
+        selector
+    };
     let selection = if statement {
         if selector != 2 {
             return Err(failed(
@@ -186,6 +274,31 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         let periods = strings(&mut r, "certificate.periods")?;
         let comparative = strings(&mut r, "certificate.comparative")?;
         Selection::Statement(statement::Selection::new(definition, periods, comparative)?)
+    } else if open_items {
+        match selector {
+            0 if output_format == "fa:balance-explanation:v1" => {
+                let account = r.u128("certificate.account")?;
+                let period = text(&mut r, 128, "certificate.period")?.to_string();
+                if period.is_empty() {
+                    return Err(failed(
+                        "report_selector",
+                        "balance explanation period is empty",
+                    ));
+                }
+                Selection::ExplainBalance { account, period }
+            }
+            1 if output_format == "fa:open-items:v1" => Selection::OpenItems(
+                r.present("certificate.account")?
+                    .then(|| r.u128("certificate.account"))
+                    .transpose()?,
+            ),
+            _ => {
+                return Err(failed(
+                    "supported_report",
+                    "native v3 selector and output format disagree",
+                ));
+            }
+        }
     } else {
         match selector {
             0 => Selection::Periods(strings(&mut r, "certificate.periods")?),
@@ -194,17 +307,39 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             _ => return Err(failed("supported_report", "unknown trial-balance selector")),
         }
     };
+    let expected_format = match &selection {
+        Selection::ExplainBalance { .. } => "fa:balance-explanation:v1",
+        Selection::OpenItems(_) => "fa:open-items:v1",
+        Selection::Statement(_) => "fa:statement:v1",
+        _ if dimension => "fa:dimension-trial-balance:v1",
+        _ => "fa:trial-balance:v1",
+    };
+    if output_format != expected_format {
+        return Err(failed(
+            "supported_report",
+            "certificate output format disagrees with its selector",
+        ));
+    }
     if matches!(&selection, Selection::Periods(p) | Selection::Activity(p) if p.is_empty()) {
         return Err(failed("report_selector", "period selection is empty"));
     }
+    let dimension_selection = if dimension {
+        Some(dimension::Selection {
+            dimension: text(&mut r, 128, "certificate.dimension")?.to_string(),
+            value: text(&mut r, 128, "certificate.dimension_value")?.to_string(),
+        })
+    } else {
+        None
+    };
     let registry_digest = r.fixed("certificate.registry_digest")?;
     let journal_root = r.fixed("certificate.journal_root")?;
     let leaves = r.u64("certificate.leaves")?;
-    let inputs = r.count(7, 4, "certificate.native_inputs")?;
-    if inputs != 7 {
+    let expected_inputs = if dimension { 8 } else { 7 };
+    let inputs = r.count(expected_inputs, 4, "certificate.native_inputs")?;
+    if inputs != expected_inputs {
         return Err(failed(
             "certificate_closure",
-            "certificate must retain all seven native input attestations",
+            "certificate must retain every native input attestation for its report family",
         ));
     }
     for _ in 0..inputs {
@@ -212,12 +347,13 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
-    if statement && r.present("certificate.time_selection")? {
-        return Err(failed(
-            "supported_report",
-            "Instant-selected statements need a portable time-evidence closure",
-        ));
-    }
+    let time_selection = if instant
+        || (statement || dimension || open_items) && r.present("certificate.time_selection")?
+    {
+        Some(VerifiedInstantSelection::read(&mut r)?)
+    } else {
+        None
+    };
     let digest = r.fixed("certificate.digest")?;
     r.finish("report certificate")?;
     if hash_parts(b"fa:report-output:v1", &[output]) != output_digest {
@@ -236,7 +372,9 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         book,
         branch,
         known_at,
+        time_selection,
         selection,
+        dimension: dimension_selection,
         registry_digest,
         journal_root,
         leaves,
@@ -250,7 +388,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
 /// an exact independently selected checkpoint. An optional detached receipt is
 /// verified over this report bundle's digest using those same trusted keys.
 /// An embedded checkpoint is never a trust anchor merely because it is present.
-/// Version-2 statements require a receipt through this convenience API; use
+/// Version-2 reports require a receipt through this convenience API; use
 /// verify_report_expected to supply a recipient-selected certificate instead.
 /// Version-1 statements require verify_statement_report and recipient unit IDs.
 pub fn verify_report(
@@ -263,7 +401,7 @@ pub fn verify_report(
 }
 
 /// Verify a report with an independently selected source certificate digest.
-/// For version-2 native statements, either this recipient-owned pin or a valid
+/// For version-2 native reports, either this recipient-owned pin or a valid
 /// production receipt is required: a checkpoint authenticates the journal, but cannot by
 /// itself authenticate the certificate's definition and complete unit registry.
 /// Never derive this expected digest from the untrusted bundle being verified.
@@ -405,12 +543,101 @@ fn verify_report_with_inputs(
             "unsupported report bundle format",
         ));
     }
-    let cert = certificate(r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?)?;
-    let is_statement = matches!(cert.selection, Selection::Statement(_));
-    if !is_statement && (major == 2 || recipient_units.is_some()) {
+    let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
+    // The supported composition has a fixed depth: policy -> direct cash ->
+    // roll-forward -> native as-of trial balance. Each decoder checks its exact
+    // source format; no generic recursive certificate dispatch is accepted.
+    let cash_policy = if cash_flow::policy::recognizes(certificate_bytes) {
+        Some(cash_flow::policy::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    let cash_bytes = cash_policy
+        .as_ref()
+        .map_or(certificate_bytes, |value| value.source);
+    let cash = if cash_flow::recognizes(cash_bytes) {
+        Some(cash_flow::decode(cash_bytes)?)
+    } else {
+        None
+    };
+    let roll_forward_bytes = cash
+        .as_ref()
+        .map_or(certificate_bytes, |value| value.source);
+    let reconciliation = if reconciliation::recognizes(certificate_bytes) {
+        Some(reconciliation::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    let aging = if let Some(value) = &reconciliation {
+        Some(aging::decode(value.aging)?)
+    } else if aging::recognizes(certificate_bytes) {
+        Some(aging::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    let roll_forward = if roll_forward::recognizes(roll_forward_bytes) {
+        Some(roll_forward::decode(roll_forward_bytes)?)
+    } else {
+        None
+    };
+    let source = aging
+        .as_ref()
+        .map(|value| value.source)
+        .or_else(|| roll_forward.as_ref().map(|value| value.source))
+        .unwrap_or(certificate_bytes);
+    let cert = certificate(source)?;
+    if aging.is_some()
+        && (!matches!(cert.selection, Selection::OpenItems(_)) || cert.time_selection.is_some())
+    {
         return Err(failed(
             "supported_report",
-            "statement bundles and explicit unit universes require a v4 native statement certificate",
+            "effective-date aging requires a sequence-selected native OpenItems source",
+        ));
+    }
+    if let Some(request) = &roll_forward
+        && (cert.selection != Selection::AsOf(request.effective_through)
+            || cert.time_selection.is_some()
+            || cert.dimension.is_some())
+    {
+        return Err(failed(
+            "supported_report",
+            "roll-forward requires a sequence-selected native trial balance as of its closing day",
+        ));
+    }
+    let control = reconciliation
+        .as_ref()
+        .map(|value| certificate(value.control))
+        .transpose()?;
+    if let (Some(aging), Some(control)) = (&aging, &control) {
+        reconciliation::bind(aging, &cert, control)?;
+    }
+    let certificate_digest = cash_policy
+        .as_ref()
+        .map(|value| value.digest)
+        .or_else(|| cash.as_ref().map(|value| value.digest))
+        .or_else(|| reconciliation.as_ref().map(|value| value.digest))
+        .or_else(|| aging.as_ref().map(|value| value.digest))
+        .or_else(|| roll_forward.as_ref().map(|value| value.digest))
+        .unwrap_or(cert.digest);
+    let is_statement = matches!(cert.selection, Selection::Statement(_));
+    let is_open_items = matches!(cert.selection, Selection::OpenItems(_));
+    let is_explanation = matches!(cert.selection, Selection::ExplainBalance { .. });
+    if (!is_statement && recipient_units.is_some())
+        || (!is_statement
+            && !is_open_items
+            && !is_explanation
+            && roll_forward.is_none()
+            && major == 2)
+    {
+        return Err(failed(
+            "supported_report",
+            "registry bundles require a native statement, OpenItems, ExplainBalance, roll-forward or direct cash flow; explicit unit universes require a v4 statement",
+        ));
+    }
+    if (is_open_items || is_explanation || roll_forward.is_some()) && major != 2 {
+        return Err(failed(
+            "registry_closure",
+            "native v3 reports, roll-forwards and direct cash flows require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -419,7 +646,7 @@ fn verify_report_with_inputs(
             "a version-1 native statement requires independently supplied unit identifiers; use verify_statement_report or fa-verify report --units",
         ));
     }
-    if expected_certificate.is_some_and(|expected| *expected != cert.digest) {
+    if expected_certificate.is_some_and(|expected| *expected != certificate_digest) {
         return Err(failed(
             "recipient_certificate",
             "report uses another certificate than the recipient requested",
@@ -428,7 +655,7 @@ fn verify_report_with_inputs(
     if major == 2 && receipt.is_none() && expected_certificate.is_none() {
         return Err(failed(
             "report_input_authority",
-            "native statement definitions and complete unit registries require a valid production receipt or an independently selected source certificate digest",
+            "native report inputs, composed report selections and complete unit registries require a valid production receipt or an independently selected outer report certificate digest",
         ));
     }
     let signed_bytes = r.bytes(1024 * 1024, "report_bundle.checkpoint")?;
@@ -480,8 +707,12 @@ fn verify_report_with_inputs(
             r.bytes(MAX_RECORD_BYTES, "migration.body")?,
         ));
     }
-    let units = if major == 2 {
-        let n = r.count(4, 8, "report_bundle.registries")?;
+    let (units, supersession_reasons) = if major == 2 {
+        let n = r.count(
+            if is_explanation { 5 } else { 4 },
+            8,
+            "report_bundle.registries",
+        )?;
         let mut inputs = Vec::with_capacity(n);
         for _ in 0..n {
             inputs.push((
@@ -489,16 +720,19 @@ fn verify_report_with_inputs(
                 r.bytes(1024 * 1024, "registry.canonical")?,
             ));
         }
-        let units = registry::verify(&inputs, &cert.registry_digest)?;
+        let (units, reasons) = registry::verify(&inputs, &cert.registry_digest, is_explanation)?;
         if recipient_units.is_some_and(|expected| expected != units.as_slice()) {
             return Err(failed(
                 "statement_units",
                 "recipient unit identifiers differ from the authenticated complete registry universe",
             ));
         }
-        units
+        (units, reasons)
     } else {
-        recipient_units.unwrap_or_default().to_vec()
+        (
+            recipient_units.unwrap_or_default().to_vec(),
+            BTreeMap::new(),
+        )
     };
     r.finish("report bundle")?;
     let digest = hash_parts(REPORT_BUNDLE_FORMAT, &[bundle]);
@@ -509,6 +743,9 @@ fn verify_report_with_inputs(
         })
         .transpose()?;
     let envelopes = &prefix.envelopes;
+    if let Some(time) = &cert.time_selection {
+        temporal::verify(time, cert.known_at, anchor.through_seq, envelopes, &records)?;
+    }
     let mut hashes = Vec::new();
     let mut last_seq = None;
     let mut ordinal = 0u32;
@@ -533,10 +770,11 @@ fn verify_report_with_inputs(
             "the authenticated entries at known-at do not reproduce the certificate's journal root",
         ));
     }
-    let visible_migrations =
-        crate::migration_balance::report_visibility(envelopes, &records, &bodies, cert.known_at)
+    let (visible_migrations, migration_activations) =
+        crate::migration_balance::report_visibility_at(envelopes, &records, &bodies, cert.known_at)
             .map_err(|e| failed("migration_visibility", e.to_string()))?;
     let mut schema = metadata::Schema::default();
+    let mut dimension_history = dimension::History::default();
     let mut infos = BTreeMap::new();
     let mut by_digest = BTreeMap::new();
     for (index, (envelope, (len, payload))) in envelopes.iter().zip(&records).enumerate() {
@@ -545,7 +783,10 @@ fn verify_report_with_inputs(
         }
         let info = metadata::entry_info(&payload[..*len], envelope)?;
         if let Some((kind, body)) = info.schema {
-            schema.apply(kind, body, &cert.book)?;
+            schema.apply(kind, body, &cert.book, envelope.commit_seq)?;
+            if cert.dimension.is_some() {
+                dimension_history.apply(kind, body, &cert.book)?;
+            }
         }
         if by_digest.insert(envelope.record_digest, index).is_some() {
             return Err(failed(
@@ -556,6 +797,7 @@ fn verify_report_with_inputs(
         infos.insert(index, info);
     }
     let mut resolved = BTreeSet::new();
+    let mut releases = BTreeMap::new();
     for (index, info) in &infos {
         let e = &envelopes[*index];
         if e.class != 3 {
@@ -569,7 +811,11 @@ fn verify_report_with_inputs(
             .ok_or_else(|| failed("pending_resolution", "pending target is missing"))?;
         let original = &envelopes[target_index];
         if original.class != 2
-            || original.commit_seq >= e.commit_seq
+            // An atomic batch can publish its Pending and Resolution together.
+            // Prefix ordinals order identities, not member execution. The
+            // authenticated target digest, derived VId and single resolution
+            // establish the snapshot's lifecycle without trusting that order.
+            || original.commit_seq > e.commit_seq
             || !infos[&target_index].matches_identity(target.0)
             || !resolved.insert(target_index)
         {
@@ -578,6 +824,207 @@ fn verify_report_with_inputs(
                 "invalid or duplicate pending resolution",
             ));
         }
+        releases.insert(target_index, e.commit_seq);
+    }
+    let dimension = cert
+        .dimension
+        .as_ref()
+        .map(|selection| dimension_history.select(selection))
+        .transpose()?;
+    if let Selection::OpenItems(account_filter) = &cert.selection {
+        let (open_items, output) = open_items::replay(
+            cert.known_at,
+            *account_filter,
+            &units,
+            &schema,
+            envelopes,
+            &infos,
+            &legs,
+            &records,
+            &visible_migrations,
+            &migration_activations,
+        )?;
+        if output != cert.output {
+            return Err(failed(
+                "report_recomputation",
+                "open-item amounts, complete application history, account metadata or canonical bytes differ from independent replay",
+            ));
+        }
+        if let Some(aging_certificate) = &aging {
+            let historical = open_items::replay_as_of(
+                cert.known_at,
+                *account_filter,
+                aging_certificate.effective_through,
+                &units,
+                &schema,
+                envelopes,
+                &infos,
+                &legs,
+                &records,
+                &visible_migrations,
+                &migration_activations,
+            )?;
+            let (aging, output) = aging::replay(
+                aging_certificate,
+                cert.book,
+                cert.known_at,
+                cert.digest,
+                historical,
+            )?;
+            if let (Some(reconciliation_certificate), Some(control_certificate)) =
+                (&reconciliation, &control)
+            {
+                let account = open_items::account(
+                    account_filter.ok_or_else(|| {
+                        failed("reconciliation_selection", "missing selected account")
+                    })?,
+                    &schema,
+                )?;
+                let control = replay_trial_balance(
+                    control_certificate,
+                    &schema,
+                    None,
+                    &dimension_history,
+                    envelopes,
+                    &records,
+                    &legs,
+                    &infos,
+                    &resolved,
+                    &visible_migrations,
+                )?;
+                let (comparison, output) = reconciliation::replay(
+                    reconciliation_certificate,
+                    aging_certificate.digest,
+                    control_certificate.digest,
+                    account,
+                    aging,
+                    control.rows,
+                    &units,
+                )?;
+                return Ok(VerifiedReport {
+                    scope: "recomputation",
+                    bundle_digest: digest,
+                    certificate_digest,
+                    output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                    checkpoint: signed,
+                    known_at: cert.known_at,
+                    time_selection: None,
+                    effective_through: Some(comparison.effective_through),
+                    activity: false,
+                    periods: control.periods,
+                    rows: Vec::new(),
+                    statement: None,
+                    dimension: None,
+                    open_items: None,
+                    explanation: None,
+                    aging: None,
+                    aging_reconciliation: Some(comparison),
+                    roll_forward: None,
+                    cash_flow: None,
+                    unit_universe_source: "authenticated-registry",
+                    output,
+                    checked_records: records.len(),
+                    receipt,
+                });
+            }
+            return Ok(VerifiedReport {
+                scope: "recomputation",
+                bundle_digest: digest,
+                certificate_digest,
+                output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                checkpoint: signed,
+                known_at: cert.known_at,
+                time_selection: None,
+                effective_through: Some(aging.effective_through),
+                activity: false,
+                periods: Vec::new(),
+                rows: Vec::new(),
+                statement: None,
+                dimension: None,
+                open_items: None,
+                explanation: None,
+                aging: Some(aging),
+                aging_reconciliation: None,
+                roll_forward: None,
+                cash_flow: None,
+                unit_universe_source: "authenticated-registry",
+                output,
+                checked_records: records.len(),
+                receipt,
+            });
+        }
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            bundle_digest: digest,
+            certificate_digest: cert.digest,
+            output_digest: cert.output_digest,
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: cert.time_selection,
+            effective_through: None,
+            activity: false,
+            periods: Vec::new(),
+            rows: Vec::new(),
+            statement: None,
+            dimension: None,
+            open_items: Some(open_items),
+            explanation: None,
+            aging: None,
+            aging_reconciliation: None,
+            roll_forward: None,
+            cash_flow: None,
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
+    if let Selection::ExplainBalance { account, period } = &cert.selection {
+        let (explanation, output) = explain::replay(
+            cert.known_at,
+            *account,
+            period,
+            &units,
+            &supersession_reasons,
+            &schema,
+            envelopes,
+            &infos,
+            &legs,
+            &visible_migrations,
+            &migration_activations,
+            &releases,
+        )?;
+        if output != cert.output {
+            return Err(failed(
+                "report_recomputation",
+                "balance explanation cells, whole-period commitment, provenance or complete history differ from independent replay",
+            ));
+        }
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            bundle_digest: digest,
+            certificate_digest: cert.digest,
+            output_digest: cert.output_digest,
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: cert.time_selection,
+            effective_through: None,
+            activity: false,
+            periods: vec![period.clone()],
+            rows: Vec::new(),
+            statement: None,
+            dimension: None,
+            open_items: None,
+            explanation: Some(explanation),
+            aging: None,
+            aging_reconciliation: None,
+            roll_forward: None,
+            cash_flow: None,
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
     }
     if let Selection::Statement(selection) = &cert.selection {
         let (statement, output) = statement::replay(
@@ -613,11 +1060,19 @@ fn verify_report_with_inputs(
             output_digest: cert.output_digest,
             checkpoint: signed,
             known_at: cert.known_at,
+            time_selection: cert.time_selection,
             effective_through: Some(statement.columns[0].effective_through),
             activity: selection.activity(),
             periods: selection.periods.clone(),
             rows: Vec::new(),
             statement: Some(statement),
+            dimension: None,
+            open_items: None,
+            explanation: None,
+            aging: None,
+            aging_reconciliation: None,
+            roll_forward: None,
+            cash_flow: None,
             unit_universe_source: if major == 2 {
                 "authenticated-registry"
             } else {
@@ -628,9 +1083,162 @@ fn verify_report_with_inputs(
             receipt,
         });
     }
+    let TrialBalanceReplay {
+        effective_through: through,
+        activity,
+        periods,
+        rows,
+        output,
+    } = replay_trial_balance(
+        &cert,
+        &schema,
+        dimension.as_ref(),
+        &dimension_history,
+        envelopes,
+        &records,
+        &legs,
+        &infos,
+        &resolved,
+        &visible_migrations,
+    )?;
+    if let Some(certificate) = &roll_forward {
+        let (roll_forward, output) = roll_forward::replay(
+            certificate,
+            cert.book,
+            cert.known_at,
+            cert.digest,
+            &units,
+            &schema,
+            envelopes,
+            &infos,
+            &legs,
+            &visible_migrations,
+            &rows,
+        )?;
+        if let Some(cash_certificate) = &cash {
+            let (mut cash_flow, mut output) =
+                cash_flow::replay(cash_certificate, roll_forward, certificate.digest)?;
+            if let Some(policy) = &cash_policy {
+                output = cash_flow::policy::replay(
+                    policy,
+                    &mut cash_flow,
+                    cash_certificate.digest,
+                    &output,
+                    &schema,
+                    envelopes,
+                    &legs,
+                    &by_digest,
+                )?;
+            }
+            return Ok(VerifiedReport {
+                scope: "recomputation",
+                bundle_digest: digest,
+                certificate_digest,
+                output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+                checkpoint: signed,
+                known_at: cert.known_at,
+                time_selection: None,
+                effective_through: Some(cash_flow.ledger.effective_through),
+                activity: false,
+                periods: Vec::new(),
+                rows: Vec::new(),
+                statement: None,
+                dimension: None,
+                open_items: None,
+                explanation: None,
+                aging: None,
+                aging_reconciliation: None,
+                roll_forward: None,
+                cash_flow: Some(cash_flow),
+                unit_universe_source: "authenticated-registry",
+                output,
+                checked_records: records.len(),
+                receipt,
+            });
+        }
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            bundle_digest: digest,
+            certificate_digest,
+            output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: None,
+            effective_through: Some(roll_forward.effective_through),
+            activity: false,
+            periods: Vec::new(),
+            rows: Vec::new(),
+            statement: None,
+            dimension: None,
+            open_items: None,
+            explanation: None,
+            aging: None,
+            aging_reconciliation: None,
+            roll_forward: Some(roll_forward),
+            cash_flow: None,
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
+    Ok(VerifiedReport {
+        scope: "recomputation",
+        bundle_digest: digest,
+        certificate_digest: cert.digest,
+        output_digest: cert.output_digest,
+        checkpoint: signed,
+        known_at: cert.known_at,
+        time_selection: cert.time_selection,
+        effective_through: through,
+        activity,
+        periods,
+        rows,
+        statement: None,
+        dimension,
+        open_items: None,
+        explanation: None,
+        aging: None,
+        aging_reconciliation: None,
+        roll_forward: None,
+        cash_flow: None,
+        unit_universe_source: "not-applicable",
+        output,
+        checked_records: records.len(),
+        receipt,
+    })
+}
+
+struct TrialBalanceReplay {
+    effective_through: Option<i32>,
+    activity: bool,
+    periods: Vec<String>,
+    rows: Vec<ReportRow>,
+    output: Vec<u8>,
+}
+
+/// The native standalone and reconciliation control reports share the same
+/// independent fold and exact output comparison.
+#[allow(clippy::too_many_arguments)]
+fn replay_trial_balance(
+    cert: &Certificate<'_>,
+    schema: &metadata::Schema,
+    dimension: Option<&VerifiedDimensionSelection>,
+    dimension_history: &dimension::History,
+    envelopes: &[crate::envelope::LeafEnvelope],
+    records: &[(usize, &[u8])],
+    legs: &[Vec<crate::envelope::Leg>],
+    infos: &BTreeMap<usize, metadata::EntryInfo<'_>>,
+    resolved: &BTreeSet<usize>,
+    visible_migrations: &BTreeSet<u64>,
+) -> Result<TrialBalanceReplay, ReportError> {
     let (periods, through, activity) = schema.selection(&cert.selection)?;
+    let dimension_filter = dimension
+        .as_ref()
+        .map(|selection| dimension::LegFilter::new(&cert.book, selection, dimension_history))
+        .transpose()?;
     let mut sums: BTreeMap<(u128, u32), [i128; 4]> = BTreeMap::new();
-    for (index, info) in &infos {
+    for (index, info) in infos {
         let e = &envelopes[*index];
         if legs[*index].is_empty()
             || (e.class == 2 && resolved.contains(index))
@@ -650,7 +1258,23 @@ fn verify_report_with_inputs(
         if !selected {
             continue;
         }
-        for leg in &legs[*index] {
+        let selected_legs = dimension_filter
+            .as_ref()
+            .map(|filter| dimension::selected_legs(&records[*index].1[..records[*index].0], filter))
+            .transpose()?;
+        if selected_legs
+            .as_ref()
+            .is_some_and(|mask| mask.len() != legs[*index].len())
+        {
+            return Err(failed(
+                "dimension_tags",
+                "dimension and monetary leg counts disagree",
+            ));
+        }
+        for (leg_index, leg) in legs[*index].iter().enumerate() {
+            if selected_legs.as_ref().is_some_and(|mask| !mask[leg_index]) {
+                continue;
+            }
             if leg.mantissa < 0 {
                 return Err(failed("exact_arithmetic", "a leg has a negative mantissa"));
             }
@@ -691,35 +1315,46 @@ fn verify_report_with_inputs(
         });
     }
     rows.sort_by(|a, b| a.code.cmp(&b.code).then(a.unit.cmp(&b.unit)));
-    if totals.values().any(|t| t[0] != t[1] || t[2] != t[3]) {
+    // A dimension view selects individual legs. Its counterpart can be
+    // untagged or belong to another value, so its own totals need not balance.
+    if dimension.is_none() && totals.values().any(|t| t[0] != t[1] || t[2] != t[3]) {
         return Err(failed(
             "monetary_footing",
             "posted or pending monetary totals do not balance",
         ));
     }
-    let output = output(&periods, cert.known_at, through, activity, &rows, &totals);
+    let trial_balance = output(&periods, cert.known_at, through, activity, &rows, &totals);
+    let output = match &dimension {
+        None => trial_balance,
+        Some(filter) => {
+            let mut w = Writer::default();
+            w.fixed(DIMENSION_OUTPUT_FORMAT)
+                .bytes(filter.dimension.as_bytes())
+                .bytes(filter.value.as_bytes())
+                .count(filter.values.len());
+            for value in &filter.values {
+                w.bytes(value.as_bytes());
+            }
+            w.bytes(&trial_balance);
+            w.buf
+        }
+    };
     if output != cert.output {
         return Err(failed(
             "report_recomputation",
-            mismatch(&rows, cert.output)?,
+            if dimension.is_some() {
+                "dimension filter, authenticated descendants, tagged balances or canonical bytes differ from independent replay".to_string()
+            } else {
+                mismatch(&rows, cert.output)?
+            },
         ));
     }
-    Ok(VerifiedReport {
-        scope: "recomputation",
-        bundle_digest: digest,
-        certificate_digest: cert.digest,
-        output_digest: cert.output_digest,
-        checkpoint: signed,
-        known_at: cert.known_at,
+    Ok(TrialBalanceReplay {
         effective_through: through,
         activity,
         periods,
         rows,
-        statement: None,
-        unit_universe_source: "not-applicable",
         output,
-        checked_records: records.len(),
-        receipt,
     })
 }
 

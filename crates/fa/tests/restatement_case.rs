@@ -1489,3 +1489,361 @@ fn a_restatement_case_restates_a_locked_periods_posting_under_independent_approv
     assert_eq!(cash(&after), Some(20_000), "the target plus the delta");
     assert_posted_diff_is_the_rehearsed_one(&before, &after, &rehearsed.report);
 }
+
+/// fa-yugf.93 (H13; plan §8.3): a PolicyChangeRetrospective case posts
+/// Restatement entries into a Locked period under independent dual-control
+/// approvals with session-lineage enforcement, then discloses and closes.
+#[test]
+fn a_policy_change_retrospective_case_restates_a_locked_periods_posting_under_independent_approvals()
+ {
+    use fa_policy::possession_digest;
+    let (mut book, narrative, authority) = book(0xcf);
+    let book_id = book.context().book_id;
+    let usd = UnitRegistry::embedded().unwrap().lookup("USD").unwrap();
+    let close = Capability::embedded(PRINCIPAL, &["close"]).unwrap();
+    book.transition_period(
+        "FY2025-P12",
+        PeriodTransition::Open,
+        PRINCIPAL,
+        1,
+        b"open-december",
+        &close,
+    )
+    .unwrap()
+    .unwrap();
+    let receipt = Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"Contract schedule: December 2025 recognition recast under ASC 606".to_vec(),
+    };
+    book.add_document(&receipt).unwrap().unwrap();
+    let legs = |cents: i128| {
+        vec![
+            LegPayload::simple(
+                Side::Debit,
+                account_vid(book_id, "1000"),
+                Amount::new(usd, cents),
+            ),
+            LegPayload::simple(
+                Side::Credit,
+                account_vid(book_id, "3000"),
+                Amount::new(usd, cents),
+            ),
+        ]
+    };
+    let december = day(2025, 12, 15);
+    let entry = |book: &Book, class, legs: Vec<LegPayload>, key: &[u8], who: VId| EntryPayload {
+        schema_minor: 0,
+        book_id,
+        branch_id: Id128::TRUNK,
+        class,
+        effective_date: december,
+        document_date: None,
+        description: book.seal_text("December policy recast").unwrap(),
+        effective_period: None,
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        control: None,
+        base_totals: None,
+        idempotency_key: key.to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([0xcf; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: who,
+        session_ref: None,
+        evidence: vec![receipt.evidence_ref(1)],
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        extensions: Vec::new(),
+        tags: Vec::new(),
+    };
+    let posted = book
+        .post(PostRequest {
+            proposal: entry(
+                &book,
+                EntryClass::ORIGINAL,
+                legs(15_000),
+                b"original-policy",
+                PRINCIPAL,
+            ),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: Capability::embedded(PRINCIPAL, &["post"]).unwrap(),
+        })
+        .unwrap()
+        .unwrap();
+    let target = posted.entry_ref();
+    book.transition_period(
+        "FY2025-P12",
+        PeriodTransition::Close,
+        PRINCIPAL,
+        1,
+        b"close-december",
+        &close,
+    )
+    .unwrap()
+    .unwrap();
+    let lock = book
+        .plan_transition(
+            "FY2025-P12",
+            PeriodTransition::Lock,
+            PRINCIPAL,
+            1,
+            b"lock-december",
+        )
+        .unwrap()
+        .unwrap();
+    let lock_digest = book.plan_digest(&lock).unwrap().unwrap();
+    let lock_approval = book
+        .approve(
+            Capability::embedded(VId(9), &["approve"]).unwrap(),
+            lock_digest,
+        )
+        .unwrap()
+        .unwrap()
+        .approval();
+    book.transition_planned(&lock, PeriodTransition::Lock, &close, &[lock_approval])
+        .unwrap()
+        .unwrap();
+
+    let date = day(2026, 2, 12);
+    let planner_vid = VId(4);
+    let planner = Capability::embedded(
+        planner_vid,
+        &["post", "read", "restate", "issue_capability", "approve"],
+    )
+    .unwrap();
+    let steward = Capability::embedded(VId(7), &["issue_capability", "approve"]).unwrap();
+    let issue = |book: &mut Book, by: &Capability, holder: u128, ops: &[Op], key: &[u8]| {
+        let token = Capability::new(VId(holder), Profile::Human, ops, by.holder())
+            .unwrap()
+            .holder_bound(possession_digest(&[u8::try_from(holder).unwrap(); 32]));
+        book.issue_capability(by.clone(), token.clone(), date, key, "approver")
+            .unwrap()
+            .unwrap();
+        token
+    };
+    let alice = issue(
+        &mut book,
+        &steward,
+        2,
+        &[Op::Approve, Op::IssueCapability],
+        b"alice",
+    );
+    let bob = issue(&mut book, &steward, 3, &[Op::Approve], b"bob");
+    let dave = issue(&mut book, &alice, 6, &[Op::Approve], b"dave");
+    let carol = issue(&mut book, &planner, 5, &[Op::Approve], b"carol");
+
+    let restate = Capability::embedded(PRINCIPAL, &["restate", "read", "produce"]).unwrap();
+    let poster = Capability::embedded(PRINCIPAL, &["restate", "post", "read"]).unwrap();
+    let opened = book
+        .open_case(
+            restate.clone(),
+            CaseKind::PolicyChangeRetrospective,
+            vec!["FY2025-P12".into()],
+            Some(narrative),
+            None,
+            date,
+            b"pcr-open",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened.case.state, CaseState::Proposed);
+    assert_eq!(opened.case.body.kind, CaseKind::PolicyChangeRetrospective);
+    let determined = book
+        .determine_case(
+            restate.clone(),
+            1,
+            Determination {
+                day: day(2026, 2, 10),
+                authority,
+            },
+            date,
+            b"pcr-determine",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(determined.case.state, CaseState::Determined);
+
+    book.open_scenario(
+        planner.clone(),
+        "pcr-scenario",
+        ScenarioFork::default(),
+        december,
+        "Retrospective policy change adds 50.00 to December",
+    )
+    .unwrap()
+    .unwrap();
+    let supersedes = |kind| fa_model::Supersession {
+        target,
+        kind,
+        reason_code: 4,
+    };
+    let mut misshapen = entry(
+        &book,
+        EntryClass::RESTATEMENT,
+        legs(5_000),
+        b"pcr-misshapen",
+        planner_vid,
+    );
+    misshapen.supersession = vec![supersedes(fa_model::SupersessionKind::Revises)];
+    let wrong = book
+        .run_in_scenario(
+            planner.clone(),
+            "pcr-scenario",
+            PostIntent::new(misshapen, Vec::new()).unwrap(),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(wrong.code, code::RESTATEMENT_SHAPE, "{wrong:?}");
+
+    let mut planned = entry(
+        &book,
+        EntryClass::RESTATEMENT,
+        legs(5_000),
+        b"pcr-delta",
+        planner_vid,
+    );
+    planned.supersession = vec![supersedes(fa_model::SupersessionKind::Restates)];
+    book.run_in_scenario(
+        planner,
+        "pcr-scenario",
+        PostIntent::new(planned.clone(), Vec::new()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let rehearsed = book
+        .certify_scenario_diff(
+            PRINCIPAL,
+            &restate,
+            "pcr-scenario",
+            &["FY2025-P12".to_string()],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    let certificate = rehearsed.certificate.clone();
+    book.rehearse_case(restate.clone(), 1, &certificate, date, b"pcr-rehearsal")
+        .unwrap()
+        .unwrap();
+    let manifest = book.case_manifest(1).unwrap().unwrap();
+    let plan = manifest.entries[0].plan;
+    let digest = manifest.digest().unwrap();
+    let approve = |book: &mut Book, cap: &Capability| {
+        book.approve(cap.clone(), digest)
+            .unwrap()
+            .unwrap()
+            .approval()
+            .approval_vid
+    };
+    let (a, b, d, c) = (
+        approve(&mut book, &alice),
+        approve(&mut book, &bob),
+        approve(&mut book, &dave),
+        approve(&mut book, &carol),
+    );
+    for (pair, approver, issuer) in [
+        (vec![a, d], VId(6), VId(2)),
+        (vec![a, c], VId(5), planner_vid),
+    ] {
+        let head = book.head().unwrap();
+        let refused = book
+            .approve_case(restate.clone(), 1, pair, date, b"pcr-lineage")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, "FA-REF-008", "{refused:?}");
+        assert!(
+            refused.message.contains(&format!("{:032x}", approver.0))
+                && refused.message.contains(&format!("{:032x}", issuer.0))
+                && refused.message.contains("session lineage"),
+            "{refused:?}"
+        );
+        assert_eq!(book.head().unwrap(), head);
+        assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Rehearsed);
+    }
+    book.approve_case(restate.clone(), 1, vec![a, b], date, b"pcr-dual")
+        .unwrap()
+        .unwrap();
+
+    let derived = fa_journal::derive_member(
+        book_id,
+        CaseKind::PolicyChangeRetrospective,
+        1,
+        plan,
+        &planned,
+        PRINCIPAL,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(derived.class, EntryClass::RESTATEMENT);
+    assert_eq!(derived.supersession, planned.supersession);
+    let alone = book
+        .post(PostRequest {
+            proposal: derived.clone(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+            capability: poster.clone(),
+        })
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(alone.code, code::CASE_MEMBERSHIP, "{alone:?}");
+
+    let before = book.trial_balance(&["FY2025-P12".to_string()]).unwrap();
+    let posted = book
+        .post_case(poster, 1, date, b"pcr-post")
+        .unwrap()
+        .unwrap();
+    assert_eq!(posted.case.state, CaseState::Posted);
+    let (restatement, _) = book
+        .read_entry(posted.case.posted[0].entry)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restatement.proposal.class, EntryClass::RESTATEMENT);
+    assert_eq!(
+        restatement.proposal.proposal_digest().unwrap(),
+        derived.proposal_digest().unwrap()
+    );
+    let after = book.trial_balance(&["FY2025-P12".to_string()]).unwrap();
+    let cash = |tb: &fa_registers::TrialBalance| {
+        tb.rows
+            .iter()
+            .find(|row| row.code == "1000")
+            .map(|row| row.debits - row.credits)
+    };
+    assert_eq!(cash(&before), Some(15_000));
+    assert_eq!(cash(&after), Some(20_000), "the target plus the delta");
+    assert_posted_diff_is_the_rehearsed_one(&before, &after, &rehearsed.report);
+
+    let closer = Capability::embedded(PRINCIPAL, &["restate", "read"]).unwrap();
+    let note = Document {
+        book_id,
+        kind: 20,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: PRINCIPAL,
+        bytes: b"Note 2: retrospective adoption of ASC 606".to_vec(),
+    };
+    book.add_document(&note).unwrap().unwrap();
+    book.record_review(
+        &Capability::embedded(VId(5), &["approve"]).unwrap(),
+        &note.oid(),
+        Vec::new(),
+    )
+    .unwrap()
+    .unwrap();
+    let disclosed = book
+        .disclose_case(closer.clone(), 1, note.oid(), date, b"pcr-disclose")
+        .unwrap()
+        .unwrap();
+    assert_eq!(disclosed.case.state, CaseState::Disclosed);
+    let closed = book
+        .close_case(closer, 1, date, b"pcr-close")
+        .unwrap()
+        .unwrap();
+    assert_eq!(closed.case.state, CaseState::Closed);
+}

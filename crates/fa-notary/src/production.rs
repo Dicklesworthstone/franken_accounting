@@ -1,29 +1,27 @@
-//! Litigation production tooling: `ProductionProfile`, multi-matter Bates
-//! assignment, `ExhibitMark`, privilege logs, and FRE 902(13)/(14) technical
-//! certification packages (plan §11.8, §13.2–§13.4, Appendix A; bead `fa-6l9`).
+//! Litigation production tooling: projections over journaled [`fa_journal::ProductionProfile`]
+//! and [`fa_journal::BatesRange`] vertices, privilege logs, and FRE 902(13)/(14) technical
+//! certification packages (plan §11.8, §13.2–§13.4, Appendix A; beads `fa-6l9`, `fa-9ccl`).
 //!
-//! All litigation production metadata lives outside the immutable `Document`
-//! payload so `doc_commit` never changes when a document is Bates-stamped,
-//! designated under a protective order, or marked as an exhibit in one or more
-//! matters.
+//! All litigation production metadata lives in the journal (`fa_journal::production`
+//! and `fa_journal::attestation`) outside the immutable `Document` payload so
+//! `doc_commit` never changes when a document is Bates-stamped, designated under
+//! a protective order, or marked as an exhibit in one or more matters.
 
 use std::collections::BTreeMap;
 
-use fa_journal::{DocumentRead, KernelError, RedactedView};
-use fa_model::{DecodeError, EncodeError, Oid, Reader, Writer};
+use fa_journal::{DocumentRead, KernelError, Produced, ProductionView, RedactedView};
+use fa_model::{DecodeError, EncodeError, Oid};
 use fa_time::DateDay;
 use fgdb_crypto::Hasher;
-use fgdb_types::{CommitSeq, VId};
+use fgdb_types::CommitSeq;
 
 use crate::bundle::{Bundle, ProductionReceipt};
 use crate::state::StoredCheckpoint;
 
-pub const PRODUCTION_PROFILE_DOMAIN: &[u8] = b"fa:production-profile:v1";
-pub const EXHIBIT_MARK_DOMAIN: &[u8] = b"fa:exhibit-mark:v1";
 pub const PRIVILEGE_LOG_DOMAIN: &[u8] = b"fa:privilege-log:v1";
-pub const MAX_BATES_PREFIX_BYTES: usize = 16;
-pub const MAX_MATTER_ID_BYTES: usize = 128;
-pub const MAX_EXHIBIT_LABEL_BYTES: usize = 64;
+pub const MAX_BATES_PREFIX_BYTES: usize = fa_journal::production::MAX_BATES_PREFIX_BYTES;
+pub const MAX_MATTER_ID_BYTES: usize = fa_journal::production::MAX_MATTER_BYTES;
+pub const MAX_EXHIBIT_LABEL_BYTES: usize = fa_journal::attestation::MAX_EXHIBIT_LABEL_BYTES;
 
 fn hash_domain(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
     let mut h = Hasher::new();
@@ -73,7 +71,7 @@ impl ConfidentialityDesignation {
     }
 }
 
-/// Load-file format selector on a [`ProductionProfile`] (Appendix A `load_file_format: u8`).
+/// Load-file format selector on a [`fa_journal::ProductionProfile`] (Appendix A `load_file_format: u8`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadFileFormat {
     ConcordanceDatOpt = 1,
@@ -98,7 +96,7 @@ impl LoadFileFormat {
     }
 }
 
-/// Errors returned when validating or encoding litigation production metadata.
+/// Errors returned when validating or projecting litigation production metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProductionError {
     InvalidField(&'static str),
@@ -132,136 +130,8 @@ impl From<DecodeError> for ProductionError {
     }
 }
 
-/// Matter-scoped production profile (Appendix A `ProductionProfile`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionProfile {
-    pub matter_id: String,
-    /// Prefix for Bates stamps in this matter (1..=16 ASCII bytes, e.g. `"ACME-SEC"`).
-    pub bates_prefix: String,
-    /// Next starting Bates number (>= 1).
-    pub next_bates: u64,
-    /// Per-document confidentiality designation (`0..=3`).
-    pub designations: BTreeMap<Oid, ConfidentialityDesignation>,
-    /// Optional governing protective order document OID.
-    pub protective_order_oid: Option<Oid>,
-    /// Selected discovery load-file format (`1..=3`).
-    pub load_file_format: LoadFileFormat,
-}
-
-impl ProductionProfile {
-    pub fn new(
-        matter_id: impl Into<String>,
-        bates_prefix: impl Into<String>,
-        next_bates: u64,
-        load_file_format: LoadFileFormat,
-    ) -> Result<Self, ProductionError> {
-        let profile = Self {
-            matter_id: matter_id.into(),
-            bates_prefix: bates_prefix.into(),
-            next_bates,
-            designations: BTreeMap::new(),
-            protective_order_oid: None,
-            load_file_format,
-        };
-        profile.validate()?;
-        Ok(profile)
-    }
-
-    pub fn validate(&self) -> Result<(), ProductionError> {
-        if self.matter_id.trim().is_empty() || self.matter_id.len() > MAX_MATTER_ID_BYTES {
-            return Err(ProductionError::InvalidField("matter_id"));
-        }
-        if self.bates_prefix.trim().is_empty()
-            || self.bates_prefix.len() > MAX_BATES_PREFIX_BYTES
-            || !self.bates_prefix.is_ascii()
-        {
-            return Err(ProductionError::InvalidField("bates_prefix"));
-        }
-        if self.next_bates == 0 {
-            return Err(ProductionError::InvalidField("next_bates"));
-        }
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn designation_for(&self, oid: &Oid) -> ConfidentialityDesignation {
-        self.designations
-            .get(oid)
-            .copied()
-            .unwrap_or(ConfidentialityDesignation::None)
-    }
-
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, ProductionError> {
-        self.validate()?;
-        let mut w = Writer::with_capacity(128 + self.designations.len() * 36);
-        w.bytes(PRODUCTION_PROFILE_DOMAIN)
-            .str(&self.matter_id)
-            .str(&self.bates_prefix)
-            .u64(self.next_bates);
-        let pairs: Vec<(&Oid, &ConfidentialityDesignation)> = self.designations.iter().collect();
-        w.list(&pairs, |w, (oid, des)| {
-            w.fixed(&oid.0).u8(des.tag());
-        });
-        w.opt(self.protective_order_oid.as_ref(), |w, oid| {
-            w.fixed(&oid.0);
-        });
-        w.u8(self.load_file_format.tag());
-        Ok(w.finish()?)
-    }
-
-    pub fn oid(&self) -> Result<Oid, ProductionError> {
-        let bytes = self.canonical_bytes()?;
-        Ok(Oid(hash_domain(PRODUCTION_PROFILE_DOMAIN, &bytes)))
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, ProductionError> {
-        let mut r = Reader::new(bytes);
-        if r.bytes(64, "profile.domain")? != PRODUCTION_PROFILE_DOMAIN {
-            return Err(ProductionError::Decode(r.invalid("profile.domain")));
-        }
-        let matter_id = r.str(MAX_MATTER_ID_BYTES, "profile.matter_id")?.to_string();
-        let bates_prefix = r
-            .str(MAX_BATES_PREFIX_BYTES, "profile.bates_prefix")?
-            .to_string();
-        let next_bates = r.u64("profile.next_bates")?;
-        let raw_pairs = r.list(65_536, "profile.designations", |r| {
-            let oid = Oid(r.fixed("profile.designation.oid")?);
-            let tag = r.u8("profile.designation.tag")?;
-            let Some(des) = ConfidentialityDesignation::from_tag(tag) else {
-                return Err(r.invalid("profile.designation.tag"));
-            };
-            Ok((oid, des))
-        })?;
-        let mut designations = BTreeMap::new();
-        for (oid, des) in raw_pairs {
-            if designations.insert(oid, des).is_some() {
-                return Err(ProductionError::InvalidField("duplicate designation oid"));
-            }
-        }
-        let protective_order_oid = r.opt("profile.protective_order_oid", |r| {
-            Ok(Oid(r.fixed("profile.protective_order_oid")?))
-        })?;
-        let fmt_tag = r.u8("profile.load_file_format")?;
-        let Some(load_file_format) = LoadFileFormat::from_tag(fmt_tag) else {
-            return Err(ProductionError::Decode(
-                r.invalid("profile.load_file_format"),
-            ));
-        };
-        r.finish()?;
-        let profile = Self {
-            matter_id,
-            bates_prefix,
-            next_bates,
-            designations,
-            protective_order_oid,
-            load_file_format,
-        };
-        profile.validate()?;
-        Ok(profile)
-    }
-}
-
-/// Contiguous Bates number range assigned to a document in a specific matter (plan §13.2).
+/// Contiguous Bates number range assigned to a document in a specific matter (plan §13.2),
+/// projected from a journaled [`fa_journal::BatesRange`] and [`fa_journal::ProductionProfile`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatesAssignment {
     pub document_oid: Oid,
@@ -275,6 +145,25 @@ pub struct BatesAssignment {
 }
 
 impl BatesAssignment {
+    /// Project a journaled [`fa_journal::BatesRange`] under its [`fa_journal::ProductionProfile`].
+    pub fn from_journaled(
+        profile: &fa_journal::ProductionProfile,
+        range: &fa_journal::BatesRange,
+    ) -> Result<Self, ProductionError> {
+        let designation = ConfidentialityDesignation::from_tag(range.designation)
+            .ok_or(ProductionError::InvalidField("designation"))?;
+        Ok(Self {
+            document_oid: range.document,
+            doc_commit: range.doc_commit,
+            matter_id: profile.matter.clone(),
+            bates_prefix: profile.bates_prefix.clone(),
+            start_number: range.start,
+            end_number: range.end,
+            page_count: range.pages(),
+            designation,
+        })
+    }
+
     #[must_use]
     pub fn beg_bates(&self) -> String {
         format!("{}-{:08}", self.bates_prefix, self.start_number)
@@ -291,201 +180,25 @@ impl BatesAssignment {
     }
 }
 
-/// Exhibit mark binding a trial/deposition exhibit label to a subject OID and
-/// signed digest in a specific matter (Appendix A `ExhibitMark`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExhibitMark {
-    pub subject_oid: Oid,
-    pub label: String,
-    pub matter_id: String,
-    pub principal: VId,
-    pub signed_digest: [u8; 32],
+/// Project every [`BatesAssignment`] from a journaled [`Produced`] outcome.
+pub fn bates_assignments_from_produced(
+    produced: &Produced,
+) -> Result<Vec<BatesAssignment>, ProductionError> {
+    produced
+        .ranges
+        .iter()
+        .map(|r| BatesAssignment::from_journaled(&produced.profile, &r.range))
+        .collect()
 }
 
-impl ExhibitMark {
-    pub fn new(
-        subject_oid: Oid,
-        label: impl Into<String>,
-        matter_id: impl Into<String>,
-        principal: VId,
-        signed_digest: [u8; 32],
-    ) -> Result<Self, ProductionError> {
-        let mark = Self {
-            subject_oid,
-            label: label.into(),
-            matter_id: matter_id.into(),
-            principal,
-            signed_digest,
-        };
-        mark.validate()?;
-        Ok(mark)
-    }
-
-    pub fn validate(&self) -> Result<(), ProductionError> {
-        if self.label.trim().is_empty() || self.label.len() > MAX_EXHIBIT_LABEL_BYTES {
-            return Err(ProductionError::InvalidField("label"));
-        }
-        if self.matter_id.trim().is_empty() || self.matter_id.len() > MAX_MATTER_ID_BYTES {
-            return Err(ProductionError::InvalidField("matter_id"));
-        }
-        Ok(())
-    }
-
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, ProductionError> {
-        self.validate()?;
-        let mut w = Writer::with_capacity(160);
-        w.bytes(EXHIBIT_MARK_DOMAIN)
-            .fixed(&self.subject_oid.0)
-            .str(&self.label)
-            .str(&self.matter_id)
-            .u128(self.principal.0)
-            .fixed(&self.signed_digest);
-        Ok(w.finish()?)
-    }
-
-    pub fn oid(&self) -> Result<Oid, ProductionError> {
-        let bytes = self.canonical_bytes()?;
-        Ok(Oid(hash_domain(EXHIBIT_MARK_DOMAIN, &bytes)))
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, ProductionError> {
-        let mut r = Reader::new(bytes);
-        if r.bytes(64, "exhibit.domain")? != EXHIBIT_MARK_DOMAIN {
-            return Err(ProductionError::Decode(r.invalid("exhibit.domain")));
-        }
-        let subject_oid = Oid(r.fixed("exhibit.subject_oid")?);
-        let label = r.str(MAX_EXHIBIT_LABEL_BYTES, "exhibit.label")?.to_string();
-        let matter_id = r.str(MAX_MATTER_ID_BYTES, "exhibit.matter_id")?.to_string();
-        let principal = VId(r.u128("exhibit.principal")?);
-        let signed_digest = r.fixed("exhibit.signed_digest")?;
-        r.finish()?;
-        Self::new(subject_oid, label, matter_id, principal, signed_digest)
-    }
-}
-
-/// Multi-matter production registry that tracks per-matter [`ProductionProfile`]s,
-/// idempotent Bates assignments per `(matter_id, document_oid)`, and exhibit marks.
-///
-/// Producing the same document twice in the same matter returns its existing
-/// [`BatesAssignment`] without burning new numbers; producing the same document
-/// in a second matter assigns that second matter's Bates range while preserving
-/// the first matter's assignment and leaving the document's `doc_commit` untouched.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MatterProductionRegistry {
-    profiles: BTreeMap<String, ProductionProfile>,
-    assignments: BTreeMap<(String, Oid), BatesAssignment>,
-    exhibits: Vec<ExhibitMark>,
-}
-
-impl MatterProductionRegistry {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register_profile(&mut self, profile: ProductionProfile) -> Result<(), ProductionError> {
-        profile.validate()?;
-        self.profiles.insert(profile.matter_id.clone(), profile);
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn profile(&self, matter_id: &str) -> Option<&ProductionProfile> {
-        self.profiles.get(matter_id)
-    }
-
-    /// Assign (or retrieve existing) contiguous Bates numbers for `document_oid`
-    /// in `matter_id`.
-    pub fn assign_bates(
-        &mut self,
-        matter_id: &str,
-        document_oid: Oid,
-        doc_commit: [u8; 32],
-        page_count: u64,
-    ) -> Result<BatesAssignment, ProductionError> {
-        if page_count == 0 {
-            return Err(ProductionError::InvalidField("page_count"));
-        }
-        if let Some(existing) = self.assignments.get(&(matter_id.to_string(), document_oid)) {
-            return Ok(existing.clone());
-        }
-        let Some(profile) = self.profiles.get_mut(matter_id) else {
-            return Err(ProductionError::InvalidField("unknown matter_id"));
-        };
-        let start_number = profile.next_bates;
-        let end_number = start_number
-            .checked_add(page_count - 1)
-            .ok_or(ProductionError::BatesOverflow)?;
-        let next_bates = end_number
-            .checked_add(1)
-            .ok_or(ProductionError::BatesOverflow)?;
-        let designation = profile.designation_for(&document_oid);
-        let assignment = BatesAssignment {
-            document_oid,
-            doc_commit,
-            matter_id: profile.matter_id.clone(),
-            bates_prefix: profile.bates_prefix.clone(),
-            start_number,
-            end_number,
-            page_count,
-            designation,
-        };
-        profile.next_bates = next_bates;
-        self.assignments
-            .insert((matter_id.to_string(), document_oid), assignment.clone());
-        Ok(assignment)
-    }
-
-    /// Return all Bates ranges assigned to `document_oid` across all matters,
-    /// ordered deterministically by `matter_id`.
-    #[must_use]
-    pub fn bates_for_document(&self, document_oid: &Oid) -> Vec<BatesAssignment> {
-        self.assignments
-            .iter()
-            .filter_map(|((_, oid), assignment)| {
-                if oid == document_oid {
-                    Some(assignment.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// Return all Bates assignments in `matter_id`, ordered by `start_number`.
-    #[must_use]
-    pub fn bates_for_matter(&self, matter_id: &str) -> Vec<BatesAssignment> {
-        let mut out: Vec<BatesAssignment> = self
-            .assignments
-            .iter()
-            .filter_map(|((m, _), assignment)| {
-                if m == matter_id {
-                    Some(assignment.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        out.sort_by_key(|a| a.start_number);
-        out
-    }
-
-    pub fn mark_exhibit(&mut self, mark: ExhibitMark) -> Result<Oid, ProductionError> {
-        let oid = mark.oid()?;
-        if !self.exhibits.contains(&mark) {
-            self.exhibits.push(mark);
-        }
-        Ok(oid)
-    }
-
-    #[must_use]
-    pub fn exhibits_for_subject(&self, matter_id: &str, subject_oid: &Oid) -> Vec<ExhibitMark> {
-        self.exhibits
-            .iter()
-            .filter(|m| m.matter_id == matter_id && &m.subject_oid == subject_oid)
-            .cloned()
-            .collect()
-    }
+/// Project every [`BatesAssignment`] from a journaled [`ProductionView`].
+pub fn bates_assignments_from_view(
+    view: &ProductionView,
+) -> Result<Vec<BatesAssignment>, ProductionError> {
+    view.ranges
+        .iter()
+        .map(|r| BatesAssignment::from_journaled(&view.profile, &r.range))
+        .collect()
 }
 
 /// How a privileged or protected document was treated in the production (plan §13.2).
@@ -557,13 +270,13 @@ impl PrivilegeLog {
     /// Build a deterministic privilege log for `matter_id` from the documents
     /// observed during bundle production (`reads`), any documents withheld in
     /// full (`withheld_in_full`), the privilege metadata map (`metadata`), and
-    /// the matter's [`MatterProductionRegistry`].
+    /// the matter's journaled [`BatesAssignment`] projections.
     pub fn build(
         matter_id: impl Into<String>,
         reads: &BTreeMap<Oid, DocumentRead>,
         withheld_in_full: &[Oid],
         metadata: &BTreeMap<Oid, PrivilegeMetadata>,
-        registry: &MatterProductionRegistry,
+        assignments: &[BatesAssignment],
     ) -> Result<Self, ProductionError> {
         let matter_id = matter_id.into();
         if matter_id.trim().is_empty() {
@@ -576,9 +289,9 @@ impl PrivilegeLog {
                 let withheld_chunks = count_withheld_chunks(view);
                 if withheld_chunks > 0 {
                     let meta = metadata.get(oid);
-                    let bates_range = registry
-                        .assignments
-                        .get(&(matter_id.clone(), *oid))
+                    let bates_range = assignments
+                        .iter()
+                        .find(|a| a.matter_id == matter_id && &a.document_oid == oid)
                         .map(BatesAssignment::range_label);
                     rows.push(PrivilegeLogRow {
                         document_oid: *oid,
@@ -859,12 +572,8 @@ pub struct MatterProductionPackage {
 
 /// Assemble a [`MatterProductionPackage`] from an already-produced [`Bundle`],
 /// its [`StoredCheckpoint`], its signed [`ProductionReceipt`], the capability-filtered
-/// `reads` observed during bundle assembly, optional `page_counts` per document
-/// (defaults to 1 page per 4 KiB chunk), `withheld_in_full` document OIDs, and
-/// `privilege_metadata`.
-///
-/// The source documents in the book are never mutated; Bates ranges and exhibit
-/// marks are tracked in `registry` per matter.
+/// `reads` observed during bundle assembly, the journaled [`BatesAssignment`]
+/// projections, `withheld_in_full` document OIDs, and `privilege_metadata`.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_matter_package(
     matter_id: &str,
@@ -873,39 +582,16 @@ pub fn assemble_matter_package(
     receipt: ProductionReceipt,
     signer_public_key: &[u8; 32],
     reads: &BTreeMap<Oid, DocumentRead>,
-    page_counts: &BTreeMap<Oid, u64>,
+    bates_assignments: Vec<BatesAssignment>,
     withheld_in_full: &[Oid],
     privilege_metadata: &BTreeMap<Oid, PrivilegeMetadata>,
-    registry: &mut MatterProductionRegistry,
 ) -> Result<MatterProductionPackage, KernelError> {
-    let mut bates_assignments = Vec::with_capacity(reads.len());
-    for (oid, read) in reads {
-        let (doc_commit, default_pages) = match read {
-            DocumentRead::Full(doc) => {
-                let chunks = (doc.bytes.len() as u64)
-                    .div_ceil(fa_journal::evidence::CHUNK_BYTES as u64)
-                    .max(1);
-                (doc.doc_commit(), chunks)
-            }
-            DocumentRead::Redacted(view) => (view.doc_commit, (view.chunks.len() as u64).max(1)),
-        };
-        let pages = page_counts
-            .get(oid)
-            .copied()
-            .unwrap_or(default_pages)
-            .max(1);
-        let assignment = registry
-            .assign_bates(matter_id, *oid, doc_commit, pages)
-            .map_err(|e| KernelError::Corrupt(e.to_string()))?;
-        bates_assignments.push(assignment);
-    }
-
     let privilege_log = PrivilegeLog::build(
         matter_id,
         reads,
         withheld_in_full,
         privilege_metadata,
-        registry,
+        &bates_assignments,
     )
     .map_err(|e| KernelError::Corrupt(e.to_string()))?;
 
@@ -935,100 +621,38 @@ mod tests {
     use crate::bundle::ReceiptBody;
     use crate::checkpoint::{CheckpointBody, TransparencyCheckpoint};
     use crate::sign::{CheckpointSigner, SigningKey};
-    use fa_journal::{Document, ViewChunk};
+    use fa_journal::{BatesRange, ProductionProfile as JournalProfile, ViewChunk};
     use fa_model::Id128;
+    use fgdb_types::VId;
 
     #[test]
-    fn production_profile_and_exhibit_mark_round_trip() {
-        let mut profile =
-            ProductionProfile::new("SEC-2026-0042", "ACME-SEC", 1, LoadFileFormat::Both).unwrap();
-        profile.protective_order_oid = Some(Oid([0x11; 32]));
-        profile
-            .designations
-            .insert(Oid([0x22; 32]), ConfidentialityDesignation::Confidential);
-        profile.designations.insert(
-            Oid([0x33; 32]),
-            ConfidentialityDesignation::AttorneysEyesOnly,
-        );
-
-        let bytes = profile.canonical_bytes().unwrap();
-        let decoded = ProductionProfile::decode(&bytes).unwrap();
-        assert_eq!(decoded, profile);
-        assert_eq!(decoded.oid().unwrap(), profile.oid().unwrap());
-
-        let mark = ExhibitMark::new(
-            Oid([0x22; 32]),
-            "PX-042",
-            "SEC-2026-0042",
-            VId(77),
-            [0x99; 32],
-        )
-        .unwrap();
-        let mark_bytes = mark.canonical_bytes().unwrap();
-        let mark_decoded = ExhibitMark::decode(&mark_bytes).unwrap();
-        assert_eq!(mark_decoded, mark);
-        assert_eq!(mark_decoded.oid().unwrap(), mark.oid().unwrap());
-    }
-
-    #[test]
-    fn multi_matter_bates_assignment_preserves_source_doc_commit_and_idempotency() {
-        let doc = Document {
+    fn bates_assignment_projects_journaled_profile_and_range() {
+        let profile = JournalProfile {
             book_id: Id128([1; 16]),
-            kind: 1,
-            mime: "application/pdf".to_string(),
-            bytes: b"invoice #1042 original bytes".to_vec(),
-            grade: 1,
-            retrieved_by: VId(10),
+            matter: "SEC-2026-0042".into(),
+            bates_prefix: "ACME-SEC".into(),
+            first_bates: 1,
+            load_file_format: LoadFileFormat::Both.tag(),
+            protective_order: Some(Oid([0x11; 32])),
         };
-        let original_commit = doc.doc_commit();
-        let doc_oid = doc.oid();
-
-        let mut registry = MatterProductionRegistry::new();
-        registry
-            .register_profile(
-                ProductionProfile::new(
-                    "MATTER-SEC",
-                    "ACME-SEC",
-                    1,
-                    LoadFileFormat::ConcordanceDatOpt,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        registry
-            .register_profile(
-                ProductionProfile::new("MATTER-CIVIL", "ACME-CIV", 500, LoadFileFormat::EdrmXml)
-                    .unwrap(),
-            )
-            .unwrap();
-
-        let bates_sec_1 = registry
-            .assign_bates("MATTER-SEC", doc_oid, original_commit, 3)
-            .unwrap();
-        assert_eq!(bates_sec_1.beg_bates(), "ACME-SEC-00000001");
-        assert_eq!(bates_sec_1.end_bates(), "ACME-SEC-00000003");
-        assert_eq!(bates_sec_1.doc_commit, original_commit);
-
-        // Producing the same document again in MATTER-SEC returns the exact same Bates range.
-        let bates_sec_2 = registry
-            .assign_bates("MATTER-SEC", doc_oid, original_commit, 3)
-            .unwrap();
-        assert_eq!(bates_sec_2, bates_sec_1);
-        assert_eq!(registry.profile("MATTER-SEC").unwrap().next_bates, 4);
-
-        // Producing the same document in MATTER-CIVIL assigns MATTER-CIVIL's Bates range
-        // while preserving MATTER-SEC's Bates range and leaving doc.doc_commit() unchanged.
-        let bates_civ = registry
-            .assign_bates("MATTER-CIVIL", doc_oid, original_commit, 3)
-            .unwrap();
-        assert_eq!(bates_civ.beg_bates(), "ACME-CIV-00000500");
-        assert_eq!(bates_civ.end_bates(), "ACME-CIV-00000502");
-        assert_eq!(doc.doc_commit(), original_commit);
-
-        let all_for_doc = registry.bates_for_document(&doc_oid);
-        assert_eq!(all_for_doc.len(), 2);
-        assert_eq!(all_for_doc[0].matter_id, "MATTER-CIVIL");
-        assert_eq!(all_for_doc[1].matter_id, "MATTER-SEC");
+        let range = BatesRange {
+            document: Oid([0x22; 32]),
+            doc_commit: [0x99; 32],
+            start: 1,
+            end: 3,
+            designation: ConfidentialityDesignation::Confidential.tag(),
+        };
+        let assignment = BatesAssignment::from_journaled(&profile, &range).unwrap();
+        assert_eq!(assignment.beg_bates(), "ACME-SEC-00000001");
+        assert_eq!(assignment.end_bates(), "ACME-SEC-00000003");
+        assert_eq!(
+            assignment.range_label(),
+            "ACME-SEC-00000001..=ACME-SEC-00000003"
+        );
+        assert_eq!(
+            assignment.designation,
+            ConfidentialityDesignation::Confidential
+        );
     }
 
     #[test]
@@ -1076,12 +700,16 @@ mod tests {
             },
         );
 
-        let mut registry = MatterProductionRegistry::new();
-        registry
-            .register_profile(
-                ProductionProfile::new("MATTER-SEC", "ACME-SEC", 10, LoadFileFormat::Both).unwrap(),
-            )
-            .unwrap();
+        let assignments = vec![BatesAssignment {
+            document_oid: doc_redacted_oid,
+            doc_commit: [0x11; 32],
+            matter_id: "MATTER-SEC".into(),
+            bates_prefix: "ACME-SEC".into(),
+            start_number: 10,
+            end_number: 11,
+            page_count: 2,
+            designation: ConfidentialityDesignation::Confidential,
+        }];
 
         let key = SigningKey::from_seed(&[7; 32]);
         let statement = Statement {
@@ -1133,10 +761,9 @@ mod tests {
             receipt,
             &key.public_key(),
             &reads,
-            &BTreeMap::new(),
+            assignments,
             &[doc_withheld_oid],
             &metadata,
-            &mut registry,
         )
         .unwrap();
 

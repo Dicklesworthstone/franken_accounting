@@ -1,0 +1,83 @@
+# Fixture sources for tools/case-fetch's unittests (synthetic documents in ../docs).
+# PORT is replaced with the test server's port in a temporary copy.
+
+[[source]]
+id = "SRC-FX-001"
+title = "Example committee report (synthetic fixture)"
+publisher = "fixture"
+original_url = "http://127.0.0.1:PORT/report.txt"
+archive_url = "http://127.0.0.1:PORT/report.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "c686376f11b3ce4d2248257e0c727ef3237e003fe5a5a1d72d32791842b8f8ed"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "c686376f11b3ce4d2248257e0c727ef3237e003fe5a5a1d72d32791842b8f8ed"]
+redistribution_basis = "fixture"
+assertion_status = "investigative_finding"
+anchor_scheme = ["page"]
+status = "OK"
+
+[[source]]
+id = "SRC-FX-002"
+title = "Example complaint (synthetic fixture)"
+publisher = "fixture"
+original_url = "http://127.0.0.1:PORT/complaint.txt"
+archive_url = "http://127.0.0.1:PORT/complaint.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "21fe592ec6b1b76aef737d7a7fa4dad9dc7b69c6e69ebfa568398ca08a59baba"
+format = "txt"
+extraction = ["case_fetch.py extract", "text-utf-8", "21fe592ec6b1b76aef737d7a7fa4dad9dc7b69c6e69ebfa568398ca08a59baba"]
+redistribution_basis = "fixture"
+assertion_status = "allegation"
+anchor_scheme = ["paragraph", "line"]
+status = "OK"
+
+[[source]]
+id = "SRC-FX-003"
+title = "Example annual report (synthetic fixture)"
+publisher = "fixture"
+original_url = "http://127.0.0.1:PORT/filing.htm"
+archive_url = "http://127.0.0.1:PORT/filing.htm"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "fe40083c51351cda6f879a4ad2ff62e080fe14ea294bc3b0e76faa7e3f6f3db9"
+format = "htm"
+redistribution_basis = "fixture"
+assertion_status = "filer_audited"
+anchor_scheme = ["table_cell"]
+status = "OK"
+
+[[source]]
+id = "SRC-FX-004"
+title = "Example XBRL instance (synthetic fixture)"
+publisher = "fixture"
+original_url = "http://127.0.0.1:PORT/instance.xml"
+archive_url = "http://127.0.0.1:PORT/instance.xml"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+retrieved_utc = "2026-10-26T00:00:00Z"
+sha256 = "5accdba7fe966ef6444728d112699de56c89f5c7080be2f1e03e8b1b9d91a65d"
+format = "xml"
+redistribution_basis = "fixture"
+assertion_status = "filer_audited"
+anchor_scheme = ["xbrl"]
+status = "OK"
+
+[[source]]
+id = "SRC-FX-005"
+title = "A candidate source (synthetic fixture)"
+publisher = "fixture"
+original_url = "http://127.0.0.1:PORT/blocked.txt"
+archive_url = "http://127.0.0.1:PORT/blocked.txt"
+retrieval_route = "archive_capture"
+original_hash_compared = false
+format = "txt"
+redistribution_basis = "fixture"
+assertion_status = "allegation"
+anchor_scheme = ["line"]
+status = "BLOCKED"
+status_reason = "fixture: an unread candidate"

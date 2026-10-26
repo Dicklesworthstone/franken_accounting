@@ -780,6 +780,58 @@ fn findings_remain_citable_and_review_history_survives_process_boundaries() {
     );
     let shown = ok(&f.book, &["finding", "show", &selected]);
     assert_eq!(text(data(&shown).get("row").unwrap(), "status"), "Open");
+
+    // fa-waow (plan §15.3): `fa finding dismiss` is the review whose action
+    // is dismiss, under every rule review applies.
+    let reviews = data(&shown)
+        .get("row")
+        .and_then(|row| row.get("reviews"))
+        .and_then(Json::as_arr)
+        .unwrap();
+    let reopened = format!("R:{}", text(reviews.last().unwrap(), "review_vid"));
+    let dismiss = |extra: &[&str]| -> Vec<String> {
+        [
+            "finding",
+            "dismiss",
+            selected.as_str(),
+            "--dismissal-reason",
+            "explained",
+            "--previous",
+            reopened.as_str(),
+            "--note",
+            "The approved weekend posting is explained after all",
+            "--as",
+            "reviewer",
+        ]
+        .iter()
+        .chain(extra)
+        .map(|arg| (*arg).to_string())
+        .collect()
+    };
+    let before = f.head();
+    for planted in [
+        // Its action is the subcommand's.
+        vec!["--action", "acknowledge", "--evidence", f.evidence.as_str()],
+        // A dismissal retains its evidence, as review requires.
+        vec![],
+    ] {
+        let argv = dismiss(&planted);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (exit, refused) = call(&f.book, &argv, None);
+        assert_eq!(exit, 2, "{planted:?}: {refused:?}");
+    }
+    assert_eq!(f.head(), before);
+    let argv = dismiss(&["--evidence", f.evidence.as_str()]);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let dismissed = ok(&f.book, &argv);
+    let decision = data(&dismissed).get("review").unwrap();
+    assert_eq!(text(decision, "action"), "dismiss");
+    assert_eq!(text(decision, "reason"), "explained");
+    let shown = ok(&f.book, &["finding", "show", &selected]);
+    assert_eq!(
+        text(data(&shown).get("row").unwrap(), "status"),
+        "Dismissed"
+    );
 }
 
 #[test]

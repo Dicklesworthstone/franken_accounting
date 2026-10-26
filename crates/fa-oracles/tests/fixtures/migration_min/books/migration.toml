@@ -1,0 +1,104 @@
+# Minimal migration fixture (A1b, A7m): one legacy entry staged through fa migrate open|stage|finalize,
+# with its legacy attribution. Loaded against the pilot's case files. Never copied to cases/.
+
+[book]
+variant = "migration"
+opening_date = "2003-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2001Q3"
+start = "2001-07-01"
+end = "2001-09-30"
+fiscal_year = 2001
+kind = "Historical"
+
+[[period]]
+code = "2003Q1"
+start = "2003-01-01"
+end = "2003-03-31"
+fiscal_year = 2003
+kind = "Normal"
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "migrate"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-approver-2"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[account]]
+code = "1510"
+name_fact = "F9"
+type = "Asset"
+role = "fixed_asset"
+opened = "2000-12-31"
+
+[[account]]
+code = "6100"
+name_fact = "F4"
+type = "Expense"
+opened = "2000-12-31"
+
+[[document]]
+id = "DOC-LEGACY-TB"
+stub_of = "legacy_tb"
+grade = "Generated"
+
+[[intent]]
+id = "F9"
+fact = "F9"
+class = "Migration"
+principal = "case-closer-1"
+effective_date = "2001-09-30"
+idempotency_key = "wc-mig-F9"
+source_entered_by = "property-accounting-director-1"
+source_approved_by = "property-accounting-director-1"
+
+[[leg]]
+intent = "F9"
+ordinal = 0
+account = "1510"
+side = "Dr"
+amount_literal = "742725000.00"
+amount_rule = "value:F9#1"
+unit = "USD"
+
+[[leg]]
+intent = "F9"
+ordinal = 1
+account = "6100"
+side = "Cr"
+amount_literal = "742725000.00"
+amount_rule = "value:F9#1"
+unit = "USD"
+
+[[step]]
+seq = 1
+kind = "migrate_open"
+ref = "DOC-LEGACY-TB"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "migrate_stage"
+ref = "F9..F9"
+principal = "case-closer-1"
+approvers = ["case-approver-1", "case-approver-2"]
+
+[[step]]
+seq = 3
+kind = "migrate_finalize"
+ref = "1"
+principal = "case-closer-1"
+approvers = ["case-approver-1", "case-approver-2"]

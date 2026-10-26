@@ -99,6 +99,13 @@ value = 65536
 [[limit]]
 name = "max_batch_entries"
 value = 8190
+# Maximum canonical `LogicalDeltaTemplate` byte size of one substrate
+# transaction (fa-gbkc): derived from `fgdb-chronicle` V1 capsule ceiling
+# (`MAX_PROTECTED_LEN_V1 = 56,403 * 256 = 14,439,168` bytes) minus the 16-byte
+# `XChaCha20Poly1305V1` authentication tag at pinned rev `b323bd1`.
+[[limit]]
+name = "max_batch_template_bytes"
+value = 14439152
 [[limit]]
 name = "max_intake_text_bytes"
 value = 256
@@ -129,3 +136,22 @@ value = 64
 [[limit]]
 name = "max_bank_predecessor_depth"
 value = 4096
+
+# Complete native-period snapshots. Each cell carries exact posted/pending
+# amounts, while unresolved holds remain bounded by max_batch_entries.
+# The byte limit is independent of the distinct-key limit and does not waive
+# the native transaction's own capsule/row admission limits.
+[[limit]]
+name = "max_register_checkpoint_bytes"
+value = 8388608
+[[limit]]
+name = "max_register_checkpoint_cells"
+value = 100000
+
+# A complete custom layout plus one bounded activation review envelope.
+[[limit]]
+name = "max_statement_definition_bytes"
+value = 65536
+[[limit]]
+name = "max_statement_definition_plan_bytes"
+value = 66880

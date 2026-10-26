@@ -681,6 +681,14 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(&req.capability, db.frontier()?) {
         return Ok(Err(policy::refusal(&d)));
     }
+    if let Err(refusal) = policy::capability_admitted(db, book, &req.capability)? {
+        return Ok(Err(refusal));
+    }
+    // Reopened books may need their retained native history hydrated to
+    // authenticate recovered outcome coverage. Admission precedes that read.
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let prev_corroborated = latest_corroborated_tick(db, None)?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
@@ -694,9 +702,34 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
         &req.principal_ref.0.to_le_bytes(),
         &req.idempotency_key,
     );
+    // TimeEvidence shares the same scoped key as postings and atomic batches.
+    // A target-derived reversal/resolution or an outer batch can reserve this
+    // key without creating the ordinary Entry identity checked below.
+    if let Err(refusal) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        req.principal_ref,
+        &req.idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         return recorded_tick(db, &row, &req, book);
+    }
+    // An exact legacy retry above remains readable. A new tick must prove
+    // that an old target-derived posting did not already consume its key.
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&initial_proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     let (witnessed, latest) = tick_witness(&txn, db)?;
     if let Some(corr) = prev_corroborated
@@ -756,6 +789,7 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
     };
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         book_root(),
         property::LATEST_TICK,
@@ -781,6 +815,12 @@ pub async fn record_tick<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
             Some(row) => recorded_tick(db, &row, &req, book),
+            None if db
+                .vertex(crate::outcome::entry_outcome_vid(&initial_proposal))?
+                .is_some() =>
+            {
+                Ok(Err(crate::outcome::key_conflict()))
+            }
             None => Err(KernelError::Corrupt(
                 "identity spent but no live row".into(),
             )),
@@ -805,6 +845,9 @@ fn recorded_tick<V: asupersync::fs::Vfs + Clone>(
         Err(r) => Ok(Err(r)),
         Ok(posted) => {
             let stored = decode_entry(row)?;
+            if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+                return Ok(Err(crate::outcome::key_conflict()));
+            }
             let Some(ControlPayload::TimeTick {
                 observed_utc_ns, ..
             }) = stored.proposal.control
@@ -1171,7 +1214,24 @@ pub async fn sweep_batch<V: asupersync::fs::Vfs + Clone>(
     req: &SweepRequest,
     describe: &mut Describe<'_>,
 ) -> Outcome<Option<SweepBatch>> {
-    match sweep_batch_with_witness(db, ctx, book, req, describe).await? {
+    sweep_batch_with_crash(db, ctx, book, req, describe, None).await
+}
+
+/// [`sweep_batch`] through the substrate's production crash-point seam
+/// (`WriteTxn::commit_with_crash`), for the lab campaign that crashes an
+/// expiry batch's one publication at each registered point and checks the
+/// book after reopening (fa-0fl). `None` is `sweep_batch`: both run this one
+/// path.
+#[doc(hidden)]
+pub async fn sweep_batch_with_crash<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: &SweepRequest,
+    describe: &mut Describe<'_>,
+    crash_at: Option<fgdb::CrashPoint>,
+) -> Outcome<Option<SweepBatch>> {
+    match sweep_batch_at(db, ctx, book, req, describe, crash_at).await? {
         Ok((batch, _)) => Ok(Ok(batch)),
         Err(r) => Ok(Err(r)),
     }
@@ -1186,6 +1246,17 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     req: &SweepRequest,
     describe: &mut Describe<'_>,
+) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
+    sweep_batch_at(db, ctx, book, req, describe, None).await
+}
+
+async fn sweep_batch_at<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    req: &SweepRequest,
+    describe: &mut Describe<'_>,
+    crash_at: Option<fgdb::CrashPoint>,
 ) -> Outcome<(Option<SweepBatch>, SweepReadWitness)> {
     let mut witness = SweepReadWitness::default();
     let sweep_key = fa_policy::sod::control_key("SweepControl", None, "Expire");
@@ -1233,7 +1304,7 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
         return Ok(Ok((None, witness)));
     }
     let take = due.len().min(req.max_batch);
-    let remaining_due = due.len() - take;
+    let mut remaining_due = due.len() - take;
     due.truncate(take);
 
     let txn_cx = ctx.txn();
@@ -1270,6 +1341,7 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
     let mut cells: BTreeMap<VId, CellRun> = BTreeMap::new();
     let mut entries = WriteBatch::new(relation::IN_PERIOD);
     let mut resolves = WriteBatch::new(relation::RESOLVES);
+    let mut tracker = crate::batch::TemplateByteTracker::default();
     let mut expired = Vec::with_capacity(due.len());
     for d in &due {
         let hold_vid = d.hold.vid;
@@ -1343,9 +1415,25 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
             txn.abort();
             return Ok(Err(refusal));
         }
-        release_hold(&txn, db, &mut accounts, &mut cells, &hold.proposal, &period)?;
         let entry = proposal.seal(Vec::new(), None)?;
-        entries.create_vertex(rvid, vec![label::ENTRY], entry_mirrors(&entry)?);
+        let mirrors = entry_mirrors(&entry)?;
+        let mut next_tracker = tracker.clone();
+        next_tracker.create_vertex(relation::IN_PERIOD, rvid, 1, &mirrors);
+        next_tracker.record_entry_outcome_claim(relation::IN_PERIOD, &entry.proposal);
+        next_tracker.add_edge(relation::IN_PERIOD, &[]);
+        next_tracker.add_edge(
+            relation::RESOLVES,
+            &[(property::DISPOSITION, CanonicalScalar::Int(2))],
+        );
+        let cell_reserve = (cells.len() + hold.proposal.legs.len()).saturating_mul(400) + 4096;
+        if !expired.is_empty()
+            && next_tracker.total_bytes().saturating_add(cell_reserve)
+                > fa_model::limits::MAX_BATCH_TEMPLATE_BYTES
+        {
+            break;
+        }
+        release_hold(&txn, db, &mut accounts, &mut cells, &hold.proposal, &period)?;
+        entries.create_vertex(rvid, vec![label::ENTRY], mirrors);
         crate::outcome::stage_entry(&mut entries, &entry, rvid)?;
         entries.add_edge(edge_id(relation::IN_PERIOD, rvid, pvid), rvid, pvid, vec![]);
         resolves.add_edge(
@@ -1354,8 +1442,11 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
             hold_vid,
             vec![(property::DISPOSITION, CanonicalScalar::Int(2))],
         );
+        tracker = next_tracker;
         expired.push((d.hold, entry.entry_ref(rvid)));
     }
+    remaining_due += due.len() - expired.len();
+    due.truncate(expired.len());
     witness.substrate_rows_read += accounts.len() + cells.len();
 
     let last = due
@@ -1423,7 +1514,7 @@ pub async fn sweep_batch_with_witness<V: asupersync::fs::Vfs + Clone>(
         WriteMismatchPolicy::AbortWrite,
     );
     txn.write_ordered(db, vec![entries, resolves])?;
-    match txn.commit(db, &ctx.commit()).await {
+    match txn.commit_with_crash(db, &ctx.commit(), crash_at).await {
         Ok(seq) => Ok(Ok((
             Some(SweepBatch {
                 tick,
@@ -3065,7 +3156,11 @@ mod tests {
             let template_entry = template_proposal.seal(Vec::new(), None).expect("seal");
             let mirrors = entry_mirrors(&template_entry).expect("mirrors");
             let ctx = self.ctx();
-            let chunk_size = 50_000;
+            // One commit is one Chronicle capsule, and a V1 capsule carries at
+            // most one RFC 6330 source block of protected bytes (~14.4 MB);
+            // 10,000 entry mirrors per batch outgrew it as the mirror gained
+            // properties, so the substrate refused the commit.
+            let chunk_size = 1_000;
             for chunk_start in (0..count).step_by(chunk_size) {
                 let chunk_end = (chunk_start + chunk_size).min(count);
                 let mut batch = WriteBatch::new(relation::IN_BOOK);

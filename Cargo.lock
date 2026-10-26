@@ -866,6 +866,7 @@ dependencies = [
  "fa-model",
  "fa-money",
  "fa-notary",
+ "fa-oracles",
  "fa-policy",
  "fa-registers",
  "fa-registry",
@@ -881,7 +882,9 @@ name = "fa-conformance"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa",
  "fa-journal",
+ "fa-lantern",
  "fa-model",
  "fa-money",
  "fa-policy",
@@ -1026,6 +1029,7 @@ name = "fa-lantern"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-docket",
  "fa-gen",
  "fa-journal",
  "fa-model",
@@ -1049,8 +1053,10 @@ name = "fa-mcp"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa",
  "fa-cli",
  "fa-registry",
+ "fa-verify",
  "fastmcp-rust",
 ]
 
@@ -1094,6 +1100,13 @@ dependencies = [
  "fgdb-crypto",
  "fgdb-gql",
  "fgdb-types",
+]
+
+[[package]]
+name = "fa-oracles"
+version = "0.0.1"
+dependencies = [
+ "fa-registry",
 ]
 
 [[package]]

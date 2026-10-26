@@ -129,12 +129,11 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
     f.assign_procedure_roles();
     for (id, _) in selected {
         let certified = f.certify(&f.request(id, source));
-        // fa-6l8g moved the party-attributing procedures to version 3.
+        // fa-6l8g moved the party-attributing procedures to version 3, and
+        // fa-yugf.83 the investor-population ones on to version 4.
         let version = match id {
-            "lookback.preferences"
-            | "ponzi.net_investment"
-            | "distribution.rising_tide"
-            | "distribution.pro_rata" => 3,
+            "lookback.preferences" => 3,
+            "ponzi.net_investment" | "distribution.rising_tide" | "distribution.pro_rata" => 4,
             _ => 2,
         };
         assert_eq!(certified.report.version, version, "{id}");
@@ -393,7 +392,67 @@ fn a_discrepancy_beyond_signed_statistic_capacity_has_no_certificate_or_wrapped_
     f.post(1, "1000", "6000", i128::MAX, false);
     let exact = f.certify(&f.request("recon.attested_register_compare", source));
     assert_eq!(exact.report.findings[0].statistic.value, i128::MAX);
-    f.post(1, "1000", "3000", 1, false);
+    let head = f.head();
+    let legs = vec![
+        LegPayload::simple(Side::Credit, f.id("1000"), Amount::new(f.unit, 1)),
+        LegPayload::simple(Side::Debit, f.id("3000"), Amount::new(f.unit, 1)),
+    ];
+    let over_cap = EntryPayload {
+        schema_minor: 0,
+        book_id: f.book.context().book_id,
+        branch_id: Id128::TRUNK,
+        class: EntryClass::ORIGINAL,
+        effective_date: day(1),
+        document_date: None,
+        description: f.book.seal_text(&cx, "Over-cap credit").unwrap(),
+        effective_period: None,
+        unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+        legs,
+        control: None,
+        base_totals: None,
+        idempotency_key: b"over-cap-credit".to_vec(),
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([1; 32]),
+            intent_kind: 1,
+        },
+        principal_ref: PRINCIPAL,
+        session_ref: None,
+        evidence: f.evidence.clone(),
+        supersession: Vec::new(),
+        pending: None,
+        external_ids: Vec::new(),
+        tags: Vec::new(),
+        extensions: Vec::new(),
+    };
+    let refusal = f
+        .runtime
+        .block_on(f.book.post(
+            &cx,
+            PostRequest {
+                proposal: over_cap,
+                approvals: Vec::new(),
+                plan_certificate: None,
+                capability: cap(&["post"]),
+            },
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, "FA-REF-198", "{refusal}");
+    assert_eq!(f.head(), head);
+    let mut wider_claim = fa_registers::assertion::claim_of(&claim);
+    wider_claim.mantissa = 2;
+    let evidence: Vec<_> = f.evidence.iter().map(|e| e.document_oid).collect();
+    f.runtime
+        .block_on(fa_journal::attestation::commit_register_equals(
+            &mut f.book.db,
+            &cx,
+            &f.book.context,
+            &Capability::embedded(VId(74), &["reconcile"]).unwrap(),
+            wider_claim,
+            evidence,
+        ))
+        .unwrap()
+        .unwrap();
     let head = f.head();
     assert!(matches!(
         f.book.certify_procedure(

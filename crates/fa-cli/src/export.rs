@@ -14,10 +14,23 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_read_flag, usage, write_new_output_file};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json, or fa export ads (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json";
+const EXAMPLE: &str = "fa export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl (--period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json, fa export ads [--account <code>] (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json, fa export saft (--period <code> | --as-of YYYY-MM-DD) --out <new dir> --with-proofs [--state <oid|latest>] --json, or fa export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
+const WAREHOUSE_EXAMPLE: &str = "fa export warehouse --connector snowflake|bigquery|s3 [--destination <ref>] (--report <C:oid|oid|certificate-file> | --period <code> | --as-of YYYY-MM-DD) [--as-known-at HEAD|<seq>|<RFC3339>] [--out <new path>] --json";
 /// The complete-prefix bundle and its receipt an ADS extract is proved with.
 const PROOF_BUNDLE: &str = "ADS_Proof.fab";
 const PROOF_RECEIPT: &str = "ADS_Proof.receipt";
+/// The same pair beside a SAF-T extract.
+const SAFT_PROOF_BUNDLE: &str = "SAFT_Proof.fab";
+const SAFT_PROOF_RECEIPT: &str = "SAFT_Proof.receipt";
+
+/// The bundle and receipt file names a proved `format` package carries.
+fn proof_files(format: &str) -> (&'static str, &'static str) {
+    if format == "saft" {
+        (SAFT_PROOF_BUNDLE, SAFT_PROOF_RECEIPT)
+    } else {
+        (PROOF_BUNDLE, PROOF_RECEIPT)
+    }
+}
 
 /// One output file of an export: its name in the package and its bytes.
 struct ExportFile {
@@ -27,6 +40,9 @@ struct ExportFile {
 
 pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let format = match args.positional.get(1).map(String::as_str) {
+        Some("warehouse") if args.positional.len() == 2 => {
+            return export_warehouse_cmd(ctx, args);
+        }
         Some(
             format @ ("ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl"),
         ) if args.positional.len() == 2 => format,
@@ -35,6 +51,14 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
         _ => return Err(usage("export needs exactly one format", EXAMPLE)),
     };
+    for flag in ["--connector", "--destination", "--report"] {
+        if args.flag(flag).is_some() {
+            return Err(usage(
+                format!("{flag} belongs to `fa export warehouse`"),
+                WAREHOUSE_EXAMPLE,
+            ));
+        }
+    }
     for flag in [
         "--period",
         "--as-of",
@@ -42,6 +66,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         "--known-at",
         "--out",
         "--state",
+        "--account",
     ] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(format!("export takes only one {flag}"), EXAMPLE));
@@ -54,19 +79,21 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "omit --out to receive the complete export inline",
         ));
     }
-    // An ADS extract with its proofs (plan §13.1, fa-2q91): the complete
-    // prefix of a recorded accumulator state, and the extract selected at
-    // exactly that state's sequence, so fa-verify ads can check every row.
+    // An ADS or SAF-T extract with its proofs (plan §13.1, fa-2q91): the
+    // complete prefix of a recorded accumulator state, and the extract
+    // selected at exactly that state's sequence, so fa-verify ads or saft can
+    // check every row. A proved SAF-T file is written into a new directory
+    // beside its bundle and receipt, as the ADS package is.
     let with_proofs = args.switch("--with-proofs");
     if with_proofs
-        && (format != "ads"
+        && (!matches!(format, "ads" | "saft")
             || output.is_none()
             || args.flag("--as-known-at").is_some()
             || args.flag("--known-at").is_some())
     {
         return Err(usage(
-            "--with-proofs proves an ADS package written with --out, at its proof state's own sequence: no --as-known-at",
-            "fa export ads --period <code> --out <new dir> --with-proofs [--state <oid|latest>] --json",
+            "--with-proofs proves an ADS or SAF-T package written to a new --out directory, at its proof state's own sequence: no --as-known-at",
+            "fa export ads|saft --period <code> --out <new dir> --with-proofs [--state <oid|latest>] --json",
         ));
     }
     if !with_proofs && args.flag("--state").is_some() {
@@ -79,6 +106,16 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None | Some("latest") => None,
         Some(text) => Some(fa_model::Oid(crate::proof::fixed_hex(text, "--state")?)),
     };
+    // One account's extract (plan §13.1): every entry with a leg on it, and
+    // its balance. With --with-proofs the bundle proves that account's
+    // entries complete through the cutoff (ScopeIndexComplete).
+    let account = args.flag("--account");
+    if account.is_some() && format != "ads" {
+        return Err(usage(
+            "--account scopes an ADS extract to one account; other formats export the whole chart",
+            "fa export ads --account <code> --period <code> --out <new dir> [--with-proofs] --json",
+        ));
+    }
     // An export discloses the journal to an outsider, as a proof or a
     // bundle does: authority is checked before the book is read.
     let capability = ctx.capability(args, &["read", "produce"])?;
@@ -104,9 +141,33 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let book = ctx.books.open_admitted(args, |book| {
         // The bundle is produced first (its own admission precedes every
         // read of the journal); the read scope borrows the book after it.
+        // An account's bundle ends at the cutoff, so a --period cutoff is
+        // read first under the admitted read scope (at a pinned capability's
+        // own pin), and checked again at the proof's own sequence below.
+        let planned_cutoff = match (with_proofs, account, &selection) {
+            (true, Some(_), fa::TrialBalanceSelection::Periods(_)) => {
+                let at = match capability.known_at_pin() {
+                    Some(pin) => Some(pin.min(book.head()?)),
+                    None => None,
+                };
+                let scope = book.read_scope(capability.holder(), &capability)??;
+                let seq = scope.admit_report(&selection.clone().into(), at)??;
+                Some(cutoff_at(&scope, &selection, seq)?)
+            }
+            (true, Some(_), fa::TrialBalanceSelection::AsOf(day)) => Some(*day),
+            _ => None,
+        };
         let proved_at = if with_proofs {
+            let scope = match (account, planned_cutoff) {
+                (Some(code), Some(cutoff)) => fa::BundleScope::Index(fa::ScopeRequest::Account {
+                    account: fa_model::account_vid(book.context().book_id, code),
+                    from: i32::MIN,
+                    to: cutoff.0,
+                }),
+                _ => fa::BundleScope::Prefix,
+            };
             let request = fa::BundleRequest {
-                scope: fa::BundleScope::Prefix,
+                scope,
                 balances: Vec::new(),
                 inline_documents: false,
             };
@@ -142,28 +203,83 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         // An export is cumulative stock, even when --period names its
         // boundary. Admit that reach before reading any period or entry.
         let seq = scope.admit_report(&selection.clone().into(), known_at)??;
-        let through = match &selection {
-            fa::TrialBalanceSelection::Periods(periods) => {
-                let code = &periods[0];
-                let period = scope.period_at(code, Some(seq))??.ok_or_else(|| {
-                    usage(
-                        format!("no period `{code}` in this book at {}", seq.0),
-                        "select a period recorded at the requested known-at sequence",
-                    )
+        let through = cutoff_at(&scope, &selection, seq)?;
+        if planned_cutoff.is_some_and(|planned| planned != through) {
+            return Err(Fail::Internal(format!(
+                "the account bundle's cutoff is not the period's end at the proof state's sequence {}",
+                seq.0
+            )));
+        }
+        let journal = book.format_journal(through, Some(seq))?;
+        // A migration chunk counts only when its run makes it visible, and
+        // fa-verify learns that from migration-aware balance proofs, which
+        // carry the run bodies (fa-mv0f). So a proved whole-chart extract is
+        // produced again at the same state with a balance over every chart
+        // account in every unit its legs use, cut off at the extract's
+        // cutoff. That covers each cell a chunk, visible or not, could touch,
+        // and is a second witness of every Trial_Balance row.
+        if account.is_none()
+            && let Some((first, key)) = proved.take()
+        {
+            let book_id = book.context().book_id;
+            let mut units: std::collections::BTreeSet<u32> = journal
+                .entries
+                .iter()
+                .flat_map(|e| e.legs.iter().map(|l| l.amount.unit.0))
+                .collect();
+            units.insert(book.spec()?.base_unit.0);
+            let balances = journal
+                .accounts
+                .iter()
+                .flat_map(|a| {
+                    let vid = fa_model::account_vid(book_id, &a.code);
+                    units.iter().map(move |unit| fa::BalanceRequest {
+                        account: vid,
+                        unit: *unit,
+                        effective_through: Some(through.0),
+                    })
+                })
+                .collect();
+            let request = fa::BundleRequest {
+                scope: fa::BundleScope::Prefix,
+                balances,
+                inline_documents: false,
+            };
+            let state = first.checkpoint.checkpoint.body.state_oid;
+            let again = book
+                .produce_bundle(capability.holder(), &capability, Some(state), &request)??
+                .ok_or_else(|| {
+                    Fail::Internal("the proof state is no longer on the checkpoint chain".into())
                 })?;
-                DateDay(period.end.0 - 1)
-            }
-            fa::TrialBalanceSelection::AsOf(day) => *day,
-            fa::TrialBalanceSelection::Activity(_) => {
-                return Err(Fail::Internal(
-                    "an export cannot select period activity".into(),
-                ));
-            }
-        };
-        selected = Some(book.format_journal(through, Some(seq))?);
+            proved = Some((again, key));
+        }
+        selected = Some(match account {
+            None => journal,
+            Some(code) => journal.scoped_to_account(code).map_err(|_| {
+                usage(
+                    format!("no account `{code}` in this book's chart at {}", seq.0),
+                    "name a chart account (fa chart show --json)",
+                )
+            })?,
+        });
         Ok(())
     })?;
     let journal = selected.ok_or_else(|| Fail::Internal("export selection is missing".into()))?;
+    // One account's proof is its scope-index run: it holds no migration
+    // run's lifecycle controls and no balance, so fa-verify cannot decide
+    // whether a migration entry in it counts (fa-mv0f), and refuses it.
+    let chunks = journal
+        .entries
+        .iter()
+        .filter(|e| e.class == fa_model::EntryClass::MIGRATION)
+        .count();
+    if with_proofs && account.is_some() && chunks > 0 {
+        ctx.out.warn(format!(
+            "this account's extract holds {chunks} migration {} whose run visibility its account bundle cannot prove, so fa-verify ads will refuse {}; the whole-chart extract (no --account) carries the balances that prove it",
+            if chunks == 1 { "entry" } else { "entries" },
+            if chunks == 1 { "it" } else { "them" },
+        ));
+    }
     let files = render_files(format, &journal)?;
     let total: usize = files.iter().map(|f| f.content.len()).sum();
     let max_inline = crate::verbs::registry()
@@ -181,10 +297,10 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let mut paths = Vec::new();
     if let Some(path) = output {
-        if format == "ads" {
+        if format == "ads" || with_proofs {
             std::fs::create_dir(ctx.files.resolve(path)).map_err(|e| {
                 usage(
-                    format!("cannot create the ADS package directory {path}: {e}"),
+                    format!("cannot create the {format} package directory {path}: {e}"),
                     "choose a new --out directory; an existing path is never reused",
                 )
             })?;
@@ -200,9 +316,10 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 paths.push(inner);
             }
             if let Some((produced, _)) = &proved {
+                let (bundle, receipt) = proof_files(format);
                 for (name, bytes) in [
-                    (PROOF_BUNDLE, produced.bundle.bytes.as_slice()),
-                    (PROOF_RECEIPT, produced.receipt.as_slice()),
+                    (bundle, produced.bundle.bytes.as_slice()),
+                    (receipt, produced.receipt.as_slice()),
                 ] {
                     let inner = format!("{path}/{name}");
                     write_new_output_file(&ctx.files, &inner, bytes, "export", "--out")?;
@@ -239,14 +356,15 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("content_digest", s(hex(&coordinate.content_digest))),
             ("certificate_digest", s(hex(&coordinate.certificate_digest))),
             ("out", output.map_or(Json::Null, s)),
+            ("account_scope", account.map_or(Json::Null, s)),
             ("files", Json::Arr(listed)),
             (
                 "proof",
                 proved.as_ref().map_or(Json::Null, |(produced, key)| {
                     let statement = &produced.checkpoint.checkpoint.body.statement;
                     obj(vec![
-                        ("bundle", s(PROOF_BUNDLE)),
-                        ("receipt", s(PROOF_RECEIPT)),
+                        ("bundle", s(proof_files(format).0)),
+                        ("receipt", s(proof_files(format).1)),
                         ("bundle_digest", s(hex(&produced.bundle.digest))),
                         (
                             "state",
@@ -256,7 +374,14 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                             "through_seq",
                             Json::Int(i128::from(statement.through_seq.0)),
                         ),
-                        ("completeness", s("seq_range_complete")),
+                        (
+                            "completeness",
+                            s(if account.is_some() {
+                                "scope_index_complete"
+                            } else {
+                                "seq_range_complete"
+                            }),
+                        ),
                         ("checkpoint_public_key", s(key.as_str())),
                     ])
                 }),
@@ -275,6 +400,31 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ),
     );
     Ok(())
+}
+
+/// The inclusive effective cutoff an export selects at `seq`: the last day
+/// of the --period named, or the --as-of day.
+fn cutoff_at(
+    scope: &fa::ReadScope<'_>,
+    selection: &fa::TrialBalanceSelection,
+    seq: fgdb_types::CommitSeq,
+) -> Result<DateDay, Fail> {
+    match selection {
+        fa::TrialBalanceSelection::Periods(periods) => {
+            let code = &periods[0];
+            let period = scope.period_at(code, Some(seq))??.ok_or_else(|| {
+                usage(
+                    format!("no period `{code}` in this book at {}", seq.0),
+                    "select a period recorded at the requested known-at sequence",
+                )
+            })?;
+            Ok(DateDay(period.end.0 - 1))
+        }
+        fa::TrialBalanceSelection::AsOf(day) => Ok(*day),
+        fa::TrialBalanceSelection::Activity(_) => Err(Fail::Internal(
+            "an export cannot select period activity".into(),
+        )),
+    }
 }
 
 /// The four tables of an ADS package, in the order `fa export ads` writes
@@ -371,9 +521,289 @@ fn files_json(files: &[ExportFile], inline: bool) -> Vec<Json> {
         .collect()
 }
 
-const VERIFY_EXAMPLE: &str = "fa verify export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl <the exported file, or the ads package directory> --json";
+const VERIFY_EXAMPLE: &str = "fa verify export ads|saft|csv-gl|beancount|hledger|ndjson|xbrl|warehouse <the exported file, or the ads package directory> --json";
 const VERIFY_FIX: &str = "export again with fa export at the coordinate you need and verify that file; an edited export is not the book's";
 const VERIFY_CITE: &str = "plan §16 (export then import is the identity on folds) and the export's coordinate certificate (content_digest over the canonical journal, certificate_digest over its coordinate)";
+
+/// `fa export warehouse` (plan §5.7, §15; beads fa-ff6, fa-lzrn): invoke the
+/// host's `fwc` connector (`snowflake`, `bigquery`, `s3`) as a supervised
+/// subprocess over a verified report certificate or journal coordinate, and
+/// emit the canonical `WarehouseExportReceipt` control record.
+fn export_warehouse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.switch("--with-proofs") || args.flag("--state").is_some() {
+        return Err(usage(
+            "--with-proofs and --state belong to `fa export ads`",
+            WAREHOUSE_EXAMPLE,
+        ));
+    }
+    for flag in [
+        "--connector",
+        "--destination",
+        "--report",
+        "--period",
+        "--as-of",
+        "--as-known-at",
+        "--known-at",
+        "--out",
+    ] {
+        if args.flag_all(flag).len() > 1 {
+            return Err(usage(
+                format!("export warehouse takes only one {flag}"),
+                WAREHOUSE_EXAMPLE,
+            ));
+        }
+    }
+    let connector_raw = args.require("--connector", "snowflake|bigquery|s3")?;
+    let connector = fa_formats::fwc::WarehouseConnector::parse(connector_raw)
+        .map_err(|e| usage(format!("--connector: {e}"), WAREHOUSE_EXAMPLE))?;
+    let destination = args.flag("--destination").unwrap_or(connector.as_str());
+    if destination.trim().is_empty() {
+        return Err(usage("--destination must not be empty", WAREHOUSE_EXAMPLE));
+    }
+    let output = args.flag("--out");
+    if let Some(path) = output {
+        if path.is_empty() || path == "-" {
+            return Err(usage(
+                "--out names a new file for the warehouse export receipt; - is not an output path",
+                "omit --out to receive the receipt inline",
+            ));
+        }
+        if ctx.files.resolve(path).exists() {
+            return Err(usage(
+                format!("output file {path} already exists; an existing path is never overwritten"),
+                "choose a new --out path",
+            ));
+        }
+    }
+    let capability = ctx.capability(args, &["read", "produce"])?;
+    for op in [Op::Read, Op::Produce] {
+        fa_policy::require(
+            &capability,
+            op,
+            "exporting a certified report to a warehouse",
+        )
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
+    let report_arg = args.flag("--report");
+    if report_arg.is_some()
+        && (args.flag("--period").is_some()
+            || args.flag("--as-of").is_some()
+            || args.flag("--as-known-at").is_some()
+            || args.flag("--known-at").is_some())
+    {
+        return Err(usage(
+            "--report carries its own certified coordinate; do not combine it with --period, --as-of, or --as-known-at",
+            WAREHOUSE_EXAMPLE,
+        ));
+    }
+    let selection = if report_arg.is_none() {
+        Some(match (args.flag("--period"), args.flag("--as-of")) {
+            (Some(code), None) => fa::TrialBalanceSelection::Periods(vec![code.to_string()]),
+            (None, Some(date)) => fa::TrialBalanceSelection::AsOf(
+                DateDay::parse(date)
+                    .map_err(|e| usage(format!("--as-of: {e}"), "--as-of YYYY-MM-DD"))?,
+            ),
+            _ => {
+                return Err(usage(
+                    "export warehouse needs --report <certificate> or one of --period <code> or --as-of YYYY-MM-DD",
+                    WAREHOUSE_EXAMPLE,
+                ));
+            }
+        })
+    } else {
+        None
+    };
+
+    let mut prepared: Option<(Vec<u8>, [u8; 32], fa_formats::FormatJournal)> = None;
+    let book = ctx.books.open_admitted(args, |book| {
+        let principal = capability.holder();
+        if let Some(report_path) = report_arg {
+            let _ = book.read_scope(principal, &capability)??;
+            let cert_bytes = crate::notary::read_certificate_bytes(
+                book,
+                &ctx.files,
+                report_path,
+                principal,
+                &capability,
+            )?;
+            let artifact = fa::ReportArtifact::decode(&cert_bytes)?;
+            crate::notary::prepare_artifact_history(
+                book,
+                principal,
+                &capability,
+                &artifact,
+                &cert_bytes,
+            )?;
+            if artifact.family() == fa::ReportArtifactFamily::ScenarioDiff {
+                let certificate = fa::ScenarioDiffCertificate::decode(&cert_bytes)?;
+                book.replay_scenario_diff(principal, &capability, &certificate)??;
+            } else {
+                book.replay_report_artifact_for(
+                    principal,
+                    &capability,
+                    &cert_bytes,
+                    Some(artifact.digest()),
+                    fa::ReportArtifactExpectation::AsSupplied,
+                )??;
+            }
+            let seq = artifact.known_at();
+            let through = book
+                .periods()?
+                .into_iter()
+                .filter(|p| p.created_at <= seq)
+                .map(|p| DateDay(p.end.0 - 1))
+                .max()
+                .or_else(|| book.spec().ok().and_then(|s| s.opening_date))
+                .unwrap_or(DateDay(0));
+            let _ = book
+                .read_scope(principal, &capability)??
+                .admit_report(&fa::TrialBalanceSelection::AsOf(through).into(), Some(seq))??;
+            let journal = book.format_journal(through, Some(seq))?;
+            prepared = Some((cert_bytes, *artifact.digest(), journal));
+        } else if let Some(selection) = &selection {
+            let scope = book.read_scope(principal, &capability)??;
+            let known_at = known_at_read_flag(args, book, &ctx.out, &capability)?.0;
+            let seq = scope.admit_report(&selection.clone().into(), known_at)??;
+            let through = match selection {
+                fa::TrialBalanceSelection::Periods(periods) => {
+                    let code = &periods[0];
+                    let period = scope.period_at(code, Some(seq))??.ok_or_else(|| {
+                        usage(
+                            format!("no period `{code}` in this book at {}", seq.0),
+                            "select a period recorded at the requested known-at sequence",
+                        )
+                    })?;
+                    DateDay(period.end.0 - 1)
+                }
+                fa::TrialBalanceSelection::AsOf(day) => *day,
+                fa::TrialBalanceSelection::Activity(_) => {
+                    return Err(Fail::Internal(
+                        "an export cannot select period activity".into(),
+                    ));
+                }
+            };
+            let journal = book.format_journal(through, Some(seq))?;
+            let stream = fa_formats::csv_gl::write_ndjson_gl_stream(&journal)
+                .map_err(|e| Fail::Internal(format!("warehouse ndjson writer: {e}")))?;
+            let cert_digest = journal.coordinate.certificate_digest;
+            prepared = Some((stream.into_bytes(), cert_digest, journal));
+        }
+        Ok(())
+    })?;
+    let (report_bytes, cert_digest, journal) =
+        prepared.ok_or_else(|| Fail::Internal("warehouse export selection is missing".into()))?;
+    let receipt = fa_formats::fwc::invoke_fwc_warehouse_export(
+        std::path::Path::new("fwc"),
+        connector,
+        destination,
+        &report_bytes,
+        cert_digest,
+    )
+    .map_err(|err| match err {
+        fa_formats::fwc::FwcSubprocessError::Environment(refusal) => Fail::Environment(format!(
+            "`fwc` did not run: {}; install flywheel_connectors (`fwc` on PATH)",
+            refusal.message
+        )),
+        fa_formats::fwc::FwcSubprocessError::Format(error) => usage(
+            format!("the fwc warehouse receipt: {error}"),
+            WAREHOUSE_EXAMPLE,
+        ),
+    })?;
+    let canonical = receipt
+        .canonical_bytes()
+        .map_err(|e| Fail::Internal(format!("warehouse receipt encode: {e}")))?;
+    let control_oid = receipt
+        .control_record_digest()
+        .map_err(|e| Fail::Internal(format!("warehouse control digest: {e}")))?;
+    let decoded = fa_formats::fwc::WarehouseExportReceipt::decode_canonical(&canonical)
+        .map_err(|e| Fail::Internal(format!("warehouse receipt decode: {e}")))?;
+    debug_assert_eq!(decoded, receipt);
+    let coordinate = &journal.coordinate;
+    let files = vec![ExportFile {
+        name: "Warehouse_Export_Receipt.toml",
+        content: render_warehouse_receipt_file(&receipt, &canonical, &control_oid, coordinate),
+    }];
+    if let Some(path) = output {
+        write_new_output_file(
+            &ctx.files,
+            path,
+            files[0].content.as_bytes(),
+            "export",
+            "--out",
+        )?;
+    }
+    let out = &ctx.out;
+    out.at_book(&book)?;
+    out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
+    let listed = files_json(&files, output.is_none());
+    out.event(
+        "journal_exported",
+        vec![
+            ("format", s("warehouse")),
+            (
+                "effective_through",
+                s(coordinate.effective_through.render()),
+            ),
+            ("known_at", Json::Int(i128::from(coordinate.known_at_seq))),
+            ("entries", Json::Int(i128::from(coordinate.entry_count))),
+            ("accounts", Json::Int(journal.accounts.len() as i128)),
+            ("content_digest", s(hex(&control_oid.0))),
+            (
+                "certificate_digest",
+                s(hex(&receipt.report_certificate_digest)),
+            ),
+            ("out", output.map_or(Json::Null, s)),
+            ("account_scope", Json::Null),
+            ("files", Json::Arr(listed)),
+            ("proof", Json::Null),
+        ],
+        &format!(
+            "exported certified report {} to warehouse {}:{} (control record {}, fwc receipt {})",
+            hex(&receipt.report_certificate_digest),
+            receipt.connector.as_str(),
+            receipt.destination_ref,
+            hex(&control_oid.0),
+            hex(&receipt.fwc_receipt_hash),
+        ),
+    );
+    Ok(())
+}
+
+fn render_warehouse_receipt_file(
+    receipt: &fa_formats::fwc::WarehouseExportReceipt,
+    canonical_bytes: &[u8],
+    control_oid: &fa_model::Oid,
+    coordinate: &fa_formats::ExportCoordinate,
+) -> String {
+    format!(
+        "schema = \"fa.warehouse_export_receipt.v1\"\nconnector = {:?}\ndestination_ref = {:?}\nreport_digest = \"{}\"\nreport_certificate_digest = \"{}\"\npayload_document_oid = \"{}\"\nfwc_receipt_hash = \"{}\"\nrobot_schema_version = {:?}\ncontrol_record_oid = \"{}\"\ncanonical_hex = \"{}\"\neffective_through = \"{}\"\nknown_at_seq = {}\n",
+        receipt.connector.as_str(),
+        receipt.destination_ref,
+        hex(&receipt.report_digest),
+        hex(&receipt.report_certificate_digest),
+        hex(&receipt.payload_document_oid.0),
+        hex(&receipt.fwc_receipt_hash),
+        receipt.robot_schema_version,
+        hex(&control_oid.0),
+        hex(canonical_bytes),
+        coordinate.effective_through.render(),
+        coordinate.known_at_seq,
+    )
+}
+
+fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for &[hi, lo] in bytes.as_chunks::<2>().0 {
+        let hi = (hi as char).to_digit(16)?;
+        let lo = (lo as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Some(out)
+}
 
 /// The coordinate an export claims: where to select the book's journal
 /// again, and the certificate digest its reader verified, when it verifies
@@ -408,12 +838,15 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     let (format, path) = (format.as_str(), path.as_str());
     if !matches!(
         format,
-        "ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl"
+        "ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl" | "warehouse"
     ) {
         return Err(usage(
             format!("unknown export format `{format}`"),
             VERIFY_EXAMPLE,
         ));
+    }
+    if format == "warehouse" {
+        return verify_warehouse_export(ctx, args, path);
     }
     if format == "ads" && path == "-" {
         return Err(usage(
@@ -628,4 +1061,162 @@ fn ndjson_coordinate(stream: &str) -> Result<Claimed, String> {
         known_at,
         certificate_digest: Some(text("certificate_digest")?.to_string()),
     })
+}
+
+fn verify_warehouse_export(ctx: &mut Ctx<'_>, args: &Args, path: &str) -> Result<(), Fail> {
+    let text = ctx.files.read_text(path)?;
+    let failed = |message: String| Fail::Verification {
+        message,
+        detail: obj(vec![("format", s("warehouse")), ("file", s(path))]),
+        cite: Some(VERIFY_CITE.into()),
+        fix: Some(VERIFY_FIX.into()),
+    };
+    let mut canonical_hex: Option<String> = None;
+    let mut control_oid_hex: Option<String> = None;
+    let mut effective_through_raw: Option<String> = None;
+    let mut known_at_raw: Option<u64> = None;
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let k = k.trim();
+        let v = v.trim();
+        match k {
+            "canonical_hex" => {
+                canonical_hex = Some(v.trim_matches('"').to_string());
+            }
+            "control_record_oid" => {
+                control_oid_hex = Some(v.trim_matches('"').to_string());
+            }
+            "effective_through" => {
+                effective_through_raw = Some(v.trim_matches('"').to_string());
+            }
+            "known_at_seq" => {
+                known_at_raw = Some(v.parse::<u64>().map_err(|_| {
+                    failed("warehouse receipt known_at_seq is not a sequence".into())
+                })?);
+            }
+            _ => {}
+        }
+    }
+    let canonical_hex =
+        canonical_hex.ok_or_else(|| failed("warehouse receipt has no canonical_hex".into()))?;
+    let canonical_bytes = decode_hex_bytes(&canonical_hex)
+        .ok_or_else(|| failed("warehouse receipt canonical_hex is not valid hex".into()))?;
+    let receipt = fa_formats::fwc::WarehouseExportReceipt::decode_canonical(&canonical_bytes)
+        .map_err(|e| failed(format!("warehouse receipt decode: {e}")))?;
+    let control_oid = receipt
+        .control_record_digest()
+        .map_err(|e| Fail::Internal(format!("warehouse control digest: {e}")))?;
+    if control_oid_hex.as_deref() != Some(hex(&control_oid.0).as_str()) {
+        return Err(failed(
+            "warehouse receipt control_record_oid does not match its canonical bytes".into(),
+        ));
+    }
+    let effective_through = DateDay::parse(
+        effective_through_raw
+            .as_deref()
+            .ok_or_else(|| failed("warehouse receipt has no effective_through".into()))?,
+    )
+    .map_err(|e| failed(format!("warehouse receipt effective_through: {e}")))?;
+    let known_at =
+        known_at_raw.ok_or_else(|| failed("warehouse receipt has no known_at_seq".into()))?;
+    let capability = ctx.capability(args, &["read", "verify"])?;
+    for op in [Op::Read, Op::Verify] {
+        fa_policy::require(&capability, op, "verifying a warehouse export receipt")
+            .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    }
+    let mut selected = None;
+    let book = ctx.books.open_admitted(args, |book| {
+        let scope = book.read_scope(capability.holder(), &capability)??;
+        let selection = fa::TrialBalanceSelection::AsOf(effective_through);
+        let seq =
+            scope.admit_report(&selection.into(), Some(fgdb_types::CommitSeq(known_at)))??;
+        let journal = book.format_journal(effective_through, Some(seq))?;
+        if receipt.report_certificate_digest != journal.coordinate.certificate_digest {
+            let cert_bytes = book
+                .read_report_artifact(
+                    capability.holder(),
+                    &capability,
+                    &receipt.report_certificate_digest,
+                )??
+                .canonical_bytes()?;
+            let artifact = fa::ReportArtifact::decode(&cert_bytes)?;
+            crate::notary::prepare_artifact_history(
+                book,
+                capability.holder(),
+                &capability,
+                &artifact,
+                &cert_bytes,
+            )?;
+            if artifact.family() == fa::ReportArtifactFamily::ScenarioDiff {
+                let certificate = fa::ScenarioDiffCertificate::decode(&cert_bytes)?;
+                book.replay_scenario_diff(capability.holder(), &capability, &certificate)??;
+            } else {
+                book.replay_report_artifact_for(
+                    capability.holder(),
+                    &capability,
+                    &cert_bytes,
+                    Some(artifact.digest()),
+                    fa::ReportArtifactExpectation::AsSupplied,
+                )??;
+            }
+        }
+        selected = Some(journal);
+        Ok(())
+    })?;
+    let journal = selected
+        .ok_or_else(|| Fail::Internal("verify warehouse export selection is missing".into()))?;
+    let expected = render_warehouse_receipt_file(
+        &receipt,
+        &canonical_bytes,
+        &control_oid,
+        &journal.coordinate,
+    );
+    if expected != text {
+        return Err(failed(
+            "warehouse receipt file differs from the canonical receipt at its coordinate".into(),
+        ));
+    }
+    let expected_files = vec![ExportFile {
+        name: "Warehouse_Export_Receipt.toml",
+        content: expected,
+    }];
+    let legs: usize = journal.entries.iter().map(|e| e.legs.len()).sum();
+    let refold = journal
+        .refold_digest()
+        .map_err(|e| Fail::Internal(format!("refold digest: {e}")))?;
+    let coordinate = &journal.coordinate;
+    let out = &ctx.out;
+    out.at_book(&book)?;
+    out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
+    out.event(
+        "export_verified",
+        vec![
+            ("format", s("warehouse")),
+            ("file", s(path)),
+            (
+                "effective_through",
+                s(coordinate.effective_through.render()),
+            ),
+            ("known_at", Json::Int(i128::from(coordinate.known_at_seq))),
+            ("entries", Json::Int(i128::from(coordinate.entry_count))),
+            ("legs", Json::Int(legs as i128)),
+            ("content_digest", s(hex(&control_oid.0))),
+            (
+                "certificate_digest",
+                s(hex(&receipt.report_certificate_digest)),
+            ),
+            ("refold_digest", s(hex(&refold))),
+            ("reread", s("receipt")),
+            ("files", Json::Arr(files_json(&expected_files, false))),
+        ],
+        &format!(
+            "verified the warehouse export receipt {path} for {}:{} (control record {})",
+            receipt.connector.as_str(),
+            receipt.destination_ref,
+            hex(&control_oid.0),
+        ),
+    );
+    Ok(())
 }

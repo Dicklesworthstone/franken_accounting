@@ -154,6 +154,137 @@ impl Harness {
             .expect_err("checkpoint refused")
     }
 
+    fn tick(&mut self, observed_utc_ns: u64, monotonic_ok: bool) -> sweep::Ticked {
+        let request = sweep::TickRequest {
+            observed_utc_ns,
+            source: sweep::SOURCE_DAEMON_CLOCK,
+            monotonic_ok,
+            principal_ref: PRINCIPAL,
+            capability: Capability::embedded(PRINCIPAL, &["witness"]).unwrap(),
+            idempotency_key: format!("notary-tick-{observed_utc_ns}").into_bytes(),
+            description: Erasable::seal(
+                &"clock observation".to_string(),
+                None,
+                &self.book.seal_key,
+                [0x71; 32],
+                [0x72; 24],
+            ),
+        };
+        let ctx = self.ctx();
+        self.runtime
+            .block_on(sweep::record_tick(&mut self.db, &ctx, &self.book, request))
+            .expect("tick storage")
+            .expect("tick admitted")
+    }
+
+    /// Publish a first state and a correctly signed checkpoint atomically,
+    /// choosing its time reference explicitly. This constructs genuine legacy
+    /// bytes, or an originally published invalid reference, without rewriting
+    /// a modern checkpoint or weakening the producer's admission.
+    fn plant_first_checkpoint(
+        &mut self,
+        through: CommitSeq,
+        time_evidence_oid: Option<Oid>,
+    ) -> fa_notary::Checkpointed {
+        assert!(latest(&self.db, None).unwrap().is_none());
+        let ctx = self.ctx();
+        let journal = Journal::read(
+            &self.db,
+            &self.book,
+            Some(through),
+            Some(fa_notary::state::FIRST_COMMIT),
+        )
+        .unwrap()
+        .unwrap();
+        let state = AccumulatorState::of_journal(&journal, None);
+        let payload = state.canonical_bytes().unwrap();
+        let oid = state_oid(&payload);
+        let vid = state_vid(&oid);
+        let params = fgdb_gql::GqlParameters::new()
+            .with_uint64("at", through.0)
+            .unwrap();
+        let (_, certificate) = self
+            .db
+            .execute_certified(
+                &ctx.query(),
+                "MATCH (n:Entry) FOR SYSTEM_TIME AS OF SEQ $at RETURN COUNT(*) AS c",
+                &params,
+                self.book.symbols.clone(),
+                fgdb_gql::GqlQueryPolicy::new(1 << 24, 1, 1 << 26, 1 << 20),
+            )
+            .unwrap();
+        let signed = fa_notary::TransparencyCheckpoint::sign(
+            fa_notary::checkpoint::CheckpointBody {
+                statement: journal.statement(),
+                state_oid: oid,
+                scope_index_root: fa_notary::ScopeIndex::of(&journal).root(),
+                substrate_chain_commitment: certificate.snapshot_identity.0,
+                witness_policy_oid: None,
+                time_evidence_oid,
+            },
+            &[&self.signer],
+        )
+        .unwrap();
+        let checkpoint_bytes = signed.canonical_bytes().unwrap();
+        let checkpoint_oid = fa_notary::checkpoint::checkpoint_oid(&checkpoint_bytes);
+        let checkpoint_vid = checkpoint_vid(&oid);
+        let scalar = |bytes: Vec<u8>| CanonicalScalar::bytes(bytes).unwrap();
+        let mut states = WriteBatch::new(relation::DERIVED_FROM);
+        states.create_vertex(
+            vid,
+            vec![label::ACCUMULATOR_STATE],
+            vec![
+                (property::FA_PAYLOAD, scalar(payload.clone())),
+                (property::FA_DIGEST, scalar(oid.0.to_vec())),
+            ],
+        );
+        states.compare_and_set_vertex_property(
+            book_root(),
+            property::ACCUMULATOR_HEAD,
+            None,
+            scalar(oid.0.to_vec()),
+            WriteMismatchPolicy::AbortWrite,
+        );
+        let mut checkpoints = WriteBatch::new(relation::CHECKPOINTS);
+        checkpoints.create_vertex(
+            checkpoint_vid,
+            vec![label::TRANSPARENCY_CHECKPOINT],
+            vec![
+                (property::FA_PAYLOAD, scalar(checkpoint_bytes.clone())),
+                (property::FA_DIGEST, scalar(checkpoint_oid.0.to_vec())),
+            ],
+        );
+        checkpoints.add_edge(
+            fa_journal::rows::edge_id(relation::CHECKPOINTS, checkpoint_vid, vid),
+            checkpoint_vid,
+            vid,
+            vec![],
+        );
+        let mut txn = self.db.begin(&ctx.txn()).unwrap();
+        txn.write_ordered(&mut self.db, vec![states, checkpoints])
+            .unwrap();
+        let recorded_at = self
+            .runtime
+            .block_on(txn.commit(&mut self.db, &ctx.commit()))
+            .unwrap();
+        fa_notary::Checkpointed {
+            stored: StoredState {
+                oid,
+                vid,
+                recorded_at,
+                state,
+                bytes: payload,
+            },
+            checkpoint: fa_notary::StoredCheckpoint {
+                oid: checkpoint_oid,
+                vid: checkpoint_vid,
+                checkpoint: signed,
+                bytes: checkpoint_bytes,
+            },
+            leaf_kinds: journal.leaf_kinds(),
+        }
+    }
+
     /// Write `state` as a vertex and move the head pointer to it from
     /// `head` with the notary's own CAS — what an insider with raw store
     /// access could do. Returns its oid and the planting commit.
@@ -2475,6 +2606,298 @@ fn checkpoints_are_signed_by_the_book_key_and_forgeries_are_refused() {
     refused(&altered, "leaf count altered");
 }
 
+#[test]
+fn checkpoint_binds_its_prefix_tick_and_preserves_uncorroborated_observations() {
+    let mut h = harness();
+    let first_tick = h.tick(1_000, true);
+    let first = h.checkpointed();
+    assert!(first_tick.recorded_at <= first.stored.state.through_seq);
+    assert!(first.stored.state.through_seq < first.stored.recorded_at);
+    assert_eq!(
+        signed_checkpoint(&h, &first).time_evidence_oid,
+        Some(first_tick.entry_ref.entry_digest)
+    );
+
+    let uncorroborated = h.tick(1_100, false);
+    let old = fa_notary::stored_checkpoint(&h.db, &h.ctx(), &h.book, &first.stored, &h.signer)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        old.bytes, first.checkpoint.bytes,
+        "later ticks cannot change a signed prefix"
+    );
+
+    let second = h.checkpointed();
+    assert_eq!(
+        signed_checkpoint(&h, &second).time_evidence_oid,
+        Some(uncorroborated.entry_ref.entry_digest),
+        "the latest observation must not be replaced by an older corroborated tick"
+    );
+    let journal = Journal::read(
+        &h.db,
+        &h.book,
+        Some(second.stored.state.through_seq),
+        second.stored.state.evidence_after,
+    )
+    .unwrap()
+    .unwrap();
+    let leaf = journal
+        .leaves
+        .iter()
+        .find(|leaf| leaf.vid == uncorroborated.entry_ref.vid)
+        .expect("the signed time reference has its complete retained payload");
+    let fa_notary::journal::Record::Entry(entry) = leaf.record().unwrap() else {
+        panic!("TimeEvidence is an Entry");
+    };
+    assert!(matches!(
+        entry.proposal.control,
+        Some(fa_model::ControlPayload::TimeTick {
+            observed_utc_ns: 1_100,
+            monotonic_ok: false,
+            ..
+        })
+    ));
+    h.tick(1_200, true);
+    assert!(
+        verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer)
+            .unwrap()
+            .is_green()
+    );
+}
+
+/// Canonical hashes do not make a mismatched class/payload or an unsupported
+/// time source an admitted TimeEvidence record. Check the entire prefix, even
+/// when a newer, well-formed tick would otherwise supply its time reference.
+#[test]
+fn checkpoint_time_binding_rejects_malformed_candidates_anywhere_in_its_prefix() {
+    for change in [
+        "class",
+        "payload",
+        "source",
+        "origin",
+        "origin-digest",
+        "identity",
+    ] {
+        for older in [true, false] {
+            let mut h = harness();
+            let first = h.tick(1_000, true);
+            let second = h.tick(1_100, true);
+            let target = if older { first } else { second }.entry_ref.vid;
+            let row = h.db.vertex(target).unwrap().unwrap();
+            let original = fa_model::Entry::decode(
+                &fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "tick.payload").unwrap(),
+            )
+            .unwrap();
+            let mut proposal = original.proposal;
+            match change {
+                "class" => proposal.class = EntryClass::SCHEMA_CONTROL,
+                "payload" => {
+                    proposal.control = Some(fa_model::ControlPayload::SchemaChange {
+                        kind: 0,
+                        canonical_bytes: Vec::new(),
+                    });
+                }
+                "source" => {
+                    let Some(fa_model::ControlPayload::TimeTick { source, .. }) =
+                        proposal.control.as_mut()
+                    else {
+                        panic!("the fixture is a tick");
+                    };
+                    *source = 1;
+                }
+                "origin" => {
+                    proposal.origin = EntryOrigin::Intent {
+                        intent_oid: Oid([0x73; 32]),
+                        intent_kind: 1,
+                    };
+                }
+                "origin-digest" => {
+                    let EntryOrigin::Control {
+                        spec_body_digest, ..
+                    } = &mut proposal.origin
+                    else {
+                        panic!("the fixture is a control");
+                    };
+                    spec_body_digest[0] ^= 1;
+                }
+                _ => proposal.idempotency_key.push(0x74),
+            }
+            let rewritten = proposal
+                .seal(original.approvals, original.plan_certificate)
+                .unwrap();
+            let payload = rewritten.encode().unwrap();
+            assert_eq!(
+                fa_model::Entry::decode(&payload).unwrap(),
+                rewritten,
+                "{change}: the attack has valid canonical encoding and recomputed digests"
+            );
+            let mut batch = WriteBatch::new(relation::DERIVED_FROM);
+            batch.set_vertex_property(
+                target,
+                property::FA_PAYLOAD,
+                Some(CanonicalScalar::bytes(payload).unwrap()),
+            );
+            batch.set_vertex_property(
+                target,
+                property::FA_DIGEST,
+                Some(CanonicalScalar::bytes(rewritten.entry_digest.to_vec()).unwrap()),
+            );
+            h.write_raw(batch);
+            let before = h.db.frontier().unwrap();
+            let ctx = h.ctx();
+            let result = h
+                .runtime
+                .block_on(checkpoint(&mut h.db, &ctx, &h.book, &h.signer));
+            assert!(
+                matches!(result, Err(fa_journal::KernelError::Corrupt(ref why)) if why.contains("TimeEvidence")),
+                "{change}, older={older}: {result:?}"
+            );
+            assert_eq!(h.db.frontier().unwrap(), before, "nothing may be published");
+            assert!(latest(&h.db, None).unwrap().is_none());
+        }
+    }
+}
+
+/// Deliberately re-sign a changed binding with the *trusted* key. Signature
+/// validation alone admits these bytes; prefix recomputation must reject them.
+fn rewrite_checkpoint_time_binding(
+    h: &mut Harness,
+    checkpoint: &fa_notary::Checkpointed,
+    binding: Option<Oid>,
+) -> Vec<u8> {
+    let mut body = checkpoint.checkpoint.checkpoint.body.clone();
+    body.time_evidence_oid = binding;
+    let signed = fa_notary::TransparencyCheckpoint::sign(body, &[&h.signer]).unwrap();
+    let payload = signed.canonical_bytes().unwrap();
+    let oid = fa_notary::checkpoint::checkpoint_oid(&payload);
+    let mut batch = WriteBatch::new(relation::CHECKPOINTS);
+    batch.set_vertex_property(
+        checkpoint.checkpoint.vid,
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(payload.clone()).unwrap()),
+    );
+    batch.set_vertex_property(
+        checkpoint.checkpoint.vid,
+        property::FA_DIGEST,
+        Some(CanonicalScalar::bytes(oid.0.to_vec()).unwrap()),
+    );
+    h.write_raw(batch);
+    payload
+}
+
+#[test]
+fn checkpoint_time_binding_rejects_future_foreign_stale_and_non_tick_records() {
+    for variant in ["future", "foreign", "stale", "non-tick", "changed-digest"] {
+        let mut h = harness();
+        let older = h.tick(1_000, true);
+        let latest = h.tick(1_100, true);
+        let non_tick = h.post(h.rent, 17, b"not-a-tick");
+        let through = h.db.frontier().unwrap();
+        let future = h.tick(1_200, true);
+        let binding = match variant {
+            "future" => Oid(future.entry_ref.entry_digest),
+            "stale" => Oid(older.entry_ref.entry_digest),
+            "non-tick" => {
+                let row = h.db.vertex(non_tick).unwrap().unwrap();
+                let payload = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "entry").unwrap();
+                Oid(fa_model::Entry::decode(&payload).unwrap().entry_digest)
+            }
+            "foreign" => {
+                let row = h.db.vertex(latest.entry_ref.vid).unwrap().unwrap();
+                let payload = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "tick").unwrap();
+                let mut proposal = fa_model::Entry::decode(&payload).unwrap().proposal;
+                proposal.book_id = Id128([0x95; 16]);
+                Oid(proposal.seal(Vec::new(), None).unwrap().entry_digest)
+            }
+            _ => {
+                let mut digest = latest.entry_ref.entry_digest;
+                digest[0] ^= 1;
+                Oid(digest)
+            }
+        };
+        let checkpoint = h.plant_first_checkpoint(through, Some(binding));
+        fa_verify::verify_checkpoint(&checkpoint.checkpoint.bytes, &[h.signer.public_key()])
+            .expect("the valid signature alone does not prove the time reference");
+        let checked = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+        assert!(!checked.is_green(), "{variant}: {checked:?}");
+        let refusal =
+            fa_notary::stored_checkpoint(&h.db, &h.ctx(), &h.book, &checkpoint.stored, &h.signer)
+                .unwrap()
+                .expect_err(variant);
+        assert_eq!(refusal.code, code::CHECKPOINT_INVALID, "{variant}");
+        assert_eq!(refusal.exit, exit::VERIFICATION, "{variant}");
+        assert_eq!(
+            h.checkpoint_refusal().code,
+            code::CHECKPOINT_INVALID,
+            "{variant}"
+        );
+    }
+}
+
+#[test]
+fn legacy_unbound_checkpoint_remains_valid_when_later_checkpoints_bind_time() {
+    let mut h = harness();
+    h.tick(1_000, true);
+    // Construct the exact optional-field form produced before fa-7uhr,
+    // including in books that already had TimeEvidence observations.
+    let legacy = h.plant_first_checkpoint(h.db.frontier().unwrap(), None);
+    let legacy_bytes = legacy.checkpoint.bytes.clone();
+    let retained =
+        fa_notary::stored_checkpoint(&h.db, &h.ctx(), &h.book, &legacy.stored, &h.signer)
+            .unwrap()
+            .unwrap();
+    assert_eq!(retained.bytes, legacy_bytes);
+    assert_eq!(
+        fa_verify::verify_checkpoint(&legacy_bytes, &[h.signer.public_key()])
+            .unwrap()
+            .time_evidence_oid,
+        None
+    );
+    assert_eq!(retained.checkpoint.body.time_evidence_oid, None);
+    let tick = h.tick(1_100, true);
+    let next = h.checkpointed();
+    assert_eq!(next.stored.state.prev_state_oid, Some(legacy.stored.oid));
+    assert_eq!(
+        signed_checkpoint(&h, &next).time_evidence_oid,
+        Some(tick.entry_ref.entry_digest)
+    );
+    assert!(
+        verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer)
+            .unwrap()
+            .is_green()
+    );
+}
+
+#[test]
+fn checkpoint_time_binding_cannot_be_removed_by_resigning() {
+    let mut h = harness();
+    let tick = h.tick(1_000, true);
+    let original = h.checkpointed();
+    assert_eq!(
+        signed_checkpoint(&h, &original).time_evidence_oid,
+        Some(tick.entry_ref.entry_digest)
+    );
+    let stripped = rewrite_checkpoint_time_binding(&mut h, &original, None);
+    fa_verify::verify_checkpoint(&stripped, &[h.signer.public_key()])
+        .expect("the trusted signer re-signed the downgraded body");
+    let checked = verify_accumulator(&h.db, &h.ctx(), &h.book, &h.signer).unwrap();
+    assert!(!checked.is_green());
+    assert!(
+        checked.states[0]
+            .finding
+            .as_deref()
+            .is_some_and(|finding| finding.contains("originally published")),
+        "{checked:?}"
+    );
+    let refused =
+        fa_notary::stored_checkpoint(&h.db, &h.ctx(), &h.book, &original.stored, &h.signer)
+            .unwrap()
+            .unwrap_err();
+    assert_eq!(refused.code, code::CHECKPOINT_INVALID);
+    assert_eq!(refused.exit, exit::VERIFICATION);
+    assert_eq!(h.checkpoint_refusal().code, code::CHECKPOINT_INVALID);
+}
+
 /// A checkpoint rewritten in the store — re-signed by someone without the
 /// book's key — is a finding, blocks further checkpoints with FA-REF-127,
 /// and is never handed out.
@@ -3826,8 +4249,8 @@ fn bundle_limits_refuse_too_many_balances_and_oversized_inline_documents_while_a
 #[test]
 fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
     use fa_notary::{
-        ConfidentialityDesignation, ExhibitMark, LoadFileFormat, MatterProductionRegistry,
-        PrivilegeMetadata, PrivilegeTreatment, ProductionProfile, assemble_matter_package,
+        BatesAssignment, ConfidentialityDesignation, LoadFileFormat, PrivilegeMetadata,
+        PrivilegeTreatment, assemble_matter_package, bates_assignments_from_produced,
     };
 
     let mut h = harness();
@@ -3930,22 +4353,101 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
         },
     );
 
-    let mut registry = MatterProductionRegistry::new();
-    let mut profile_sec =
-        ProductionProfile::new("MATTER-SEC", "ACME-SEC", 1, LoadFileFormat::Both).unwrap();
-    profile_sec
-        .designations
-        .insert(doc_oid, ConfidentialityDesignation::Confidential);
-    registry.register_profile(profile_sec).unwrap();
-    registry
-        .register_profile(
-            ProductionProfile::new("MATTER-CIVIL", "ACME-CIV", 100, LoadFileFormat::EdrmXml)
-                .unwrap(),
-        )
-        .unwrap();
+    let produce_cap = Capability::embedded(PRINCIPAL, &["produce"]).expect("produce");
+    let day = DateDay::from_ymd(2026, 3, 20).unwrap();
+    let req_for = |key: &[u8]| ProductionRequest {
+        capability: produce_cap.clone(),
+        effective_date: day,
+        description: Erasable::seal(
+            &"production".to_string(),
+            None,
+            &h.book.seal_key,
+            [3; 32],
+            [4; 24],
+        ),
+        idempotency_key: key.to_vec(),
+    };
 
-    let mut page_counts = std::collections::BTreeMap::new();
-    page_counts.insert(doc_oid, 4);
+    let ctx = h.ctx();
+    let (produced_sec, produced_civ, marked) = h.runtime.block_on(async {
+        open_production(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ProductionProfile {
+                book_id: h.book.book_id,
+                matter: "MATTER-SEC".into(),
+                bates_prefix: "ACME-SEC".into(),
+                first_bates: 1,
+                load_file_format: LoadFileFormat::Both.tag(),
+                protective_order: None,
+            },
+            req_for(b"open-sec"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        open_production(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            ProductionProfile {
+                book_id: h.book.book_id,
+                matter: "MATTER-CIVIL".into(),
+                bates_prefix: "ACME-CIV".into(),
+                first_bates: 100,
+                load_file_format: LoadFileFormat::EdrmXml.tag(),
+                protective_order: None,
+            },
+            req_for(b"open-civ"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let produced_sec = produce(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "MATTER-SEC",
+            vec![ProducedDocument {
+                document: doc_oid,
+                pages: Some(4),
+                designation: Some(ConfidentialityDesignation::Confidential.tag()),
+            }],
+            req_for(b"produce-sec"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let produced_civ = produce(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            "MATTER-CIVIL",
+            vec![ProducedDocument {
+                document: doc_oid,
+                pages: Some(4),
+                designation: None,
+            }],
+            req_for(b"produce-civ"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let marked = mark_exhibit(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &produce_cap,
+            "MATTER-SEC",
+            doc_oid,
+            "PX-001",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        (produced_sec, produced_civ, marked)
+    });
 
     let pkg_sec = assemble_matter_package(
         "MATTER-SEC",
@@ -3954,10 +4456,9 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
         receipt.clone(),
         &h.signer.public_key(),
         &reads,
-        &page_counts,
+        bates_assignments_from_produced(&produced_sec).unwrap(),
         &[withheld_oid],
         &privilege_meta,
-        &mut registry,
     )
     .unwrap();
 
@@ -3968,15 +4469,18 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
         receipt,
         &h.signer.public_key(),
         &reads,
-        &page_counts,
+        bates_assignments_from_produced(&produced_civ).unwrap(),
         &[withheld_oid],
         &privilege_meta,
-        &mut registry,
     )
     .unwrap();
 
-    // Document produced in two matters carries both Bates ranges without mutating doc_commit.
-    let doc_bates = registry.bates_for_document(&doc_oid);
+    // Document produced in two matters carries both journaled Bates ranges without mutating doc_commit.
+    let doc_bates: Vec<BatesAssignment> = document_ranges(&h.db, &h.book, &doc_oid)
+        .unwrap()
+        .iter()
+        .map(|(p, r)| BatesAssignment::from_journaled(p, &r.range).unwrap())
+        .collect();
     assert_eq!(doc_bates.len(), 2);
     assert_eq!(
         doc_bates[0].range_label(),
@@ -3989,14 +4493,15 @@ fn litigation_production_multi_matter_bates_privilege_and_fre902_end_to_end() {
     assert_eq!(doc_bates[0].doc_commit, original_commit);
     assert_eq!(doc_bates[1].doc_commit, original_commit);
 
-    // Exhibit mark binds subject_oid and signed_digest per matter.
-    let mark =
-        ExhibitMark::new(doc_oid, "PX-001", "MATTER-SEC", PRINCIPAL, bundle_1.digest).unwrap();
-    registry.mark_exhibit(mark.clone()).unwrap();
-    assert_eq!(
-        registry.exhibits_for_subject("MATTER-SEC", &doc_oid),
-        vec![mark]
-    );
+    // Exhibit mark is journaled as an attestation on the matter's ProductionView.
+    let sec_view = read_production(&h.db, &h.book, "MATTER-SEC")
+        .unwrap()
+        .unwrap();
+    assert_eq!(sec_view.exhibits.len(), 1);
+    assert_eq!(sec_view.exhibits[0].attestation, marked.attestation);
+    assert_eq!(sec_view.exhibits[0].document, doc_oid);
+    assert_eq!(sec_view.exhibits[0].label, "PX-001");
+    assert_eq!(sec_view.exhibits[0].signed_digest, marked.signed_digest);
 
     // Privilege log contains both the redacted-in-part document and the withheld-in-full document.
     assert_eq!(pkg_sec.privilege_log.rows.len(), 2);

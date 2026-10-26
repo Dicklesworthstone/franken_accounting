@@ -3,12 +3,13 @@
 use std::collections::BTreeMap;
 
 use fa::{BatchPlan, PostIntent};
-use fa_model::{ControlPayload, Disposition, Entry, EntryClass};
+use fa_model::{ControlPayload, Disposition, Entry, EntryClass, EntryPayload};
+use fa_policy::Capability;
 use fgdb_types::VId;
 
 use super::{
     Args, Book, Condition, Ctx, Fail, Files, Json, Out, ReasonCodes, gate, hex, lineage_json, obj,
-    render_amount, s, side_name, usage, write_post_plan,
+    parse_vid, render_amount, s, side_name, usage, write_post_plan,
 };
 
 pub(super) type PriorEntries = BTreeMap<VId, Entry>;
@@ -28,8 +29,7 @@ pub(super) fn target_entry(
         .or_else(|| earlier.get(&vid).cloned()))
 }
 
-fn entry_vid(entry: &Entry) -> Result<VId, Fail> {
-    let proposal = &entry.proposal;
+pub(super) fn proposal_vid(proposal: &EntryPayload) -> Result<VId, Fail> {
     match proposal.class {
         EntryClass::REVERSAL => proposal
             .supersession
@@ -52,6 +52,73 @@ fn entry_vid(entry: &Entry) -> Result<VId, Fail> {
             "check reverses or resolves",
         )
     })
+}
+
+fn entry_vid(entry: &Entry) -> Result<VId, Fail> {
+    proposal_vid(&entry.proposal)
+}
+
+/// Resolve unpublished targets from the owner's retained reviewed entries.
+/// A capped request's original amount is not its admitted Entry: only the
+/// retained native entries supply digests and legs for dependent requests.
+/// Those targets survive discard or availability drift for exact retries;
+/// the kernel still revalidates the complete draft before any new append.
+/// Published targets need no draft lookup, preserving post-promotion retries.
+pub(super) fn draft_entries(
+    book: &mut Book,
+    capability: &Capability,
+    name: &str,
+    doc: &Json,
+) -> Result<PriorEntries, Fail> {
+    let mut targets = Vec::new();
+    for field in [
+        "reverses",
+        "resolves",
+        "reclassifies",
+        "revises",
+        "restates",
+    ] {
+        if let Some(target) = doc.get(field).and_then(Json::as_str) {
+            targets.push(parse_vid(target, field)?);
+        }
+    }
+    if let Some(legs) = doc.get("legs").and_then(Json::as_arr) {
+        for leg in legs {
+            if let Some(settles) = leg.get("settles").and_then(Json::as_arr) {
+                for settlement in settles {
+                    if let Some(target) = settlement.get("entry").and_then(Json::as_str) {
+                        targets.push(parse_vid(target, "settles.entry")?);
+                    }
+                }
+            }
+        }
+    }
+    if targets.is_empty() {
+        return Ok(PriorEntries::new());
+    }
+    fa_policy::require(
+        capability,
+        fa_policy::Op::Post,
+        "preparing a draft dependency",
+    )
+    .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+    .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
+    book.admit_current(capability)??;
+    for target in targets {
+        if book.read_entry(target)?.is_none() {
+            let mut earlier = PriorEntries::new();
+            for entry in book.draft_entries(capability, name)?? {
+                let vid = entry_vid(&entry)?;
+                if earlier.insert(vid, entry).is_some() {
+                    return Err(Fail::Internal(
+                        "a retained draft repeats an entry identity".into(),
+                    ));
+                }
+            }
+            return Ok(earlier);
+        }
+    }
+    Ok(PriorEntries::new())
 }
 
 pub(super) fn remember(earlier: &mut PriorEntries, intent: &PostIntent) -> Result<(), Fail> {
@@ -239,9 +306,17 @@ pub(super) fn emit(
     }
 
     let rehearsal = out.is_bound_agent();
-    let bound_release = out.is_bound() && plan.prepared_entries().iter().any(releases);
-    let command = if out.is_bound() {
+    let bound_release = !out.can_confirm() && plan.prepared_entries().iter().any(releases);
+    let command = if !out.can_confirm() {
         "fa_post_commit_plan".to_string()
+    } else if out.is_bound() {
+        super::operator_command(
+            args,
+            &format!(
+                "commit --plan {}",
+                super::quoted_argument(args.flag("--plan-out").unwrap_or("-"))
+            ),
+        )
     } else {
         let quote = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
         let mut command = format!(
@@ -276,7 +351,11 @@ pub(super) fn emit(
         Vec::new()
     } else {
         human.push_str(&format!("\nReview every member, then {command}"));
-        vec![(command, "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin".into())]
+        vec![(command, if out.is_bound() && out.can_confirm() {
+            super::OPERATOR_PLAN_GUIDANCE
+        } else {
+            "commit the complete artifact with the same independently supplied capability; forward data.bytes when the input is stdin"
+        }.into())]
     };
     human.push_str(
         "\nAny intervening book publication requires a fresh plan before its first commit.",
@@ -324,14 +403,7 @@ pub(super) fn emit(
             ("bytes", s(encoded)),
             ("file", args.flag("--plan-out").map_or(Json::Null, s)),
             ("scope", s("same-snapshot-batch")),
-            (
-                "authority",
-                s(if out.is_bound() {
-                    "mcp-launch-config"
-                } else {
-                    "embedded-owner"
-                }),
-            ),
+            ("authority", s(out.authority_posture())),
         ],
         &human,
         &actions,
@@ -343,7 +415,7 @@ pub(super) fn commit(ctx: &mut Ctx<'_>, args: &Args, plan: BatchPlan) -> Result<
     // A portable artifact cannot grant the bound host independent dangerous-
     // operation confirmation. Inspect every member before opening the book.
     for entry in plan.prepared_entries() {
-        if ctx.out.is_bound() && releases(entry) {
+        if !ctx.out.can_confirm() && releases(entry) {
             gate(&ctx.out, args, "resolve", None, &Condition::Voids)?;
         }
         if entry.proposal.class == EntryClass::CLOSING {
@@ -378,7 +450,7 @@ pub(super) fn commit(ctx: &mut Ctx<'_>, args: &Args, plan: BatchPlan) -> Result<
                 Ok(replanned) => Ok(super::fresh_batch(replanned)?),
                 Err(replan) => Err(replan),
             };
-            return Err(super::stale_plan(refusal, replanned, ctx.out.is_bound()));
+            return Err(super::stale_plan(refusal, replanned, &ctx.out, args));
         }
         Err(refusal) => return Err(refusal.into()),
     };

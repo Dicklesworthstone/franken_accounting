@@ -1,0 +1,297 @@
+# FIXTURE (A3b t_kinds, bead fa-yugf.8): one T of each kind for the static T checks. Synthetic values;
+# digests computed by a one-off script independently of fa-oracles; edit by hand like any fixture.
+# Never copied to cases/; no figure here is a case's published value.
+
+[[fact]]
+id = "F-A"
+provenance = "sourced"
+source = "SRC-TK-A"
+anchor_kind = "table_cell"
+anchor = "Balance Sheet|Receivables|2020"
+quote_sha256 = "66dbae68e4f498ba668b52b481891465277f250cd3cb3ced6c14144dbfae52fb"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "receivables@2020-12-31"
+
+[[fact]]
+id = "F-B"
+provenance = "sourced"
+source = "SRC-TK-B"
+anchor_kind = "table_cell"
+anchor = "Balance Sheet|Receivables|2020"
+quote_sha256 = "bdc5d8a48c23897906b09a9a3680bd2e9c8b3121edbda36f949800f0959c8d55"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "receivables@2020-12-31"
+
+[[fact]]
+id = "F-D"
+provenance = "sourced"
+source = "SRC-TK-B"
+anchor_kind = "table_cell"
+anchor = "Restatement|Receivables adjustment|2020"
+quote_sha256 = "ad57366865126e55649ecb23ae1d48887544976efea46a48eb5d85a6eeb4d306"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "receivables_adjustment@2020-12-31"
+
+[[fact]]
+id = "F-DLINE"
+provenance = "sourced"
+source = "SRC-TK-B"
+anchor_kind = "table_cell"
+anchor = "Restatement|Revenue adjustment|2020"
+quote_sha256 = "ad57366865126e55649ecb23ae1d48887544976efea46a48eb5d85a6eeb4d306"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "revenue_adjustment@2020-12-31"
+
+[[fact]]
+id = "F-RT"
+provenance = "sourced"
+source = "SRC-TK-B"
+anchor_kind = "table_cell"
+anchor = "Income Statement|Revenue|2020"
+quote_sha256 = "bdc5d8a48c23897906b09a9a3680bd2e9c8b3121edbda36f949800f0959c8d55"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "revenue@2020-12-31"
+
+[[fact]]
+id = "F-X1"
+provenance = "sourced"
+source = "SRC-TK-X"
+anchor_kind = "table_cell"
+anchor = "Exhibit|Line 1|Amount"
+quote_sha256 = "1e472b39b105d349bcd069c4a711b44a2fffb8e274714bb07ecfff69a9a7f67b"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "exhibit_line_1@2020-12-31"
+
+[[fact]]
+id = "F-X2"
+provenance = "sourced"
+source = "SRC-TK-X"
+anchor_kind = "table_cell"
+anchor = "Exhibit|Line 2|Amount"
+quote_sha256 = "deeeb5df3f2cee6bf4e597a8a3a878a6ce49b932b9e90b416922d4499f54fae6"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "exhibit_line_2@2020-12-31"
+
+[[fact]]
+id = "F-XT"
+provenance = "sourced"
+source = "SRC-TK-X"
+anchor_kind = "table_cell"
+anchor = "Exhibit|Total|Amount"
+quote_sha256 = "284b7e6d788f363f910f7beb1910473e23ce9d6c871f1ce0f31f22a982d48ad4"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "exhibit_total@2020-12-31"
+
+[[fact]]
+id = "F-S1"
+provenance = "sourced"
+source = "SRC-TK-S"
+anchor_kind = "table_cell"
+anchor = "Schedule|Payable 1|2020"
+quote_sha256 = "26d228663f13a88592a12d16cf9587caab0388b262d6d9f126ed62f9333aca94"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "payable_1@2020-12-31"
+
+[[fact]]
+id = "F-S2"
+provenance = "sourced"
+source = "SRC-TK-S"
+anchor_kind = "table_cell"
+anchor = "Schedule|Payable 2|2020"
+quote_sha256 = "9ae2bdd7beedc2e766c6b76585530e16925115707dc7a06ab5ee4aa2776b2c7b"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "payable_2@2020-12-31"
+
+[[fact]]
+id = "F-SP"
+provenance = "sourced"
+source = "SRC-TK-S"
+anchor_kind = "table_cell"
+anchor = "Schedule|Payables total|2020"
+quote_sha256 = "26d228663f13a88592a12d16cf9587caab0388b262d6d9f126ed62f9333aca94"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "payables_total@2020-12-31"
+
+[[fact]]
+id = "F-SP2"
+provenance = "sourced"
+source = "SRC-TK-S"
+anchor_kind = "table_cell"
+anchor = "Schedule|Accrued total|2020"
+quote_sha256 = "9ae2bdd7beedc2e766c6b76585530e16925115707dc7a06ab5ee4aa2776b2c7b"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "accrued_total@2020-12-31"
+
+[[fact]]
+id = "F-SE"
+provenance = "sourced"
+source = "SRC-TK-S"
+anchor_kind = "table_cell"
+anchor = "Schedule|Expense total|2020"
+quote_sha256 = "f89f8d0e735a91c5269ab08d72fa27670d000e7561698d6e664e7b603f5c4e40"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "expense_total@2020-12-31"
+
+[[fact]]
+id = "F-SL"
+provenance = "sourced"
+source = "SRC-TK-S"
+anchor_kind = "table_cell"
+anchor = "Schedule|Liabilities total|2020"
+quote_sha256 = "f89f8d0e735a91c5269ab08d72fa27670d000e7561698d6e664e7b603f5c4e40"
+about_scope = "period:FY2020"
+granularity = "statement_line"
+cell = "liabilities_total@2020-12-31"
+
+[[value]]
+fact = "F-A"
+ordinal = 1
+literal = "1,000"
+rule = "scale"
+param = 0
+value = "100000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-B"
+ordinal = 1
+literal = "900"
+rule = "scale"
+param = 0
+value = "90000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-D"
+ordinal = 1
+literal = "100"
+rule = "scale"
+param = 0
+value = "10000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-DLINE"
+ordinal = 1
+literal = "100"
+rule = "scale"
+param = 0
+value = "10000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-RT"
+ordinal = 1
+literal = "900"
+rule = "scale"
+param = 0
+value = "90000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-X1"
+ordinal = 1
+literal = "250"
+rule = "scale"
+param = 0
+value = "25000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-X2"
+ordinal = 1
+literal = "350"
+rule = "scale"
+param = 0
+value = "35000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-XT"
+ordinal = 1
+literal = "600"
+rule = "scale"
+param = 0
+value = "60000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-S1"
+ordinal = 1
+literal = "400"
+rule = "scale"
+param = 0
+value = "40000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-S2"
+ordinal = 1
+literal = "150"
+rule = "scale"
+param = 0
+value = "15000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-SP"
+ordinal = 1
+literal = "400"
+rule = "scale"
+param = 0
+value = "40000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-SP2"
+ordinal = 1
+literal = "150"
+rule = "scale"
+param = 0
+value = "15000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-SE"
+ordinal = 1
+literal = "550"
+rule = "scale"
+param = 0
+value = "55000"
+unit = "USD"
+precision = 0
+
+[[value]]
+fact = "F-SL"
+ordinal = 1
+literal = "550"
+rule = "scale"
+param = 0
+value = "55000"
+unit = "USD"
+precision = 0

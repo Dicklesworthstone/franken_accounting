@@ -28,5 +28,6 @@ fnx-algorithms = { workspace = true }
 fnx-cgse = { workspace = true }
 
 [dev-dependencies]
+fa-docket = { path = "../fa-docket", version = "=0.0.1" }
 fa-gen = { path = "../fa-gen", version = "=0.0.1" }
 fa-reference = { path = "../fa-reference", version = "=0.0.1" }

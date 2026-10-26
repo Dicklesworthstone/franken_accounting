@@ -1,0 +1,31 @@
+# Twin fixture expectations: a no_finding N whose twin rounds the amount (jet.round_amounts must
+# then report T-1), and a no_refusal N whose harness-observability twin posts T-2 into a Closed
+# period (FA-REF-010).
+
+[[expectation]]
+id = "twins-N-01"
+type = "N"
+book_variant = "native"
+statement_template = "N.no_finding"
+basis = ["T-1"]
+kind = "no_finding"
+target = "T-1"
+procedure = "jet.round_amounts"
+version = 1
+mechanism = "crates/fa-lantern/src/jet.rs:118"
+twin_kind = "mutation"
+twin_attribute = "amount_precision"
+twin_value = "1000.00"
+twin_expect = "reports"
+
+[[expectation]]
+id = "twins-N-02"
+type = "N"
+book_variant = "native"
+statement_template = "N.no_refusal"
+basis = ["T-2"]
+kind = "no_refusal"
+target = "T-2"
+mechanism = "crates/fa-journal/src/post.rs:2591"
+twin_kind = "harness_observability"
+twin_expect = "refuses FA-REF-010"

@@ -193,6 +193,24 @@ pub struct Leg {
     pub mantissa: i128,
 }
 
+/// Application facts retained independently of the public balance-leg view.
+/// A digest authenticates the target payload; the VId identifies its leg.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SettlementRef {
+    pub target: u128,
+    pub digest: [u8; 32],
+    pub ordinal: u16,
+    pub unit: u32,
+    pub amount: i128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LegDetails {
+    pub base_amount: Option<(u32, i128)>,
+    pub dimensions: Vec<(u32, u128)>,
+    pub settlements: Vec<SettlementRef>,
+}
+
 /// The selection fields an `fa:entry:v1` proposal determines, read from the
 /// front of the proposal through its legs. Every byte after the legs is
 /// covered by the digests and does not feed an envelope field.
@@ -202,6 +220,7 @@ struct ProposalPrefix {
     class: u16,
     effective_date: i32,
     legs: Vec<Leg>,
+    leg_details: Vec<LegDetails>,
 }
 
 impl ProposalPrefix {
@@ -249,6 +268,12 @@ pub(crate) fn proposal_after_legs(proposal: &[u8]) -> Result<Reader<'_>, DecodeE
     Ok(r)
 }
 
+/// Decode application facts from the same canonical prefix parser that derives
+/// leaf selectors. Authentication remains the caller's `check_record` duty.
+pub(crate) fn proposal_leg_details(proposal: &[u8]) -> Result<Vec<LegDetails>, DecodeError> {
+    Ok(proposal_prefix(proposal)?.leg_details)
+}
+
 fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeError> {
     let major = r.u16("entry.schema_major")?;
     if major != 1 {
@@ -258,6 +283,21 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
     let book_id = r.fixed("entry.book_id")?;
     let branch_id = r.fixed("entry.branch_id")?;
     let class = r.u16("entry.class")?;
+    // The supported native registry assigns posting classes 1..=15 and
+    // control classes 16..=30. Validate this vocabulary while deriving every
+    // record, before a report can exclude its date, prefix or retired state.
+    if class == 0 {
+        return Err(r.error("entry.class", Reason::BadTag(0)));
+    }
+    if class > 30 {
+        return Err(r.error(
+            "entry.class",
+            Reason::TooLong {
+                max: 30,
+                actual: usize::from(class),
+            },
+        ));
+    }
     let effective_date = r.i32("entry.effective_date")?;
     if r.present("entry.document_date")? {
         r.i32("entry.document_date")?;
@@ -268,8 +308,13 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
         r.bytes(MAX_RECORD_BYTES, "entry.effective_period.code")?;
     }
     // side u8, account u128, amount (u32, i128), option tag, two counts, memo tag.
-    let legs = r.count(MAX_ENVELOPE_LIST, 1 + 16 + 20 + 1 + 4 + 1 + 4, "entry.legs")?;
+    // Native control records carry no monetary legs, including the dated
+    // PeriodControl and MigrationControl classes. Enforce zero before any
+    // leg allocation; otherwise a resealed control could masquerade as a post.
+    let max_legs = if class >= 16 { 0 } else { MAX_ENVELOPE_LIST };
+    let legs = r.count(max_legs, 1 + 16 + 20 + 1 + 4 + 1 + 4, "entry.legs")?;
     let mut parsed = Vec::with_capacity(legs);
+    let mut leg_details = Vec::with_capacity(legs);
     for _ in 0..legs {
         let debit = match r.u8("leg.side")? {
             0 => true,
@@ -284,24 +329,47 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
             unit,
             mantissa,
         });
-        if r.present("leg.base_amount")? {
-            amount(r, "leg.base_amount")?;
-        }
-        let dims = r.count(MAX_ENVELOPE_LIST, 20, "leg.dimension_set")?;
+        let base_amount = if r.present("leg.base_amount")? {
+            Some(amount(r, "leg.base_amount")?)
+        } else {
+            None
+        };
+        // Authenticate the native dimension bound and order before any report
+        // selection can exclude a malformed record.
+        let dims = r.count(64, 20, "leg.dimension_set")?;
+        let mut dimensions = Vec::with_capacity(dims);
+        let mut previous = None;
         for _ in 0..dims {
-            r.u32("dimension.id")?;
-            r.u128("dimension.value")?;
+            let id = r.u32("dimension.id")?;
+            if previous.is_some_and(|before| before >= id) {
+                return Err(r.error("leg.dimension_set", Reason::Unsorted));
+            }
+            previous = Some(id);
+            dimensions.push((id, r.u128("dimension.value")?));
         }
         if r.present("leg.memo")? {
             skip_erasable(r, "leg.memo")?;
         }
         let settles = r.count(MAX_ENVELOPE_LIST, 16 + 32 + 2 + 20, "leg.settles")?;
+        let mut settlements = Vec::with_capacity(settles);
         for _ in 0..settles {
-            r.u128("settles.target.vid")?;
-            r.fixed::<32>("settles.target.entry_digest")?;
-            r.u16("settles.ordinal")?;
-            amount(r, "settles.amount")?;
+            let target = r.u128("settles.target.vid")?;
+            let digest = r.fixed("settles.target.entry_digest")?;
+            let ordinal = r.u16("settles.ordinal")?;
+            let (unit, amount) = amount(r, "settles.amount")?;
+            settlements.push(SettlementRef {
+                target,
+                digest,
+                ordinal,
+                unit,
+                amount,
+            });
         }
+        leg_details.push(LegDetails {
+            base_amount,
+            dimensions,
+            settlements,
+        });
     }
     Ok(ProposalPrefix {
         book_id,
@@ -309,6 +377,7 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
         class,
         effective_date,
         legs: parsed,
+        leg_details,
     })
 }
 
@@ -706,6 +775,11 @@ fn attestation_record(
                 }
                 r.i32("represented.as_of")?;
             }
+            // ExhibitMarked: matter (1..=128 bytes) and label (1..=64 bytes).
+            10 => {
+                non_empty_str(&mut r, 128, "exhibit_marked.matter")?;
+                non_empty_str(&mut r, 64, "exhibit_marked.label")?;
+            }
             4 => {
                 let account = r.u128("register_equals.account")?;
                 let unit_id = r.u32("register_equals.unit_id")?;
@@ -736,7 +810,7 @@ fn attestation_record(
         let subject_tag = r.u8("attestation.subject")?;
         let subject_bytes = r.fixed::<32>("attestation.subject")?;
         let valid_subject = match (claim_tag, subject_tag) {
-            (2, 1) | (8, 2) | (5, 1) | (9, 1) => true,
+            (2, 1) | (8, 2) | (5, 1) | (9, 1) | (10, 1) => true,
             (4, 3) => expected_cell == Some(subject_bytes),
             (3, 1) => expected_source
                 .as_ref()

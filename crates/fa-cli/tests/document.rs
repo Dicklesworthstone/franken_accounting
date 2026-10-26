@@ -1048,6 +1048,74 @@ fn search_finds_documents_by_their_own_or_extracted_text() -> std::io::Result<()
     // At the earlier frontier the derived document is not there to be found.
     let early = search(&["acme", "--as-known-at", &frontier]);
     assert_eq!(field(&early, "total"), Some("0"), "{early}");
+    // `fa verify search` rebuilds and verifies the full-text index at HEAD
+    // and at an earlier frontier, matching `fa search --kind all`'s digest.
+    let verified_early = ok(
+        &book,
+        &["verify", "search", "--as-known-at", &frontier, "--json"],
+    );
+    assert_eq!(
+        field(&verified_early, "event"),
+        Some("search_verified"),
+        "{verified_early}"
+    );
+    assert_eq!(
+        field(&verified_early, "entries"),
+        Some("4"),
+        "{verified_early}"
+    );
+    assert_eq!(
+        field(&verified_early, "documents"),
+        Some("1"),
+        "{verified_early}"
+    );
+    assert_eq!(
+        field(&verified_early, "findings"),
+        Some("0"),
+        "{verified_early}"
+    );
+    assert_eq!(
+        field(&verified_early, "records"),
+        Some("5"),
+        "{verified_early}"
+    );
+    assert_eq!(
+        field(&verified_early, "index_digest"),
+        field(&both, "index_digest"),
+        "{verified_early}"
+    );
+    let head_all = search(&["harbor", "--kind", "all"]);
+    let verified_head = ok(&book, &["verify", "search", "--json"]);
+    assert_eq!(
+        field(&verified_head, "event"),
+        Some("search_verified"),
+        "{verified_head}"
+    );
+    assert_eq!(
+        field(&verified_head, "entries"),
+        Some("4"),
+        "{verified_head}"
+    );
+    assert_eq!(
+        field(&verified_head, "documents"),
+        Some("2"),
+        "{verified_head}"
+    );
+    assert_eq!(
+        field(&verified_head, "records"),
+        Some("6"),
+        "{verified_head}"
+    );
+    assert_eq!(
+        field(&verified_head, "index_digest"),
+        field(&head_all, "index_digest"),
+        "{verified_head}"
+    );
+    let (code, out, _) = fa(
+        &book,
+        &["verify", "search", "--period", "FY2026-P03", "--json"],
+    );
+    assert_eq!(code, 2, "{out}");
     let (code, out, _) = fa(&book, &["search", "harbor", "--kind", "invoice", "--json"]);
     assert_eq!(code, 2, "{out}");
     Ok(())

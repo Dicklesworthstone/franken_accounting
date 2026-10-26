@@ -470,12 +470,25 @@ fn policy(bytes: &[u8], book: &[u8; 16]) -> Result<Policy, VerifyError> {
 /// The report fold's migration visibility over an already authenticated,
 /// payload-complete prefix. The same independent lifecycle decoder serves
 /// balance and report proofs; neither trusts mutable run-state projections.
+#[cfg(test)]
 pub(crate) fn report_visibility(
     envelopes: &[LeafEnvelope],
     records: &[(usize, &[u8])],
     bodies: &[(u64, &[u8])],
     known_at: u64,
 ) -> Result<BTreeSet<u64>, VerifyError> {
+    report_visibility_at(envelopes, records, bodies, known_at).map(|(visible, _)| visible)
+}
+
+/// Return both counting chunks and their authenticated activation sequence.
+/// Recorded-at remains the chunk's birth; an application can use it only once
+/// the run's Finalize is visible at that application's committed frontier.
+pub(crate) fn report_visibility_at(
+    envelopes: &[LeafEnvelope],
+    records: &[(usize, &[u8])],
+    bodies: &[(u64, &[u8])],
+    known_at: u64,
+) -> Result<(BTreeSet<u64>, BTreeMap<u64, u64>), VerifyError> {
     let mut runs: BTreeMap<u128, Run> = BTreeMap::new();
     let mut needed = BTreeSet::new();
     let mut chunks = Vec::new();
@@ -560,6 +573,7 @@ pub(crate) fn report_visibility(
         state.policy = Some(policy);
     }
     let mut visible = BTreeSet::new();
+    let mut activated = BTreeMap::new();
     for (index, run, day) in chunks {
         let state = runs.get(&run).ok_or_else(|| scope_error(index))?;
         if index <= state.open_index
@@ -576,9 +590,11 @@ pub(crate) fn report_visibility(
                 .is_none_or(|cutoff| day.is_some_and(|d| d >= cutoff))
         {
             visible.insert(index);
+            let (terminal, _) = state.terminal.ok_or_else(|| scope_error(index))?;
+            activated.insert(index, envelopes[terminal as usize].commit_seq);
         }
     }
-    Ok(visible)
+    Ok((visible, activated))
 }
 
 #[cfg(test)]
@@ -984,6 +1000,14 @@ mod tests {
                             visible.contains(&1),
                             should_count,
                             "mode={mode}, sole={sole}, day={day}, terminal={terminal:?}"
+                        );
+                        let (activated_visible, activated) =
+                            report_visibility_at(&envelopes, &records, &witnesses, 3).unwrap();
+                        assert_eq!(activated_visible, visible);
+                        assert_eq!(activated.get(&1).copied(), should_count.then_some(3));
+                        assert_eq!(
+                            envelopes[1].commit_seq, 2,
+                            "activation never rewrites the chunk's recorded time"
                         );
                         assert!(
                             report_visibility(&envelopes, &records, &witnesses, 2)

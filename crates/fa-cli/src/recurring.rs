@@ -360,32 +360,39 @@ fn list(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Ok(())
     })?;
     let schedules = book.recurring_schedules(&capability)??;
-    let rows = schedules
-        .iter()
-        .map(|row| {
-            obj(vec![
-                ("name", s(&row.name)),
-                ("schedule", s(format!("{:032x}", row.schedule.0))),
-                ("principal", s(format!("{:032x}", row.principal.0))),
-                ("start", s(row.start.render())),
-                ("end", row.end.map_or(Json::Null, |day| s(day.render()))),
-                ("every_months", Json::Int(i128::from(row.every_months))),
-                ("month_end", s(month_end_name(row.month_end))),
-                ("created_at", Json::Int(i128::from(row.created_at.0))),
-                (
-                    "cancelled_at",
-                    row.cancelled_at
-                        .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
-                ),
-                ("next_index", Json::Int(i128::from(row.next_index))),
-                (
-                    "next_date",
-                    row.next_date.map_or(Json::Null, |day| s(day.render())),
-                ),
-                ("blocked", row.blocked.as_ref().map_or(Json::Null, s)),
-            ])
-        })
-        .collect();
+    let calendar = fa::recurring::weekday_business_calendar(Vec::new())
+        .map_err(|e| Fail::Internal(e.to_string()))?;
+    let mut rows = Vec::with_capacity(schedules.len());
+    for row in &schedules {
+        let next_date = fa::recurring::adjust_next_occurrence(
+            row,
+            &calendar,
+            fa::recurring::BusinessDayConvention::Unadjusted,
+        )
+        .map_err(|e| Fail::Internal(e.to_string()))?
+        .map(|occ| occ.adjusted);
+        rows.push(obj(vec![
+            ("name", s(&row.name)),
+            ("schedule", s(format!("{:032x}", row.schedule.0))),
+            ("principal", s(format!("{:032x}", row.principal.0))),
+            ("start", s(row.start.render())),
+            ("end", row.end.map_or(Json::Null, |day| s(day.render()))),
+            ("every_months", Json::Int(i128::from(row.every_months))),
+            ("month_end", s(month_end_name(row.month_end))),
+            ("created_at", Json::Int(i128::from(row.created_at.0))),
+            (
+                "cancelled_at",
+                row.cancelled_at
+                    .map_or(Json::Null, |seq| Json::Int(i128::from(seq.0))),
+            ),
+            ("next_index", Json::Int(i128::from(row.next_index))),
+            (
+                "next_date",
+                next_date.map_or(Json::Null, |day| s(day.render())),
+            ),
+            ("blocked", row.blocked.as_ref().map_or(Json::Null, s)),
+        ]));
+    }
     let human = schedules
         .iter()
         .map(|row| {

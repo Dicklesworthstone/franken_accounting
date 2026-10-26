@@ -30,8 +30,10 @@ pub mod scheme {
     pub const ED25519: u16 = 1;
 }
 
-/// What the notary needs from a checkpoint signer.
-pub trait CheckpointSigner {
+/// What the notary needs from a checkpoint signer. A signer is shared with
+/// the async checkpoint and bundle paths, which hold it across awaits, so it
+/// is `Send + Sync`.
+pub trait CheckpointSigner: Send + Sync {
     /// A registered [`scheme`] id.
     fn scheme(&self) -> u16;
     /// The 32-byte public key a verifier is given out of band.

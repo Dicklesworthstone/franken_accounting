@@ -2,9 +2,13 @@
 //!
 //! Entry identity still enforces target uniqueness. These immutable claims
 //! additionally reserve (book, principal, key), shared with atomic batches.
-//! Migration retains its declared run-scoped keys. Dedicated control writers
-//! have not migrated to this protocol. Existing normal-key control entries
-//! are still checked by point lookup before a posting takes their key.
+//! Migration retains its declared run-scoped keys. Period, time and normal-key
+//! policy activation, account lifecycle, dimension creation and native
+//! subledger registration controls also reserve the common key; their
+//! pre-protocol entries remain valid retry anchors. Other dedicated
+//! writers, including target-derived capability issuance and revocation, have
+//! not migrated.
+//! Existing normal-key controls are checked before a posting takes their key.
 
 mod keys;
 mod rebuild;
@@ -206,7 +210,28 @@ pub(crate) fn witness_key<V: Vfs + Clone>(
     if !covered_class(proposal.class) {
         return Ok(Ok(false));
     }
-    let ovid = entry_outcome_vid(proposal);
+    witness_named_key(
+        txn,
+        db,
+        proposal.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        expected_entry,
+    )
+}
+
+/// A dedicated control admits its named scope before observing this opaque
+/// key. Its normal Entry identity remains the legacy retry anchor; a batch or
+/// target-derived posting at the common key conflicts without payload reads.
+pub fn witness_named_key<V: Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: Id128,
+    principal: VId,
+    key: &[u8],
+    expected_entry: VId,
+) -> Outcome<bool> {
+    let ovid = intent_outcome_vid(book, &principal.0.to_le_bytes(), key);
     match txn.vertex_has_label(db, ovid, label::INTENT_OUTCOME)? {
         None => return Ok(Ok(false)),
         Some(false) => return Ok(Err(key_conflict())),
@@ -230,10 +255,7 @@ pub(crate) fn witness_key<V: Vfs + Clone>(
         return Ok(Err(key_conflict()));
     }
     let claim = claim_of(&row)?;
-    if claim.book != proposal.book_id
-        || claim.principal != proposal.principal_ref
-        || claim.entry.vid != expected_entry
-    {
+    if claim.book != book || claim.principal != principal || claim.entry.vid != expected_entry {
         return Ok(Err(key_conflict()));
     }
     Ok(Ok(true))
@@ -565,7 +587,7 @@ fn stage_coverage(batch: &mut WriteBatch, coverage: &Coverage) -> Result<(), Ker
     Ok(())
 }
 
-pub(crate) fn require_unused_legacy_key<V: Vfs + Clone>(
+pub fn require_unused_legacy_key<V: Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     book: &BookContext,
@@ -593,6 +615,79 @@ pub fn stage_entry(
     if !covered_class(entry.proposal.class) {
         return Ok(None);
     }
+    stage_claim(batch, entry, vid).map(Some)
+}
+
+/// These controls retain their normal-key Entry identity, including
+/// old immutable entries that predate these common-key claims. Do not broaden
+/// `covered_class`: historical coverage authenticates monetary posting keys,
+/// and an old control's absence of a claim must not invalidate its exact retry.
+/// Registered reason discriminator on a PolicyControl LifecycleTransition.
+/// Its object identity binds the canonical definition; its single proof binds
+/// the chart reviewed by the higher-layer statement activation operation.
+pub const STATEMENT_ACTIVATION_REASON: u16 = 0x5354;
+
+/// The precisely registered statement-definition control shape. Admission and
+/// semantic lint remain the facade's responsibility; this only identifies a
+/// dedicated writer allowed to reserve the common successful-intent key.
+#[must_use]
+pub fn is_statement_activation(entry: &Entry) -> bool {
+    let proposal = &entry.proposal;
+    let fa_model::EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::POLICY_ACTIVATION,
+        spec_body_digest,
+    } = &proposal.origin
+    else {
+        return false;
+    };
+    proposal.class == EntryClass::POLICY_CONTROL
+        && matches!(&proposal.control,
+            Some(fa_model::ControlPayload::LifecycleTransition {
+                object_ref, from: 0, to: 1, proof_refs, reason_code,
+            }) if *reason_code == STATEMENT_ACTIVATION_REASON
+                && matches!(proof_refs.as_slice(), [fa_model::TypedRef::Object(_)])
+                && *object_ref == fa_model::statement_definition_vid(proposal.book_id, spec_body_digest))
+}
+
+fn normal_key_control(entry: &Entry, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    let admitted = matches!(
+        proposal.class,
+        EntryClass::PERIOD_CONTROL | EntryClass::TIME_CONTROL
+    ) || (proposal.class == EntryClass::POLICY_CONTROL
+        && matches!(
+            &proposal.control,
+            Some(fa_model::ControlPayload::PolicyActivation { .. })
+        ))
+        || (proposal.class == EntryClass::SCHEMA_CONTROL
+            && matches!(
+                &proposal.control,
+                Some(fa_model::ControlPayload::SchemaChange {
+                    kind: 2..=4 | 15 | 17,
+                    ..
+                })
+            ));
+    (admitted || is_statement_activation(entry))
+        && vid
+            == fa_model::entry_vid(
+                proposal.book_id,
+                &proposal.principal_ref.0.to_le_bytes(),
+                &proposal.idempotency_key,
+            )
+}
+
+/// Stage only an admitted normal-key control. In particular, a target-derived
+/// capability event cannot use the legacy normal-identity retry exception.
+pub fn stage_control(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<(), KernelError> {
+    if !normal_key_control(entry, vid) {
+        return Err(KernelError::Corrupt(
+            "control outcome claim requires an admitted normal-key control entry".into(),
+        ));
+    }
+    stage_claim(batch, entry, vid).map(|_| ())
+}
+
+fn stage_claim(batch: &mut WriteBatch, entry: &Entry, vid: VId) -> Result<[u8; 32], KernelError> {
     let claim = EntryClaim::new(entry, vid, None)?;
     let encoded = claim.canonical_bytes()?;
     let digest = domain_digest(b"fa:entry-outcome:v1", &[&encoded]);
@@ -601,7 +696,34 @@ pub fn stage_entry(
         vec![label::INTENT_OUTCOME],
         claim_properties(&claim)?,
     );
-    Ok(Some(digest))
+    Ok(digest)
+}
+
+/// A legacy normal-key control is its own immutable key reservation. When a
+/// common claim exists, it must be the original claim published with that
+/// exact entry; neither an unrelated batch nor a copied claim can supply it.
+pub fn verify_control_recorded<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+) -> Result<bool, KernelError> {
+    if !normal_key_control(entry, row.vid) || !original(db, row)? {
+        return Ok(false);
+    }
+    let outcome = entry_outcome_vid(&entry.proposal);
+    let Some(claim_row) = db.vertex(outcome)? else {
+        // A deleted modern claim is not a legacy control. The authentic
+        // publication must itself predate the common-key claim protocol.
+        return Ok(db.vertex_at(outcome, row.created_at)?.is_none());
+    };
+    if !is_entry_claim(&claim_row) {
+        return Ok(false);
+    }
+    Ok(
+        claim_of(&claim_row)? == EntryClaim::new(entry, row.vid, None)?
+            && original(db, &claim_row)?
+            && claim_row.created_at == row.created_at,
+    )
 }
 
 /// A concurrent newly published winner must have its original atomic claim.

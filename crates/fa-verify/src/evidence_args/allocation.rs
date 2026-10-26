@@ -24,6 +24,8 @@ Supports LargestRemainder, ProRataResidualToNamed (all nine rounding laws),
 Waterfall and EqualSplitResidualFirst. Zero shares remain in the target list;
 negative residual corrections must have the exact opposite posting direction.
 Both signed conservation and representable gross turnover are required.
+V1 shared dimensions and v2 per-target account/dimension cells are supported
+and included in the report.
 
 This does NOT verify driver truth/provenance, account legality, unit definitions,
 current authority, approvals, period admission, limits, later reversals,
@@ -122,9 +124,36 @@ fn side(debit: bool) -> &'static str {
     if debit { "Debit" } else { "Credit" }
 }
 
+fn dimensions_json(values: &[(u32, u128)]) -> String {
+    array(values.iter().map(|(dimension, value)| {
+        object([
+            ("dimension", quote(&dimension.to_string())),
+            ("value", quote(&format!("{value:032x}"))),
+        ])
+    }))
+}
+
+fn dimensions_text(values: &[(u32, u128)]) -> String {
+    if values.is_empty() {
+        return "(none)".into();
+    }
+    values
+        .iter()
+        .map(|(dimension, value)| format!("{dimension}:{value:032x}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn render(report: &VerifiedAllocation, json: bool) -> Result<String, Failure> {
     let inclusion = &report.inclusion;
     let basis = &report.basis;
+    let cells = (0..basis.targets.len())
+        .map(|index| {
+            basis
+                .target_cell(index)
+                .ok_or_else(|| Failure::verification("allocation target has no destination cell"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let output = if !json {
         let mut text = format!(
             "Verified allocation: entry {} at sequence {} (scope: inclusion; arithmetic: native allocation).\nLaw {} version 1; source {:032x} {}; total {} in native unit {}.\nDriver commitment {}; basis digest {}.\n",
@@ -138,7 +167,12 @@ fn render(report: &VerifiedAllocation, json: bool) -> Result<String, Failure> {
             hex(&report.driver.doc_commit),
             hex(&report.basis_digest),
         );
-        for (index, (target, share)) in basis.targets.iter().zip(&report.shares).enumerate() {
+        text.push_str(&format!(
+            "Source dimensions {}.\n",
+            dimensions_text(&basis.dimensions)
+        ));
+        for (index, (share, (account, dimensions))) in report.shares.iter().zip(&cells).enumerate()
+        {
             let posting = if *share == 0 {
                 "NoLeg"
             } else {
@@ -149,8 +183,8 @@ fn render(report: &VerifiedAllocation, json: bool) -> Result<String, Failure> {
                 })
             };
             text.push_str(&format!(
-                "target {index} account {:032x} signed_share {share} posting {posting}\n",
-                target.account
+                "target {index} account {account:032x} signed_share {share} posting {posting} dimensions {}\n",
+                dimensions_text(dimensions)
             ));
         }
         text.push_str("Only inclusion, allocation arithmetic and the exact driver citation were checked. Driver truth/provenance, account legality, unit definitions, authority, approvals, period admission, limits, later reversals, signatures and completeness were NOT checked. Raw driver bytes, weights and protected descriptions are not printed.");
@@ -214,16 +248,19 @@ fn render(report: &VerifiedAllocation, json: bool) -> Result<String, Failure> {
                     ("driver_commitment", quote(&hex(&report.driver.doc_commit))),
                     ("source_account", quote(&format!("{:032x}", basis.source))),
                     ("source_side", quote(side(basis.source_debit))),
+                    ("basis_version", quote(&basis.version().to_string())),
+                    ("source_dimensions", dimensions_json(&basis.dimensions)),
                     ("native_unit_id", quote(&basis.unit.to_string())),
                     ("total_mantissa", quote(&basis.total.to_string())),
                     ("target_count", quote(&basis.targets.len().to_string())),
                     (
                         "targets",
-                        array(basis.targets.iter().zip(&report.shares).enumerate().map(
-                            |(index, (target, share))| {
+                        array(report.shares.iter().zip(&cells).enumerate().map(
+                            |(index, (share, (account, dimensions)))| {
                                 object([
                                     ("ordinal", quote(&index.to_string())),
-                                    ("account", quote(&format!("{:032x}", target.account))),
+                                    ("account", quote(&format!("{account:032x}"))),
+                                    ("dimensions", dimensions_json(dimensions)),
                                     ("signed_share", quote(&share.to_string())),
                                     (
                                         "posting_side",
@@ -275,9 +312,10 @@ fn render(report: &VerifiedAllocation, json: bool) -> Result<String, Failure> {
             ("verified", "true".into()),
         ])
     };
-    // 1024 fixed-width numeric target rows bound construction itself. This
-    // additional ceiling prevents later renderer growth from leaking a prefix.
-    if output.len() > 512 * 1024 {
+    // At most 1024 targets each report at most 64 dimensions. Legacy shared
+    // dimensions may repeat on every row; budget the complete bounded report.
+    // This ceiling also prevents later renderer growth from leaking a prefix.
+    if output.len() > 8 * 1024 * 1024 {
         return Err(Failure::verification(
             "allocation report exceeds its output bound",
         ));

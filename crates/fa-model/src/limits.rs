@@ -38,6 +38,10 @@ pub const MAX_EXTENSION_BYTES: usize = 64 * 1024;
 /// Entries one batch commits in one transaction; an expiry-sweep batch is
 /// bounded by it (plan §5.4).
 pub const MAX_BATCH_ENTRIES: usize = 8190;
+/// Maximum canonical `LogicalDeltaTemplate` byte size of one substrate
+/// transaction (`fgdb-chronicle` V1 capsule ceiling `56,403 * 256 = 14,439,168`
+/// minus the 16-byte `XChaCha20Poly1305V1` tag at pinned rev `b323bd1`; fa-gbkc).
+pub const MAX_BATCH_TEMPLATE_BYTES: usize = 56_403 * 256 - 16;
 /// Text fields of an intake source (connector name and version, message id,
 /// scanning device).
 pub const MAX_INTAKE_TEXT_BYTES: usize = 256;
@@ -60,6 +64,19 @@ pub const MAX_DAEMON_CONNECTIONS: usize = 64;
 /// Maximum retained predecessor links verified for one bank statement chain.
 /// An oversized chain refuses; a truncated chain never establishes continuity.
 pub const MAX_BANK_PREDECESSOR_DEPTH: usize = 4096;
+
+/// Canonical native-period checkpoint body, including both amount columns and
+/// unresolved hold digests. Chunking preserves the substrate's row bound;
+/// admission of the complete maintenance transaction still belongs to FGDB.
+pub const MAX_REGISTER_CHECKPOINT_BYTES: usize = 8 * 1024 * 1024;
+/// Distinct account/unit/period keys across a checkpoint's posted and pending
+/// columns. The byte bound is enforced independently before allocation.
+pub const MAX_REGISTER_CHECKPOINT_CELLS: usize = 100_000;
+/// One complete canonical company statement definition, before chunk storage.
+pub const MAX_STATEMENT_DEFINITION_BYTES: usize = 64 * 1024;
+/// Definition plus sealed description, caller key and fixed activation framing.
+pub const MAX_STATEMENT_DEFINITION_PLAN_BYTES: usize =
+    MAX_STATEMENT_DEFINITION_BYTES + MAX_DESCRIPTION_BYTES + MAX_IDEMPOTENCY_KEY_BYTES + 256;
 
 /// Every limit as `(name, value)`, in registry order.
 pub const ALL: &[(&str, u64)] = &[
@@ -96,6 +113,7 @@ pub const ALL: &[(&str, u64)] = &[
     ("max_extensions", MAX_EXTENSIONS as u64),
     ("max_extension_bytes", MAX_EXTENSION_BYTES as u64),
     ("max_batch_entries", MAX_BATCH_ENTRIES as u64),
+    ("max_batch_template_bytes", MAX_BATCH_TEMPLATE_BYTES as u64),
     ("max_intake_text_bytes", MAX_INTAKE_TEXT_BYTES as u64),
     ("max_import_documents", MAX_IMPORT_DOCUMENTS as u64),
     ("max_legal_hold_subjects", MAX_LEGAL_HOLD_SUBJECTS as u64),
@@ -106,6 +124,22 @@ pub const ALL: &[(&str, u64)] = &[
     (
         "max_bank_predecessor_depth",
         MAX_BANK_PREDECESSOR_DEPTH as u64,
+    ),
+    (
+        "max_register_checkpoint_bytes",
+        MAX_REGISTER_CHECKPOINT_BYTES as u64,
+    ),
+    (
+        "max_register_checkpoint_cells",
+        MAX_REGISTER_CHECKPOINT_CELLS as u64,
+    ),
+    (
+        "max_statement_definition_bytes",
+        MAX_STATEMENT_DEFINITION_BYTES as u64,
+    ),
+    (
+        "max_statement_definition_plan_bytes",
+        MAX_STATEMENT_DEFINITION_PLAN_BYTES as u64,
     ),
 ];
 

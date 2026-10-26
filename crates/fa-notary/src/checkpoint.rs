@@ -22,9 +22,14 @@
 //! The signed message excludes the signatures, so witnesses can co-sign
 //! the same body later as a new object.
 //!
-//! Interim fields, registered: `witness_policy_oid` is absent until
-//! witnesses exist, and `time_evidence_oid` is absent until TimeEvidence
-//! ticks are journaled (fa-ctf); Appendix A makes the latter mandatory.
+//! `time_evidence_oid`, when present, is the complete Entry digest of the
+//! latest TimeEvidence in the covered journal prefix. New checkpoints bind
+//! that tick without changing its source or corroboration grade. A prefix
+//! without ticks and historical checkpoints made before this binding retain
+//! `None`. This observation is not an exact physical checkpoint timestamp.
+//! The independent signature verifier authenticates the reference; the
+//! in-book verifier also re-derives it from the retained prefix (fa-7uhr).
+//! `witness_policy_oid` remains absent until a policy is bound at creation.
 //!
 //! Every signer's public key is admitted before it signs (ruling 3392): a
 //! key that is not a curve point, or is a small-order point, signs nothing

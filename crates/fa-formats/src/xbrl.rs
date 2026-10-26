@@ -64,6 +64,11 @@ pub struct StatementXbrlMapping {
 
 impl StatementXbrlMapping {
     /// Standard US-GAAP concept mapping for FrankenAccounting's built-in type-level Balance Sheet.
+    ///
+    /// Element names are cited from the published FASB US-GAAP Financial Reporting Taxonomy
+    /// (`http://fasb.org/us-gaap/2026`, Statement of Financial Position — Classified `104000`):
+    /// - `unclosed_earnings` binds to `us-gaap:RetainedEarningsAccumulatedDeficit`
+    ///   (`xbrli:monetaryItemType`, `xbrli:periodType="instant"`, `xbrli:balance="credit"`).
     pub fn us_gaap_type_level_balance_sheet() -> Self {
         let b = |line_code: &str, concept: &str, side: XbrlBalanceSide| XbrlConceptBinding {
             line_code: line_code.into(),
@@ -91,7 +96,7 @@ impl StatementXbrlMapping {
                 ),
                 b(
                     "unclosed_earnings",
-                    "us-gaap:CurrentPeriodNetIncome",
+                    "us-gaap:RetainedEarningsAccumulatedDeficit",
                     XbrlBalanceSide::Credit,
                 ),
                 b(
@@ -353,6 +358,7 @@ pub struct XbrlFact {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct XbrlInstance {
     pub entity_identifier: String,
+    pub period_start: Option<String>,
     pub period_end: String,
     pub facts: Vec<XbrlFact>,
 }
@@ -769,6 +775,7 @@ pub fn write_xbrl_instance_xml(instance: &XbrlInstance) -> String {
         contexts.insert("ctx_current");
     }
 
+    let has_explicit_duration_ctx = contexts.iter().any(|c| c.starts_with("ctx_duration"));
     for ctx_id in contexts {
         xml.push_str(&format!(
             "  <xbrli:context id=\"{}\">\n",
@@ -781,10 +788,24 @@ pub fn write_xbrl_instance_xml(instance: &XbrlInstance) -> String {
         ));
         xml.push_str("    </xbrli:entity>\n");
         xml.push_str("    <xbrli:period>\n");
-        xml.push_str(&format!(
-            "      <xbrli:instant>{}</xbrli:instant>\n",
-            xml_escape(&instance.period_end)
-        ));
+        let is_duration = ctx_id.starts_with("ctx_duration")
+            || (instance.period_start.is_some() && !has_explicit_duration_ctx);
+        if is_duration {
+            let start = instance
+                .period_start
+                .as_deref()
+                .unwrap_or(&instance.period_end);
+            xml.push_str(&format!(
+                "      <xbrli:startDate>{}</xbrli:startDate>\n      <xbrli:endDate>{}</xbrli:endDate>\n",
+                xml_escape(start),
+                xml_escape(&instance.period_end)
+            ));
+        } else {
+            xml.push_str(&format!(
+                "      <xbrli:instant>{}</xbrli:instant>\n",
+                xml_escape(&instance.period_end)
+            ));
+        }
         xml.push_str("    </xbrli:period>\n");
         xml.push_str("  </xbrli:context>\n");
     }
@@ -817,7 +838,9 @@ pub fn write_xbrl_instance_xml(instance: &XbrlInstance) -> String {
 /// back into an [`XbrlInstance`] using the in-house XML parser (zero third-party crates).
 pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
     let mut entity_identifier = String::new();
+    let mut period_start: Option<String> = None;
     let mut period_end = String::new();
+    let mut saw_end_date = false;
     let mut facts = Vec::new();
 
     for raw_line in xml.lines() {
@@ -829,6 +852,19 @@ pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
                 && entity_identifier.is_empty()
             {
                 entity_identifier = xml_unescape(inner);
+            }
+        } else if let Some(rest) = line.strip_prefix("<xbrli:startDate>") {
+            if let Some(inner) = rest.strip_suffix("</xbrli:startDate>")
+                && period_start.is_none()
+            {
+                period_start = Some(xml_unescape(inner));
+            }
+        } else if let Some(rest) = line.strip_prefix("<xbrli:endDate>") {
+            if let Some(inner) = rest.strip_suffix("</xbrli:endDate>") {
+                saw_end_date = true;
+                if period_end.is_empty() {
+                    period_end = xml_unescape(inner);
+                }
             }
         } else if let Some(rest) = line.strip_prefix("<xbrli:instant>") {
             if let Some(inner) = rest.strip_suffix("</xbrli:instant>")
@@ -894,12 +930,19 @@ pub fn read_xbrl_instance_xml(xml: &str) -> Result<XbrlInstance, FormatError> {
     if entity_identifier.is_empty() || period_end.is_empty() {
         return Err(FormatError::Parse {
             format: "xbrl_gl_instance_v1",
-            detail: "XBRL instance missing entity identifier or period instant".into(),
+            detail: "XBRL instance missing entity identifier or period instant/endDate".into(),
+        });
+    }
+    if period_start.is_some() != saw_end_date {
+        return Err(FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "XBRL duration context must specify both startDate and endDate".into(),
         });
     }
 
     Ok(XbrlInstance {
         entity_identifier,
+        period_start,
         period_end,
         facts,
     })
@@ -915,6 +958,10 @@ pub fn validate_calculation_linkbase_detailed(
 ) -> Result<XbrlValidationReport, FormatError> {
     let mut fact_map: BTreeMap<(String, String, String), i128> = BTreeMap::new();
     let mut contexts_and_units: BTreeSet<(String, String)> = BTreeSet::new();
+    let has_explicit_duration_ctx = instance
+        .facts
+        .iter()
+        .any(|f| f.context_ref.starts_with("ctx_duration"));
 
     for fact in &instance.facts {
         if fact.weight_check_invalid() {
@@ -923,16 +970,39 @@ pub fn validate_calculation_linkbase_detailed(
                 detail: format!("empty concept or unit on fact {:?}", fact.concept),
             });
         }
-        if let Some(tax) = schema
-            && !tax.concepts.contains_key(&fact.concept)
-        {
-            return Err(FormatError::Parse {
-                format: "xbrl_gl_instance_v1",
-                detail: format!(
-                    "fact concept {:?} is not declared in taxonomy {}",
-                    fact.concept, tax.target_namespace
-                ),
-            });
+        if let Some(tax) = schema {
+            let Some(tax_concept) = tax.concepts.get(&fact.concept) else {
+                return Err(FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: format!(
+                        "fact concept {:?} is not declared in taxonomy {}",
+                        fact.concept, tax.target_namespace
+                    ),
+                });
+            };
+            let is_duration_ctx = fact.context_ref.starts_with("ctx_duration")
+                || (instance.period_start.is_some() && !has_explicit_duration_ctx);
+            let ctx_period_type = if is_duration_ctx {
+                XbrlPeriodType::Duration
+            } else {
+                XbrlPeriodType::Instant
+            };
+            if tax_concept.period_type != ctx_period_type {
+                return Err(FormatError::Parse {
+                    format: "xbrl_gl_instance_v1",
+                    detail: format!(
+                        "xbrl_period_type_check concept={} binding_period_type={:?} taxonomy_period_type={:?} context={} status=FAIL: fact concept `{}` period_type {:?} mismatches context `{}` ({:?})",
+                        fact.concept,
+                        ctx_period_type,
+                        tax_concept.period_type,
+                        fact.context_ref,
+                        fact.concept,
+                        tax_concept.period_type,
+                        fact.context_ref,
+                        ctx_period_type,
+                    ),
+                });
+            }
         }
         fact_map.insert(
             (
@@ -1110,11 +1180,23 @@ pub fn export_statement_lines_to_xbrl(
                 ),
             })?;
         if tax_concept.period_type != b.period_type {
+            let ctx_ref = match b.period_type {
+                XbrlPeriodType::Instant => "ctx_current",
+                XbrlPeriodType::Duration => "ctx_duration_current",
+            };
             return Err(FormatError::Parse {
                 format: "xbrl_gl_instance_v1",
                 detail: format!(
-                    "line `{}` concept `{}` period_type {:?} mismatches taxonomy {:?}",
-                    b.line_code, b.concept, b.period_type, tax_concept.period_type
+                    "xbrl_period_type_check concept={} binding_period_type={:?} taxonomy_period_type={:?} context={} status=FAIL: line `{}` concept `{}` period_type {:?} mismatches taxonomy {:?} in context `{}`",
+                    b.concept,
+                    b.period_type,
+                    tax_concept.period_type,
+                    ctx_ref,
+                    b.line_code,
+                    b.concept,
+                    b.period_type,
+                    tax_concept.period_type,
+                    ctx_ref,
                 ),
             });
         }
@@ -1149,14 +1231,25 @@ pub fn export_statement_lines_to_xbrl(
 
     let mut facts = Vec::new();
     for (col_idx, col_label) in statement.column_labels.iter().enumerate() {
-        let context_ref = if col_idx == 0 {
-            "ctx_current".to_owned()
-        } else {
-            format!("ctx_col_{col_idx}_{col_label}")
-        };
         for line in &statement.lines {
             let Some(binding) = binding_by_line.get(line.code.as_str()) else {
                 continue;
+            };
+            let context_ref = match binding.period_type {
+                XbrlPeriodType::Instant => {
+                    if col_idx == 0 {
+                        "ctx_current".to_owned()
+                    } else {
+                        format!("ctx_col_{col_idx}_{col_label}")
+                    }
+                }
+                XbrlPeriodType::Duration => {
+                    if col_idx == 0 {
+                        "ctx_duration_current".to_owned()
+                    } else {
+                        format!("ctx_duration_col_{col_idx}_{col_label}")
+                    }
+                }
             };
             let (unit_code, scale) =
                 unit_catalog
@@ -1167,7 +1260,7 @@ pub fn export_statement_lines_to_xbrl(
                     })?;
             facts.push(XbrlFact {
                 concept: binding.concept.clone(),
-                context_ref: context_ref.clone(),
+                context_ref,
                 unit_code: unit_code.to_owned(),
                 scale,
                 mantissa: line.amounts[col_idx],
@@ -1175,9 +1268,23 @@ pub fn export_statement_lines_to_xbrl(
         }
     }
 
+    let has_duration = mapping
+        .bindings
+        .iter()
+        .any(|b| b.period_type == XbrlPeriodType::Duration);
+    let period_start = if has_duration {
+        Some(
+            DateDay::from_ymd(statement.period_end.year(), 1, 1)
+                .unwrap_or(statement.period_end)
+                .render(),
+        )
+    } else {
+        None
+    };
     let period_end = statement.period_end.render();
     let instance = XbrlInstance {
         entity_identifier: entity_identifier.to_owned(),
+        period_start,
         period_end,
         facts,
     };
@@ -1340,6 +1447,7 @@ pub fn write_format_journal_xbrl_xml(journal: &FormatJournal) -> Result<String, 
     combined_facts.extend(is_inst.facts);
     let combined = XbrlInstance {
         entity_identifier: journal.coordinate.book_name.clone(),
+        period_start: is_inst.period_start,
         period_end: journal.coordinate.effective_through.render(),
         facts: combined_facts,
     };
@@ -1375,6 +1483,18 @@ pub fn verify_format_journal_xbrl_xml(
         "http://frankenaccounting.org/role/TypeLevelStatements",
     )?;
     let report = validate_calculation_linkbase_detailed(&instance, &linkbase, Some(&schema))?;
+
+    let stripped_xml: String = xml
+        .lines()
+        .filter(|l| !l.trim().starts_with("<!-- fa:xbrl-coordinate "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    if write_xbrl_instance_xml(&instance) != stripped_xml {
+        return Err(FormatError::Parse {
+            format: "xbrl_gl_instance_v1",
+            detail: "XBRL instance did not round-trip byte-for-byte".into(),
+        });
+    }
 
     let comment_line = xml
         .lines()
@@ -1428,6 +1548,7 @@ pub fn verify_format_journal_xbrl_xml(
         entry_count,
         content_digest,
         certificate_digest,
+        account_scope: None,
     };
     coordinate.verify(&content_digest)?;
     Ok((coordinate, report))
@@ -1585,5 +1706,222 @@ mod tests {
                 ..
             } if parent_concept == "us-gaap:GrossProfit"
         ));
+    }
+
+    #[test]
+    fn income_statement_facts_are_written_in_duration_contexts() {
+        let unit_catalog = UnitCatalog::embedded().unwrap();
+        let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap();
+        let linkbase = XbrlCalculationLinkbase::embedded_for_role(
+            "http://frankenaccounting.org/role/TypeLevelStatements",
+        )
+        .unwrap();
+
+        let is_stmt = EvaluatedStatementForXbrl {
+            definition_name: "income-statement".into(),
+            column_labels: vec!["current".into()],
+            period_end: DateDay::from_ymd(2026, 3, 31).unwrap(),
+            lines: vec![
+                ("revenue", 100_000),
+                ("expense", 40_000),
+                ("net_income", 60_000),
+            ]
+            .into_iter()
+            .map(|(code, amt)| EvaluatedStatementLine {
+                code: code.into(),
+                unit_id: 1,
+                amounts: vec![amt],
+            })
+            .collect(),
+        };
+
+        let (instance, report) = export_statement_lines_to_xbrl(
+            &is_stmt,
+            &StatementXbrlMapping::us_gaap_type_level_income_statement(),
+            "ACME-CORP",
+            &unit_catalog,
+            &schema,
+            &linkbase,
+        )
+        .unwrap();
+        assert_eq!(instance.period_start.as_deref(), Some("2026-01-01"));
+        assert_eq!(instance.period_end, "2026-03-31");
+        assert_eq!(report.checks_passed, 1);
+
+        let xml = write_xbrl_instance_xml(&instance);
+        assert!(
+            xml.contains("<xbrli:startDate>2026-01-01</xbrli:startDate>"),
+            "missing startDate in {xml}"
+        );
+        assert!(
+            xml.contains("<xbrli:endDate>2026-03-31</xbrli:endDate>"),
+            "missing endDate in {xml}"
+        );
+        assert!(
+            !xml.contains("<xbrli:instant>"),
+            "pure duration instance must not emit instant context: {xml}"
+        );
+
+        let round_tripped = read_xbrl_instance_xml(&xml).unwrap();
+        assert_eq!(round_tripped, instance);
+        assert_eq!(write_xbrl_instance_xml(&round_tripped), xml);
+    }
+
+    #[test]
+    fn no_binding_names_a_concept_outside_the_published_taxonomy_list() {
+        // Published FASB US-GAAP Financial Reporting Taxonomy (http://fasb.org/us-gaap/2026):
+        // - Statement of Financial Position — Classified (104000):
+        //   Assets, AssetsCurrent, AssetsNoncurrent, CashAndCashEquivalentsAtCarryingValue,
+        //   AccountsReceivableNetCurrent, InventoryNet, PropertyPlantAndEquipmentNet,
+        //   Liabilities, LiabilitiesCurrent, LiabilitiesNoncurrent, AccountsPayableCurrent,
+        //   AccruedLiabilitiesCurrent, LongTermDebtNoncurrent, CommonStockValue,
+        //   RetainedEarningsAccumulatedDeficit, StockholdersEquity,
+        //   StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest,
+        //   LiabilitiesAndStockholdersEquity.
+        // - Statement of Income (124000):
+        //   Revenues, CostOfGoodsAndServicesSold, GrossProfit, OperatingExpenses,
+        //   OperatingIncomeLoss, IncomeTaxExpenseBenefit, NetIncomeLoss.
+        let published_us_gaap: BTreeSet<&str> = [
+            "us-gaap:Assets",
+            "us-gaap:AssetsCurrent",
+            "us-gaap:AssetsNoncurrent",
+            "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+            "us-gaap:AccountsReceivableNetCurrent",
+            "us-gaap:InventoryNet",
+            "us-gaap:PropertyPlantAndEquipmentNet",
+            "us-gaap:Liabilities",
+            "us-gaap:LiabilitiesCurrent",
+            "us-gaap:LiabilitiesNoncurrent",
+            "us-gaap:AccountsPayableCurrent",
+            "us-gaap:AccruedLiabilitiesCurrent",
+            "us-gaap:LongTermDebtNoncurrent",
+            "us-gaap:CommonStockValue",
+            "us-gaap:RetainedEarningsAccumulatedDeficit",
+            "us-gaap:StockholdersEquity",
+            "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            "us-gaap:LiabilitiesAndStockholdersEquity",
+            "us-gaap:Revenues",
+            "us-gaap:CostOfGoodsAndServicesSold",
+            "us-gaap:GrossProfit",
+            "us-gaap:OperatingExpenses",
+            "us-gaap:OperatingIncomeLoss",
+            "us-gaap:IncomeTaxExpenseBenefit",
+            "us-gaap:NetIncomeLoss",
+        ]
+        .into_iter()
+        .collect();
+
+        let check_mapping = |m: &StatementXbrlMapping| -> Result<(), String> {
+            for b in &m.bindings {
+                if b.concept.starts_with("us-gaap:")
+                    && !published_us_gaap.contains(b.concept.as_str())
+                {
+                    return Err(format!(
+                        "xbrl_taxonomy_membership_check mapping={} line={} concept={} status=FAIL (not in published US-GAAP list)",
+                        m.mapping_id, b.line_code, b.concept
+                    ));
+                }
+            }
+            Ok(())
+        };
+
+        for mapping in [
+            StatementXbrlMapping::us_gaap_type_level_balance_sheet(),
+            StatementXbrlMapping::us_gaap_type_level_income_statement(),
+            StatementXbrlMapping::us_gaap_small_company_balance_sheet(),
+            StatementXbrlMapping::us_gaap_small_company_income_statement(),
+        ] {
+            if let Err(msg) = check_mapping(&mapping) {
+                panic!("{msg}");
+            }
+        }
+
+        // Cross-check the fa-statements copy of the mappings so the two crates never drift.
+        let statements_custom_rs = include_str!("../../fa-statements/src/custom.rs");
+        for line in statements_custom_rs.lines() {
+            let mut rest = line;
+            while let Some(pos) = rest.find("\"us-gaap:") {
+                let after = &rest[pos + 1..];
+                if let Some(end) = after.find('"') {
+                    let qname = &after[..end];
+                    assert!(
+                        published_us_gaap.contains(qname),
+                        "fa-statements/src/custom.rs binds non-published US-GAAP concept `{qname}`"
+                    );
+                    rest = &after[end + 1..];
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Check every calculation arc in the vendored TypeLevelStatements role.
+        let tl_linkbase = XbrlCalculationLinkbase::embedded_for_role(
+            "http://frankenaccounting.org/role/TypeLevelStatements",
+        )
+        .unwrap();
+        for arc in &tl_linkbase.arcs {
+            for c in [&arc.parent_concept, &arc.child_concept] {
+                assert!(
+                    published_us_gaap.contains(c.as_str()),
+                    "TypeLevelStatements calculation arc references non-published concept `{c}`"
+                );
+            }
+        }
+
+        // Planted negative: a mapping copy binding `us-gaap:CurrentPeriodNetIncome` must fail
+        // both the published-taxonomy membership list and the vendored schema check.
+        let mut planted = StatementXbrlMapping::us_gaap_type_level_balance_sheet();
+        planted.bindings[3].concept = "us-gaap:CurrentPeriodNetIncome".into();
+        let err_msg =
+            check_mapping(&planted).expect_err("planted CurrentPeriodNetIncome must fail");
+        println!("{err_msg}");
+        assert!(err_msg.contains("us-gaap:CurrentPeriodNetIncome"));
+    }
+
+    #[test]
+    fn an_activity_concept_in_an_instant_context_fails() {
+        let unit_catalog = UnitCatalog::embedded().unwrap();
+        let schema = XbrlTaxonomySchema::embedded_us_gaap_small_company().unwrap();
+        let linkbase = XbrlCalculationLinkbase::embedded_for_role(
+            "http://frankenaccounting.org/role/TypeLevelStatements",
+        )
+        .unwrap();
+
+        let is_stmt = EvaluatedStatementForXbrl {
+            definition_name: "income-statement".into(),
+            column_labels: vec!["current".into()],
+            period_end: DateDay::from_ymd(2026, 3, 31).unwrap(),
+            lines: vec![
+                ("revenue", 100_000),
+                ("expense", 40_000),
+                ("net_income", 60_000),
+            ]
+            .into_iter()
+            .map(|(code, amt)| EvaluatedStatementLine {
+                code: code.into(),
+                unit_id: 1,
+                amounts: vec![amt],
+            })
+            .collect(),
+        };
+
+        // Planted negative: bind activity concept `us-gaap:NetIncomeLoss` with `XbrlPeriodType::Instant`.
+        let mut bad_mapping = StatementXbrlMapping::us_gaap_type_level_income_statement();
+        bad_mapping.bindings[2].period_type = XbrlPeriodType::Instant;
+        let err = export_statement_lines_to_xbrl(
+            &is_stmt,
+            &bad_mapping,
+            "ACME-CORP",
+            &unit_catalog,
+            &schema,
+            &linkbase,
+        )
+        .expect_err("NetIncomeLoss with Instant period_type must be refused");
+        let msg = err.to_string();
+        println!("{msg}");
+        assert!(msg.contains("us-gaap:NetIncomeLoss"), "{msg}");
+        assert!(msg.contains("Instant"), "{msg}");
+        assert!(msg.contains("ctx_current"), "{msg}");
     }
 }

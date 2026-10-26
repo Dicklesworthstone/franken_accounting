@@ -145,6 +145,19 @@ impl Fixture {
 
     /// Posts `legs` (each `(side, account, amount, party)`) on `date`.
     fn post(&self, key: &str, date: &str, legs: &[(&str, &str, &str, Option<&str>)]) {
+        let (code, out) = self.try_post(key, date, legs, "");
+        assert_eq!(code, 0, "{key}: {}", out.render());
+    }
+
+    /// Posts `legs` on `date` with `extra` (more intent fields, as JSON
+    /// members without braces) and returns the exit code and envelope.
+    fn try_post(
+        &self,
+        key: &str,
+        date: &str,
+        legs: &[(&str, &str, &str, Option<&str>)],
+        extra: &str,
+    ) -> (i32, Json) {
         let legs: Vec<String> = legs
             .iter()
             .map(|(side, account, amount, party)| {
@@ -154,18 +167,30 @@ impl Fixture {
                 )
             })
             .collect();
+        let extra = if extra.is_empty() {
+            String::new()
+        } else {
+            format!(",{extra}")
+        };
         let intent = self.file(
             &format!("{key}.json"),
             &format!(
-                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{}]}}"#,
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{}]{extra}}}"#,
                 legs.join(",")
             ),
         );
-        ok(
+        run(
             &self.book,
             &["post", "--intent", &intent, "--evidence", &self.evidence],
-        );
+        )
     }
+}
+
+/// `"obligation_maturity"` declaring one contractual installment on leg 1.
+fn due(on: &str, amount: &str) -> String {
+    format!(
+        r#""obligation_maturity":[{{"ordinal":1,"status":"contractual","installments":[{{"due_date":"{on}","amount":"{amount} USD"}}]}}]"#
+    )
 }
 
 /// `(second word of the narrative, statistic value)` of each finding, sorted:
@@ -304,5 +329,350 @@ fn creditor_and_investor_margins_survive_public_workflow() {
         vec![("INV-A".to_string(), 3_000), ("INV-B".to_string(), 6_000)],
         "{}",
         pro_rata.render()
+    );
+
+    // Solvency maturity & valuation workflow on a fresh book (`fa-5dpd`, `fa-8j3g`, `fa-v0m2`):
+    // 1. Balance-sheet solvency with contra-assets (1510 Equipment +100.00, 1590 Accumulated
+    //    Depreciation -80.00 -> net assets 20.00 vs 2000 Liabilities 50.00 -> deficit 30.00),
+    //    historical RegisterEquals non-override, and explicit dated valuation adjustment
+    //    (+22.00 USD on 1510 effective 2026-04-30 -> valued assets 42.00 vs 50.00 -> deficit 8.00).
+    // 2. Cash-flow solvency with authenticated obligation maturity (`obligation_maturity`):
+    //    cash 100.00 at 2026-04-30, long-term debt 1000.00 booked 2026-01-01 due 2026-12-31
+    //    plus short-term debts 40.00 (due 2026-05-15), 35.00 (due 2026-05-30), and 50.00
+    //    (due 2026-05-31): 0 findings at 30 days (75.00 <= 100.00) and 25.00 shortfall at 31 days.
+    let s = Fixture::new();
+    let sol_chart = s.file(
+        "sol_chart.json",
+        r#"{"accounts":[
+{"code":"1510","name":"Equipment","type":"Asset","unit":"USD"},
+{"code":"1590","name":"Accumulated depreciation","type":"Asset","normal_balance":"credit","unit":"USD"}]}"#,
+    );
+    ok(&s.book, &["chart", "import", &sol_chart]);
+
+    // Fund 100.00 cash on Jan 1 against 1000.00 long-term AP (due 2026-12-31) and 900.00 rent.
+    let long_debt = s.file(
+        "long-debt.json",
+        r#"{"effective_date":"2026-01-10","idempotency_key":"long-debt","legs":[
+{"side":"debit","account":"1000","amount":"100.00 USD"},
+{"side":"debit","account":"6000","amount":"900.00 USD"},
+{"side":"credit","account":"2000","amount":"1000.00 USD"}
+],"obligation_maturity":[{"ordinal":2,"status":"contractual","installments":[{"due_date":"2026-12-31","amount":"1000.00 USD"}]}]}"#,
+    );
+    ok(
+        &s.book,
+        &["post", "--intent", &long_debt, "--evidence", &s.evidence],
+    );
+
+    // At 2026-04-30 with horizon_days=30, the 1000.00 debt due 2026-12-31 is deferred -> 0 findings.
+    let cf_long_only = ok(
+        &s.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.cash_flow_test",
+            "--effective-through",
+            "2026-04-30",
+            "--param",
+            "horizon_days=30",
+        ],
+    );
+    assert_eq!(integer(data(&cf_long_only), "finding_count"), 0);
+
+    // Add inside-horizon and boundary obligations: 40.00 due May 15, 35.00 due May 30, 50.00 due May 31.
+    for (key, due, amt) in [
+        ("short-may15", "2026-05-15", "40.00 USD"),
+        ("short-may30", "2026-05-30", "35.00 USD"),
+        ("short-may31", "2026-05-31", "50.00 USD"),
+    ] {
+        let doc = s.file(
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"2026-04-10","idempotency_key":"{key}","legs":[
+{{"side":"debit","account":"6000","amount":"{amt}"}},
+{{"side":"credit","account":"2000","amount":"{amt}"}}
+],"obligation_maturity":[{{"ordinal":1,"status":"contractual","installments":[{{"due_date":"{due}","amount":"{amt}"}}]}}]}}"#
+            ),
+        );
+        ok(
+            &s.book,
+            &["post", "--intent", &doc, "--evidence", &s.evidence],
+        );
+    }
+
+    // 30-day horizon (through May 30): 40.00 + 35.00 = 75.00 <= 100.00 cash -> 0 findings.
+    let cf_30 = ok(
+        &s.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.cash_flow_test",
+            "--effective-through",
+            "2026-04-30",
+            "--param",
+            "horizon_days=30",
+        ],
+    );
+    assert_eq!(integer(data(&cf_30), "finding_count"), 0);
+
+    // 31-day horizon (through May 31): 75.00 + 50.00 = 125.00 > 100.00 cash -> 25.00 (2,500) shortfall.
+    let cf_31 = ok(
+        &s.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.cash_flow_test",
+            "--effective-through",
+            "2026-04-30",
+            "--param",
+            "horizon_days=31",
+        ],
+    );
+    assert_eq!(integer(data(&cf_31), "finding_count"), 1);
+    let cf_finding = &rows(data(&cf_31), "findings")[0];
+    assert_eq!(
+        integer(cf_finding.get("statistic").unwrap(), "value"),
+        2_500
+    );
+
+    // Record and replay the 31-day cash-flow solvency certificate.
+    let cf_rec = ok(
+        &s.book,
+        &[
+            "finding",
+            "record",
+            "solvency.cash_flow_test",
+            "--effective-through",
+            "2026-04-30",
+            "--param",
+            "horizon_days=31",
+        ],
+    );
+    let cf_cert = text(data(&cf_rec), "certificate").to_string();
+    let cf_replayed = ok(&s.book, &["replay", &format!("C:{cf_cert}")]);
+    assert_eq!(data(&cf_replayed), data(&cf_31));
+
+    // Balance-sheet solvency with contra-assets and explicit valuation adjustment on a dedicated book.
+    let b = Fixture::new();
+    let bs_chart = b.file(
+        "bs_chart.json",
+        r#"{"accounts":[
+{"code":"1510","name":"Equipment","type":"Asset","unit":"USD"},
+{"code":"1590","name":"Accumulated depreciation","type":"Asset","normal_balance":"credit","unit":"USD"}]}"#,
+    );
+    ok(&b.book, &["chart", "import", &bs_chart]);
+    b.post(
+        "equip-fund",
+        "2026-04-01",
+        &[
+            ("debit", "1510", "100.00", None),
+            ("credit", "2000", "50.00", None),
+            ("credit", "3000", "50.00", None),
+        ],
+    );
+    b.post(
+        "equip-dep",
+        "2026-04-15",
+        &[
+            ("debit", "6000", "80.00", None),
+            ("credit", "1590", "80.00", None),
+        ],
+    );
+    let bs_book = ok(
+        &b.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.balance_sheet_test",
+            "--effective-through",
+            "2026-04-30",
+        ],
+    );
+    assert_eq!(integer(data(&bs_book), "finding_count"), 1);
+    assert_eq!(
+        integer(
+            rows(data(&bs_book), "findings")[0]
+                .get("statistic")
+                .unwrap(),
+            "value"
+        ),
+        3_000
+    );
+
+    // Post an entry carrying an authenticated valuation adjustment (+22.00 USD on 1510 at 2026-04-30).
+    let val_entry = b.file(
+        "val-entry.json",
+        r#"{"effective_date":"2026-04-20","idempotency_key":"val-entry","legs":[
+{"side":"debit","account":"6000","amount":"1.00 USD"},
+{"side":"credit","account":"3000","amount":"1.00 USD"}
+],"valuation_adjustments":[{"valuation_id":"VAL-EQUIP-2026Q2","account":"1510","basis_law":"signed_delta","effective_date":"2026-04-30","amount":"22.00 USD"}]}"#,
+    );
+    ok(
+        &b.book,
+        &["post", "--intent", &val_entry, "--evidence", &b.evidence],
+    );
+    let bs_valued = ok(
+        &b.book,
+        &[
+            "procedure",
+            "run",
+            "solvency.balance_sheet_test",
+            "--effective-through",
+            "2026-04-30",
+        ],
+    );
+    assert_eq!(integer(data(&bs_valued), "finding_count"), 1);
+    let bs_val_finding = &rows(data(&bs_valued), "findings")[0];
+    assert_eq!(
+        integer(bs_val_finding.get("statistic").unwrap(), "value"),
+        800,
+        "net book assets 20.00 + valuation delta 22.00 = 42.00 vs 50.00 debt -> 8.00 deficit"
+    );
+    assert!(
+        text(bs_val_finding, "narrative")
+            .contains("VAL-EQUIP-2026Q2:signed_delta:exact_as_of(2026-04-30)")
+    );
+}
+
+/// fa-5dpd through the public workflow (fa-v0m2's solvency companion). An
+/// obligation's maturity, declared with the entry that books it by `fa post`
+/// (extension 33), decides whether `solvency.cash_flow_test` counts it; its
+/// booking date does not. Cash is 100.00 at Apr 30. A 1,000.00 debt booked
+/// Jan 15 is due Dec 31 and a 150.00 debt booked Apr 1 is due May 15, so
+/// over the default 30-day horizon only the 150.00 matures: 50.00 short.
+/// The same history with the 1,000.00 due May 20 is 1,050.00 short. Planted
+/// negatives: a debt booked without terms leaves the schedule incomplete and
+/// the test refuses; terms on a debit leg, or installments that do not total
+/// the leg, are refused at `fa post`.
+#[test]
+fn obligation_maturity_declared_at_posting_decides_cash_flow_solvency() {
+    let book_with = |long_due: &str, short_terms: bool| {
+        let f = Fixture::new();
+        f.post(
+            "capital",
+            "2026-01-10",
+            &[
+                ("debit", "1000", "100.00", None),
+                ("credit", "3000", "100.00", None),
+            ],
+        );
+        let (code, out) = f.try_post(
+            "long-debt",
+            "2026-01-15",
+            &[
+                ("debit", "6000", "1000.00", None),
+                ("credit", "2000", "1000.00", None),
+            ],
+            &due(long_due, "1000.00"),
+        );
+        assert_eq!(code, 0, "{}", out.render());
+        let short = if short_terms {
+            due("2026-05-15", "150.00")
+        } else {
+            String::new()
+        };
+        let (code, out) = f.try_post(
+            "short-debt",
+            "2026-04-01",
+            &[
+                ("debit", "7000", "150.00", None),
+                ("credit", "2000", "150.00", None),
+            ],
+            &short,
+        );
+        assert_eq!(code, 0, "{}", out.render());
+        f
+    };
+    let solvency = |f: &Fixture| {
+        run(
+            &f.book,
+            &[
+                "procedure",
+                "run",
+                "solvency.cash_flow_test",
+                "--effective-through",
+                "2026-04-30",
+            ],
+        )
+    };
+    let shortfall = |out: &Json| {
+        let findings = rows(data(out), "findings");
+        assert_eq!(findings.len(), 1, "{}", out.render());
+        let statistic = findings[0].get("statistic").expect("statistic");
+        assert_eq!(text(statistic, "name"), "cash_flow_shortfall");
+        (
+            integer(statistic, "value"),
+            text(&findings[0], "narrative").to_string(),
+        )
+    };
+
+    let (code, dec31) = solvency(&book_with("2026-12-31", true));
+    assert_eq!(code, 0, "{}", dec31.render());
+    let (value, narrative) = shortfall(&dec31);
+    assert_eq!(value, 5_000, "{narrative}");
+    for part in [
+        "liquid_cash=10000",
+        "maturing_obligations=15000",
+        "deferred_obligations=100000",
+        "maturity_basis=authenticated_schedule",
+    ] {
+        assert!(narrative.contains(part), "{part}: {narrative}");
+    }
+
+    // Only the long debt's due date changes, and with it the verdict.
+    let (code, may20) = solvency(&book_with("2026-05-20", true));
+    assert_eq!(code, 0, "{}", may20.render());
+    let (value, narrative) = shortfall(&may20);
+    assert_eq!(value, 105_000, "{narrative}");
+    assert!(
+        narrative.contains("maturing_obligations=115000")
+            && narrative.contains("deferred_obligations=0"),
+        "{narrative}"
+    );
+
+    // Planted: the 150.00 debt booked without terms is an open obligation
+    // the schedule omits, so no maturity-based verdict is given.
+    let (code, incomplete) = solvency(&book_with("2026-12-31", false));
+    assert_eq!(code, 2, "{}", incomplete.render());
+    assert!(
+        incomplete
+            .render()
+            .contains("incomplete obligation schedule"),
+        "{}",
+        incomplete.render()
+    );
+
+    // Planted: terms the kernel's law refuses never reach the journal.
+    let f = Fixture::new();
+    let (code, debit) = f.try_post(
+        "debit-terms",
+        "2026-01-15",
+        &[
+            ("debit", "6000", "40.00", None),
+            ("credit", "2000", "40.00", None),
+        ],
+        r#""obligation_maturity":[{"ordinal":0,"status":"contractual","installments":[{"due_date":"2026-05-15","amount":"40.00 USD"}]}]"#,
+    );
+    assert_eq!(code, 2, "{}", debit.render());
+    assert!(
+        debit.render().contains("names a debit leg"),
+        "{}",
+        debit.render()
+    );
+    let (code, short) = f.try_post(
+        "short-terms",
+        "2026-01-15",
+        &[
+            ("debit", "6000", "40.00", None),
+            ("credit", "2000", "40.00", None),
+        ],
+        &due("2026-05-15", "30.00"),
+    );
+    assert_eq!(code, 2, "{}", short.render());
+    assert!(
+        short
+            .render()
+            .contains("installments must total exactly the leg's amount"),
+        "{}",
+        short.render()
     );
 }

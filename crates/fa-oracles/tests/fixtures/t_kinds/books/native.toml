@@ -1,0 +1,374 @@
+# FIXTURE (A3b t_kinds, bead fa-yugf.8): one T of each kind for the static T checks. Synthetic values;
+# digests computed by a one-off script independently of fa-oracles; edit by hand like any fixture.
+# Never copied to cases/; no figure here is a case's published value.
+
+[book]
+variant = "native"
+opening_date = "2020-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "FY2020"
+start = "2020-01-01"
+end = "2020-12-31"
+fiscal_year = 2020
+kind = "Normal"
+
+[[principal]]
+label = "tk-preparer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "tk-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "tk-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "tk-approver-2"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "tk-poster-1"
+profile = "Human"
+grants = ["read", "post", "restate", "produce"]
+
+[[principal]]
+label = "tk-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[account]]
+code = "1000"
+name_fact = "F-X1"
+type = "Asset"
+role = ""
+opened = "2019-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "1100"
+name_fact = "F-A"
+type = "Asset"
+role = ""
+opened = "2019-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2000"
+name_fact = "F-S1"
+type = "Liability"
+role = ""
+opened = "2019-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "2100"
+name_fact = "F-S2"
+type = "Liability"
+role = ""
+opened = "2019-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "3000"
+name_fact = "F-X1"
+type = "Equity"
+role = ""
+opened = "2019-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "4000"
+name_fact = "F-A"
+type = "Revenue"
+role = ""
+opened = "2019-12-31"
+role_map_rule = "role_map"
+
+[[account]]
+code = "5000"
+name_fact = "F-S1"
+type = "Expense"
+role = ""
+opened = "2019-12-31"
+role_map_rule = "role_map"
+
+[[document]]
+id = "DOC-A"
+stub_of = "SRC-TK-A"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-B"
+stub_of = "SRC-TK-B"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-X"
+stub_of = "SRC-TK-X"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-S"
+stub_of = "SRC-TK-S"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-A"
+stub_of = "placeholder:F-A"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-X1"
+stub_of = "placeholder:F-X1"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-X2"
+stub_of = "placeholder:F-X2"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-S1"
+stub_of = "placeholder:F-S1"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[document]]
+id = "DOC-PH-F-S2"
+stub_of = "placeholder:F-S2"
+grade = "AgentUpload"
+reviewed_by = "tk-second-reader"
+
+[[intent]]
+id = "F-Aa"
+fact = "F-A"
+class = "Original"
+principal = "tk-preparer-1"
+effective_date = "2020-12-31"
+memo = "synthetic (fixture)"
+evidence = "DOC-PH-F-A"
+idempotency_key = "tk-f-aa"
+
+[[intent]]
+id = "F-X1a"
+fact = "F-X1"
+class = "Original"
+principal = "tk-preparer-1"
+effective_date = "2020-12-31"
+memo = "synthetic (fixture)"
+evidence = "DOC-PH-F-X1"
+idempotency_key = "tk-f-x1a"
+
+[[intent]]
+id = "F-X2a"
+fact = "F-X2"
+class = "Original"
+principal = "tk-preparer-1"
+effective_date = "2020-12-31"
+memo = "synthetic (fixture)"
+evidence = "DOC-PH-F-X2"
+idempotency_key = "tk-f-x2a"
+
+[[intent]]
+id = "F-S1a"
+fact = "F-S1"
+class = "Original"
+principal = "tk-preparer-1"
+effective_date = "2020-12-31"
+memo = "synthetic (fixture)"
+evidence = "DOC-PH-F-S1"
+idempotency_key = "tk-f-s1a"
+
+[[intent]]
+id = "F-S2a"
+fact = "F-S2"
+class = "Original"
+principal = "tk-preparer-1"
+effective_date = "2020-12-31"
+memo = "synthetic (fixture)"
+evidence = "DOC-PH-F-S2"
+idempotency_key = "tk-f-s2a"
+
+[[intent]]
+id = "delta-F-Aa"
+fact = "F-D"
+class = "Restatement"
+principal = "tk-poster-1"
+effective_date = "2020-12-31"
+evidence = "DOC-B"
+idempotency_key = "tk-i-d"
+target = "F-Aa"
+target_kind = "restates"
+reason = "WrongAccount"
+scenario = "restate"
+
+[[case]]
+id = "R1"
+kind = "Restatement"
+periods = ["FY2020"]
+determined_on = "default"
+authority = "DOC-B"
+disclosure = "DOC-B"
+approvers = ["tk-approver-1", "tk-approver-2"]
+poster = "tk-poster-1"
+
+[[leg]]
+intent = "F-Aa"
+ordinal = 0
+account = "1100"
+side = "Dr"
+amount_literal = "1000.00"
+amount_rule = "value:F-A#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-Aa"
+ordinal = 1
+account = "4000"
+side = "Cr"
+amount_literal = "1000.00"
+amount_rule = "value:F-A#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-X1a"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "250.00"
+amount_rule = "value:F-X1#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-X1a"
+ordinal = 1
+account = "3000"
+side = "Cr"
+amount_literal = "250.00"
+amount_rule = "value:F-X1#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-X2a"
+ordinal = 0
+account = "1000"
+side = "Dr"
+amount_literal = "350.00"
+amount_rule = "value:F-X2#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-X2a"
+ordinal = 1
+account = "3000"
+side = "Cr"
+amount_literal = "350.00"
+amount_rule = "value:F-X2#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-S1a"
+ordinal = 0
+account = "5000"
+side = "Dr"
+amount_literal = "400.00"
+amount_rule = "value:F-S1#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-S1a"
+ordinal = 1
+account = "2000"
+side = "Cr"
+amount_literal = "400.00"
+amount_rule = "value:F-S1#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-S2a"
+ordinal = 0
+account = "5000"
+side = "Dr"
+amount_literal = "150.00"
+amount_rule = "value:F-S2#1"
+unit = "USD"
+
+[[leg]]
+intent = "F-S2a"
+ordinal = 1
+account = "2100"
+side = "Cr"
+amount_literal = "150.00"
+amount_rule = "value:F-S2#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F-Aa"
+ordinal = 0
+account = "1100"
+side = "Cr"
+amount_literal = "100.00"
+amount_rule = "value:F-D#1"
+unit = "USD"
+
+[[leg]]
+intent = "delta-F-Aa"
+ordinal = 1
+account = "4000"
+side = "Dr"
+amount_literal = "100.00"
+amount_rule = "value:F-D#1"
+unit = "USD"
+
+[[step]]
+seq = 1
+kind = "issue"
+ref = "FY2020"
+principal = "tk-closer-1"
+approvers = ["tk-approver-1"]
+document = "DOC-A"
+
+[[step]]
+seq = 2
+kind = "issue"
+ref = "FY2020"
+principal = "tk-closer-1"
+approvers = ["tk-approver-1"]
+document = "DOC-B"
+
+[[default]]
+attribute = "case_determination_date"
+rule = "restating_filing_date"
+rationale = "synthetic fixture: the restating filing's date determines the case"
+
+[[default]]
+attribute = "effective_date"
+rule = "reporting_period_last_day"
+rationale = "synthetic fixture: every entry is effective on its period's last day"
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "synthetic fixture: each documented entry cites a placeholder reviewed by tk-second-reader; a filing's stub is provenance, never evidence (K-EVID)"
+
+[[default]]
+attribute = "reason"
+rule = "WrongAccount"
+rationale = "synthetic fixture: the restatement corrects the account, never a legal conclusion (K-REASON)"

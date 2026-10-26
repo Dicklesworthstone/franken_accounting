@@ -75,11 +75,11 @@ pub use account_role::{
     AccountRoleControl, AccountRoleRecorded, AccountRoleSpec, AccountRoles, account_roles_at,
     record_account_role, role_control,
 };
-pub use allocation::AllocationPosting;
+pub use allocation::{AllocationPosting, AllocationTargetCell};
 pub use attestation::{
-    AttestationClaim, Attested, confirmation_received_by, confirmed_vid, read_attestation,
-    record_confirmation, record_manual_assertion, record_representation, record_review,
-    represented_vid,
+    AttestationClaim, Attested, confirmation_received_by, confirmed_vid, exhibit_mark_vid,
+    read_attestation, record_confirmation, record_manual_assertion, record_representation,
+    record_review, represented_vid,
 };
 pub use batch::{
     BatchPosted, OutcomeBody, commit_batch_plan, outcome_vid, plan_batch, plan_batch_with_history,
@@ -102,10 +102,11 @@ pub use chart::{
 };
 pub use custody::{CustodyBody, CustodyEvent, CustodyMoved, custody_chain, transfer_custody};
 pub use draft::{
-    DraftBody, DraftClosure, DraftPlanned, DraftPromoted, DraftRecorded, DraftRehearsal,
-    DraftRehearsalRequest, DraftRehearsalSource, DraftRequest, DraftSourceRecord, DraftState,
-    DraftView, PlannedIntent, discard_draft, list_drafts, open_draft, plan_into_draft,
-    promote_draft, read_draft, rehearse_draft_into,
+    DraftBody, DraftClosure, DraftPlanned, DraftPreview, DraftPreviewMember, DraftPromoted,
+    DraftRecorded, DraftRehearsal, DraftRehearsalRequest, DraftRehearsalSource, DraftRequest,
+    DraftSourceRecord, DraftState, DraftView, PlannedIntent, discard_draft, draft_entries,
+    list_drafts, open_draft, plan_into_draft, preview_draft, promote_draft, read_draft,
+    rehearse_draft_into,
 };
 pub use engagement::{
     AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, Carried,
@@ -154,8 +155,8 @@ pub use legal_hold::{
     release_legal_hold,
 };
 pub use limit::{
-    BalanceLimit, Balanced, LimitCell, LimitScope, cell_account, limit_cell_vid, period_cell_vid,
-    post_balancing,
+    BalanceLimit, Balanced, LimitCell, LimitScope, balancing_proposal, cell_account,
+    limit_cell_vid, period_cell_vid, post_balancing,
 };
 pub use migration::{
     PeriodBalance, Run, RunBody, RunChunk, RunControlRequest, RunControlled, RunMode, RunState,
@@ -188,9 +189,10 @@ pub use post::{
     explain_entry_lineage, post, post_replacement_pair, prepare_post, superseded_by,
 };
 pub use production::{
-    BatesRange, Produced, ProducedDocument, ProducedRange, ProductionOpened, ProductionProfile,
-    ProductionRequest, ProductionState, ProductionView, RecordedRange, document_ranges,
-    list_productions, open_production, produce, read_production,
+    BatesRange, ExhibitMarkedOutcome, Produced, ProducedDocument, ProducedRange, ProductionOpened,
+    ProductionProfile, ProductionRequest, ProductionState, ProductionView, RecordedExhibit,
+    RecordedRange, document_ranges, list_productions, mark_exhibit, open_production, produce,
+    read_production,
 };
 pub use rea::{
     DIMENSION_KIND_PARTY, EventRow, ExternalIdRow, InstrumentRow, LegalEntityRow, PartyRow,

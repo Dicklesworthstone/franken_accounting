@@ -184,7 +184,7 @@ name = "fa-mcp"
 layer = "surface"
 path = "crates/fa-mcp"
 planned = false
-allowlist = ["fa-cli", "fa", "fa-registry"]
+allowlist = ["fa-cli", "fa", "fa-registry", "fa-verify"]
 
 [[crate]]
 name = "fa-reference"
@@ -203,7 +203,8 @@ planned = true
 name = "fa-oracles"
 layer = "verification"
 path = "crates/fa-oracles"
-planned = true
+planned = false
+allowlist = ["fa-registry", "fa-reference", "fa-time"]
 
 [[crate]]
 name = "fa-gen"

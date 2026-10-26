@@ -73,6 +73,13 @@ pub const DATE_BASIS_EXTENSION: u16 = 3;
 /// document and party recorded at or before `through`; fa-k07b). On a
 /// Release: `1u8 ‖ u128 hold`, the Place it releases.
 pub const LEGAL_HOLD_SCOPE_EXTENSION: u16 = 4;
+/// Extension tag 5, `fa:allocation-posting:v1` (plan §6.3; fa-joq): an
+/// `Allocation` entry's computation binding — the driver basis's canonical
+/// bytes, law digest and basis digest
+/// (`registries/object_schemas/allocation.toml`). fa-journal `allocation`
+/// interprets it in full. Format v2 binds an ordered destination account and
+/// dimension map; v1 retains its original shared-dimension encoding.
+pub const ALLOCATION_EXTENSION: u16 = 5;
 /// Extension tag 6, `fa:event-ref:v1` (plan §4.1 `Event`, §4.5, FA-INV-05,
 /// bead `fa-f3bo`): binds an `EntryProposal` to a committed REA `Event`
 /// vertex — `event_vid: u128 LE ‖ event_digest: [u8; 32]` (48 bytes).
@@ -87,10 +94,16 @@ pub const CAPABILITY_BODY_EXTENSION: u16 = 7;
 /// bead fa-s7x): a draft's immutable body on its `DraftControl` Open
 /// record — `u16 version ‖ book_id[16] ‖ str name ‖ u128 owner_principal`.
 pub const DRAFT_BODY_EXTENSION: u16 = 8;
-/// Extension tag 9, `fa:draft-intent:v1` (bead fa-s7x): one planned intent
+/// Extension tag 9, `fa:draft-intent` (bead fa-s7x): one planned intent
 /// on a draft's `DraftControl` Plan record — `u16 version ‖ bytes
 /// post_intent ‖ bytes capability`: the intent's canonical bytes and the
-/// planner's capability, which its promotion replays.
+/// planner's capability, which its promotion replays. Version 2 appends the
+/// exact resolved Entry digest `[32]` reviewed in ordered draft rehearsal;
+/// version 3 also appends `bytes resolved_entry`, preserving the original
+/// target for dependent retries after discard or availability drift. Empty
+/// resolved bytes denote the Entry exactly sealed from the retained proposal
+/// and approvals (no plan certificate), verified against the retained digest.
+/// Versions 1 and 2 keep their original encoding.
 pub const DRAFT_INTENT_EXTENSION: u16 = 9;
 /// Extension tag 10, `fa:scenario-body:v1` (plan §15.2, Appendix B
 /// `ForkScenario`, bead fa-k07b): a scenario's immutable body on its
@@ -208,6 +221,16 @@ pub const RECURRING_OCCURRENCE_EXTENSION: u16 = 31;
 /// bytes (`fa_canon::encode_inputs`), so its derivation can be re-run
 /// (plan §10.3, FA-INV-05 `rule-reproduction`).
 pub const RULE_INPUTS_EXTENSION: u16 = 32;
+/// Extension tag 33, `fa:obligation-maturity:v1` (plan §11.6, bead fa-5dpd):
+/// when the obligations this entry books on its credit legs fall due
+/// ([`crate::obligation::InlineObligationTerms`]); validated against the
+/// legs by [`crate::obligation::validate_terms`].
+pub const OBLIGATION_MATURITY_EXTENSION: u16 = 33;
+/// Extension tag 34, `fa:valuation-adjustment:v1` (plan §11.6, bead fa-8j3g):
+/// explicit dated valuation inputs this entry carries
+/// ([`crate::valuation::InlineValuationTerms`]); validated by
+/// [`crate::valuation::validate_terms`].
+pub const VALUATION_ADJUSTMENT_EXTENSION: u16 = 34;
 
 /// Extension tags this reader understands. A payload at a higher
 /// `schema_minor` may carry others; they are preserved and skipped.
@@ -216,6 +239,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     AUTO_REVERSE_EXTENSION,
     DATE_BASIS_EXTENSION,
     LEGAL_HOLD_SCOPE_EXTENSION,
+    ALLOCATION_EXTENSION,
     EVENT_REF_EXTENSION,
     CAPABILITY_BODY_EXTENSION,
     DRAFT_BODY_EXTENSION,
@@ -243,6 +267,8 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     EXTERNAL_SUBLEDGER_EXTENSION,
     RECURRING_OCCURRENCE_EXTENSION,
     RULE_INPUTS_EXTENSION,
+    OBLIGATION_MATURITY_EXTENSION,
+    VALUATION_ADJUSTMENT_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1613,6 +1639,26 @@ impl EntryPayload {
         Ok(totals)
     }
 
+    /// [`Self::validate`] for a payload this build is about to write: it also
+    /// refuses a `schema_minor` above [`SCHEMA_MINOR`] (fa-hoi5). Reading
+    /// still accepts a newer writer's minor and preserves its unknown
+    /// extensions (the additive-minor law); writing one would journal
+    /// extensions this build never validated.
+    pub fn validate_for_write(&self) -> Result<(), EntryError> {
+        self.validate()?;
+        self.check_writer_minor()
+    }
+
+    fn check_writer_minor(&self) -> Result<(), EntryError> {
+        if self.schema_minor > SCHEMA_MINOR {
+            return Err(invalid(
+                "schema_minor",
+                "a writer seals only the schema minors it knows; register a new extension instead of claiming a newer minor",
+            ));
+        }
+        Ok(())
+    }
+
     /// Structural validation (not the accounting laws).
     pub fn validate(&self) -> Result<(), EntryError> {
         if !self.class.is_registered() {
@@ -1783,6 +1829,21 @@ impl EntryPayload {
                 "extensions.event_ref",
                 "fa:event-ref:v1 requires 48 bytes (event_vid u128 LE || event_digest [u8; 32])",
             ));
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(t, _)| *t == OBLIGATION_MATURITY_EXTENSION)
+        {
+            crate::obligation::validate_terms(bytes, &self.legs)
+                .map_err(|(what, why)| invalid(what, why))?;
+        }
+        if let Some((_, bytes)) = self
+            .extensions
+            .iter()
+            .find(|(t, _)| *t == VALUATION_ADJUSTMENT_EXTENSION)
+        {
+            crate::valuation::validate_terms(bytes).map_err(|(what, why)| invalid(what, why))?;
         }
         if let (Some((_, bytes)), EntryOrigin::Rule { event_ref, .. }) = (
             self.extensions
@@ -2211,8 +2272,21 @@ impl EntryPayload {
     }
 
     /// Bind the envelope — the dry-run plan certificate (if any) and the
-    /// approval transcript — and produce the committed entry.
+    /// approval transcript — and produce the committed entry. Every new
+    /// entry is sealed here, so a schema minor this build does not know is
+    /// refused here as well as at admission (fa-hoi5).
     pub fn seal(
+        self,
+        approvals: Vec<ApprovalRef>,
+        plan_certificate: Option<Oid>,
+    ) -> Result<Entry, EntryError> {
+        self.check_writer_minor()?;
+        self.seal_unchecked(approvals, plan_certificate)
+    }
+
+    /// [`Self::seal`] without the writer-minor check: how a newer writer's
+    /// entry is built for this module's own decode tests.
+    fn seal_unchecked(
         self,
         approvals: Vec<ApprovalRef>,
         plan_certificate: Option<Oid>,
@@ -3159,6 +3233,54 @@ mod tests {
         }
     }
 
+    /// fa-5dpd: extension 33 is registered, and validate judges its terms
+    /// against the legs before anything posts. Terms on the credit leg whose
+    /// installments total its 1,200.00 pass. Terms on the debit leg, on a leg
+    /// the entry does not have, totalling 1.00 short, or bytes that do not
+    /// decode are each refused.
+    #[test]
+    fn obligation_maturity_terms_are_validated_against_the_legs() {
+        use crate::obligation::{InlineObligationTerms, ObligationInstallment, ObligationStatus};
+        assert!(KNOWN_EXTENSION_TAGS.contains(&OBLIGATION_MATURITY_EXTENSION));
+        let terms = |ordinal: u16, amount: i128| {
+            InlineObligationTerms::to_extension(&[InlineObligationTerms {
+                ordinal,
+                status: ObligationStatus::Contractual,
+                installments: vec![
+                    ObligationInstallment {
+                        due_date: DateDay(20_100),
+                        amount: 20_000,
+                    },
+                    ObligationInstallment {
+                        due_date: DateDay(20_400),
+                        amount,
+                    },
+                ],
+            }])
+            .unwrap()
+        };
+        let with = |extension: (u16, Vec<u8>)| {
+            let mut p = proposal(two_legs());
+            p.extensions = vec![extension];
+            p
+        };
+        let why = |p: EntryPayload| match p.validate() {
+            Err(EntryError::Invalid {
+                what: "extensions.obligation_maturity",
+                why,
+            }) => Some(why),
+            _ => None,
+        };
+        with(terms(1, 100_000)).validate().unwrap();
+        assert!(why(with(terms(0, 100_000))).is_some_and(|w| w.contains("debit leg")));
+        assert!(why(with(terms(2, 100_000))).is_some_and(|w| w.contains("does not have")));
+        assert!(why(with(terms(1, 99_900))).is_some_and(|w| w.contains("total exactly")));
+        assert!(
+            why(with((OBLIGATION_MATURITY_EXTENSION, vec![1, 2, 3])))
+                .is_some_and(|w| w.contains("decode"))
+        );
+    }
+
     /// Additive-minor law: an unknown extension tag is refused at this
     /// reader's minor, preserved byte-for-byte at a higher one, and covered
     /// by the digests either way.
@@ -3175,7 +3297,26 @@ mod tests {
             }
         ));
         p.schema_minor = SCHEMA_MINOR + 1;
-        let e = p.clone().seal(vec![], None).unwrap();
+        // This build reads a newer writer's entry (it validates, preserving
+        // the unknown tag), but never writes one (fa-hoi5): validate_for_write
+        // and seal refuse the minor it does not know.
+        assert!(p.validate().is_ok());
+        for refused in [
+            p.validate_for_write().unwrap_err(),
+            p.clone().seal(vec![], None).unwrap_err(),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    EntryError::Invalid {
+                        what: "schema_minor",
+                        ..
+                    }
+                ),
+                "{refused:?}"
+            );
+        }
+        let e = p.clone().seal_unchecked(vec![], None).unwrap();
         let back = Entry::decode(&e.encode().unwrap()).unwrap();
         assert_eq!(back.proposal.extensions, vec![(999, vec![1, 2, 3])]);
         let mut q = p.clone();

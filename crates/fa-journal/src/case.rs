@@ -38,11 +38,15 @@
 //!   poster, with extension 23 `fa:case-member:v1`. The posting law admits
 //!   a case-bound class only as such a derivation of an Approved case, and
 //!   decides its row's approvals over the case's approvals ([`admit_member`]).
-//!   This build posts PriorPeriodAdjustment and Revision cases. A Revision
-//!   case's entries are Revision entries that each revise one standing
-//!   posting (`Revises`, net effect target plus delta) in a period the
-//!   case affects. Restatement entries wait for their SoD rule's session
-//!   lineage (fa-651f).
+//!   This build posts PriorPeriodAdjustment, Revision, Restatement and
+//!   PolicyChangeRetrospective cases. A Revision case's entries are Revision entries that each revise
+//!   one standing posting (`Revises`, net effect target plus delta) in a
+//!   period the case affects. A Restatement case's entries each restate one
+//!   posting (`Restates`, the delta legs) into the restated period, Closed
+//!   included, under the Restatement SoD rule's session lineage (fa-651f;
+//!   `a_restatement_case_restates_a_closed_period_from_the_cli`). A
+//!   PolicyChangeRetrospective case's entries are Restatement entries
+//!   (`a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli`).
 //! - **Disclose** (`Posted → Disclosed`) journals extension 25
 //!   `fa:case-disclosure:v1`: the Disclosure document the case is disclosed
 //!   in and the Reviewed attestation over it, which a principal other than
@@ -2093,8 +2097,19 @@ pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let entry = proposal.seal(Vec::new(), None)?;
+    let mirrors = entry_mirrors(&entry)?;
+    staged
+        .template_tracker
+        .create_vertex(relation::IN_CASE, evid, 1, &mirrors);
+    staged.template_tracker.set_vertex_property(
+        relation::IN_CASE,
+        vid,
+        property::STATE,
+        Some(CaseState::Approved.scalar()),
+        Some(CaseState::Posted.scalar()),
+    );
     let mut in_case = WriteBatch::new(relation::IN_CASE);
-    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.create_vertex(evid, vec![label::ENTRY], mirrors);
     in_case.compare_and_set_vertex_property(
         vid,
         property::STATE,
@@ -2102,8 +2117,10 @@ pub async fn post_case<V: asupersync::fs::Vfs + Clone>(
         CaseState::Posted.scalar(),
         WriteMismatchPolicy::AbortWrite,
     );
+    staged.template_tracker.add_edge(relation::IN_CASE, &[]);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     for e in &entries {
+        staged.template_tracker.add_edge(relation::IN_CASE, &[]);
         in_case.add_edge(
             edge_id(relation::IN_CASE, e.entry, vid),
             e.entry,
@@ -2766,5 +2783,46 @@ mod tests {
         assert_eq!(CaseKind::from_tag(0), None);
         assert_eq!(CaseState::from_tag(0), None);
         assert_eq!(CaseState::from_tag(8), None);
+    }
+
+    /// Phrases the module doc once carried while Restatement posting waited
+    /// on fa-651f (H12, fa-yugf.88), and while no test posted a
+    /// PolicyChangeRetrospective case (H13, fa-yugf.93); both post now.
+    const STALE: [&str; 3] = [
+        "Restatement entries wait",
+        "This build posts PriorPeriodAdjustment and Revision cases",
+        "not yet exercised by a test",
+    ];
+
+    fn stale_in(text: &str) -> Vec<&'static str> {
+        STALE.iter().copied().filter(|p| text.contains(p)).collect()
+    }
+
+    #[test]
+    fn case_module_doc_names_every_postable_kind_and_no_stale_claim() {
+        let doc: Vec<&str> = include_str!("case.rs")
+            .lines()
+            .take_while(|l| l.starts_with("//!"))
+            .map(|l| l.trim_start_matches("//!").trim())
+            .collect();
+        let doc = doc.join(" ");
+        let sentence = doc
+            .split("This build posts ")
+            .nth(1)
+            .and_then(|rest| rest.split(" cases.").next())
+            .expect("the module doc says which case kinds this build posts");
+        for kind in CaseKind::ALL {
+            if posting_class(kind).is_some() {
+                let name = format!("{kind:?}");
+                assert!(sentence.contains(&name), "{name} missing from: {sentence}");
+            }
+        }
+        assert!(stale_in(&doc).is_empty(), "{:?}", stale_in(&doc));
+        // The planted negatives: the doc as it stood at 8196f5e40, and the
+        // PolicyChangeRetrospective caveat before f1af9aaf3, are caught.
+        let old = "This build posts PriorPeriodAdjustment and Revision cases. Restatement entries wait for their SoD rule's session lineage (fa-651f).";
+        assert_eq!(stale_in(old), STALE[..2].to_vec());
+        let caveat = "(a PolicyChangeRetrospective case's entries are Restatement entries, not yet exercised by a test)";
+        assert_eq!(stale_in(caveat), vec![STALE[2]]);
     }
 }

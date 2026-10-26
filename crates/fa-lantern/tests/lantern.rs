@@ -4788,6 +4788,82 @@ fn phase_19_5b_reconciliation_completeness_and_audit_procedures() {
     witness::determinism(&snapshot, &h.book, &ConfirmCoverage::new().unwrap()).unwrap();
 }
 
+/// H18 (fa-yugf.98): `events.subsequent` treats a prior period as a closed
+/// boundary only when its latest recorded transition put it in SoftClosed,
+/// Closed or Locked. Version 1 counted every period with any transition, and
+/// every period is opened by one, so an Adjusting entry five days after an
+/// Open January was reported as a subsequent event.
+#[test]
+fn events_subsequent_closed_boundary_is_the_latest_transition_never_an_opened_period() {
+    use fa_lantern::Transition;
+    use fa_lantern::cutoff::SubsequentEvents;
+
+    let mut h = harness();
+    let base = h.snapshot();
+    let jan = h.period_code(day(2026, 1, 15));
+    let feb = h.period_code(day(2026, 2, 15));
+    let usd = h.usd;
+    let adjusting = make_snapshot_entry(
+        &mut h,
+        VId(93_001),
+        CommitSeq(700),
+        day(2026, 2, 5),
+        &feb,
+        EntryClass::ADJUSTING,
+        vec![
+            ("6000", Side::Debit, usd, 500_000),
+            ("1000", Side::Credit, usd, 500_000),
+        ],
+        Vec::new(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let t = |seq: u64, from: PeriodState, to: PeriodState| Transition {
+        recorded_at: CommitSeq(seq),
+        from,
+        to,
+    };
+    let opened = t(10, PeriodState::Future, PeriodState::Open);
+    let soft = t(20, PeriodState::Open, PeriodState::SoftClosed);
+    let closed = t(30, PeriodState::SoftClosed, PeriodState::Closed);
+    let reopened = t(30, PeriodState::SoftClosed, PeriodState::Open);
+    let locked = t(40, PeriodState::Closed, PeriodState::Locked);
+    let cases = [
+        (
+            "opened only (the version-1 false positive)",
+            vec![opened],
+            false,
+        ),
+        ("soft-closed", vec![opened, soft], true),
+        ("closed", vec![opened, soft, closed], true),
+        (
+            "soft-closed then reopened",
+            vec![opened, soft, reopened],
+            false,
+        ),
+        ("locked", vec![opened, soft, closed, locked], true),
+    ];
+    for (label, transitions, expected) in cases {
+        let mut snapshot = base.clone();
+        snapshot.entries.push(adjusting.clone());
+        snapshot.transitions.insert(jan.clone(), transitions);
+        let run = run_over(&snapshot, &h.book, &SubsequentEvents::new().unwrap()).unwrap();
+        let cited = run
+            .findings
+            .iter()
+            .any(|f| f.cites.contains(&Cite::Entry(VId(93_001))));
+        assert_eq!(
+            cited, expected,
+            "January {label}: the Adjusting entry effective 2026-02-05 must be reported iff January is a closed boundary"
+        );
+        if expected {
+            witness::determinism(&snapshot, &h.book, &SubsequentEvents::new().unwrap()).unwrap();
+        }
+    }
+}
+
 /// Deterministic SplitMix64 generator + greedy shrinker (`fs-propcheck` style,
 /// zero floats, no ambient entropy) for `fa-vpk` property and differential suites.
 struct PropGen {

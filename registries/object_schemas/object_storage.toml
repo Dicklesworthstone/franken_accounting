@@ -11,6 +11,9 @@ post_plan_kind = 1
 replacement_plan_kind = 2
 batch_plan_kind = 3
 intent_outcome_kind = 4
+registry_epoch_kind = 5
+register_checkpoint_kind = 6
+statement_definition_kind = 7
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||
@@ -38,3 +41,15 @@ intent_outcome_kind = 4
 # intent_outcome.toml defines its body bound and historical raw-root compatibility.
 # Successful EntryClaim/coverage/key-tree/replay-witness rows share the label,
 # but use small independent inline codecs in posting_outcomes.toml, not kind 4.
+# RegistryEpoch kind 5 archives the exact registry texts bound by a native
+# report certificate. Root and fragments share the Certificate maintenance
+# label, like plan objects, and publish with the report in one transaction.
+# The distinct kind, body format and identity domain keep them separate from
+# report artifacts. Certificate storage is excluded from accounting scratch replay.
+# RegisterCheckpoint kind 6 stores complete native-period fold snapshots. Root
+# and fragments use RegisterCheckpoint, share immutable birth, and are published
+# atomically with the mutable RegisterState/cells and latest-checkpoint pointer.
+# They are rebuildable maintenance data, not authenticated opening-balance proof.
+# StatementDefinition kind 7 stores a canonical custom definition under its
+# own authoritative label. Root/fragments publish with the approving PolicyControl
+# activation and retain their original birth; scratch replay preserves them.

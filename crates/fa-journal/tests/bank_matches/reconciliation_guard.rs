@@ -5,6 +5,7 @@ use super::*;
 use fa_journal::bank::{
     BankReconciliationPreparation, BankReconciliationRecorded, BankReconciliationRequest,
     bank_reconciliation_status, prepare_bank_reconciliation, reconcile_bank_statement,
+    witness_reconciliation_locks,
 };
 use fa_journal::migration::read_run;
 use fa_journal::post::{PostPreparation, prepare_post};
@@ -284,6 +285,42 @@ fn a_multi_currency_cash_close_protects_only_its_attested_currency() {
         post_request(&mut h, protected).unwrap_err().code,
         code::CAPABILITY
     );
+}
+
+#[test]
+fn a_reconciliation_history_is_reused_only_at_the_basis_it_was_verified_at() {
+    let mut h = Harness::new();
+    let (import, _, _) = confirmed_source(&mut h);
+    let cash = account_vid(h.book.book_id, "1000");
+    let cx = h.cx();
+    // Verified before any close: no lock, and the history is kept.
+    let mut history = None;
+    let before = h.db.begin(&cx.txn()).unwrap();
+    let locks = witness_reconciliation_locks(&h.db, &cx, &h.book, &before, &[cash], &mut history)
+        .unwrap()
+        .unwrap();
+    before.abort();
+    assert!(locks.is_empty());
+    assert!(history.is_some());
+    let recorded = close(&mut h, import);
+    // At the close's new basis the kept history is stale. Reusing it would
+    // miss the lock the close just created.
+    let after = h.db.begin(&cx.txn()).unwrap();
+    let carried = witness_reconciliation_locks(&h.db, &cx, &h.book, &after, &[cash], &mut history)
+        .unwrap()
+        .unwrap();
+    let fresh = witness_reconciliation_locks(&h.db, &cx, &h.book, &after, &[cash], &mut None)
+        .unwrap()
+        .unwrap();
+    // Kept again at this basis, it answers exactly as a fresh verification.
+    let reused = witness_reconciliation_locks(&h.db, &cx, &h.book, &after, &[cash], &mut history)
+        .unwrap()
+        .unwrap();
+    after.abort();
+    assert_eq!(carried.len(), 1, "{carried:?}");
+    assert_eq!(carried[0].attestation.vid, recorded.attestation_vid);
+    assert_eq!(carried, fresh);
+    assert_eq!(reused, fresh);
 }
 
 #[test]

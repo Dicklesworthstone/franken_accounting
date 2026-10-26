@@ -535,7 +535,7 @@ code = "FA-REF-080"
 name = "EVIDENCE_MINIMUM"
 owners = ["fa-journal"]
 exit = "refusal"
-cite = "registries/evidence_policy.toml [[minimum]] class = \"{class}\" (FA-INV-05 evidence-minimum)"
+cite = "registries/evidence_policy.toml [[minimum]] class = \"{class}\" (FA-INV-05 evidence-minimum; the evidence minimum checks presence and kind, not content)"
 fix = "record the source document with `fa document add <file> --kind <Kind> --json` and cite it in the intent's `evidence` (or --evidence <oid>); where the class's row admits one and no document exists, the preparer records a ManualAssertion over the proposal with a reason from reason_codes.toml before posting"
 
 [[refusal]]
@@ -593,7 +593,7 @@ code = "FA-REF-086"
 name = "SELF_SOURCED"
 owners = ["fa-journal"]
 exit = "refusal"
-cite = "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation)"
+cite = "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation; the evidence minimum checks presence and kind, not content)"
 fix = "have a principal other than the uploader, holding approve, record a Reviewed attestation over each such document; or cite a document a person or third party supplied, recorded with `fa document add <file> --grade HumanUpload --json` by that person"
 
 [[refusal]]
@@ -1248,6 +1248,14 @@ owners = ["fa-journal"]
 exit = "refusal"
 cite = "plan §8.5 (register checkpoint cadence must not exceed any active RetentionPolicy floor; beads fa-v6di, fa-9xf9)"
 fix = "choose a register checkpoint cadence smaller than or equal to the active RetentionPolicy floor"
+
+[[refusal]]
+code = "FA-REF-201"
+name = "BATCH_BYTE_BUDGET"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §5.6, §5.8; limits.toml max_batch_template_bytes = 14439152 (fgdb-chronicle V1 capsule ceiling 56403 * 256 - 16 at rev b323bd1; bead fa-gbkc)"
+fix = "split the batch into smaller batches with `fa batch <batch.json>` so each batch's canonical LogicalDeltaTemplate stays at or below 14439152 bytes"
 
 # ---- Proof export (145–146) ---
 [[refusal]]

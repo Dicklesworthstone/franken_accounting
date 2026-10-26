@@ -1,0 +1,21 @@
+# Twin population fixture expectations: a no_finding N on benford.first_digit@2 over 120 legs,
+# marked sourced and complete so it passes K-TIER's tier-P bar. Below min_population (500) the
+# finding cites nothing, so the digit-skew twin cannot report and the N fails (A11c).
+
+[[expectation]]
+id = "twins_population-N-01"
+type = "N"
+book_variant = "native"
+statement_template = "N.no_finding"
+basis = ["B-1"]
+kind = "no_finding"
+target = "B-1"
+procedure = "benford.first_digit"
+version = 2
+population = "sourced_complete"
+population_basis = ["B-1", "B-2", "B-3", "B-4", "B-5", "B-6", "B-7", "B-8"]
+mechanism = "crates/fa-lantern/src/digits.rs:318-327"
+twin_kind = "mutation"
+twin_attribute = "amount_precision"
+twin_value = "9000.00"
+twin_expect = "reports"

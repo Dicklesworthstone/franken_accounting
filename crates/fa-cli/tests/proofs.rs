@@ -3,10 +3,22 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "proofs/aging.rs"]
+mod aging;
+#[path = "proofs/cash_flow.rs"]
+mod cash_flow;
+#[path = "proofs/dimension_report.rs"]
+mod dimension_report;
+#[path = "proofs/explanation_report.rs"]
+mod explanation_report;
+#[path = "proofs/indirect_cash_flow_basis.rs"]
+mod indirect_cash_flow_basis;
 #[path = "proofs/prefix.rs"]
 mod prefix;
 #[path = "proofs/report.rs"]
 mod report;
+#[path = "proofs/roll_forward.rs"]
+mod roll_forward;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1014,15 +1026,37 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
     let bundle = std::fs::read(dir.join("ADS_Proof.fab")).expect("bundle");
     let receipt = std::fs::read(dir.join("ADS_Proof.receipt")).expect("receipt");
     let tb = read("Trial_Balance.txt");
-    let verify_with = |gl: &str, tb: &str| {
-        fa_verify::ads::verify_ads(&certificate, gl, tb, &bundle, &[key], Some(&receipt))
+    let chart = read("Chart_of_Accounts.txt");
+    let verify_package = |chart: &str, gl: &str, tb: &str| {
+        fa_verify::ads::verify_ads(&certificate, chart, gl, tb, &bundle, &[key], Some(&receipt))
             .expect("a well-formed bundle")
     };
+    let verify_with = |gl: &str, tb: &str| verify_package(&chart, gl, tb);
     let verify = |gl: &str| verify_with(gl, &tb);
     let gl = read("GL_Detail.txt");
     let report = verify(&gl);
     assert!(report.verified(), "{:?}", report.failures);
     assert_eq!((report.entries, report.rows), (2, 4));
+    // The chart is exactly the one the proven entries declare: the code,
+    // name, type and normal balance of each account.
+    assert_eq!(report.chart_rows, Some(2), "{chart}");
+    assert!(chart.contains("1000|Cash|Asset|D\n"), "{chart}");
+    for bad in [
+        chart.replace("|Cash|", "|Petty cash|"),
+        chart.replace("Cash|Asset", "Cash|Expense"),
+        format!("{chart}9999|Suspense|Asset|D\n"),
+    ] {
+        let judged = verify_package(&bad, &gl, &tb);
+        assert!(!judged.verified(), "{bad}");
+        assert!(
+            judged
+                .failures
+                .iter()
+                .any(|f| f.contains("Chart_of_Accounts")),
+            "{:?}",
+            judged.failures
+        );
+    }
     // The trial balance is the refold of the two proven entries, and so is
     // proven too; an altered balance is not.
     assert_eq!(report.tb_rows, 2);
@@ -1140,6 +1174,535 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
     assert_eq!(integer(get(extract, "detail"), "entries"), 2);
     assert_eq!(cli(&without, true).exit, 8);
     assert_eq!(cli(&gl, false).exit, 2);
+}
+
+/// Plan §13.1 (fa-2q91): one account's month, `fa export ads --account 1000
+/// --period FY2026-P03 --with-proofs`, is proven by that account's scope
+/// index (ScopeIndexComplete) over every effective day through the cutoff.
+/// GL_Detail is exactly the proven entries with a Cash leg, each whole;
+/// Trial_Balance is Cash's own refold. An entry without a Cash leg, a
+/// missing entry, an altered balance, a stripped scope or another
+/// account's scope fails offline.
+#[test]
+fn an_account_month_ads_extract_is_proven_by_its_scope_index_offline() {
+    let f = Fixture::new();
+    let chart = write(
+        &f.dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&f.book, &["chart", "import", &chart]);
+    ok(&f.book, &["period", "create", "--fiscal-year", "2026"]);
+    ok(&f.book, &["period", "open", "FY2026-P03"]);
+    let source = write(
+        &f.dir,
+        "receipt.txt",
+        "Account-month proof fixture receipts.",
+    );
+    let evidence = text(
+        &ok(
+            &f.book,
+            &[
+                "document",
+                "add",
+                &source,
+                "--kind",
+                "Receipt",
+                "--grade",
+                "HumanUpload",
+            ],
+        ),
+        "oid",
+    )
+    .to_string();
+    let post = |key: &str, date: &str, debit: &str, credit: &str, amount: &str| {
+        let intent = write(
+            &f.dir,
+            &format!("{key}.json"),
+            &format!(
+                r#"{{"effective_date":"{date}","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"{amount} USD"}},{{"side":"credit","account":"{credit}","amount":"{amount} USD"}}]}}"#
+            ),
+        );
+        ok(
+            &f.book,
+            &["post", "--intent", &intent, "--evidence", &evidence],
+        );
+    };
+    post("sale-1", "2026-03-05", "1000", "4000", "12.34");
+    // No Cash leg: outside the account's extract.
+    post("bill-1", "2026-03-08", "6000", "2000", "3.00");
+    post("pay-1", "2026-03-12", "2000", "1000", "3.00");
+    f.checkpoint();
+    // Recorded after the state: in neither extract.
+    post("sale-2", "2026-03-20", "1000", "4000", "5.00");
+
+    let export = |name: &str, account: Option<&str>| -> (PathBuf, Json) {
+        let dir = f.dir.join(name);
+        let mut args = vec!["export", "ads"];
+        if let Some(code) = account {
+            args.extend(["--account", code]);
+        }
+        args.extend([
+            "--period",
+            "FY2026-P03",
+            "--out",
+            dir.to_str().unwrap(),
+            "--with-proofs",
+        ]);
+        let line = ok(&f.book, &args);
+        (dir, line)
+    };
+    let (dir, line) = export("cash", Some("1000"));
+    let (whole, whole_line) = export("whole", None);
+    assert_eq!(text(&line, "account_scope"), "1000");
+    assert_eq!(get(&whole_line, "account_scope"), &Json::Null);
+    let proof = get(&line, "proof");
+    assert_eq!(text(proof, "completeness"), "scope_index_complete");
+    assert_eq!(integer(&line, "known_at"), integer(proof, "through_seq"));
+    assert_eq!(integer(&line, "entries"), 2, "sale-1 and pay-1");
+    assert_eq!(integer(&whole_line, "entries"), 3);
+    let key: [u8; 32] = unhex(text(proof, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    let read = |dir: &Path, name: &str| std::fs::read_to_string(dir.join(name)).expect(name);
+    let certificate = read(&dir, "ADS_Coordinate_Certificate.toml");
+    assert!(
+        certificate.ends_with("account_scope = \"1000\"\n"),
+        "{certificate}"
+    );
+    let bundle = std::fs::read(dir.join("ADS_Proof.fab")).expect("bundle");
+    let receipt = std::fs::read(dir.join("ADS_Proof.receipt")).expect("receipt");
+    let gl = read(&dir, "GL_Detail.txt");
+    let tb = read(&dir, "Trial_Balance.txt");
+    let chart = read(&dir, "Chart_of_Accounts.txt");
+    let verify_as = |certificate: &str, gl: &str, tb: &str| {
+        fa_verify::ads::verify_ads(certificate, &chart, gl, tb, &bundle, &[key], Some(&receipt))
+            .expect("a well-formed bundle")
+    };
+    let verify_with = |gl: &str, tb: &str| verify_as(&certificate, gl, tb);
+    let report = verify_with(&gl, &tb);
+    assert!(report.verified(), "{:?}", report.failures);
+    assert_eq!(report.account_scope.as_deref(), Some("1000"));
+    assert_eq!((report.entries, report.rows), (2, 4));
+    // One account's run carries no chart declaration: its chart is not
+    // judged, and the report says so rather than passing it.
+    assert_eq!(report.chart_rows, None);
+    assert_eq!(
+        chart
+            .lines()
+            .skip(1)
+            .map(|row| &row[..4])
+            .collect::<Vec<_>>(),
+        ["1000", "2000", "4000"],
+        "the accounts Cash's entries name: {chart}"
+    );
+    assert!(!gl.contains("|6000|"), "{gl}");
+    // Cash's own balance only: 12.34 in, 3.00 out.
+    assert_eq!(report.tb_rows, 1);
+    assert_eq!(
+        tb.lines().skip(1).collect::<Vec<_>>(),
+        ["1000|2026-03-31|D|9.34|USD|2"],
+        "{tb}"
+    );
+
+    // Planted: bill-1's rows, copied from the whole-chart extract.
+    let whole_gl = read(&whole, "GL_Detail.txt");
+    let bill: String = whole_gl
+        .lines()
+        .filter(|row| row.contains("|6000|"))
+        .flat_map(|row| {
+            let id = row.split('|').next().unwrap();
+            whole_gl
+                .lines()
+                .filter(move |other| other.starts_with(&format!("{id}|")))
+        })
+        .take(2)
+        .map(|row| format!("{row}\n"))
+        .collect();
+    assert_eq!(bill.lines().count(), 2, "{whole_gl}");
+    let smuggled = verify_with(&format!("{gl}{bill}"), &tb);
+    assert!(!smuggled.verified());
+    assert!(
+        smuggled
+            .failures
+            .iter()
+            .any(|f| f.contains("is no proven entry")),
+        "{:?}",
+        smuggled.failures
+    );
+    // Planted: pay-1's rows taken out.
+    let rows: Vec<&str> = gl.lines().collect();
+    let last = rows.last().unwrap().split('|').next().unwrap();
+    let without: String = rows
+        .iter()
+        .filter(|row| !row.starts_with(&format!("{last}|")))
+        .map(|row| format!("{row}\n"))
+        .collect();
+    let missing = verify_with(&without, &tb);
+    assert!(
+        missing
+            .failures
+            .iter()
+            .any(|f| f.contains("missing from GL_Detail")),
+        "{:?}",
+        missing.failures
+    );
+    // Planted: Cash's balance altered.
+    let altered = verify_with(&gl, &tb.replace("D|9.34", "D|9.35"));
+    assert!(
+        altered
+            .failures
+            .iter()
+            .any(|f| f.contains("is not the refold")),
+        "{:?}",
+        altered.failures
+    );
+    // Planted: the scope stripped (a whole chart claimed over one
+    // account's bundle), and another account's scope.
+    let stripped = verify_as(
+        &certificate.replace("account_scope = \"1000\"\n", ""),
+        &gl,
+        &tb,
+    );
+    assert!(
+        stripped
+            .failures
+            .iter()
+            .any(|f| f
+                .contains("a whole-chart ADS extract is judged against a complete-prefix bundle")),
+        "{:?}",
+        stripped.failures
+    );
+    let other = verify_as(
+        &certificate.replace("account_scope = \"1000\"", "account_scope = \"4000\""),
+        &gl,
+        &tb,
+    );
+    assert!(
+        other
+            .failures
+            .iter()
+            .any(|f| f.contains("account 4000's entries")),
+        "{:?}",
+        other.failures
+    );
+
+    // `fa-verify ads <dir>` names the scope; --account is ADS-only and
+    // names a chart account.
+    let cli = fa_verify::cli::run(
+        &[
+            "ads".to_string(),
+            dir.to_str().unwrap().to_string(),
+            "--json".to_string(),
+            "--key".to_string(),
+            text(proof, "checkpoint_public_key").to_string(),
+        ],
+        &|path: &str| std::fs::read(path),
+    );
+    assert_eq!(cli.exit, 0, "{}{}", cli.stdout, cli.stderr);
+    let parsed = json::parse(cli.stdout.trim()).expect("one JSON report");
+    let Json::Arr(checks) = get(&parsed, "checks") else {
+        panic!("checks: {}", cli.stdout);
+    };
+    let extract = checks
+        .iter()
+        .find(|check| text(check, "check") == "ads_extract")
+        .expect("the extract is a named check");
+    assert_eq!(text(get(extract, "detail"), "account_scope"), "1000");
+    let (code, _) = run(
+        &f.book,
+        &[
+            "export",
+            "saft",
+            "--account",
+            "1000",
+            "--period",
+            "FY2026-P03",
+        ],
+    );
+    assert_eq!(code, 2);
+    let unknown = f.dir.join("unknown");
+    let (code, refused) = run(
+        &f.book,
+        &[
+            "export",
+            "ads",
+            "--account",
+            "9999",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            unknown.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 2, "{}", refused.render());
+    assert!(
+        !unknown.exists(),
+        "nothing is written for an unknown account"
+    );
+}
+
+/// Plan §13.1 (fa-2q91, scoreboard G3-06): `fa export saft --with-proofs`
+/// writes the SAF-T 2.00 extract at exactly a recorded state's sequence,
+/// beside that state's complete-prefix bundle and receipt, in a new
+/// directory. `fa_verify::saft` reads it without fa-formats and judges it
+/// as `fa-verify ads` does: its transactions are exactly the proven entries
+/// the export selects, its balance assertions their refold, and its
+/// accounts the proven chart. An altered amount, a dropped transaction, an
+/// altered assertion, a renamed account or a moved coordinate fails.
+#[test]
+fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
+    let f = Fixture::new();
+    let evidence = f.chart_and_evidence();
+    f.post("saft-1", "2026-03-10", "12.34", &evidence);
+    f.post("saft-2", "2026-03-20", "2.00", &evidence);
+    f.checkpoint();
+    // Recorded after the state: not in the extract.
+    f.post("saft-3", "2026-03-25", "5.00", &evidence);
+    let dir = f.dir.join("saft");
+    let line = ok(
+        &f.book,
+        &[
+            "export",
+            "saft",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            dir.to_str().unwrap(),
+            "--with-proofs",
+        ],
+    );
+    let proof = get(&line, "proof");
+    assert_eq!(text(proof, "completeness"), "seq_range_complete");
+    assert_eq!(text(proof, "bundle"), "SAFT_Proof.fab");
+    assert_eq!(integer(&line, "known_at"), integer(proof, "through_seq"));
+    assert_eq!(integer(&line, "entries"), 2);
+    let key: [u8; 32] = unhex(text(proof, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    let xml = std::fs::read_to_string(dir.join("SAF-T.xml")).expect("SAF-T.xml");
+    let bundle = std::fs::read(dir.join("SAFT_Proof.fab")).expect("bundle");
+    let receipt = std::fs::read(dir.join("SAFT_Proof.receipt")).expect("receipt");
+    let verify = |xml: &str| {
+        fa_verify::saft::verify_saft(xml, &bundle, &[key], Some(&receipt))
+            .expect("a well-formed bundle")
+    };
+    let report = verify(&xml);
+    assert!(report.verified(), "{:?}", report.failures);
+    assert_eq!((report.entries, report.rows), (2, 4));
+    assert_eq!(report.tb_rows, 2);
+    assert_eq!(report.chart_rows, Some(2));
+    assert_eq!(report.effective_through, "2026-03-31");
+
+    let fails_on = |bad: &str, part: &str| {
+        assert_ne!(bad, xml, "the planted edit changed nothing");
+        let judged = verify(bad);
+        assert!(!judged.verified(), "{bad}");
+        assert!(
+            judged.failures.iter().any(|f| f.contains(part)),
+            "{part}: {:?}",
+            judged.failures
+        );
+    };
+    // An amount in the transactions, the first entry's debit.
+    fails_on(
+        &xml.replacen(
+            "<DebitAmount>12.34</DebitAmount>",
+            "<DebitAmount>12.35</DebitAmount>",
+            1,
+        ),
+        "is no proven entry",
+    );
+    // A whole transaction dropped.
+    let start = xml.find("    <Transaction>").unwrap();
+    let end =
+        xml[start..].find("    </Transaction>\n").unwrap() + start + "    </Transaction>\n".len();
+    let dropped = format!("{}{}", &xml[..start], &xml[end..]);
+    fails_on(&dropped, "missing from GeneralLedgerEntries");
+    // A balance assertion.
+    fails_on(
+        &xml.replacen("<Amount>14.34</Amount>", "<Amount>14.35</Amount>", 1),
+        "is not the refold",
+    );
+    // An account renamed in the master files.
+    fails_on(
+        &xml.replace(
+            "<AccountDescription>Cash</AccountDescription>",
+            "<AccountDescription>Petty cash</AccountDescription>",
+        ),
+        "GeneralLedgerAccounts row",
+    );
+    // The coordinate moved.
+    let seq = integer(proof, "through_seq");
+    fails_on(
+        &xml.replace(
+            &format!("<KnownAtSeq>{seq}</KnownAtSeq>"),
+            &format!("<KnownAtSeq>{}</KnownAtSeq>", seq + 1),
+        ),
+        "known_at_seq",
+    );
+
+    // `fa-verify saft <dir>` reads the package by its names: exit 0 as
+    // written, 8 when a transaction is dropped, 2 with no key.
+    let cli = |xml_text: &str, with_key: bool| {
+        let mut args = vec![
+            "saft".to_string(),
+            dir.to_str().unwrap().to_string(),
+            "--json".to_string(),
+        ];
+        if with_key {
+            args.extend([
+                "--key".to_string(),
+                text(proof, "checkpoint_public_key").to_string(),
+            ]);
+        }
+        let read = |path: &str| {
+            if path.ends_with("/SAF-T.xml") {
+                Ok(xml_text.as_bytes().to_vec())
+            } else {
+                std::fs::read(path)
+            }
+        };
+        fa_verify::cli::run(&args, &read)
+    };
+    let verified = cli(&xml, true);
+    assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
+    let parsed = json::parse(verified.stdout.trim()).expect("one JSON report");
+    let Json::Arr(checks) = get(&parsed, "checks") else {
+        panic!("checks: {}", verified.stdout);
+    };
+    let extract = checks
+        .iter()
+        .find(|check| text(check, "check") == "saft_extract")
+        .expect("the extract is a named check");
+    assert_eq!(text(extract, "result"), "pass");
+    assert_eq!(cli(&dropped, true).exit, 8);
+    assert_eq!(cli(&xml, false).exit, 2);
+}
+
+/// fa-mv0f: a migrated book's extracts verify offline. Every demo book holds
+/// a finalized MigrationRun. A proved whole-chart extract's bundle carries a
+/// migration-aware balance over every chart cell, whose run bodies let
+/// fa-verify decide each chunk's visibility. The migration entries are in
+/// GL_Detail and proven, in ADS and SAF-T alike. One taken out fails, and
+/// the same extract judged against the state's plain prefix bundle (no
+/// balances) is refused, naming the visibility it cannot prove.
+#[test]
+fn a_migrated_books_extracts_verify_offline() {
+    let dir = temp_dir();
+    let book = dir.join("book");
+    let (code, made) = run(
+        &book,
+        &["demo", "init", "--scenario", "retail", "--seed", "7"],
+    );
+    assert_eq!(code, 0, "{}", made.render());
+    ok(&book, &["checkpoint", "create", "--grant", "witness"]);
+    let export = |format: &str| {
+        let out = dir.join(format);
+        let line = ok(
+            &book,
+            &[
+                "export",
+                format,
+                "--as-of",
+                "2026-12-31",
+                "--out",
+                out.to_str().unwrap(),
+                "--with-proofs",
+            ],
+        );
+        (out, line)
+    };
+    let (ads, line) = export("ads");
+    let proof = get(&line, "proof");
+    let key: [u8; 32] = unhex(text(proof, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    let read = |name: &str| std::fs::read_to_string(ads.join(name)).expect(name);
+    let (certificate, chart, gl, tb) = (
+        read("ADS_Coordinate_Certificate.toml"),
+        read("Chart_of_Accounts.txt"),
+        read("GL_Detail.txt"),
+        read("Trial_Balance.txt"),
+    );
+    let receipt = std::fs::read(ads.join("ADS_Proof.receipt")).expect("receipt");
+    let verify = |gl: &str, bundle: &[u8], receipt: &[u8]| {
+        fa_verify::ads::verify_ads(&certificate, &chart, gl, &tb, bundle, &[key], Some(receipt))
+            .expect("a well-formed bundle")
+    };
+    let bundle = std::fs::read(ads.join("ADS_Proof.fab")).expect("bundle");
+    let report = verify(&gl, &bundle, &receipt);
+    assert!(report.verified(), "{:?}", report.failures);
+    assert!(report.chart_rows.is_some(), "{report:?}");
+    // The migration entries (Entry_Class 12) are in the extract, proven.
+    let migrated: Vec<&str> = gl
+        .lines()
+        .skip(1)
+        .filter(|row| row.split('|').nth(4) == Some("12"))
+        .collect();
+    assert!(!migrated.is_empty(), "{gl}");
+    let id = migrated[0].split('|').next().unwrap();
+    let without: String = gl
+        .lines()
+        .filter(|row| !row.starts_with(&format!("{id}|")))
+        .map(|row| format!("{row}\n"))
+        .collect();
+    let missing = verify(&without, &bundle, &receipt);
+    assert!(
+        missing
+            .failures
+            .iter()
+            .any(|f| f.contains("missing from GL_Detail")),
+        "{:?}",
+        missing.failures
+    );
+    // The same extract against the state's plain prefix bundle: nothing
+    // decides the chunks' visibility, so they are refused, not guessed.
+    let plain = dir.join("plain.fab");
+    let plain_receipt = dir.join("plain.receipt");
+    ok(
+        &book,
+        &[
+            "bundle",
+            "produce",
+            "--state",
+            text(proof, "state"),
+            "--out",
+            plain.to_str().unwrap(),
+            "--receipt-out",
+            plain_receipt.to_str().unwrap(),
+        ],
+    );
+    let unproven = verify(
+        &gl,
+        &std::fs::read(&plain).expect("plain bundle"),
+        &std::fs::read(&plain_receipt).expect("plain receipt"),
+    );
+    assert!(!unproven.verified());
+    assert!(
+        unproven
+            .failures
+            .iter()
+            .any(|f| f.contains("proves whether its run makes it visible")),
+        "{:?}",
+        unproven.failures
+    );
+
+    // SAF-T of the same book verifies the same way.
+    let (saft, saft_line) = export("saft");
+    let saft_proof = get(&saft_line, "proof");
+    let saft_key: [u8; 32] = unhex(text(saft_proof, "checkpoint_public_key"))
+        .try_into()
+        .expect("32-byte key");
+    let judged = fa_verify::saft::verify_saft(
+        &std::fs::read_to_string(saft.join("SAF-T.xml")).expect("SAF-T.xml"),
+        &std::fs::read(saft.join("SAFT_Proof.fab")).expect("bundle"),
+        &[saft_key],
+        Some(&std::fs::read(saft.join("SAFT_Proof.receipt")).expect("receipt")),
+    )
+    .expect("a well-formed bundle");
+    assert!(judged.verified(), "{:?}", judged.failures);
+    assert_eq!(judged.entries, report.entries);
 }
 
 #[test]

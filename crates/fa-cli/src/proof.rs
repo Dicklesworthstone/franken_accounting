@@ -663,7 +663,7 @@ pub(crate) fn write_new(
     })
 }
 
-const BUNDLE_EXAMPLE: &str = "fa bundle produce [--certificate <C:oid|file|->] [--state <oid|latest>] [--account <code> --from YYYY-MM-DD --to YYYY-MM-DD | --entry <vid>...] [--balance <code>:<UNIT>[:YYYY-MM-DD]]... [--inline-documents] [--out <new.fab> --receipt-out <new-file>] --json";
+const BUNDLE_EXAMPLE: &str = "fa bundle produce [--certificate <C:oid|file|->] [--expect '<request JSON>'] [--state <oid|latest>] [--account <code> --from YYYY-MM-DD --to YYYY-MM-DD | --entry <vid>...] [--balance <code>:<UNIT>[:YYYY-MM-DD]]... [--inline-documents] [--out <new.fab> --receipt-out <new-file>] --json";
 
 /// A bundle's scope arguments, checked before the book is opened: `--state`
 /// (a recorded state's 64-hex oid, or `latest`), and one scope, `--account`
@@ -805,7 +805,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.positional.get(1).map(String::as_str) != Some("produce") || args.positional.len() != 2 {
         return Err(usage("bundle has one subcommand: produce", BUNDLE_EXAMPLE));
     }
-    for flag in ["--out", "--receipt-out", "--certificate"] {
+    for flag in ["--out", "--receipt-out", "--certificate", "--expect"] {
         if args.flag_all(flag).len() > 1 {
             return Err(usage(
                 format!("bundle takes only one {flag}"),
@@ -814,6 +814,12 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     }
     let report_source = args.flag("--certificate");
+    if args.flag("--expect").is_some() && report_source.is_none() {
+        return Err(usage(
+            "--expect selects an aging reconciliation request and requires --certificate",
+            "fa bundle produce --certificate C:<reconciliation-oid> --expect '<JSON>'",
+        ));
+    }
     if report_source.is_some()
         && (["--account", "--from", "--to", "--entry", "--balance"]
             .iter()
@@ -822,7 +828,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     {
         return Err(usage(
             "--certificate selects the report's complete journal prefix and cannot be combined with another scope, balances or inline documents",
-            "fa bundle produce --certificate C:<native-report-certificate> [--state <oid|latest>] [--out <new.fab> --receipt-out <new-file>]",
+            "fa bundle produce --certificate C:<report-certificate> [--state <oid|latest>] [--out <new.fab> --receipt-out <new-file>]",
         ));
     }
     let scope_args = bundle_scope_args(args, BUNDLE_EXAMPLE)?;
@@ -884,26 +890,80 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut report_digest = None;
     let mut report_units = None;
     let produced = if let Some(source) = report_source {
-        let certificate = crate::notary::certificate_input(
+        let bytes = crate::notary::read_certificate_bytes(
             &book,
             &ctx.files,
-            "--certificate",
             source,
             principal,
             &capability,
-            fa::ReportCertificate::decode,
         )?;
-        report_digest = Some(hex(&certificate.digest));
-        if matches!(&certificate.selection, fa::ReportSelection::Statement(_)) {
-            report_units = Some(
-                book.context()
-                    .units
-                    .iter()
-                    .map(|(id, _)| id.0)
-                    .collect::<Vec<_>>(),
-            );
+        let artifact = fa::ReportArtifact::decode(&bytes)?;
+        if args.flag("--expect").is_some()
+            && artifact.family() != fa::ReportArtifactFamily::AgingReconciliation
+        {
+            return Err(usage(
+                "--expect on bundle produce applies only to an aging reconciliation certificate",
+                "omit --expect for other portable report families",
+            ));
         }
-        book.produce_report_bundle(principal, &capability, state, &certificate)??
+        // Pin the delivered artifact, including an aging report's cutoff and
+        // buckets. Its nested OpenItems certificate alone does not name that
+        // question and must never become the recipient's --expect value.
+        report_digest = Some(hex(artifact.digest()));
+        match artifact.family() {
+            fa::ReportArtifactFamily::Native => {
+                let certificate = artifact.source_certificate();
+                if matches!(&certificate.selection, fa::ReportSelection::Statement(_)) {
+                    report_units = Some(
+                        book.context()
+                            .units
+                            .iter()
+                            .map(|(id, _)| id.0)
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                book.produce_report_bundle(principal, &capability, state, certificate)??
+            }
+            fa::ReportArtifactFamily::EffectiveDateAging => {
+                let certificate = fa::AgingCertificate::decode(&bytes)?;
+                book.produce_aging_bundle(principal, &capability, state, &certificate)??
+            }
+            fa::ReportArtifactFamily::AgingReconciliation => {
+                let expected = crate::notary::reconciliation_bundle_expectation(args, &book)?;
+                let certificate = fa::AgingReconciliationCertificate::decode(&bytes)?;
+                book.produce_aging_reconciliation_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    &certificate,
+                    &expected,
+                )??
+            }
+            fa::ReportArtifactFamily::RollForward => {
+                let certificate = fa::RollForwardCertificate::decode(&bytes)?;
+                book.produce_roll_forward_bundle(principal, &capability, state, &certificate)??
+            }
+            fa::ReportArtifactFamily::CashFlow => {
+                let certificate = fa::CashFlowCertificate::decode(&bytes)?;
+                book.produce_cash_flow_bundle(principal, &capability, state, &certificate)??
+            }
+            fa::ReportArtifactFamily::PolicyCashFlow => {
+                let certificate = fa::cash_flow_policy::CashFlowPolicyCertificate::decode(&bytes)?;
+                book.produce_cash_flow_policy_bundle(principal, &capability, state, &certificate)??
+            }
+            _ => {
+                return Err(fa_journal::Refusal::new(
+                    fa::notary_code::SCOPE_UNSUPPORTED,
+                    fa_journal::exit::REFUSAL,
+                    format!(
+                        "{} certificates have no independent portable report producer",
+                        artifact.family().name(),
+                    ),
+                    "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
+                    "use a supported native report, effective-date aging, aging reconciliation, roll-forward, direct cash-flow or policy cash-flow certificate; replay other report families against their original retained book",
+                ).into());
+            }
+        }
     } else {
         book.produce_bundle(principal, &capability, state, &request)??
     };

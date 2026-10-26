@@ -12,7 +12,7 @@ fn unhex(s: &str) -> Vec<u8> {
         .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
         .collect()
 }
-fn registries() -> Vec<(String, Vec<u8>)> {
+pub(super) fn registries() -> Vec<(String, Vec<u8>)> {
     let raw = unhex(include_str!("registries.hex"));
     let mut r = Reader::new(&raw);
     let n = r.count(4, 8, "registries").unwrap();
@@ -26,7 +26,7 @@ fn registries() -> Vec<(String, Vec<u8>)> {
     r.finish("registries").unwrap();
     out
 }
-fn closure(docs: &[(String, Vec<u8>)]) -> [u8; 32] {
+pub(super) fn closure(docs: &[(String, Vec<u8>)]) -> [u8; 32] {
     let mut out = Vec::new();
     for (name, bytes) in docs {
         out.extend_from_slice(name.as_bytes());
@@ -372,11 +372,22 @@ fn pack(
     docs: &[(String, Vec<u8>)],
     registry_digest: [u8; 32],
 ) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
+    pack_at(records, definition, output, docs, registry_digest, 9)
+}
+
+fn pack_at(
+    records: &[Record],
+    definition: &[u8],
+    output: &[u8],
+    docs: &[(String, Vec<u8>)],
+    registry_digest: [u8; 32],
+    known_at: u64,
+) -> (Vec<u8>, SignedCheckpoint, [u8; 32]) {
     let all: Vec<_> = records.iter().map(|r| r.envelope.encode()).collect();
     let checkpoint = Checkpoint {
         book_id: BOOK,
         branch_id: [0; 16],
-        through_seq: 10,
+        through_seq: records.last().unwrap().envelope.commit_seq,
         leaf_count: all.len() as u64,
         root: root_of(&all.iter().map(|e| leaf_hash(e)).collect::<Vec<_>>()),
     };
@@ -390,7 +401,7 @@ fn pack(
     }
     let old: Vec<_> = records
         .iter()
-        .filter(|r| r.envelope.commit_seq <= 9)
+        .filter(|r| r.envelope.commit_seq <= known_at)
         .map(|r| leaf_hash(&r.envelope.encode()))
         .collect();
     let mut cert = Writer::default();
@@ -400,7 +411,7 @@ fn pack(
         .bytes(b"fa:statement:v1")
         .fixed(&BOOK)
         .fixed(&[0; 16])
-        .u64(9)
+        .u64(known_at)
         .u8(2)
         .bytes(definition)
         .count(1)
@@ -582,6 +593,140 @@ fn changed_definition_cannot_hide_unmapped_or_multiply_mapped_zero_leaves() {
         );
     }
 }
+// Patch complete fields of the frozen canonical documents, preserving valid
+// framing. These tests do not import the producer's registry parser or codecs.
+fn registry_field(key: &str, tag: u8, value: &[u8]) -> Vec<u8> {
+    let mut bytes = (key.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(key.as_bytes());
+    bytes.push(tag);
+    bytes.extend_from_slice(value);
+    bytes
+}
+fn registry_text_field(key: &str, value: &str) -> Vec<u8> {
+    let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(value.as_bytes());
+    registry_field(key, 1, &bytes)
+}
+fn replace_registry_field(bytes: &mut Vec<u8>, old: &[u8], new: &[u8]) {
+    let positions = bytes
+        .windows(old.len())
+        .enumerate()
+        .filter_map(|(at, value)| (value == old).then_some(at))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        positions.len(),
+        1,
+        "mutation must identify one frozen field"
+    );
+    assert_ne!(old, new, "mutation must change the supplied semantics");
+    bytes.splice(positions[0]..positions[0] + old.len(), new.iter().copied());
+}
+
+#[test]
+fn resealed_entry_laws_and_ambiguous_control_kinds_are_refused_after_authentication() {
+    let mut changes = vec![
+        (
+            "reversal supersession",
+            registry_text_field("supersession", "reverses"),
+            registry_text_field("supersession", "replaces"),
+            "entry-class semantics",
+        ),
+        (
+            "duplicate control id",
+            registry_field("id", 2, &2i128.to_le_bytes()),
+            registry_field("id", 2, &1i128.to_le_bytes()),
+            "ambiguous or unsupported control-kind registry",
+        ),
+        (
+            "duplicate control name",
+            registry_text_field("name", "policy_activation"),
+            registry_text_field("name", "period_transition"),
+            "ambiguous or unsupported control-kind registry",
+        ),
+        (
+            "unregistered control class",
+            registry_text_field("class", "TimeControl"),
+            registry_text_field("class", "UnknownControl"),
+            "ambiguous or unsupported control-kind registry",
+        ),
+    ];
+    for (name, carries) in [("Original", true), ("Pending", false)] {
+        // The class's ordered kind/name fields make the boolean's row unique.
+        let suffix = [
+            registry_text_field("kind", "posting"),
+            registry_text_field("name", name),
+        ]
+        .concat();
+        changes.push((
+            name,
+            [
+                registry_field("carries_open_items", 3, &[u8::from(carries)]),
+                suffix.clone(),
+            ]
+            .concat(),
+            [
+                registry_field("carries_open_items", 3, &[u8::from(!carries)]),
+                suffix,
+            ]
+            .concat(),
+            "entry-class semantics",
+        ));
+    }
+    let original = registries();
+    let original_closure = closure(&original);
+    let definition = definition(true);
+    let result = expected(true);
+    let output = output_bytes(&result, &definition, 9);
+    let records = history();
+    let (baseline, anchor, original_digest) =
+        pack(&records, &definition, &output, &original, original_closure);
+    assert_eq!(
+        verify_statement_fixture(&baseline, anchor.clone(), original_digest)
+            .unwrap()
+            .statement,
+        Some(result)
+    );
+
+    for (name, old, new, reason) in changes {
+        let mut docs = original.clone();
+        replace_registry_field(&mut docs[1].1, &old, &new);
+        let changed_closure = closure(&docs);
+        assert_ne!(changed_closure, original_closure, "{name}");
+        let (bytes, unchanged_anchor, trusted_digest) =
+            pack(&records, &definition, &output, &docs, changed_closure);
+        assert_eq!(unchanged_anchor.checkpoint, anchor.checkpoint, "{name}");
+        assert_ne!(trusted_digest, original_digest, "{name}");
+        // Even a recipient who explicitly trusts the resealed certificate
+        // cannot make this interpreter apply unsupported accounting meanings.
+        let error =
+            verify_statement_fixture(&bytes, unchanged_anchor, trusted_digest).expect_err(name);
+        assert_eq!(error.predicate, "registry_closure", "{name}: {error}");
+        assert!(error.detail.contains(reason), "{name}: {error}");
+    }
+}
+
+#[test]
+fn authenticated_foundation_metadata_upgrade_preserves_exact_statement_recomputation() {
+    let mut docs = registries();
+    let original_closure = closure(&docs);
+    replace_registry_field(
+        &mut docs[3].1,
+        &registry_text_field("taken_on", "2026-10-10"),
+        &registry_text_field("taken_on", "2026-09-01"),
+    );
+    let changed_closure = closure(&docs);
+    assert_ne!(changed_closure, original_closure);
+    let definition = definition(true);
+    let expected = expected(true);
+    let output = output_bytes(&expected, &definition, 9);
+    let (bytes, anchor, trusted_digest) =
+        pack(&history(), &definition, &output, &docs, changed_closure);
+    let verified = verify_statement_fixture(&bytes, anchor, trusted_digest).unwrap();
+    assert_eq!(verified.statement, Some(expected));
+    assert_eq!(verified.output, output);
+    assert_eq!(verified.unit_universe_source, "authenticated-registry");
+}
+
 #[test]
 fn statement_registry_vocabulary_refuses_unknown_accounting_semantics_even_when_resealed() {
     let mut docs = registries();
@@ -626,10 +771,37 @@ fn unknown_statement_major_and_instant_selection_fail_closed() {
     assert_eq!(
         certificate(&instant)
             .err()
-            .expect("Instant refused")
+            .expect("incomplete Instant evidence refused")
             .predicate,
-        "supported_report"
+        "canonical_encoding"
     );
+}
+
+#[test]
+fn instant_statements_recompute_the_authenticated_tick_selection_and_every_line() {
+    let mut records = history();
+    records.pop(); // The last ordinary posting is outside the original report.
+    records.extend([
+        temporal::tick(10, 100, true),
+        temporal::tick(11, 200, false),
+    ]);
+    let definition = definition(true);
+    let docs = registries();
+    let expected = expected(true);
+    let (bytes, anchor, _) = pack_at(
+        &records,
+        &definition,
+        &output_bytes(&expected, &definition, 10),
+        &docs,
+        closure(&docs),
+        10,
+    );
+    let time = temporal::selection(150, 11, 10, (10, 100, true), Some((11, 200, false)));
+    let (bytes, digest) = temporal::with_time(&bytes, &time);
+    let verified = verify_statement_fixture(&bytes, anchor, digest).unwrap();
+    assert_eq!(verified.statement, Some(expected));
+    assert_eq!(verified.time_selection, Some(time));
+    assert_eq!(verified.known_at, 10);
 }
 
 #[test]

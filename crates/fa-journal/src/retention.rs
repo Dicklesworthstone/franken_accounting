@@ -456,6 +456,7 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     proposal: &EntryPayload,
     proposal_digest: &[u8; 32],
     expected_oid: Oid,
+    approvals: &[ApprovalRef],
 ) -> Outcome<RetentionPolicyActivated> {
     let stored = match prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
@@ -477,8 +478,11 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
             "resubmit the identical retention policy activation to get the recorded outcome, or use a new idempotency key",
         )
     };
-    if stored.proposal.class != EntryClass::POLICY_CONTROL {
+    if stored.proposal.class != EntryClass::POLICY_CONTROL || stored.approvals != approvals {
         return Ok(Err(conflict()));
+    }
+    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+        return Ok(Err(crate::outcome::key_conflict()));
     }
     let same = &stored.proposal_digest == proposal_digest
         || matches!(
@@ -491,7 +495,7 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     if !same {
         return Ok(Err(conflict()));
     }
-    let epoch = crate::policy::security_policy_epoch(db)?;
+    let epoch = crate::policy::security_policy_epoch_at(db, row.created_at)?;
     Ok(Ok(RetentionPolicyActivated {
         policy_oid: expected_oid,
         control_entry: row.vid,
@@ -591,6 +595,12 @@ pub async fn activate_retention_policy<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(&req.capability, at) {
         return Ok(Err(refusal(&d)));
     }
+    if let Err(r) = capability_admitted(db, book, &req.capability)? {
+        return Ok(Err(r));
+    }
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
 
     let evidence_policy =
         EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
@@ -607,9 +617,37 @@ pub async fn activate_retention_policy<V: asupersync::fs::Vfs + Clone>(
         &proposal.principal_ref.0.to_le_bytes(),
         &proposal.idempotency_key,
     );
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(db, book, &row, proposal, &proposal_digest, expected_oid);
+        return recorded_or_conflict(
+            db,
+            book,
+            &row,
+            proposal,
+            &proposal_digest,
+            expected_oid,
+            &req.approvals,
+        );
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     let epoch = epoch_witness(&txn, db)?;
     let preparer = Party::for_capability(proposal.principal_ref, &req.capability);
@@ -680,6 +718,7 @@ pub async fn activate_retention_policy<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(req.approvals.clone(), None)?;
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
 
     let pvid = retention_policy_vid(book.book_id, &expected_oid);
     if txn.vertex(db, pvid)?.is_none() {
@@ -758,16 +797,31 @@ pub async fn activate_retention_policy<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
-            Some(row) => {
-                recorded_or_conflict(db, book, &row, proposal, &proposal_digest, expected_oid)
+            Some(row) => recorded_or_conflict(
+                db,
+                book,
+                &row,
+                proposal,
+                &proposal_digest,
+                expected_oid,
+                &req.approvals,
+            ),
+            None => {
+                if db
+                    .vertex(crate::outcome::entry_outcome_vid(proposal))?
+                    .is_some()
+                {
+                    Ok(Err(crate::outcome::key_conflict()))
+                } else {
+                    Ok(Err(Refusal::new(
+                        code::CONFLICT,
+                        exit::CONFLICT,
+                        "a concurrent retention activation won the cell creation race",
+                        "FG-LAW-FCW-01 (first committer wins)",
+                        "retry the retention policy activation",
+                    )))
+                }
             }
-            None => Ok(Err(Refusal::new(
-                code::CONFLICT,
-                exit::CONFLICT,
-                "a concurrent retention activation won the cell creation race",
-                "FG-LAW-FCW-01 (first committer wins)",
-                "retry the retention policy activation",
-            ))),
         },
         Err(e) => Err(e.into()),
     }

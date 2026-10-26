@@ -9,6 +9,7 @@ fn posting(total: i128, method: AllocationMethod, weights: &[u128]) -> Allocatio
         source: VId(10),
         source_side: Side::Credit,
         dimensions: Vec::new(),
+        target_cells: Vec::new(),
         request: AllocationRequest {
             total: Amount::new(UnitId(7), total),
             method,
@@ -288,4 +289,109 @@ fn diagnostics_do_not_dump_driver_or_proposal_bytes() {
     ] {
         assert!(!diagnostic.contains(sensitive));
     }
+}
+
+fn cell_posting(total: i128, weights: &[u128]) -> AllocationPosting {
+    let mut basis = posting(total, AllocationMethod::LargestRemainder, weights);
+    basis.dimensions = vec![(3, VId(100))];
+    basis.target_cells = weights
+        .iter()
+        .enumerate()
+        .map(|(i, _)| fa_journal::AllocationTargetCell {
+            account: basis.source,
+            dimensions: vec![(3, VId(200 + i as u128))],
+        })
+        .collect();
+    for (target, cell) in basis.request.targets.iter_mut().zip(&basis.target_cells) {
+        target.id = cell.identity().unwrap();
+    }
+    basis
+}
+
+#[test]
+fn dimensional_review_preserves_same_account_cells_and_has_an_exact_v2_layout() {
+    let original = review(cell_posting(100, &[3, 2]));
+    let basis = original.posting().basis_bytes().unwrap();
+    let intent = original.intent.canonical_bytes().unwrap();
+    let mut expected = b"FA-ALLOC-REVIEW\0".to_vec();
+    expected.extend_from_slice(&[2, 0, 0, 0]);
+    for part in [&basis, &intent] {
+        expected.extend_from_slice(&u32::try_from(part.len()).unwrap().to_le_bytes());
+        expected.extend_from_slice(part);
+    }
+    assert_eq!(original.canonical_bytes().unwrap(), expected);
+    let restored = AllocationReview::decode(&expected).unwrap();
+    assert_eq!(restored, original);
+    assert_eq!(restored.proposal().legs.len(), 3);
+    assert!(
+        restored
+            .proposal()
+            .legs
+            .iter()
+            .all(|leg| leg.account_ref == VId(10))
+    );
+    assert_eq!(
+        restored.proposal().legs[0].dimension_set,
+        vec![(3, VId(100))]
+    );
+    assert_eq!(
+        restored.proposal().legs[1].dimension_set,
+        vec![(3, VId(200))]
+    );
+    assert_eq!(
+        restored.proposal().legs[2].dimension_set,
+        vec![(3, VId(201))]
+    );
+    assert_eq!(restored.proposal().legs[1].amount.mantissa, 60);
+    assert_eq!(restored.proposal().legs[2].amount.mantissa, 40);
+    assert_eq!(
+        restored.digest().unwrap(),
+        domain_digest(b"fa:allocation-review:v2", &[&expected])
+    );
+}
+
+#[test]
+fn destination_only_changes_invalidate_review_and_proposal_identity() {
+    let original = review(cell_posting(100, &[3, 2]));
+    let mut changed = original.posting().clone();
+    changed.target_cells[0].dimensions[0].1 = VId(999);
+    changed.request.targets[0].id = changed.target_cells[0].identity().unwrap();
+    assert_eq!(
+        changed.request.execute().unwrap().shares(),
+        original.outcome().unwrap().shares()
+    );
+    assert!(AllocationReview::from_proposal(changed.clone(), original.proposal().clone()).is_err());
+    let alternative = review(changed);
+    assert_ne!(
+        alternative.proposal_digest().unwrap(),
+        original.proposal_digest().unwrap()
+    );
+    assert!(matches!(
+        alternative.verify_for(&original.digest().unwrap()),
+        Err(AllocationReviewError::Mismatch)
+    ));
+}
+
+#[test]
+fn dimensional_review_refuses_downgraded_versions_truncation_and_trailing_bytes() {
+    let original = review(cell_posting(1, &[1, 1]));
+    let bytes = original.canonical_bytes().unwrap();
+    for cut in 0..bytes.len() {
+        assert!(
+            AllocationReview::decode(&bytes[..cut]).is_err(),
+            "cut {cut}"
+        );
+    }
+    let mut downgraded = bytes.clone();
+    downgraded[16..18].copy_from_slice(&1_u16.to_le_bytes());
+    assert!(AllocationReview::decode(&downgraded).is_err());
+    let mut downgraded_basis = bytes.clone();
+    // Header (20), basis length (4), basis magic (15), then version.
+    downgraded_basis[39..41].copy_from_slice(&1_u16.to_le_bytes());
+    assert!(AllocationReview::decode(&downgraded_basis).is_err());
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(AllocationReview::decode(&trailing).is_err());
+    assert_eq!(original.posting().target_cells.len(), 2);
+    assert_eq!(original.proposal().legs.len(), 2);
 }

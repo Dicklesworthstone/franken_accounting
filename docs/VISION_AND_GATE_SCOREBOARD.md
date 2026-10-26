@@ -58,15 +58,15 @@
 
 > **Gate rule:** Gate met only when every row is `works`.
 
-- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **30**, `refused`: **2**, `absent`: **23**)
+- **Plan §19 transcription BLAKE3:** `1b846fd2e9fead56d46bc81eec807e23aec956c64c17ac57097916189078568a` (55 verbatim clauses: `works`: **35**, `refused`: **2**, `absent`: **18**)
 
 | Gate | Works | Lawful Refusal | Absent | Total | Gate Status |
 |---|---:|---:|---:|---:|---|
 | `G0` | 13 | 0 | 0 | 13 | **MET** |
-| `Genesis` | 8 | 2 | 1 | 11 | **UNMET** |
-| `G1` | 3 | 0 | 4 | 7 | **UNMET** |
-| `G2` | 4 | 0 | 6 | 10 | **UNMET** |
-| `G3` | 2 | 0 | 6 | 8 | **UNMET** |
+| `Genesis` | 9 | 2 | 0 | 11 | **UNMET** |
+| `G1` | 4 | 0 | 3 | 7 | **UNMET** |
+| `G2` | 6 | 0 | 4 | 10 | **UNMET** |
+| `G3` | 3 | 0 | 5 | 8 | **UNMET** |
 | `G4` | 0 | 0 | 6 | 6 | **UNMET** |
 
 ### Gate Criteria Detail
@@ -91,7 +91,7 @@
 | `GEN-03` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `entry` | `—` | post a balanced two-leg entry via `PostEntry` through admit/resolve/laws/plan/commit |
 | `GEN-04` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `projections_verified` | `—` | the derived legs exist and equal the payload |
 | `GEN-05` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `balance_explained` | `—` | the register maintainer advances and `balance = fold` |
-| `GEN-06` | `Genesis` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-0fl` | crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover |
+| `GEN-06` | `Genesis` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-02` | `works` | `0` | `lab_campaign_ok` | `—` | crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover |
 | `GEN-07` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | `fa tb --json` returns the certified trial balance |
 | `GEN-08` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `registers_verified` | `—` | `fa verify registers` is green |
 | `GEN-09` | `Genesis` | `cli` | `cli` | `—` | `refused` | `3` | `error` (`FA-REF-001`) | `fa-lm7` | an unbalanced proposal is refused with exit `3` and the per-unit imbalance |
@@ -102,12 +102,12 @@
 | `G1-03` | `G1` | `differential` | `differential` | `—` | `works` | `0` | `differential_ok` | `—` | registers verified by fold on every fixture |
 | `G1-04` | `G1` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-nl7` | idempotency and batches under crash |
 | `G1-05` | `G1` | `differential` | `differential` | `—` | `absent` | `2` | `error` | `fa-2ihd` | the reference differential over model-generated histories |
-| `G1-06` | `G1` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-nmk4` | the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar |
+| `G1-06` | `G1` | `cli` | `cli` | `—` | `works` | `0` | `polish_bar_ok` | `—` | the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar |
 | `G1-07` | `G1` | `cli` | `cli` | `—` | `works` | `0` | `bundle_produced` | `—` | `fa-verify` verifies a produced bundle of the Genesis book |
 | `G2-01` | `G2` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-01` | `works` | `0` | `lab_campaign_ok` | `—` | period state machine, admissibility matrix, and witness-resolved post-vs-close races proven in both orders |
 | `G2-02` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | selectors including `AS ORIGINALLY REPORTED` and `AS REPORTED IN` |
-| `G2-03` | `G2` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-75j4` | supersession netting and restatement cases with diff certificates |
-| `G2-04` | `G2` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-0fl` | two-phase entries with expiry sweeps under lab |
+| `G2-03` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `restatement_cases_ok` | `—` | supersession netting and restatement cases with diff certificates |
+| `G2-04` | `G2` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-03` | `works` | `0` | `lab_campaign_ok` | `—` | two-phase entries with expiry sweeps under lab |
 | `G2-05` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `evidence_explained` | `—` | documents, custody, attestations, balance assertions |
 | `G2-06` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `accumulator_verified` | `—` | accumulator continuity and witnessed checkpoints |
 | `G2-07` | `G2` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-0x0` | FA-INV-03/07/08/10/14 live |
@@ -119,7 +119,7 @@
 | `G3-03` | `G3` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-651f` | SoD and caveats enforced at commit (FA-INV-10 full) |
 | `G3-04` | `G3` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-bwri` | statements and consolidation certified |
 | `G3-05` | `G3` | `measurement` | `measurement` | `FA-ART-CAL-01` | `works` | `0` | `measurement_ok` | `—` | Lantern's procedures with evidence rows and measured precision/recall |
-| `G3-06` | `G3` | `cli` | `cli` | `—` | `absent` | `2` | `error` | `fa-2q91` | ADS/SAF-T exports with proofs |
+| `G3-06` | `G3` | `cli` | `cli` | `—` | `works` | `0` | `exports_with_proofs_ok` | `—` | ADS/SAF-T exports with proofs |
 | `G3-07` | `G3` | `cli` | `cli` | `—` | `works` | `0` | `demo_initialized` | `—` | `fa demo init` scenarios |
 | `G3-08` | `G3` | `agent-campaign` | `agent-campaign` | `—` | `absent` | `2` | `error` | `fa-nmk4` | the gauntlet's surface-parity and ergonomics scorecards published |
 | `G4-01` | `G4` | `measurement` | `measurement` | `—` | `absent` | `2` | `error` | `fa-ykbp` | all activated §17 manifests green and public |

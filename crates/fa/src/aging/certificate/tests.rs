@@ -667,6 +667,224 @@ fn authorization_and_book_binding_precede_historical_observation() {
     assert_eq!(h.head(), head);
 }
 
+fn scoped_refusal<T: core::fmt::Debug>(outcome: Outcome<T>) {
+    let refusal = outcome.unwrap().unwrap_err();
+    assert_eq!(refusal.exit, exit::SAFETY, "{refusal:?}");
+}
+
+#[test]
+fn every_aging_entrypoint_enforces_complete_history_scope() {
+    let mut h = Harness::new();
+    let entry = h.post(
+        "scope-invoice",
+        "2026-03-01",
+        h.usd,
+        ("ar", "sales"),
+        100,
+        None,
+    );
+    let certified = h.certify(&h.request("2026-03-31"));
+    let certificate = &certified.certificate;
+    let expected = certificate.request().unwrap();
+    let cx = h.cx();
+
+    // A malformed live payload makes unauthorized HEAD observation visible:
+    // scope admission must return a safety refusal before the fold touches it.
+    let row = cx
+        .query()
+        .with_restriction(|| h.book.db.vertex(entry.vid))
+        .unwrap()
+        .unwrap();
+    let original = fa_journal::rows::prop(&row, property::FA_PAYLOAD)
+        .cloned()
+        .unwrap();
+    let mut damage = WriteBatch::new(relation::CHILD_OF);
+    damage.compare_and_set_vertex_property(
+        entry.vid,
+        property::FA_PAYLOAD,
+        Some(original),
+        CanonicalScalar::bytes(Vec::new()).unwrap(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    h.runtime
+        .block_on(h.book.db.write(&cx.commit(), damage))
+        .unwrap();
+    let head = h.head();
+    let unrestricted = cap(&["read", "produce"]);
+    let capabilities = [
+        unrestricted.clone().for_accounts(&["ar"]).unwrap(),
+        unrestricted.clone().for_periods(&["FY2026-P03"]).unwrap(),
+        unrestricted.clone().effective_through(day("2026-03-31")),
+        unrestricted.clone().on_branch(Id128([0x44; 16])).unwrap(),
+        unrestricted.known_at_most(CommitSeq(certificate.source().known_at.0 - 1)),
+    ];
+    for capability in capabilities {
+        scoped_refusal(h.book.certify_effective_date_aging(
+            &cx,
+            PRINCIPAL,
+            &capability,
+            &h.request("2026-03-31"),
+        ));
+        scoped_refusal(h.book.certify_effective_date_aging_from_source(
+            &cx,
+            PRINCIPAL,
+            &capability,
+            certificate.source(),
+            expected.effective_through,
+            &expected.buckets,
+        ));
+        scoped_refusal(h.book.replay_effective_date_aging(
+            &cx,
+            PRINCIPAL,
+            &capability,
+            certificate,
+        ));
+        scoped_refusal(h.book.replay_effective_date_aging_for(
+            &cx,
+            PRINCIPAL,
+            &capability,
+            certificate,
+            &expected,
+        ));
+        scoped_refusal(h.book.effective_date_aging_jsonl(
+            &cx,
+            PRINCIPAL,
+            &capability,
+            certificate,
+            &expected,
+        ));
+    }
+    assert_eq!(h.head(), head);
+}
+
+#[test]
+fn aging_historical_pin_serves_the_fixed_prefix_and_refuses_head_or_later_sources() {
+    let mut h = Harness::new();
+    h.post(
+        "pinned-invoice",
+        "2026-03-01",
+        h.usd,
+        ("ar", "sales"),
+        100,
+        None,
+    );
+    let original = h.certify(&h.request("2026-03-31"));
+    let expected = original.certificate.request().unwrap();
+    let pin = original.certificate.source().known_at;
+    let capability = cap(&["read", "produce"]).known_at_most(pin);
+    h.post(
+        "later-invoice",
+        "2026-03-02",
+        h.usd,
+        ("ar", "sales"),
+        17,
+        None,
+    );
+    let latest = h.certify(&h.request("2026-03-31"));
+    assert!(latest.certificate.source().known_at > pin);
+    let head = h.head();
+    let cx = h.cx();
+
+    assert_eq!(
+        h.book
+            .certify_effective_date_aging(&cx, PRINCIPAL, &capability, &expected)
+            .unwrap()
+            .unwrap()
+            .report,
+        original.report,
+    );
+    assert_eq!(
+        h.book
+            .certify_effective_date_aging_from_source(
+                &cx,
+                PRINCIPAL,
+                &capability,
+                original.certificate.source(),
+                expected.effective_through,
+                &expected.buckets,
+            )
+            .unwrap()
+            .unwrap()
+            .report,
+        original.report,
+    );
+    assert_eq!(
+        h.book
+            .replay_effective_date_aging(&cx, PRINCIPAL, &capability, &original.certificate)
+            .unwrap()
+            .unwrap(),
+        original.report,
+    );
+    assert_eq!(
+        h.book
+            .replay_effective_date_aging_for(
+                &cx,
+                PRINCIPAL,
+                &capability,
+                &original.certificate,
+                &expected,
+            )
+            .unwrap()
+            .unwrap(),
+        original.report,
+    );
+    let workpaper = h
+        .book
+        .effective_date_aging_jsonl(
+            &cx,
+            PRINCIPAL,
+            &capability,
+            &original.certificate,
+            &expected,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(workpaper.contains("aged_open_item"));
+
+    scoped_refusal(h.book.certify_effective_date_aging(
+        &cx,
+        PRINCIPAL,
+        &capability,
+        &h.request("2026-03-31"),
+    ));
+    let later_request = latest.certificate.request().unwrap();
+    scoped_refusal(h.book.certify_effective_date_aging(
+        &cx,
+        PRINCIPAL,
+        &capability,
+        &later_request,
+    ));
+    scoped_refusal(h.book.certify_effective_date_aging_from_source(
+        &cx,
+        PRINCIPAL,
+        &capability,
+        latest.certificate.source(),
+        expected.effective_through,
+        &expected.buckets,
+    ));
+    scoped_refusal(h.book.replay_effective_date_aging(
+        &cx,
+        PRINCIPAL,
+        &capability,
+        &latest.certificate,
+    ));
+    scoped_refusal(h.book.replay_effective_date_aging_for(
+        &cx,
+        PRINCIPAL,
+        &capability,
+        &latest.certificate,
+        &later_request,
+    ));
+    scoped_refusal(h.book.effective_date_aging_jsonl(
+        &cx,
+        PRINCIPAL,
+        &capability,
+        &latest.certificate,
+        &later_request,
+    ));
+    assert_eq!(h.head(), head);
+}
+
 #[test]
 fn backdated_application_cutoff_is_refused_instead_of_losing_balances() {
     let mut h = Harness::new();

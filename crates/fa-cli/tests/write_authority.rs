@@ -6,12 +6,13 @@
 //! operations it requires, and the CLI's bound-route table must name
 //! exactly those operations.
 //!
-//! A token-bound session never holds more than the Preparer launch ceiling
+//! An MCP token-bound session never holds more than the Preparer launch ceiling
 //! (read, post, post_softclosed, verify, reconcile, produce, partial_view):
 //! a row needing any other operation (approve, witness, schema_change,
 //! hold, erase, privileged, migrate, close, issue_capability) can never be
-//! run by one, and a token with exactly its operations is refused when the
-//! session is bound. Every other row is run in process over an in-memory
+//! run by MCP, and a token with exactly its operations is refused when the
+//! MCP session is bound. Ordinary Human operator tokens have separate coverage
+//! in operator_tokens.rs. Every other row is run in process over an in-memory
 //! book with an issued holder-bound token, and must refuse with exit 7, the
 //! named refusal, an unchanged book head and no host file written when the
 //! token lacks any one of its operations (FA-REF-011), has expired
@@ -52,6 +53,8 @@ const ZERO_DIGEST: &str = "00000000000000000000000000000000000000000000000000000
 enum Admitted {
     /// Its inputs are complete: it succeeds (exit 0).
     Succeeds,
+    /// The read succeeds and publishes its immutable certificate receipt.
+    RetainsCertificate,
     /// Its inputs are placeholders: it may fail, but never on authority.
     Reaches,
 }
@@ -99,31 +102,6 @@ const HOST_ONLY: &[(&str, Option<&str>, &str)] = &[
         "installs the chart (schema genesis)",
     ),
     ("period", Some("create"), "births fiscal periods"),
-    (
-        "period",
-        Some("open"),
-        "period transitions are host-confirmed",
-    ),
-    (
-        "period",
-        Some("soft-close"),
-        "period transitions are host-confirmed",
-    ),
-    (
-        "period",
-        Some("close"),
-        "period transitions are host-confirmed",
-    ),
-    (
-        "period",
-        Some("lock"),
-        "period transitions are host-confirmed",
-    ),
-    (
-        "period",
-        Some("reopen"),
-        "period transitions are host-confirmed",
-    ),
     (
         "capability",
         Some("issue"),
@@ -372,8 +350,53 @@ fn write_files(dir: &Path, files: &[(&str, &str)]) {
 }
 
 fn rows(document: &str, entry: &str) -> Vec<Row> {
-    use Admitted::{Reaches, Succeeds};
+    use Admitted::{Reaches, RetainsCertificate, Succeeds};
     let mut rows = vec![
+        row(
+            &["tb", "--period", "FY2026-P03", "--certify"],
+            &[Op::Read, Op::Produce],
+            RetainsCertificate,
+        ),
+        row(
+            &[
+                "statement",
+                "balance-sheet",
+                "--for",
+                "FY2026-P03",
+                "--certify",
+            ],
+            &[Op::Read, Op::Produce],
+            RetainsCertificate,
+        ),
+        row(
+            &[
+                "explain",
+                "balance",
+                "1000",
+                "--period",
+                "FY2026-P03",
+                "--certify",
+            ],
+            &[Op::Read, Op::Produce],
+            RetainsCertificate,
+        ),
+        row(
+            &["open-items", "--account", "1200", "--certify"],
+            &[Op::Read, Op::Produce],
+            RetainsCertificate,
+        ),
+        row(
+            &[
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--dimension",
+                "cost_center=not-created",
+                "--certify",
+            ],
+            &[Op::Read, Op::Produce],
+            Reaches,
+        ),
         row(
             &["post", "--intent", "post.json", "--evidence", document],
             &[Op::Post],
@@ -575,6 +598,48 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
             Reaches,
         ),
         row(&["checkpoint", "create"], &[Op::Witness], Reaches),
+        row(&["period", "open", "FY2026-P04"], &[Op::Close], Reaches),
+        row(
+            &["period", "soft-close", "FY2026-P03"],
+            &[Op::Close],
+            Reaches,
+        ),
+        row(
+            &[
+                "period",
+                "close",
+                "FY2026-P03",
+                "--reason",
+                "Scheduled",
+                "--yes",
+            ],
+            &[Op::Close],
+            Reaches,
+        ),
+        row(
+            &[
+                "period",
+                "lock",
+                "FY2026-P03",
+                "--reason",
+                "AuditComplete",
+                "--yes",
+            ],
+            &[Op::Close],
+            Reaches,
+        ),
+        row(
+            &[
+                "period",
+                "reopen",
+                "FY2026-P03",
+                "--reason",
+                "LateTransactions",
+                "--yes",
+            ],
+            &[Op::Reopen],
+            Reaches,
+        ),
         row(
             &[
                 "case",
@@ -646,6 +711,19 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
                 "matrix-matter",
                 "--bates-prefix",
                 "MTX",
+            ],
+            &[Op::Produce],
+            Succeeds,
+        ),
+        row(
+            &[
+                "exhibit",
+                "mark",
+                document,
+                "--label",
+                "Px-1",
+                "--matter",
+                "matrix-matter",
             ],
             &[Op::Produce],
             Succeeds,
@@ -1256,6 +1334,25 @@ fn rows(document: &str, entry: &str) -> Vec<Row> {
     );
     bundle.output = Some("matrix.fab");
     rows.push(bundle);
+    for args in [
+        vec!["tb", "--period", "FY2026-P03"],
+        vec!["statement", "income-statement", "--for", "FY2026-P03"],
+        vec!["explain", "balance", "1000", "--period", "FY2026-P03"],
+        vec!["open-items", "--account", "1200"],
+    ] {
+        let file = match args[0] {
+            "tb" => "matrix-tb.certificate",
+            "statement" => "matrix-statement.certificate",
+            "explain" => "matrix-explanation.certificate",
+            "open-items" => "matrix-open-items.certificate",
+            _ => unreachable!(),
+        };
+        let mut args = args;
+        args.extend(["--certificate-out", file]);
+        let mut report = row(&args, &[Op::Read, Op::Produce], RetainsCertificate);
+        report.output = Some(file);
+        rows.push(report);
+    }
     rows
 }
 
@@ -1499,6 +1596,29 @@ fn every_bound_writing_command_is_admitted_on_exactly_its_operations() {
             Admitted::Succeeds => {
                 assert_eq!(exit, 0, "exact ops {:?}: {out:?}", row.argv);
                 parse_line(&out);
+            }
+            Admitted::RetainsCertificate => {
+                assert_eq!(exit, 0, "exact ops {:?}: {out:?}", row.argv);
+                let lines: Vec<_> = out.stdout.lines().collect();
+                assert_eq!(lines.len(), 2, "report and certificate: {out:?}");
+                for line in &lines {
+                    registry().unwrap().check_line(line).expect("robot schema");
+                }
+                let receipt = json::parse(lines[1]).expect("certificate receipt");
+                assert_eq!(
+                    receipt.get("event").and_then(Json::as_str),
+                    Some("report_certificate"),
+                    "{out:?}"
+                );
+                let digest = receipt
+                    .get("data")
+                    .and_then(|data| data.get("oid"))
+                    .and_then(Json::as_str)
+                    .expect("retained certificate digest");
+                assert_eq!(digest.len(), 64, "{out:?}");
+                if let Some(file) = row.output {
+                    assert!(m.dir.join(file).exists(), "certificate copy is written");
+                }
             }
             Admitted::Reaches => {
                 if exit != 0 {

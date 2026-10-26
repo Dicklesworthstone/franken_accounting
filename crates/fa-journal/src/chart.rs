@@ -1028,7 +1028,8 @@ pub(crate) fn schema_control_proposal(
     }
 }
 
-fn check_lifecycle_idempotency(
+fn check_lifecycle_idempotency<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     avid: VId,
@@ -1043,6 +1044,14 @@ fn check_lifecycle_idempotency(
             )));
         }
     };
+    // These direct schema controls have no approval or plan transcript. A retry
+    // cannot silently accept an altered envelope or a missing modern claim.
+    if !stored.approvals.is_empty()
+        || stored.plan_certificate.is_some()
+        || !crate::outcome::verify_control_recorded(db, row, &stored)?
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     let same = if &stored.proposal_digest == proposal_digest {
         true
     } else {
@@ -1073,6 +1082,32 @@ fn check_lifecycle_idempotency(
             "resubmit the identical schema control to get the recorded outcome, or use a new idempotency key",
         )))
     }
+}
+
+fn lifecycle_identity_race<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    evid: VId,
+    avid: VId,
+    proposal: &EntryPayload,
+    proposal_digest: &[u8; 32],
+) -> Outcome<AccountLifecycleRecorded> {
+    if let Some(row) = db.vertex(evid)? {
+        return check_lifecycle_idempotency(db, book, &row, avid, proposal, proposal_digest);
+    }
+    if db
+        .vertex(crate::outcome::entry_outcome_vid(proposal))?
+        .is_some()
+    {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
+    Ok(Err(Refusal::new(
+        code::CONFLICT,
+        exit::CONFLICT,
+        "a concurrent chart change claimed an identity this lifecycle operation creates",
+        "FG-LAW-FCW-01 (first committer wins)",
+        "re-read the account's current state and retry the lifecycle operation",
+    )))
 }
 
 /// Open a new account as a journaled `SchemaChange` (`kind = 2`) with an
@@ -1198,6 +1233,12 @@ pub async fn open_account<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
     );
     let avid = account_vid(book.book_id, &spec.code);
+    if let Err(r) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(r));
+    }
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
     let existing_periods = if spec.limit.is_some_and(|l| l.scope == LimitScope::Period) {
         list_periods(db)?
     } else {
@@ -1211,15 +1252,36 @@ pub async fn open_account<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        principal_ref,
+        idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         return check_lifecycle_idempotency(
+            db,
             db_book_ref(book),
             &row,
             avid,
             &proposal,
             &proposal_digest,
         );
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     if txn.vertex(db, avid)?.is_some() {
         txn.abort();
@@ -1274,6 +1336,7 @@ pub async fn open_account<V: asupersync::fs::Vfs + Clone>(
 
     let mut batch = WriteBatch::new(relation::CHILD_OF);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     let mut props = vec![
         (
             property::BOOK_ID,
@@ -1363,6 +1426,9 @@ pub async fn open_account<V: asupersync::fs::Vfs + Clone>(
                 "retry open_account against the new frontier",
             )))
         }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => lifecycle_identity_race(db, book, evid, avid, &proposal, &proposal_digest),
         Err(e) => Err(e.into()),
     }
 }
@@ -1440,6 +1506,13 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
     );
     let avid = account_vid(book.book_id, code_str);
 
+    if let Err(r) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(r));
+    }
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
+
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
@@ -1447,9 +1520,29 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        principal_ref,
+        idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_lifecycle_idempotency(book, &row, avid, &proposal, &proposal_digest);
+        return check_lifecycle_idempotency(db, book, &row, avid, &proposal, &proposal_digest);
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     let Some(row) = txn.vertex(db, avid)? else {
         txn.abort();
@@ -1693,6 +1786,7 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
         .ok_or_else(|| KernelError::Corrupt("closed effectivity encoded empty".into()))?;
     let mut batch = WriteBatch::new(relation::CHILD_OF);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         avid,
         property::FA_PAYLOAD,
@@ -1717,6 +1811,9 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
                 "re-verify the account's balance and retry close_account",
             )))
         }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => lifecycle_identity_race(db, book, evid, avid, &proposal, &proposal_digest),
         Err(e) => Err(e.into()),
     }
 }
@@ -1775,6 +1872,13 @@ pub async fn promote_to_summary<V: asupersync::fs::Vfs + Clone>(
     );
     let avid = account_vid(book.book_id, code_str);
 
+    if let Err(r) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(r));
+    }
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
+
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
     if let Err(r) = crate::policy::capability_witness(&txn, db, book, capability)? {
@@ -1782,9 +1886,29 @@ pub async fn promote_to_summary<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        principal_ref,
+        idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return check_lifecycle_idempotency(book, &row, avid, &proposal, &proposal_digest);
+        return check_lifecycle_idempotency(db, book, &row, avid, &proposal, &proposal_digest);
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     let Some(row) = txn.vertex(db, avid)? else {
         txn.abort();
@@ -1896,6 +2020,7 @@ pub async fn promote_to_summary<V: asupersync::fs::Vfs + Clone>(
         .ok_or_else(|| KernelError::Corrupt("promoted effectivity encoded empty".into()))?;
     let mut batch = WriteBatch::new(relation::CHILD_OF);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         avid,
         property::POSTING,
@@ -1927,6 +2052,9 @@ pub async fn promote_to_summary<V: asupersync::fs::Vfs + Clone>(
                 "re-verify the account's postings and retry promote_to_summary",
             )))
         }
+        Err(WriteTxnError::Write(
+            fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
+        )) => lifecycle_identity_race(db, book, evid, avid, &proposal, &proposal_digest),
         Err(e) => Err(e.into()),
     }
 }

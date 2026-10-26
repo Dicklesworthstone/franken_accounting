@@ -1,0 +1,405 @@
+# =============================================================================
+# crates/fa-oracles/data/binding_fixtures.toml: shared binding fixtures
+# (docs/FORENSIC_CASE_STUDIES_PLAN.md §4.4; bead fa-yugf.3, A1a)
+#
+# Consumer: fa-oracles' values_canonical, normalize, sentence and scope tests
+# (Rust; A1a and A3a) and tools/case-fetch/test_case_fetch.py (Python, A9): both
+# implementations must produce these exact results.
+# Gate: `cargo test -p fa-oracles` (values_canonical_matches_the_shared_fixture_rows,
+# and case_fetch_unittests_pass, which runs the Python suite over every section).
+# Retire: never while receipts carry values_sha256 or verify binds quotes.
+# Each [[values]] row: the fact's about_scope, its value lines (TAB-joined
+# ordinal, literal, rule, param, value, unit, precision, in ordinal order),
+# the canonical bytes in lower-case hex, and their SHA-256.
+# Each [[normalize]] row: an input and its normalized form, both UTF-8 in hex,
+# and the normalized bytes' SHA-256 (quote_sha256).
+# Each [[sentence]] row: a raw text, a quote, how often the normalized quote
+# occurs in the normalized text (count, overlaps included), and whether its
+# first occurrence is sentence-aligned.
+# Each [[scope]] row: a quote, a fact's about_scope and granularity, the
+# entry's period an entry: scope resolves to (entry_period, when set), the
+# account ids the case's account: scopes name (case_accounts, when set), and
+# the case-fetch-scope-v2 verdict: scope_ok, and reason, the exact message
+# (the conflict, or "range=none" for a rangeless scheme, else empty).
+# =============================================================================
+
+schema_version = 1
+
+[[values]]
+id = "F4"
+about_scope = "period:2001Q2"
+value_lines = ["1\t$560 million\tscale\t6\t56000000000\tUSD\t6", "2\tJuly 17, 2001\tdate_literal\t\t2001-07-17\t\t"]
+canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d706572696f643a3230303151320a310924353630206d696c6c696f6e097363616c6509360935363030303030303030300955534409360a32094a756c792031372c203230303109646174655f6c69746572616c0909323030312d30372d313709090a"
+values_sha256 = "5f778be6c814e7fdb9fc2de34a19fd3150e252b1153427bbbfa59d5bc7ed8415"
+
+[[values]]
+id = "F4-p26"
+about_scope = "entry:F4"
+value_lines = ["1\t$560,000,000\tscale\t0\t56000000000\tUSD\t0"]
+canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d656e7472793a46340a3109243536302c3030302c303030097363616c6509300935363030303030303030300955534409300a"
+values_sha256 = "c677d633e79ba439d80cab0ca62f7c0103855ee1f9537e0ef3a8672614e7cacc"
+
+[[values]]
+id = "W406-TA-2000"
+about_scope = "period:FY2000"
+value_lines = ["1\t98,727\tscale\t0\t98727\t\t0"]
+canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d706572696f643a4659323030300a310939382c373237097363616c6509300939383732370909300a"
+values_sha256 = "4ffce76cd8c6970af61b2b2b247efd18e10b8c84029d0a57e31e26eae68ab9ad"
+
+[[values]]
+id = "no-values"
+about_scope = "a fact with no values"
+value_lines = []
+canonical_hex = "66613a636173652d76616c7565733a76310a61626f75745f73636f70653d6120666163742077697468206e6f2076616c7565730a"
+values_sha256 = "cb71d70797ba356b20301794b5b9bc7d6c594a112b20216212db93ceb2200d92"
+
+[[normalize]]
+id = "runs"
+input_hex = "0920610d0a0b0c62c2a0c2a06320"
+normalized_hex = "6120622063"
+quote_sha256 = "0e9f64031fcb2bc708b531c2a20441580425d151a38503f38592a7dd36019d3b"
+
+[[normalize]]
+id = "file-separator-kept"
+input_hex = "611c62201f2063"
+normalized_hex = "611c62201f2063"
+quote_sha256 = "daba58773fa47616cbb5dbc0c721c52445cbd2a2aa747af2f6780e3ac1b869b8"
+
+[[normalize]]
+id = "typographic-quotes-kept"
+input_hex = "e2809c51756f746564e2809d20e2809874657874e28099"
+normalized_hex = "e2809c51756f746564e2809d20e2809874657874e28099"
+quote_sha256 = "2a27c5e36cd34ca9ffdaa6a62462178fa5bfca302f0c57aecc0a81ac4329460d"
+
+[[normalize]]
+id = "nbsp-only"
+input_hex = "c2a0c2a0"
+normalized_hex = ""
+quote_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+[[normalize]]
+id = "em-space-kept"
+input_hex = "61e2808362"
+normalized_hex = "61e2808362"
+quote_sha256 = "d98ee46a818de7808c5b2342ea531289af73aec4e83591208efba6ca748d7f5f"
+
+[[normalize]]
+id = "form-feed-is-a-space"
+input_hex = "70616765206f6e652e0c706167652074776f2e"
+normalized_hex = "70616765206f6e652e20706167652074776f2e"
+quote_sha256 = "4c3456d7c16082814f9b336c60675f47b9fe9302d60199b69bd0dfc9db033385"
+
+[[sentence]]
+id = "fragment"
+text = "The director rarely entered and approved entries himself, so his involvement was unusual."
+quote = "entered and approved"
+aligned = false
+count = 1
+
+[[sentence]]
+id = "whole-sentence"
+text = "The director rarely entered and approved entries himself, so his involvement was unusual."
+quote = "The director rarely entered and approved entries himself, so his involvement was unusual."
+aligned = true
+count = 1
+
+[[sentence]]
+id = "abbreviation-p"
+text = "See p. 26 of the report. It said so."
+quote = "See p. 26 of the report."
+aligned = true
+count = 1
+
+[[sentence]]
+id = "abbreviation-p-is-no-end"
+text = "See p. 26 of the report. It said so."
+quote = "See p."
+aligned = false
+count = 1
+
+[[sentence]]
+id = "closing-quote"
+text = "He said \"stop.\" Then he left."
+quote = "He said \"stop.\""
+aligned = true
+count = 1
+
+[[sentence]]
+id = "us-abbreviation"
+text = "The U.S. office closed. It reopened."
+quote = "The U.S. office closed."
+aligned = true
+count = 1
+
+[[sentence]]
+id = "us-abbreviation-is-no-end"
+text = "The U.S. office closed. It reopened."
+quote = "The U.S."
+aligned = false
+count = 1
+
+[[sentence]]
+id = "question"
+text = "Was it known? Yes."
+quote = "Was it known?"
+aligned = true
+count = 1
+
+[[sentence]]
+id = "second-sentence"
+text = "One. Two words here. Three."
+quote = "Two words here."
+aligned = true
+count = 1
+
+[[sentence]]
+id = "block-after-heading"
+text = "SUMMARY OF FINDINGS\n\nThe ledger was reviewed. It balanced."
+quote = "The ledger was reviewed."
+aligned = true
+count = 1
+
+[[sentence]]
+id = "heading-without-blank-line-joins"
+text = "SUMMARY OF FINDINGS\nThe ledger was reviewed. It balanced."
+quote = "The ledger was reviewed."
+aligned = false
+count = 1
+
+[[sentence]]
+id = "wrapped-line-is-no-start"
+text = "The transfer of line\ncosts was recorded. It was late."
+quote = "costs was recorded."
+aligned = false
+count = 1
+
+[[sentence]]
+id = "heading-line-between-sentences"
+text = "The ledger was reviewed.\n\nUNAUDITED\n\nIt balanced."
+quote = "UNAUDITED"
+aligned = true
+count = 1
+
+[[sentence]]
+id = "part-of-a-heading-line"
+text = "The ledger was reviewed.\n\nSELECTED DATA\n\nIt balanced."
+quote = "SELECTED"
+aligned = false
+count = 1
+
+[[sentence]]
+id = "repeated-sentence"
+text = "One sentence. The ledger was reviewed. The ledger was reviewed."
+quote = "The ledger was reviewed."
+aligned = true
+count = 2
+
+[[scope]]
+id = "sec-paragraph-29"
+quote = "These entries for the first quarter of 2001 were made without any supporting documentation or proper business rationale."
+about_scope = "entry:F12"
+granularity = "journal_entry"
+entry_period = "2002Q1"
+scope_ok = false
+reason = "names period 2001Q1, entry F12 is 2002Q1"
+
+[[scope]]
+id = "sec-paragraph-29-own-quarter"
+quote = "These entries for the first quarter of 2001 were made without any supporting documentation or proper business rationale."
+about_scope = "period:2001Q1"
+granularity = "journal_entry"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "same-quarter"
+quote = "During the second quarter of 2001, the company transferred $560 million."
+about_scope = "period:2001Q2"
+granularity = "journal_entry"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "booked-quarter-and-posting-day"
+quote = "During the second quarter of 2001, the Example Company transferred $560 million of line costs to construction in progress on July 17, 2001."
+about_scope = "period:2001Q2"
+granularity = "journal_entry"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "quarter-label-conflict"
+quote = "The 1Q02 transfer to capital was $718 million."
+about_scope = "period:2001Q3"
+granularity = "journal_entry"
+scope_ok = false
+reason = "names period 2002Q1, scope period 2001Q3"
+
+[[scope]]
+id = "fiscal-year-is-not-its-quarter"
+quote = "In fiscal 2001 the company capitalized line costs."
+about_scope = "period:2001Q3"
+granularity = "period_total"
+scope_ok = false
+reason = "names period FY2001, scope period 2001Q3"
+
+[[scope]]
+id = "fiscal-year-scope"
+quote = "In fiscal year 2001 the company capitalized line costs."
+about_scope = "period:FY2001"
+granularity = "period_total"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "quarter-labels-in-two-spellings"
+quote = "Line costs fell in Q3 2001 and again in 3Q01."
+about_scope = "period:2001Q3"
+granularity = "period_total"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "month-scope-and-a-quarter"
+quote = "In the third quarter of 2001 the company recorded the entry."
+about_scope = "period:2001-07"
+granularity = "journal_entry"
+scope_ok = false
+reason = "names period 2001Q3, scope period 2001-07"
+
+[[scope]]
+id = "no-period-words"
+quote = "98,727"
+about_scope = "period:FY2000"
+granularity = "statement_line"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "entry-without-a-period"
+quote = "These entries for the first quarter of 2001 were made."
+about_scope = "entry:F4-p26"
+granularity = "journal_entry"
+scope_ok = false
+reason = "names period 2001Q1, and entry F4-p26 has no period"
+
+[[scope]]
+id = "account-conflict"
+quote = "Transfers out of account 1ZR176 totaled $5,000."
+about_scope = "account:1FN025"
+granularity = "ledger_row"
+scope_ok = false
+reason = "names account 1ZR176, scope account 1FN025"
+
+[[scope]]
+id = "account-match"
+quote = "Transfers out of account No. 1ZR176 totaled $5,000."
+about_scope = "account:1ZR176"
+granularity = "ledger_row"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "bare-account-id-the-case-knows"
+quote = "Transfers out of 1ZR176 totaled $5,000."
+about_scope = "account:1FN025"
+granularity = "ledger_row"
+case_accounts = ["1FN025", "1ZR176"]
+scope_ok = false
+reason = "names account 1ZR176, scope account 1FN025"
+
+[[scope]]
+id = "bare-id-the-case-does-not-know"
+quote = "Transfers out of 1ZR176 totaled $5,000."
+about_scope = "account:1FN025"
+granularity = "ledger_row"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "scheme-backs-no-entry"
+quote = "The scheme ran from the first quarter of 2001 to the first quarter of 2002."
+about_scope = "scheme:capitalization-2001Q1-2002Q1"
+granularity = "journal_entry"
+scope_ok = false
+reason = "`scheme:capitalization-2001Q1-2002Q1` is scheme-level; it backs a journal_entry fact only through an interpretation"
+
+[[scope]]
+id = "scheme-backs-a-period-total"
+quote = "The scheme ran from the first quarter of 2001 to the first quarter of 2002."
+about_scope = "scheme:capitalization-2001Q1-2002Q1"
+granularity = "period_total"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "quarter-outside-the-scheme-range"
+quote = "In the third quarter of 2002 the transfers stopped."
+about_scope = "scheme:capitalization-2001Q1-2002Q1"
+granularity = "period_total"
+scope_ok = false
+reason = "names period 2002Q3, outside 2001Q1-2002Q1"
+
+[[scope]]
+id = "day-range-outside-the-scheme-quarter"
+quote = "Reserves were released between July 17–19, 2000."
+about_scope = "scheme:reserve-release-2000Q2"
+granularity = "period_total"
+scope_ok = false
+reason = "names 2000-07-17..2000-07-19, outside 2000Q2"
+
+[[scope]]
+id = "day-range-inside-the-scheme-range"
+quote = "Reserves were released between July 17–19, 2000."
+about_scope = "scheme:reserve-release-2000Q2-2000Q3"
+granularity = "period_total"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "month-inside-the-scheme-month"
+quote = "In March 2001 the notes were exchanged for stock."
+about_scope = "scheme:notes-for-stock-2001-03"
+granularity = "period_total"
+scope_ok = true
+reason = ""
+
+[[scope]]
+id = "date-outside-the-scheme-day"
+quote = "On December 9, 2016 the purchase price was allocated."
+about_scope = "scheme:linkedin-ppa-2016-12-08"
+granularity = "period_total"
+scope_ok = false
+reason = "names 2016-12-09, outside 2016-12-08"
+
+[[scope]]
+id = "rangeless-scheme"
+quote = "On July 17, 2000 the partnership was formed."
+about_scope = "scheme:spe-ljm1"
+granularity = "period_total"
+scope_ok = true
+reason = "range=none"
+
+[[scope]]
+id = "inverted-scheme-range"
+quote = "No dates here."
+about_scope = "scheme:x-2001Q2-2001Q1"
+granularity = "period_total"
+scope_ok = false
+reason = "scheme `x-2001Q2-2001Q1`: its range runs backwards"
+
+[[scope]]
+id = "scheme-tail-that-parses-as-no-form"
+quote = "No dates here."
+about_scope = "scheme:x-2001Q5"
+granularity = "period_total"
+scope_ok = false
+reason = "scheme `x-2001Q5`: its range tail parses as no quarter, month or day form"
+
+[[scope]]
+id = "unstructured-scope"
+quote = "During the second quarter of 2001, the company transferred $560 million."
+about_scope = "the 2Q01 line-cost transfer to CIP"
+granularity = "journal_entry"
+scope_ok = false
+reason = "`the 2Q01 line-cost transfer to CIP` is not entry:<fact>, period:<label>, scheme:<slug> or account:<id>"

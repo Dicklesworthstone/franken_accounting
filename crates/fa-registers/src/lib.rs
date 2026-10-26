@@ -20,6 +20,7 @@
 
 pub mod assertion;
 pub mod availability;
+pub mod checkpoint;
 pub mod entity;
 pub mod explain;
 pub mod fx;
@@ -45,7 +46,7 @@ use fa_time::{DateDay, PeriodKind};
 use fgdb::{Database, VertexRow, WriteBatch};
 use fgdb_crypto::Hasher;
 use fgdb_types::context::PurposeContexts;
-use fgdb_types::{CanonicalScalar, CommitSeq, VId};
+use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
 pub use availability::{
     AccountAvailability, AvailabilityDrift, AvailabilityVerification, verify_availability,
@@ -73,8 +74,8 @@ pub use lots::{
     fold_lots_from_open_items, lots,
 };
 pub use maintainer::{
-    Advance, HeadFold, PreparedAdvance, advance, head_fold, prepare_advance, publish_advance,
-    rebuild,
+    Advance, HeadFold, PreparedAdvance, advance, fold_at, fold_at_with_context, head_fold,
+    prepare_advance, publish_advance, rebuild,
 };
 pub use open_items::{
     Application, AppliedDrift, OpenItem, OpenItemVerification, open_items, verify_open_items,
@@ -189,6 +190,16 @@ pub struct Fold {
     pub(crate) posted_legs_digest: [u8; 32],
     /// Per-entry leg contribution digests of unresolved `Pending` holds, ordered by `(commit_seq, entry_vid)`.
     pub(crate) pending_holds: BTreeMap<(CommitSeq, VId), [u8; 32]>,
+}
+
+impl Fold {
+    /// The unresolved `Pending` holds the fold digest commits to: each hold's
+    /// leg contribution digest, keyed by `(commit_seq, entry_vid)`. Read-only;
+    /// the fold alone maintains them.
+    #[must_use]
+    pub fn pending_holds(&self) -> &BTreeMap<(CommitSeq, VId), [u8; 32]> {
+        &self.pending_holds
+    }
 }
 
 /// `vid(Register) = H("fa:vid:register:v1" ‖ book ‖ account ‖ unit ‖ period)`.
@@ -431,7 +442,7 @@ pub(crate) fn resolutions(
 ) -> Result<BTreeMap<VId, CommitSeq>, RegisterError> {
     let by_id: BTreeMap<_, _> = entries.iter().map(|(id, e, seq)| (*id, (e, seq))).collect();
     let mut resolved = BTreeMap::new();
-    for (_, entry, seq) in entries {
+    for (vid, entry, seq) in entries {
         if entry.proposal.class != EntryClass::RESOLUTION {
             continue;
         }
@@ -446,7 +457,11 @@ pub(crate) fn resolutions(
         };
         if original.proposal.class != EntryClass::PENDING
             || original.entry_digest != target.entry_digest
-            || *original_seq >= seq
+            // An earlier batch member and its resolution publish atomically.
+            // Their VId order is not their staging order; both are visible at
+            // this frontier, with the exact target digest and derived identity.
+            || *original_seq > seq
+            || *vid != fa_journal::rows::resolution_vid(target.vid)
             || resolved.insert(target.vid, *seq).is_some()
         {
             return Err(
@@ -513,12 +528,25 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
     period_code: &str,
     known_at: Option<CommitSeq>,
 ) -> Result<Fold, RegisterError> {
+    fold_period_counted(db, book, period_code, known_at).map(|(fold, _)| fold)
+}
+
+/// [`fold_period_at`], with the number of legs it added to cells, posted
+/// and held: the fold's own count of the work it did, which a rebuild
+/// reports as its work witness (plan §17, fa-ykbp).
+pub(crate) fn fold_period_counted<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period_code: &str,
+    known_at: Option<CommitSeq>,
+) -> Result<(Fold, u64), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
     let mut cells: BTreeMap<CellKey, Cell> = BTreeMap::new();
     let mut pending = BTreeMap::new();
     let mut watermark: Option<CommitSeq> = None;
     let mut count = 0u64;
+    let mut legs = 0u64;
     let mut posted_legs_digest = [0u8; 32];
     let mut pending_holds = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
@@ -538,12 +566,18 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
                 watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
             } else {
                 add_entry(&mut pending, &entry, period_code)?;
+                legs = legs
+                    .checked_add(entry.proposal.legs.len() as u64)
+                    .ok_or(RegisterError::Overflow)?;
                 let hold_digest = fold_entry_contributions([0u8; 32], created_at, vid, &entry)?;
                 pending_holds.insert((created_at, vid), hold_digest);
             }
         } else {
             count = count.checked_add(1).ok_or(RegisterError::Overflow)?;
             add_entry(&mut cells, &entry, period_code)?;
+            legs = legs
+                .checked_add(entry.proposal.legs.len() as u64)
+                .ok_or(RegisterError::Overflow)?;
             posted_legs_digest =
                 fold_entry_contributions(posted_legs_digest, created_at, vid, &entry)?;
         }
@@ -558,16 +592,19 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
         posted_legs_digest,
         &pending_holds,
     )?;
-    Ok(Fold {
-        period: period_code.to_string(),
-        cells,
-        pending,
-        watermark,
-        entries: count,
-        fold_digest,
-        posted_legs_digest,
-        pending_holds,
-    })
+    Ok((
+        Fold {
+            period: period_code.to_string(),
+            cells,
+            pending,
+            watermark,
+            entries: count,
+            fold_digest,
+            posted_legs_digest,
+            pending_holds,
+        },
+        legs,
+    ))
 }
 
 type CellValues = (i128, i128, u64);
@@ -596,7 +633,8 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<CommitSeq, RegisterError> {
     // The API accepts a Fold for inspection, not as a new source of truth.
     // Exclusive access to Database keeps this check and publication together.
-    if fold_period(db, book, &fold.period)? != *fold {
+    let (literal, legs) = fold_period_counted(db, book, &fold.period, None)?;
+    if literal != *fold {
         return Err(RegisterError::StaleFold);
     }
     // Preserve the existing empty-materialization no-op. Explicit advance
@@ -607,11 +645,14 @@ pub async fn materialize<V: asupersync::fs::Vfs + Clone>(
         && db
             .vertex(maintainer::state_vid(book.book_id, &fold.period))?
             .is_none()
+        && db
+            .vertex(checkpoint::head_vid(book.book_id, &fold.period))?
+            .is_none()
         && materialize_batch(db, book, fold)?.is_empty()
     {
         return Ok(db.frontier()?);
     }
-    let prepared = maintainer::prepare_fold(db, book, fold.clone())?;
+    let prepared = maintainer::prepare_fold(db, book, literal, legs)?;
     Ok(maintainer::publish_advance(db, ctx, book, prepared)
         .await?
         .published_at)
@@ -933,6 +974,76 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
     Ok(result)
 }
 
+/// Verify the maintained cells and every checkpoint reachable from their
+/// current checkpoint pointer. Each snapshot is independently refolded from
+/// immutable journal entries at its own processed prefix; intact checksums
+/// alone do not establish that a cache contains the right amounts or history.
+///
+/// A broken checkpoint chain is reported as projection drift. Verification
+/// never edits checkpoints or the journal; explicit rebuilding replaces the
+/// damaged derived chain with a fresh independently computed snapshot.
+pub fn verify_period_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    period_code: &str,
+) -> Result<Verification, RegisterError> {
+    let mut result = verify_period(db, book, period_code)?;
+    let at = db.frontier()?;
+    let mut next = match checkpoint::load_latest(db, cx, book, period_code, at) {
+        Ok(value) => value,
+        Err(RegisterError::ProjectionDrift(message))
+        | Err(RegisterError::Kernel(KernelError::Corrupt(message))) => {
+            result
+                .projection_errors
+                .push(format!("register checkpoint chain: {message}"));
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    let mut visited = BTreeSet::new();
+    while let Some(snapshot) = next {
+        if !visited.insert(snapshot.body_digest) {
+            result
+                .projection_errors
+                .push("register checkpoint chain repeats a snapshot".into());
+            break;
+        }
+        let truth = fold_period_at(db, book, period_code, Some(snapshot.through))?;
+        if snapshot.fold != truth {
+            result.projection_errors.push(format!(
+                "register checkpoint at {} disagrees with its independently refolded journal prefix",
+                snapshot.through.0,
+            ));
+        }
+        next = match snapshot.previous {
+            None => None,
+            Some(previous) if previous.through >= snapshot.through => {
+                result
+                    .projection_errors
+                    .push("register checkpoint predecessors are not strictly earlier".into());
+                break;
+            }
+            Some(previous) => match checkpoint::load(db, cx, book, period_code, previous, at) {
+                Ok(value) => Some(value),
+                Err(RegisterError::ProjectionDrift(message))
+                | Err(RegisterError::Kernel(KernelError::Corrupt(message))) => {
+                    result
+                        .projection_errors
+                        .push(format!("register checkpoint chain: {message}"));
+                    break;
+                }
+                Err(error) => return Err(error),
+            },
+        };
+    }
+    if !result.is_green() {
+        result.cache_status = CacheStatus::Corrupt;
+        result.verified_through = None;
+    }
+    Ok(result)
+}
+
 fn verify_projection<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -1161,7 +1272,7 @@ fn trial_balance_filtered<V: asupersync::fs::Vfs + Clone>(
     report_at(db, book, selected, seq, through, &[], filter)
 }
 
-/// How a trial balance at the frontier was served (plan §17: a balance
+/// How a trial balance at its selected snapshot was served (plan §17: a balance
 /// read states whether maintained cells answered it and how long its tail
 /// was).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1195,7 +1306,44 @@ pub fn trial_balance_served<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     periods: &[String],
 ) -> Result<(TrialBalance, Served), RegisterError> {
-    let seq = db.frontier()?;
+    trial_balance_served_at(db, book, periods, None)
+}
+
+/// A trial balance at `known_at`, using that snapshot's retained register
+/// state and exact tail when available. Metadata, cached cells and journal
+/// contributions all use the same coordinate. This is a retained-snapshot
+/// optimization, not a claim that certified RegisterCheckpoints exist.
+pub fn trial_balance_served_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    trial_balance_served_at_inner(db, None, book, periods, known_at)
+}
+
+/// A trial balance at one recorded prefix, using durable register checkpoints
+/// and their exact tails when available. Loading checkpoint objects uses the
+/// caller's query context. A missing or damaged cache falls back to the same
+/// authoritative journal fold as [`trial_balance_served_at`].
+pub fn trial_balance_served_at_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    trial_balance_served_at_inner(db, Some(cx), book, periods, known_at)
+}
+
+fn trial_balance_served_at_inner<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: Option<&QueryCx>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    let seq = resolve_known_at(db, known_at)?;
     let selected = select_periods(db, book, periods, seq)?;
     let mut through = None;
     for p in &selected {
@@ -1207,7 +1355,7 @@ pub fn trial_balance_served<V: asupersync::fs::Vfs + Clone>(
         through = Some(through.map_or(DateDay(end), |d: DateDay| d.max(DateDay(end))));
     }
     let maintained = match through {
-        Some(day) => maintained_sums(db, book, day)?,
+        Some(day) => maintained_sums(db, cx, book, day, seq)?,
         None => Err("no period was selected".to_string()),
     };
     match maintained {
@@ -1235,13 +1383,15 @@ type ServedPeriods = Vec<(String, CommitSeq, usize)>;
 /// servable cells.
 fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
+    cx: Option<&QueryCx>,
     book: &BookContext,
     day: DateDay,
+    seq: CommitSeq,
 ) -> Result<Result<(ColumnSums, ServedPeriods), String>, RegisterError> {
-    let accounts = fa_journal::genesis::list_accounts(db)?;
+    let (accounts, periods) = report_metadata_at(db, seq)?;
     let mut sums = ColumnSums::new();
     let mut served = Vec::new();
-    for period in fa_journal::genesis::list_periods(db)? {
+    for period in periods {
         let last = DateDay(
             period
                 .end
@@ -1259,8 +1409,8 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
                 day.render()
             )));
         }
-        let Some(head) = maintainer::head_fold(db, book, &period.code, &accounts)? else {
-            if period_has_postings(db, period.vid)? {
+        let Some(head) = maintained_fold_at(db, cx, book, &period.code, &accounts, seq)? else {
+            if period_has_postings_at(db, period.vid, seq)? {
                 return Ok(Err(unservable(&period.code)));
             }
             continue;
@@ -1271,11 +1421,25 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
     Ok(Ok((sums, served)))
 }
 
+fn maintained_fold_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: Option<&QueryCx>,
+    book: &BookContext,
+    period: &str,
+    accounts: &[AccountRow],
+    known_at: CommitSeq,
+) -> Result<Option<HeadFold>, RegisterError> {
+    match cx {
+        Some(cx) => maintainer::fold_at_with_context(db, cx, book, period, accounts, known_at),
+        None => maintainer::fold_at(db, book, period, accounts, known_at),
+    }
+}
+
 /// Why maintained cells could not answer for a period with postings, and
 /// how to make them answer.
 fn unservable(period: &str) -> String {
     format!(
-        "period `{period}` has postings but its maintained cells cannot answer at the head (no or damaged state, drifted cells, or a tail outside this process's delta window); `fa registers advance --period {period}` or a daemon's register cycle keeps them current"
+        "period `{period}` has postings but its maintained cells cannot answer at the selected snapshot (no or damaged state, drifted cells, or a tail outside this process's delta window); the journal is folded literally; `fa registers advance --period {period}` or a daemon's register cycle maintains future read snapshots"
     )
 }
 
@@ -1306,18 +1470,53 @@ pub fn period_activity_served<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     periods: &[String],
 ) -> Result<(TrialBalance, Served), RegisterError> {
-    let seq = db.frontier()?;
+    period_activity_served_at(db, book, periods, None)
+}
+
+/// Period activity at a fixed known-at snapshot, served from retained
+/// maintained cells plus an exact bounded tail, or from the literal fold.
+pub fn period_activity_served_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    period_activity_served_at_inner(db, None, book, periods, known_at)
+}
+
+/// Period activity at one recorded prefix, using durable register checkpoints
+/// and exact tails through the caller's query context. Unavailable derived
+/// state never changes the report: the authoritative literal fold is the
+/// fallback, with the serving choice returned separately.
+pub fn period_activity_served_at_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    period_activity_served_at_inner(db, Some(cx), book, periods, known_at)
+}
+
+fn period_activity_served_at_inner<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: Option<&QueryCx>,
+    book: &BookContext,
+    periods: &[String],
+    known_at: Option<CommitSeq>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    let seq = resolve_known_at(db, known_at)?;
     let selected = select_periods(db, book, periods, seq)?;
-    let accounts = fa_journal::genesis::list_accounts(db)?;
+    let (accounts, _) = report_metadata_at(db, seq)?;
     let mut sums = ColumnSums::new();
     let mut served = Vec::new();
     for code in &selected {
-        match maintainer::head_fold(db, book, code, &accounts)? {
+        match maintained_fold_at(db, cx, book, code, &accounts, seq)? {
             Some(head) => {
                 add_cells(&mut sums, &head.fold)?;
                 served.push((code.clone(), head.served_at, head.tail_entries));
             }
-            None if period_has_postings(db, period_at(db, book, code, seq)?.vid)? => {
+            None if period_has_postings_at(db, period_at(db, book, code, seq)?.vid, seq)? => {
                 let reason = unservable(code);
                 return Ok((
                     report_at(db, book, selected.clone(), seq, None, &[], None)?,
@@ -1333,15 +1532,45 @@ pub fn period_activity_served<V: asupersync::fs::Vfs + Clone>(
     ))
 }
 
+/// Read only the selected snapshot's book membership and metadata. Loading
+/// the current chart or periods here would let later schema changes alter a
+/// historical report, even when all monetary contributions were pinned.
+fn report_metadata_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    seq: CommitSeq,
+) -> Result<(Vec<AccountRow>, Vec<PeriodRow>), RegisterError> {
+    let mut accounts = Vec::new();
+    let mut periods = Vec::new();
+    for vid in db.in_neighbours_at(fa_journal::rows::book_root(), relation::IN_BOOK, seq)? {
+        let Some(row) = db.vertex_at(vid, seq)? else {
+            continue;
+        };
+        if row.labels.contains(&label::ACCOUNT) {
+            accounts.push(AccountRow::decode(&row)?);
+        }
+        if row.labels.contains(&label::PERIOD) {
+            periods.push(PeriodRow::decode(&row)?);
+        }
+    }
+    accounts.sort_by(|a, b| a.code.cmp(&b.code));
+    periods.sort_by(|a, b| {
+        (a.fiscal_year, a.ordinal, &a.code).cmp(&(b.fiscal_year, b.ordinal, &b.code))
+    });
+    Ok((accounts, periods))
+}
+
 /// Whether anything that can carry a leg reaches `period`: an Entry with
 /// legs, or a register cell (a stale cell without its state is not
 /// trusted to be empty).
-fn period_has_postings<V: asupersync::fs::Vfs + Clone>(
+fn period_has_postings_at<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     period: VId,
+    seq: CommitSeq,
 ) -> Result<bool, RegisterError> {
-    for vid in db.in_neighbours(period, relation::IN_PERIOD)? {
-        let Some(row) = db.vertex(vid)? else { continue };
+    for vid in db.in_neighbours_at(period, relation::IN_PERIOD, seq)? {
+        let Some(row) = db.vertex_at(vid, seq)? else {
+            continue;
+        };
         if row.labels.contains(&label::REGISTER) {
             return Ok(true);
         }

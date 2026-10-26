@@ -1488,13 +1488,13 @@ meaning = "Post-period lookahead window in civil days for subsequent disbursemen
 
 [[procedure]]
 id = "events.subsequent"
-version = 1
+version = 2
 claim = "statistical"
 evidence = "FA-EVID-L45"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Subsequent events review (AS 2801 / IAS 10): material postings, reversals, or restatements effective or recorded within window_days after a closed or soft-closed period boundary."
+summary = "Subsequent events review (AS 2801 / IAS 10): material postings, reversals, or restatements effective or recorded within window_days after a closed or soft-closed period boundary. A period is such a boundary when its latest recorded transition put it in SoftClosed, Closed or Locked. Version 1 counted every period with any recorded transition, including one that was only opened."
 
 [[parameter]]
 procedure = "events.subsequent"
@@ -1689,13 +1689,13 @@ meaning = "UVTA section 9 fraudulent-transfer lookback window in civil days (def
 
 [[procedure]]
 id = "ponzi.net_investment"
-version = 3
+version = 4
 claim = "statistical"
 evidence = "FA-EVID-L56"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Madoff net-equity Ponzi schedule (In re Bernard L. Madoff Investment Securities LLC, 654 F.3d 229): computes per-investor cash_in minus cash_out, investor cohort by first-inflow date, net-loser equity claims, and net-winner fictitious profits subject to clawback. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions. Version 3 (fa-6l8g) attributes each entry's cash, within each (unit, legal entity) partition, only to the investors whose own legs fund or receive it (or the one party the cash legs name when no contra leg names one), marks an investor whose figures unresolved cash may touch attribution=incomplete, and reports that cash as an unresolved_attribution finding; version 2 gave every party an entry named the entry's whole cash."
+summary = "Madoff net-equity Ponzi schedule (In re Bernard L. Madoff Investment Securities LLC, 654 F.3d 229): computes per-investor cash_in minus cash_out, investor cohort by first-inflow date, net-loser equity claims, and net-winner fictitious profits subject to clawback. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions. Version 3 (fa-6l8g) attributes each entry's cash, within each (unit, legal entity) partition, only to the investors whose own legs fund or receive it (or the one party the cash legs name when no contra leg names one), marks an investor whose figures unresolved cash may touch attribution=incomplete, and reports that cash as an unresolved_attribution finding; version 2 gave every party an entry named the entry's whole cash. Version 4 (fa-yugf.83) keeps in the population only parties with an investor movement, so a vendor's refund or a customer's payment makes no one an investor; a member's other attributed cash still counts. Version 3 kept every party with attributed cash in."
 effective_through = "optional"
 
 [[parameter]]
@@ -1729,13 +1729,13 @@ meaning = "The least new money, as basis points of the window's redemptions to e
 
 [[procedure]]
 id = "distribution.rising_tide"
-version = 3
+version = 4
 claim = "statistical"
 evidence = "FA-EVID-L57"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Rising-tide receivership distribution (SEC v. Huber, 702 F.3d 903): equalizes cumulative recovery rates (pre-receivership withdrawals plus receivership distribution divided by principal invested) across net-loser investors up to the exact rational water level supported by the distributable pool under LargestRemainder. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions. Version 3 (fa-6l8g) attributes each entry's cash, within each (unit, legal entity) partition, only to the investors whose own legs fund or receive it (or the one party the cash legs name when no contra leg names one); a unit holding cash no one investor's legs account for reports an unresolved_attribution finding and no schedule; version 2 gave every party an entry named the entry's whole cash."
+summary = "Rising-tide receivership distribution (SEC v. Huber, 702 F.3d 903): equalizes cumulative recovery rates (pre-receivership withdrawals plus receivership distribution divided by principal invested) across net-loser investors up to the exact rational water level supported by the distributable pool under LargestRemainder. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions. Version 3 (fa-6l8g) attributes each entry's cash, within each (unit, legal entity) partition, only to the investors whose own legs fund or receive it (or the one party the cash legs name when no contra leg names one); a unit holding cash no one investor's legs account for reports an unresolved_attribution finding and no schedule; version 2 gave every party an entry named the entry's whole cash. Version 4 (fa-yugf.83) keeps in the population only parties with an investor movement, so a vendor's refund or a customer's payment makes no one an investor; a member's other attributed cash still counts. Version 3 kept every party with attributed cash in."
 effective_through = "optional"
 
 [[parameter]]
@@ -1746,13 +1746,13 @@ meaning = "Explicit distributable cash pool in unit mantissa (0 = use the book's
 
 [[procedure]]
 id = "distribution.pro_rata"
-version = 3
+version = 4
 claim = "statistical"
 evidence = "FA-EVID-L58"
 tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Cunningham v. Brown pro-rata receivership distribution: allocates the distributable cash pool across net-loser investors in exact proportion to their net unrecovered principal (cash_in minus cash_out) under LargestRemainder. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions. Version 3 (fa-6l8g) attributes each entry's cash, within each (unit, legal entity) partition, only to the investors whose own legs fund or receive it (or the one party the cash legs name when no contra leg names one); a unit holding cash no one investor's legs account for reports an unresolved_attribution finding and no schedule; version 2 gave every party an entry named the entry's whole cash."
+summary = "Cunningham v. Brown pro-rata receivership distribution: allocates the distributable cash pool across net-loser investors in exact proportion to their net unrecovered principal (cash_in minus cash_out) under LargestRemainder. Cash is the accounts holding the `cash` account role; an investor movement's contra leg is on an Equity account or one holding the `investor_capital` account role (registries/account_roles.toml, assigned with fa chart role). Refused when no account holds the cash role. Version 1 guessed both from code and name tokens and from words in entry descriptions. Version 3 (fa-6l8g) attributes each entry's cash, within each (unit, legal entity) partition, only to the investors whose own legs fund or receive it (or the one party the cash legs name when no contra leg names one); a unit holding cash no one investor's legs account for reports an unresolved_attribution finding and no schedule; version 2 gave every party an entry named the entry's whole cash. Version 4 (fa-yugf.83) keeps in the population only parties with an investor movement, so a vendor's refund or a customer's payment makes no one an investor; a member's other attributed cash still counts. Version 3 kept every party with attributed cash in."
 effective_through = "optional"
 
 [[parameter]]

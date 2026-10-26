@@ -20,8 +20,20 @@ use std::time::{Duration, Instant};
 use fa_cli::json::Json;
 use fastmcp_rust::{JsonValue, json};
 
+#[path = "e2e_stdio/aging_bundle.rs"]
+mod aging_bundle;
+#[path = "e2e_stdio/cash_flow_bundle.rs"]
+mod cash_flow_bundle;
 #[path = "e2e_stdio/draft_review.rs"]
 mod draft_review;
+#[path = "e2e_stdio/explanation_bundle.rs"]
+mod explanation_bundle;
+#[path = "e2e_stdio/indirect_cash_flow_basis.rs"]
+mod indirect_cash_flow_basis;
+#[path = "e2e_stdio/open_items_bundle.rs"]
+mod open_items_bundle;
+#[path = "e2e_stdio/roll_forward_bundle.rs"]
+mod roll_forward_bundle;
 
 const PROTOCOL: &str = "2026-07-28";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -528,31 +540,6 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         &mut mcp,
         "fa_read_statement",
         json!({
-            "name": "balance-sheet", "for": "FY2026-P03", "compare": "FY2026-P02", "certify": true,
-        }),
-    );
-    assert!(!error, "{output}");
-    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
-    assert_eq!(certified.as_array().unwrap().len(), 2);
-    assert_eq!(certified[0]["columns"].as_array().unwrap().len(), 2);
-    assert_eq!(certified[1]["file"], JsonValue::Null);
-    let replay_oid = format!("C:{}", certified[1]["oid"].as_str().unwrap());
-    for certificate in [
-        replay_oid,
-        certified[1]["bytes"].as_str().unwrap().to_string(),
-    ] {
-        let (error, replay, _) = call_tool(
-            &mut mcp,
-            "fa_read_replay",
-            json!({"certificate": certificate}),
-        );
-        assert!(!error, "{replay}");
-        assert_eq!(replay, certified[0].to_string());
-    }
-    let (error, output, _) = call_tool(
-        &mut mcp,
-        "fa_read_statement",
-        json!({
             "name": "balance-sheet", "for": "FY2026-P03", "certificate_out": null,
         }),
     );
@@ -593,7 +580,24 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         "{output}"
     );
     // The default reader cannot acquire produce authority from a certify flag.
+    let before_refusals = cli_data(&["book", "info", "--book", &b, "--json"]);
     for (tool, args) in [
+        (
+            "fa_read_trial_balance",
+            json!({"period": "FY2026-P03", "certify": true}),
+        ),
+        (
+            "fa_read_statement",
+            json!({"name": "balance-sheet", "for": "FY2026-P03", "certify": true}),
+        ),
+        (
+            "fa_read_explain_balance",
+            json!({"account": "1000", "period": "FY2026-P03", "certify": true}),
+        ),
+        (
+            "fa_read_open_items",
+            json!({"account": "1000", "certify": true}),
+        ),
         (
             "fa_read_trial_balance",
             json!({"period": "FY2026-P03", "summary": true, "certify": true}),
@@ -613,6 +617,11 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         assert_eq!(refused["refusal_id"], json!("FA-REF-011"));
         assert!(output.contains("produce"), "{output}");
     }
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_refusals,
+        "refused report publication must not advance the frontier"
+    );
     assert_eq!(mcp.finish(), 0);
 
     let mut producer = Mcp::start_with(
@@ -627,6 +636,31 @@ fn financial_statements_and_retained_replay_use_the_same_agent_bound_surface() {
         ],
     );
     producer.discover();
+    let (error, output, _) = call_tool(
+        &mut producer,
+        "fa_read_statement",
+        json!({
+            "name": "balance-sheet", "for": "FY2026-P03", "compare": "FY2026-P02", "certify": true,
+        }),
+    );
+    assert!(!error, "{output}");
+    let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
+    assert_eq!(certified.as_array().unwrap().len(), 2);
+    assert_eq!(certified[0]["columns"].as_array().unwrap().len(), 2);
+    assert_eq!(certified[1]["file"], JsonValue::Null);
+    let replay_oid = format!("C:{}", certified[1]["oid"].as_str().unwrap());
+    for certificate in [
+        replay_oid,
+        certified[1]["bytes"].as_str().unwrap().to_string(),
+    ] {
+        let (error, replay, _) = call_tool(
+            &mut producer,
+            "fa_read_replay",
+            json!({"certificate": certificate}),
+        );
+        assert!(!error, "{replay}");
+        assert_eq!(replay, certified[0].to_string());
+    }
     for (tool, family, event_name, args) in [
         (
             "fa_read_trial_balance",
@@ -1044,7 +1078,21 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
 
     // This parity test deliberately uses the trusted Preparer template;
     // default Agent behavior is exercised separately below.
-    let mut mcp = Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    let launch = [
+        "--profile",
+        "preparer",
+        "--principal",
+        "operator",
+        "--grant",
+        "read",
+        "--grant",
+        "post",
+        "--grant",
+        "verify",
+        "--grant",
+        "produce",
+    ];
+    let mut mcp = Mcp::start_with(&book, &launch);
     mcp.discover();
 
     // tools/list: exactly the registry's default-surface wire names (plan
@@ -1166,7 +1214,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         envelope["authority"],
         json!({
             "posture": "mcp-launch-config", "principal": "operator", "profile": "preparer",
-            "ops": ["read", "post", "verify"],
+            "ops": ["read", "post", "verify", "produce"],
         })
     );
     assert!(envelope["coordinate"]["known_at"].is_number(), "{envelope}");
@@ -1849,7 +1897,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     // fa-1nx: an Agent session certifying a trial balance between a Preparer's
     // dry-run plan and commit advances raw known_at without moving the
     // accounting frontier, so the Preparer's plan still commits cleanly.
-    let mut agent_certifier = Mcp::start(&book);
+    let mut agent_certifier = Mcp::start_with(&book, &["--grant", "read", "--grant", "produce"]);
     agent_certifier.discover();
     let (is_error, cert_text, _) = call_tool(
         &mut agent_certifier,
@@ -2140,8 +2188,7 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
     assert_eq!(code, 0);
     let plan_file = dir.join("mcp.plan.hex");
     std::fs::write(&plan_file, &encoded).unwrap();
-    let mut reopened =
-        Mcp::start_with(&book, &["--profile", "preparer", "--principal", "operator"]);
+    let mut reopened = Mcp::start_with(&book, &launch);
     reopened.discover();
     let before_retry = cli_data(&["book", "info", "--book", &b, "--json"]);
     for arguments in [
@@ -2504,9 +2551,26 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
     let init = mcp.discover();
     assert!(init["instructions"].as_str().unwrap().contains("mcp-agent"));
 
-    // Real Agent reads and immutable report retention remain usable.
-    let (error, text, result) = call_tool(
+    // The default Agent can read, but cannot acquire Produce from a tool
+    // argument. A separately granted producer retains the report that this
+    // default session can subsequently replay.
+    let before_certify = cli_data(&["book", "info", "--book", &b, "--json"]);
+    let (error, text, _) = call_tool(
         &mut mcp,
+        "fa_read_trial_balance",
+        json!({"period": "FY2026-P03", "certify": true}),
+    );
+    assert!(error, "a default Agent has no Produce authority: {text}");
+    assert_eq!(structured_error(&text)["refusal_id"], "FA-REF-011");
+    assert!(text.contains("produce"), "{text}");
+    assert_eq!(
+        cli_data(&["book", "info", "--book", &b, "--json"]),
+        before_certify
+    );
+    let mut producer = Mcp::start_with(&book, &["--grant", "read", "--grant", "produce"]);
+    producer.discover();
+    let (error, text, result) = call_tool(
+        &mut producer,
         "fa_read_trial_balance",
         json!({"period": "FY2026-P03", "certify": true}),
     );
@@ -2514,7 +2578,8 @@ fn default_agent_authority_survives_stdio_and_cannot_be_changed_by_a_call() {
     let certified: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
     let envelope: JsonValue =
         fastmcp_rust::serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(envelope["authority"], authority);
+    assert_eq!(envelope["authority"]["ops"], json!(["read", "produce"]));
+    assert_eq!(producer.finish(), 0);
     let (error, replayed, result) = call_tool(
         &mut mcp,
         "fa_read_replay",
@@ -5370,4 +5435,103 @@ fn error_shape_matches_appendix_d() {
         "{e}"
     );
     log("Appendix D: MCP error data carries the CLI's refusal object and the detector's options");
+}
+
+#[test]
+fn fa_orient_next_offers_audit_program_matching_cli_next() {
+    let dir = tmp("orient-next-eng");
+    let book = dir.join("book");
+    let b = book.display().to_string();
+    cli_data(&[
+        "book",
+        "create",
+        "--book",
+        &b,
+        "--name",
+        "Orient Eng Co",
+        "--json",
+    ]);
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"3000","name":"Capital","type":"Equity","unit":"USD"}]}"#,
+    )
+    .unwrap();
+    let chart = chart.display().to_string();
+    cli_data(&["chart", "import", &chart, "--book", &b, "--json"]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&["period", "open", "FY2026-P01", "--book", &b, "--json"]);
+    cli_data(&[
+        "engagement",
+        "open",
+        "FY2026-inv",
+        "--kind",
+        "investigation",
+        "--period",
+        "FY2026-P01",
+        "--overall",
+        "50000.00 USD",
+        "--performance",
+        "37500.00 USD",
+        "--clearly-trivial",
+        "2500.00 USD",
+        "--book",
+        &b,
+        "--json",
+    ]);
+
+    let (code, cli_stdout) = cli(&["next", "--book", &b, "--json"]);
+    assert_eq!(code, 0, "{cli_stdout}");
+    let cli_line: JsonValue =
+        fastmcp_rust::serde_json::from_str(cli_stdout.lines().last().unwrap()).unwrap();
+    let mut cli_steps = vec![(
+        cli_line["data"]["command"].as_str().unwrap().to_string(),
+        cli_line["data"]["why"].as_str().unwrap().to_string(),
+    )];
+    for action in cli_line["next_actions"].as_array().unwrap() {
+        cli_steps.push((
+            action["command"].as_str().unwrap().to_string(),
+            action["why"].as_str().unwrap().to_string(),
+        ));
+    }
+
+    let mut mcp = Mcp::start(&book);
+    mcp.discover();
+    let (is_error, text, result) = call_tool(&mut mcp, "fa_orient_next", json!({}));
+    assert!(!is_error, "{text}");
+    let mcp_data: JsonValue = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let mcp_env: JsonValue = fastmcp_rust::serde_json::from_str(
+        result["content"][1]["text"].as_str().expect("envelope"),
+    )
+    .unwrap();
+    let mut mcp_steps = vec![(
+        mcp_data["command"].as_str().unwrap().to_string(),
+        mcp_data["why"].as_str().unwrap().to_string(),
+    )];
+    for action in mcp_env["next_actions"].as_array().unwrap() {
+        mcp_steps.push((
+            action["command"].as_str().unwrap().to_string(),
+            action["why"].as_str().unwrap().to_string(),
+        ));
+    }
+    assert_eq!(mcp_steps, cli_steps, "fa_orient_next != fa next");
+    assert!(
+        mcp_steps.iter().any(|(c, _)| c == "fa jet --json"),
+        "{mcp_steps:?}"
+    );
+    assert!(
+        mcp_steps
+            .iter()
+            .any(|(c, _)| c == "fa procedure list --json"),
+        "{mcp_steps:?}"
+    );
+    assert_eq!(mcp.finish(), 0);
 }

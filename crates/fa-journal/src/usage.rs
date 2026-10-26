@@ -561,6 +561,38 @@ impl Judged {
         Ok(vec![cites, in_book])
     }
 
+    pub(crate) fn record_template_bytes(
+        &self,
+        tracker: &mut crate::batch::TemplateByteTracker,
+    ) -> Result<(), KernelError> {
+        for movement in &self.moves {
+            let cell = movement.after.key.cell_vid();
+            let after_props = movement.after.properties()?;
+            if let Some(before) = movement.before {
+                let before_props = before.properties()?;
+                for ((key, before_val), (_, after_val)) in before_props.into_iter().zip(after_props)
+                {
+                    tracker.set_vertex_property(
+                        relation::HAS_LEG,
+                        cell,
+                        key,
+                        Some(before_val),
+                        Some(after_val),
+                    );
+                }
+            } else {
+                tracker.create_vertex(relation::HAS_LEG, cell, 1, &after_props);
+            }
+            let id = movement.debit.vid();
+            tracker.create_vertex(relation::HAS_LEG, id, 1, &movement.debit.properties()?);
+            for _ in cite_targets(&movement.debit) {
+                tracker.add_edge(relation::CITES, &[]);
+            }
+            tracker.add_edge(relation::IN_BOOK, &[]);
+        }
+        Ok(())
+    }
+
     /// Only daily-limited plans append this domain; old plans keep their bytes.
     pub(crate) fn bind_effects(&self, hasher: &mut Hasher) -> Result<(), KernelError> {
         hasher.update(b"fa:post-daily-usage:v1");

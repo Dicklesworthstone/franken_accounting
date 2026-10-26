@@ -1,0 +1,11 @@
+# The harness self-test (plan §3.2b, §15 A7a/A8a): every runner stage on a small synthetic book.
+# kind = "harness_selftest": no sources, never rendered, exempt from K-BASIS by kind; A8a completes it.
+id = "_selftest"
+title = "Harness self-test: the runner's stages on a synthetic book"
+version = 1
+kind = "harness_selftest"
+scope = "the runner itself: book creation, period labels, placeholder documents, posts, a refused post, an audit procedure"
+claims = []
+capabilities = ["verb:post", "procedure:jet.round_amounts@1", "refusal:FA-REF-010"]
+pinned_commit = "fe1b40512"
+variants = ["native"]

@@ -47,7 +47,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     ("recon.attested_register_compare", 1),
     ("recon.assertion_drift", 1),
     ("completeness.unrecorded_liabilities", 1),
-    ("events.subsequent", 1),
+    // H18 (fa-yugf.98): a closed boundary is a period whose latest transition closed it.
+    ("events.subsequent", 2),
     ("party.master_changes", 1),
     ("payroll.ghost", 2),
     ("expense.capitalization", 2),
@@ -59,9 +60,9 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     // fa-6l8g: version 3 attributes party cash through each party's own legs.
     ("lookback.preferences", 3),
     ("lookback.fraudulent_transfer", 1),
-    ("ponzi.net_investment", 3),
-    ("distribution.rising_tide", 3),
-    ("distribution.pro_rata", 3),
+    ("ponzi.net_investment", 4),
+    ("distribution.rising_tide", 4),
+    ("distribution.pro_rata", 4),
     ("damages.attested_baseline", 1),
 ];
 

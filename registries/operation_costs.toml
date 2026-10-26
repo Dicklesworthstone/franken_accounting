@@ -77,7 +77,7 @@ derived_objects = "1 Entry + n Leg + edges + ExternalIds + 1 IntentOutcome; an e
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none; a rate lookup is a document already in the book, never a synchronous call"
 complexity_witness = "O(legs) point reads + 1 period witness + 1 Entry vertex + O(legs) Leg vertices and projection edges + 1 common-key IntentOutcome claim; final-overlay register capacity adds O(snapshot vertices + journal legs), O(snapshot vertices) retained row/insertion witnesses and transient memory, with cancellation checkpoints and no extra writes; key admission uses metadata point probes and authentic coverage, checking the bounded original genesis publication or O(log K) immutable key-tree nodes for K recovered keys"
-notes = "One native publication includes the successful common-key claim. Reversal, resolution and replacement identities retain their target-derived Entry VIds while reserving the same (book, principal, key) namespace as ordinary posts and batches. Dedicated control writers and Migration run keys are outside this successful-posting claim protocol; durable refusals remain unimplemented. Automatic scheduled reversals require one capacity prefix scan per candidate, including when composed into period Open; a sweep blocks refused candidates before staging, while Open refuses atomically. This is a conservative interim cost, not a measured SLO. A limited account's LimitCell (the registered §5.5 exception) is compare-and-set when the entry moves that account; no other shared cell is registered. A settling leg also moves each target leg's `applied` mirror by compare-and-set (plan §5.7), for which Appendix G registers no exception (recorded on fa-vz7e for an owner ruling)."
+notes = "One native publication includes the successful common-key claim. Reversal, resolution and replacement identities retain their target-derived Entry VIds while reserving the same (book, principal, key) namespace as ordinary posts and batches. PeriodControl transitions, TimeControl ticks, normal-key security/retention policy activations, account lifecycle controls, dimension value creation and native subledger registration also reserve this namespace; other dedicated writers, including target-derived capability issuance/revocation, and Migration run keys remain outside it. Durable refusals remain unimplemented. Automatic scheduled reversals require one capacity prefix scan per candidate, including when composed into period Open; a sweep blocks refused candidates before staging, while Open refuses atomically. This is a conservative interim cost, not a measured SLO. A limited account's LimitCell (the registered §5.5 exception) is compare-and-set when the entry moves that account; no other shared cell is registered. A settling leg also moves each target leg's `applied` mirror by compare-and-set (plan §5.7), for which Appendix G registers no exception (recorded on fa-vz7e for an owner ruling)."
 
 [[operation_class]]
 id = "portable_single_entry_plan_and_commit"
@@ -107,7 +107,7 @@ derived_objects = "N admitted Entry/Leg censuses with all native member effects 
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none; all evidence, approvals and rates are already in the book"
 complexity_witness = "Sum of N production member preparations over the carried overlay, plus O(native_delta_bytes + plan_bytes + outcome_bytes + N) hashing and retention per rehearsal/first commit; repeated prefix staging and member history/usage checks retain their native costs. Fresh outer and member keys each authenticate coverage: a bounded original genesis frame or O(log K) recovered-key proof, hence O((N+1)*log K) recovered-key reads. Exact retry checks O(N + fragment_count) original claims, rows and edges plus O(plan_bytes + outcome_bytes) reconstruction."
-notes = "Complete native LogicalDeltaTemplate digest binds the exact snapshot; any intervening publication before first commit requires re-planning. No per-member publication, additional shared cell or approval publication is introduced. Existing member reservation/usage cells retain their existing admission and costs. The 8190-member and 67440560-byte format ceilings are not capacity acceptance claims: IntentOutcome uses 52+48*N canonical bytes and at most 96 kind-4 fragments, while Entry rows and all native transaction limits still apply. Rehearsal stages retention before aborting; refusal writes nothing. Durable refusal outcomes and atomic batch drafts are not implemented by this operation."
+notes = "Complete native LogicalDeltaTemplate digest binds the exact snapshot; any intervening publication before first commit requires re-planning. No per-member publication, additional shared cell or approval publication is introduced. Existing member reservation/usage cells retain their existing admission and costs. The 8190-member and 67440560-byte format ceilings are not capacity acceptance claims: IntentOutcome uses 52+48*N canonical bytes and at most 96 kind-4 fragments, while Entry rows and the 14439152-byte max_batch_template_bytes ceiling (fgdb-chronicle V1 capsule MAX_PROTECTED_LEN_V1 = 56403 * 256 = 14439168 minus 16-byte XChaCha20Poly1305V1 tag at rev b323bd1; refused as FA-REF-201) apply. Rehearsal stages retention before aborting; refusal writes nothing. Durable refusal outcomes and atomic batch drafts are not implemented by this operation."
 
 [[operation_class]]
 id = "batch_post"
@@ -122,7 +122,7 @@ derived_objects = "N Entry/Leg censuses + N common-key IntentOutcome member clai
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
 complexity_witness = "Sum of N production member preparations, point witnesses and projection writes over one carried overlay; repeated prefix staging and history/usage checks retain their native costs. Key admission adds a bounded genesis-frame check per key or O((N+1)*log K) point reads for K recovered keys. Exact retry admits all requested members and compares the complete IN_BATCH metadata footprint before decoding the outcome, then verifies original co-birth and every member claim."
-notes = "The batch key must differ from every member key; cross-family collisions and repeated member keys refuse without publication. The 8190-member format ceiling does not guarantee native capacity acceptance: entries, claims, outcome fragments, witnesses and transaction limits all apply. Retained approved effects use the separate portable-plan operation; this direct-post row does not claim a persisted EffectManifest or durable refusal outcome."
+notes = "The batch key must differ from every member key; cross-family collisions and repeated member keys refuse without publication. The 8190-member format ceiling is paired with the 14439152-byte max_batch_template_bytes budget (fgdb-chronicle V1 capsule MAX_PROTECTED_LEN_V1 = 56403 * 256 = 14439168 minus 16-byte XChaCha20Poly1305V1 tag at rev b323bd1): any batch whose canonical LogicalDeltaTemplate exceeds 14439152 bytes refuses with FA-REF-201 (exit 3) naming the member boundary and split count. Retained approved effects use the separate portable-plan operation; this direct-post row does not claim a persisted EffectManifest or durable refusal outcome."
 
 [[operation_class]]
 id = "intent_outcome_coverage_rebuild"
@@ -197,22 +197,97 @@ derived_objects = "batch census + DraftSet transition"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
 complexity_witness = "O(N * legs) intent replay + 1 DraftSet LifecycleTransition + one final-overlay capacity fold O(snapshot vertices + journal legs), retaining conservative native row/insertion witnesses without extra writes"
-notes = "intent replay with revalidation"
+notes = "intent replay with revalidation; bounded by both max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201)"
 
 [[operation_class]]
 id = "period_transition"
 name = "Period transition"
 substrate_class = "Autocommit write, fused arm"
 substrate_transactions = "1"
-today_posture = "One publication updating Period state mirror and journaling 1 PeriodControl entry"
+today_posture = "One publication updating Period state mirror and journaling 1 PeriodControl entry with its common-key IntentOutcome"
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "1 PeriodControl entry"
+derived_objects = "1 PeriodControl entry + 1 IntentOutcome"
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "1 Period point read + 1 point-read witness + 1 PeriodControl entry + 1 Period state update"
-notes = "SSI witness for racing posts"
+complexity_witness = "1 Period point read/witness/state-CAS + 1 PeriodControl entry + 1 common-key IntentOutcome; opaque key and original Entry probes plus authenticated coverage with a bounded genesis frame or O(log K) recovered-key nodes; reopened native history is hydrated before preparation"
+notes = "First-committer-wins witnesses cover racing posts and competing scoped keys. Exact retries verify the original control, its optional atomic claim and ordered approvals without publication; legacy controls retain their normal-key Entry identities. A fresh legacy transition requires explicit verified outcome recovery. Opening may additionally mint the scheduled reversals priced under single_entry_post."
+
+[[operation_class]]
+id = "time_evidence_tick"
+name = "Journaled TimeEvidence observation"
+substrate_class = "Autocommit write, fused arm"
+substrate_transactions = "1"
+today_posture = "One publication journaling a TimeControl entry, its common-key IntentOutcome and the latest-tick compare-and-set"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 TimeControl entry + 1 IntentOutcome"
+hot_object_exceptions = []
+external_authorities = "none; the caller supplies its observation under its time capability"
+complexity_witness = "Current corroborated-tick discovery scans retained entries; key admission adds opaque common-key and original Entry point witnesses plus authenticated coverage with a bounded genesis frame or O(log K) recovered-key nodes. Reopened native history is hydrated before preparation. The root latest-tick CAS and both new vertices publish atomically."
+notes = "No added publication or barrier. Exact retries preserve the original normalized corroboration and verify the optional original claim without advancing the frontier. A fresh legacy tick requires explicit verified outcome recovery. This is a structural cost description, not a measured latency or throughput result."
+
+[[operation_class]]
+id = "policy_activation"
+name = "Security or retention policy activation"
+substrate_class = "Autocommit write, fused arm"
+substrate_transactions = "1"
+today_posture = "One publication journals the normal-key PolicyControl entry and common-key IntentOutcome with the existing security epoch or retention state change"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 PolicyControl entry + 1 IntentOutcome; a retention activation may additionally create 1 RetentionPolicy body and 1 retention cell"
+hot_object_exceptions = []
+external_authorities = "none; retention authority is an already-recorded document"
+complexity_witness = "The fixed new-vertex census is 2 for security activation and up to 4 for a first retention activation; both are one atomic publication. Current authority and ordered approval witnesses retain their existing costs; retention additionally validates authority custody and any named subjects and updates its bounded active-policy cell. Common-key admission uses metadata point witnesses and authenticated coverage, checking the bounded original genesis publication or O(log K) recovered-key nodes. Reopened native history is hydrated after authority admission; exact retries authenticate original Entry and claim snapshots."
+notes = "activation_claims_publish_atomically_and_block_other_posting_families checks the fixed publication census. This does not count all reads or claim measured latency. Retry preserves the original ordered approvals and publication epoch without re-authorizing historic approvals or changing current state. Exact legacy normal-key activation retries remain readable; new legacy activations require verified monetary-key recovery. Target-derived capability events and other PolicyControl discriminants are outside this operation and are not covered by its legacy retry exception."
+
+[[operation_class]]
+id = "account_lifecycle"
+name = "Account opening, closing or promotion"
+substrate_class = "Point-witnessed schema control and account effects in one WriteTxn"
+substrate_transactions = "1 for first publication; 0 for an exact recorded-outcome retry"
+today_posture = "One publication journals the normal-key SchemaControl and common-key IntentOutcome together with account creation or lifecycle changes"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 SchemaControl entry + 1 IntentOutcome; opening additionally creates 1 Account, its membership/parent edges, and any declared limit cells"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "Without declared limits, opening creates 3 vertices and closing/promotion create 2; the existing account property changes and edges remain in the same publication. Closing and promotion retain their existing posting/history scans and account witnesses; opening retains its parent and any period-limit provisioning reads. Common-key admission adds metadata point witnesses and authenticated coverage, checking the bounded original genesis publication or O(log K) recovered-key nodes. Native history is hydrated only after current whole-book authority admission."
+notes = "lifecycle_claims_publish_atomically_with_state_and_block_posting_keys checks the fixed vertex census for each operation. This is structural accounting, not a measured read count or latency result. Exact retries bind the original empty approval transcript and authenticate original Entry/claim snapshots. Genuine legacy controls retain their normal-key reservations and exact retries; fresh legacy lifecycle changes require verified monetary-key recovery. Only SchemaChange kinds 2/3/4 are included; other schema writers and target-derived capability controls are outside this operation."
+
+[[operation_class]]
+id = "dimension_value_registration"
+name = "Registered dimension value creation"
+substrate_class = "Point-witnessed SchemaChange and dimension projections in one WriteTxn"
+substrate_transactions = "1 for first publication; 0 for an exact recorded-outcome retry"
+today_posture = "One publication journals the normal-key SchemaControl, common-key IntentOutcome and declared dimension value together"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 SchemaControl entry + 1 IntentOutcome + 1 DimensionValue; the first value of a kind additionally creates 1 Dimension; 1 IN_BOOK edge for each new dimension object and an optional CHILD_OF parent edge"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "The fixed new-vertex census is 3, or 4 when the dimension root is absent; existing dimension and parent validation retain their point-read costs. Common-key admission adds metadata witnesses and authenticated coverage, checking the bounded original genesis frame or O(log K) recovered-key nodes. Original Entry/claim snapshots authenticate retries. Cold native history hydration follows full current whole-book authority admission."
+notes = "registration_claims_publish_atomically_and_block_other_posting_families checks the vertex and edge census in the parent-free case. No extra publication, shared mutable outcome head or measured latency claim. Exact or resealed-equivalent retries preserve the original empty approval/plan envelope. Pre-protocol normal-key controls remain valid retry anchors; fresh legacy registrations require verified monetary-key recovery. This row covers only SchemaChange kind17 creation, not requirement changes or dimension closure."
+
+[[operation_class]]
+id = "native_subledger_registration"
+name = "Native AR or AP subledger registration"
+substrate_class = "Authorized history validation and one witnessed SchemaChange transaction"
+substrate_transactions = "1 for first publication; 0 for an exact recorded-outcome retry"
+today_posture = "One publication journals the normal-key SchemaControl, common-key IntentOutcome and Subledger while binding its existing control account"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "3 immutable vertices: 1 SchemaControl entry + 1 IntentOutcome + 1 Subledger; 1 IN_BOOK edge, 1 CONTROLS edge and the existing Account.control_of property compare-and-set"
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "The fixed write census is 3 vertices, 2 edges and one account property change in one publication. Existing definition/projection replay and complete entry history scanning for party-complete control-account detail retain their history-dependent costs. Key admission adds metadata witnesses and a bounded original genesis-frame check or O(log K) authenticated recovered-key reads. Exact retries verify original Entry/claim snapshots and retained subledger projections; history hydration follows current whole-book authority admission."
+notes = "registration_claims_publish_atomically_and_block_other_posting_families checks the fixed publication census. No extra publication, shared mutable outcome head or constant-time history claim. Duplicate codes or control accounts remain refusals, and existing party/type/leaf checks remain enforced. Genuine pre-protocol registrations retain their exact normal-key retries before and after explicit outcome recovery. Only SchemaChange kind15 native registration is covered; external subledger and other schema-control writers retain their own protocols."
 
 [[operation_class]]
 id = "close_run_execute"
@@ -242,7 +317,7 @@ derived_objects = "N case Entry/Leg censuses + N common-key IntentOutcome member
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
 complexity_witness = "Sum of N member preparations, each re-reading the Approved case state (a point witness), its manifest and the scenario Plan record and re-deriving its entry, + final-overlay capacity fold O(snapshot vertices + journal legs) with native row/insertion witnesses + 1 Post entry + 1 state compare-and-set in one transaction"
-notes = "dual-control approvals and the rehearsal's diff Certificate are prior transactions; the case state compare-and-set is on the case's own RestatementCase vertex, not a book-wide cell"
+notes = "dual-control approvals and the rehearsal's diff Certificate are prior transactions; the case state compare-and-set is on the case's own RestatementCase vertex, not a book-wide cell; bounded by max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201)"
 
 [[operation_class]]
 id = "register_maintenance_flush"
@@ -287,7 +362,7 @@ derived_objects = "Resolution(Expires) entries"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "time evidence (substrate's profiled observation)"
 complexity_witness = "O(expired_batch) Resolution(Expires) entries + SweepCursor under TimeEvidence"
-notes = "bounded batch per tick"
+notes = "bounded batch per tick (at most max_batch_entries = 8190 and max_batch_template_bytes = 14439152 B per tick)"
 
 [[operation_class]]
 id = "bundle_production"
@@ -347,7 +422,7 @@ derived_objects = "Migration entries; opening attestation"
 hot_object_exceptions = []
 external_authorities = "none"
 complexity_witness = "O(chunks * legs) staged migration entries + 1 finalizing MigrationControl(Finalize) with tie_out_digest + final-overlay capacity fold O(snapshot vertices + journal legs), including newly activated chunks, with native row/insertion witnesses and no extra writes"
-notes = "gap-free chunk manifests; today each chunk stages in its own publication before the 1 finalizing MigrationControl(Finalize) publication (see fa-zddh)"
+notes = "gap-free chunk manifests; today each chunk stages in its own publication before the 1 finalizing MigrationControl(Finalize) publication (see fa-zddh), with each publication bounded by max_batch_template_bytes (14439152 B, FA-REF-201)"
 
 # ---- Counted Kernel Operation Witnesses (bead fa-i5s) -----------------------
 # Checked against the deterministic operation counter in `fa-bench` / `fa-sim`
@@ -401,9 +476,9 @@ point_reads = 1
 witnesses = 1
 cas_moves = 1
 edges_written = 1
-vertices_written = 1
+vertices_written = 2
 transactions = 1
-complexity_witness = "1 Period vertex read/witness/state-CAS + 1 PeriodControl entry vertex + 1 FOR edge"
+complexity_witness = "1 Period vertex read/witness/state-CAS + 1 PeriodControl entry vertex + 1 common-key IntentOutcome vertex + 1 FOR edge; key/coverage admission costs are described in the operation class and are not measured by this fixed census"
 
 [[kernel_op_witness]]
 id = "document_add"
@@ -561,3 +636,18 @@ hot_object_exceptions = []
 external_authorities = "none; independent approvals are retained native Approval records obtained by separate explicit operations"
 complexity_witness = "O(retained journal + chart + nominal groups + closing legs) checked-integer folds, complete contribution digest and route replay; the commit guards the observed publication frontier in addition to ordinary native witnesses"
 notes = "Prior Closing legs participate in the fold so reclose transfers only residual activity. Zero residual publishes nothing. Full-year base-unit and undimensioned/legal-entity-only scope is enforced. Review bytes use the existing PostIntent wire and publish nothing; approval-only commits preserve its source basis. Closing uses ordinary period, evidence, authority, approval, idempotency and balance laws. Atomic batch/draft promotion cannot bypass the required complete source basis. This is the intrinsic closing operation, not the full CloseTask DAG or Locked case-bound reclose."
+
+[[operation_class]]
+id = "statement_definition_activation"
+name = "Approved custom statement definition activation"
+substrate_class = "Read-only canonical review and one witnessed PolicyControl publication"
+substrate_transactions = "0 for preparation/read or an exact retry; 1 for a new activation"
+today_posture = "Complete immutable definition and chunk fragments, approving control and shared successful-intent key claim publish atomically"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "1 StatementDefinition root, bounded 4096-byte fragments above the inline threshold, 1 PolicyControl Entry and 1 IntentOutcome key claim; no mutable name head"
+hot_object_exceptions = []
+external_authorities = "none; two independent Human approvals are prior explicit native operations"
+complexity_witness = "Retained chart/schema and activation history scans, exact partition lint, and original-row/approval validation; historical checks may revisit source prefixes. Work depends on journal history and activated versions, not an indexed constant-time claim. Definition bytes are bounded at 65536 before chunk staging."
+notes = "The saved plan binds complete definition bytes, effective date, preparer, caller key and canonical accounting-schema basis. Approval commits do not alter this basis. Publication rechecks schema under the exclusive book borrow and witnesses authority, approvals, accounts and intent identity. Name/version/effective history remains immutable. Explicit older approved versions remain replayable after a newer default activates. Native regression witness: fa::statement_definition::tests::chunked_definition_activates_atomically_survives_approval_commits_and_retries."

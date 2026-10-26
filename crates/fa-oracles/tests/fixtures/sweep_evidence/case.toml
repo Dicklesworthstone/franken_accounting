@@ -1,0 +1,12 @@
+# Evidence sweep fixture (fa-yugf.17, A7c): one entry's evidence_attached table, decided by dry run
+# and, for the ManualAssertion cell, by fa document attest manual --plan-out, for fa-cli's
+# tests/cases.rs. Never copied to cases/; claims nothing.
+id = "sweep_evidence"
+title = "Evidence sweep fixture: an evidence_attached table with a ManualAssertion cell"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's P-cell sweep of evidence cells, the ManualAssertion route included"
+claims = []
+capabilities = ["verb:post", "refusal:FA-REF-080", "refusal:FA-REF-086"]
+pinned_commit = "3dd46ab3f"
+variants = ["native"]

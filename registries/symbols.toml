@@ -539,3 +539,14 @@ name = "RuleVersion"
 [[label]]
 id = 57
 name = "RuleName"
+
+# Immutable native-period fold snapshots; their roots and chunks are derived
+# maintenance data, excluded from accounting-object scratch replay.
+[[label]]
+id = 58
+name = "RegisterCheckpoint"
+
+# Immutable custom statement layouts, atomically retained with activation.
+[[label]]
+id = 59
+name = "StatementDefinition"

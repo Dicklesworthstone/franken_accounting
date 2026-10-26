@@ -1,0 +1,7 @@
+# Rel fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "R-1"
+provenance = "synthetic"
+reason = "a line cost moved into two fixed-asset accounts with different amounts, as F9's two-debit cell"
+discipline = "never cited by a case; the relational D's target"

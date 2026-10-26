@@ -1,11 +1,12 @@
-# Work-witness manifest for FA-ART-LAB-01 (FA-INV-03.witness-race bounded schedule exploration).
-# Produced by: cargo test -p fa-kernel --test period_close_invariants post_vs_close_race_has_no_silent_post_into_closed_period
+# Work-witness manifest for FA-ART-LAB-01: the DPOR-guided exploration of the
+# prepared post-vs-close race (fa-0fl, fa-vtzt). Every witness field is what the
+# producing test computes, and it checks them against the ledger on every run.
 schema_version = 1
 artifact_id = "FA-ART-LAB-01"
 kind = "lab-campaign"
-produced_by = "cargo test -p fa-kernel --test period_close_invariants post_vs_close_race_has_no_silent_post_into_closed_period"
-git_commit = "a8775e1ca39278488ec5711d241f3502ccddfd79"
-seed_manifest_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-schedule_count = 10
-explored_interleavings = 10
-certificate_hashes_blake3 = ["4d7f3e21c08a92b150e69a1f28c45601389ab27f81d46e0957a23c61f84b9011", "9c12a874f3b061d8e52340798a1bc452670fed38912a4b6c7d8e9f0123456789"]
+produced_by = "cargo test -p fa --lib book::tests::prepared_post_and_close_preserve_witnesses_under_dpor_guided_exploration"
+git_commit = "e26c60dcd5e60ce833330b893bdc654e54069691"
+seed_manifest_sha256 = "011607c08898d7f9206ce3bdf56e36098cbec3ff22890ffd14494b640dcb1179"
+schedule_count = 13
+explored_interleavings = 2
+certificate_hashes_blake3 = ["d58907e901ab4df7f25cdd2c317e66177b35249b813e4215723013f11c43051c", "0a0e6c13bc30895617311e089e58866ef5b718a690edcf79e9db563cfe4fc901", "e1e03c5f1f9ba692fd65b81600c013c9b84d35658f4edc52e89cf111870ae804", "00999dd88d4522baa288b1fd541abf86e7c7681a24831b168357225a4a5deea8", "f6b54e14f32f49f190595f0901fd02dac4d13d3d12aa119f9e89ad8446148dae", "878c97f0b666050cd019c32245be010df517d61ea8ee306516a6e055d9b6e396", "f716d3bb1c26d6ab677cd9654b85ca3fa992b3402962075140995fa350bf6f63", "9b912ef19f6983fb1f8c3da2e91434153d2eae375a438b3f8b624646a2b5e1e1", "20f812f9fb6198ef6649758e0cf670481a71c6d56df6cb76197f7ccfa71c9cd1", "b981581df91165abe6f165e5bc49a0307ac2f25a9de5b3f8ef60943088522226", "2d8dad092f4f0a0c751ece1c72688e22f6a32dca9fbd580dfbaae646c1d340f2", "b736a5f5d3ae5534130c8606ad387ce356187d309074dfe3f2362a47495700a3", "0fb79417ff1bc69ef2367f14e3d5b9dffb7f510725ac6cc345abcec10b124b17"]

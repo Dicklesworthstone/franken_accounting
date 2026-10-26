@@ -872,9 +872,15 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let markers_checked = check_claims_lint(&claims_config, &known_markers, &doc_refs)?;
     verify_prose_claims_lint(root, &evidence_artifacts, &invariants).map_err(|e| e.to_string())?;
 
-    // 4. Parse nested TOML schemas under object_schemas/, bundle_schema/, and statements/.
+    // 4. Parse nested TOML schemas under object_schemas/, bundle_schema/,
+    //    statements/ and regulatory_edits/.
     let mut extra_files = 0usize;
-    for sub in ["object_schemas", "bundle_schema", "statements"] {
+    for sub in [
+        "object_schemas",
+        "bundle_schema",
+        "statements",
+        "regulatory_edits",
+    ] {
         let sub_dir = reg_dir.join(sub);
         if sub_dir.is_dir() {
             let entries =
@@ -912,6 +918,7 @@ pub fn check_workspace_registries(root: &Path) -> Result<CheckSummary, String> {
     let _g0 = check_g0_report(root)?;
     let _derived_checked =
         check_operation_costs_derived_objects(root, &read("operation_costs.toml")?)?;
+    let _producers_checked = check_artifact_producers(root, &evidence_artifacts)?;
     let fuzz_lib_path = root.join("crates/fa-fuzz/src/lib.rs");
     if fuzz_lib_path.is_file() {
         let fuzz_text = fs::read_to_string(&fuzz_lib_path)
@@ -1056,6 +1063,128 @@ fn collect_write_path_identifiers(root: &Path) -> BTreeSet<String> {
         walk_rs(&root.join(crate_dir), &mut known);
     }
     known
+}
+
+/// The workspace package (under `crates/` or `tools/`) whose `[package]`
+/// table is named `name`. Only that table counts: fa-cli's `[[bin]]` is
+/// also named `fa`.
+fn workspace_package_dir(root: &Path, name: &str) -> Option<PathBuf> {
+    let wanted = format!("name = \"{name}\"");
+    for parent in ["crates", "tools"] {
+        let Ok(entries) = fs::read_dir(root.join(parent)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(text) = fs::read_to_string(entry.path().join("Cargo.toml")) else {
+                continue;
+            };
+            let package_name = text
+                .lines()
+                .map(str::trim)
+                .skip_while(|l| *l != "[package]")
+                .skip(1)
+                .take_while(|l| !l.starts_with('['))
+                .find(|l| l.starts_with("name ="));
+            if package_name == Some(wanted.as_str()) {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
+/// Whether any `.rs` file under `dir` contains one of `needles`.
+fn defines_text(dir: &Path, needles: &[String]) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            defines_text(&path, needles)
+        } else {
+            path.extension().and_then(|s| s.to_str()) == Some("rs")
+                && fs::read_to_string(&path)
+                    .is_ok_and(|text| needles.iter().any(|n| text.contains(n.as_str())))
+        }
+    })
+}
+
+/// Every evidence artifact's `produced_by` names a computation that exists
+/// (fa-vtzt): `cargo test -p <package> [--lib | --test <target>] <filter>`
+/// where the package is a workspace member, a named test target exists, and
+/// the filter's last path segment is a function the package defines. A
+/// witness whose producer does not exist was not produced by it.
+pub fn check_artifact_producers(
+    root: &Path,
+    artifacts: &EvidenceArtifacts,
+) -> Result<usize, String> {
+    for row in &artifacts.artifacts {
+        let fail = |why: String| Err(format!("evidence_artifacts.toml {}: {why}", row.id));
+        let words: Vec<&str> = row.produced_by.split_whitespace().collect();
+        let Some(rest) = words.strip_prefix(&["cargo", "test"]) else {
+            return fail(format!(
+                "produced_by `{}` is not a `cargo test` command",
+                row.produced_by
+            ));
+        };
+        let mut package = None;
+        let mut target = None;
+        let mut filter = None;
+        let mut i = 0;
+        while i < rest.len() {
+            match rest[i] {
+                "-p" | "--package" => {
+                    package = rest.get(i + 1).copied();
+                    i += 2;
+                }
+                "--test" => {
+                    target = rest.get(i + 1).copied();
+                    i += 2;
+                }
+                "--" => break,
+                word if word.starts_with('-') => i += 1,
+                word => {
+                    filter = Some(word);
+                    i += 1;
+                }
+            }
+        }
+        let (Some(package), Some(filter)) = (package, filter) else {
+            return fail(format!(
+                "produced_by `{}` names no `-p <package>` and test",
+                row.produced_by
+            ));
+        };
+        let Some(dir) = workspace_package_dir(root, package) else {
+            return fail(format!("package `{package}` is not a workspace member"));
+        };
+        if let Some(target) = target {
+            let tests = dir.join("tests");
+            if !tests.join(format!("{target}.rs")).is_file()
+                && !tests.join(target).join("main.rs").is_file()
+            {
+                return fail(format!("package `{package}` has no test target `{target}`"));
+            }
+        }
+        // A filter whose modules do not exist matches no test, and cargo
+        // reports zero tests run as success: every module segment must be
+        // declared, as well as the test function itself.
+        let mut segments: Vec<&str> = filter.split("::").collect();
+        let name = segments.pop().unwrap_or(filter);
+        for module in segments {
+            if !defines_text(
+                &dir,
+                &[format!("mod {module};"), format!("mod {module} {{")],
+            ) {
+                return fail(format!("package `{package}` declares no module `{module}`"));
+            }
+        }
+        if !defines_text(&dir, &[format!("fn {name}(")]) {
+            return fail(format!("package `{package}` defines no test `{name}`"));
+        }
+    }
+    Ok(artifacts.artifacts.len())
 }
 
 /// Verify that every object/relation kind named in `derived_objects` of
@@ -1254,6 +1383,20 @@ pub fn check_readme_agents_sync(
         }
     }
     aliases.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
+    // The global flags (`[global]`), which the CLI parser accepts before the
+    // verb as anywhere else (`fa --token t --book ./b period close …`).
+    let (global_value_flags, global_switches): (BTreeSet<String>, BTreeSet<String>) =
+        match verbs_doc.tables.get("global") {
+            Some(global) => (
+                req_str_array("verbs.toml", global, "flags")?
+                    .into_iter()
+                    .collect(),
+                req_str_array("verbs.toml", global, "switches")?
+                    .into_iter()
+                    .collect(),
+            ),
+            None => (BTreeSet::new(), BTreeSet::new()),
+        };
 
     let (above_tldr, _) = readme_text
         .split_once("\n## TL;DR\n")
@@ -1302,6 +1445,28 @@ pub fn check_readme_agents_sync(
             .skip(1)
             .map(str::to_string)
             .collect();
+        // Leading global flags are skipped: a value flag with its value (or
+        // `--flag=value`), a switch alone. An unregistered leading flag stays,
+        // and is refused below as the verb it would be read as.
+        while let Some(first) = words.first().cloned() {
+            let (name, inline) = match first.split_once('=') {
+                Some((name, _)) => (name.to_string(), true),
+                None => (first, false),
+            };
+            let take = if global_value_flags.contains(&name) {
+                if inline { 1 } else { 2 }
+            } else if global_switches.contains(&name) && !inline {
+                1
+            } else {
+                break;
+            };
+            words.drain(..take.min(words.len()));
+        }
+        if words.is_empty() {
+            return Err(format!(
+                "README.md:{pending_line}: command `{joined}` names no verb after its global flags (registries/verbs.toml:1)"
+            ));
+        }
         for (from, to) in &aliases {
             if words.len() >= from.len() && words[..from.len()] == from[..] {
                 let mut expanded = to.clone();
@@ -2094,6 +2259,33 @@ per_procedure_confusion = ["jet.round_amounts:90:0:0:1200"]
             err.contains("README.md:") && err.contains("conjure"),
             "unexpected error: {err}"
         );
+        // Global flags before the verb are skipped, as the CLI parser skips
+        // them; the verb after them is still checked, an unregistered leading
+        // flag is still refused, and a command of flags alone names no verb.
+        for (planted, needle) in [
+            ("fa --token t.token --book ./b conjure --json", "conjure"),
+            ("fa --bogus x period close FY2026-P03", "--bogus"),
+            ("fa --book ./b --json", "names no verb"),
+        ] {
+            let bad = readme_text.replacen(
+                "\n## TL;DR\n",
+                &format!("\n```bash\n{planted}\n```\n\n## TL;DR\n"),
+                1,
+            );
+            let err = check_readme_agents_sync(
+                &bad,
+                &agents_text,
+                &check_sh_text,
+                &verbs_text,
+                &known_markers,
+                &prefixes,
+            )
+            .expect_err(planted);
+            assert!(
+                err.contains("README.md:") && err.contains(needle),
+                "{planted}: unexpected error: {err}"
+            );
+        }
 
         // (c) Status date > 7 days from verdict date fails with file:line.
         let stale_readme = readme_text.replacen("Status (2026-", "Status (2025-", 1);
@@ -2130,6 +2322,48 @@ per_procedure_confusion = ["jet.round_amounts:90:0:0:1200"]
             err.contains("AGENTS.md:") && err.contains("scripts/check.sh:"),
             "unexpected error: {err}"
         );
+    }
+
+    /// fa-vtzt: a witness's producer must exist. The first planted value is
+    /// the producer FA-ART-LAB-01 once named, a crate and test that never
+    /// existed.
+    #[test]
+    fn artifact_producers_name_existing_tests() {
+        let root = default_workspace_root();
+        let text = fs::read_to_string(root.join("registries/evidence_artifacts.toml"))
+            .expect("evidence_artifacts.toml");
+        let ledger = EvidenceArtifacts::from_text(&text).expect("the ledger parses");
+        assert_eq!(
+            check_artifact_producers(&root, &ledger).expect("every producer exists"),
+            ledger.artifacts.len()
+        );
+        for (producer, why) in [
+            (
+                "cargo test -p fa-kernel --test period_close_invariants post_vs_close_race_has_no_silent_post_into_closed_period",
+                "`fa-kernel` is not a workspace member",
+            ),
+            (
+                "cargo test -p fa --lib book::tests::an_exploration_nobody_wrote",
+                "defines no test `an_exploration_nobody_wrote`",
+            ),
+            // The test exists, but in module calibration_tests: this filter
+            // runs zero tests, and cargo calls that success.
+            (
+                "cargo test -p fa-lantern --test lantern calibration::labeled_procedures_measure_what_the_calibration_registry_pins",
+                "declares no module `calibration`",
+            ),
+            (
+                "cargo test -p fa-lantern --test calibration labeled_procedures_measure_what_the_calibration_registry_pins",
+                "no test target `calibration`",
+            ),
+            ("bash scripts/campaign.sh", "is not a `cargo test` command"),
+        ] {
+            let mut planted = ledger.clone();
+            planted.artifacts[0].produced_by = producer.to_string();
+            let err = check_artifact_producers(&root, &planted)
+                .expect_err("a producer that does not exist is refused");
+            assert!(err.contains(why), "{producer}: {err}");
+        }
     }
 
     #[test]

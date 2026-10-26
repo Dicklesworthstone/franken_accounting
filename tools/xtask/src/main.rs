@@ -292,13 +292,13 @@ mod tests {
 
         let j = render_summary(true).expect("json summary");
         assert!(j.contains("\"gate_g1_live\":18,\"gate_g1_total\":18"));
-        assert!(j.contains("\"mutants\":37"));
+        assert!(j.contains("\"mutants\":38"));
     }
 
     #[test]
     fn workspace_mutants_manifest_is_green_and_deterministic() {
         let root = default_workspace_root();
-        assert_eq!(anchor_workspace_mutants(&root).expect("anchored"), 37);
+        assert_eq!(anchor_workspace_mutants(&root).expect("anchored"), 38);
         let ids = MutantLedger::embedded().expect("ledger").mutants;
         let all_killed: BTreeMap<String, String> = ids
             .iter()
@@ -308,8 +308,8 @@ mod tests {
         let m2 = evaluate_workspace_mutants(&root, &all_killed).expect("mutants lane");
         assert_eq!(m1, m2);
         assert!(m1.is_green());
-        assert_eq!(m1.total, 37);
-        assert_eq!(m1.killed, 37);
+        assert_eq!(m1.total, 38);
+        assert_eq!(m1.killed, 38);
         assert!(m1.survivors.is_empty());
         assert_eq!(m1.to_json(), m2.to_json());
     }

@@ -72,7 +72,7 @@ pub(super) fn from_cash<V: Vfs + Clone, B: Vfs + Clone>(
     cx: &PurposeContexts,
     principal: VId,
     capability: &Capability,
-    cash: CashFlow,
+    cash: CashFlowBasis,
     income_periods: &[String],
     definition: &IndirectCashFlowDefinition,
 ) -> Outcome<IndirectCashFlow> {
@@ -185,9 +185,10 @@ pub(super) fn from_cash<V: Vfs + Clone, B: Vfs + Clone>(
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Read an indirect earnings-to-cash workpaper at one native prefix under
-    /// current whole-book Read authority. HEAD resolves once in the direct cash
-    /// reader. Income, historical chart expansion and all adjustment citations
-    /// use that same prefix. No posting, new runtime or protected text read.
+    /// current whole-book Read authority. HEAD resolves once in the selected
+    /// explicit, policy or split cash reader. Income, historical chart expansion
+    /// and all adjustment citations use that same prefix. No posting, new runtime
+    /// or protected text read.
     pub fn indirect_cash_flow(
         &self,
         cx: &PurposeContexts,
@@ -195,7 +196,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &Capability,
         request: &IndirectCashFlowRequest,
     ) -> Outcome<IndirectCashFlow> {
-        let cash = match self.cash_flow(
+        let cash = match crate::cash_flow_basis::read(
+            self,
             cx,
             principal,
             capability,

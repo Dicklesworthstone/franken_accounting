@@ -26,16 +26,17 @@ pub(crate) fn accounts<'a>(proposals: impl IntoIterator<Item = &'a EntryPayload>
 }
 
 /// Called only after payload scope/authority admission. Restrict financial
-/// evaluation and diagnostics to accounts in the authorized proposed effects;
-/// the wider native scan is a conservative internal conflict witness.
+/// evaluation, diagnostics, and point-read conflict witnesses to accounts in
+/// the authorized proposed effects.
 pub(crate) fn admit<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     ctx: &PurposeContexts,
     book_id: Id128,
     accounts: &BTreeSet<VId>,
+    staged: impl IntoIterator<Item = VId>,
 ) -> Outcome<()> {
-    admit_including(txn, db, ctx, book_id, accounts, None)
+    admit_including(txn, db, ctx, book_id, accounts, staged, None)
 }
 
 /// Automatic effects need a verdict before staging, so a blocked schedule
@@ -44,6 +45,7 @@ pub(crate) fn admit_addition<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     ctx: &PurposeContexts,
+    staged: impl IntoIterator<Item = VId>,
     vid: VId,
     entry: &Entry,
 ) -> Outcome<()> {
@@ -54,6 +56,7 @@ pub(crate) fn admit_addition<V: asupersync::fs::Vfs + Clone>(
         ctx,
         entry.proposal.book_id,
         &accounts,
+        staged,
         Some((vid, entry)),
     )
 }
@@ -64,30 +67,53 @@ fn admit_including<V: asupersync::fs::Vfs + Clone>(
     ctx: &PurposeContexts,
     book_id: Id128,
     accounts: &BTreeSet<VId>,
+    staged: impl IntoIterator<Item = VId>,
     extra: Option<(VId, &Entry)>,
 ) -> Outcome<()> {
     if accounts.is_empty() {
         return Ok(Ok(()));
+    }
+    for account in accounts {
+        txn.vertex(db, *account)?;
     }
     let maximum = fa_registry::register_capacity_embedded()
         .map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let base = crate::genesis::read_book_spec_at(db, txn.basis())?
         .ok_or_else(|| KernelError::Corrupt("register capacity requires a book".into()))?
         .base_unit;
+    let mut rows: BTreeMap<VId, _> = db
+        .vertices_at(txn.basis())?
+        .into_iter()
+        .filter(|row| row.labels.contains(&label::ENTRY))
+        .map(|row| (row.vid, row))
+        .collect();
+    for vid in staged {
+        if let Some(row) = txn.vertex(db, vid)?
+            && row.labels.contains(&label::ENTRY)
+        {
+            rows.insert(vid, row);
+        }
+    }
     let mut entries = Vec::new();
     let mut resolved = BTreeSet::new();
     let mut runs = BTreeMap::new();
-    for row in txn.vertices(db)? {
+    for row in rows.into_values() {
         ctx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
-        if !row.labels.contains(&label::ENTRY) {
-            continue;
-        }
         let entry = Entry::decode(&crate::rows::bytes(
             &row,
             property::FA_PAYLOAD,
             "entry._fa_payload",
         )?)?;
         if entry.proposal.book_id != book_id || entry.proposal.branch_id != Id128::TRUNK {
+            continue;
+        }
+        let relevant = entry.proposal.class == EntryClass::RESOLUTION
+            || entry
+                .proposal
+                .legs
+                .iter()
+                .any(|l| accounts.contains(&l.account_ref));
+        if !relevant {
             continue;
         }
         if !crate::migration::visible_in(txn, db, &entry, &mut runs)? {

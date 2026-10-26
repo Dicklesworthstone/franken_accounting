@@ -1041,16 +1041,30 @@ pub fn prepare_bank_reconciliation<V: Vfs + Clone>(
     ))))
 }
 
+/// The verified reconciliation history at one committed prefix. It reads
+/// only committed rows at `at`, never a transaction's overlay, so every
+/// member of one batch (one transaction, one basis) shares it (fa-rcw1).
+#[derive(Clone, Debug)]
+pub struct ReconciliationHistory {
+    at: CommitSeq,
+    recorded: Vec<BankReconciliationRecorded>,
+}
+
 /// Witness each affected account even when there is no close. New close
 /// publication adds an ATTESTS edge to that account; FGDB's adjacency endpoint
 /// conflict check invalidates a prepared post without serializing disjoint
 /// accounts through a global vertex-population scan.
+///
+/// `history` is reused when it was verified at this transaction's basis and
+/// verified there otherwise; the account and attestation witnesses are still
+/// read through `txn` on every call.
 pub fn witness_reconciliation_locks<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
     txn: &WriteTxn,
     accounts: &[VId],
+    history: &mut Option<ReconciliationHistory>,
 ) -> Outcome<Vec<BankReconciliationLock>> {
     let accounts: BTreeSet<_> = accounts.iter().copied().collect();
     if accounts.is_empty() {
@@ -1059,10 +1073,25 @@ pub fn witness_reconciliation_locks<V: Vfs + Clone>(
     for account in &accounts {
         txn.vertex(db, *account)?;
     }
-    let history = match history_at(db, cx, book, txn.basis())? {
-        Ok(history) => history,
-        Err(refusal) => return Ok(Err(refusal)),
+    let at = txn.basis();
+    let recorded = match history.take() {
+        Some(verified) if verified.at == at => verified.recorded,
+        _ => match history_at(db, cx, book, at)? {
+            Ok(recorded) => recorded,
+            Err(refusal) => return Ok(Err(refusal)),
+        },
     };
+    let locks = locks_for(db, txn, &accounts, &recorded);
+    *history = Some(ReconciliationHistory { at, recorded });
+    locks
+}
+
+fn locks_for<V: Vfs + Clone>(
+    db: &Database<V>,
+    txn: &WriteTxn,
+    accounts: &BTreeSet<VId>,
+    history: &[BankReconciliationRecorded],
+) -> Outcome<Vec<BankReconciliationLock>> {
     let mut locks = Vec::new();
     for recorded in history {
         if !accounts.contains(&recorded.claim.manifest.account) {

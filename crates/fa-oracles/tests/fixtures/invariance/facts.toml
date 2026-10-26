@@ -1,0 +1,13 @@
+# Invariance fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "S-1"
+provenance = "synthetic"
+reason = "a round-amount Original entry with a party, the D row's target"
+discipline = "never cited by a case; the target the filler must not touch"
+
+[[fact]]
+id = "S-2"
+provenance = "synthetic"
+reason = "a second target entry"
+discipline = "never cited by a case; the target the filler must not touch"

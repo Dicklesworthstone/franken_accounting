@@ -18,7 +18,7 @@ use fa_time::DateDay;
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
-use super::{OpenItem, carries_open_items, fold_open_items};
+use super::{OpenItem, carries_open_items, fold_open_items, is_live};
 use crate::{KernelError, RegisterError, entries_at, resolve_known_at};
 
 /// A literal payload fold at both a civil-date cutoff and a recorded prefix.
@@ -107,6 +107,43 @@ fn restrict_effective(
         }
     }
     entries.retain(|(_, entry, _)| entry.proposal.effective_date <= through);
+    // A valid recorded history can project to a live receipt whose target is
+    // already reversed: the receipt's undo can have a later effective date
+    // than the target's reversal. The payload fold omits dead target entries,
+    // so accepting this selection would silently lose the receipt's applied
+    // amount rather than preserve it as an unapplied credit.
+    let mut reversed_by = BTreeMap::new();
+    for (vid, entry, _) in entries.iter() {
+        if entry.proposal.class != EntryClass::REVERSAL {
+            continue;
+        }
+        if let [supersession] = entry.proposal.supersession.as_slice()
+            && supersession.kind == SupersessionKind::Reverses
+            && reversed_by.insert(supersession.target.vid, *vid).is_some()
+        {
+            return Err(KernelError::Corrupt("an entry is reversed twice".into()).into());
+        }
+    }
+    for (vid, entry, _) in entries.iter() {
+        if !carries_open_items(entry) || !is_live(*vid, &reversed_by)? {
+            continue;
+        }
+        for leg in &entry.proposal.legs {
+            if account.is_some_and(|account| account != leg.account_ref) {
+                continue;
+            }
+            for settlement in &leg.settles {
+                if !is_live(settlement.target.vid, &reversed_by)? {
+                    return Err(RegisterError::InvalidSelection(format!(
+                        "effective cutoff {through} strands a live settlement from \
+                         {vid:?} on reversed target {:?}; select a cutoff including \
+                         the application's undo or inspect the known-at-only open items",
+                        settlement.target.vid
+                    )));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -330,6 +367,87 @@ mod tests {
             Err(RegisterError::InvalidSelection(_))
         ));
         assert!(at(&history, "2026-01-31").is_empty());
+    }
+
+    #[test]
+    fn a_live_application_cannot_disappear_with_its_reversed_target() {
+        let invoice = invoice("2026-01-10");
+        let receipt = receipt(&invoice, "2026-01-10");
+        let undo_receipt = reverse(&receipt, 3, "2026-02-10");
+        let undo_invoice = reverse(&invoice, 4, "2026-01-20");
+        let history = vec![invoice, receipt, undo_receipt, undo_invoice];
+
+        // Recorded order is valid: undo the applying receipt before reversing
+        // its invoice. Only the effective-date projection strands the credit.
+        assert!(
+            fold_open_items(&history, Some(RECEIVABLE))
+                .unwrap()
+                .is_empty()
+        );
+        for account in [None, Some(RECEIVABLE)] {
+            assert!(matches!(
+                restrict_effective(&mut history.clone(), account, date("2026-01-31")),
+                Err(RegisterError::InvalidSelection(message)) if message.contains("strands a live settlement")
+            ));
+        }
+        assert_eq!(invoice_item(&at(&history, "2026-01-19")).open, 60);
+        assert!(at(&history, "2026-02-10").is_empty());
+
+        // An unrelated cash selection still has its literal live debit.
+        let mut cash = history.clone();
+        restrict_effective(&mut cash, Some(CASH), date("2026-01-31")).unwrap();
+        let cash = fold_open_items(&cash, Some(CASH)).unwrap();
+        assert_eq!(cash.len(), 1);
+        assert_eq!(cash[0].open, 40);
+    }
+
+    #[test]
+    fn final_effective_liveness_does_not_impose_commit_prefix_capacity() {
+        let invoice = invoice("2026-01-10");
+        let apply = |id, day| {
+            let mut application = leg(Side::Credit, RECEIVABLE, 60);
+            application.settles.push(Settlement {
+                target: reference(&invoice),
+                ordinal: 0,
+                amount: Amount::new(UnitId(1), 60),
+            });
+            record(
+                id,
+                day,
+                EntryClass::ORIGINAL,
+                vec![leg(Side::Debit, CASH, 60), application],
+                Vec::new(),
+            )
+        };
+        let first = apply(2, "2026-01-11");
+        let undo_first = reverse(&first, 3, "2026-02-10");
+        let second = apply(4, "2026-01-12");
+        let undo_second = reverse(&second, 5, "2026-01-13");
+        let history = vec![invoice, first, undo_first, second, undo_second];
+
+        // Filtering away the first undo creates an intermediate 120-on-100
+        // prefix, but the final projection has only the first 60 live. It is
+        // a historical selection, not a sequence of newly admitted commits.
+        let january = at(&history, "2026-01-31");
+        let item = invoice_item(&january);
+        assert_eq!(item.applied, 60);
+        assert_eq!(item.open, 40);
+        assert_eq!(item.applications.len(), 2);
+        assert!(item.applications[0].live);
+        assert!(!item.applications[1].live);
+        assert_eq!(invoice_item(&at(&history, "2026-02-10")).open, 100);
+    }
+
+    #[test]
+    fn duplicate_reversals_remain_corruption_in_effective_history() {
+        let invoice = invoice("2026-01-10");
+        let first = reverse(&invoice, 2, "2026-01-20");
+        let second = reverse(&invoice, 3, "2026-01-21");
+        let mut history = vec![invoice, first, second];
+        assert!(matches!(
+            restrict_effective(&mut history, Some(RECEIVABLE), date("2026-01-31")),
+            Err(RegisterError::Kernel(KernelError::Corrupt(_)))
+        ));
     }
 
     #[test]

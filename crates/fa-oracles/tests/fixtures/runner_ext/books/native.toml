@@ -1,0 +1,344 @@
+# Runner fixture native book: one quarter opened, posted to, closed and locked; an Original
+# round-amount entry, an equal-split allocation, a manually asserted entry, a two-entry batch, a
+# recorded event, a jet.round_amounts run with an explicit parameter, its findings filed in the
+# provenance engagement, and a rule checked, proposed and backtested against itself. Synthetic;
+# amounts are fixture values.
+
+[book]
+variant = "native"
+opening_date = "2026-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2026Q1"
+start = "2026-01-01"
+end = "2026-03-31"
+fiscal_year = 2026
+kind = "Normal"
+
+[[period]]
+code = "2026Q2"
+start = "2026-04-01"
+end = "2026-06-30"
+fiscal_year = 2026
+kind = "Normal"
+
+[[principal]]
+label = "selftest-preparer-1"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-closer-1"
+profile = "Human"
+grants = ["read", "close"]
+
+[[principal]]
+label = "case-approver-1"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "examiner-1"
+profile = "Human"
+grants = ["read", "produce"]
+
+[[account]]
+code = "1000"
+name_fact = "S-1"
+type = "Asset"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6000"
+name_fact = "S-1"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6100"
+name_fact = "S-2"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[account]]
+code = "6200"
+name_fact = "S-2"
+type = "Expense"
+role = ""
+opened = "2026-01-01"
+role_map_rule = "role_map"
+
+[[party]]
+id = "V-1"
+label = "fixture-vendor-1"
+kind = "Vendor"
+
+[[document]]
+id = "DOC-PH-S-1"
+stub_of = "placeholder:S-1"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-S-2"
+stub_of = "placeholder:S-2"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-S-4"
+stub_of = "placeholder:S-4"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-S-5"
+stub_of = "placeholder:S-5"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[document]]
+id = "DOC-PH-S-6"
+stub_of = "placeholder:S-6"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[intent]]
+id = "S-1"
+fact = "S-1"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-15"
+memo = "rent (runner fixture)"
+evidence = "DOC-PH-S-1"
+idempotency_key = "runner-ext-S-1"
+
+[[intent]]
+id = "S-2"
+fact = "S-2"
+class = "Allocation"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-10"
+memo = "rent split across two cost lines (runner fixture)"
+evidence = "DOC-PH-S-2"
+idempotency_key = "runner-ext-S-2"
+allocation_law = "EqualSplitResidualFirst"
+allocation_total = "300.01"
+allocation_source = "6000"
+allocation_source_side = "credit"
+allocation_targets = ["6100", "6200"]
+
+[[intent]]
+id = "S-3"
+fact = "S-3"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-02-25"
+memo = "petty cash (runner fixture)"
+evidence = "manual_assertion:InternalTransfer"
+idempotency_key = "runner-ext-S-3"
+
+[[intent]]
+id = "S-4"
+fact = "S-4"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-02"
+memo = "supplies (runner fixture)"
+evidence = "DOC-PH-S-4"
+idempotency_key = "runner-ext-S-4"
+
+[[intent]]
+id = "S-5"
+fact = "S-5"
+class = "Original"
+principal = "selftest-preparer-1"
+effective_date = "2026-03-03"
+memo = "supplies (runner fixture)"
+evidence = "DOC-PH-S-5"
+idempotency_key = "runner-ext-S-5"
+
+[[leg]]
+intent = "S-1"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "3000.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "S-1"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "3000.00"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "S-3"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "42.50"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "S-3"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "42.50"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "S-4"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "17.25"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "S-4"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "17.25"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "S-5"
+ordinal = 0
+account = "6000"
+side = "Dr"
+amount_literal = "8.10"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[leg]]
+intent = "S-5"
+ordinal = 1
+account = "1000"
+side = "Cr"
+amount_literal = "8.10"
+amount_rule = "synthetic"
+unit = "USD"
+
+[[event]]
+id = "EV-S-6"
+kind = "sale"
+occurred_on = "2026-03-05"
+evidence = ["DOC-PH-S-6"]
+participants = ["V-1"]
+resource_label = "cash"
+resource_amount_literal = "100.00"
+resource_amount_rule = "synthetic"
+resource_unit = "USD"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2026Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "intent"
+ref = "S-1"
+
+[[step]]
+seq = 3
+kind = "allocate"
+ref = "S-2"
+
+[[step]]
+seq = 4
+kind = "intent"
+ref = "S-3"
+
+[[step]]
+seq = 5
+kind = "batch"
+ref = "S-4..S-5"
+
+[[step]]
+seq = 6
+kind = "event_record"
+ref = "EV-S-6"
+principal = "selftest-preparer-1"
+
+[[step]]
+seq = 7
+kind = "finding_record"
+ref = "jet.round_amounts@1"
+principal = "examiner-1"
+params = ["round_power=3"]
+
+[[step]]
+seq = 8
+kind = "engagement_file"
+ref = "finding:runner_ext-D-01"
+principal = "examiner-1"
+
+[[step]]
+seq = 9
+kind = "period_soft_close"
+ref = "2026Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 10
+kind = "period_close"
+ref = "2026Q1"
+principal = "case-closer-1"
+
+[[step]]
+seq = 11
+kind = "period_lock"
+ref = "2026Q1"
+principal = "case-closer-1"
+approvers = ["case-approver-1"]
+
+[[step]]
+seq = 12
+kind = "rule_check"
+ref = "rules/cash_sale.rule"
+principal = "selftest-preparer-1"
+
+[[step]]
+seq = 13
+kind = "rule_propose"
+ref = "rules/cash_sale.rule"
+principal = "selftest-preparer-1"
+
+[[step]]
+seq = 14
+kind = "rule_backtest"
+ref = "rules/cash_sale.rule"
+principal = "selftest-preparer-1"
+params = ["compare=13", "from=2026-01-01", "to=2026-03-31"]
+
+[[default]]
+attribute = "evidence_attached"
+rule = "placeholder_reviewed"
+rationale = "the fixture's documents are placeholders reviewed by case-second-reader (plan §2.6)"

@@ -103,13 +103,19 @@ commands:
   bundle       <bundle> --key K... [--receipt R]
                                                 an evidence bundle (.fab), every predicate graded
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
-               [--units N,N,...]               independently recompute native trial-balance rows
-                                                or statement lines. V1 statements require --units;
+               [--units N,N,...]               independently recompute native or dimension-filtered
+                                                trial balances, statements, open items, balance explanations,
+                                                effective-date aging, reconciliation, account roll-forwards or direct cash flows.
+                                                V1 statements require --units;
                                                 V2 registry bundles require --receipt or trusted --expect
   ads          <dir> --key K... [--receipt R]   an ADS extract (fa export ads --with-proofs): its
                                                 bundle graded, then GL_Detail exactly the entries it
-                                                proves through the certificate's cutoff and
-                                                Trial_Balance exactly their refold
+                                                proves through the certificate's cutoff,
+                                                Trial_Balance exactly their refold and, against a
+                                                complete prefix, Chart_of_Accounts its declarations
+  saft         <dir> --key K... [--receipt R]   a SAF-T 2.00 extract (fa export saft --with-proofs),
+                                                judged as ads: transactions, balance assertions and
+                                                accounts, read without the producer's parser
 
 ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its own):
   --key K...             C is a signed TransparencyCheckpoint; its signature by one of
@@ -138,7 +144,7 @@ expectations) and the document and redacted-view commands: fa-verify --help.
 exit codes: 0 verified · 2 usage · 5 file I/O · 8 verification failed
 ";
 
-const COMMANDS: [&str; 11] = [
+const COMMANDS: [&str; 12] = [
     "state",
     "checkpoint",
     "inclusion",
@@ -150,6 +156,7 @@ const COMMANDS: [&str; 11] = [
     "bundle",
     "report",
     "ads",
+    "saft",
 ];
 
 /// Flags that take a value, and the switches.
@@ -203,7 +210,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--unsigned-checkpoint",
         ],
         "doc-commit" => &["--kind", "--expect"],
-        "bundle" | "ads" => &["--key", "--receipt"],
+        "bundle" | "ads" | "saft" => &["--key", "--receipt"],
         "report" => &["--key", "--receipt", "--checkpoint", "--expect", "--units"],
         _ => &[],
     }
@@ -214,6 +221,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Json {
     Null,
+    Bool(bool),
     Int(i64),
     Str(String),
     List(Vec<Json>),
@@ -240,6 +248,7 @@ impl Json {
     fn write(&self, out: &mut String) {
         match self {
             Self::Null => out.push_str("null"),
+            Self::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
             Self::Int(n) => out.push_str(&n.to_string()),
             Self::Str(s) => write_str(out, s),
             Self::List(items) => {
@@ -1309,7 +1318,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         .ok_or_else(|| {
                             usage(
                                 format!("`--expect {raw}` is not 64 hex characters"),
-                                "pass the independently selected native report certificate digest",
+                                "pass the independently selected report certificate digest (the outer certificate for composed aging, reconciliation, roll-forward and cash-flow reports)",
                             )
                         })
                 })
@@ -1369,16 +1378,48 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ("effective_through", day(report.effective_through)),
                             (
                                 "report_mode",
-                                s(if report.activity { "activity" } else { "stock" }),
+                                s(if report.explanation.is_some() {
+                                    "balance_explanation"
+                                } else if report.aging_reconciliation.is_some() {
+                                    "aging_reconciliation"
+                                } else if report.aging.is_some() {
+                                    "effective_date_aging"
+                                } else if let Some(cash) = &report.cash_flow {
+                                    if cash.policy.is_some() {
+                                        "policy_cash_flow"
+                                    } else {
+                                        "cash_flow"
+                                    }
+                                } else if report.roll_forward.is_some() {
+                                    "roll_forward"
+                                } else if report.open_items.is_some() {
+                                    "open_items"
+                                } else if report.activity {
+                                    "activity"
+                                } else {
+                                    "stock"
+                                }),
                             ),
                             ("records", n(report.checked_records as u64)),
                             (
                                 "rows",
-                                n(report
-                                    .statement
-                                    .as_ref()
-                                    .map_or(report.rows.len(), |statement| statement.lines.len())
-                                    as u64),
+                                n(if let Some(explanation) = &report.explanation {
+                                    explanation.contributions.len()
+                                } else if let Some(comparison) = &report.aging_reconciliation {
+                                    comparison.rows.len()
+                                } else if let Some(aging) = &report.aging {
+                                    aging.items.len()
+                                } else if let Some(cash) = &report.cash_flow {
+                                    cash.units.len()
+                                } else if let Some(schedule) = &report.roll_forward {
+                                    schedule.rows.len()
+                                } else if let Some(open_items) = &report.open_items {
+                                    open_items.items.len()
+                                } else if let Some(statement) = &report.statement {
+                                    statement.lines.len()
+                                } else {
+                                    report.rows.len()
+                                } as u64),
                             ),
                             ("unit_universe_source", s(report.unit_universe_source)),
                             (
@@ -1387,8 +1428,79 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ),
                         ],
                     ));
+                    if let Some(time) = &report.time_selection {
+                        checks.push(Check::pass(
+                            "time_selection",
+                            "authenticated_tick_bucket",
+                            vec![
+                                ("requested_utc_ns", n(time.requested_utc_ns)),
+                                ("frontier", n(time.frontier)),
+                                ("resolved_seq", n(time.resolved_seq)),
+                                ("precision_grade", s("tick_bucket")),
+                                ("lower_entry", s(format!("{:032x}", time.lower_entry))),
+                                ("lower_recorded_at", n(time.lower.recorded_at)),
+                                ("lower_observed_utc_ns", n(time.lower.observed_utc_ns)),
+                                (
+                                    "upper_entry",
+                                    time.upper_entry
+                                        .map_or(Json::Null, |entry| s(format!("{entry:032x}"))),
+                                ),
+                                (
+                                    "upper_recorded_at",
+                                    time.upper.map_or(Json::Null, |tick| n(tick.recorded_at)),
+                                ),
+                                (
+                                    "upper_observed_utc_ns",
+                                    time.upper
+                                        .map_or(Json::Null, |tick| n(tick.observed_utc_ns)),
+                                ),
+                                ("source_grade", s(time.source_grade())),
+                                ("physical_commit_time", s("not_judged")),
+                                ("external_utc_accuracy", s("not_judged")),
+                                ("book_genesis_policy_admission", s("not_judged")),
+                            ],
+                        ));
+                    }
+                    if let Some(dimension) = &report.dimension {
+                        checks.push(Check::pass(
+                            "dimension_filter",
+                            "authenticated_journal",
+                            vec![
+                                ("dimension", s(&dimension.dimension)),
+                                ("value", s(&dimension.value)),
+                                (
+                                    "included_values",
+                                    Json::List(dimension.values.iter().map(s).collect()),
+                                ),
+                                (
+                                    "selection",
+                                    s("tagged legs, including declared descendants"),
+                                ),
+                                ("monetary_footing", s("not required for a filtered view")),
+                            ],
+                        ));
+                    }
                     if let Some(statement) = &report.statement {
                         checks.extend(statement_checks(statement, report.unit_universe_source));
+                    }
+                    if let Some(open_items) = &report.open_items {
+                        checks.extend(open_items_checks(open_items));
+                    }
+                    if let Some(explanation) = &report.explanation {
+                        checks.extend(explanation_checks(explanation));
+                    }
+                    if let Some(aging) = &report.aging {
+                        checks.extend(aging_checks(aging));
+                    }
+                    if let Some(comparison) = &report.aging_reconciliation {
+                        checks.extend(reconciliation_checks(comparison));
+                        checks.extend(aging_checks(&comparison.aging));
+                    }
+                    if let Some(schedule) = &report.roll_forward {
+                        checks.extend(roll_forward_checks(schedule));
+                    }
+                    if let Some(cash) = &report.cash_flow {
+                        checks.extend(cash_flow_checks(cash));
                     }
                     for row in &report.rows {
                         checks.push(Check::pass(
@@ -1441,6 +1553,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 })
             };
             let certificate = text("ADS_Coordinate_Certificate.toml")?;
+            let chart_of_accounts = text("Chart_of_Accounts.txt")?;
             let gl_detail = text("GL_Detail.txt")?;
             let trial_balance = text("Trial_Balance.txt")?;
             let bundle = load(read, &format!("{dir}/ADS_Proof.fab"), false)?;
@@ -1451,6 +1564,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             Ok(
                 match verify_ads(
                     &certificate,
+                    &chart_of_accounts,
                     &gl_detail,
                     &trial_balance,
                     &bundle,
@@ -1464,12 +1578,806 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         detail: Vec::new(),
                         reason: Some(e.to_string()),
                     }],
-                    Ok(report) => ads_checks(&report),
+                    Ok(report) => ads_checks(&report, "ads_extract"),
+                },
+            )
+        }
+        "saft" => {
+            let dir = subject(args, "a SAF-T package directory")?;
+            let keys = args.all("--key");
+            if keys.is_empty() {
+                return Err(usage(
+                    "no trusted key: a SAF-T extract is judged only against keys you name",
+                    "pass the book's checkpoint public key with `--key <64 hex>`",
+                ));
+            }
+            let keys: Vec<[u8; 32]> = keys.into_iter().map(key).collect::<Result<_, _>>()?;
+            let path = format!("{dir}/SAF-T.xml");
+            let xml = String::from_utf8(load(read, &path, false)?).map_err(|_| {
+                usage(
+                    format!("`{path}` is not UTF-8 text"),
+                    "name the directory `fa export saft --with-proofs --out <dir>` wrote",
+                )
+            })?;
+            let bundle = load(read, &format!("{dir}/SAFT_Proof.fab"), false)?;
+            let receipt = match args.one("--receipt") {
+                Some(p) => load(read, p, args.hex)?,
+                None => load(read, &format!("{dir}/SAFT_Proof.receipt"), false)?,
+            };
+            Ok(
+                match crate::saft::verify_saft(&xml, &bundle, &keys, Some(&receipt)) {
+                    Err(e) => vec![Check {
+                        name: "bundle",
+                        scope: "format",
+                        verdict: Verdict::Fail,
+                        detail: Vec::new(),
+                        reason: Some(e.to_string()),
+                    }],
+                    Ok(report) => ads_checks(&report, "saft_extract"),
                 },
             )
         }
         _ => unreachable_command(cmd),
     }
+}
+
+fn account_check(name: &'static str, account: &crate::report::VerifiedReportAccount) -> Check {
+    let policy = match account.unit_policy {
+        crate::report::OpenItemUnitPolicy::Single(unit) => format!("single:{unit}"),
+        crate::report::OpenItemUnitPolicy::AnyCurrency => "any_currency".into(),
+        crate::report::OpenItemUnitPolicy::AnyUnit => "any_unit".into(),
+    };
+    Check::pass(
+        name,
+        "recomputation",
+        vec![
+            ("account", s(format!("{:032x}", account.account))),
+            ("code", s(&account.code)),
+            ("name", s(&account.name)),
+            ("account_type", n(u64::from(account.account_type))),
+            (
+                "normal_balance",
+                s(if account.normal_balance == 0 {
+                    "debit"
+                } else {
+                    "credit"
+                }),
+            ),
+            ("is_leaf", Json::Bool(account.is_leaf)),
+            ("unit_policy", s(policy)),
+            (
+                "limit_lower",
+                account
+                    .limit
+                    .as_ref()
+                    .and_then(|limit| limit.lower)
+                    .map_or(Json::Null, |value| s(value.to_string())),
+            ),
+            (
+                "limit_upper",
+                account
+                    .limit
+                    .as_ref()
+                    .and_then(|limit| limit.upper)
+                    .map_or(Json::Null, |value| s(value.to_string())),
+            ),
+            (
+                "limit_scope",
+                account.limit.as_ref().map_or(Json::Null, |limit| {
+                    s(if limit.period_scoped {
+                        "period"
+                    } else {
+                        "lifetime"
+                    })
+                }),
+            ),
+            ("created_at", n(account.created_at)),
+        ],
+    )
+}
+
+fn explanation_checks(report: &crate::report::VerifiedBalanceExplanation) -> Vec<Check> {
+    let mut checks = vec![
+        Check::pass(
+            "balance_explanation",
+            "authenticated_parameters",
+            vec![
+                ("account", s(format!("{:032x}", report.account))),
+                ("period", s(&report.period)),
+                ("known_at", n(report.known_at)),
+                ("unit_universe_source", s("authenticated-registry")),
+                ("reason_code_source", s("authenticated-registry")),
+                ("history", s("complete recorded-time cell history")),
+                (
+                    "evidence_heads",
+                    s("committed citations; document authenticity not judged"),
+                ),
+            ],
+        ),
+        account_check("balance_explanation_account", &report.account_row),
+        Check::pass(
+            "balance_explanation_fold",
+            "recomputation",
+            vec![
+                ("scope", s("whole selected period")),
+                ("fold_digest", h(&report.fold_digest)),
+                ("watermark", report.watermark.map_or(Json::Null, n)),
+                (
+                    "last_changed_at",
+                    report.last_changed_at().map_or(Json::Null, n),
+                ),
+                ("posted_cells", n(report.cells.len() as u64)),
+                ("pending_cells", n(report.pending.len() as u64)),
+            ],
+        ),
+    ];
+    for (column, cells) in [("posted", &report.cells), ("pending", &report.pending)] {
+        for cell in cells {
+            checks.push(Check::pass(
+                "balance_explanation_cell",
+                "recomputation",
+                vec![
+                    ("account", s(format!("{:032x}", cell.account))),
+                    ("period", s(&cell.period)),
+                    ("unit", n(u64::from(cell.unit_id))),
+                    ("column", s(column)),
+                    ("debits", s(cell.debits.to_string())),
+                    ("credits", s(cell.credits.to_string())),
+                    ("entry_count", n(cell.entry_count)),
+                ],
+            ));
+        }
+    }
+    for c in &report.contributions {
+        checks.push(Check::pass(
+            "balance_contribution",
+            "recomputation",
+            vec![
+                ("entry", s(format!("{:032x}", c.entry))),
+                ("entry_digest", h(&c.entry_digest)),
+                ("class", n(u64::from(c.class))),
+                ("effective_date", day(Some(c.effective_date))),
+                ("recorded_at", n(c.recorded_at)),
+                ("visible_at", n(c.visible_at)),
+                ("ordinal", n(u64::from(c.ordinal))),
+                ("side", s(if c.debit { "debit" } else { "credit" })),
+                ("unit", n(u64::from(c.unit_id))),
+                ("mantissa", s(c.mantissa.to_string())),
+                ("column", s(c.column.name())),
+                ("released_at", c.released_at.map_or(Json::Null, n)),
+                (
+                    "resolves",
+                    c.resolves.map_or(Json::Null, |id| s(format!("{id:032x}"))),
+                ),
+            ],
+        ));
+        for lineage in &c.supersedes {
+            let reason = &report.supersession_reasons[&lineage.reason_code];
+            checks.push(Check::pass(
+                "balance_contribution_supersession",
+                "authenticated_journal",
+                vec![
+                    ("entry", s(format!("{:032x}", c.entry))),
+                    ("ordinal", n(u64::from(c.ordinal))),
+                    ("target", s(format!("{:032x}", lineage.target))),
+                    ("target_digest", h(&lineage.entry_digest)),
+                    ("kind", n(u64::from(lineage.kind))),
+                    ("reason_code", n(u64::from(lineage.reason_code))),
+                    ("reason_name", s(&reason.name)),
+                    ("reason_meaning", s(&reason.meaning)),
+                ],
+            ));
+        }
+        for evidence in &c.evidence {
+            checks.push(Check::pass(
+                "balance_contribution_evidence",
+                "authenticated_journal",
+                vec![
+                    ("entry", s(format!("{:032x}", c.entry))),
+                    ("ordinal", n(u64::from(c.ordinal))),
+                    ("document_oid", h(&evidence.document_oid)),
+                    ("doc_commit", h(&evidence.doc_commit)),
+                    ("role", n(u64::from(evidence.role))),
+                ],
+            ));
+        }
+    }
+    for change in &report.history {
+        checks.push(Check::pass(
+            "balance_history",
+            "recomputation",
+            vec![
+                ("recorded_at", n(change.recorded_at)),
+                ("unit", n(u64::from(change.unit_id))),
+                ("debits", s(change.debits.to_string())),
+                ("credits", s(change.credits.to_string())),
+                ("debits_pending", s(change.debits_pending.to_string())),
+                ("credits_pending", s(change.credits_pending.to_string())),
+            ],
+        ));
+    }
+    checks
+}
+
+fn open_items_checks(report: &crate::report::VerifiedOpenItems) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "open_items_parameters",
+        "authenticated_parameters",
+        vec![
+            (
+                "account_filter",
+                report
+                    .account_filter
+                    .map_or(Json::Null, |id| s(format!("{id:032x}"))),
+            ),
+            ("unit_universe_source", s("authenticated-registry")),
+            (
+                "application_history",
+                s("complete; reversed applications retained"),
+            ),
+            ("amount_basis", s("native units")),
+        ],
+    )];
+    for account in report.accounts.values() {
+        checks.push(account_check("open_item_account", account));
+    }
+    for item in &report.items {
+        checks.push(Check::pass(
+            "open_item",
+            "recomputation",
+            vec![
+                ("entry", s(format!("{:032x}", item.entry))),
+                ("ordinal", n(u64::from(item.ordinal))),
+                ("account", s(format!("{:032x}", item.account))),
+                ("unit", n(u64::from(item.unit_id))),
+                ("side", s(if item.debit { "debit" } else { "credit" })),
+                ("effective_date", day(Some(item.effective_date))),
+                ("recorded_at", n(item.recorded_at)),
+                ("original", s(item.original.to_string())),
+                ("applied", s(item.applied.to_string())),
+                ("applied_out", s(item.applied_out.to_string())),
+                ("open", s(item.open.to_string())),
+                ("applications", n(item.applications.len() as u64)),
+            ],
+        ));
+        for application in &item.applications {
+            checks.push(Check::pass(
+                "open_item_application",
+                "recomputation",
+                vec![
+                    ("target_entry", s(format!("{:032x}", item.entry))),
+                    ("target_ordinal", n(u64::from(item.ordinal))),
+                    ("entry", s(format!("{:032x}", application.entry))),
+                    ("ordinal", n(u64::from(application.ordinal))),
+                    ("amount", s(application.amount.to_string())),
+                    ("recorded_at", n(application.recorded_at)),
+                    ("live", Json::Bool(application.live)),
+                ],
+            ));
+        }
+    }
+    checks
+}
+
+fn reconciliation_checks(report: &crate::report::VerifiedAgingReconciliation) -> Vec<Check> {
+    let mut checks = vec![
+        Check::pass(
+            "aging_reconciliation",
+            "recomputation",
+            vec![
+                ("book", h(&report.book_id)),
+                ("known_at", n(report.known_at)),
+                ("effective_through", day(Some(report.effective_through))),
+                ("account", s(format!("{:032x}", report.account.account))),
+                ("reconciled", Json::Bool(report.is_reconciled())),
+                ("units", n(report.rows.len() as u64)),
+                (
+                    "aging_certificate_digest",
+                    h(&report.aging_certificate_digest),
+                ),
+                (
+                    "control_certificate_digest",
+                    h(&report.control_certificate_digest),
+                ),
+                (
+                    "scope",
+                    s("selected-account consistency at one recorded prefix and effective cutoff"),
+                ),
+                (
+                    "comparison",
+                    s("posted debit net minus open debit net, separately per native unit"),
+                ),
+                (
+                    "pending",
+                    s("reported separately; excluded from the comparison"),
+                ),
+                ("external_subledger", s("not judged")),
+            ],
+        ),
+        account_check("aging_reconciliation_account", &report.account),
+    ];
+    for row in &report.rows {
+        checks.push(Check::pass(
+            "aging_reconciliation_row",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", report.account.account))),
+                ("unit", n(u64::from(row.unit_id))),
+                ("posted_debits", s(row.posted_debits.to_string())),
+                ("posted_credits", s(row.posted_credits.to_string())),
+                ("pending_debits", s(row.pending_debits.to_string())),
+                ("pending_credits", s(row.pending_credits.to_string())),
+                ("open_debits", s(row.open_debits.to_string())),
+                ("open_credits", s(row.open_credits.to_string())),
+                ("open_item_count", n(row.open_item_count)),
+                ("posted_net", s(row.posted_net.to_string())),
+                ("open_net", s(row.open_net.to_string())),
+                ("difference", s(row.difference.to_string())),
+                ("reconciled", Json::Bool(row.difference == 0)),
+            ],
+        ));
+    }
+    checks
+}
+
+fn aging_checks(report: &crate::report::VerifiedAging) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "aging_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("effective_through", day(Some(report.effective_through))),
+            (
+                "account_filter",
+                report
+                    .account_filter
+                    .map_or(Json::Null, |id| s(format!("{id:032x}"))),
+            ),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "age_basis",
+                s("civil days since effective date; no contractual due date inferred"),
+            ),
+            (
+                "selection",
+                s("effective cutoff before settlement and reversal netting"),
+            ),
+            (
+                "amount_basis",
+                s("native units; separate debit and credit totals"),
+            ),
+            (
+                "producer_authorization",
+                s("not judged; saved capability bytes grant no current authority"),
+            ),
+        ],
+    )];
+    for (index, band) in report.bands.iter().enumerate() {
+        checks.push(Check::pass(
+            "aging_band",
+            "recomputation",
+            vec![
+                ("bucket", n(index as u64)),
+                ("lower_inclusive", n(band.lower_inclusive)),
+                (
+                    "upper_inclusive",
+                    band.upper_inclusive.map_or(Json::Null, n),
+                ),
+            ],
+        ));
+    }
+    for aged in &report.items {
+        let item = &aged.item;
+        checks.push(Check::pass(
+            "aging_item",
+            "recomputation",
+            vec![
+                ("entry", s(format!("{:032x}", item.entry))),
+                ("ordinal", n(u64::from(item.ordinal))),
+                ("account", s(format!("{:032x}", item.account))),
+                ("unit", n(u64::from(item.unit_id))),
+                ("side", s(if item.debit { "debit" } else { "credit" })),
+                ("effective_date", day(Some(item.effective_date))),
+                ("recorded_at", n(item.recorded_at)),
+                ("original", s(item.original.to_string())),
+                ("applied", s(item.applied.to_string())),
+                ("applied_out", s(item.applied_out.to_string())),
+                ("open", s(item.open.to_string())),
+                ("age_days", n(aged.age_days)),
+                ("bucket", n(aged.bucket as u64)),
+                ("applications", n(item.applications.len() as u64)),
+            ],
+        ));
+        for application in &item.applications {
+            checks.push(Check::pass(
+                "aging_application",
+                "recomputation",
+                vec![
+                    ("target_entry", s(format!("{:032x}", item.entry))),
+                    ("target_ordinal", n(u64::from(item.ordinal))),
+                    ("entry", s(format!("{:032x}", application.entry))),
+                    ("ordinal", n(u64::from(application.ordinal))),
+                    ("amount", s(application.amount.to_string())),
+                    ("recorded_at", n(application.recorded_at)),
+                    ("live", Json::Bool(application.live)),
+                ],
+            ));
+        }
+    }
+    for cell in &report.cells {
+        checks.push(Check::pass(
+            "aging_cell",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", cell.account))),
+                ("unit", n(u64::from(cell.unit_id))),
+                ("bucket", n(cell.bucket as u64)),
+                ("debits", s(cell.amounts.debits.to_string())),
+                ("credits", s(cell.amounts.credits.to_string())),
+                ("item_count", n(cell.amounts.item_count)),
+            ],
+        ));
+    }
+    for total in &report.totals {
+        checks.push(Check::pass(
+            "aging_total",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", total.account))),
+                ("unit", n(u64::from(total.unit_id))),
+                ("debits", s(total.amounts.debits.to_string())),
+                ("credits", s(total.amounts.credits.to_string())),
+                ("item_count", n(total.amounts.item_count)),
+            ],
+        ));
+    }
+    checks
+}
+
+fn roll_forward_checks(report: &crate::report::VerifiedRollForward) -> Vec<Check> {
+    let mut checks = vec![Check::pass(
+        "roll_forward_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&report.book_id)),
+            ("known_at", n(report.known_at)),
+            ("label", s(&report.label)),
+            ("effective_from", day(Some(report.effective_from))),
+            ("effective_through", day(Some(report.effective_through))),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "units",
+                Json::List(
+                    report
+                        .units
+                        .iter()
+                        .map(|&unit| n(u64::from(unit)))
+                        .collect(),
+                ),
+            ),
+            ("amount_basis", s("native units; debit minus credit")),
+            (
+                "classification_basis",
+                s(
+                    "recorded entry class, numeric supersession reasons and Rule-origin version; rule execution not judged",
+                ),
+            ),
+        ],
+    )];
+    for account in &report.accounts {
+        checks.push(Check::pass(
+            "roll_forward_account",
+            "authenticated_metadata",
+            vec![
+                ("account", s(format!("{:032x}", account.id))),
+                ("code", s(&account.code)),
+                ("name", s(&account.name)),
+                ("account_type", n(u64::from(account.account_type))),
+                ("is_leaf", Json::Bool(account.is_leaf)),
+            ],
+        ));
+    }
+    for (index, bucket) in report.buckets.iter().enumerate() {
+        checks.push(Check::pass(
+            "roll_forward_bucket",
+            "recomputation",
+            vec![
+                ("bucket", n(index as u64)),
+                ("class", n(u64::from(bucket.class))),
+                ("reason_code", s(&bucket.reason_code)),
+                (
+                    "rule_digest",
+                    bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| h(digest)),
+                ),
+            ],
+        ));
+    }
+    for row in &report.rows {
+        checks.push(Check::pass(
+            "roll_forward_row",
+            "recomputation",
+            vec![
+                ("account", s(format!("{:032x}", row.account_id))),
+                ("unit", n(u64::from(row.unit_id))),
+                ("opening", amount(row.opening)),
+                (
+                    "activity",
+                    Json::List(row.activity.iter().copied().map(amount).collect()),
+                ),
+                ("net_change", amount(row.net_change)),
+                ("closing", amount(row.closing)),
+            ],
+        ));
+    }
+    for movement in &report.movements {
+        checks.push(Check::pass(
+            "roll_forward_movement",
+            "recomputation",
+            vec![
+                ("entry_digest", h(&movement.entry_digest)),
+                ("leg_index", n(u64::from(movement.leg_index))),
+                ("recorded_seq", n(movement.recorded_seq)),
+                ("effective_day", day(Some(movement.effective_day))),
+                ("account", s(format!("{:032x}", movement.account_id))),
+                ("unit", n(u64::from(movement.unit_id))),
+                ("class", n(u64::from(movement.bucket.class))),
+                ("reason_code", s(&movement.bucket.reason_code)),
+                (
+                    "rule_digest",
+                    movement
+                        .bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| h(digest)),
+                ),
+                ("debits", amount(movement.debits)),
+                ("credits", amount(movement.credits)),
+            ],
+        ));
+    }
+    checks
+}
+
+fn cash_activity(activity: crate::report::CashFlowActivity) -> &'static str {
+    use crate::report::CashFlowActivity;
+    match activity {
+        CashFlowActivity::Operating => "operating",
+        CashFlowActivity::Investing => "investing",
+        CashFlowActivity::Financing => "financing",
+        CashFlowActivity::ExchangeEffect => "exchange_effect",
+        CashFlowActivity::InternalTransfer => "internal_transfer",
+    }
+}
+
+fn cash_basis(basis: crate::report::CashFlowDecisionBasis) -> &'static str {
+    use crate::report::CashFlowDecisionBasis;
+    match basis {
+        CashFlowDecisionBasis::AccountRules => "account_rules",
+        CashFlowDecisionBasis::ExplicitOverride => "explicit_override",
+        CashFlowDecisionBasis::InternalTransfer => "internal_transfer",
+    }
+}
+
+fn cash_section(section: crate::report::CashFlowSection) -> Json {
+    Json::Obj(vec![
+        ("inflows", amount(section.inflows)),
+        ("outflows", amount(section.outflows)),
+        ("net", amount(section.net)),
+    ])
+}
+
+fn cash_flow_checks(report: &crate::report::VerifiedCashFlow) -> Vec<Check> {
+    let ledger = &report.ledger;
+    let mut checks = vec![Check::pass(
+        "cash_flow_parameters",
+        "authenticated_parameters",
+        vec![
+            ("book", h(&ledger.book_id)),
+            ("known_at", n(ledger.known_at)),
+            ("label", s(&ledger.label)),
+            ("definition", s(&report.definition.name)),
+            ("effective_from", day(Some(ledger.effective_from))),
+            ("effective_through", day(Some(ledger.effective_through))),
+            (
+                "source_certificate_digest",
+                h(&report.source_certificate_digest),
+            ),
+            (
+                "units",
+                Json::List(
+                    ledger
+                        .units
+                        .iter()
+                        .map(|&unit| n(u64::from(unit)))
+                        .collect(),
+                ),
+            ),
+            (
+                "cash_accounts",
+                Json::List(
+                    report
+                        .definition
+                        .cash_accounts
+                        .iter()
+                        .map(|id| s(format!("{id:032x}")))
+                        .collect(),
+                ),
+            ),
+            (
+                "amount_basis",
+                s("registered native units; debit minus credit; no cross-unit conversion"),
+            ),
+            (
+                "gross_basis",
+                s("net only within original entry, native unit and activity section"),
+            ),
+            (
+                "running_balance_basis",
+                s("effective-day order, then recorded sequence and original leg citation"),
+            ),
+            ("economic_classification", s("not_judged")),
+            ("cash_equivalence", s("not_judged")),
+            ("definition_approval", s("not_judged")),
+        ],
+    )];
+    for account in &ledger.accounts {
+        checks.push(Check::pass(
+            "cash_flow_account",
+            "authenticated_metadata",
+            vec![
+                ("account", s(format!("{:032x}", account.id))),
+                ("code", s(&account.code)),
+                ("name", s(&account.name)),
+                ("account_type", n(u64::from(account.account_type))),
+                ("is_leaf", Json::Bool(account.is_leaf)),
+            ],
+        ));
+    }
+    for (index, bucket) in ledger.buckets.iter().enumerate() {
+        checks.push(Check::pass(
+            "cash_flow_bucket",
+            "recomputation",
+            vec![
+                ("bucket", n(index as u64)),
+                ("class", n(u64::from(bucket.class))),
+                ("reason_code", s(&bucket.reason_code)),
+                (
+                    "rule_digest",
+                    bucket
+                        .rule_digest
+                        .as_ref()
+                        .map_or(Json::Null, |digest| h(digest)),
+                ),
+                ("rule_execution", s("not_judged")),
+            ],
+        ));
+    }
+    for (index, cell) in ledger.cells.iter().enumerate() {
+        checks.push(Check::pass(
+            "cash_flow_cell",
+            "recomputation",
+            vec![
+                ("cell", n(index as u64)),
+                ("account", s(format!("{:032x}", cell.account_id))),
+                ("unit", n(u64::from(cell.unit_id))),
+                ("opening", amount(cell.opening)),
+                ("debits", amount(cell.debits)),
+                ("credits", amount(cell.credits)),
+                ("net_change", amount(cell.net_change)),
+                ("closing", amount(cell.closing)),
+                ("line_start", n(u64::from(cell.line_start))),
+                ("line_end", n(u64::from(cell.line_end))),
+            ],
+        ));
+    }
+    let activities: std::collections::BTreeMap<_, _> = report
+        .definition
+        .assignments
+        .iter()
+        .map(|assignment| {
+            (
+                (assignment.entry_digest, assignment.leg_index),
+                assignment.activity,
+            )
+        })
+        .collect();
+    for line in &ledger.lines {
+        checks.push(Check::pass(
+            "cash_flow_movement",
+            "recomputation",
+            vec![
+                ("cell", n(u64::from(line.cell_index))),
+                ("entry_digest", h(&line.entry_digest)),
+                ("leg_index", n(u64::from(line.leg_index))),
+                ("recorded_seq", n(line.recorded_seq)),
+                ("effective_day", day(Some(line.effective_day))),
+                ("bucket", n(u64::from(line.bucket_index))),
+                ("debits", amount(line.debits)),
+                ("credits", amount(line.credits)),
+                ("running_balance", amount(line.running_balance)),
+                (
+                    "activity",
+                    activities
+                        .get(&(line.entry_digest, line.leg_index))
+                        .map_or(Json::Null, |&activity| s(cash_activity(activity))),
+                ),
+            ],
+        ));
+    }
+    for unit in &report.units {
+        checks.push(Check::pass(
+            "cash_flow_unit",
+            "recomputation",
+            vec![
+                ("unit", n(u64::from(unit.unit_id))),
+                ("opening", amount(unit.opening)),
+                ("operating", cash_section(unit.operating)),
+                ("investing", cash_section(unit.investing)),
+                ("financing", cash_section(unit.financing)),
+                ("exchange_effects", cash_section(unit.exchange_effects)),
+                ("net_change", amount(unit.net_change)),
+                ("closing", amount(unit.closing)),
+            ],
+        ));
+    }
+    if let Some(verified) = &report.policy {
+        checks.push(Check::pass(
+            "cash_flow_policy",
+            "authenticated_parameters",
+            vec![
+                ("source_certificate_digest", h(&verified.source_certificate_digest)),
+                ("name", s(&verified.policy.name)),
+                ("cash_accounts", Json::List(verified.policy.cash_accounts.iter().map(|id| s(format!("{id:032x}"))).collect())),
+                ("decision_basis", s("every original nonzero counterpart in the same entry and native unit, plus explicit overrides")),
+                ("policy_approval", s("not_judged")),
+            ],
+        ));
+        for rule in &verified.policy.account_rules {
+            checks.push(Check::pass(
+                "cash_flow_rule",
+                "authenticated_parameters",
+                vec![
+                    ("account", s(format!("{:032x}", rule.account_id))),
+                    ("activity", s(cash_activity(rule.activity))),
+                    ("historical_account", s("existing monetary leaf")),
+                ],
+            ));
+        }
+        for assignment in &verified.policy.overrides {
+            checks.push(Check::pass(
+                "cash_flow_override",
+                "authenticated_parameters",
+                vec![
+                    ("entry_digest", h(&assignment.entry_digest)),
+                    ("leg_index", n(u64::from(assignment.leg_index))),
+                    ("activity", s(cash_activity(assignment.activity))),
+                ],
+            ));
+        }
+        for decision in &verified.decisions {
+            checks.push(Check::pass(
+                "cash_flow_decision",
+                "recomputation",
+                vec![
+                    ("entry_digest", h(&decision.entry_digest)),
+                    ("leg_index", n(u64::from(decision.leg_index))),
+                    ("activity", s(cash_activity(decision.activity))),
+                    ("basis", s(cash_basis(decision.basis))),
+                ],
+            ));
+        }
+    }
+    checks
 }
 
 fn statement_checks(
@@ -1567,14 +2475,19 @@ fn statement_checks(
 }
 
 /// The bundle's checks, then the extract's: exactly the proven selection.
-fn ads_checks(report: &AdsReport) -> Vec<Check> {
+fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
     let mut checks = bundle_checks(&report.bundle);
     let detail = vec![
         ("effective_through", s(report.effective_through.as_str())),
         ("known_at_seq", report.known_at_seq.map_or(Json::Null, n)),
+        (
+            "account_scope",
+            report.account_scope.as_deref().map_or(Json::Null, s),
+        ),
         ("entries", n(report.entries)),
         ("rows", n(report.rows)),
         ("tb_rows", n(report.tb_rows)),
+        ("chart_rows", report.chart_rows.map_or(Json::Null, n)),
         (
             "units",
             Json::List(
@@ -1592,10 +2505,10 @@ fn ads_checks(report: &AdsReport) -> Vec<Check> {
         ),
     ];
     checks.push(if report.verified() {
-        Check::pass("ads_extract", "completeness", detail)
+        Check::pass(name, "completeness", detail)
     } else {
         Check {
-            name: "ads_extract",
+            name,
             scope: "completeness",
             verdict: if report.bundle.verified() {
                 Verdict::Fail
@@ -1725,6 +2638,560 @@ pub fn run(args: &[String], read: Read<'_>) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconciliation_renders_discrepancies_as_verified_data_with_exact_amounts() {
+        use crate::report::*;
+        let report = VerifiedAgingReconciliation {
+            book_id: [3; 16],
+            known_at: 9,
+            effective_through: 40,
+            account: VerifiedReportAccount {
+                account: 9,
+                code: "ar".into(),
+                name: "Receivable".into(),
+                account_type: 1,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: OpenItemUnitPolicy::AnyCurrency,
+                limit: None,
+                created_at: 2,
+            },
+            aging: VerifiedAging {
+                book_id: [3; 16],
+                known_at: 9,
+                effective_through: 40,
+                account_filter: Some(9),
+                source_certificate_digest: [4; 32],
+                bands: vec![],
+                items: vec![],
+                cells: vec![],
+                totals: vec![],
+            },
+            control_rows: vec![],
+            rows: vec![VerifiedAgingReconciliationRow {
+                unit_id: 7,
+                posted_debits: i128::MAX,
+                posted_credits: 0,
+                pending_debits: 27,
+                pending_credits: 0,
+                open_debits: 10,
+                open_credits: 0,
+                open_item_count: 1,
+                posted_net: i128::MAX,
+                open_net: 10,
+                difference: i128::MAX - 10,
+            }],
+            aging_certificate_digest: [5; 32],
+            control_certificate_digest: [6; 32],
+        };
+        let checks = reconciliation_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "aging_reconciliation",
+                "aging_reconciliation_account",
+                "aging_reconciliation_row",
+            ]
+        );
+        assert!(
+            checks
+                .iter()
+                .all(|check| matches!(check.verdict, Verdict::Pass))
+        );
+        let mut json = String::new();
+        for check in checks {
+            check.json().write(&mut json);
+        }
+        for expected in [
+            format!("\"posted_debits\":\"{}\"", i128::MAX),
+            format!("\"difference\":\"{}\"", i128::MAX - 10),
+            "\"pending_debits\":\"27\"".into(),
+            "\"reconciled\":false".into(),
+            "\"unit\":7".into(),
+            format!("\"aging_certificate_digest\":\"{}\"", "05".repeat(32)),
+            format!("\"control_certificate_digest\":\"{}\"", "06".repeat(32)),
+            "\"external_subledger\":\"not judged\"".into(),
+        ] {
+            assert!(json.contains(&expected), "{expected}: {json}");
+        }
+    }
+
+    #[test]
+    fn balance_explanation_renders_exact_history_and_authenticated_provenance() {
+        use crate::report::{
+            ExplanationCell, ExplanationCellChange, ExplanationColumn, ExplanationContribution,
+            ExplanationEvidence, ExplanationReason, ExplanationSupersession, OpenItemUnitPolicy,
+            VerifiedBalanceExplanation, VerifiedReportAccount,
+        };
+        let report = VerifiedBalanceExplanation {
+            account: 9,
+            account_row: VerifiedReportAccount {
+                account: 9,
+                code: "cash".into(),
+                name: "Cash".into(),
+                account_type: 1,
+                normal_balance: 0,
+                is_leaf: true,
+                unit_policy: OpenItemUnitPolicy::Single(1),
+                limit: None,
+                created_at: 2,
+            },
+            period: "P1".into(),
+            known_at: 9,
+            fold_digest: [3; 32],
+            watermark: Some(9),
+            cells: vec![ExplanationCell {
+                account: 9,
+                unit_id: 1,
+                period: "P1".into(),
+                debits: 0,
+                credits: i128::MAX,
+                entry_count: 1,
+            }],
+            pending: vec![],
+            contributions: vec![ExplanationContribution {
+                entry: 2,
+                entry_digest: [4; 32],
+                class: 4,
+                effective_date: 10,
+                recorded_at: 9,
+                visible_at: 9,
+                ordinal: 0,
+                debit: false,
+                unit_id: 1,
+                mantissa: i128::MAX,
+                column: ExplanationColumn::Posted,
+                released_at: None,
+                resolves: None,
+                supersedes: vec![ExplanationSupersession {
+                    target: 1,
+                    entry_digest: [5; 32],
+                    kind: 1,
+                    reason_code: 1,
+                }],
+                evidence: vec![ExplanationEvidence {
+                    document_oid: [7; 32],
+                    doc_commit: [8; 32],
+                    role: 2,
+                }],
+            }],
+            history: vec![ExplanationCellChange {
+                recorded_at: 9,
+                unit_id: 1,
+                debits: 0,
+                credits: i128::MAX,
+                debits_pending: 0,
+                credits_pending: 0,
+            }],
+            supersession_reasons: std::collections::BTreeMap::from([(
+                1,
+                ExplanationReason {
+                    code: 1,
+                    name: "Historical name".into(),
+                    meaning: "Historical reason meaning".into(),
+                },
+            )]),
+        };
+        let checks = explanation_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "balance_explanation",
+                "balance_explanation_account",
+                "balance_explanation_fold",
+                "balance_explanation_cell",
+                "balance_contribution",
+                "balance_contribution_supersession",
+                "balance_contribution_evidence",
+                "balance_history",
+            ]
+        );
+        let mut json = String::new();
+        for check in checks {
+            Json::Obj(check.detail).write(&mut json);
+        }
+        for expected in [
+            format!("\"mantissa\":\"{}\"", i128::MAX),
+            format!("\"credits\":\"{}\"", i128::MAX),
+            "\"reason_code\":1".into(),
+            "\"reason_name\":\"Historical name\"".into(),
+            "\"reason_meaning\":\"Historical reason meaning\"".into(),
+            "\"entry_count\":1".into(),
+            "\"scope\":\"whole selected period\"".into(),
+            format!("\"document_oid\":\"{}\"", "07".repeat(32)),
+            format!("\"doc_commit\":\"{}\"", "08".repeat(32)),
+            "\"evidence_heads\":\"committed citations; document authenticity not judged\"".into(),
+        ] {
+            assert!(json.contains(&expected), "{expected}: {json}");
+        }
+    }
+
+    #[test]
+    fn roll_forward_renders_exact_signed_rows_and_complete_classified_citations() {
+        use crate::report::*;
+        let bucket = RollForwardBucket {
+            class: 4,
+            reason_code: "supersession:1,2".into(),
+            rule_digest: Some([7; 32]),
+        };
+        let report = VerifiedRollForward {
+            book_id: [3; 16],
+            known_at: 9,
+            label: "Lead schedule".into(),
+            effective_from: 10,
+            effective_through: 40,
+            source_certificate_digest: [4; 32],
+            accounts: vec![RollForwardAccount {
+                id: 1,
+                code: "1000".into(),
+                name: "Cash".into(),
+                account_type: 1,
+                is_leaf: true,
+            }],
+            units: vec![0],
+            buckets: vec![bucket.clone()],
+            rows: vec![RollForwardRow {
+                account_id: 1,
+                unit_id: 0,
+                opening: i128::MAX,
+                activity: vec![-i128::MAX],
+                net_change: -i128::MAX,
+                closing: 0,
+            }],
+            movements: vec![RollForwardMovement {
+                entry_digest: [5; 32],
+                leg_index: 2,
+                recorded_seq: 8,
+                effective_day: 30,
+                account_id: 1,
+                unit_id: 0,
+                bucket,
+                debits: 0,
+                credits: i128::MAX,
+            }],
+        };
+        let checks = roll_forward_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "roll_forward_parameters",
+                "roll_forward_account",
+                "roll_forward_bucket",
+                "roll_forward_row",
+                "roll_forward_movement",
+            ]
+        );
+        let render = |index: usize| {
+            let mut value = String::new();
+            Json::Obj(checks[index].detail.clone()).write(&mut value);
+            value
+        };
+        assert!(render(0).contains("rule execution not judged"));
+        assert!(render(2).contains("\"reason_code\":\"supersession:1,2\""));
+        assert!(render(2).contains(&format!("\"rule_digest\":\"{}\"", "07".repeat(32))));
+        assert!(render(3).contains(&format!("\"activity\":[\"{}\"]", -i128::MAX)));
+        assert!(render(3).contains(&format!("\"opening\":\"{}\"", i128::MAX)));
+        assert!(render(4).contains("\"recorded_seq\":8"));
+        assert!(render(4).contains("\"leg_index\":2"));
+        assert!(render(4).contains(&format!("\"entry_digest\":\"{}\"", "05".repeat(32))));
+        assert!(render(4).contains(&format!("\"credits\":\"{}\"", i128::MAX)));
+    }
+
+    #[test]
+    fn cash_flow_renders_exact_gross_sections_gl_and_policy_derivation() {
+        use crate::report::*;
+        let assignment = CashFlowAssignment {
+            entry_digest: [5; 32],
+            leg_index: 2,
+            activity: CashFlowActivity::Operating,
+        };
+        let mut report = VerifiedCashFlow {
+            source_certificate_digest: [4; 32],
+            ledger: VerifiedGeneralLedger {
+                book_id: [3; 16],
+                known_at: 9,
+                label: "Cash source".into(),
+                effective_from: 10,
+                effective_through: 40,
+                accounts: vec![RollForwardAccount {
+                    id: 1,
+                    code: "1000".into(),
+                    name: "Cash".into(),
+                    account_type: 1,
+                    is_leaf: true,
+                }],
+                units: vec![0, 7],
+                buckets: vec![RollForwardBucket {
+                    class: 4,
+                    reason_code: "supersession:1".into(),
+                    rule_digest: Some([7; 32]),
+                }],
+                cells: vec![
+                    GeneralLedgerCell {
+                        account_id: 1,
+                        unit_id: 0,
+                        opening: i128::MAX,
+                        debits: 0,
+                        credits: i128::MAX,
+                        net_change: -i128::MAX,
+                        closing: 0,
+                        line_start: 0,
+                        line_end: 1,
+                    },
+                    GeneralLedgerCell {
+                        account_id: 1,
+                        unit_id: 7,
+                        opening: 0,
+                        debits: 0,
+                        credits: 0,
+                        net_change: 0,
+                        closing: 0,
+                        line_start: 1,
+                        line_end: 1,
+                    },
+                ],
+                lines: vec![GeneralLedgerLine {
+                    cell_index: 0,
+                    entry_digest: [5; 32],
+                    leg_index: 2,
+                    recorded_seq: 8,
+                    effective_day: 30,
+                    bucket_index: 0,
+                    debits: 0,
+                    credits: i128::MAX,
+                    running_balance: 0,
+                }],
+            },
+            definition: CashFlowDefinition {
+                name: "Cash policy €".into(),
+                cash_accounts: vec![1],
+                assignments: vec![assignment.clone()],
+            },
+            units: vec![
+                CashFlowUnit {
+                    unit_id: 0,
+                    opening: i128::MAX,
+                    operating: CashFlowSection {
+                        inflows: 0,
+                        outflows: i128::MAX,
+                        net: -i128::MAX,
+                    },
+                    investing: CashFlowSection::default(),
+                    financing: CashFlowSection::default(),
+                    exchange_effects: CashFlowSection::default(),
+                    net_change: -i128::MAX,
+                    closing: 0,
+                },
+                CashFlowUnit {
+                    unit_id: 7,
+                    opening: 0,
+                    operating: CashFlowSection::default(),
+                    investing: CashFlowSection::default(),
+                    financing: CashFlowSection::default(),
+                    exchange_effects: CashFlowSection::default(),
+                    net_change: 0,
+                    closing: 0,
+                },
+            ],
+            policy: Some(VerifiedCashFlowPolicy {
+                source_certificate_digest: [6; 32],
+                policy: CashFlowPolicy {
+                    name: "Cash policy €".into(),
+                    cash_accounts: vec![1],
+                    account_rules: vec![CashFlowAccountRule {
+                        account_id: 9,
+                        activity: CashFlowActivity::Investing,
+                    }],
+                    overrides: vec![assignment],
+                },
+                decisions: vec![CashFlowPolicyDecision {
+                    entry_digest: [5; 32],
+                    leg_index: 2,
+                    activity: CashFlowActivity::Operating,
+                    basis: CashFlowDecisionBasis::ExplicitOverride,
+                }],
+            }),
+        };
+        let checks = cash_flow_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "cash_flow_parameters",
+                "cash_flow_account",
+                "cash_flow_bucket",
+                "cash_flow_cell",
+                "cash_flow_cell",
+                "cash_flow_movement",
+                "cash_flow_unit",
+                "cash_flow_unit",
+                "cash_flow_policy",
+                "cash_flow_rule",
+                "cash_flow_override",
+                "cash_flow_decision",
+            ]
+        );
+        let render = |index: usize| {
+            let mut value = String::new();
+            Json::Obj(checks[index].detail.clone()).write(&mut value);
+            value
+        };
+        assert!(render(0).contains("\"economic_classification\":\"not_judged\""));
+        assert!(render(0).contains("\"units\":[0,7]"));
+        assert!(render(2).contains("\"reason_code\":\"supersession:1\""));
+        assert!(render(3).contains(&format!("\"credits\":\"{}\"", i128::MAX)));
+        assert!(render(4).contains("\"line_start\":1,\"line_end\":1"));
+        assert!(render(5).contains(&format!("\"entry_digest\":\"{}\"", "05".repeat(32))));
+        assert!(render(5).contains("\"recorded_seq\":8"));
+        assert!(render(5).contains("\"leg_index\":2"));
+        assert!(render(5).contains("\"running_balance\":\"0\""));
+        assert!(render(6).contains(&format!(
+            "\"operating\":{{\"inflows\":\"0\",\"outflows\":\"{}\",\"net\":\"{}\"}}",
+            i128::MAX,
+            -i128::MAX
+        )));
+        assert!(render(7).contains("\"unit\":7,\"opening\":\"0\""));
+        assert!(render(8).contains(&format!(
+            "\"source_certificate_digest\":\"{}\"",
+            "06".repeat(32)
+        )));
+        assert!(render(9).contains("\"activity\":\"investing\""));
+        assert!(render(11).contains("\"basis\":\"explicit_override\""));
+        report.policy = None;
+        assert_eq!(cash_flow_checks(&report).len(), 8);
+        assert_eq!(
+            cash_basis(CashFlowDecisionBasis::AccountRules),
+            "account_rules"
+        );
+        assert_eq!(
+            cash_basis(CashFlowDecisionBasis::InternalTransfer),
+            "internal_transfer"
+        );
+    }
+
+    #[test]
+    fn aging_renders_effective_age_bands_exact_totals_and_undone_applications() {
+        use crate::report::*;
+        let amounts = VerifiedAgingAmounts {
+            debits: i128::MAX,
+            credits: 0,
+            item_count: 1,
+        };
+        let report = VerifiedAging {
+            book_id: [3; 16],
+            known_at: 9,
+            effective_through: 40,
+            account_filter: Some(9),
+            source_certificate_digest: [4; 32],
+            bands: vec![VerifiedAgingBand {
+                lower_inclusive: 0,
+                upper_inclusive: None,
+            }],
+            items: vec![VerifiedAgedOpenItem {
+                item: VerifiedOpenItem {
+                    entry: 1,
+                    ordinal: 0,
+                    account: 9,
+                    unit_id: 1,
+                    debit: true,
+                    effective_date: 10,
+                    recorded_at: 3,
+                    original: i128::MAX,
+                    applied: 0,
+                    applied_out: 0,
+                    open: i128::MAX,
+                    applications: vec![VerifiedApplication {
+                        entry: 2,
+                        ordinal: 1,
+                        amount: 40,
+                        recorded_at: 4,
+                        live: false,
+                    }],
+                },
+                age_days: 30,
+                bucket: 0,
+            }],
+            cells: vec![VerifiedAgingCell {
+                account: 9,
+                unit_id: 1,
+                bucket: 0,
+                amounts: amounts.clone(),
+            }],
+            totals: vec![VerifiedAgingTotal {
+                account: 9,
+                unit_id: 1,
+                amounts,
+            }],
+        };
+        let checks = aging_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "aging_parameters",
+                "aging_band",
+                "aging_item",
+                "aging_application",
+                "aging_cell",
+                "aging_total",
+            ]
+        );
+        let render = |index: usize| {
+            let mut rendered = String::new();
+            Json::Obj(checks[index].detail.clone()).write(&mut rendered);
+            rendered
+        };
+        assert!(render(0).contains("no contractual due date inferred"));
+        assert!(render(1).contains("\"upper_inclusive\":null"));
+        assert!(render(2).contains(&format!("\"open\":\"{}\"", i128::MAX)));
+        assert!(render(2).contains("\"age_days\":30"));
+        assert!(render(3).contains("\"live\":false"));
+        assert!(render(4).contains(&format!("\"debits\":\"{}\"", i128::MAX)));
+        assert!(render(5).contains("\"credits\":\"0\""));
+    }
+
+    #[test]
+    fn open_items_render_exact_amounts_and_undone_application_history() {
+        let report = crate::report::VerifiedOpenItems {
+            account_filter: Some(9),
+            accounts: std::collections::BTreeMap::new(),
+            items: vec![crate::report::VerifiedOpenItem {
+                entry: 1,
+                ordinal: 0,
+                account: 9,
+                unit_id: 1,
+                debit: true,
+                effective_date: 10,
+                recorded_at: 3,
+                original: i128::MAX,
+                applied: 0,
+                applied_out: 0,
+                open: i128::MAX,
+                applications: vec![crate::report::VerifiedApplication {
+                    entry: 2,
+                    ordinal: 1,
+                    amount: 40,
+                    recorded_at: 4,
+                    live: false,
+                }],
+            }],
+        };
+        let checks = open_items_checks(&report);
+        assert_eq!(
+            checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            [
+                "open_items_parameters",
+                "open_item",
+                "open_item_application"
+            ]
+        );
+        let mut rendered = String::new();
+        Json::Obj(checks[1].detail.clone()).write(&mut rendered);
+        assert!(rendered.contains(&format!("\"open\":\"{}\"", i128::MAX)));
+        rendered.clear();
+        Json::Obj(checks[2].detail.clone()).write(&mut rendered);
+        assert!(rendered.contains("\"live\":false"));
+        assert!(rendered.contains("\"amount\":\"40\""));
+    }
     use std::collections::BTreeMap;
 
     const ACCUMULATOR: &str = include_str!("../tests/fixtures/accumulator_v1.txt");

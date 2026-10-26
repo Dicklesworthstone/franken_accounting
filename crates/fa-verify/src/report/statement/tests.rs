@@ -17,12 +17,16 @@ fn envelope(index: u8, class: u16, at: u64) -> LeafEnvelope {
 }
 fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::EntryInfo<'static> {
     metadata::EntryInfo {
+        time_tick: None,
         schema: None,
         period: None,
         resolution: None,
         identity,
         legacy_identity: None,
         supersession: target.into_iter().collect(),
+        supersession_reasons: target.map(|_| 1).into_iter().collect(),
+        rule_version_oid: None,
+        evidence: Vec::new(),
     }
 }
 #[test]
@@ -125,8 +129,8 @@ fn schema() -> metadata::Schema {
         .i32(59)
         .u8(0);
     let mut schema = metadata::Schema::default();
-    schema.apply(1, &chart.buf, &[0; 16]).unwrap();
-    schema.apply(13, &periods.buf, &[0; 16]).unwrap();
+    schema.apply(1, &chart.buf, &[0; 16], 1).unwrap();
+    schema.apply(13, &periods.buf, &[0; 16], 2).unwrap();
     schema
 }
 #[test]

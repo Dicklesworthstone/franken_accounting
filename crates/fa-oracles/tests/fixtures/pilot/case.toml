@@ -1,0 +1,12 @@
+# Pilot fixture (A1a-A1c): WorldCom F2, F4, F9, F12. Written by hand for the loader tests; its sourced
+# rows are schema fixtures until W1's receipts exist, never verified case data. Never copied to cases/.
+id = "worldcom"
+letter = "W"
+title = "WorldCom line-cost capitalization (pilot fixture)"
+version = 1
+kind = "case"
+scope = "the documented capitalization entries F2, F4, F9 and F12 (fixture)"
+claims = []
+capabilities = ["procedure:expense.capitalization@2", "refusal:FA-REF-080", "verb:post"]
+pinned_commit = "8196f5e40"
+variants = ["native"]

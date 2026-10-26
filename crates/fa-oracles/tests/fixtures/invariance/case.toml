@@ -1,0 +1,12 @@
+# Invariance fixture (fa-yugf.25, A11a): A6's filler fixture with a D row on jet.round_amounts,
+# run on every filler variant and two book ids, for fa-cli's tests/cases.rs. Never copied to cases/;
+# claims nothing.
+id = "invariance"
+title = "Invariance fixture: a D row agreeing across filler variants and book ids"
+version = 1
+kind = "harness_selftest"
+scope = "the filler- and identifier-invariance witness"
+claims = []
+capabilities = ["verb:post", "verb:batch", "procedure:jet.round_amounts@1"]
+pinned_commit = "8af46bde3"
+variants = ["native"]

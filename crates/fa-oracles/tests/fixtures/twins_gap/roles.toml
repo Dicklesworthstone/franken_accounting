@@ -1,0 +1,36 @@
+# Twin gap fixture roles: labels only (plan §2.8); no person stands behind them.
+
+[[role]]
+label = "selftest-preparer-1"
+kind = "harness"
+description = "prepares the fixture's synthetic entries"
+
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "runs the fixture book's period transitions"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "reviews the fixture's placeholder documents"
+
+[[role]]
+label = "examiner-1"
+kind = "harness"
+description = "records the fixture's audit procedure runs"
+
+[[role]]
+label = "fixture-investor-a"
+kind = "harness"
+description = "the fixture's first investor party"
+
+[[role]]
+label = "fixture-investor-b"
+kind = "harness"
+description = "the fixture's second investor party"
+
+[[role]]
+label = "fixture-investor-c"
+kind = "harness"
+description = "the fixture's third investor party"

@@ -4,7 +4,8 @@ use fa_model::{DecodeError, Id128, Reader};
 
 use super::super::{
     AdjustmentCategory, AdjustmentSign, Bytes, INDIRECT_CASH_FLOW_FORMAT,
-    IndirectCashFlowAdjustment, MAX_PERIODS, bounded, write_definition,
+    INDIRECT_CASH_FLOW_FORMAT_V2, IndirectCashFlowAdjustment, MAX_PERIODS, bounded,
+    write_definition,
 };
 use super::*;
 use crate::general_ledger::MAX_GENERAL_LEDGER_LINES;
@@ -64,6 +65,7 @@ fn read_definition(r: &mut Reader<'_>) -> Result<IndirectCashFlowDefinition, Dec
 }
 
 fn size(
+    kind: CashFlowBasisKind,
     source: usize,
     selected: &[String],
     definition: &IndirectCashFlowDefinition,
@@ -72,7 +74,8 @@ fn size(
     let mut total = 0usize;
     for n in [
         4,
-        INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT.len(),
+        format(kind).len(),
+        usize::from(kind != CashFlowBasisKind::Explicit),
         4,
         source,
         4,
@@ -101,25 +104,52 @@ fn size(
 /// Bind the existing output headers without inventing another report decoder.
 /// Amounts, periods, definitions and all remaining source bytes stay opaque
 /// here: only full native replay and the exact byte comparison validate them.
-fn check_output(output: &[u8], source: &CashFlowCertificate) -> Result<(), DecodeError> {
+fn check_output(output: &[u8], source: &CashFlowBasisCertificate) -> Result<(), DecodeError> {
     let mut r = Reader::new(output);
-    if r.str(64, "indirect output format")? != INDIRECT_CASH_FLOW_FORMAT
-        || r.bytes(MAX_INDIRECT_CASH_FLOW_BYTES, "indirect direct cash output")? != source.output()
-    {
-        return Err(r.invalid("indirect output does not bind its original direct cash report"));
+    let kind = source.kind();
+    let expected_format = match kind {
+        CashFlowBasisKind::Explicit => INDIRECT_CASH_FLOW_FORMAT,
+        CashFlowBasisKind::Policy | CashFlowBasisKind::Split => INDIRECT_CASH_FLOW_FORMAT_V2,
+    };
+    if r.str(64, "indirect output format")? != expected_format {
+        return Err(r.invalid("indirect output format differs from its cash basis"));
+    }
+    if kind != CashFlowBasisKind::Explicit && r.u8("indirect output cash basis")? != kind as u8 {
+        return Err(r.invalid("indirect output kind differs from its cash basis"));
+    }
+    let source_output = source
+        .output_bytes()
+        .map_err(|_| r.invalid("cannot encode the original cash basis output"))?;
+    if r.bytes(MAX_INDIRECT_CASH_FLOW_BYTES, "indirect cash basis output")? != source_output {
+        return Err(r.invalid("indirect output does not bind its original complete cash basis"));
     }
     let mut income = Reader::new(r.bytes(MAX_INDIRECT_CASH_FLOW_BYTES, "indirect income output")?);
     if income.fixed::<13>("income magic")? != *b"FA-STATEMENT\0"
         || income.u16("income major")? != 1
         || income.u16("income minor")? != 0
-        || income.fixed::<16>("income book")?
-            != source.source_certificate().source_certificate().book_id.0
+        || income.fixed::<16>("income book")? != source.native_source_certificate().book_id.0
         || income.fixed::<16>("income branch")? != Id128::TRUNK.0
         || income.u64("income known-at")? != source.known_at().0
     {
         return Err(income.invalid("indirect income header differs from its native source"));
     }
     Ok(())
+}
+
+/// Version one has no discriminator and remains explicit-only. Version two
+/// admits only the new families so there is one canonical outer format per kind.
+fn read_kind(r: &mut Reader<'_>) -> Result<CashFlowBasisKind, DecodeError> {
+    match r.bytes(64, "indirect certificate format")? {
+        value if value == INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT => Ok(CashFlowBasisKind::Explicit),
+        value if value == INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2 => {
+            match r.u8("indirect certificate cash basis")? {
+                1 => Ok(CashFlowBasisKind::Policy),
+                2 => Ok(CashFlowBasisKind::Split),
+                _ => Err(r.invalid("version two requires a policy or split cash basis")),
+            }
+        }
+        _ => Err(r.invalid("unsupported indirect certificate format")),
+    }
 }
 
 impl IndirectCashFlowCertificate {
@@ -135,6 +165,7 @@ impl IndirectCashFlowCertificate {
         check_output(&self.output, &self.source).map_err(|e| invalid(e.to_string()))?;
         let source = self.source.canonical_bytes()?;
         let expected_size = size(
+            self.source.kind(),
             source.len(),
             &self.income_periods,
             &self.definition,
@@ -142,7 +173,10 @@ impl IndirectCashFlowCertificate {
         )?;
         let build = || -> Result<Vec<u8>, Refusal> {
             let mut out = Bytes::default();
-            out.blob(INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT)?;
+            out.blob(format(self.source.kind()))?;
+            if self.source.kind() != CashFlowBasisKind::Explicit {
+                out.add(&[self.source.kind() as u8])?;
+            }
             out.blob(&source)?;
             out.count(self.income_periods.len())?;
             for period in &self.income_periods {
@@ -164,7 +198,7 @@ impl IndirectCashFlowCertificate {
     /// conferred by its content digest. Retain the expected inputs separately.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         let mut body = self.body_bytes()?;
-        if domain_digest(DIGEST_DOMAIN, &[&body]) != self.digest {
+        if domain_digest(digest_domain(self.source.kind()), &[&body]) != self.digest {
             return Err(invalid(
                 "indirect certificate digest differs from its contents",
             ));
@@ -187,13 +221,9 @@ impl IndirectCashFlowCertificate {
         }
         let malformed = |e: DecodeError| invalid(format!("malformed indirect certificate: {e}"));
         let mut r = Reader::new(bytes);
-        if r.bytes(64, "indirect certificate format")
-            .map_err(malformed)?
-            != INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT
-        {
-            return Err(invalid("unsupported indirect certificate format"));
-        }
-        let source = CashFlowCertificate::decode(
+        let kind = read_kind(&mut r).map_err(malformed)?;
+        let source = CashFlowBasisCertificate::decode(
+            kind,
             r.bytes(
                 MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
                 "indirect native source",
@@ -320,10 +350,156 @@ mod tests {
         out.blob(&output).unwrap();
         out.add(&[0; 32]).unwrap();
         assert_eq!(
-            size(source.len(), &p, &d, output.len()).unwrap(),
+            size(
+                CashFlowBasisKind::Explicit,
+                source.len(),
+                &p,
+                &d,
+                output.len()
+            )
+            .unwrap(),
             out.0.len()
         );
-        assert!(size(usize::MAX, &p, &d, 0).is_err());
-        assert!(size(MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES, &p, &d, 0).is_err());
+        assert!(size(CashFlowBasisKind::Explicit, usize::MAX, &p, &d, 0).is_err());
+        assert!(
+            size(
+                CashFlowBasisKind::Explicit,
+                MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
+                &p,
+                &d,
+                0,
+            )
+            .is_err()
+        );
+        for kind in [CashFlowBasisKind::Policy, CashFlowBasisKind::Split] {
+            let mut v2 = Bytes::default();
+            v2.blob(INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2).unwrap();
+            v2.add(&[kind as u8]).unwrap();
+            v2.blob(&source).unwrap();
+            v2.count(1).unwrap();
+            v2.string("P1").unwrap();
+            write_definition(&mut v2, &d).unwrap();
+            v2.blob(&output).unwrap();
+            v2.add(&[0; 32]).unwrap();
+            assert_eq!(
+                size(kind, source.len(), &p, &d, output.len()).unwrap(),
+                v2.0.len(),
+            );
+            let overhead = size(kind, 0, &p, &d, 0).unwrap();
+            assert_eq!(
+                size(
+                    kind,
+                    MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES - overhead,
+                    &p,
+                    &d,
+                    0
+                )
+                .unwrap(),
+                MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES,
+            );
+            assert!(
+                size(
+                    kind,
+                    MAX_INDIRECT_CASH_FLOW_CERTIFICATE_BYTES - overhead + 1,
+                    &p,
+                    &d,
+                    0,
+                )
+                .is_err()
+            );
+            assert!(size(kind, usize::MAX, &p, &d, 0).is_err());
+        }
+    }
+
+    #[test]
+    fn version_and_kind_have_one_canonical_encoding_and_reject_truncation() {
+        for (tag, kind) in [
+            (
+                INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT,
+                CashFlowBasisKind::Explicit,
+            ),
+            (
+                INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2,
+                CashFlowBasisKind::Policy,
+            ),
+            (
+                INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2,
+                CashFlowBasisKind::Split,
+            ),
+        ] {
+            let mut out = Bytes::default();
+            out.blob(tag).unwrap();
+            if kind != CashFlowBasisKind::Explicit {
+                out.add(&[kind as u8]).unwrap();
+            }
+            let mut reader = Reader::new(&out.0);
+            assert_eq!(read_kind(&mut reader).unwrap(), kind);
+            reader.finish().unwrap();
+            for cut in 0..out.0.len() {
+                assert!(read_kind(&mut Reader::new(&out.0[..cut])).is_err());
+            }
+        }
+        for tag in [0, 3, u8::MAX] {
+            let mut out = Bytes::default();
+            out.blob(INDIRECT_CASH_FLOW_CERTIFICATE_FORMAT_V2).unwrap();
+            out.add(&[tag]).unwrap();
+            assert!(read_kind(&mut Reader::new(&out.0)).is_err());
+            assert!(IndirectCashFlowCertificate::decode(&out.0).is_err());
+        }
+        let mut unknown = Bytes::default();
+        unknown
+            .blob(b"fa:indirect-cash-flow-certificate:v3")
+            .unwrap();
+        assert!(read_kind(&mut Reader::new(&unknown.0)).is_err());
+    }
+
+    #[test]
+    fn each_kind_requires_its_exact_nested_certificate_family() {
+        for (kind, wrong_tag) in [
+            (
+                CashFlowBasisKind::Explicit,
+                crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT,
+            ),
+            (
+                CashFlowBasisKind::Explicit,
+                crate::cash_flow_split::CASH_FLOW_SPLIT_CERTIFICATE_FORMAT.as_bytes(),
+            ),
+            (
+                CashFlowBasisKind::Policy,
+                crate::CASH_FLOW_CERTIFICATE_FORMAT,
+            ),
+            (
+                CashFlowBasisKind::Policy,
+                crate::cash_flow_split::CASH_FLOW_SPLIT_CERTIFICATE_FORMAT.as_bytes(),
+            ),
+            (
+                CashFlowBasisKind::Split,
+                crate::CASH_FLOW_CERTIFICATE_FORMAT,
+            ),
+            (
+                CashFlowBasisKind::Split,
+                crate::cash_flow_policy::CASH_FLOW_POLICY_CERTIFICATE_FORMAT,
+            ),
+        ] {
+            let mut nested = Bytes::default();
+            nested.blob(wrong_tag).unwrap();
+            if kind == CashFlowBasisKind::Split {
+                // The split decoder checks transport integrity before its
+                // family tag; supply that valid envelope to reach this check.
+                let digest =
+                    domain_digest(b"fa:cash-flow-split-certificate-digest:v1", &[&nested.0]);
+                nested.add(&digest).unwrap();
+            }
+            // Pin refusal at the family tag, before any missing nested fields.
+            let refusal = CashFlowBasisCertificate::decode(kind, &nested.0).unwrap_err();
+            assert!(refusal.message.contains("format"), "{}", refusal.message);
+            let mut outer = Bytes::default();
+            outer.blob(format(kind)).unwrap();
+            if kind != CashFlowBasisKind::Explicit {
+                outer.add(&[kind as u8]).unwrap();
+            }
+            outer.blob(&nested.0).unwrap();
+            assert!(IndirectCashFlowCertificate::decode(&outer.0).is_err());
+        }
     }
 }

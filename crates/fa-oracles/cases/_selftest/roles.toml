@@ -1,0 +1,21 @@
+# Harness self-test roles: labels only (plan §2.8); no person stands behind them.
+
+[[role]]
+label = "selftest-preparer-1"
+kind = "harness"
+description = "prepares the self-test's synthetic entries"
+
+[[role]]
+label = "case-closer-1"
+kind = "harness"
+description = "runs the self-test book's period transitions"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "reviews the self-test's placeholder documents"
+
+[[role]]
+label = "examiner-1"
+kind = "harness"
+description = "records the self-test's audit procedure runs"

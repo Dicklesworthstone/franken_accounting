@@ -339,17 +339,38 @@ pub async fn create_dimension_value<V: Vfs + Clone>(
     let evid = entry_vid(book.book_id, &principal.0.to_le_bytes(), key);
     let dim_vid = dimension_vid(book.book_id, kind.code);
     let value_vid = dimension_value_vid(book.book_id, kind.code, &spec.code);
+    if let Err(refusal) = crate::policy::capability_admitted(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(refusal));
+    }
     let mut txn = db.begin(&ctx.txn())?;
     if let Err(refusal) = crate::policy::capability_witness(&txn, db, book, capability)? {
         txn.abort();
         return Ok(Err(refusal));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
+    if let Err(refusal) =
+        crate::outcome::witness_named_key(&txn, db, book.book_id, principal, key, evid)?
+    {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
         let stored = Entry::decode(&bytes(&row, property::FA_PAYLOAD, "entry payload")?)?;
-        if stored.proposal.semantic_digest(&book.seal_key)?
-            != proposal.semantic_digest(&book.seal_key)?
+        if row.labels.as_slice() != [label::ENTRY]
+            || row.props != entry_mirrors(&stored)?
+            || !stored.approvals.is_empty()
+            || stored.plan_certificate.is_some()
+            || !crate::outcome::verify_control_recorded(db, &row, &stored)?
+        {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
+        if stored.proposal_digest != entry.proposal_digest
+            && stored.proposal.semantic_digest(&book.seal_key)?
+                != proposal.semantic_digest(&book.seal_key)?
         {
             return Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
@@ -376,6 +397,15 @@ pub async fn create_dimension_value<V: Vfs + Clone>(
             control_entry: evid,
             already_recorded: true,
         }));
+    }
+    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refusal));
     }
     if txn.vertex(db, value_vid)?.is_some() {
         txn.abort();
@@ -419,6 +449,7 @@ pub async fn create_dimension_value<V: Vfs + Clone>(
     let dimension_id = CanonicalScalar::Int(i64::from(kind.id));
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
     in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
     if need_dimension {
         let mut props = vec![
             (property::BOOK_ID, book_id.clone()),

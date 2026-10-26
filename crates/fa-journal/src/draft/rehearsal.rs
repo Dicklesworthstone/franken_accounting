@@ -490,14 +490,20 @@ fn capture<V: Vfs + Clone>(
                         "Plan record carries a different extension or proof",
                     ));
                 }
-                let (intent, capability) = decode_intent(bytes)?;
+                let (intent, capability, resolved_entry_digest, resolved_entry) =
+                    decode_intent(bytes)?;
                 let planned = intent.proposal();
                 if proposal.principal_ref != body.owner
                     || capability.holder() != body.owner
                     || planned.principal_ref != body.owner
                     || planned.book_id != book.book_id
                     || planned.branch_id != Id128::TRUNK
-                    || intent_bytes(&intent, &capability)? != *bytes
+                    || intent_bytes(
+                        &intent,
+                        &capability,
+                        resolved_entry_digest,
+                        resolved_entry.as_ref(),
+                    )? != *bytes
                     || !member_keys.insert(planned.idempotency_key.clone())
                 {
                     return Err(corrupt(
@@ -509,6 +515,8 @@ fn capture<V: Vfs + Clone>(
                     recorded_at: record.reference.recorded_at,
                     intent,
                     capability,
+                    resolved_entry_digest,
+                    resolved_entry,
                 });
                 plans.push(record.reference.clone());
                 Kind::Plan
@@ -652,6 +660,10 @@ pub async fn rehearse_draft_into<V: Vfs + Clone>(
         }
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if let Err(refusal) = check_resolved_members(&request.name, &view.intents, &staged.entries) {
+        staged.txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Err(refusal) = witness_open(&staged.txn, &target, book, &request.name)? {
         staged.txn.abort();
         return Ok(Err(refusal));

@@ -7,7 +7,7 @@ use fa::cash_flow_policy::CashFlowPolicy;
 use fa::cash_flow_split::{CashFlowSplitDefinition, SplitCashFlow};
 use fa::{
     AdjustmentCategory, AdjustmentSign, AgingBuckets, AgingReconciliationRequest,
-    CashFlowDefinition, IndirectCashFlowRequest, RollForwardRequest,
+    CashFlowBasisDefinition, CashFlowDefinition, IndirectCashFlowRequest, RollForwardRequest,
 };
 use fa_model::account_vid;
 use fa_time::DateDay;
@@ -199,7 +199,16 @@ fn scope(doc: &Json, book: &Book) -> Result<RollForwardRequest, Fail> {
 }
 
 fn policy_shape(policy: &Json, indirect: bool) -> Result<(), Fail> {
-    crate::cli::validate_cash_flow_policy_fields(policy, indirect)?;
+    let classification = if indirect && policy.get("splits").is_some() {
+        crate::cli::validate_cash_flow_split_policy_fields(policy, true)?;
+        "splits"
+    } else if indirect && policy.get("account_rules").is_some() {
+        crate::cli::validate_cash_flow_rules_policy_fields(policy, true)?;
+        "account_rules"
+    } else {
+        crate::cli::validate_cash_flow_policy_fields(policy, indirect)?;
+        "assignments"
+    };
     string(policy, "name")?;
     for item in array(policy, "cash_accounts")? {
         if !matches!(item, Json::Str(code) if !code.is_empty()) {
@@ -208,12 +217,47 @@ fn policy_shape(policy: &Json, indirect: bool) -> Result<(), Fail> {
             ));
         }
     }
-    array(policy, "assignments")?;
+    array(policy, classification)?;
     if indirect {
         string(policy, "cash_policy")?;
         array(policy, "adjustments")?;
     }
     Ok(())
+}
+
+/// A portable reconciliation keeps the recipient's original account, cutoff,
+/// sequence and bands independent of the certificate being exported.
+pub(crate) fn reconciliation_bundle_expectation(
+    args: &Args,
+    book: &Book,
+) -> Result<AgingReconciliationRequest, Fail> {
+    if args.flag_all("--expect").len() != 1 {
+        return Err(invalid(
+            "aging reconciliation export requires exactly one --expect JSON request",
+        ));
+    }
+    let text = args.flag("--expect").ok_or_else(|| {
+        invalid("aging reconciliation export requires the recipient's --expect JSON")
+    })?;
+    check_size(text)?;
+    let doc = crate::json::parse(text)
+        .map_err(|error| invalid(format!("invalid replay expectation JSON: {error}")))?;
+    if string(&doc, "kind")? != "aging-reconciliation" {
+        return Err(invalid(
+            "aging reconciliation export requires kind aging-reconciliation",
+        ));
+    }
+    reconciliation_request(&doc, book)
+}
+
+fn reconciliation_request(doc: &Json, book: &Book) -> Result<AgingReconciliationRequest, Fail> {
+    exact_fields(doc, &["kind", "account", "through", "known_at", "buckets"])?;
+    Ok(AgingReconciliationRequest {
+        account: account(string(doc, "account")?, book)?,
+        effective_through: day(doc, "through")?,
+        known_at: Some(fixed_prefix(doc)?),
+        buckets: aging_buckets(doc)?,
+    })
 }
 
 pub(super) fn parse(
@@ -242,16 +286,16 @@ pub(super) fn parse(
                 allowed.push("income_periods");
             }
             exact_fields(&doc, &allowed)?;
-            let request = scope(&doc, book)?;
+            let mut request = scope(&doc, book)?;
             let policy = field(&doc, "policy")?;
             policy_shape(policy, indirect)?;
-            let mut definition = crate::cli::parse_cash_flow_definition(
-                policy,
-                book.context().book_id,
-                &request.accounts,
-                "",
-            )?;
             if !indirect {
+                let definition = crate::cli::parse_cash_flow_definition(
+                    policy,
+                    book.context().book_id,
+                    &request.accounts,
+                    "",
+                )?;
                 return Ok(Expected::CashFlow(request, definition));
             }
             let income_periods = array(&doc, "income_periods")?
@@ -268,7 +312,15 @@ pub(super) fn parse(
             }
             let (cash_policy, indirect) =
                 crate::cli::parse_indirect_cash_flow_definition(policy, "")?;
-            definition.name = cash_policy;
+            let definition = crate::cli::parse_indirect_cash_flow_basis(
+                policy,
+                book,
+                principal,
+                capability,
+                &mut request,
+                &cash_policy,
+                |refusal| certificate_invalid(refusal.message),
+            )?;
             Ok(Expected::Indirect(IndirectCashFlowRequest {
                 cash: request,
                 cash_definition: definition,
@@ -386,15 +438,9 @@ pub(super) fn parse(
                 .map_err(|refusal| certificate_invalid(refusal.message))?;
             Ok(Expected::SplitCashFlow(request, definition))
         }
-        "aging-reconciliation" => {
-            exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
-            Ok(Expected::Reconciliation(AgingReconciliationRequest {
-                account: account(string(&doc, "account")?, book)?,
-                effective_through: day(&doc, "through")?,
-                known_at: Some(fixed_prefix(&doc)?),
-                buckets: aging_buckets(&doc)?,
-            }))
-        }
+        "aging-reconciliation" => Ok(Expected::Reconciliation(reconciliation_request(
+            &doc, book,
+        )?)),
         "aging" => {
             exact_fields(&doc, &["kind", "account", "through", "known_at", "buckets"])?;
             // An omitted account is the whole-book aging the producer chose by
@@ -588,10 +634,7 @@ pub(crate) fn cash_flow_expectation_json(
     obj(fields)
 }
 
-pub(crate) fn policy_cash_flow_expectation_json(
-    request: &RollForwardRequest,
-    policy: &CashFlowPolicy,
-) -> Json {
+fn rules_policy_fields(policy: &CashFlowPolicy) -> Vec<(&'static str, Json)> {
     // Overrides render exactly as a direct policy's assignments do.
     let mut policy_json = policy_fields(&CashFlowDefinition {
         name: policy.name.clone(),
@@ -621,26 +664,63 @@ pub(crate) fn policy_cash_flow_expectation_json(
                 .collect(),
         ),
     ));
+    policy_json
+}
+
+pub(crate) fn policy_cash_flow_expectation_json(
+    request: &RollForwardRequest,
+    policy: &CashFlowPolicy,
+) -> Json {
     let mut fields = scope_fields(request);
     fields.push(("kind", s("policy-cash-flow")));
-    fields.push(("policy", obj(policy_json)));
+    fields.push(("policy", obj(rules_policy_fields(policy))));
     obj(fields)
 }
 
-pub(crate) fn indirect_expectation_json(request: &IndirectCashFlowRequest) -> Json {
+/// Preserve the full selected policy, including the original units of splits.
+/// Validate the complete generated transport before publishing a certificate.
+pub(crate) fn indirect_expectation_json(
+    request: &IndirectCashFlowRequest,
+    basis: &fa::CashFlowBasis,
+    units: &fa_money::UnitRegistry,
+) -> Result<Json, Fail> {
+    let policy = match (&request.cash_definition, basis) {
+        (CashFlowBasisDefinition::Explicit(definition), fa::CashFlowBasis::Explicit(_)) => {
+            policy_fields(definition)
+        }
+        (CashFlowBasisDefinition::Policy(policy), fa::CashFlowBasis::Policy(_)) => {
+            rules_policy_fields(policy)
+        }
+        (CashFlowBasisDefinition::Split(_), fa::CashFlowBasis::Split(report)) => {
+            split_policy_fields(report, units)?
+        }
+        _ => {
+            return Err(invalid(
+                "indirect replay expectation and report use different cash bases",
+            ));
+        }
+    };
+    let doc = indirect_expectation_doc(request, policy);
+    check_size(&doc.render())?;
+    Ok(doc)
+}
+
+fn indirect_expectation_doc(
+    request: &IndirectCashFlowRequest,
+    mut policy: Vec<(&'static str, Json)>,
+) -> Json {
     let mut fields = scope_fields(&request.cash);
     fields.push(("kind", s("indirect-cash-flow")));
     fields.push((
         "income_periods",
         Json::Arr(request.income_periods.iter().map(s).collect()),
     ));
-    let mut policy = policy_fields(&request.cash_definition);
     for (name, value) in &mut policy {
         if *name == "name" {
             *value = s(&request.definition.name);
         }
     }
-    policy.push(("cash_policy", s(&request.cash_definition.name)));
+    policy.push(("cash_policy", s(request.cash_definition.name())));
     policy.push((
         "adjustments",
         Json::Arr(
@@ -685,8 +765,20 @@ pub(crate) fn split_cash_flow_expectation_json(
     report: &SplitCashFlow,
     units: &fa_money::UnitRegistry,
 ) -> Result<Json, Fail> {
+    let mut fields = scope_fields(request);
+    fields.push(("kind", s("split-cash-flow")));
+    fields.push(("policy", obj(split_policy_fields(report, units)?)));
+    let doc = obj(fields);
+    check_size(&doc.render())?;
+    Ok(doc)
+}
+
+fn split_policy_fields(
+    report: &SplitCashFlow,
+    units: &fa_money::UnitRegistry,
+) -> Result<Vec<(&'static str, Json)>, Fail> {
     let definition = report.definition();
-    let policy = obj(vec![
+    Ok(vec![
         ("name", s(&definition.name)),
         (
             "cash_accounts",
@@ -702,13 +794,7 @@ pub(crate) fn split_cash_flow_expectation_json(
             "splits",
             Json::Arr(crate::cli::cash_flow_split_rows_json(report, units)?),
         ),
-    ]);
-    let mut fields = scope_fields(request);
-    fields.push(("kind", s("split-cash-flow")));
-    fields.push(("policy", policy));
-    let doc = obj(fields);
-    check_size(&doc.render())?;
-    Ok(doc)
+    ])
 }
 
 pub(crate) fn reconciliation_expectation_json(request: &AgingReconciliationRequest) -> Json {
@@ -792,7 +878,14 @@ pub(super) fn validate_generated(expected: fa::ReportArtifactExpectation<'_>) ->
             equity_expectation_json(request)
         }
         fa::ReportArtifactExpectation::IndirectCashFlow(request) => {
-            indirect_expectation_json(request)
+            let policy = match &request.cash_definition {
+                CashFlowBasisDefinition::Explicit(definition) => policy_fields(definition),
+                CashFlowBasisDefinition::Policy(policy) => rules_policy_fields(policy),
+                // The producer checks source-bound split transport before
+                // retention, in indirect_expectation_json, as for direct splits.
+                CashFlowBasisDefinition::Split(_) => return Ok(()),
+            };
+            indirect_expectation_doc(request, policy)
         }
         fa::ReportArtifactExpectation::AgingReconciliation(request) => {
             reconciliation_expectation_json(request)

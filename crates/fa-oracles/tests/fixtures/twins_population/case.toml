@@ -1,0 +1,11 @@
+# Twin population fixture (fa-yugf.27, A11c): a Benford N over 120 legs, below the procedure's
+# 500-leg minimum, for fa-cli's tests/cases.rs. Never copied to cases/; claims nothing.
+id = "twins_population"
+title = "Twin population fixture: a Benford N whose twin cannot report below the minimum"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's N evaluation of a population-gated procedure below its min_population"
+claims = []
+capabilities = ["verb:post", "procedure:benford.first_digit@2"]
+pinned_commit = "60d7b6c0a"
+variants = ["native"]

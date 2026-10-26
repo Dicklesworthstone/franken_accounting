@@ -13,7 +13,7 @@ use fa_model::{AccountType, ControlPayload, EntryClass, LegPayload, PartyIdentif
 
 use attribution::{Leg, Named, attribute, named, owners};
 use fa_money::Side;
-use fa_time::{DateDay, Weekday};
+use fa_time::{DateDay, PeriodState, Weekday};
 use fgdb_types::VId;
 
 use crate::amount::{
@@ -609,7 +609,7 @@ impl Procedure for SubsequentEvents {
         Self::ID
     }
     fn version(&self) -> u16 {
-        1
+        2
     }
     fn params(&self) -> &Params {
         &self.params
@@ -643,12 +643,20 @@ impl Procedure for SubsequentEvents {
             by_vid.insert(e.vid, e);
         }
 
-        // Identify closed/soft-closed periods and their end dates
+        // A period is a closed boundary when its latest recorded transition
+        // put it in SoftClosed, Closed or Locked. Every period is born Future
+        // and opened by a recorded transition, so "has a transition" would
+        // count a period that is still Open; a reopened period is no
+        // boundary either. Transitions are sorted by recorded_at.
         let mut closed_periods: Vec<(String, DateDay)> = Vec::new();
         for (pcode, trs) in &snapshot.transitions {
-            if !trs.is_empty()
-                && let Some(p) = snapshot.periods.get(pcode)
-            {
+            let closed = trs.last().is_some_and(|t| {
+                matches!(
+                    t.to,
+                    PeriodState::SoftClosed | PeriodState::Closed | PeriodState::Locked
+                )
+            });
+            if closed && let Some(p) = snapshot.periods.get(pcode) {
                 closed_periods.push((pcode.clone(), p.end));
             }
         }
@@ -1347,17 +1355,49 @@ impl Procedure for ConfirmCoverage {
     }
 }
 
-/// `solvency.balance_sheet_test` (plan §11.6, `FA-EVID-L52`):
-/// A balance-sheet screen over the signed native asset and liability basis.
+/// `solvency.balance_sheet_test` (plan §11.6, `FA-EVID-L52`, `fa-8j3g`):
+/// A balance-sheet screen over the signed native asset and liability basis,
+/// with optional authenticated dated valuation inputs
+/// (`SolvencyBalanceSheetTest::with_valuation_schedule` or inline
+/// `fa:solvency-valuation:v1` entry extensions).
 /// Version 2 preserves contra-accounts and applies the declared haircut once
 /// to each unit's positive net asset basis, truncating toward zero. A negative
 /// asset basis remains negative. `RegisterEquals` records are reconciliation
-/// assertions, never valuation instructions. Explicit documented valuations
-/// remain unsupported; this screen makes no fair-value or legal conclusion.
+/// assertions, never valuation instructions.
 pub struct SolvencyBalanceSheetTest {
     params: Params,
+    valuation_schedule: Option<crate::solvency::AuthenticatedValuationSchedule>,
 }
-procedure_boilerplate!(SolvencyBalanceSheetTest, "solvency.balance_sheet_test");
+
+impl SolvencyBalanceSheetTest {
+    pub const ID: &'static str = "solvency.balance_sheet_test";
+
+    pub fn new() -> Result<Self, LanternError> {
+        Ok(Self {
+            params: Params::defaults(Self::ID)?,
+            valuation_schedule: None,
+        })
+    }
+
+    #[must_use]
+    pub fn with(params: Params) -> Self {
+        Self {
+            params,
+            valuation_schedule: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_valuation_schedule(
+        params: Params,
+        schedule: crate::solvency::AuthenticatedValuationSchedule,
+    ) -> Self {
+        Self {
+            params,
+            valuation_schedule: Some(schedule),
+        }
+    }
+}
 
 impl Procedure for SolvencyBalanceSheetTest {
     fn id(&self) -> &'static str {
@@ -1382,6 +1422,31 @@ impl Procedure for SolvencyBalanceSheetTest {
                 name: "fair_value_haircut_bps".into(),
                 message: "must be in 0..=10000".into(),
             });
+        }
+
+        if let Some(schedule) = &self.valuation_schedule {
+            let report = crate::solvency::evaluate_balance_sheet_solvency(
+                Self::ID,
+                snapshot,
+                book,
+                haircut_bps,
+                schedule,
+                work,
+            )?;
+            return Ok(report.findings);
+        }
+        if let Some(inline_schedule) =
+            crate::solvency::valuation_schedule_from_inline_extensions(Self::ID, snapshot)?
+        {
+            let report = crate::solvency::evaluate_balance_sheet_solvency(
+                Self::ID,
+                snapshot,
+                book,
+                haircut_bps,
+                &inline_schedule,
+                work,
+            )?;
+            return Ok(report.findings);
         }
 
         let through = snapshot.coordinate.effective_through;
@@ -2406,7 +2471,9 @@ struct InvestorPopulation {
 /// and from words in the entry's description (fa-kxc4). Version 3 attributes
 /// each entry's cash per `(unit, legal entity)` partition to the investors
 /// whose own legs fund or receive it ([`attribution`], fa-6l8g); version 2
-/// gave every party an entry named its whole cash.
+/// gave every party an entry named its whole cash. Version 4 keeps in the
+/// population only parties with an investor movement (fa-yugf.83); version 3
+/// kept every party with attributed cash in.
 fn collect_investor_positions(
     procedure: &str,
     snapshot: &Snapshot,
@@ -2555,10 +2622,14 @@ fn collect_investor_positions(
         }
     }
 
-    // Retain parties that invested principal (cash_in > 0) or touched an explicit investor account
+    // Retain only investors: parties with an investor movement, whose
+    // contra leg is on an Equity account or one holding the investor_capital
+    // role (the registry summary; fa-yugf.83). A member's other attributed
+    // cash still counts, so a payout booked through an expense account still
+    // reaches its investor; a vendor's refund makes no one an investor.
     let positions: Vec<InvestorPosition> = positions
         .into_iter()
-        .filter(|(k, p)| p.cash_in > 0 || explicit_investor_party.contains(k))
+        .filter(|(k, _)| explicit_investor_party.contains(k))
         .map(|(_, p)| p)
         .collect();
 
@@ -2604,7 +2675,7 @@ impl Procedure for PonziNetInvestment {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        4
     }
     fn params(&self) -> &Params {
         &self.params
@@ -2988,7 +3059,7 @@ impl Procedure for DistributionRisingTide {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        4
     }
     fn params(&self) -> &Params {
         &self.params
@@ -3161,7 +3232,7 @@ impl Procedure for DistributionProRata {
         Self::ID
     }
     fn version(&self) -> u16 {
-        3
+        4
     }
     fn params(&self) -> &Params {
         &self.params

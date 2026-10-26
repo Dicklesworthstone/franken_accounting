@@ -1,0 +1,11 @@
+# Twin gap fixture (fa-yugf.27, A11c): an exact_gap N and its gap_zero twin target on a micro-book,
+# for fa-cli's tests/cases.rs. Never copied to cases/; claims nothing.
+id = "twins_gap"
+title = "Twin gap fixture: an exact_gap N whose twin target shows gap 0"
+version = 1
+kind = "harness_selftest"
+scope = "the runner's exact_gap N evaluation: a mechanism-explained gap and a zero-gap twin target"
+claims = []
+capabilities = ["verb:post", "procedure:ponzi.net_investment@4"]
+pinned_commit = "60d7b6c0a"
+variants = ["native"]

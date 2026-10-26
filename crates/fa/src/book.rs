@@ -1507,6 +1507,33 @@ impl Book {
         )))
     }
 
+    /// Rehearse this owner's retained draft members without publishing them.
+    /// Returns their resolved entries, or `None` for an empty open draft.
+    pub fn preview_draft(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Option<fa_journal::DraftPreview>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.preview_draft(
+            &purposes, capability, name,
+        )))
+    }
+
+    /// Original resolved draft entries for dependent request construction.
+    /// Retained targets remain readable by the owner after discard or drift;
+    /// preparing a new append still revalidates the complete draft.
+    pub fn draft_entries(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Vec<fa_model::Entry>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.draft_entries(
+            &purposes, capability, name,
+        )))
+    }
+
     /// Promote the draft `name`: its intents post to trunk as one batch,
     /// each admitted again under current policy.
     pub fn promote_draft(
@@ -1863,6 +1890,21 @@ impl Book {
         document: &fa_model::Oid,
     ) -> Result<Vec<(fa_journal::ProductionProfile, fa_journal::RecordedRange)>, BookError> {
         with_store!(&self.store, core => core.document_bates_ranges(&self.purposes(), document))
+    }
+
+    /// Mark `document` as exhibit `label` in `matter` (plan §13.2, Appendix B
+    /// `MarkExhibit`).
+    pub fn mark_exhibit(
+        &mut self,
+        capability: fa_journal::Capability,
+        matter: &str,
+        document: fa_model::Oid,
+        label: &str,
+    ) -> Outcome<fa_journal::ExhibitMarkedOutcome> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.mark_exhibit(
+            &purposes, capability, matter, document, label,
+        )))
     }
 
     /// Open the engagement `profile.engagement` (plan §11.12, bead fa-zgn):
@@ -2406,6 +2448,19 @@ impl Book {
     ) -> Outcome<(Posted, Posted)> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.commit_replacement_plan(&purposes, plan, capability)))
+    }
+
+    /// Resolve a balancing request's available amount for a sealed approval
+    /// review. This publishes nothing and grants no posting permission. Restore
+    /// its request form, run `plan`, and require the reviewed proposal digest
+    /// before committing; a changed amount requires a new review and approvals.
+    pub fn review_balancing(
+        &mut self,
+        proposal: fa_model::EntryPayload,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_model::EntryPayload> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => core.review_balancing(&purposes, proposal, capability))
     }
 
     /// Rehearse an intent through the posting kernel without publishing.
@@ -3018,6 +3073,48 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.functional_balance_as_of(
             &purposes, capability, effective_through, known_at,
+        )))
+    }
+
+    /// Functional-currency trial balance with its historical account metadata.
+    /// Select one period's activity, stock through one period end, or a civil date.
+    pub fn functional_trial_balance(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::FunctionalTrialBalance> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_trial_balance(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Certify exact retained functional valuations, original Rate evidence and
+    /// the selected journal prefix under current whole-book Read and Produce.
+    pub fn certify_functional_trial_balance(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_trial_balance(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Certify a functional trial balance at an instant resolved by retained
+    /// TimeEvidence; the certificate keeps the original tick brackets.
+    pub fn certify_functional_trial_balance_at_instant(
+        &mut self,
+        capability: &fa_journal::Capability,
+        selection: crate::TrialBalanceSelection,
+        requested_utc_ns: u64,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_trial_balance_at_instant(
+            &purposes, capability, selection, requested_utc_ns,
         )))
     }
 
@@ -3739,6 +3836,108 @@ impl Book {
         with_store!(&self.store, core => core.statement(&self.purposes(), selection, known_at))
     }
 
+    /// Prepare a company layout for two independent approvers. The review
+    /// binds its exact bytes and the complete historical chart partition.
+    pub fn plan_statement_definition(
+        &self,
+        capability: &fa_policy::Capability,
+        definition: fa_statements::custom::CustomStatementDefinition,
+        effective_from: DateDay,
+        key: &[u8],
+    ) -> Outcome<crate::statement_definition::StatementDefinitionPlan> {
+        with_store!(&self.store, core => core.plan_statement_definition(
+            &self.purposes(), capability, definition, effective_from, key,
+        ))
+    }
+
+    /// Atomically retain a reviewed layout and its approved activation.
+    pub fn activate_statement_definition(
+        &mut self,
+        capability: &fa_policy::Capability,
+        plan: crate::statement_definition::StatementDefinitionPlan,
+        approvals: Vec<fa_model::ApprovalRef>,
+    ) -> Outcome<crate::statement_definition::ActivatedStatementDefinition> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.activate_statement_definition(
+            &purposes, capability, plan, approvals,
+        )))
+    }
+
+    /// Lint an editable company layout against one admitted historical chart.
+    pub fn lint_statement_definition(
+        &self,
+        capability: &fa_policy::Capability,
+        definition: &fa_statements::custom::CustomStatementDefinition,
+        known_at: CommitSeq,
+    ) -> Outcome<fa_statements::custom::StatementLintReport> {
+        with_store!(&self.store, core => core.lint_statement_definition(
+            &self.purposes(), capability, definition, known_at,
+        ))
+    }
+
+    /// Resolve the layout activated for a name and effective reporting date.
+    pub fn active_statement_definition(
+        &self,
+        capability: &fa_policy::Capability,
+        name: &str,
+        day: DateDay,
+        known_at: CommitSeq,
+    ) -> Outcome<Option<crate::statement_definition::ActivatedStatementDefinition>> {
+        with_store!(&self.store, core => core.active_statement_definition(
+            &self.purposes(), capability, name, day, known_at,
+        ))
+    }
+
+    pub fn custom_statement(
+        &self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CustomStatementReport> {
+        with_store!(&self.store, core => core.custom_statement(
+            &self.purposes(), capability, selection, known_at,
+        ))
+    }
+
+    pub fn certify_custom_statement(
+        &self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        with_store!(&self.store, core => core.certify_custom_statement(
+            &self.purposes(), capability, selection, known_at,
+        ))
+    }
+
+    /// Evaluate an approved company layout using retained functional amounts,
+    /// with current authority and the complete historical source available.
+    pub fn functional_custom_statement(
+        &mut self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CustomStatementReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.functional_custom_statement(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
+    /// Retain the approved layout, original valuations and optional presented
+    /// view in a functional custom report certificate.
+    pub fn certify_functional_custom_statement(
+        &mut self,
+        capability: &fa_policy::Capability,
+        selection: crate::CustomStatementSelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::CertifiedReport> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.certify_functional_custom_statement(
+            &purposes, capability, selection, known_at,
+        )))
+    }
+
     /// Evaluate a statement in the historical book's functional currency.
     /// The admitted whole-book reader receives exact retained valuations;
     /// this hydrates history without publishing or revaluing any entry.
@@ -3800,6 +3999,17 @@ impl Book {
         requested_utc_ns: u64,
     ) -> Outcome<crate::CertifiedStatement> {
         with_store!(&self.store, core => core.certify_statement_at_instant(&self.purposes(), selection, requested_utc_ns))
+    }
+
+    /// Evaluate a regulatory schedule (plan §12.6, `fa statement
+    /// regulatory`) from authoritative journal payloads, without publishing
+    /// any object.
+    pub fn regulatory_schedule(
+        &self,
+        selection: crate::RegulatorySelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        with_store!(&self.store, core => core.regulatory_schedule(&self.purposes(), selection, known_at))
     }
 
     /// Resolve a UTC instant from retained ticks without reading a clock.
@@ -3902,8 +4112,8 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.retain_certificate(&purposes, certificate)))
     }
 
-    /// Persist a certificate lazily after verifying current `read` authority
-    /// for this book (fa-1nx).
+    /// Persist a certificate lazily after verifying current `read` and
+    /// `produce` authority for this book (fa-mg2j).
     pub fn retain_certificate_authorized(
         &mut self,
         certificate: &crate::ReportCertificate,
@@ -4233,13 +4443,19 @@ impl Book {
         ))
     }
 
-    /// Produce a portable native trial balance or statement for `fa-verify report`.
+    /// Produce a portable native or dimension-filtered trial balance, statement
+    /// open-item report or balance explanation for `fa-verify report`.
     /// Replays the certificate under current whole-book read/produce authority,
     /// then exports every payload in a signed checkpoint covering its prefix.
     /// Returns `None` if the selected recorded checkpoint is unavailable.
     /// Native statements carry authenticated registry inputs when the exact
     /// closure is available. Legacy bundles retain recipient-supplied unit
     /// premises and require the complete unit-ID list for verification.
+    /// Open-item reports and balance explanations require the exact authenticated
+    /// registry closure; they never fall back to an unbound accounting premise.
+    /// Explanations additionally require their original retained reason-code
+    /// epoch. Historical key-derived replacement identities in the selected
+    /// prefix remain unsupported by the portable explanation interpreter.
     pub fn produce_report_bundle(
         &mut self,
         principal: VId,
@@ -4251,6 +4467,116 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.produce_report_bundle(
             &purposes, principal, capability, state, certificate,
         )))
+    }
+
+    /// Produce a portable effective-date aging schedule for `fa-verify report`.
+    /// Replays both the source OpenItems certificate and the historical cutoff
+    /// under current whole-book read/produce authority. The complete signed
+    /// prefix and exact registry closure allow a recipient to reconstruct the
+    /// items, applications, age bands and separate debit/credit totals without
+    /// the source book. The receipt binds the outer aging certificate.
+    ///
+    /// Ages are measured from posting effective dates, not contractual due
+    /// dates. Sequence-selected trunk certificates are supported. Returns
+    /// `None` if the selected recorded checkpoint is unavailable.
+    pub fn produce_aging_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_aging_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce a portable account lead schedule for `fa-verify report`.
+    /// Replays the complete roll-forward at its historical recorded prefix
+    /// under current whole-book read/produce authority. The signed complete
+    /// prefix and exact four-registry closure let a recipient reconstruct
+    /// opening balances, every posted movement and closing balances; even
+    /// offsetting movements remain independently checkable. The outer
+    /// roll-forward certificate is preserved and bound by the signed receipt.
+    /// Sequence-selected trunk certificates are supported. Returns `None`
+    /// when the selected recorded checkpoint is unavailable.
+    pub fn produce_roll_forward_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::RollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_roll_forward_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce classified direct cash flow for independent `fa-verify report`
+    /// recomputation. The bundle carries every original selected cash movement
+    /// and the exact four-document historical registry closure. Current
+    /// whole-book read/produce authority is checked before observing history;
+    /// the receipt binds the outer classification certificate, not merely its
+    /// roll-forward source. Returns `None` when its checkpoint is unavailable.
+    pub fn produce_cash_flow_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::CashFlowCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_cash_flow_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Produce policy-classified direct cash flow for offline recomputation.
+    /// Native replay derives each classification from complete original
+    /// counterpart entries; the signed outer artifact preserves every policy
+    /// rule, override and decision basis. Current whole-book read/produce
+    /// authority and the exact historical registry closure are mandatory.
+    /// Policy choices are retained inputs, not journaled approval or activation.
+    /// Returns `None` when the selected checkpoint is unavailable.
+    pub fn produce_cash_flow_policy_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::cash_flow_policy::CashFlowPolicyCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.produce_cash_flow_policy_bundle(
+            &purposes, principal, capability, state, certificate,
+        )))
+    }
+
+    /// Export an aging-to-control reconciliation under current whole-book
+    /// read and produce authority. The original aging and AsOf trial-balance
+    /// certificates share one signed, complete journal prefix and original
+    /// registry closure. Recipients can recompute every open, posted, pending
+    /// and difference cell without the source book.
+    ///
+    /// `expected` is the recipient's independently selected account, civil
+    /// cutoff, fixed recorded sequence and age bands; HEAD is not an expectation.
+    /// The outer reconciliation digest identifies the delivered claim. Export
+    /// appends nothing and returns `None` when the selected checkpoint is absent.
+    pub fn produce_aging_reconciliation_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_aging_reconciliation_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
     }
 
     /// Produce an evidence bundle (plan §13.2) and its detached production
@@ -5253,6 +5579,18 @@ impl Book {
         with_store!(&self.store, core => core.search(&self.purposes(), query, known_at, documents, kind))
     }
 
+    /// Rebuild the search index at `known_at` (the head when `None`) over
+    /// every visible entry and the caller's `documents_and_findings`, and
+    /// verify its corpus hash and manifest digest (`fa verify search`; see
+    /// [`crate::search`]).
+    pub fn verify_search(
+        &self,
+        known_at: Option<CommitSeq>,
+        documents_and_findings: &[crate::SearchIndexableRecord],
+    ) -> Result<crate::SearchVerification, BookError> {
+        with_store!(&self.store, core => core.verify_search(&self.purposes(), known_at, documents_and_findings))
+    }
+
     /// `selection` at `from` and at `to` (the head when `None`), what
     /// changed between them, and every entry recorded after `from` through
     /// `to` (`fa diff`; see [`crate::ledger_diff`]).
@@ -5730,6 +6068,20 @@ impl Book {
         with_store!(&self.store, core => core.spec(&self.purposes()))
     }
 
+    /// Materialize a substrate storage checkpoint and retention cut over the
+    /// committed spine (plan §16.6): upon reopen, delta cursors prior to the
+    /// compacted frontier are retired while all certified reads remain intact.
+    pub fn compact_storage(&mut self) -> Result<(), BookError> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.compact_storage(&purposes)))
+    }
+
+    /// Whether the substrate's live delta stream still retains commits since
+    /// `since` (`false` once `since` precedes a reopened compaction cut).
+    pub fn has_delta_since(&self, since: CommitSeq) -> Result<bool, BookError> {
+        with_store!(&self.store, core => core.has_delta_since(&self.purposes(), since))
+    }
+
     /// Open reads under `capability` for `principal` (plan §14.2), through
     /// the kernel's [`fa_journal::policy::admit_reads`]: the capability is
     /// the principal's, holds `read`, its `books` caveat admits this book,
@@ -6130,8 +6482,9 @@ impl ReadScope<'_> {
     /// period through its latest selected one (a `periods` caveat refuses
     /// it; an `effective` caveat admits it only through that period's last
     /// day); period activity and an explanation reach exactly their
-    /// periods; open items reach the whole book. A statement's columns,
-    /// current and comparative, reach what their basis folds: a stock basis
+    /// periods; open items reach the whole book. A statement's or a
+    /// regulatory schedule's columns, current and comparative, reach what
+    /// their basis folds: a stock basis
     /// is a balance through the latest of them, an activity basis exactly
     /// their periods.
     pub fn admit_report(
@@ -6158,10 +6511,15 @@ impl ReadScope<'_> {
             ReportSelection::ExplainBalance { period, .. } => {
                 self.authority.periods(book, seq, &[period.as_str()])
             }
-            ReportSelection::Statement(statement) => {
-                let mut reached = codes(&statement.periods);
-                reached.extend(codes(&statement.comparative));
-                match statement.definition.basis() {
+            ReportSelection::Statement(_) | ReportSelection::RegulatorySchedule(_) => {
+                let Some((kind, periods, comparative)) = selection.statement_columns() else {
+                    return Err(BookError::Kernel(fa_journal::KernelError::Corrupt(
+                        "a statement selection lacks its statement columns".into(),
+                    )));
+                };
+                let mut reached = codes(periods);
+                reached.extend(codes(comparative));
+                match kind.basis() {
                     fa_statements::Basis::Stock => {
                         self.authority.stock_through(book, seq, &reached)
                     }
@@ -6171,7 +6529,9 @@ impl ReadScope<'_> {
             // A dimension filter crosses accounts and periods: a scoped
             // capability is refused, never filtered.
             ReportSelection::OpenItems { .. }
+            | ReportSelection::CustomStatement(_)
             | ReportSelection::FunctionalStatement(_)
+            | ReportSelection::FunctionalTrialBalance(_)
             | ReportSelection::Consolidation { .. }
             | ReportSelection::FunctionalConsolidation { .. }
             | ReportSelection::DimensionTrialBalance { .. } => self.authority.whole_book(seq),

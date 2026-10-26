@@ -731,15 +731,10 @@ fn every_plan_leaf_present_or_registered() {
         ),
         (
             "fa bundle show",
-            "fa-waow: the standalone fa-verify reads a .fab",
+            "fa-waow: the standalone fa-verify reads a .fab (fa-cli is surface, and workspace_topology.toml admits no normal edge into fa-verify's verification layer)",
         ),
         ("fa close run", "fa-4o0: the CloseRun task DAG"),
         ("fa close status", "fa-4o0: the CloseRun task DAG"),
-        ("fa exhibit mark", "fa-6l9"),
-        (
-            "fa finding dismiss",
-            "fa-waow: today fa finding review --action dismiss",
-        ),
         ("fa gen book", "fa-ykbp"),
         (
             "fa recon book-to-book",
@@ -748,7 +743,7 @@ fn every_plan_leaf_present_or_registered() {
         ("fa unit add", "fa-waow"),
         (
             "fa verify bundle",
-            "fa-waow: the standalone fa-verify verifies a bundle",
+            "fa-waow: the standalone fa-verify verifies a bundle (fa-cli is surface, and workspace_topology.toml admits no normal edge into fa-verify's verification layer)",
         ),
     ];
     let plan = std::fs::read_to_string(concat!(

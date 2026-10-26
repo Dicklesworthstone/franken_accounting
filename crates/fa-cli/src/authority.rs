@@ -1,9 +1,9 @@
-//! Authority fixed by an MCP host's trusted launch configuration (fa-23r).
+//! Authority fixed by trusted launch configuration or an issued holder token.
 //!
-//! This is an in-process binding, not an authenticated operator or a bearer
-//! token. There is deliberately no wire decoder, request constructor, or
-//! authority-bearing CLI flag. The ordinary CLI remains the embedded-owner
-//! posture; a bound host must use the typed entrypoint for every command.
+//! MCP uses the bounded Agent/Preparer launch ceiling (fa-23r). Ordinary CLI
+//! and daemon requests can additionally bind an explicitly issued Human
+//! operator token. Both postures retain the exact capability and fixed paths;
+//! no request argument supplies authority or changes its posture.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -75,6 +75,14 @@ impl LaunchProfile {
     }
 }
 
+/// Kept out of request arguments and token bytes. Only a Human token that
+/// cannot be admitted by MCP can select the operator confirmation posture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionPosture {
+    Mcp,
+    HumanOperator,
+}
+
 /// One principal, book, key path and capability for the host's lifetime.
 /// Paths are fixed against the launch working directory, so a tool's file
 /// context cannot change which book or key file is opened.
@@ -85,6 +93,7 @@ pub struct LaunchAuthority {
     files: Option<PathBuf>,
     principal: String,
     profile: LaunchProfile,
+    posture: SessionPosture,
     capability: Capability,
     /// The issued capability's commitment when the session is bound to a
     /// holder's token (`fa-mcp --token`, bead fa-v62), not to a template.
@@ -138,13 +147,14 @@ impl LaunchAuthority {
             files: None,
             principal,
             profile,
+            posture: SessionPosture::Mcp,
             capability,
             issued: None,
             token: None,
         })
     }
 
-    /// A session bound to a holder's issued token (plan §14.2, bead fa-v62):
+    /// An MCP session bound to a holder's issued token (plan §14.2, fa-v62):
     /// the token's principal, its journaled capability verbatim (so its
     /// ceilings, scope caveats and expiry hold), and the profile it was issued
     /// under. The token's secret has already proven possession
@@ -186,10 +196,60 @@ impl LaunchAuthority {
             files: None,
             principal: token.principal().to_string(),
             profile,
+            posture: SessionPosture::Mcp,
             capability,
             issued: Some(issued),
             token: Some(token.clone()),
         })
+    }
+
+    /// Bind an ordinary CLI or daemon request to its holder's exact token.
+    /// Human operators with explicit approval, period-control or witness
+    /// authority may confirm their commands. Every one of those operations
+    /// is outside both MCP launch ceilings, so a token relayed by MCP can
+    /// never acquire confirmation authority at the daemon.
+    ///
+    /// Tokens within the MCP ceiling retain the existing restricted posture,
+    /// even when their base profile and operator kind are Human: the daemon
+    /// receives the same token bytes from both transports. No capability is
+    /// widened or reissued, and current issuance, revocation, expiry and scope
+    /// admission still precede protected reads or writes.
+    pub fn from_operator_token(
+        book: PathBuf,
+        keys: Option<PathBuf>,
+        token: &CapabilityToken,
+    ) -> Result<Self, String> {
+        let capability = token.capability();
+        let operator = capability.profile() == Profile::Human
+            && capability.operator_kind() == fa_policy::OperatorKind::Human
+            && [Op::Approve, Op::Close, Op::Reopen, Op::Witness]
+                .iter()
+                .any(|op| capability.holds(*op));
+        if !operator {
+            return Self::from_token(book, keys, token);
+        }
+        let issued = capability
+            .commitment()
+            .map_err(|e| format!("token capability: {e}"))?;
+        Ok(Self {
+            book: launch_path(book, "book")?,
+            keys: keys.map(|path| launch_path(path, "keys")).transpose()?,
+            files: None,
+            principal: token.principal().to_string(),
+            profile: LaunchProfile::Preparer,
+            posture: SessionPosture::HumanOperator,
+            capability: capability.clone(),
+            issued: Some(issued),
+            token: Some(token.clone()),
+        })
+    }
+
+    /// Whether this exact token belongs to the ordinary Human-operator route.
+    /// Confirmation changes no rights, and never releases identity or path
+    /// binding. MCP sessions always return false.
+    #[must_use]
+    pub fn can_confirm(&self) -> bool {
+        self.posture == SessionPosture::HumanOperator
     }
 
     /// The issued capability's commitment when bound to a token.
@@ -210,6 +270,9 @@ impl LaunchAuthority {
     /// (`agent_prepared_human_approvers`) and document upload grading
     /// (`AgentUpload`) record an AI operator, never a human.
     pub fn as_mcp_operator(mut self) -> Result<Self, String> {
+        if self.can_confirm() {
+            return Err("a Human operator token cannot bind an MCP session".into());
+        }
         self.capability = self
             .capability
             .with_operator_kind(fa_policy::OperatorKind::Agent)
@@ -354,6 +417,17 @@ impl LaunchAuthority {
         self.profile
     }
 
+    /// The actual advertised profile: an operator token retains Human, while
+    /// MCP sessions name their bounded Agent or Preparer launch template.
+    #[must_use]
+    pub fn profile_name(&self) -> &'static str {
+        if self.can_confirm() {
+            self.capability.profile().name()
+        } else {
+            self.profile.name()
+        }
+    }
+
     #[must_use]
     pub fn capability(&self) -> &Capability {
         &self.capability
@@ -371,7 +445,7 @@ impl LaunchAuthority {
                 }),
             ),
             ("principal", s(&self.principal)),
-            ("profile", s(self.profile.name())),
+            ("profile", s(self.profile_name())),
             (
                 "ops",
                 Json::Arr(
@@ -695,6 +769,100 @@ mod tests {
         assert!(refused.unwrap_err().contains("`approve`"));
         let system = token(Profile::System, &[Op::Read]);
         assert!(LaunchAuthority::from_token(PathBuf::from("/book"), None, &system).is_err());
+    }
+
+    #[test]
+    fn human_operator_tokens_preserve_caveats_and_cannot_bind_mcp() {
+        let secret = [0x31; 32];
+        for op in [Op::Approve, Op::Close, Op::Reopen, Op::Witness] {
+            // The daemon sees only token bytes, so these sets must remain
+            // disjoint even if an MCP launch ceiling changes in the future.
+            for profile in [LaunchProfile::Agent, LaunchProfile::Preparer] {
+                assert!(!profile.ceiling().contains(&op), "{profile:?}: {op}");
+            }
+            let capability = Capability::new(
+                principal_vid("controller"),
+                Profile::Human,
+                &[Op::Read, op],
+                VId(1),
+            )
+            .unwrap()
+            .for_books(&[fa_model::Id128([7; 16])])
+            .unwrap()
+            .for_periods(&["FY2026-P03"])
+            .unwrap()
+            .expiring_at(fgdb_types::CommitSeq(41))
+            .holder_bound(fa_policy::possession_digest(&secret));
+            let token = CapabilityToken::new("controller", capability.clone(), secret).unwrap();
+            assert!(LaunchAuthority::from_token(PathBuf::from("/book"), None, &token).is_err());
+            let authority =
+                LaunchAuthority::from_operator_token(PathBuf::from("/book"), None, &token).unwrap();
+            assert!(authority.can_confirm());
+            assert_eq!(authority.capability(), &capability);
+            assert_eq!(authority.issued(), Some(capability.commitment().unwrap()));
+            assert_eq!(
+                authority.token().unwrap().canonical_bytes().unwrap(),
+                token.canonical_bytes().unwrap()
+            );
+            assert_eq!(authority.principal(), "controller");
+            assert_eq!(authority.principal_vid(), capability.holder());
+            assert_eq!(authority.book(), Path::new("/book"));
+            assert_eq!(
+                authority
+                    .envelope_json()
+                    .get("profile")
+                    .and_then(Json::as_str),
+                Some("Human")
+            );
+            assert!(authority.as_mcp_operator().is_err());
+        }
+    }
+
+    #[test]
+    fn ordinary_tokens_without_separating_human_authority_keep_mcp_restrictions() {
+        let secret = [0x32; 32];
+        let token = |capability: Capability| {
+            CapabilityToken::new(
+                "holder",
+                capability.holder_bound(fa_policy::possession_digest(&secret)),
+                secret,
+            )
+            .unwrap()
+        };
+        for profile in [Profile::Agent, Profile::Human] {
+            let token = token(
+                Capability::new(
+                    principal_vid("holder"),
+                    profile,
+                    &[Op::Read, Op::Post],
+                    VId(1),
+                )
+                .unwrap(),
+            );
+            let strict = LaunchAuthority::from_token(PathBuf::from("/book"), None, &token).unwrap();
+            let ordinary =
+                LaunchAuthority::from_operator_token(PathBuf::from("/book"), None, &token).unwrap();
+            assert!(!ordinary.can_confirm());
+            assert_eq!(ordinary.capability(), strict.capability());
+            assert_eq!(ordinary.envelope_json(), strict.envelope_json());
+        }
+        // Witness is legal in the base Agent capability vocabulary, but
+        // never grants an AI operator the Human confirmation posture.
+        for profile in [Profile::Agent, Profile::Human, Profile::System] {
+            let capability =
+                Capability::new(principal_vid("holder"), profile, &[Op::Witness], VId(1))
+                    .unwrap()
+                    .with_operator_kind(fa_policy::OperatorKind::Agent)
+                    .unwrap();
+            assert!(
+                LaunchAuthority::from_operator_token(
+                    PathBuf::from("/book"),
+                    None,
+                    &token(capability),
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

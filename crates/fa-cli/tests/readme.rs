@@ -331,7 +331,25 @@ fn present_tense_lines(readme: &str) -> Vec<String> {
 
 /// What the registry says is wrong with the command `line`, if anything.
 fn unregistered(reg: &Registry, line: &str) -> Option<String> {
-    let argv: Vec<String> = words(line).into_iter().skip(1).collect();
+    let mut argv: Vec<String> = words(line).into_iter().skip(1).collect();
+    // Global options may precede the verb (`fa --token t --book b period
+    // close …`): a registered flag takes its value, a switch takes none, and
+    // any other leading option is refused.
+    while let Some(first) = argv.first().filter(|w| w.starts_with("--")).cloned() {
+        let (flag, inline_value) = first
+            .split_once('=')
+            .map_or((first.as_str(), false), |(f, _)| (f, true));
+        let takes = if reg.global.flags.iter().any(|g| g == flag) {
+            if inline_value { 1 } else { 2 }
+        } else if reg.global.switches.iter().any(|g| g == flag) {
+            1
+        } else {
+            return Some(format!(
+                "`{line}`: `{flag}` is not a registered global option"
+            ));
+        };
+        argv.drain(..takes.min(argv.len()));
+    }
     let rest = reg.expand_alias(&argv);
     let Some(verb) = reg.verb(rest.first()?) else {
         return Some(format!("`{line}`: `{}` is not a registered verb", rest[0]));
@@ -412,6 +430,151 @@ fn the_registry_check_names_an_invented_verb_subcommand_or_flag() {
             "{verdict:?} should name {names}"
         );
     }
+    // Global options may precede the verb, a flag with its value or inline;
+    // an unregistered leading option is still named.
+    for ok in [
+        "fa --token controller.token --book ./books/acme period close FY2026-P03 --reason Scheduled --yes --json",
+        "fa --book=./books/acme --json tb --period FY2026-P03",
+    ] {
+        assert_eq!(unregistered(reg, ok), None, "{ok}");
+    }
+    let verdict = unregistered(reg, "fa --frobnicate x tb --period FY2026-P03");
+    assert!(
+        verdict
+            .as_deref()
+            .is_some_and(|v| v.contains("`--frobnicate` is not a registered global option")),
+        "{verdict:?}"
+    );
+}
+
+/// Phrases the `case` docs carried while Restatement posting waited on
+/// fa-651f (H12, fa-yugf.88), and while no test posted a
+/// PolicyChangeRetrospective case (H13, fa-yugf.93). Both post now
+/// (`a_restatement_case_restates_a_closed_period_from_the_cli`,
+/// `a_policy_change_retrospective_case_restates_a_closed_period_from_the_cli`).
+const STALE_CASE_CLAIMS: [&str; 5] = [
+    "entries are refused with FA-REF-178",
+    "This build posts PriorPeriodAdjustment and Revision cases",
+    "a PriorPeriodAdjustment or Revision case's entries",
+    "Restatement posting waits",
+    "not yet exercised by a test",
+];
+
+fn stale_case_posting_claims(text: &str) -> Vec<&'static str> {
+    STALE_CASE_CLAIMS
+        .iter()
+        .copied()
+        .filter(|p| text.contains(p))
+        .collect()
+}
+
+#[test]
+fn case_docs_name_every_postable_kind_and_make_no_stale_posting_claim() {
+    let reg = registry().expect("verbs.toml");
+    let case = reg.verb("case").expect("the case verb");
+    let post = case
+        .usage
+        .iter()
+        .find(|u| u.starts_with("case post"))
+        .expect("a case post usage line");
+    let posts = post
+        .split("This build posts ")
+        .nth(1)
+        .and_then(|rest| rest.split(" cases").next())
+        .expect("the case post usage says which kinds this build posts");
+    for kind in fa_journal::case::CaseKind::ALL {
+        if fa_journal::case::posting_class(kind).is_some() {
+            let name = format!("{kind:?}");
+            assert!(posts.contains(&name), "{name} missing from: {posts}");
+        }
+    }
+    let surfaces = [
+        ("case post usage", post.as_str()),
+        ("case summary", case.summary.as_str()),
+        ("README", README.split("## TL;DR").next().unwrap_or(README)),
+    ];
+    for (what, text) in surfaces {
+        let stale = stale_case_posting_claims(text);
+        assert!(stale.is_empty(), "{what}: {stale:?}");
+    }
+    // The planted negative: every surface as it stood at 8196f5e40 is caught.
+    let old_usage = "This build posts PriorPeriodAdjustment and Revision cases: a Revision case's scenario plans each Revision; a Restatement case's entries are refused with FA-REF-178.)";
+    assert_eq!(
+        stale_case_posting_claims(old_usage),
+        [
+            "entries are refused with FA-REF-178",
+            "This build posts PriorPeriodAdjustment and Revision cases"
+        ]
+    );
+    let old_summary = "approve its effect manifest under dual control, post a PriorPeriodAdjustment or Revision case's entries in one batch,";
+    assert_eq!(
+        stale_case_posting_claims(old_summary),
+        ["a PriorPeriodAdjustment or Revision case's entries"]
+    );
+    let old_readme = "PriorPeriodAdjustment and Revision cases post their entries (Restatement posting waits on its SoD rule's session lineage, `fa-651f`).";
+    assert_eq!(
+        stale_case_posting_claims(old_readme),
+        ["Restatement posting waits"]
+    );
+    // The caveat every surface carried before f1af9aaf3 posted one.
+    let old_caveat = "PriorPeriodAdjustment, Revision and Restatement cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries, not yet exercised by a test).";
+    assert_eq!(
+        stale_case_posting_claims(old_caveat),
+        ["not yet exercised by a test"]
+    );
+}
+
+/// The `--scenario` list in a `demo init` usage line, split on `|`.
+fn demo_usage_scenarios(usage: &str) -> Option<Vec<String>> {
+    let start = usage.find("--scenario ")? + "--scenario ".len();
+    let end = start + usage[start..].find(']')?;
+    Some(usage[start..end].split('|').map(str::to_string).collect())
+}
+
+#[test]
+fn demo_usage_names_exactly_the_scenarios_fa_demo_parses() {
+    // H3 (fa-yugf.84): the usage once listed five scenarios `Scenario::parse`
+    // rejects (saas, manufacturing, nonprofit, holding, crypto) and omitted
+    // ghost-payroll. An agent follows usage text literally, so the registry's
+    // list must be exactly the parser's.
+    let names: Vec<&str> = fa_demo::Scenario::ALL.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        names,
+        fa_demo::SCENARIO_NAMES,
+        "SCENARIO_NAMES is Scenario::ALL"
+    );
+    let reg = registry().expect("verbs.toml");
+    let demo = reg.verb("demo").expect("the demo verb");
+    let init = demo
+        .usage
+        .iter()
+        .find(|u| u.starts_with("demo init"))
+        .expect("a demo init usage line");
+    let listed = demo_usage_scenarios(init).expect("a --scenario list");
+    assert_eq!(
+        listed,
+        fa_demo::SCENARIO_NAMES,
+        "verbs.toml demo usage: {init}"
+    );
+    for name in &listed {
+        assert!(fa_demo::Scenario::parse(name).is_some(), "{name} parses");
+    }
+    // The planted negative: the stale list is caught, naming what fails.
+    let stale = "demo init [--scenario retail|saas|manufacturing|nonprofit|holding|crypto|bank|ponzi|shell-network|worldcom|channel-stuffing] [--seed <N>]";
+    let stale_names = demo_usage_scenarios(stale).expect("the stale list parses");
+    let rejected: Vec<&String> = stale_names
+        .iter()
+        .filter(|n| fa_demo::Scenario::parse(n).is_none())
+        .collect();
+    assert_eq!(
+        rejected,
+        ["saas", "manufacturing", "nonprofit", "holding", "crypto"]
+    );
+    assert_ne!(
+        stale_names,
+        fa_demo::SCENARIO_NAMES,
+        "ghost-payroll was missing"
+    );
 }
 
 #[test]
@@ -529,4 +692,91 @@ fn target_state_commands_below_tldr_are_registered_or_name_a_target_bead() {
         checked >= 10,
         "expected >= 10 `fa` lines below ## TL;DR, found {checked}"
     );
+}
+
+fn has_evidence_minimum_phrase(text: &str) -> bool {
+    text.contains("presence and kind, not content")
+        || text.contains("presence and kind, not what a document says")
+}
+
+fn check_evidence_minimum_surfaces(
+    readme_above_tldr: &str,
+    catalog_cites: &[(&str, &str)],
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    if !has_evidence_minimum_phrase(readme_above_tldr) {
+        missing.push(
+            "README above `## TL;DR` lacks the evidence-minimum limit (`presence and kind, not content`)"
+                .to_string(),
+        );
+    }
+    for (code, cite) in catalog_cites {
+        if !has_evidence_minimum_phrase(cite) {
+            missing.push(format!(
+                "`{code}` lacks the evidence-minimum limit (`presence and kind, not content`); current cite: `{cite}`"
+            ));
+        }
+    }
+    missing
+}
+
+#[test]
+fn evidence_minimum_docs_state_presence_and_kind_not_content() {
+    let (above_tldr, _) = README
+        .split_once("\n## TL;DR\n")
+        .expect("README has a `## TL;DR` heading");
+    let mut cites = Vec::new();
+    for code in ["FA-REF-080", "FA-REF-086"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .args(["explain", "refusal", code, "--json", "--no-color"])
+            .env_remove("FA_BOOK")
+            .env_remove("FA_TOKEN")
+            .output()
+            .expect("run fa explain refusal");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{code}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        let last = stdout.lines().last().expect("one robot line");
+        let parsed = json::parse(last).expect("valid JSON");
+        let cite = parsed
+            .get("data")
+            .and_then(|d| d.get("cite"))
+            .and_then(json::Json::as_str)
+            .expect("data.cite string")
+            .to_string();
+        cites.push((code, cite));
+    }
+    let cite_refs: Vec<(&str, &str)> = cites.iter().map(|(c, s)| (*c, s.as_str())).collect();
+    let missing = check_evidence_minimum_surfaces(above_tldr, &cite_refs);
+    assert!(missing.is_empty(), "{missing:#?}");
+}
+
+#[test]
+fn evidence_minimum_phrase_check_fails_without_the_sentence() {
+    let (above_tldr, _) = README
+        .split_once("\n## TL;DR\n")
+        .expect("README has a `## TL;DR` heading");
+    let stripped_readme = above_tldr.replace("presence and kind, not content", "");
+    let stripped_cites = [
+        (
+            "FA-REF-080",
+            "registries/evidence_policy.toml [[minimum]] class = \"{class}\" (FA-INV-05 evidence-minimum)",
+        ),
+        (
+            "FA-REF-086",
+            "plan §9.3 (self-sourced evidence: AgentUpload, Generated; it counts once an approver other than the uploader records a Reviewed attestation)",
+        ),
+    ];
+    let missing = check_evidence_minimum_surfaces(&stripped_readme, &stripped_cites);
+    assert_eq!(missing.len(), 3, "{missing:#?}");
+    assert!(
+        missing[0].contains("README above `## TL;DR`"),
+        "{missing:#?}"
+    );
+    assert!(missing[1].contains("`FA-REF-080`"), "{missing:#?}");
+    assert!(missing[2].contains("`FA-REF-086`"), "{missing:#?}");
 }

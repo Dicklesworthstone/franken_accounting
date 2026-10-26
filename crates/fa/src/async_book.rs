@@ -17,7 +17,7 @@ use fa_journal::{
     AccountSpec, BookContext, BookSpec, ChartInstalled, KernelError, PostRequest, Posted,
     Transitioned,
 };
-use fa_model::{Entry, Erasable, SealKey, SymbolTable};
+use fa_model::{Entry, EntryClass, Erasable, SealKey, SymbolTable};
 use fa_registers::{
     AvailabilityVerification, BalanceExplanation, Fold, OpenItem, OpenItemVerification,
     TrialBalance, Verification,
@@ -126,6 +126,37 @@ pub struct AsyncBook<V: Vfs + Clone, B: Vfs + Clone = V> {
     entropy: Entropy,
     /// Signs this book's transparency checkpoints (derived from its keys).
     signer: fa_notary::SigningKey,
+}
+
+/// Borrow the exact certificate being exported while sharing its native
+/// source closure. A composed report always keeps its outer bytes and digest.
+#[derive(Clone, Copy)]
+enum ReportBundleCertificate<'a> {
+    Native(&'a crate::ReportCertificate),
+    Aging(&'a crate::AgingCertificate),
+    RollForward(&'a crate::RollForwardCertificate),
+    CashFlow(&'a crate::CashFlowCertificate),
+    CashFlowPolicy(&'a crate::cash_flow_policy::CashFlowPolicyCertificate),
+    AgingReconciliation {
+        certificate: &'a crate::AgingReconciliationCertificate,
+        expected: &'a crate::AgingReconciliationRequest,
+    },
+}
+
+impl<'a> ReportBundleCertificate<'a> {
+    fn source(self) -> &'a crate::ReportCertificate {
+        match self {
+            Self::Native(certificate) => certificate,
+            Self::Aging(certificate) => certificate.source(),
+            Self::RollForward(certificate) => certificate.source_certificate(),
+            Self::CashFlow(certificate) => certificate.source_certificate().source_certificate(),
+            Self::CashFlowPolicy(certificate) => certificate
+                .source_certificate()
+                .source_certificate()
+                .source_certificate(),
+            Self::AgingReconciliation { certificate, .. } => certificate.aging_source().source(),
+        }
+    }
 }
 
 impl<V: Vfs + Clone> AsyncBook<V> {
@@ -253,6 +284,33 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// The current committed frontier under the caller's read context.
     pub fn head(&self, cx: &PurposeContexts) -> Result<CommitSeq, BookError> {
         self.query(cx, |db, _| Ok(db.frontier().map_err(KernelError::from)?))
+    }
+
+    /// Materialize a substrate storage checkpoint and retention cut over the
+    /// committed spine (plan §16.6): upon reopen, delta cursors prior to the
+    /// compacted frontier are retired while all certified reads remain intact.
+    pub async fn compact_storage(&mut self, cx: &PurposeContexts) -> Result<(), BookError> {
+        let commit = cx.commit();
+        commit.checkpoint().map_err(BookError::Context)?;
+        self.db
+            .compact(&commit)
+            .await
+            .map_err(|e| KernelError::Write(fgdb::WriteError::from(e)))?;
+        Ok(())
+    }
+
+    /// Whether the substrate's live delta stream still retains commits since
+    /// `since` (`false` once `since` precedes a reopened compaction cut).
+    pub fn has_delta_since(
+        &self,
+        cx: &PurposeContexts,
+        since: CommitSeq,
+    ) -> Result<bool, BookError> {
+        self.query(cx, |db, _| match db.delta_since(since) {
+            Ok(_) => Ok(true),
+            Err(fgdb::ReadError::DeltaCursorRetired { .. }) => Ok(false),
+            Err(e) => Err(KernelError::from(e).into()),
+        })
     }
 
     /// The genesis spec journaled on the book root (base unit, calendar,
@@ -1005,6 +1063,29 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         Ok(fa_journal::plan_into_draft(&mut self.db, cx, &self.context, name, intent, req).await?)
     }
 
+    /// Rehearse this owner's retained draft members without publishing them.
+    /// Returns their resolved entries, or `None` for an empty open draft.
+    pub async fn preview_draft(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Option<fa_journal::DraftPreview>> {
+        Ok(fa_journal::preview_draft(&mut self.db, cx, &self.context, capability, name).await?)
+    }
+
+    /// Original resolved draft entries for dependent request construction.
+    /// Retained targets remain readable by the owner after discard or drift;
+    /// preparing a new append still revalidates the complete draft.
+    pub async fn draft_entries(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        name: &str,
+    ) -> Outcome<Vec<fa_model::Entry>> {
+        Ok(fa_journal::draft_entries(&mut self.db, cx, &self.context, capability, name).await?)
+    }
+
     /// Replay the draft's intents to trunk in one batch under a promoter
     /// holding `approve` who is not its owner.
     pub async fn promote_draft(
@@ -1649,6 +1730,28 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Mark `document` as exhibit `label` in `matter` (plan §13.2, Appendix B
+    /// `MarkExhibit`).
+    pub async fn mark_exhibit(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        matter: &str,
+        document: fa_model::Oid,
+        label: &str,
+    ) -> Outcome<fa_journal::ExhibitMarkedOutcome> {
+        Ok(fa_journal::mark_exhibit(
+            &mut self.db,
+            cx,
+            &self.context,
+            &capability,
+            matter,
+            document,
+            label,
+        )
+        .await?)
+    }
+
     fn engagement_request(
         &self,
         cx: &PurposeContexts,
@@ -2195,6 +2298,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Read the witnessed availability for a balancing approval review. The
+    /// result is a sealed-input candidate, never an executable posting plan.
+    pub fn review_balancing(
+        &mut self,
+        cx: &PurposeContexts,
+        proposal: fa_model::EntryPayload,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_model::EntryPayload> {
+        cx.txn().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::limit::review_balancing(
+            &mut self.db,
+            cx,
+            &self.context,
+            proposal,
+            capability.clone(),
+        )?)
+    }
+
     /// Run the real posting preparation under the caller's transaction
     /// context, then abort it. No runtime or authority is created here.
     pub fn plan(
@@ -2403,12 +2524,35 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
         max_batch: usize,
     ) -> Outcome<Option<fa_journal::SweepBatch>> {
+        self.sweep_expiry_with_crash(cx, capability, max_batch, None)
+            .await
+    }
+
+    /// [`Self::sweep_expiry`] through the substrate's commit crash-point
+    /// seam, for the lab campaign that crashes an expiry batch's
+    /// publication and reopens the book (fa-0fl). `None` is `sweep_expiry`.
+    #[doc(hidden)]
+    pub async fn sweep_expiry_with_crash(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        max_batch: usize,
+        crash_at: Option<fgdb::CrashPoint>,
+    ) -> Outcome<Option<fa_journal::SweepBatch>> {
         cx.commit().checkpoint().map_err(BookError::Context)?;
         let req = sweep_request(capability, max_batch);
         let book = &self.context;
         let entropy = &self.entropy;
         let mut describe = |text: &str| seal(cx, entropy, &book.seal_key, text);
-        Ok(fa_journal::sweep_batch(&mut self.db, cx, book, &req, &mut describe).await?)
+        Ok(fa_journal::sweep::sweep_batch_with_crash(
+            &mut self.db,
+            cx,
+            book,
+            &req,
+            &mut describe,
+            crash_at,
+        )
+        .await?)
     }
 
     /// Examine at most `max_batch` reached schedules in one transaction,
@@ -3388,7 +3532,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         period: &str,
     ) -> Result<Verification, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::verify_period(db, book, period)?)
+            Ok(fa_registers::verify_period_with_context(
+                db,
+                &cx.query(),
+                book,
+                period,
+            )?)
         })
     }
 
@@ -3489,8 +3638,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.signer.public_key()
     }
 
-    /// Export a native trial-balance or statement certificate with a signed,
-    /// payload-complete journal prefix for the independent offline verifier. The complete
+    /// Export a native or dimension-filtered trial balance, statement, open-item
+    /// or balance-explanation certificate with a signed, payload-complete journal prefix. The complete
     /// prefix is disclosed, so account/effective scope caveats cannot be served
     /// by filtering its records. The certificate is replayed before production.
     pub async fn produce_report_bundle(
@@ -3501,11 +3650,153 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         state: Option<fa_model::Oid>,
         certificate: &crate::ReportCertificate,
     ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::Native(certificate),
+        )
+        .await
+    }
+
+    /// Export an effective-date aging schedule and its native OpenItems source
+    /// over one signed complete prefix. The outer certificate binds the cutoff,
+    /// bucket boundaries and exact historical output; it is never replaced by
+    /// the all-effective-time source certificate. Current whole-book read and
+    /// produce authority are required before either history is observed.
+    pub async fn produce_aging_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::Aging(certificate),
+        )
+        .await
+    }
+
+    /// Export an exact account lead schedule over one authenticated prefix.
+    /// Its explicit account/unit/date selection, opening stock, every posted
+    /// movement and closing stock remain bound by the outer certificate.
+    /// Current whole-book read and produce precede any history observation.
+    pub async fn produce_roll_forward_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::RollForwardCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::RollForward(certificate),
+        )
+        .await
+    }
+
+    /// Export classified direct cash flow with its exact original movements,
+    /// opening and closing stock, and authenticated historical registry inputs.
+    /// The outer certificate binds the complete explicit classification; its
+    /// roll-forward source alone cannot authenticate those professional inputs.
+    pub async fn produce_cash_flow_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::CashFlowCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::CashFlow(certificate),
+        )
+        .await
+    }
+
+    /// Export policy-classified direct cash flow. Replay derives each decision
+    /// from the original complete counterpart entries before the exact policy,
+    /// including unused rules and explicit overrides, is signed in the bundle.
+    /// This does not journal, activate or approve the caller's policy.
+    pub async fn produce_cash_flow_policy_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::cash_flow_policy::CashFlowPolicyCertificate,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::CashFlowPolicy(certificate),
+        )
+        .await
+    }
+
+    /// Export the original aging/control reconciliation and both native
+    /// sources over one signed complete prefix. The recipient must independently
+    /// select the account, cutoff, fixed sequence and age bands in `expected`.
+    /// Both sources are replayed before export; current whole-book read and
+    /// produce authority are required before observing retained history.
+    pub async fn produce_aging_reconciliation_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::AgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::AgingReconciliation {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
+    async fn produce_report_bundle_inner(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        report: ReportBundleCertificate<'_>,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let certificate = report.source();
         cx.query().checkpoint().map_err(BookError::Context)?;
         let reach = fa_policy::Reach {
-            observes: capability
-                .known_at_pin()
-                .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            // Roll-forward and cash-flow replay require unpinned head authority.
+            // Enforce that boundary before restoring any report history.
+            observes: match report {
+                ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::CashFlow(_)
+                | ReportBundleCertificate::CashFlowPolicy(_) => fa_policy::Observes::Head,
+                _ => capability
+                    .known_at_pin()
+                    .map_or(fa_policy::Observes::Head, fa_policy::Observes::At),
+            },
             ..fa_policy::Reach::whole_book(true)
         };
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
@@ -3521,18 +3812,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         if certificate.book_id != self.context.book_id
-            || certificate.time_selection.is_some()
             || !matches!(
                 &certificate.selection,
-                crate::ReportSelection::TrialBalance(_) | crate::ReportSelection::Statement(_)
+                crate::ReportSelection::TrialBalance(_)
+                    | crate::ReportSelection::DimensionTrialBalance { .. }
+                    | crate::ReportSelection::Statement(_)
+                    | crate::ReportSelection::OpenItems { .. }
+                    | crate::ReportSelection::ExplainBalance { .. }
             )
         {
             return Ok(Err(fa_journal::Refusal::new(
                 fa_notary::code::SCOPE_UNSUPPORTED,
                 fa_journal::exit::REFUSAL,
-                "offline report production requires this book's sequence-selected native trial-balance or statement certificate",
+                "offline report production requires this book's native trial-balance, dimension-filtered trial-balance, statement, open-item or balance-explanation certificate",
                 "plan §13.1–13.3 (complete authenticated report inputs)",
-                "certify a native fa tb or fa statement report using HEAD or a recorded sequence, then produce its C:<oid> against a checkpoint covering that sequence",
+                "certify a native fa tb (optionally --dimension kind=value), fa statement, fa open-items or fa explain balance report, then produce its C:<oid> against a checkpoint covering its sequence and any retained time frontier",
             )));
         }
         if let Err(refusal) = self
@@ -3541,17 +3835,128 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
-        if let Err(refusal) = self.replay_report(cx, certificate)? {
-            return Ok(Err(refusal));
+        let replayed = match report {
+            ReportBundleCertificate::Native(certificate) => {
+                match self.replay_report(cx, certificate)? {
+                    Ok(report) => Some(report),
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::Aging(certificate) => {
+                if let Err(refusal) =
+                    self.replay_effective_date_aging(cx, principal, capability, certificate)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::RollForward(certificate) => {
+                if let Err(refusal) =
+                    self.replay_roll_forward(cx, principal, capability, certificate)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::CashFlow(certificate) => {
+                if let Err(refusal) = self.replay_cash_flow(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    certificate.request(),
+                    certificate.definition(),
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::CashFlowPolicy(certificate) => {
+                if let Err(refusal) = self.replay_cash_flow_with_policy(
+                    cx,
+                    principal,
+                    capability,
+                    certificate,
+                    certificate.request(),
+                    certificate.policy(),
+                )? {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
+            ReportBundleCertificate::AgingReconciliation {
+                certificate: reconciliation,
+                expected,
+            } => {
+                if let Err(refusal) = self.replay_effective_date_aging_reconciliation(
+                    cx,
+                    principal,
+                    capability,
+                    reconciliation,
+                    expected,
+                )? {
+                    return Ok(Err(refusal));
+                }
+                if reconciliation.control_source().registry_digest != certificate.registry_digest {
+                    return Ok(Err(fa_journal::Refusal::new(
+                        fa_notary::code::SCOPE_UNSUPPORTED,
+                        fa_journal::exit::REFUSAL,
+                        "portable aging/control reconciliation requires one original registry closure for both sources",
+                        "plan §5.7 / §13.3 (independent reconstruction from the authenticated inputs)",
+                        "retain and export aging and AsOf control sources certified against the same historical registry epoch",
+                    )));
+                }
+                None
+            }
+        };
+        let closure_frontier = certificate
+            .time_selection
+            .as_ref()
+            .map_or(certificate.known_at, |time| {
+                CommitSeq(time.resolution.frontier)
+            });
+        if certificate.time_selection.is_some()
+            && self.query(cx, |db, _| {
+                Ok(
+                    fa_journal::genesis::read_book_spec_at(db, closure_frontier)?
+                        .is_some_and(|spec| spec.opening_date.is_some()),
+                )
+            })?
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "instant report bundles cannot yet authenticate the book's opening-date admission policy",
+                "plan §7.1a, §13.3 (book-genesis policy is outside the checkpoint's record prefix)",
+                "certify the report at its resolved recorded sequence before producing an offline report bundle",
+            )));
         }
-        let registries = if matches!(&certificate.selection, crate::ReportSelection::Statement(_)) {
-            match crate::certificate::offline_statement_registries(certificate, &self.context.units)
-            {
+        let requires_registry_closure = matches!(
+            report,
+            ReportBundleCertificate::RollForward(_)
+                | ReportBundleCertificate::CashFlow(_)
+                | ReportBundleCertificate::CashFlowPolicy(_)
+                | ReportBundleCertificate::AgingReconciliation { .. }
+        ) || matches!(
+            &certificate.selection,
+            crate::ReportSelection::OpenItems { .. }
+                | crate::ReportSelection::ExplainBalance { .. }
+        );
+        let registries = if requires_registry_closure
+            || matches!(&certificate.selection, crate::ReportSelection::Statement(_))
+        {
+            match crate::certificate::offline_report_registries_at(
+                &self.db,
+                &cx.query(),
+                &self.context,
+                certificate,
+            )? {
                 Ok(registries) => Some(registries),
                 Err(refusal)
-                    if refusal.code == fa_notary::code::SCOPE_UNSUPPORTED
-                        || refusal.code
-                            == crate::certificate::code::CERTIFICATE_REGISTRY_UNAVAILABLE =>
+                    if !requires_registry_closure
+                        && (refusal.code == fa_notary::code::SCOPE_UNSUPPORTED
+                            || refusal.code
+                                == crate::certificate::code::CERTIFICATE_REGISTRY_UNAVAILABLE) =>
                 {
                     // Preserve native replay's legacy export for custom book
                     // units and supported historical closures. A v1 statement
@@ -3564,6 +3969,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         } else {
             None
         };
+        if let Some(crate::ReportOutput::ExplainBalance(explanation)) = &replayed
+            && let Err(refusal) = crate::certificate::check_explanation_reasons_at(
+                &self.db,
+                &cx.query(),
+                &self.context,
+                certificate,
+                explanation,
+            )?
+        {
+            return Ok(Err(refusal));
+        }
+        drop(replayed);
         let at = self.head(cx)?;
         let commitment = capability
             .commitment()
@@ -3583,6 +4000,38 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Some(Err(refusal)) => return Ok(Err(refusal)),
             Some(Ok(basis)) => basis,
         };
+        if let crate::ReportSelection::OpenItems { account } = &certificate.selection
+            && let Err(refusal) =
+                fa_notary::report::check_open_items_scope(&journal, certificate.known_at, *account)?
+        {
+            return Ok(Err(refusal));
+        }
+        if matches!(
+            &certificate.selection,
+            crate::ReportSelection::ExplainBalance { .. }
+        ) && let Err(refusal) =
+            fa_notary::report::check_explanation_scope(&journal, certificate.known_at)?
+        {
+            return Ok(Err(refusal));
+        }
+        if certificate.time_selection.is_some()
+            && journal.leaves.iter().any(|leaf| {
+                leaf.envelope.is_entry()
+                    && leaf.envelope.commit_seq <= closure_frontier
+                    && matches!(
+                        leaf.envelope.class,
+                        EntryClass::MIGRATION | EntryClass::MIGRATION_CONTROL
+                    )
+            })
+        {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_notary::code::SCOPE_UNSUPPORTED,
+                fa_journal::exit::REFUSAL,
+                "instant report bundles cannot yet authenticate migration-genesis admission",
+                "plan §7.1a, §8.6, §13.3 (migration-genesis policy must not be inferred)",
+                "certify the report at its resolved recorded sequence before producing an offline report bundle",
+            )));
+        }
         let bodies = match self.query(cx, |db, _| {
             Ok(fa_notary::report::run_bodies(
                 db,
@@ -3593,23 +4042,70 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(bodies) => bodies,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let bytes = certificate
-            .canonical_bytes()
-            .map_err(|error| KernelError::Model(error.into()))?;
-        let assembled = match registries.as_deref() {
-            Some(registries) => fa_notary::report::assemble_with_registries(
+        let bytes = match report {
+            ReportBundleCertificate::Native(certificate) => certificate
+                .canonical_bytes()
+                .map_err(|error| KernelError::Model(error.into()))?,
+            ReportBundleCertificate::Aging(certificate) => match certificate.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            },
+            ReportBundleCertificate::RollForward(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::CashFlow(certificate) => match certificate.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(refusal) => return Ok(Err(refusal)),
+            },
+            ReportBundleCertificate::CashFlowPolicy(certificate) => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::AgingReconciliation { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+        };
+        let assembled = match (report, registries.as_deref()) {
+            (ReportBundleCertificate::AgingReconciliation { .. }, Some(registries)) => {
+                fa_notary::report::assemble_reconciliation_with_registries(
+                    &journal,
+                    &checkpoint,
+                    &bytes,
+                    closure_frontier,
+                    &bodies,
+                    registries,
+                )
+            }
+            (ReportBundleCertificate::AgingReconciliation { .. }, None) => {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_notary::code::SCOPE_UNSUPPORTED,
+                    fa_journal::exit::REFUSAL,
+                    "portable aging/control reconciliation requires the complete original registry closure",
+                    "plan §5.7 / §13.3 (independent reconstruction from the authenticated inputs)",
+                    "retain the source certificates' original account, entry-class, unit and foundation registries",
+                )));
+            }
+            (_, Some(registries)) => fa_notary::report::assemble_with_registries(
                 &journal,
                 &checkpoint,
                 &bytes,
-                certificate.known_at,
+                closure_frontier,
                 &bodies,
                 registries,
             ),
-            None => fa_notary::report::assemble(
+            (_, None) => fa_notary::report::assemble(
                 &journal,
                 &checkpoint,
                 &bytes,
-                certificate.known_at,
+                closure_frontier,
                 &bodies,
             ),
         }?;
@@ -3623,7 +4119,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 producer_principal: principal,
                 produced_at_seq: at,
                 capability_commitment: commitment,
-                time_evidence_oid: None,
+                time_evidence_oid: checkpoint.checkpoint.body.time_evidence_oid,
             },
             &self.signer,
         )
@@ -3780,7 +4276,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 producer_principal: principal,
                 produced_at_seq: at,
                 capability_commitment: commitment,
-                time_evidence_oid: None,
+                time_evidence_oid: checkpoint.checkpoint.body.time_evidence_oid,
             },
             &self.signer,
         )
@@ -3953,7 +4449,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
     ) -> Result<fa_journal::ProjectionVerification, BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_journal::verify_projections(db, book, known_at)?)
+            let mut verification = fa_journal::verify_projections(db, book, known_at)?;
+            verification
+                .drift
+                .extend(crate::statement_definition::verify_at(
+                    db,
+                    &cx.query(),
+                    book,
+                    verification.known_at,
+                )?);
+            Ok(verification)
         })
     }
 
@@ -4277,6 +4782,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .and_then(crate::statements::certified))
     }
 
+    /// Evaluate a regulatory schedule (plan §12.6) from journal payloads at
+    /// one snapshot. Its columns fold as a statement of its kind does.
+    pub fn regulatory_schedule(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::RegulatorySelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        self.query(cx, |db, book| {
+            crate::statements::read_regulatory(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
     /// Resolve a UTC instant from the journal's retained TimeEvidence at HEAD.
     /// The returned frontier and brackets describe the precision of the read.
     pub fn resolve_known_at_instant(
@@ -4387,7 +4905,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     }
 
     /// Retain verified canonical certificate bytes after verifying current
-    /// `read` authority for this book (fa-1nx).
+    /// `read` and `produce` authority for this book (fa-mg2j). Retention
+    /// publishes metadata even though producing the report itself is a read.
     pub async fn retain_certificate_authorized(
         &mut self,
         cx: &PurposeContexts,
@@ -4395,7 +4914,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_policy::Capability,
     ) -> Outcome<crate::RetainedCertificate> {
         if let Err(denial) =
-            fa_policy::admit_read(capability, capability.holder(), self.context.book_id)
+            fa_policy::admit_read(capability, capability.holder(), self.context.book_id).and_then(
+                |()| {
+                    fa_policy::require(
+                        capability,
+                        fa_policy::Op::Produce,
+                        "retaining a report certificate",
+                    )
+                },
+            )
         {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
@@ -4435,31 +4962,36 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await
     }
 
-    /// A head read (`known_at` absent) is answered from maintained registers
-    /// plus the exact tail when they can serve it, else by the literal fold;
-    /// both give the same report (fa-715). A historical read folds literally.
+    /// A read is answered from the selected snapshot's maintained registers
+    /// plus its exact bounded tail when available, else by the literal fold.
+    /// Both give the same report, including historical reads (fa-715).
     pub fn trial_balance_at(
         &self,
         cx: &PurposeContexts,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        match known_at {
-            None => Ok(self.trial_balance_served(cx, periods)?.0),
-            Some(_) => self.query(cx, |db, book| {
-                Ok(fa_registers::trial_balance_at(db, book, periods, known_at)?)
-            }),
-        }
+        self.query(cx, |db, book| {
+            Ok(fa_registers::trial_balance_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                known_at,
+            )?
+            .0)
+        })
     }
 
     /// Load the committed delta window back to the oldest maintained
-    /// register cursor (fa-715). A store reopened from a checkpoint holds
-    /// only its frontier, so without this a head read in a new process
+    /// register or complete checkpoint cursor (fa-715, fa-9xf9). A store
+    /// reopened from a checkpoint holds only its frontier, so without this
+    /// a head read in a new process
     /// cannot fold the tail after a cursor and folds the journal literally.
     /// Admitted like [`AsyncBook::prepare_report_history`]: whole-book read
     /// authority, checked before anything is observed. A book without
-    /// maintained cells loads nothing; an explicitly retired interval stays
-    /// retired, and reads over it keep folding literally.
+    /// maintained cells or checkpoints loads nothing; an explicitly retired
+    /// interval stays retired, and reads over it keep folding literally.
     pub async fn prepare_head_reads(
         &mut self,
         cx: &PurposeContexts,
@@ -4478,7 +5010,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let oldest = self.query(cx, |db, book| {
             let mut oldest: Option<CommitSeq> = None;
             for period in fa_journal::genesis::list_periods(db)? {
-                if let Some(cursor) = fa_registers::maintainer::cursor(db, book, &period.code)? {
+                if let Some(cursor) = fa_registers::maintainer::cursor_with_context(
+                    db,
+                    &cx.query(),
+                    book,
+                    &period.code,
+                )? {
                     oldest = Some(oldest.map_or(cursor, |seen: CommitSeq| seen.min(cursor)));
                 }
             }
@@ -4504,7 +5041,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::period_activity_served(db, book, periods)?)
+            Ok(fa_registers::period_activity_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                None,
+            )?)
         })
     }
 
@@ -4517,7 +5060,13 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         periods: &[String],
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
-            Ok(fa_registers::trial_balance_served(db, book, periods)?)
+            Ok(fa_registers::trial_balance_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                None,
+            )?)
         })
     }
 
@@ -4532,18 +5081,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
-    /// A head read (`known_at` absent) is answered from maintained registers
-    /// plus the exact tail when they can serve it, else by the literal fold;
-    /// both give the same report (fa-715). A historical read folds literally.
+    /// A read is answered from the selected snapshot's maintained registers
+    /// plus its exact bounded tail when available, else by the literal fold.
+    /// Both give the same report, including historical reads (fa-715).
     pub fn period_activity(
         &self,
         cx: &PurposeContexts,
         periods: &[String],
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        self.query(cx, |db, book| match known_at {
-            None => Ok(fa_registers::period_activity_served(db, book, periods)?.0),
-            Some(_) => Ok(fa_registers::period_activity(db, book, periods, known_at)?),
+        self.query(cx, |db, book| {
+            Ok(fa_registers::period_activity_served_at_with_context(
+                db,
+                &cx.query(),
+                book,
+                periods,
+                known_at,
+            )?
+            .0)
         })
     }
 }

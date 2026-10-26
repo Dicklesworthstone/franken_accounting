@@ -563,6 +563,99 @@ fn ads_reader_refuses_conflicting_headers_line_numbers_and_metadata() {
     }
 }
 
+/// fa-2q91 (plan §13.1): an account-scoped ADS package holds every entry with
+/// a leg on its account, each whole, and that account's balance only. Its
+/// certificate binds the account under its own digest domain; a whole-chart
+/// certificate's bytes are unchanged. The reader refuses a scoped package
+/// carrying another account's entry, and stripping the scope fails the
+/// certificate.
+#[test]
+fn ads_account_scope_keeps_whole_entries_binds_the_account_and_refuses_foreign_rows() {
+    let units = UnitCatalog::embedded().unwrap();
+    let journal = sample_multi_unit_journal();
+    let whole = write_ads_package(&journal).unwrap();
+    assert!(!whole.certificate_toml.contains("account_scope"));
+
+    let scoped = journal.clone().scoped_to_account("1000").unwrap();
+    assert_eq!(scoped.coordinate.account_scope.as_deref(), Some("1000"));
+    let naming: Vec<&FormatEntry> = journal
+        .entries
+        .iter()
+        .filter(|e| e.legs.iter().any(|l| l.account_code == "1000"))
+        .collect();
+    assert!(!naming.is_empty() && naming.len() < journal.entries.len());
+    assert_eq!(scoped.entries.iter().collect::<Vec<_>>(), naming);
+    let balances: Vec<&FormatAssertion> = journal
+        .assertions
+        .iter()
+        .filter(|a| a.account_code == "1000")
+        .collect();
+    assert_eq!(balances.len(), 1);
+    assert_eq!(scoped.assertions.iter().collect::<Vec<_>>(), balances);
+    assert_eq!(scoped.coordinate.entry_count, naming.len() as u64);
+    assert_ne!(
+        scoped.coordinate.certificate_digest,
+        journal.coordinate.certificate_digest
+    );
+
+    let package = write_ads_package(&scoped).unwrap();
+    assert!(
+        package
+            .certificate_toml
+            .ends_with("account_scope = \"1000\"\n")
+    );
+    let tb: Vec<&str> = package.trial_balance.lines().skip(1).collect();
+    assert_eq!(tb.len(), 1, "{}", package.trial_balance);
+    assert!(tb[0].starts_with("1000|"), "{}", package.trial_balance);
+    let restored = read_ads_package(&package, &units).unwrap();
+    assert_eq!(restored, scoped);
+
+    // Planted: an entry naming no 1000 leg, copied in from the whole chart
+    // with the chart rows of its accounts, so only the scope can refuse it.
+    let foreign = journal
+        .entries
+        .iter()
+        .find(|e| e.legs.iter().all(|l| l.account_code != "1000"))
+        .unwrap();
+    let mut smuggled = package.clone();
+    for line in whole.chart_of_accounts.lines().skip(1) {
+        let code = line.split('|').next().unwrap();
+        let missing = !package
+            .chart_of_accounts
+            .lines()
+            .any(|kept| kept.starts_with(&format!("{code}|")));
+        if missing && foreign.legs.iter().any(|l| l.account_code == code) {
+            smuggled.chart_of_accounts.push_str(line);
+            smuggled.chart_of_accounts.push('\n');
+        }
+    }
+    for line in whole.gl_detail.lines() {
+        if line.starts_with(&format!("{}|", foreign.entry_id)) {
+            smuggled.gl_detail.push_str(line);
+            smuggled.gl_detail.push('\n');
+        }
+    }
+    let refused = read_ads_package(&smuggled, &units).unwrap_err();
+    assert!(
+        refused.to_string().contains("scoped to account 1000"),
+        "{refused}"
+    );
+    // Planted: the same rows without the scope line read as a whole chart,
+    // whose certificate digest they do not carry.
+    let mut unscoped = package.clone();
+    unscoped.certificate_toml = unscoped
+        .certificate_toml
+        .replace("account_scope = \"1000\"\n", "");
+    assert!(matches!(
+        read_ads_package(&unscoped, &units),
+        Err(FormatError::CertificateMismatch { .. })
+    ));
+    assert!(matches!(
+        journal.scoped_to_account("9999"),
+        Err(FormatError::UnknownAccount { .. })
+    ));
+}
+
 #[test]
 fn tigerbeetle_semantic_corpus_agrees_on_all_scenarios_and_catches_planted_mutation() {
     let corpus = TbCorpus::embedded().expect("tigerbeetle_semantics.toml");
@@ -594,6 +687,7 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
     let bs_linkbase = XbrlCalculationLinkbase::standard_balance_sheet();
     let bs_instance = XbrlInstance {
         entity_identifier: "ACME-CORP".to_owned(),
+        period_start: None,
         period_end: "2026-03-31".to_owned(),
         facts: vec![
             XbrlFact {
@@ -650,6 +744,7 @@ fn xbrl_calculation_linkbase_validates_statements_and_catches_inconsistency() {
     let is_linkbase = XbrlCalculationLinkbase::standard_income_statement();
     let is_instance = XbrlInstance {
         entity_identifier: "ACME-CORP".to_owned(),
+        period_start: Some("2026-01-01".to_owned()),
         period_end: "2026-03-31".to_owned(),
         facts: vec![
             XbrlFact {

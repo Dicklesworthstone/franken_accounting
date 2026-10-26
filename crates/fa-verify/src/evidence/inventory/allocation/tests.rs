@@ -52,8 +52,10 @@ fn erased(w: &mut Writer) {
 fn proposal(bytes: &[u8], shares: &[i128], citations: &[EvidenceCitation]) -> Vec<u8> {
     let b = AllocationBasis::decode(bytes).unwrap();
     let mut w = Writer::default();
+    // Allocation entries are written at the registered extensions minor (1)
+    // since 752c2f08c.
     w.u16(1)
-        .u16(2)
+        .u16(1)
         .fixed(&BOOK)
         .fixed(&[0; 16])
         .u16(9)
@@ -62,32 +64,34 @@ fn proposal(bytes: &[u8], shares: &[i128], citations: &[EvidenceCitation]) -> Ve
     erased(&mut w);
     w.u8(0)
         .count(1 + shares.iter().filter(|share| **share != 0).count());
-    let vector = core::iter::once((10, b.total, b.source_debit)).chain(
-        shares
-            .iter()
-            .enumerate()
-            .filter(|(_, share)| **share != 0)
-            .map(|(i, share)| {
-                (
-                    20 + i as u128,
-                    *share,
-                    if *share < 0 {
-                        b.source_debit
-                    } else {
-                        !b.source_debit
-                    },
-                )
-            }),
-    );
-    for (account, share, debit) in vector {
+    let vector = core::iter::once((b.source, b.total, b.source_debit, b.dimensions.as_slice()))
+        .chain(
+            shares
+                .iter()
+                .enumerate()
+                .filter(|(_, share)| **share != 0)
+                .map(|(i, share)| {
+                    let (account, dimensions) = b.target_cell(i).unwrap();
+                    (
+                        account,
+                        *share,
+                        if *share < 0 {
+                            b.source_debit
+                        } else {
+                            !b.source_debit
+                        },
+                        dimensions,
+                    )
+                }),
+        );
+    for (account, share, debit, dimensions) in vector {
         w.u8(u8::from(!debit))
             .u128(account)
             .u32(1)
             .i128(share.checked_abs().unwrap())
-            .u8(0)
-            .count(0)
-            .u8(0)
-            .count(0);
+            .u8(0);
+        write_dimensions(&mut w, dimensions);
+        w.u8(0).count(0);
     }
     let gross: i128 = shares.iter().filter(|share| **share > 0).sum();
     w.u8(0)
@@ -112,10 +116,10 @@ fn proposal(bytes: &[u8], shares: &[i128], citations: &[EvidenceCitation]) -> Ve
     let mut record = Writer::default();
     record
         .fixed(b"FA-ALLOC-POST\0")
-        .u16(1)
+        .u16(b.version())
         .bytes(bytes)
         .fixed(&law_digest(b.law))
-        .fixed(&basis_digest(bytes));
+        .fixed(&basis_digest(b.version(), bytes));
     w.bytes(&record.buf);
     w.buf
 }
@@ -401,4 +405,248 @@ fn public_basis_values_are_revalidated_before_arithmetic() {
     let mut changed = valid;
     changed.targets[0].account = changed.source;
     assert!(changed.shares().is_err());
+}
+
+fn write_dimensions(w: &mut Writer, dimensions: &[(u32, u128)]) {
+    w.count(dimensions.len());
+    for (dimension, value) in dimensions {
+        w.u32(*dimension).u128(*value);
+    }
+}
+
+fn dimensional_basis(
+    law: u16,
+    rounding: u16,
+    total: i128,
+    weights: &[u128],
+    cells: &[(u128, Vec<(u32, u128)>)],
+    source_debit: bool,
+) -> Vec<u8> {
+    assert_eq!(weights.len(), cells.len());
+    let ids: Vec<_> = cells
+        .iter()
+        .map(|(account, dimensions)| {
+            let mut w = Writer::default();
+            w.u128(*account);
+            write_dimensions(&mut w, dimensions);
+            let digest = hash_parts(
+                b"fa:allocation-target:v2",
+                &[&(w.buf.len() as u32).to_le_bytes(), &w.buf],
+            );
+            u128::from_le_bytes(digest[..16].try_into().unwrap())
+        })
+        .collect();
+    let mut request = Writer::default();
+    request
+        .fixed(b"FA-ALLOC-REQUEST\0")
+        .u16(1)
+        .u16(0)
+        .u16(law)
+        .u16(1)
+        .u32(1)
+        .i128(total);
+    if law == 2 {
+        request.u16(rounding).u128(ids[0]);
+    }
+    request.count(weights.len());
+    for (id, weight) in ids.iter().zip(weights) {
+        request.u128(*id).u128(*weight);
+    }
+    let mut w = Writer::default();
+    w.fixed(b"FA-ALLOC-BASIS\0")
+        .u16(2)
+        .u128(10)
+        .u8(u8::from(!source_debit));
+    write_dimensions(&mut w, &[(2, 100)]);
+    w.bytes(&request.buf).count(cells.len());
+    for (account, dimensions) in cells {
+        w.u128(*account);
+        write_dimensions(&mut w, dimensions);
+    }
+    w.buf
+}
+
+#[test]
+fn dimensional_allocations_keep_same_account_cells_zero_shares_and_signed_residuals() {
+    for source_debit in [true, false] {
+        for (law, rounding, total, weights, expected) in [
+            (1, 0, 100, vec![3, 2], vec![60, 40]),
+            (2, 6, 1, vec![1, 1, 1], vec![-1, 1, 1]),
+            (3, 0, 10, vec![4, 0, 9], vec![4, 0, 6]),
+            (5, 0, 2, vec![1; 5], vec![2, 0, 0, 0, 0]),
+        ] {
+            let cells: Vec<_> = (0..weights.len())
+                .map(|index| (10, vec![(2, 101 + index as u128)]))
+                .collect();
+            let bytes = dimensional_basis(law, rounding, total, &weights, &cells, source_debit);
+            let p = proposal(&bytes, &expected, &[citation(&bytes)]);
+            let (full, checkpoint, digest) = proof(&p, true);
+            let verified = verify_allocation_for(&full, &checkpoint, &digest, &bytes).unwrap();
+            assert_eq!(verified.shares, expected);
+            assert_eq!(verified.basis.version(), 2);
+            assert_eq!(verified.basis.target_cells.len(), cells.len());
+            for (index, cell) in cells.iter().enumerate() {
+                assert_eq!(
+                    verified.basis.target_cell(index),
+                    Some((cell.0, cell.1.as_slice()))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dimension_only_entry_changes_refuse_even_after_repairing_outer_hashes() {
+    let cells = vec![(10, vec![(2, 101)]), (10, vec![(2, 102)])];
+    let bytes = dimensional_basis(1, 0, 100, &[3, 2], &cells, false);
+    let mut p = proposal(&bytes, &[60, 40], &[citation(&bytes)]);
+    // First occurrence is the first destination leg, before any record/citation.
+    let value = 101u128.to_le_bytes();
+    let offset = p
+        .windows(value.len())
+        .position(|window| window == value.as_slice())
+        .unwrap();
+    p[offset..offset + value.len()].copy_from_slice(&102u128.to_le_bytes());
+    let (full, checkpoint, digest) = proof(&p, true);
+    assert_eq!(
+        verify_allocation_for(&full, &checkpoint, &digest, &bytes),
+        Err(AllocationError::LegMismatch { ordinal: 1 })
+    );
+}
+
+#[test]
+fn cell_order_identity_and_exact_source_exclusion_are_independently_checked() {
+    let cells = vec![(10, vec![(2, 101)]), (10, vec![(2, 102)])];
+    let bytes = dimensional_basis(1, 0, 100, &[3, 2], &cells, false);
+    // One source dimension makes the request begin at byte 62. Law 1 has a
+    // 49-byte header; each target is 32 bytes. The cell list follows it.
+    let first_id = 62 + 49;
+    let first_cell = 62 + 49 + 2 * 32 + 4;
+    let mut changed = bytes.clone();
+    changed[first_id] ^= 1;
+    assert!(AllocationBasis::decode(&changed).is_err());
+    let mut changed = bytes.clone();
+    let first = changed[first_cell..first_cell + 40].to_vec();
+    let second = changed[first_cell + 40..first_cell + 80].to_vec();
+    changed[first_cell..first_cell + 40].copy_from_slice(&second);
+    changed[first_cell + 40..first_cell + 80].copy_from_slice(&first);
+    assert!(AllocationBasis::decode(&changed).is_err());
+    for cells in [
+        vec![(10, vec![(2, 101)]), (10, vec![(2, 101)])],
+        vec![(10, vec![(2, 100)]), (10, vec![(2, 102)])],
+        vec![(10, vec![(3, 1), (2, 2)]), (10, vec![(2, 102)])],
+        vec![(10, vec![(2, 1), (2, 2)]), (10, vec![(2, 102)])],
+    ] {
+        assert!(
+            AllocationBasis::decode(&dimensional_basis(1, 0, 100, &[3, 2], &cells, false)).is_err()
+        );
+    }
+}
+
+#[test]
+fn changed_destination_basis_cannot_replace_the_recipient_expectation() {
+    let cells = vec![(10, vec![(2, 101)]), (10, vec![(2, 102)])];
+    let bytes = dimensional_basis(1, 0, 100, &[3, 2], &cells, false);
+    let p = proposal(&bytes, &[60, 40], &[citation(&bytes)]);
+    let (full, checkpoint, digest) = proof(&p, true);
+    let changed = dimensional_basis(
+        1,
+        0,
+        100,
+        &[3, 2],
+        &[(10, vec![(2, 103)]), (10, vec![(2, 102)])],
+        false,
+    );
+    assert_eq!(
+        AllocationBasis::decode(&changed).unwrap().shares().unwrap(),
+        [60, 40]
+    );
+    assert!(verify_allocation_for(&full, &checkpoint, &digest, &changed).is_err());
+}
+
+#[test]
+fn v2_framing_bounds_and_record_version_are_checked() {
+    let cells = vec![(10, vec![(2, 101)]), (10, vec![(2, 102)])];
+    let bytes = dimensional_basis(1, 0, 100, &[3, 2], &cells, false);
+    for end in 0..bytes.len() {
+        assert!(AllocationBasis::decode(&bytes[..end]).is_err());
+    }
+    let mut changed = bytes.clone();
+    changed[15..17].copy_from_slice(&3u16.to_le_bytes());
+    assert!(AllocationBasis::decode(&changed).is_err());
+    let cell_count = 62 + 49 + 2 * 32;
+    for count in [0u32, 1, 3, 1025] {
+        let mut changed = bytes.clone();
+        changed[cell_count..cell_count + 4].copy_from_slice(&count.to_le_bytes());
+        assert!(AllocationBasis::decode(&changed).is_err());
+    }
+    let mut changed = bytes.clone();
+    let dimension_count = cell_count + 4 + 16;
+    changed[dimension_count..dimension_count + 4].copy_from_slice(&65u32.to_le_bytes());
+    assert!(AllocationBasis::decode(&changed).is_err());
+    let mut changed = bytes.clone();
+    changed.push(0);
+    assert!(AllocationBasis::decode(&changed).is_err());
+    let p = proposal(&bytes, &[60, 40], &[citation(&bytes)]);
+    let marker = b"FA-ALLOC-POST\0";
+    let offset = p
+        .windows(marker.len())
+        .position(|window| window == marker.as_slice())
+        .unwrap();
+    for version in [1u16, 3] {
+        let mut changed = p.clone();
+        changed[offset + marker.len()..offset + marker.len() + 2]
+            .copy_from_slice(&version.to_le_bytes());
+        let (full, checkpoint, digest) = proof(&changed, true);
+        assert_eq!(
+            verify_allocation_for(&full, &checkpoint, &digest, &bytes),
+            Err(AllocationError::BasisMismatch)
+        );
+    }
+    let mut changed = p;
+    let wrong_digest = basis_digest(1, &bytes);
+    let end = changed.len();
+    changed[end - 32..].copy_from_slice(&wrong_digest);
+    let (full, checkpoint, digest) = proof(&changed, true);
+    assert_eq!(
+        verify_allocation_for(&full, &checkpoint, &digest, &bytes),
+        Err(AllocationError::BasisMismatch)
+    );
+}
+
+#[test]
+fn modified_public_v2_cells_are_revalidated_before_arithmetic() {
+    let cells = vec![(10, vec![(2, 101)]), (10, vec![(2, 102)])];
+    let bytes = dimensional_basis(1, 0, 100, &[3, 2], &cells, false);
+    let valid = AllocationBasis::decode(&bytes).unwrap();
+    let mut changed = valid.clone();
+    changed.target_cells[0].dimensions[0].1 = 103;
+    assert!(changed.shares().is_err());
+    let mut changed = valid.clone();
+    changed.target_cells.pop();
+    assert!(changed.shares().is_err());
+    let mut changed = valid.clone();
+    changed.targets[0].account ^= 1;
+    assert!(changed.shares().is_err());
+    let mut changed = valid;
+    changed.dimensions = vec![(2, 101)];
+    assert!(changed.shares().is_err());
+}
+
+#[test]
+fn legacy_driver_identity_and_shared_cell_interpretation_remain_unchanged() {
+    let bytes = basis(1, 0, 7, &[1, 1], true);
+    let p = proposal(&bytes, &[4, 3], &[citation(&bytes)]);
+    let (full, checkpoint, digest) = proof(&p, true);
+    let verified = verify_allocation_for(&full, &checkpoint, &digest, &bytes).unwrap();
+    assert_eq!(verified.basis.version(), 1);
+    assert!(verified.basis.target_cells.is_empty());
+    assert_eq!(verified.basis.target_cell(0), Some((20, &[][..])));
+    assert_eq!(
+        verified.basis_digest,
+        hash_parts(
+            b"fa:allocation-basis:v1",
+            &[&(bytes.len() as u32).to_le_bytes(), &bytes],
+        )
+    );
 }

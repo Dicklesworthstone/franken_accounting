@@ -1,0 +1,14 @@
+# FIXTURE (A3b t_kinds, bead fa-yugf.8): one T of each kind for the static T checks. Synthetic values;
+# digests computed by a one-off script independently of fa-oracles; edit by hand like any fixture.
+# Never copied to cases/; no figure here is a case's published value.
+
+id = "t_kinds"
+letter = "X"
+title = "One T of each kind (A3b fixture, synthetic)"
+version = 1
+kind = "case"
+scope = "static T checks over a synthetic book (fixture)"
+claims = []
+capabilities = ["verb:post"]
+pinned_commit = "8196f5e40"
+variants = ["native"]

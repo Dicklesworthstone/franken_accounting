@@ -203,25 +203,33 @@ impl RegulatoryScheduleDefinition {
     /// FFIEC 041 Schedule RC — Consolidated Report of Condition (Balance Sheet),
     /// instruction version `FFIEC-041-2026Q1`.
     ///
-    /// Bank chart convention:
-    /// - `10..` Noninterest-bearing cash and due from depository institutions (`RCON0081`)
-    /// - `11..` Interest-bearing balances (`RCON0071`)
-    /// - `12..` Held-to-maturity securities (`RCONJJ34`)
-    /// - `13..` Available-for-sale debt securities (`RCON1773`)
-    /// - `14..` Loans and leases held for investment (`RCON2122`)
-    /// - `15..` Less: Allowance for credit losses on loans and leases (`RCON3123`, credit normal)
-    /// - Net loans and leases (`RCONB529 = RCON2122 - RCON3123`)
-    /// - `16..`–`19..` Premises, fixed assets, and other assets (`RCON2145`)
-    /// - Total assets (`RCON2170 = RCON0081 + RCON0071 + RCONJJ34 + RCON1773 + RCONB529 + RCON2145`)
-    /// - `20..`–`22..` Total deposits in domestic offices (`RCON2200`)
-    /// - `23..`–`25..` Other borrowed money (`RCON3190`)
-    /// - `26..`–`29..` Other liabilities (`RCON2930`)
-    /// - Total liabilities (`RCON2948 = RCON2200 + RCON3190 + RCON2930`)
-    /// - `30..` Common stock (`RCON3230`)
-    /// - `31..` Surplus (`RCON3839`)
-    /// - All other Equity (`RCON3632` Retained earnings and other equity capital)
-    /// - Total bank equity capital (`RCON3210 = RCON3230 + RCON3839 + RCON3632`)
-    /// - Total liabilities and equity capital (`RCON3300 = RCON2948 + RCON3210`)
+    /// Lines select the codes of the shipped bank chart
+    /// (`templates/charts/us-bank-call-report.json`, whose leaves are named by
+    /// their RC line), by code prefix:
+    /// - `111` noninterest-bearing balances and currency and coin (`RCON0081`)
+    /// - `112` interest-bearing balances (`RCON0071`)
+    /// - `121` held-to-maturity securities (`RCONJJ34`)
+    /// - `122` available-for-sale debt securities (`RCON1773`)
+    /// - `141`, `142` loans and leases held for sale and held for investment (`RCON2122`)
+    /// - `143` less: allowance for credit losses on loans and leases (`RCON3123`, credit normal)
+    /// - loans and leases, net of the allowance (`RCONB529 = RCON2122 - RCON3123`)
+    /// - every other asset (`RCON2145`): equity securities, federal funds sold and
+    ///   repos, trading assets, premises, other real estate, investments,
+    ///   intangibles and other assets
+    /// - total assets (`RCON2170`)
+    /// - `21` deposits in domestic offices (`RCON2200`)
+    /// - `24` other borrowed money (`RCON3190`)
+    /// - every other liability (`RCON2930`): federal funds purchased and repos,
+    ///   trading liabilities, subordinated notes and other liabilities
+    /// - total liabilities (`RCON2948 = RCON2200 + RCON3190 + RCON2930`)
+    /// - `32` common stock (`RCON3230`), `33` surplus (`RCON3839`)
+    /// - all other equity, including this period's income (`RCON3632`)
+    /// - total bank equity capital (`RCON3210`) and total liabilities and
+    ///   equity capital (`RCON3300`)
+    ///
+    /// Every leaf of the template maps to exactly one line (`fa statement lint
+    /// --definition ffiec_041_schedule_rc_2026q1`). The MDRM codes are the
+    /// library's; they are not re-verified here against the published form.
     #[must_use]
     pub fn ffiec_041_schedule_rc_2026q1() -> Self {
         let statement_definition = CustomStatementDefinition {
@@ -235,7 +243,7 @@ impl RegulatoryScheduleDefinition {
                     label: "Cash and noninterest-bearing balances due from depository institutions"
                         .into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["10".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["111".into()]),
                         sign: Sign::Debit,
                     },
                 },
@@ -243,7 +251,7 @@ impl RegulatoryScheduleDefinition {
                     code: "RCON0071".into(),
                     label: "Interest-bearing balances due from depository institutions".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["11".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["112".into()]),
                         sign: Sign::Debit,
                     },
                 },
@@ -251,7 +259,7 @@ impl RegulatoryScheduleDefinition {
                     code: "RCONJJ34".into(),
                     label: "Held-to-maturity securities".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["12".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["121".into()]),
                         sign: Sign::Debit,
                     },
                 },
@@ -259,15 +267,18 @@ impl RegulatoryScheduleDefinition {
                     code: "RCON1773".into(),
                     label: "Available-for-sale debt securities".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["13".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["122".into()]),
                         sign: Sign::Debit,
                     },
                 },
                 CustomLineDefinition {
                     code: "RCON2122".into(),
-                    label: "Loans and leases held for investment".into(),
+                    label: "Loans and leases held for sale and held for investment".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["14".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec![
+                            "141".into(),
+                            "142".into(),
+                        ]),
                         sign: Sign::Debit,
                     },
                 },
@@ -275,13 +286,13 @@ impl RegulatoryScheduleDefinition {
                     code: "RCON3123".into(),
                     label: "Allowance for credit losses on loans and leases".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["15".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["143".into()]),
                         sign: Sign::Credit,
                     },
                 },
                 CustomLineDefinition {
                     code: "RCONB529".into(),
-                    label: "Loans and leases held for investment, net of allowance".into(),
+                    label: "Loans and leases, net of the allowance for credit losses".into(),
                     source: CustomLineSource::Formula {
                         add: vec!["RCON2122".into()],
                         subtract: vec!["RCON3123".into()],
@@ -289,17 +300,18 @@ impl RegulatoryScheduleDefinition {
                 },
                 CustomLineDefinition {
                     code: "RCON2145".into(),
-                    label: "Premises and fixed assets and other assets".into(),
+                    label: "All other assets: equity securities, federal funds sold and repos, trading, premises, other real estate, investments, intangibles and other assets".into(),
                     source: CustomLineSource::AccountSet {
                         expr: AccountSetExpr::Difference {
                             include: Box::new(AccountSetExpr::AccountTypes(vec![1])),
                             exclude: Box::new(AccountSetExpr::AccountCodePrefixes(vec![
-                                "10".into(),
-                                "11".into(),
-                                "12".into(),
-                                "13".into(),
-                                "14".into(),
-                                "15".into(),
+                                "111".into(),
+                                "112".into(),
+                                "121".into(),
+                                "122".into(),
+                                "141".into(),
+                                "142".into(),
+                                "143".into(),
                             ])),
                         },
                         sign: Sign::Debit,
@@ -324,11 +336,7 @@ impl RegulatoryScheduleDefinition {
                     code: "RCON2200".into(),
                     label: "Deposits in domestic offices".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec![
-                            "20".into(),
-                            "21".into(),
-                            "22".into(),
-                        ]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["21".into()]),
                         sign: Sign::Credit,
                     },
                 },
@@ -336,27 +344,19 @@ impl RegulatoryScheduleDefinition {
                     code: "RCON3190".into(),
                     label: "Other borrowed money".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec![
-                            "23".into(),
-                            "24".into(),
-                            "25".into(),
-                        ]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["24".into()]),
                         sign: Sign::Credit,
                     },
                 },
                 CustomLineDefinition {
                     code: "RCON2930".into(),
-                    label: "Other liabilities".into(),
+                    label: "All other liabilities: federal funds purchased and repos, trading liabilities, subordinated notes and other liabilities".into(),
                     source: CustomLineSource::AccountSet {
                         expr: AccountSetExpr::Difference {
                             include: Box::new(AccountSetExpr::AccountTypes(vec![2])),
                             exclude: Box::new(AccountSetExpr::AccountCodePrefixes(vec![
-                                "20".into(),
                                 "21".into(),
-                                "22".into(),
-                                "23".into(),
                                 "24".into(),
-                                "25".into(),
                             ])),
                         },
                         sign: Sign::Credit,
@@ -374,7 +374,7 @@ impl RegulatoryScheduleDefinition {
                     code: "RCON3230".into(),
                     label: "Common stock".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["30".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["32".into()]),
                         sign: Sign::Credit,
                     },
                 },
@@ -382,19 +382,19 @@ impl RegulatoryScheduleDefinition {
                     code: "RCON3839".into(),
                     label: "Surplus".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["31".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["33".into()]),
                         sign: Sign::Credit,
                     },
                 },
                 CustomLineDefinition {
                     code: "RCON3632".into(),
-                    label: "Retained earnings and undivided profits".into(),
+                    label: "Retained earnings and all other equity capital, including this period's income".into(),
                     source: CustomLineSource::AccountSet {
                         expr: AccountSetExpr::Difference {
                             include: Box::new(AccountSetExpr::AccountTypes(vec![3, 4, 5])),
                             exclude: Box::new(AccountSetExpr::AccountCodePrefixes(vec![
-                                "30".into(),
-                                "31".into(),
+                                "32".into(),
+                                "33".into(),
                             ])),
                         },
                         sign: Sign::Credit,
@@ -462,7 +462,7 @@ impl RegulatoryScheduleDefinition {
                     code: "RIAD4010".into(),
                     label: "Interest and fee income on loans".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["40".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["411".into()]),
                         sign: Sign::Credit,
                     },
                 },
@@ -470,7 +470,39 @@ impl RegulatoryScheduleDefinition {
                     code: "RIAD4065".into(),
                     label: "Interest and dividend income on securities".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["41".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["415".into()]),
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "RIAD4115".into(),
+                    label: "Interest income on balances due from depository institutions".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["414".into()]),
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "RIAD4020".into(),
+                    label: "Interest income on federal funds sold and securities purchased under agreements to resell".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["417".into()]),
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "RIAD4518".into(),
+                    label: "Other interest income".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: AccountSetExpr::Difference {
+                            include: Box::new(AccountSetExpr::AccountCodePrefixes(vec!["41".into()])),
+                            exclude: Box::new(AccountSetExpr::AccountCodePrefixes(vec![
+                                "411".into(),
+                                "414".into(),
+                                "415".into(),
+                                "417".into(),
+                            ])),
+                        },
                         sign: Sign::Credit,
                     },
                 },
@@ -478,7 +510,13 @@ impl RegulatoryScheduleDefinition {
                     code: "RIAD4107".into(),
                     label: "Total interest income".into(),
                     source: CustomLineSource::Formula {
-                        add: vec!["RIAD4010".into(), "RIAD4065".into()],
+                        add: vec![
+                            "RIAD4010".into(),
+                            "RIAD4020".into(),
+                            "RIAD4065".into(),
+                            "RIAD4115".into(),
+                            "RIAD4518".into(),
+                        ],
                         subtract: vec![],
                     },
                 },
@@ -486,15 +524,31 @@ impl RegulatoryScheduleDefinition {
                     code: "RIAD4170".into(),
                     label: "Interest on deposits".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["50".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["521".into()]),
                         sign: Sign::Debit,
                     },
                 },
                 CustomLineDefinition {
                     code: "RIAD4185".into(),
-                    label: "Interest on other borrowed money".into(),
+                    label: "Interest on trading liabilities and other borrowed money".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["51".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["523".into()]),
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "RIAD4180".into(),
+                    label: "Expense of federal funds purchased and securities sold under agreements to repurchase".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["522".into()]),
+                        sign: Sign::Debit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "RIAD4200".into(),
+                    label: "Interest on subordinated notes and debentures".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["524".into()]),
                         sign: Sign::Debit,
                     },
                 },
@@ -502,7 +556,12 @@ impl RegulatoryScheduleDefinition {
                     code: "RIAD4073".into(),
                     label: "Total interest expense".into(),
                     source: CustomLineSource::Formula {
-                        add: vec!["RIAD4170".into(), "RIAD4185".into()],
+                        add: vec![
+                            "RIAD4170".into(),
+                            "RIAD4180".into(),
+                            "RIAD4185".into(),
+                            "RIAD4200".into(),
+                        ],
                         subtract: vec![],
                     },
                 },
@@ -518,7 +577,7 @@ impl RegulatoryScheduleDefinition {
                     code: "RIADJJ33".into(),
                     label: "Provision for credit losses".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["52".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["54".into()]),
                         sign: Sign::Debit,
                     },
                 },
@@ -529,8 +588,8 @@ impl RegulatoryScheduleDefinition {
                         expr: AccountSetExpr::Difference {
                             include: Box::new(AccountSetExpr::AccountTypes(vec![4])),
                             exclude: Box::new(AccountSetExpr::AccountCodePrefixes(vec![
-                                "40".into(),
                                 "41".into(),
+                                "46".into(),
                             ])),
                         },
                         sign: Sign::Credit,
@@ -543,20 +602,40 @@ impl RegulatoryScheduleDefinition {
                         expr: AccountSetExpr::Difference {
                             include: Box::new(AccountSetExpr::AccountTypes(vec![5])),
                             exclude: Box::new(AccountSetExpr::AccountCodePrefixes(vec![
-                                "50".into(),
-                                "51".into(),
                                 "52".into(),
-                                "80".into(),
+                                "54".into(),
+                                "59".into(),
                             ])),
                         },
                         sign: Sign::Debit,
                     },
                 },
                 CustomLineDefinition {
+                    code: "RIAD3521".into(),
+                    label: "Realized gains (losses) on held-to-maturity securities".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["461".into()]),
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
+                    code: "RIAD3196".into(),
+                    label: "Realized gains (losses) on available-for-sale debt securities".into(),
+                    source: CustomLineSource::AccountSet {
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["462".into()]),
+                        sign: Sign::Credit,
+                    },
+                },
+                CustomLineDefinition {
                     code: "RIAD4301".into(),
                     label: "Income before applicable income taxes".into(),
                     source: CustomLineSource::Formula {
-                        add: vec!["RIAD4074".into(), "RIAD4079".into()],
+                        add: vec![
+                            "RIAD3196".into(),
+                            "RIAD3521".into(),
+                            "RIAD4074".into(),
+                            "RIAD4079".into(),
+                        ],
                         subtract: vec!["RIAD4093".into(), "RIADJJ33".into()],
                     },
                 },
@@ -564,7 +643,7 @@ impl RegulatoryScheduleDefinition {
                     code: "RIAD4302".into(),
                     label: "Applicable income taxes".into(),
                     source: CustomLineSource::AccountSet {
-                        expr: AccountSetExpr::AccountCodePrefixes(vec!["80".into()]),
+                        expr: AccountSetExpr::AccountCodePrefixes(vec!["59".into()]),
                         sign: Sign::Debit,
                     },
                 },
@@ -696,196 +775,307 @@ pub struct FfiecEditRule {
     pub rhs_terms: Vec<FfiecEditTerm>,
 }
 
-/// Lookup FFIEC / FR Y-9C validity and quality edits for `<form>@<quarter>`
-/// (plan §12.6 `regulatory.edits(<form>@<quarter>)`).
-///
-/// Supported selectors include `"FFIEC041@2026Q1"`, `"FFIEC041:RC@2026Q1"`,
-/// `"FFIEC041:RI@2026Q1"`, and `"FRY9C@2026Q1"`.
-pub fn regulatory_edits(form_at_quarter: &str) -> Result<Vec<FfiecEditRule>, StatementError> {
-    let rc_edits = vec![
-        FfiecEditRule {
-            edit_id: "FFIEC041-RC-V001".into(),
-            form_at_quarter: "FFIEC041@2026Q1".into(),
-            schedule_code: "RC".into(),
-            kind: FfiecEditKind::Validity,
-            description: "Net loans and leases (RCONB529) must equal loans and leases held for investment (RCON2122) minus allowance for credit losses (RCON3123)".into(),
-            lhs_terms: vec![FfiecEditTerm {
-                line_code: "RCONB529".into(),
-                weight: 1,
-            }],
-            operator: FfiecEditOperator::Equals,
-            rhs_terms: vec![
-                FfiecEditTerm {
-                    line_code: "RCON2122".into(),
-                    weight: 1,
-                },
-                FfiecEditTerm {
-                    line_code: "RCON3123".into(),
-                    weight: -1,
-                },
-            ],
-        },
-        FfiecEditRule {
-            edit_id: "FFIEC041-RC-V002".into(),
-            form_at_quarter: "FFIEC041@2026Q1".into(),
-            schedule_code: "RC".into(),
-            kind: FfiecEditKind::Validity,
-            description: "Total assets (RCON2170) must equal Total liabilities and equity capital (RCON3300)".into(),
-            lhs_terms: vec![FfiecEditTerm {
-                line_code: "RCON2170".into(),
-                weight: 1,
-            }],
-            operator: FfiecEditOperator::Equals,
-            rhs_terms: vec![FfiecEditTerm {
-                line_code: "RCON3300".into(),
-                weight: 1,
-            }],
-        },
-        FfiecEditRule {
-            edit_id: "FFIEC041-RC-V003".into(),
-            form_at_quarter: "FFIEC041@2026Q1".into(),
-            schedule_code: "RC".into(),
-            kind: FfiecEditKind::Validity,
-            description: "Total liabilities (RCON2948) must equal the sum of deposits (RCON2200), other borrowed money (RCON3190), and other liabilities (RCON2930)".into(),
-            lhs_terms: vec![FfiecEditTerm {
-                line_code: "RCON2948".into(),
-                weight: 1,
-            }],
-            operator: FfiecEditOperator::Equals,
-            rhs_terms: vec![
-                FfiecEditTerm {
-                    line_code: "RCON2200".into(),
-                    weight: 1,
-                },
-                FfiecEditTerm {
-                    line_code: "RCON3190".into(),
-                    weight: 1,
-                },
-                FfiecEditTerm {
-                    line_code: "RCON2930".into(),
-                    weight: 1,
-                },
-            ],
-        },
-        FfiecEditRule {
-            edit_id: "FFIEC041-RC-Q001".into(),
-            form_at_quarter: "FFIEC041@2026Q1".into(),
-            schedule_code: "RC".into(),
-            kind: FfiecEditKind::Quality,
-            description: "Loans and leases held for investment (RCON2122) should be greater than or equal to allowance for credit losses (RCON3123)".into(),
-            lhs_terms: vec![FfiecEditTerm {
-                line_code: "RCON2122".into(),
-                weight: 1,
-            }],
-            operator: FfiecEditOperator::GreaterOrEqual,
-            rhs_terms: vec![FfiecEditTerm {
-                line_code: "RCON3123".into(),
-                weight: 1,
-            }],
-        },
-    ];
+/// The edits registries (plan §12.6, `regulatory.edits(<form>@<quarter>)`),
+/// one per form and report quarter, as data under
+/// `registries/regulatory_edits/`.
+const EDIT_REGISTRIES: &[(&str, &str)] = &[
+    (
+        "FFIEC041@2026Q1",
+        include_str!("../../../registries/regulatory_edits/FFIEC041@2026Q1.toml"),
+    ),
+    (
+        "FRY9C@2026Q1",
+        include_str!("../../../registries/regulatory_edits/FRY9C@2026Q1.toml"),
+    ),
+];
 
-    let ri_edits = vec![
-        FfiecEditRule {
-            edit_id: "FFIEC041-RI-V001".into(),
-            form_at_quarter: "FFIEC041@2026Q1".into(),
-            schedule_code: "RI".into(),
-            kind: FfiecEditKind::Validity,
-            description: "Net interest income (RIAD4074) must equal Total interest income (RIAD4107) minus Total interest expense (RIAD4073)".into(),
-            lhs_terms: vec![FfiecEditTerm {
-                line_code: "RIAD4074".into(),
-                weight: 1,
-            }],
-            operator: FfiecEditOperator::Equals,
-            rhs_terms: vec![
-                FfiecEditTerm {
-                    line_code: "RIAD4107".into(),
-                    weight: 1,
-                },
-                FfiecEditTerm {
-                    line_code: "RIAD4073".into(),
-                    weight: -1,
-                },
-            ],
-        },
-        FfiecEditRule {
-            edit_id: "FFIEC041-RI-V002".into(),
-            form_at_quarter: "FFIEC041@2026Q1".into(),
-            schedule_code: "RI".into(),
-            kind: FfiecEditKind::Validity,
-            description: "Net income (RIAD4340) must equal Income before taxes (RIAD4301) minus Applicable income taxes (RIAD4302)".into(),
-            lhs_terms: vec![FfiecEditTerm {
-                line_code: "RIAD4340".into(),
-                weight: 1,
-            }],
-            operator: FfiecEditOperator::Equals,
-            rhs_terms: vec![
-                FfiecEditTerm {
-                    line_code: "RIAD4301".into(),
-                    weight: 1,
-                },
-                FfiecEditTerm {
-                    line_code: "RIAD4302".into(),
-                    weight: -1,
-                },
-            ],
-        },
-    ];
+/// Where a registry's edits come from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditSource {
+    /// FrankenAccounting's own arithmetic identities under its own ids: not
+    /// the regulator's published criteria.
+    Illustrative,
+    /// The regulator's published edit criteria, naming the publication.
+    Published { publication: String },
+}
 
-    let hc_edits = vec![
-        FfiecEditRule {
-            edit_id: "FRY9C-HC-V001".into(),
-            form_at_quarter: "FRY9C@2026Q1".into(),
-            schedule_code: "HC".into(),
-            kind: FfiecEditKind::Validity,
-            description: "Consolidated total assets (BHCK2170) must equal Total liabilities and equity capital (BHCK3300)".into(),
-            lhs_terms: vec![FfiecEditTerm {
-                line_code: "BHCK2170".into(),
-                weight: 1,
-            }],
-            operator: FfiecEditOperator::Equals,
-            rhs_terms: vec![FfiecEditTerm {
-                line_code: "BHCK3300".into(),
-                weight: 1,
-            }],
-        },
-        FfiecEditRule {
-            edit_id: "FRY9C-HC-V002".into(),
-            form_at_quarter: "FRY9C@2026Q1".into(),
-            schedule_code: "HC".into(),
-            kind: FfiecEditKind::Validity,
-            description: "Net loans and leases (BHCKB529) must equal loans and leases (BHCK2122) minus allowance (BHCK3123)".into(),
-            lhs_terms: vec![FfiecEditTerm {
-                line_code: "BHCKB529".into(),
-                weight: 1,
-            }],
-            operator: FfiecEditOperator::Equals,
-            rhs_terms: vec![
-                FfiecEditTerm {
-                    line_code: "BHCK2122".into(),
-                    weight: 1,
-                },
-                FfiecEditTerm {
-                    line_code: "BHCK3123".into(),
-                    weight: -1,
-                },
-            ],
-        },
-    ];
+/// One `<form>@<quarter>` edits registry: its schedules' instruction
+/// version, where its edits come from, and the edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegulatoryEditSet {
+    pub form_at_quarter: String,
+    pub instruction_version: String,
+    pub source: EditSource,
+    pub edits: Vec<FfiecEditRule>,
+}
 
-    match form_at_quarter {
-        "FFIEC041:RC@2026Q1" => Ok(rc_edits),
-        "FFIEC041:RI@2026Q1" => Ok(ri_edits),
-        "FFIEC041@2026Q1" => {
-            let mut all = rc_edits;
-            all.extend(ri_edits);
-            Ok(all)
+/// The registered edits for `<form>@<quarter>` (`FFIEC041@2026Q1`,
+/// `FRY9C@2026Q1`), checked as they load: ids are unique, kinds and
+/// operators are registered, and every term names a line of its schedule.
+pub fn regulatory_edit_set(form_at_quarter: &str) -> Result<RegulatoryEditSet, StatementError> {
+    let Some((_, text)) = EDIT_REGISTRIES
+        .iter()
+        .find(|(name, _)| *name == form_at_quarter)
+    else {
+        let registered: Vec<&str> = EDIT_REGISTRIES.iter().map(|(name, _)| *name).collect();
+        return Err(StatementError::Input(format!(
+            "no edits registry for `{form_at_quarter}`; registered: {}",
+            registered.join(", ")
+        )));
+    };
+    parse_edit_set(form_at_quarter, text)
+}
+
+/// The edits for a selector: `<form>@<quarter>` (every schedule's) or
+/// `<form>:<schedule>@<quarter>` (one schedule's), such as
+/// `"FFIEC041:RC@2026Q1"`.
+pub fn regulatory_edits(selector: &str) -> Result<Vec<FfiecEditRule>, StatementError> {
+    let (form_at_quarter, schedule) = match selector.split_once(':') {
+        Some((form, rest)) => {
+            let (schedule, quarter) = rest.split_once('@').ok_or_else(|| {
+                StatementError::Input(format!(
+                    "regulatory edit selector `{selector}` is not <form>:<schedule>@<quarter>"
+                ))
+            })?;
+            (format!("{form}@{quarter}"), Some(schedule))
         }
-        "FRY9C:HC@2026Q1" | "FRY9C@2026Q1" => Ok(hc_edits),
-        other => Err(StatementError::Input(format!(
-            "unknown regulatory edit selector `{other}`; expected FFIEC041@2026Q1, FFIEC041:RC@2026Q1, FFIEC041:RI@2026Q1, or FRY9C@2026Q1"
-        ))),
+        None => (selector.to_string(), None),
+    };
+    let set = regulatory_edit_set(&form_at_quarter)?;
+    if let Some(schedule) = schedule
+        && !set.edits.iter().any(|edit| edit.schedule_code == schedule)
+    {
+        return Err(StatementError::Input(format!(
+            "the `{form_at_quarter}` edits registry has no edits for schedule `{schedule}`"
+        )));
     }
+    Ok(set
+        .edits
+        .into_iter()
+        .filter(|edit| schedule.is_none_or(|code| edit.schedule_code == code))
+        .collect())
+}
+
+/// The registered edits that run over `schedule`: the registry of its form
+/// and instruction version, narrowed to its schedule code.
+pub fn edits_for_schedule(
+    schedule: &RegulatoryScheduleDefinition,
+) -> Result<RegulatoryEditSet, StatementError> {
+    for (name, text) in EDIT_REGISTRIES {
+        if name.split_once('@').map(|(form, _)| form) != Some(schedule.form.as_str()) {
+            continue;
+        }
+        let set = parse_edit_set(name, text)?;
+        if set.instruction_version == schedule.instruction_version {
+            let edits = set
+                .edits
+                .into_iter()
+                .filter(|edit| edit.schedule_code == schedule.schedule_code)
+                .collect();
+            return Ok(RegulatoryEditSet { edits, ..set });
+        }
+    }
+    Err(StatementError::Input(format!(
+        "no edits registry for {} under {}",
+        schedule.form.as_str(),
+        schedule.instruction_version
+    )))
+}
+
+/// The schedules a form registers under one instruction version.
+fn registered_schedules(
+    form: &str,
+    instruction_version: &str,
+) -> Vec<RegulatoryScheduleDefinition> {
+    [
+        RegulatoryScheduleDefinition::ffiec_041_schedule_rc_2026q1(),
+        RegulatoryScheduleDefinition::ffiec_041_schedule_ri_2026q1(),
+        RegulatoryScheduleDefinition::fr_y9c_schedule_hc_2026q1(),
+    ]
+    .into_iter()
+    .filter(|schedule| {
+        schedule.form.as_str() == form && schedule.instruction_version == instruction_version
+    })
+    .collect()
+}
+
+fn parse_edit_set(form_at_quarter: &str, text: &str) -> Result<RegulatoryEditSet, StatementError> {
+    use fa_registry::toml::{Table, Value};
+    let bad = |why: String| {
+        StatementError::Definition(format!("edits registry {form_at_quarter}: {why}"))
+    };
+    let doc = fa_registry::toml::parse(text).map_err(|error| bad(error.to_string()))?;
+    if !doc.tables.is_empty() || doc.arrays.keys().any(|name| name != "edit") {
+        return Err(bad("only the root and [[edit]] tables are admitted".into()));
+    }
+    let only = |table: &Table, keys: &[&str], what: &str| {
+        table
+            .keys()
+            .find(|key| !keys.contains(&key.as_str()))
+            .map_or(Ok(()), |key| {
+                Err(bad(format!("{what} has unknown key `{key}`")))
+            })
+    };
+    let text_of = |table: &Table, key: &str, what: &str| -> Result<String, StatementError> {
+        table
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| bad(format!("{what} `{key}` must be a string")))
+    };
+    let root = &doc.root;
+    only(
+        root,
+        &[
+            "schema_version",
+            "form",
+            "quarter",
+            "instruction_version",
+            "source",
+            "publication",
+        ],
+        "the registry",
+    )?;
+    if root.get("schema_version").and_then(Value::as_int) != Some(1) {
+        return Err(bad("schema_version must be 1".into()));
+    }
+    let form = text_of(root, "form", "the registry")?;
+    let quarter = text_of(root, "quarter", "the registry")?;
+    if format!("{form}@{quarter}") != form_at_quarter {
+        return Err(bad(format!("names {form}@{quarter}")));
+    }
+    let instruction_version = text_of(root, "instruction_version", "the registry")?;
+    let publication = text_of(root, "publication", "the registry")?;
+    let source = match text_of(root, "source", "the registry")?.as_str() {
+        "illustrative" if publication.is_empty() => EditSource::Illustrative,
+        "published" if !publication.is_empty() => EditSource::Published { publication },
+        other => {
+            return Err(bad(format!(
+                "source `{other}` must be illustrative (with no publication) or published (naming its publication)"
+            )));
+        }
+    };
+    let schedules = registered_schedules(&form, &instruction_version);
+    if schedules.is_empty() {
+        return Err(bad(format!(
+            "no {form} schedule is registered under {instruction_version}"
+        )));
+    }
+    let mut ids = BTreeSet::new();
+    let mut edits = Vec::new();
+    for table in doc.arrays.get("edit").map_or(&[][..], Vec::as_slice) {
+        only(
+            table,
+            &[
+                "id",
+                "schedule",
+                "kind",
+                "description",
+                "lhs",
+                "operator",
+                "rhs",
+            ],
+            "an edit",
+        )?;
+        let id = text_of(table, "id", "an edit")?;
+        if id.is_empty() || id.len() > 64 || !ids.insert(id.clone()) {
+            return Err(bad(format!(
+                "edit id `{id}` is empty, longer than 64 bytes or repeated"
+            )));
+        }
+        let what = format!("edit {id}");
+        let schedule_code = text_of(table, "schedule", &what)?;
+        let Some(schedule) = schedules
+            .iter()
+            .find(|schedule| schedule.schedule_code == schedule_code)
+        else {
+            return Err(bad(format!(
+                "{what} names schedule `{schedule_code}`, which {form} does not register under {instruction_version}"
+            )));
+        };
+        let lines: BTreeSet<&str> = schedule
+            .statement_definition
+            .lines
+            .iter()
+            .map(|line| line.code.as_str())
+            .collect();
+        let kind = match text_of(table, "kind", &what)?.as_str() {
+            "validity" => FfiecEditKind::Validity,
+            "quality" => FfiecEditKind::Quality,
+            other => {
+                return Err(bad(format!(
+                    "{what} kind `{other}` is not validity or quality"
+                )));
+            }
+        };
+        let operator = match text_of(table, "operator", &what)?.as_str() {
+            "==" => FfiecEditOperator::Equals,
+            ">=" => FfiecEditOperator::GreaterOrEqual,
+            "<=" => FfiecEditOperator::LessOrEqual,
+            other => {
+                return Err(bad(format!(
+                    "{what} operator `{other}` is not ==, >= or <="
+                )));
+            }
+        };
+        let description = text_of(table, "description", &what)?;
+        if description.is_empty() {
+            return Err(bad(format!("{what} has no description")));
+        }
+        let terms = |key: &str| -> Result<Vec<FfiecEditTerm>, StatementError> {
+            let values = table
+                .get(key)
+                .and_then(Value::as_array)
+                .ok_or_else(|| bad(format!("{what} `{key}` must be an array of line codes")))?;
+            if values.is_empty() || values.len() > MAX_EDIT_TERMS {
+                return Err(bad(format!(
+                    "{what} `{key}` needs 1..={MAX_EDIT_TERMS} terms"
+                )));
+            }
+            values
+                .iter()
+                .map(|value| {
+                    let term = value
+                        .as_str()
+                        .ok_or_else(|| bad(format!("{what} `{key}` holds a non-string term")))?;
+                    let (weight, line_code) = match term.strip_prefix('-') {
+                        Some(line) => (-1, line),
+                        None => (1, term),
+                    };
+                    if !lines.contains(line_code) {
+                        return Err(bad(format!(
+                            "{what} names line `{line_code}`, which schedule {schedule_code} does not have"
+                        )));
+                    }
+                    Ok(FfiecEditTerm {
+                        line_code: line_code.to_string(),
+                        weight,
+                    })
+                })
+                .collect()
+        };
+        let lhs_terms = terms("lhs")?;
+        let rhs_terms = terms("rhs")?;
+        edits.push(FfiecEditRule {
+            edit_id: id,
+            form_at_quarter: form_at_quarter.to_string(),
+            schedule_code,
+            kind,
+            description,
+            lhs_terms,
+            operator,
+            rhs_terms,
+        });
+    }
+    if edits.is_empty() {
+        return Err(bad("registers no edits".into()));
+    }
+    Ok(RegulatoryEditSet {
+        form_at_quarter: form_at_quarter.to_string(),
+        instruction_version,
+        source,
+        edits,
+    })
 }
 
 /// Single evaluated FFIEC / FR Y-9C edit check row.
@@ -1099,6 +1289,93 @@ mod tests {
     use fa_model::Id128;
     use fa_time::DateDay;
 
+    /// fa-doa9: the edits are data under registries/regulatory_edits/,
+    /// labelled illustrative, and are checked as they load. Planted: an
+    /// unknown line, a repeated id, a published source without its
+    /// publication, a registry naming another quarter, and an unregistered
+    /// selector are each refused.
+    #[test]
+    fn edits_load_from_registry() {
+        let call_report = regulatory_edit_set("FFIEC041@2026Q1").unwrap();
+        assert_eq!(call_report.instruction_version, "FFIEC-041-2026Q1");
+        assert_eq!(call_report.source, EditSource::Illustrative);
+        let ids: Vec<&str> = call_report
+            .edits
+            .iter()
+            .map(|edit| edit.edit_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "FFIEC041-RC-V001",
+                "FFIEC041-RC-V002",
+                "FFIEC041-RC-V003",
+                "FFIEC041-RC-Q001",
+                "FFIEC041-RI-V001",
+                "FFIEC041-RI-V002",
+            ]
+        );
+        let v001 = &call_report.edits[0];
+        assert_eq!(v001.operator, FfiecEditOperator::Equals);
+        assert_eq!(
+            v001.rhs_terms,
+            [
+                FfiecEditTerm {
+                    line_code: "RCON2122".into(),
+                    weight: 1
+                },
+                FfiecEditTerm {
+                    line_code: "RCON3123".into(),
+                    weight: -1
+                },
+            ]
+        );
+        assert_eq!(call_report.edits[3].kind, FfiecEditKind::Quality);
+        assert_eq!(regulatory_edits("FFIEC041:RC@2026Q1").unwrap().len(), 4);
+        assert_eq!(regulatory_edits("FFIEC041:RI@2026Q1").unwrap().len(), 2);
+        let holding = regulatory_edit_set("FRY9C@2026Q1").unwrap();
+        assert_eq!(holding.instruction_version, "FR-Y-9C-2026Q1");
+        assert_eq!(holding.edits.len(), 2);
+        assert_eq!(regulatory_edits("FRY9C:HC@2026Q1").unwrap(), holding.edits);
+
+        // Planted negatives, on altered copies of the shipped registry.
+        let shipped = EDIT_REGISTRIES[0].1;
+        let refused = |text: &str, needle: &str| {
+            let error = parse_edit_set("FFIEC041@2026Q1", text).unwrap_err();
+            assert!(error.to_string().contains(needle), "{needle}: {error}");
+        };
+        refused(
+            &shipped.replace("rhs = [\"RCON3300\"]", "rhs = [\"RCON9999\"]"),
+            "names line `RCON9999`, which schedule RC does not have",
+        );
+        refused(
+            &shipped.replace("id = \"FFIEC041-RC-V002\"", "id = \"FFIEC041-RC-V001\""),
+            "repeated",
+        );
+        refused(
+            &shipped.replace("source = \"illustrative\"", "source = \"published\""),
+            "source `published`",
+        );
+        refused(
+            &shipped.replace("quarter = \"2026Q1\"", "quarter = \"2026Q3\""),
+            "names FFIEC041@2026Q3",
+        );
+        refused(
+            &shipped.replace("schedule = \"RI\"", "schedule = \"RC-K\""),
+            "names schedule `RC-K`",
+        );
+        for selector in ["FFIEC041@2026Q3", "FFIEC031@2026Q1"] {
+            let error = regulatory_edit_set(selector).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("registered: FFIEC041@2026Q1, FRY9C@2026Q1"),
+                "{error}"
+            );
+        }
+        assert!(regulatory_edits("FFIEC041:HC@2026Q1").is_err());
+    }
+
     #[test]
     fn call_report_rc_ri_and_fr_y9c_hc_definitions_evaluate_and_pass_ffiec_edits() {
         let rc = RegulatoryScheduleDefinition::ffiec_041_schedule_rc_2026q1();
@@ -1116,14 +1393,14 @@ mod tests {
         let accounts = vec![
             Account {
                 id: 1,
-                code: "1010".into(),
+                code: "1110".into(),
                 name: "Vault Cash and Fed Reserve Noninterest".into(),
                 account_type: 1,
                 is_leaf: true,
             },
             Account {
                 id: 2,
-                code: "1110".into(),
+                code: "1120".into(),
                 name: "Interest-Bearing Fed Balances".into(),
                 account_type: 1,
                 is_leaf: true,
@@ -1137,126 +1414,126 @@ mod tests {
             },
             Account {
                 id: 4,
-                code: "1310".into(),
+                code: "1220".into(),
                 name: "AFS Agency MBS".into(),
                 account_type: 1,
                 is_leaf: true,
             },
             Account {
                 id: 5,
-                code: "1410".into(),
+                code: "1420".into(),
                 name: "Commercial & Industrial Loans".into(),
                 account_type: 1,
                 is_leaf: true,
             },
             Account {
                 id: 6,
-                code: "1510".into(),
+                code: "1430".into(),
                 name: "Allowance for Credit Losses".into(),
                 account_type: 1,
                 is_leaf: true,
             },
             Account {
                 id: 7,
-                code: "1610".into(),
+                code: "1600".into(),
                 name: "Bank Premises and Equipment".into(),
                 account_type: 1,
                 is_leaf: true,
             },
             Account {
                 id: 8,
-                code: "2010".into(),
+                code: "2110".into(),
                 name: "Demand Deposits (DDA)".into(),
                 account_type: 2,
                 is_leaf: true,
             },
             Account {
                 id: 9,
-                code: "2310".into(),
+                code: "2400".into(),
                 name: "FHLB Advances".into(),
                 account_type: 2,
                 is_leaf: true,
             },
             Account {
                 id: 10,
-                code: "2610".into(),
+                code: "2600".into(),
                 name: "Accrued Interest Payable".into(),
                 account_type: 2,
                 is_leaf: true,
             },
             Account {
                 id: 11,
-                code: "3010".into(),
+                code: "3200".into(),
                 name: "Common Stock".into(),
                 account_type: 3,
                 is_leaf: true,
             },
             Account {
                 id: 12,
-                code: "3110".into(),
+                code: "3300".into(),
                 name: "Capital Surplus".into(),
                 account_type: 3,
                 is_leaf: true,
             },
             Account {
                 id: 13,
-                code: "3210".into(),
+                code: "3400".into(),
                 name: "Retained Earnings".into(),
                 account_type: 3,
                 is_leaf: true,
             },
             Account {
                 id: 14,
-                code: "4010".into(),
+                code: "4110".into(),
                 name: "Loan Interest Income".into(),
                 account_type: 4,
                 is_leaf: true,
             },
             Account {
                 id: 15,
-                code: "4110".into(),
+                code: "4150".into(),
                 name: "Securities Interest Income".into(),
                 account_type: 4,
                 is_leaf: true,
             },
             Account {
                 id: 16,
-                code: "4210".into(),
+                code: "4520".into(),
                 name: "Service Charges on Deposit Accounts".into(),
                 account_type: 4,
                 is_leaf: true,
             },
             Account {
                 id: 17,
-                code: "5010".into(),
+                code: "5210".into(),
                 name: "Deposit Interest Expense".into(),
                 account_type: 5,
                 is_leaf: true,
             },
             Account {
                 id: 18,
-                code: "5110".into(),
+                code: "5230".into(),
                 name: "Borrowing Interest Expense".into(),
                 account_type: 5,
                 is_leaf: true,
             },
             Account {
                 id: 19,
-                code: "5210".into(),
+                code: "5400".into(),
                 name: "Provision for Credit Losses".into(),
                 account_type: 5,
                 is_leaf: true,
             },
             Account {
                 id: 20,
-                code: "6010".into(),
+                code: "5710".into(),
                 name: "Salaries and Employee Benefits".into(),
                 account_type: 5,
                 is_leaf: true,
             },
             Account {
                 id: 21,
-                code: "8010".into(),
+                code: "5900".into(),
                 name: "Applicable Income Taxes".into(),
                 account_type: 5,
                 is_leaf: true,

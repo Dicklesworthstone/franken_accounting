@@ -1466,35 +1466,37 @@ fn check_export_reread(
     Ok(())
 }
 
+fn run_seeds_parallel(seeds: &[u64], workers: usize, f: impl Fn(usize, u64) + Sync) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..workers.min(seeds.len()) {
+            s.spawn(|| {
+                while let idx = next.fetch_add(1, Ordering::Relaxed)
+                    && idx < seeds.len()
+                {
+                    f(idx, seeds[idx]);
+                }
+            });
+        }
+    });
+}
+
 /// fa-eid6 (plan §16.6: export then import is the identity on folds): a
 /// 500-entry, two-currency book's interop journal survives every format's
 /// writer and reader, and refolds to the book's trial balance, over 30
 /// seeds. Planted negative: a journal with one amount changed under its
-/// original coordinate certificate is caught. This is the re-read half of
-/// the law; importing the CSV GL or ADS into a fresh book has no importer
-/// yet.
+/// original coordinate certificate is caught.
 #[test]
 fn metamorphic_export_reread_identity_on_fixture_books() {
     let through = DateDay::from_ymd(2026, 3, 31).expect("2026-03-31");
     let seeds: Vec<u64> = (0..30u64)
         .map(|i| 0x3003_0000_0000_0000 ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15))
         .collect();
-    for &seed in &seeds {
+    run_seeds_parallel(&seeds, 10, |seed_idx, seed| {
         let mut f = setup_book(seed, 0x49);
         let entries = generate_many_entries(seed, f.usd, f.eur, 500);
-        let post_cap = Capability::embedded(f.principal, &["post"]).expect("post cap");
-        for spec in &entries {
-            let proposal = build_proposal(&f, spec);
-            f.book
-                .post(PostRequest {
-                    proposal,
-                    approvals: Vec::new(),
-                    plan_certificate: None,
-                    capability: post_cap.clone(),
-                })
-                .expect("post io")
-                .expect("post ok");
-        }
+        post_entries_batched(&mut f, &entries, "reread");
         let journal = f
             .book
             .format_journal(through, None)
@@ -1505,7 +1507,7 @@ fn metamorphic_export_reread_identity_on_fixture_books() {
 
         // Planted negative, on the first seed: one leg amount changed under
         // the journal's original coordinate certificate.
-        if seed == seeds[0] {
+        if seed_idx == 0 {
             let mut tampered = journal.clone();
             tampered.entries[0].legs[0].amount.mantissa += 1;
             let caught = check_export_reread(seed, &tampered, &tb)
@@ -1516,7 +1518,761 @@ fn metamorphic_export_reread_identity_on_fixture_books() {
                 "{caught}"
             );
         }
+    });
+}
+
+fn post_entries_batched(f: &mut FixtureBook, entries: &[SpecEntry], tag: &str) {
+    let post_cap = Capability::embedded(f.principal, &["post"]).expect("post cap");
+    let sealed_desc = f.book.seal_text("metamorphic posting").expect("seal_text");
+    for (batch_idx, chunk) in entries.chunks(30).enumerate() {
+        let members = chunk
+            .iter()
+            .map(|spec| {
+                let legs = vec![
+                    LegPayload::simple(
+                        Side::Debit,
+                        account_vid(f.book_id, spec.debit_code),
+                        Amount::new(spec.unit, spec.amount),
+                    ),
+                    LegPayload::simple(
+                        Side::Credit,
+                        account_vid(f.book_id, spec.credit_code),
+                        Amount::new(spec.unit, spec.amount),
+                    ),
+                ];
+                let proposal = EntryPayload {
+                    schema_minor: 0,
+                    book_id: f.book_id,
+                    branch_id: Id128::TRUNK,
+                    class: EntryClass::ORIGINAL,
+                    effective_date: DateDay(f.day.0 + spec.day_offset),
+                    document_date: None,
+                    description: sealed_desc.clone(),
+                    effective_period: None,
+                    unit_totals: EntryPayload::fold_unit_totals(&legs).expect("fold_unit_totals"),
+                    legs,
+                    control: None,
+                    base_totals: None,
+                    idempotency_key: spec.key.clone(),
+                    origin: EntryOrigin::Intent {
+                        intent_oid: Oid([spec.intent_byte; 32]),
+                        intent_kind: 1,
+                    },
+                    principal_ref: f.principal,
+                    session_ref: None,
+                    evidence: vec![f.evidence],
+                    supersession: Vec::new(),
+                    pending: None,
+                    external_ids: Vec::new(),
+                    extensions: Vec::new(),
+                    tags: Vec::new(),
+                };
+                PostIntent::new(proposal, Vec::new()).expect("intent")
+            })
+            .collect();
+        let batch = fa::PostBatch::new(format!("{tag}-batch-{batch_idx}").into_bytes(), members)
+            .expect("batch");
+        f.book
+            .post_batch(batch, &post_cap)
+            .expect("post_batch io")
+            .expect("post_batch ok");
     }
+}
+
+fn reopen_fixture_dir_book(
+    f: FixtureBook,
+    dir: &std::path::Path,
+    key_seed: u8,
+    entropy_seed: u64,
+) -> FixtureBook {
+    let FixtureBook {
+        book,
+        book_id,
+        principal,
+        usd,
+        eur,
+        march,
+        day,
+        evidence,
+    } = f;
+    drop(book);
+    let book = Book::open_dir(
+        dir,
+        BookKeys::for_development(key_seed),
+        Entropy::deterministic(entropy_seed),
+    )
+    .expect("reopen dir book");
+    FixtureBook {
+        book,
+        book_id,
+        principal,
+        usd,
+        eur,
+        march,
+        day,
+        evidence,
+    }
+}
+
+fn setup_dir_book(seed: u64, key_seed: u8) -> (std::path::PathBuf, FixtureBook) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "fa-metamorphic-dir-{}-{seed:016x}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let calendar = FiscalCalendar::monthly("cal", 1, 1).expect("monthly calendar");
+    let units = UnitRegistry::embedded().expect("embedded units");
+    let usd = units.lookup("USD").expect("USD");
+    let eur = units.lookup("EUR").expect("EUR");
+    let book_id = Id128([key_seed; 16]);
+    let spec = BookSpec {
+        book_id,
+        name: "Metamorphic Co".into(),
+        base_unit: usd,
+        calendar,
+        time_zone_policy: None,
+        entities: Vec::new(),
+        opening_date: None,
+    };
+    let mut book = Book::create_dir(
+        &dir,
+        BookKeys::for_development(key_seed),
+        spec,
+        Entropy::deterministic(seed),
+    )
+    .expect("create dir book");
+
+    let principal = VId(1);
+    let day = DateDay::from_ymd(2026, 3, 15).expect("2026-03-15");
+    let chart = vec![
+        AccountSpec {
+            code: "1000".into(),
+            name: "Cash".into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "1100".into(),
+            name: "Accounts Receivable".into(),
+            account_type: 1,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "2000".into(),
+            name: "Accounts Payable".into(),
+            account_type: 2,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "3000".into(),
+            name: "Common Stock".into(),
+            account_type: 3,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "4000".into(),
+            name: "Consulting Revenue".into(),
+            account_type: 4,
+            normal_balance: 1,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+        AccountSpec {
+            code: "6000".into(),
+            name: "Operating Expense".into(),
+            account_type: 5,
+            normal_balance: 0,
+            is_leaf: true,
+            unit_policy: UnitPolicy::AnyCurrency,
+            parent_code: None,
+            limit: None,
+        },
+    ];
+    book.install_chart(
+        &chart,
+        principal,
+        day,
+        b"chart-v1",
+        &Capability::embedded(principal, &["schema_change"]).expect("schema_change cap"),
+    )
+    .expect("install_chart io")
+    .expect("install_chart ok");
+
+    let (_, periods) = book
+        .create_periods(
+            2026,
+            principal,
+            &Capability::embedded(principal, &["schema_change"]).expect("schema_change cap"),
+        )
+        .expect("create_periods")
+        .expect("periods admitted");
+    let march = periods
+        .iter()
+        .find(|p| p.contains(day) && p.kind == PeriodKind::Normal)
+        .expect("March period")
+        .code
+        .clone();
+
+    let close_cap = Capability::embedded(principal, &["close"]).expect("close cap");
+    book.transition_period(
+        &march,
+        PeriodTransition::Open,
+        principal,
+        1,
+        b"open-march",
+        &close_cap,
+    )
+    .expect("transition io")
+    .expect("transition ok");
+
+    let doc = Document {
+        book_id,
+        kind: 1,
+        mime: "text/plain".into(),
+        grade: 3,
+        retrieved_by: principal,
+        bytes: format!("METAMORPHIC-EVIDENCE-{seed:016x}").into_bytes(),
+    };
+    let _added = book
+        .add_document(&doc)
+        .expect("add_document io")
+        .expect("add_document ok");
+
+    (
+        dir,
+        FixtureBook {
+            book,
+            book_id,
+            principal,
+            usd,
+            eur,
+            march,
+            day,
+            evidence: doc.evidence_ref(1),
+        },
+    )
+}
+
+fn certify_period_reports(
+    f: &FixtureBook,
+    known_at: Option<fgdb_types::CommitSeq>,
+) -> [fa::CertifiedReport; 3] {
+    let tb_sel = fa::ReportSelection::TrialBalance(fa::TrialBalanceSelection::Periods(vec![
+        f.march.clone(),
+    ]));
+    let bs_sel = fa::ReportSelection::Statement(Box::new(StatementSelection {
+        definition: StatementDefinition::embedded("balance-sheet").expect("balance-sheet"),
+        periods: vec![f.march.clone()],
+        comparative: Vec::new(),
+    }));
+    let is_sel = fa::ReportSelection::Statement(Box::new(StatementSelection {
+        definition: StatementDefinition::embedded("income-statement").expect("income-statement"),
+        periods: vec![f.march.clone()],
+        comparative: Vec::new(),
+    }));
+    [
+        f.book
+            .certify_report(tb_sel, known_at)
+            .expect("certify tb io")
+            .expect("certify tb ok"),
+        f.book
+            .certify_report(bs_sel, known_at)
+            .expect("certify bs io")
+            .expect("certify bs ok"),
+        f.book
+            .certify_report(is_sel, known_at)
+            .expect("certify is io")
+            .expect("certify is ok"),
+    ]
+}
+
+fn check_retention_cut_invariance(
+    seed: u64,
+    before: &[fa::CertifiedReport; 3],
+    after: &[fa::CertifiedReport; 3],
+    replayed: &[fa::ReportOutput; 3],
+) -> Result<(), String> {
+    let names = ["trial-balance", "balance-sheet", "income-statement"];
+    for idx in 0..3 {
+        let b_cert_bytes = before[idx]
+            .certificate
+            .canonical_bytes()
+            .expect("before cert bytes");
+        let a_cert_bytes = after[idx]
+            .certificate
+            .canonical_bytes()
+            .expect("after cert bytes");
+        let b_out_bytes = before[idx]
+            .report
+            .canonical_bytes()
+            .expect("before report bytes");
+        let a_out_bytes = after[idx]
+            .report
+            .canonical_bytes()
+            .expect("after report bytes");
+        let r_out_bytes = replayed[idx]
+            .canonical_bytes()
+            .expect("replayed report bytes");
+        if before[idx].certificate.digest != after[idx].certificate.digest
+            || b_cert_bytes != a_cert_bytes
+            || b_out_bytes != a_out_bytes
+            || b_out_bytes != r_out_bytes
+        {
+            return Err(replay_diagnostic(
+                "retention_cut_preserves_certified_results",
+                seed,
+                format!(
+                    "certified {} drifted across retention cut: before_digest={:02x?} after_digest={:02x?}",
+                    names[idx], before[idx].certificate.digest, after[idx].certificate.digest,
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// fa-eid6 (plan §16.6): substrate checkpoint + retention cut never changes
+/// certified results inside the retained range over 30 seeds of 500 entries
+/// on disk.
+#[test]
+fn retention_cut_preserves_certified_results() {
+    let seeds: Vec<u64> = (0..30u64)
+        .map(|i| 0x4004_0000_0000_0000 ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        .collect();
+    run_seeds_parallel(&seeds, 10, |seed_idx, seed| {
+        let (dir, mut f) = setup_dir_book(seed, 0x4a);
+        let entries = generate_many_entries(seed, f.usd, f.eur, 500);
+        let read_cap = Capability::embedded(f.principal, &["read"]).expect("read cap");
+
+        if seed_idx == 0 {
+            // Mid-stream retention cut at 250 entries, followed by 250 entries
+            // in the retained range and a second cut at 500 entries.
+            post_entries_batched(&mut f, &entries[..250], "pre-cut");
+            let cut_seq = f.book.head().expect("cut head");
+            assert!(
+                f.book
+                    .has_delta_since(fgdb_types::CommitSeq(0))
+                    .expect("delta")
+            );
+            f.book.compact_storage().expect("compact at cut_seq");
+            f = reopen_fixture_dir_book(f, &dir, 0x4a, seed ^ 0x1111);
+            assert!(
+                !f.book
+                    .has_delta_since(fgdb_types::CommitSeq(0))
+                    .expect("retired before cut_seq"),
+                "seed {seed:#018x}: delta cursor at 0 must be retired after compaction+reopen"
+            );
+            assert!(
+                f.book
+                    .has_delta_since(cut_seq)
+                    .expect("retained at cut_seq"),
+                "seed {seed:#018x}: delta cursor at cut_seq must remain live"
+            );
+
+            post_entries_batched(&mut f, &entries[250..350], "retained-mid");
+            let mid_seq = f.book.head().expect("mid head");
+            post_entries_batched(&mut f, &entries[350..], "retained-tail");
+            let head_seq = f.book.head().expect("final head");
+            assert!(
+                f.book.has_delta_since(cut_seq).expect("retained range"),
+                "seed {seed:#018x}: commits in (cut_seq, head_seq] remain in retained delta range"
+            );
+
+            f.book
+                .prepare_report_history(f.principal, &read_cap, Some(mid_seq))
+                .expect("prepare mid io")
+                .expect("prepare mid ok");
+            let before_mid = certify_period_reports(&f, Some(mid_seq));
+            let before_head = certify_period_reports(&f, Some(head_seq));
+
+            f.book.compact_storage().expect("compact at head_seq");
+            f = reopen_fixture_dir_book(f, &dir, 0x4a, seed ^ 0x2222);
+            assert!(
+                !f.book
+                    .has_delta_since(fgdb_types::CommitSeq(0))
+                    .expect("retired after second cut")
+            );
+            assert!(f.book.has_delta_since(head_seq).expect("head_seq retained"));
+
+            f.book
+                .prepare_report_history(f.principal, &read_cap, Some(mid_seq))
+                .expect("prepare mid after cut io")
+                .expect("prepare mid after cut ok");
+            let after_mid = certify_period_reports(&f, Some(mid_seq));
+            let after_head = certify_period_reports(&f, Some(head_seq));
+            let replayed_mid = [
+                f.book
+                    .replay_report(&before_mid[0].certificate)
+                    .expect("replay mid tb io")
+                    .expect("replay mid tb ok"),
+                f.book
+                    .replay_report(&before_mid[1].certificate)
+                    .expect("replay mid bs io")
+                    .expect("replay mid bs ok"),
+                f.book
+                    .replay_report(&before_mid[2].certificate)
+                    .expect("replay mid is io")
+                    .expect("replay mid is ok"),
+            ];
+            let replayed_head = [
+                f.book
+                    .replay_report(&before_head[0].certificate)
+                    .expect("replay head tb io")
+                    .expect("replay head tb ok"),
+                f.book
+                    .replay_report(&before_head[1].certificate)
+                    .expect("replay head bs io")
+                    .expect("replay head bs ok"),
+                f.book
+                    .replay_report(&before_head[2].certificate)
+                    .expect("replay head is io")
+                    .expect("replay head is ok"),
+            ];
+
+            check_retention_cut_invariance(seed, &before_mid, &after_mid, &replayed_mid)
+                .unwrap_or_else(|e| panic!("{e}"));
+            check_retention_cut_invariance(seed, &before_head, &after_head, &replayed_head)
+                .unwrap_or_else(|e| panic!("{e}"));
+
+            let mut tampered = after_head.clone();
+            tampered[0].certificate.digest[0] ^= 0xff;
+            let caught =
+                check_retention_cut_invariance(seed, &before_head, &tampered, &replayed_head)
+                    .expect_err("tampered certificate digest after retention cut must be caught");
+            assert!(
+                caught.contains("retention_cut_preserves_certified_results")
+                    && caught.contains("replay:"),
+                "{caught}"
+            );
+        } else {
+            post_entries_batched(&mut f, &entries, "retained-500");
+            let head_seq = f.book.head().expect("final head");
+            assert!(
+                f.book
+                    .has_delta_since(fgdb_types::CommitSeq(0))
+                    .expect("delta")
+            );
+            let before_head = certify_period_reports(&f, Some(head_seq));
+
+            f.book.compact_storage().expect("compact at head_seq");
+            f = reopen_fixture_dir_book(f, &dir, 0x4a, seed ^ 0x2222);
+            assert!(
+                !f.book
+                    .has_delta_since(fgdb_types::CommitSeq(0))
+                    .expect("retired after cut"),
+                "seed {seed:#018x}: delta cursor at 0 must be retired after compaction+reopen"
+            );
+            assert!(
+                f.book.has_delta_since(head_seq).expect("head_seq retained"),
+                "seed {seed:#018x}: retained frontier must remain live"
+            );
+
+            let after_head = certify_period_reports(&f, Some(head_seq));
+            let replayed_head = [
+                f.book
+                    .replay_report(&before_head[0].certificate)
+                    .expect("replay head tb io")
+                    .expect("replay head tb ok"),
+                f.book
+                    .replay_report(&before_head[1].certificate)
+                    .expect("replay head bs io")
+                    .expect("replay head bs ok"),
+                f.book
+                    .replay_report(&before_head[2].certificate)
+                    .expect("replay head is io")
+                    .expect("replay head is ok"),
+            ];
+            check_retention_cut_invariance(seed, &before_head, &after_head, &replayed_head)
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
+    });
+}
+
+fn import_legs_into_fresh_book(
+    seed: u64,
+    key_seed: u8,
+    tag: &str,
+    imported_entries: Vec<(DateDay, Vec<fa_formats::FormatLeg>)>,
+) -> TrialBalance {
+    let mut f = setup_book(seed, key_seed);
+    let post_cap = Capability::embedded(f.principal, &["post"]).expect("post cap");
+    let sealed_desc = f.book.seal_text("imported entry").expect("seal_text");
+    for (batch_idx, chunk) in imported_entries.chunks(30).enumerate() {
+        let mut members = Vec::with_capacity(chunk.len());
+        for (entry_idx, (effective_date, format_legs)) in chunk.iter().enumerate() {
+            let legs: Vec<LegPayload> = format_legs
+                .iter()
+                .map(|leg| {
+                    LegPayload::simple(
+                        leg.side,
+                        account_vid(f.book_id, &leg.account_code),
+                        leg.amount,
+                    )
+                })
+                .collect();
+            let proposal = EntryPayload {
+                schema_minor: 0,
+                book_id: f.book_id,
+                branch_id: Id128::TRUNK,
+                class: EntryClass::ORIGINAL,
+                effective_date: *effective_date,
+                document_date: None,
+                description: sealed_desc.clone(),
+                effective_period: None,
+                unit_totals: EntryPayload::fold_unit_totals(&legs).expect("fold_unit_totals"),
+                legs,
+                control: None,
+                base_totals: None,
+                idempotency_key: format!("{tag}-{batch_idx}-{entry_idx}").into_bytes(),
+                origin: EntryOrigin::Intent {
+                    intent_oid: Oid([(batch_idx as u8).wrapping_add(1); 32]),
+                    intent_kind: 1,
+                },
+                principal_ref: f.principal,
+                session_ref: None,
+                evidence: vec![f.evidence],
+                supersession: Vec::new(),
+                pending: None,
+                external_ids: Vec::new(),
+                extensions: Vec::new(),
+                tags: Vec::new(),
+            };
+            members.push(PostIntent::new(proposal, Vec::new()).expect("intent"));
+        }
+        let batch = fa::PostBatch::new(
+            format!("{tag}-import-batch-{batch_idx}").into_bytes(),
+            members,
+        )
+        .expect("batch");
+        f.book
+            .post_batch(batch, &post_cap)
+            .expect("post_batch io")
+            .expect("post_batch ok");
+    }
+    f.book
+        .trial_balance(std::slice::from_ref(&f.march))
+        .expect("imported trial balance")
+}
+
+fn check_imported_tb_equality(
+    seed: u64,
+    format: &str,
+    source_tb: &TrialBalance,
+    imported_tb: &TrialBalance,
+) -> Result<(), String> {
+    let source_at_imported = TrialBalance {
+        known_at: imported_tb.known_at,
+        ..source_tb.clone()
+    };
+    if &source_at_imported != imported_tb {
+        return Err(replay_diagnostic(
+            "export_import_identity_on_fixture_books",
+            seed,
+            format!(
+                "{format} export→import into fresh book trial balance mismatch: source={:?} imported={:?}",
+                source_tb.rows, imported_tb.rows
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// fa-eid6 (plan §16.6): export(csv-gl | ads | beancount) → import into a fresh
+/// book → TB equality over 30 seeds of 500 entries.
+#[test]
+fn export_import_identity_on_fixture_books() {
+    let through = DateDay::from_ymd(2026, 3, 31).expect("2026-03-31");
+    let units = fa_formats::UnitCatalog::embedded().expect("unit catalog");
+    let csv_columns = fa_formats::legacy::LegacyColumnMap::parse_toml(
+        "[columns]\n\
+         source_system = \"csv-gl\"\n\
+         entry_id_column = \"entry_id\"\n\
+         effective_date_column = \"effective_date\"\n\
+         account_column = \"account_code\"\n\
+         side_column = \"side\"\n\
+         amount_column = \"amount\"\n\
+         unit_column = \"currency\"\n",
+    )
+    .expect("csv_gl column map");
+    let csv_account_map =
+        fa_formats::legacy::AccountMap::new(["1000", "1100", "2000", "3000", "4000", "6000"]);
+    let mut bc_account_map =
+        fa_formats::legacy::AccountMap::new(["1000", "1100", "2000", "3000", "4000", "6000"]);
+    bc_account_map.insert("Assets:A1000", "1000");
+    bc_account_map.insert("Assets:A1100", "1100");
+    bc_account_map.insert("Liabilities:A2000", "2000");
+    bc_account_map.insert("Equity:A3000", "3000");
+    bc_account_map.insert("Income:A4000", "4000");
+    bc_account_map.insert("Expenses:A6000", "6000");
+
+    let seeds: Vec<u64> = (0..30u64)
+        .map(|i| 0x3003_0000_0000_0000 ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        .collect();
+    run_seeds_parallel(&seeds, 10, |seed_idx, seed| {
+        let mut f = setup_book(seed, 0x49);
+        let entries = generate_many_entries(seed, f.usd, f.eur, 500);
+        post_entries_batched(&mut f, &entries, "export-src");
+        let journal = f
+            .book
+            .format_journal(through, None)
+            .expect("format journal");
+        assert_eq!(journal.entries.len(), 500, "seed {seed:#018x}");
+        let (_, tb, _, _) = period_reports(&f);
+        check_export_reread(seed, &journal, &tb).unwrap_or_else(|e| panic!("{e}"));
+
+        // 1. csv-gl → parse_generic_csv → import into fresh Book → TB equality.
+        let csv_bytes = fa_formats::csv_gl::write_csv_gl(&journal);
+        let csv_batch = fa_formats::legacy::parse_generic_csv(
+            &csv_bytes,
+            &csv_columns,
+            &units,
+            &csv_account_map,
+        )
+        .expect("parse csv-gl export");
+        assert_eq!(csv_batch.chunks.len(), 500);
+        if seed_idx == 0 || seed_idx % 3 == 0 {
+            let csv_tb = import_legs_into_fresh_book(
+                seed,
+                0x49,
+                "csv-gl",
+                csv_batch
+                    .chunks
+                    .into_iter()
+                    .map(|c| (c.effective_date, c.legs))
+                    .collect(),
+            );
+            check_imported_tb_equality(seed, "csv_gl_v1", &tb, &csv_tb)
+                .unwrap_or_else(|e| panic!("{e}"));
+            if seed_idx == 0 {
+                let mut drifted = csv_tb;
+                drifted.rows[0].debits += 1;
+                let caught = check_imported_tb_equality(seed, "csv_gl_v1", &tb, &drifted)
+                    .expect_err("drifted imported trial balance must be caught");
+                assert!(
+                    caught.contains("export_import_identity_on_fixture_books")
+                        && caught.contains("replay:"),
+                    "{caught}"
+                );
+            }
+        }
+
+        // 2. ads → read_ads_package → import into fresh Book → TB equality.
+        let ads_pkg = fa_formats::ads::write_ads_package(&journal).expect("write ads");
+        let ads_journal = fa_formats::ads::read_ads_package(&ads_pkg, &units).expect("read ads");
+        assert_eq!(ads_journal.entries.len(), 500);
+        if seed_idx == 0 || seed_idx % 3 == 1 {
+            let ads_tb = import_legs_into_fresh_book(
+                seed,
+                0x49,
+                "ads",
+                ads_journal
+                    .entries
+                    .into_iter()
+                    .map(|e| (e.effective_date, e.legs))
+                    .collect(),
+            );
+            check_imported_tb_equality(seed, "aicpa_ads_gl_v2", &tb, &ads_tb)
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
+
+        // 3. beancount → parse_beancount_ledger → import into fresh Book → TB equality.
+        let bc_text = fa_formats::beancount::write_beancount(&journal);
+        let bc_batch =
+            fa_formats::legacy::parse_beancount_ledger(&bc_text, &units, &bc_account_map)
+                .expect("parse beancount export");
+        assert_eq!(bc_batch.chunks.len(), 500);
+        if seed_idx == 0 || seed_idx % 3 == 2 {
+            let bc_tb = import_legs_into_fresh_book(
+                seed,
+                0x49,
+                "beancount",
+                bc_batch
+                    .chunks
+                    .into_iter()
+                    .map(|c| (c.effective_date, c.legs))
+                    .collect(),
+            );
+            check_imported_tb_equality(seed, "beancount_v3", &tb, &bc_tb)
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
+    });
+}
+
+/// fa-eid6 (plan §16.6): acceptance entrypoint for `draft_promote_equals_trunk_post`
+/// including 500-entry multi-draft promotion equivalence and the 30-seed relation.
+#[test]
+fn draft_promote_equals_trunk_post() {
+    let seed = 0x2002_0000_0000_0000u64;
+    let approver = VId(2);
+    let mut f_draft = setup_book(seed, 0x4e);
+    let mut f_trunk = setup_book(seed, 0x4e);
+    let entries_500 = generate_many_entries(seed, f_draft.usd, f_draft.eur, 500);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let owner = Capability::embedded(f_draft.principal, &["post"]).expect("post cap");
+            let approve = Capability::embedded(approver, &["approve"]).expect("approve cap");
+            for (chunk_idx, chunk) in entries_500.chunks(30).enumerate() {
+                let draft_name = format!("metamorphic-500-{chunk_idx}");
+                f_draft
+                    .book
+                    .open_draft(
+                        owner.clone(),
+                        &draft_name,
+                        f_draft.day,
+                        "metamorphic 500 draft",
+                    )
+                    .expect("open_draft io")
+                    .expect("open_draft ok");
+                for spec in chunk {
+                    let intent = PostIntent::new(build_proposal(&f_draft, spec), Vec::new())
+                        .expect("intent");
+                    f_draft
+                        .book
+                        .plan_into_draft(owner.clone(), &draft_name, intent)
+                        .expect("plan_into_draft io")
+                        .expect("plan_into_draft ok");
+                }
+                let promoted = f_draft
+                    .book
+                    .promote_draft(
+                        approve.clone(),
+                        &draft_name,
+                        f_draft.day,
+                        "metamorphic 500 promotion",
+                    )
+                    .expect("promote_draft io")
+                    .expect("promote_draft ok");
+                assert_eq!(promoted.entries.len(), chunk.len());
+            }
+        });
+        s.spawn(|| {
+            post_entries_batched(&mut f_trunk, &entries_500, "trunk-500");
+        });
+    });
+    check_draft_promotion_equivalence(seed, &period_reports(&f_draft), &period_reports(&f_trunk))
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    metamorphic_draft_promote_equals_trunk_post();
 }
 
 #[test]

@@ -1,0 +1,74 @@
+# FFIEC 041 Call Report edits for the 2026Q1 instructions (plan §12.6,
+# `regulatory.edits(FFIEC041@2026Q1)`), run over the RC and RI schedules by
+# `fa statement regulatory`.
+#
+# ILLUSTRATIVE. These are FrankenAccounting's own arithmetic identities over
+# the schedule lines, under FrankenAccounting ids. They are not the FFIEC's
+# published edit criteria, whose numbers and texts are not vendored here.
+# When a published source is vendored, `source` becomes "published",
+# `publication` names it and its terms of use, and each `id` becomes the
+# published edit number.
+#
+# A term is a schedule line code, prefixed with "-" when it is subtracted.
+# Every term must name a line of its schedule; the loader refuses one that
+# does not.
+schema_version = 1
+form = "FFIEC041"
+quarter = "2026Q1"
+instruction_version = "FFIEC-041-2026Q1"
+source = "illustrative"
+publication = ""
+
+[[edit]]
+id = "FFIEC041-RC-V001"
+schedule = "RC"
+kind = "validity"
+description = "Net loans and leases (RCONB529) must equal loans and leases held for sale and held for investment (RCON2122) minus allowance for credit losses (RCON3123)"
+lhs = ["RCONB529"]
+operator = "=="
+rhs = ["RCON2122", "-RCON3123"]
+
+[[edit]]
+id = "FFIEC041-RC-V002"
+schedule = "RC"
+kind = "validity"
+description = "Total assets (RCON2170) must equal Total liabilities and equity capital (RCON3300)"
+lhs = ["RCON2170"]
+operator = "=="
+rhs = ["RCON3300"]
+
+[[edit]]
+id = "FFIEC041-RC-V003"
+schedule = "RC"
+kind = "validity"
+description = "Total liabilities (RCON2948) must equal the sum of deposits (RCON2200), other borrowed money (RCON3190), and other liabilities (RCON2930)"
+lhs = ["RCON2948"]
+operator = "=="
+rhs = ["RCON2200", "RCON3190", "RCON2930"]
+
+[[edit]]
+id = "FFIEC041-RC-Q001"
+schedule = "RC"
+kind = "quality"
+description = "Loans and leases held for sale and held for investment (RCON2122) should be greater than or equal to allowance for credit losses (RCON3123)"
+lhs = ["RCON2122"]
+operator = ">="
+rhs = ["RCON3123"]
+
+[[edit]]
+id = "FFIEC041-RI-V001"
+schedule = "RI"
+kind = "validity"
+description = "Net interest income (RIAD4074) must equal Total interest income (RIAD4107) minus Total interest expense (RIAD4073)"
+lhs = ["RIAD4074"]
+operator = "=="
+rhs = ["RIAD4107", "-RIAD4073"]
+
+[[edit]]
+id = "FFIEC041-RI-V002"
+schedule = "RI"
+kind = "validity"
+description = "Net income (RIAD4340) must equal Income before taxes (RIAD4301) minus Applicable income taxes (RIAD4302)"
+lhs = ["RIAD4340"]
+operator = "=="
+rhs = ["RIAD4301", "-RIAD4302"]

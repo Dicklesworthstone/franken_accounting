@@ -57,7 +57,7 @@ switch_over = "retention policy per book"
 foundation = "frankengraphdb"
 upstream = "live"
 fa_status = "live"
-conformance_tests = ["a_certified_read_replays_byte_identically_after_later_commits"]
+conformance_tests = ["a_certified_read_replays_byte_identically_after_later_commits", "retained_versions_preserve_declared_method"]
 
 [[capability]]
 row = "R-SSI"
@@ -69,7 +69,7 @@ foundation = "frankengraphdb"
 upstream = "planned"
 fa_status = "interim"
 tracking = "fa-0fl"
-conformance_tests = ["refresh_snapshot_refuses_first_committer_wins_iff_a_witnessed_row_changed", "a_witnessed_row_changed_after_staging_loses_first_committer_wins_at_commit", "post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period", "concurrent_receipts_settling_one_open_item_conflict_in_both_commit_orders", "aggregate_guard_no_publication_between_compare_and_marker"]
+conformance_tests = ["refresh_snapshot_refuses_first_committer_wins_iff_a_witnessed_row_changed", "a_witnessed_row_changed_after_staging_loses_first_committer_wins_at_commit", "post_vs_close_conflicts_in_both_commit_orders_including_an_empty_period", "concurrent_receipts_settling_one_open_item_conflict_in_both_commit_orders", "aggregate_guard_no_publication_between_compare_and_marker", "every_activation_path_preserves_representable_cells"]
 
 [[capability]]
 row = "R-CAT"

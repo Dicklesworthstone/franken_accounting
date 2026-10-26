@@ -35,6 +35,8 @@ use fgdb_types::{CanonicalScalar, VId};
 mod account_role_tests;
 #[path = "genesis/carrying.rs"]
 mod carrying_tests;
+#[path = "genesis/chart_outcome_keys.rs"]
+mod chart_outcome_keys;
 #[path = "genesis/closing_carrying.rs"]
 mod closing_carrying_tests;
 #[path = "genesis/external_subledger.rs"]
@@ -45,14 +47,20 @@ mod fx_law_tests;
 mod outcome_batch_integrity_tests;
 #[path = "genesis/outcome_keys.rs"]
 mod outcome_key_tests;
+#[path = "genesis/policy_outcome_keys.rs"]
+mod policy_outcome_keys;
 #[path = "genesis/recurring.rs"]
 mod recurring_tests;
 #[path = "genesis/register_capacity.rs"]
 mod register_capacity;
+#[path = "genesis/registration_outcome_keys.rs"]
+mod registration_outcome_keys;
 #[path = "genesis/scheduled_admission.rs"]
 mod scheduled_admission_tests;
 #[path = "genesis/subledger.rs"]
 mod subledger_tests;
+#[path = "genesis/time_outcome_keys.rs"]
+mod time_outcome_keys;
 
 #[path = "genesis/outcome_recovery.rs"]
 mod outcome_recovery_tests;
@@ -678,8 +686,21 @@ fn harness_configured_coverage(
     h.add_document(&source)
         .expect("the fixture document is admitted");
     h.evidence = vec![source.evidence_ref(ROLE_SOURCE)];
-    h.transition(&march, PeriodTransition::Open, b"open-march")
-        .expect("march opens");
+    if coverage {
+        h.transition(&march, PeriodTransition::Open, b"open-march")
+            .expect("march opens");
+    } else {
+        // This fixture represents an original pre-protocol book. The current
+        // transition writer correctly requires authenticated legacy key
+        // coverage before adding a fresh control, so retain the old writer's
+        // original Entry and period projection directly, without a claim.
+        outcome_key_tests::write_legacy_transition(
+            &mut h,
+            &march,
+            PeriodTransition::Open,
+            b"open-march",
+        );
+    }
     h
 }
 
@@ -855,6 +876,35 @@ fn unbalanced_entry_is_refused_with_exit_3_and_nothing_written() {
     );
     let vid = fa_model::entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"inv-2");
     assert!(h.db.vertex(vid).unwrap().is_none());
+}
+
+/// fa-hoi5: a balanced proposal that claims a schema minor this build does
+/// not know, carrying an extension no reader registered, is refused at
+/// admission (FA-REF-100, naming `schema_minor`) and writes nothing. At its
+/// own minor the same proposal is the ordinary unregistered-tag refusal.
+#[test]
+fn a_proposal_claiming_a_future_schema_minor_is_refused() {
+    let mut h = harness();
+    let before = h.db.frontier().unwrap();
+    let mut proposal = h.proposal(h.rent_legs(5_000), b"future-minor", EntryClass::ORIGINAL);
+    proposal.schema_minor = fa_model::entry::SCHEMA_MINOR + 1;
+    proposal.extensions = vec![(999, vec![1, 2, 3])];
+    let r = h.post(h.request(proposal.clone(), &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(r.message.contains("schema_minor"), "{}", r.message);
+    assert_eq!(h.db.frontier().unwrap(), before);
+    let vid = fa_model::entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), b"future-minor");
+    assert!(h.db.vertex(vid).unwrap().is_none());
+
+    proposal.schema_minor = fa_model::entry::SCHEMA_MINOR;
+    let r = h.post(h.request(proposal, &["post"])).unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-100", exit::USAGE), "{r}");
+    assert!(
+        r.message.contains("unregistered extension tag"),
+        "{}",
+        r.message
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
 }
 
 #[test]
@@ -3514,7 +3564,8 @@ fn a_preparers_manual_assertion_stands_in_for_a_document_only_where_registered()
         | AttestationClaim::RegisterEquals(_)
         | AttestationClaim::Reconciled(_)
         | AttestationClaim::Confirmed { .. }
-        | AttestationClaim::Represented { .. } => None,
+        | AttestationClaim::Represented { .. }
+        | AttestationClaim::ExhibitMarked { .. } => None,
     };
     let (reason_code, statement) = manual.expect("a ManualAssertion");
     assert_eq!(reason_code, 1);
@@ -6904,15 +6955,14 @@ fn portable_post_plan_retains_requested_and_resolved_balancing_legs() {
         }),
     );
     let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
-    let mut proposal = h.proposal(h.rent_legs(1_000), b"plan-balancing", EntryClass::ORIGINAL);
-    proposal.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
-    proposal.extensions.push((
-        fa_model::entry::BALANCING_EXTENSION,
-        limit::balancing_bytes(1, 1_000),
-    ));
+    let proposal = balancing_proposal(
+        h.proposal(h.rent_legs(1_000), b"plan-balancing", EntryClass::ORIGINAL),
+        1,
+    )
+    .unwrap();
     let basis = h.db.frontier().unwrap();
     let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
-    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    let plan = h.post_plan(h.request(proposal.clone(), &["post"])).unwrap();
     assert_eq!(plan.intent().proposal().legs[0].amount.mantissa, 1_000);
     assert_eq!(plan.proposal().legs[0].amount.mantissa, 700);
     assert_eq!(plan.proposal().legs[1].amount.mantissa, 700);
@@ -6929,6 +6979,221 @@ fn portable_post_plan_retains_requested_and_resolved_balancing_legs() {
     assert_eq!(entry.proposal.legs[0].amount.mantissa, 700);
     let retry = h.publish_plan(plan, &capability).unwrap();
     assert_eq!(retry.entry_ref(), posted.entry_ref());
+    assert_eq!(h.db.frontier().unwrap(), posted.recorded_at());
+
+    // The retained request remains retryable through ordinary posting even
+    // after its first execution consumed the entire available amount.
+    let retry = h.post(h.request(proposal, &["post"])).unwrap();
+    assert!(matches!(retry, Posted::AlreadyRecorded { .. }));
+    assert_eq!(retry.entry_ref(), posted.entry_ref());
+    for (requested, leg) in [(999, 1), (1_000, 0)] {
+        let changed = balancing_proposal(
+            h.proposal(
+                h.rent_legs(requested),
+                b"plan-balancing",
+                EntryClass::ORIGINAL,
+            ),
+            leg,
+        )
+        .unwrap();
+        let refusal = h.post(h.request(changed, &["post"])).unwrap_err();
+        assert_eq!(refusal.code, "FA-REF-032", "{refusal}");
+    }
+    assert_eq!(h.db.frontier().unwrap(), posted.recorded_at());
+}
+
+#[test]
+fn balancing_post_plan_refuses_changed_availability_and_replans_exactly() {
+    let mut h = harness_configured(
+        Vec::new(),
+        None,
+        Some(BalanceLimit {
+            lower: Some(-700),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    );
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let proposal = balancing_proposal(
+        h.proposal(
+            h.rent_legs(1_000),
+            b"changing-balancing",
+            EntryClass::ORIGINAL,
+        ),
+        1,
+    )
+    .unwrap();
+    let plan = h.post_plan(h.request(proposal.clone(), &["post"])).unwrap();
+    assert_eq!(plan.proposal().legs[1].amount.mantissa, 700);
+    h.post(h.request(
+        h.proposal(h.rent_legs(100), b"intervening-spend", EntryClass::ORIGINAL),
+        &["post"],
+    ))
+    .unwrap();
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let refusal = h.publish_plan(plan, &capability).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-034", exit::CONFLICT));
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    assert_eq!(plan.intent().proposal().legs[1].amount.mantissa, 1_000);
+    assert_eq!(plan.proposal().legs[1].amount.mantissa, 600);
+    let posted = h.publish_plan(plan, &capability).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal.legs[1].amount.mantissa, 600);
+
+    // An exhausted allowance refuses; saturation cannot create a zero entry.
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let proposal = balancing_proposal(
+        h.proposal(h.rent_legs(1), b"empty-balancing", EntryClass::ORIGINAL),
+        1,
+    )
+    .unwrap();
+    let refusal = h.post_plan(h.request(proposal, &["post"])).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-090", exit::REFUSAL));
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+}
+
+#[test]
+fn balancing_post_plan_requires_approval_of_the_resolved_effects() {
+    let mut h = harness_configured(
+        Vec::new(),
+        None,
+        Some(BalanceLimit {
+            lower: Some(-700),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    );
+    let march = h.march.clone();
+    h.transition(&march, PeriodTransition::Close, b"close-balancing-approval")
+        .unwrap();
+    let capability = Capability::embedded(PRINCIPAL, &["post", "post_closed"]).unwrap();
+    let proposal = balancing_proposal(
+        h.proposal(
+            h.rent_legs(1_000),
+            b"approved-balancing",
+            EntryClass::ADJUSTING,
+        ),
+        1,
+    )
+    .unwrap();
+    let wrong_approval = h.approve_transition(proposal.proposal_digest().unwrap());
+    let mut request = h.request(proposal.clone(), &["post", "post_closed"]);
+    request.approvals = vec![wrong_approval];
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let refusal = h.post_plan(request.clone()).unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-016", exit::SAFETY));
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+
+    let mut resolved = proposal;
+    resolved.legs = h.rent_legs(700);
+    resolved.unit_totals = EntryPayload::fold_unit_totals(&resolved.legs).unwrap();
+    let approval = h.approve_transition(resolved.proposal_digest().unwrap());
+    request.approvals = vec![approval];
+    let plan = h.post_plan(request).unwrap();
+    assert_eq!(plan.proposal(), &resolved);
+    assert_eq!(plan.approvals(), &[approval]);
+    let posted = h.publish_plan(plan, &capability).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal, resolved);
+    assert_eq!(entry.approvals, vec![approval]);
+}
+
+#[test]
+fn balancing_review_manual_assertion_binds_actual_movement_not_requested_amount() {
+    let mut h = harness_configured(
+        Vec::new(),
+        None,
+        Some(BalanceLimit {
+            lower: Some(-700),
+            upper: None,
+            scope: LimitScope::Lifetime,
+        }),
+    );
+    let capability = Capability::embedded(PRINCIPAL, &["post"]).unwrap();
+    let mut proposal = balancing_proposal(
+        h.proposal(
+            h.rent_legs(1_000),
+            b"reviewed-capped-assertion",
+            EntryClass::ORIGINAL,
+        ),
+        1,
+    )
+    .unwrap();
+    proposal.evidence.clear();
+    let basis = h.db.frontier().unwrap();
+    let cell = h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap();
+    let purposes = h.ctx();
+    let resolved = fa_journal::limit::review_balancing(
+        &mut h.db,
+        &purposes,
+        &h.book,
+        proposal.clone(),
+        capability.clone(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolved.legs[0].amount.mantissa, 700);
+    assert_eq!(resolved.legs[1].amount.mantissa, 700);
+    assert_eq!(
+        fa_journal::limit::request_form(&resolved).unwrap(),
+        Some(proposal.clone())
+    );
+    assert_eq!(h.db.frontier().unwrap(), basis);
+    assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+
+    // An assertion over the requested 1,000 is a different claim from the
+    // actual 700 movement. Neither direct posting nor planning may use it.
+    h.assert_manually(
+        PRINCIPAL,
+        &proposal,
+        1,
+        h.statement("Synthetic requested movement has no issued document", 71),
+    )
+    .unwrap();
+    let before = h.db.frontier().unwrap();
+    for planned in [false, true] {
+        let request = h.request(proposal.clone(), &["post"]);
+        let refusal = if planned {
+            h.post_plan(request).unwrap_err()
+        } else {
+            h.post(request).unwrap_err()
+        };
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            ("FA-REF-080", exit::REFUSAL),
+            "{refusal}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(h.db.vertex(limit_cell_vid(h.cash)).unwrap().unwrap(), cell);
+    }
+
+    // Recording the actual reviewed claim does not change availability. The
+    // original request remains portable, and the posted proposal is exactly
+    // the one the preparer asserted, not the larger requested movement.
+    h.assert_manually(
+        PRINCIPAL,
+        &resolved,
+        1,
+        h.statement("Synthetic actual movement has no issued document", 72),
+    )
+    .unwrap();
+    let plan = h.post_plan(h.request(proposal, &["post"])).unwrap();
+    assert_eq!(plan.proposal(), &resolved);
+    let posted = h.publish_plan(plan.clone(), &capability).unwrap();
+    let (entry, _) = read_entry(&h.db, posted.entry_ref().vid).unwrap().unwrap();
+    assert_eq!(entry.proposal, resolved);
+    assert_eq!(
+        h.publish_plan(plan, &capability).unwrap().entry_ref(),
+        posted.entry_ref()
+    );
     assert_eq!(h.db.frontier().unwrap(), posted.recorded_at());
 }
 
@@ -10395,6 +10660,45 @@ impl Harness {
     }
 }
 
+#[test]
+fn ordered_draft_plans_allow_later_members_to_settle_earlier_members() {
+    let mut h = harness();
+    let agent = h.agent_capability();
+    h.open_draft(agent.clone(), "invoice-and-receipt").unwrap();
+    let mut invoice = h.invoice(1_000, b"draft-invoice");
+    invoice.principal_ref = AGENT;
+    let invoice_vid = fa_model::entry_vid(
+        h.book.book_id,
+        &AGENT.0.to_le_bytes(),
+        &invoice.idempotency_key,
+    );
+    let planned = h
+        .plan_draft(agent.clone(), "invoice-and-receipt", invoice)
+        .unwrap();
+    let invoice = EntryRef {
+        vid: invoice_vid,
+        entry_digest: planned.plan.unwrap().members()[0].entry.entry_digest,
+    };
+    let mut receipt = h.receipt(600, vec![settle(invoice, 0, h.usd, 600)], b"draft-receipt");
+    receipt.principal_ref = AGENT;
+    let planned = h.plan_draft(agent, "invoice-and-receipt", receipt).unwrap();
+    assert_eq!(planned.plan.unwrap().members().len(), 2);
+    assert!(h.db.vertex(invoice.vid).unwrap().is_none());
+    let basis = h.db.frontier().unwrap();
+    let promoted = h
+        .promote(h.approver_capability(), "invoice-and-receipt")
+        .unwrap();
+    assert_eq!(promoted.recorded_at, fgdb_types::CommitSeq(basis.0 + 1));
+    assert_eq!(promoted.entries.len(), 2);
+    assert_eq!(promoted.entries[0], invoice);
+    assert_eq!(h.applied_to(invoice.vid, 0), 600);
+    for member in promoted.entries {
+        let (entry, recorded_at) = read_entry(&h.db, member.vid).unwrap().unwrap();
+        assert_eq!(recorded_at, promoted.recorded_at);
+        assert_eq!(entry.proposal.principal_ref, AGENT);
+    }
+}
+
 /// fa-s7x: an Agent opens a draft and plans two intents into it; each is
 /// rehearsed under every posting law and journaled, and nothing reaches
 /// trunk. The Agent cannot promote its own work; a Human holding `approve`
@@ -10421,7 +10725,7 @@ fn an_agent_drafts_and_a_human_promotes_the_intents_to_trunk_in_one_commit() {
         .plan_draft(agent.clone(), "close-03", first.clone())
         .expect("the first intent is rehearsed and journaled");
     let plan = planned.plan.expect("a fresh Plan carries its rehearsal");
-    assert_eq!(plan.certificate().principal, AGENT);
+    assert_eq!(plan.principal(), AGENT);
     h.plan_draft(agent.clone(), "close-03", second.clone())
         .expect("the second intent");
     let retry = h

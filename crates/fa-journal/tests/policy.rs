@@ -46,6 +46,9 @@ const BOB: VId = VId(22);
 const CAROL: VId = VId(23);
 const AGENT: VId = VId(31);
 
+#[path = "policy/capability_retries.rs"]
+mod capability_retries;
+
 struct Harness {
     runtime: Runtime,
     root: Cx,
@@ -1235,11 +1238,14 @@ fn an_identical_activation_retry_is_its_recorded_outcome() {
         h.activate(proposal.clone(), controller(), vec![bob, carol]),
         Ok(recorded.clone())
     );
-    // Approvals are envelope, not request: a retry citing none is the same request.
-    assert_eq!(
-        h.activate(proposal.clone(), controller(), Vec::new()),
-        Ok(recorded.clone())
-    );
+    // The immutable outcome binds its ordered approvals. They are not
+    // re-authorized at the new epoch, but cannot be omitted or reordered.
+    for approvals in [Vec::new(), vec![carol, bob]] {
+        let refused = h
+            .activate(proposal.clone(), controller(), approvals)
+            .unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("FA-REF-032", exit::CONFLICT));
+    }
     // A semantically identical retry (the erasable description re-sealed with
     // fresh salt, so different bytes) is the same request too.
     let mut resealed = proposal.clone();
@@ -1252,7 +1258,7 @@ fn an_identical_activation_retry_is_its_recorded_outcome() {
     );
     assert_ne!(resealed.proposal_digest().unwrap(), digest);
     assert_eq!(
-        h.activate(resealed, controller(), Vec::new()),
+        h.activate(resealed, controller(), vec![bob, carol]),
         Ok(recorded.clone())
     );
     assert_eq!(

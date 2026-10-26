@@ -1,0 +1,25 @@
+# Twin gap fixture facts: synthetic stand-ins (plan §2.1 `synthetic`); they support no claim.
+
+[[fact]]
+id = "G-A"
+provenance = "synthetic"
+reason = "investor A's cash subscription; A also receives principal by transfer"
+discipline = "never cited by a case; the exact_gap N's target"
+
+[[fact]]
+id = "G-B"
+provenance = "synthetic"
+reason = "investor B's cash subscription; B transfers principal to A"
+discipline = "never cited by a case; population only"
+
+[[fact]]
+id = "G-C"
+provenance = "synthetic"
+reason = "investor C's cash subscription, with no transfer"
+discipline = "never cited by a case; the N's twin target"
+
+[[fact]]
+id = "G-T"
+provenance = "synthetic"
+reason = "a principal transfer from B to A that moves no cash"
+discipline = "never cited by a case; the mechanism's input"
