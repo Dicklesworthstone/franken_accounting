@@ -5,7 +5,8 @@
 use super::*;
 
 pub(super) fn tick(book: &mut Book, ns: u64, monotonic_ok: bool) {
-    let (runtime, root) = Book::runtime_and_root().unwrap();
+    let runtime = asupersync::runtime::RuntimeBuilder::new().build().unwrap();
+    let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
     let capability = Capability::embedded(PRINCIPAL, &["witness"]).unwrap();
     runtime
         .block_on(book.record_tick(&root, ns, monotonic_ok, &capability))
