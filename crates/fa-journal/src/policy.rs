@@ -144,6 +144,17 @@ pub fn security_policy_epoch<V: asupersync::fs::Vfs + Clone>(
     epoch_from(prop(&row, property::SECURITY_POLICY_EPOCH))
 }
 
+/// The epoch an immutable control outcome observed at its own publication.
+pub(crate) fn security_policy_epoch_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    at: CommitSeq,
+) -> Result<u64, KernelError> {
+    let row = db
+        .vertex_at(book_root(), at)?
+        .ok_or_else(|| KernelError::Corrupt("no book root at the recorded publication".into()))?;
+    epoch_from(prop(&row, property::SECURITY_POLICY_EPOCH))
+}
+
 /// Witness every cited approval inside `txn` and evaluate SoD for `key`.
 /// Each `ApprovalRef` must bind `proposal_digest`, name a recorded approval
 /// of this book whose identity matches its content, and have been recorded
@@ -590,6 +601,7 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     row: &fgdb::VertexRow,
     proposal: &EntryPayload,
     proposal_digest: &[u8; 32],
+    approvals: &[ApprovalRef],
 ) -> Outcome<PolicyActivated> {
     let stored = match prop(row, property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => Entry::decode(b.as_slice())?,
@@ -611,8 +623,11 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
             "resubmit the identical activation to get the recorded outcome, or use a new idempotency key",
         )
     };
-    if stored.proposal.class != EntryClass::POLICY_CONTROL {
+    if stored.proposal.class != EntryClass::POLICY_CONTROL || stored.approvals != approvals {
         return Ok(Err(conflict()));
+    }
+    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+        return Ok(Err(crate::outcome::key_conflict()));
     }
     if &stored.proposal_digest == proposal_digest {
         return recorded_activation(db, row).map(Ok);
@@ -737,6 +752,14 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
     if let Err(d) = fa_policy::current(&req.capability, at) {
         return Ok(Err(refusal(&d)));
     }
+    if let Err(r) = capability_admitted(db, book, &req.capability)? {
+        return Ok(Err(r));
+    }
+    // Authenticate recovered legacy-key coverage and original retry rows
+    // after current whole-book authority has been admitted.
+    if let Err(r) = crate::scratch::ensure_history(db, ctx).await? {
+        return Ok(Err(r));
+    }
     let proposal_digest = proposal.proposal_digest()?;
     let txn_cx = ctx.txn();
     let mut txn = db.begin(&txn_cx)?;
@@ -749,9 +772,29 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
         &proposal.principal_ref.0.to_le_bytes(),
         &proposal.idempotency_key,
     );
+    if let Err(r) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        evid,
+    )? {
+        txn.abort();
+        return Ok(Err(r));
+    }
     if let Some(row) = txn.vertex(db, evid)? {
         txn.abort();
-        return recorded_or_conflict(db, book, &row, proposal, &proposal_digest);
+        return recorded_or_conflict(db, book, &row, proposal, &proposal_digest, &req.approvals);
+    }
+    if let Err(r) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(r));
     }
     // The witnessed scalar is the compare-and-set's expectation (absent on
     // a book that never activated a policy).
@@ -781,6 +824,7 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(req.approvals.clone(), None)?;
     let mut batch = WriteBatch::new(relation::IN_BOOK);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         book_root(),
         property::SECURITY_POLICY_EPOCH,
@@ -820,10 +864,21 @@ pub async fn activate_policy<V: asupersync::fs::Vfs + Clone>(
         )) => match db.vertex(evid)? {
             // Lost the identity race: the recorded outcome if it is the same
             // activation, a conflict if it is not.
-            Some(row) => recorded_or_conflict(db, book, &row, proposal, &proposal_digest),
-            None => Err(KernelError::Corrupt(
-                "identity spent but no live row".into(),
-            )),
+            Some(row) => {
+                recorded_or_conflict(db, book, &row, proposal, &proposal_digest, &req.approvals)
+            }
+            None => {
+                if db
+                    .vertex(crate::outcome::entry_outcome_vid(proposal))?
+                    .is_some()
+                {
+                    Ok(Err(crate::outcome::key_conflict()))
+                } else {
+                    Err(KernelError::Corrupt(
+                        "identity spent but no live row".into(),
+                    ))
+                }
+            }
         },
         Err(e) => Err(e.into()),
     }

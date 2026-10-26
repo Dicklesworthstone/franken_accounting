@@ -12,6 +12,61 @@ use fgdb_types::ids::DatabaseSecurityNamespaceId;
 
 use super::*;
 
+#[test]
+fn a_target_derived_control_cannot_use_the_normal_key_legacy_exception() {
+    let mut h = Harness::source("control key identity");
+    let proposal = crate::policy::activation_proposal(
+        &h.book,
+        VId(116),
+        crate::policy::steward().unwrap().policy_oid,
+        fa_time::DateDay::from_ymd(2026, 3, 15).unwrap(),
+        b"policy-key",
+        fa_model::Erasable::seal(
+            &"activate policy".to_string(),
+            None,
+            &h.book.seal_key,
+            [117; 32],
+            [118; 24],
+        ),
+    );
+    let entry = proposal.seal(Vec::new(), None).unwrap();
+    let target = crate::policy::revocation_vid(h.book.book_id, &[119; 32]);
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    assert!(stage_control(&mut batch, &entry, target).is_err());
+    batch.create_vertex(
+        target,
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
+    h.write(batch);
+    let row = h.db.vertex(target).unwrap().unwrap();
+    assert!(!verify_control_recorded(&h.db, &row, &entry).unwrap());
+
+    let mut capability = entry.proposal;
+    capability.idempotency_key = b"capability-key".to_vec();
+    capability.control = Some(fa_model::ControlPayload::CapabilityEvent {
+        commitment: [119; 32],
+        kind: crate::policy::CAPABILITY_EVENT_REVOKE,
+        caveats_digest: [0; 32],
+    });
+    capability.origin = fa_model::EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::CAPABILITY_REVOCATION,
+        spec_body_digest: [119; 32],
+    };
+    let entry = capability.seal(Vec::new(), None).unwrap();
+    let normal = fa_model::entry_vid(h.book.book_id, &116_u128.to_le_bytes(), b"capability-key");
+    let mut batch = WriteBatch::new(relation::IN_BOOK);
+    assert!(stage_control(&mut batch, &entry, normal).is_err());
+    batch.create_vertex(
+        normal,
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
+    h.write(batch);
+    let row = h.db.vertex(normal).unwrap().unwrap();
+    assert!(!verify_control_recorded(&h.db, &row, &entry).unwrap());
+}
+
 struct Harness {
     runtime: Runtime,
     root: Cx,
