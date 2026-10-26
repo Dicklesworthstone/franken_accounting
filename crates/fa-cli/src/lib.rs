@@ -50,6 +50,7 @@ mod query;
 mod rea;
 mod recurring;
 mod refusal_object;
+mod regulatory;
 mod rule;
 mod sample;
 mod scenario;

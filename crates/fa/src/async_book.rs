@@ -4408,6 +4408,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .and_then(crate::statements::certified))
     }
 
+    /// Evaluate a regulatory schedule (plan §12.6) from journal payloads at
+    /// one snapshot. Its columns fold as a statement of its kind does.
+    pub fn regulatory_schedule(
+        &self,
+        cx: &PurposeContexts,
+        selection: crate::RegulatorySelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        self.query(cx, |db, book| {
+            crate::statements::read_regulatory(db, &cx.query(), book, selection, known_at)
+        })
+    }
+
     /// Resolve a UTC instant from the journal's retained TimeEvidence at HEAD.
     /// The returned frontier and brackets describe the precision of the read.
     pub fn resolve_known_at_instant(

@@ -12432,7 +12432,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     if functional
         && (matches!(
             args.positional[1].as_str(),
-            "trace" | "issue" | "issuances" | "lint" | "equity-roll-forward"
+            "trace" | "issue" | "issuances" | "lint" | "regulatory" | "equity-roll-forward"
         ) || args.flag("--branch").is_some()
             || args.flag("--from-diff").is_some()
             || crate::issuance::view_flag(args).is_some())
@@ -12447,6 +12447,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
         "issue" => return crate::issuance::issue(ctx, args),
         "issuances" => return crate::issuance::issuances(ctx, args),
         "lint" => return statement_lint(ctx, args),
+        "regulatory" => return crate::regulatory::statement_regulatory(ctx, args),
         "equity-roll-forward" => return statement_equity_roll_forward(ctx, args),
         _ => {}
     }

@@ -707,6 +707,41 @@ pub fn lint_custom_statement_definition(
     })
 }
 
+/// Map `accounts` onto `definition`'s lines by code, as [`crate::map_accounts`]
+/// maps a registered definition by account type: every covered leaf must
+/// match exactly one account line, or the partition is refused naming the
+/// unmapped and multiply mapped codes. Codes the definition names that
+/// `accounts` lack are not checked here; `lint_custom_statement_definition`
+/// reports those against a whole chart.
+pub fn map_custom_accounts(
+    definition: &CustomStatementDefinition,
+    accounts: &[Account],
+) -> Result<Vec<crate::AccountMapping>, StatementError> {
+    let lint = lint_custom_statement_definition(definition, accounts)?;
+    if !lint.unmapped_leaves.is_empty() || !lint.multiply_mapped_leaves.is_empty() {
+        return Err(StatementError::Partition {
+            unmapped: lint.unmapped_leaves,
+            multiply_mapped: lint.multiply_mapped_leaves,
+        });
+    }
+    let by_code: BTreeMap<&str, &Account> = accounts
+        .iter()
+        .map(|account| (account.code.as_str(), account))
+        .collect();
+    lint.mappings
+        .into_iter()
+        .map(|(code, line_code)| {
+            let account = by_code
+                .get(code.as_str())
+                .ok_or_else(|| input(format!("mapped account `{code}` is not in the chart")))?;
+            Ok(crate::AccountMapping {
+                account: (*account).clone(),
+                line_code,
+            })
+        })
+        .collect()
+}
+
 /// Evaluate a `CustomStatementDefinition` over a `StatementInput` (`fa-i9yn`).
 pub fn evaluate_custom(
     definition: &CustomStatementDefinition,
@@ -1976,6 +2011,48 @@ mod tests {
             ],
             check_lines: vec!["balance_check".into()],
         }
+    }
+
+    /// fa-doa9: certificate status maps a later chart's new leaves alone.
+    /// Codes the definition names elsewhere (3000) need not be among them,
+    /// but every new covered leaf must match exactly one line.
+    #[test]
+    fn custom_accounts_map_by_code_or_refuse_the_partition() {
+        let definition = custom_balance_sheet_def();
+        let leaf = |id: u128, code: &str, account_type: u8| Account {
+            id,
+            code: code.into(),
+            name: format!("Account {code}"),
+            account_type,
+            is_leaf: true,
+        };
+        let later = vec![leaf(7, "1020", 1), leaf(8, "1200", 1), leaf(9, "2100", 2)];
+        let mapped = map_custom_accounts(&definition, &later).unwrap();
+        let lines: Vec<(&str, &str)> = mapped
+            .iter()
+            .map(|mapping| (mapping.account.code.as_str(), mapping.line_code.as_str()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("1020", "cash_and_equivalents"),
+                ("1200", "other_assets"),
+                ("2100", "liabilities"),
+            ]
+        );
+        assert_eq!(mapped[0].account, later[0]);
+        // Planted negative: an equity leaf other than 3000 matches no line.
+        let mut unmapped = later.clone();
+        unmapped.push(leaf(10, "3100", 3));
+        let refused = map_custom_accounts(&definition, &unmapped);
+        assert!(
+            matches!(
+                &refused,
+                Err(StatementError::Partition { unmapped, multiply_mapped })
+                    if unmapped == &["3100".to_string()] && multiply_mapped.is_empty()
+            ),
+            "{refused:?}"
+        );
     }
 
     #[test]

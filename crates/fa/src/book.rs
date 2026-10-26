@@ -3817,6 +3817,17 @@ impl Book {
         with_store!(&self.store, core => core.certify_statement_at_instant(&self.purposes(), selection, requested_utc_ns))
     }
 
+    /// Evaluate a regulatory schedule (plan §12.6, `fa statement
+    /// regulatory`) from authoritative journal payloads, without publishing
+    /// any object.
+    pub fn regulatory_schedule(
+        &self,
+        selection: crate::RegulatorySelection,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::Statement> {
+        with_store!(&self.store, core => core.regulatory_schedule(&self.purposes(), selection, known_at))
+    }
+
     /// Resolve a UTC instant from retained ticks without reading a clock.
     /// Keep the returned frontier and brackets with the resolved sequence.
     pub fn resolve_known_at_instant(
@@ -6177,8 +6188,9 @@ impl ReadScope<'_> {
     /// period through its latest selected one (a `periods` caveat refuses
     /// it; an `effective` caveat admits it only through that period's last
     /// day); period activity and an explanation reach exactly their
-    /// periods; open items reach the whole book. A statement's columns,
-    /// current and comparative, reach what their basis folds: a stock basis
+    /// periods; open items reach the whole book. A statement's or a
+    /// regulatory schedule's columns, current and comparative, reach what
+    /// their basis folds: a stock basis
     /// is a balance through the latest of them, an activity basis exactly
     /// their periods.
     pub fn admit_report(
@@ -6205,10 +6217,15 @@ impl ReadScope<'_> {
             ReportSelection::ExplainBalance { period, .. } => {
                 self.authority.periods(book, seq, &[period.as_str()])
             }
-            ReportSelection::Statement(statement) => {
-                let mut reached = codes(&statement.periods);
-                reached.extend(codes(&statement.comparative));
-                match statement.definition.basis() {
+            ReportSelection::Statement(_) | ReportSelection::RegulatorySchedule(_) => {
+                let Some((kind, periods, comparative)) = selection.statement_columns() else {
+                    return Err(BookError::Kernel(fa_journal::KernelError::Corrupt(
+                        "a statement selection lacks its statement columns".into(),
+                    )));
+                };
+                let mut reached = codes(periods);
+                reached.extend(codes(comparative));
+                match kind.basis() {
                     fa_statements::Basis::Stock => {
                         self.authority.stock_through(book, seq, &reached)
                     }

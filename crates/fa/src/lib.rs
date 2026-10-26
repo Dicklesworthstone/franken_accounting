@@ -224,6 +224,7 @@ pub use fa_statements::markdown::{
     StatementMarkdownIr, TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec,
     render_statement_ir, render_trial_balance_ir,
 };
+pub use fa_statements::regulatory::RegulatoryScheduleDefinition;
 pub use fa_statements::render::{
     StatementRenderFormat, format_utc_epoch_iso8601, render_html, render_pdf, render_pdfa,
     render_svg, validate_pdfa2b,
@@ -314,8 +315,8 @@ pub use statement_trace::{
     StatementPublication, StatementTrace, StatementTraceCertificate, StatementTraceRequest,
 };
 pub use statements::{
-    CertifiedStatement, StatementSelection, UncorrectedLine, UncorrectedStatement,
-    statement_definition_kind,
+    CertifiedStatement, RegulatorySelection, StatementSelection, UncorrectedLine,
+    UncorrectedStatement, statement_definition_kind,
 };
 pub use subledger::{
     NativeSubledger, NativeSubledgerKind, NativeSubledgerReconciliation, NativeSubledgerRecorded,

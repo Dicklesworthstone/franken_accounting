@@ -12262,6 +12262,32 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
         seen.extend(check_robot_output(&argv, code, &out));
     }
 
+    // fa-doa9: a regulatory schedule needs the chart it maps by code.
+    let bank = dir.join("bank");
+    for args in [
+        vec!["book", "create", "--name", "Bank Co"],
+        vec!["chart", "import", "--template", "us-bank-call-report"],
+        vec!["period", "create", "--fiscal-year", "2026"],
+        vec![
+            "statement",
+            "regulatory",
+            "--form",
+            "041",
+            "--schedule",
+            "RC",
+            "--quarter",
+            "2026Q1",
+            "--for",
+            "FY2026-P03",
+        ],
+    ] {
+        let mut argv = args.clone();
+        argv.push("--json");
+        let (code, out, err) = fa(Some(bank.as_path()), &argv);
+        assert_eq!(code, 0, "args={argv:?}\n{out}\n{err}");
+        seen.extend(check_robot_output(&argv, code, &out));
+    }
+
     // The daemon's frames and its own output are fad's to emit (crates/fad tests).
     let declared: BTreeSet<String> = reg
         .events
