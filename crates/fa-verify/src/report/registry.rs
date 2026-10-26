@@ -19,7 +19,7 @@ const MAX_DOCUMENT: usize = 1024 * 1024;
 enum Value {
     Text(String),
     Int(i128),
-    Bool,
+    Bool(bool),
     Array,
 }
 type Table = BTreeMap<String, Value>;
@@ -75,12 +75,11 @@ impl<'a> Cursor<'a> {
             2 => Value::Int(i128::from_le_bytes(
                 self.take(16)?.try_into().expect("sixteen bytes"),
             )),
-            3 => {
-                if self.byte()? > 1 {
-                    return Err(invalid("noncanonical registry boolean"));
-                }
-                Value::Bool
-            }
+            3 => Value::Bool(match self.byte()? {
+                0 => false,
+                1 => true,
+                _ => return Err(invalid("noncanonical registry boolean")),
+            }),
             4 => {
                 let n = self.count(65_536, 1)?;
                 for _ in 0..n {
@@ -165,6 +164,12 @@ fn string<'a>(row: &'a Table, key: &str) -> Result<&'a str, ReportError> {
         _ => Err(invalid(format!("registry field {key} must be text"))),
     }
 }
+fn boolean(row: &Table, key: &str) -> Result<bool, ReportError> {
+    match row.get(key) {
+        Some(Value::Bool(value)) => Ok(*value),
+        _ => Err(invalid(format!("registry field {key} must be a boolean"))),
+    }
+}
 fn rows<'a>(doc: &'a Document, table: &str) -> Result<&'a [Table], ReportError> {
     doc.arrays
         .get(table)
@@ -246,9 +251,25 @@ fn entry_classes(doc: &Document) -> Result<(), ReportError> {
         return Err(invalid("unsupported entry-class registry vocabulary"));
     }
     for (i, (row, name)) in values.iter().zip(names).enumerate() {
-        if integer(row, "tag")? != (i + 1) as i128
+        // These fields describe the posting and visibility law, not just
+        // presentation labels. An authenticated hash of different semantics
+        // cannot authorize this verifier to apply its built-in interpretation.
+        let supersession = match i + 1 {
+            3 => "resolves",
+            4 => "reverses",
+            5 => "replaces",
+            6 => "reclassifies",
+            7 => "optional",
+            13 => "revises",
+            14 => "restates",
+            _ => "none",
+        };
+        if row.len() != if i < 15 { 5 } else { 4 }
+            || integer(row, "tag")? != (i + 1) as i128
             || string(row, "name")? != name
             || string(row, "kind")? != if i < 15 { "posting" } else { "control" }
+            || string(row, "supersession")? != supersession
+            || (i < 15 && boolean(row, "carries_open_items")? != !matches!(i + 1, 2 | 4))
         {
             return Err(invalid(
                 "entry-class semantics differ from this verifier's supported version",
@@ -258,6 +279,22 @@ fn entry_classes(doc: &Document) -> Result<(), ReportError> {
     // These are the control origins that supply chart/period metadata and
     // migration visibility. Their numeric identities cannot be reinterpreted.
     let controls = rows(doc, "control_kind")?;
+    let mut ids = BTreeSet::new();
+    let mut control_names = BTreeSet::new();
+    for row in controls {
+        let id = integer(row, "id")?;
+        let name = string(row, "name")?;
+        if row.len() != 4
+            || !(1..=u16::MAX as i128).contains(&id)
+            || name.is_empty()
+            || !ids.insert(id)
+            || !control_names.insert(name)
+            || !names[15..].contains(&string(row, "class")?)
+            || string(row, "minted_by")?.is_empty()
+        {
+            return Err(invalid("ambiguous or unsupported control-kind registry"));
+        }
+    }
     for (id, name, class) in [
         (1, "chart_install", "SchemaControl"),
         (9, "migration_run", "MigrationControl"),
@@ -275,13 +312,6 @@ fn entry_classes(doc: &Document) -> Result<(), ReportError> {
                 "schema/migration control identities differ from supported semantics",
             ));
         }
-    }
-    if string(&values[3], "supersession")? != "reverses"
-        || string(&values[2], "supersession")? != "resolves"
-    {
-        return Err(invalid(
-            "entry resolution/reversal semantics are unsupported",
-        ));
     }
     Ok(())
 }

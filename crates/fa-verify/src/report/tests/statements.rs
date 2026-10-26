@@ -593,6 +593,140 @@ fn changed_definition_cannot_hide_unmapped_or_multiply_mapped_zero_leaves() {
         );
     }
 }
+// Patch complete fields of the frozen canonical documents, preserving valid
+// framing. These tests do not import the producer's registry parser or codecs.
+fn registry_field(key: &str, tag: u8, value: &[u8]) -> Vec<u8> {
+    let mut bytes = (key.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(key.as_bytes());
+    bytes.push(tag);
+    bytes.extend_from_slice(value);
+    bytes
+}
+fn registry_text_field(key: &str, value: &str) -> Vec<u8> {
+    let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(value.as_bytes());
+    registry_field(key, 1, &bytes)
+}
+fn replace_registry_field(bytes: &mut Vec<u8>, old: &[u8], new: &[u8]) {
+    let positions = bytes
+        .windows(old.len())
+        .enumerate()
+        .filter_map(|(at, value)| (value == old).then_some(at))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        positions.len(),
+        1,
+        "mutation must identify one frozen field"
+    );
+    assert_ne!(old, new, "mutation must change the supplied semantics");
+    bytes.splice(positions[0]..positions[0] + old.len(), new.iter().copied());
+}
+
+#[test]
+fn resealed_entry_laws_and_ambiguous_control_kinds_are_refused_after_authentication() {
+    let mut changes = vec![
+        (
+            "reversal supersession",
+            registry_text_field("supersession", "reverses"),
+            registry_text_field("supersession", "replaces"),
+            "entry-class semantics",
+        ),
+        (
+            "duplicate control id",
+            registry_field("id", 2, &2i128.to_le_bytes()),
+            registry_field("id", 2, &1i128.to_le_bytes()),
+            "ambiguous or unsupported control-kind registry",
+        ),
+        (
+            "duplicate control name",
+            registry_text_field("name", "policy_activation"),
+            registry_text_field("name", "period_transition"),
+            "ambiguous or unsupported control-kind registry",
+        ),
+        (
+            "unregistered control class",
+            registry_text_field("class", "TimeControl"),
+            registry_text_field("class", "UnknownControl"),
+            "ambiguous or unsupported control-kind registry",
+        ),
+    ];
+    for (name, carries) in [("Original", true), ("Pending", false)] {
+        // The class's ordered kind/name fields make the boolean's row unique.
+        let suffix = [
+            registry_text_field("kind", "posting"),
+            registry_text_field("name", name),
+        ]
+        .concat();
+        changes.push((
+            name,
+            [
+                registry_field("carries_open_items", 3, &[u8::from(carries)]),
+                suffix.clone(),
+            ]
+            .concat(),
+            [
+                registry_field("carries_open_items", 3, &[u8::from(!carries)]),
+                suffix,
+            ]
+            .concat(),
+            "entry-class semantics",
+        ));
+    }
+    let original = registries();
+    let original_closure = closure(&original);
+    let definition = definition(true);
+    let result = expected(true);
+    let output = output_bytes(&result, &definition, 9);
+    let records = history();
+    let (baseline, anchor, original_digest) =
+        pack(&records, &definition, &output, &original, original_closure);
+    assert_eq!(
+        verify_statement_fixture(&baseline, anchor.clone(), original_digest)
+            .unwrap()
+            .statement,
+        Some(result)
+    );
+
+    for (name, old, new, reason) in changes {
+        let mut docs = original.clone();
+        replace_registry_field(&mut docs[1].1, &old, &new);
+        let changed_closure = closure(&docs);
+        assert_ne!(changed_closure, original_closure, "{name}");
+        let (bytes, unchanged_anchor, trusted_digest) =
+            pack(&records, &definition, &output, &docs, changed_closure);
+        assert_eq!(unchanged_anchor.checkpoint, anchor.checkpoint, "{name}");
+        assert_ne!(trusted_digest, original_digest, "{name}");
+        // Even a recipient who explicitly trusts the resealed certificate
+        // cannot make this interpreter apply unsupported accounting meanings.
+        let error =
+            verify_statement_fixture(&bytes, unchanged_anchor, trusted_digest).expect_err(name);
+        assert_eq!(error.predicate, "registry_closure", "{name}: {error}");
+        assert!(error.detail.contains(reason), "{name}: {error}");
+    }
+}
+
+#[test]
+fn authenticated_foundation_metadata_upgrade_preserves_exact_statement_recomputation() {
+    let mut docs = registries();
+    let original_closure = closure(&docs);
+    replace_registry_field(
+        &mut docs[3].1,
+        &registry_text_field("taken_on", "2026-10-10"),
+        &registry_text_field("taken_on", "2026-09-01"),
+    );
+    let changed_closure = closure(&docs);
+    assert_ne!(changed_closure, original_closure);
+    let definition = definition(true);
+    let expected = expected(true);
+    let output = output_bytes(&expected, &definition, 9);
+    let (bytes, anchor, trusted_digest) =
+        pack(&history(), &definition, &output, &docs, changed_closure);
+    let verified = verify_statement_fixture(&bytes, anchor, trusted_digest).unwrap();
+    assert_eq!(verified.statement, Some(expected));
+    assert_eq!(verified.output, output);
+    assert_eq!(verified.unit_universe_source, "authenticated-registry");
+}
+
 #[test]
 fn statement_registry_vocabulary_refuses_unknown_accounting_semantics_even_when_resealed() {
     let mut docs = registries();

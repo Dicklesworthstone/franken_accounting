@@ -891,6 +891,145 @@ fn replace_certificate(bundle: &[u8], certificate: &ReportCertificate) -> Vec<u8
 }
 
 #[test]
+fn authenticated_registry_upgrades_preserve_supported_semantics_or_refuse() {
+    let mut fixture = Fixture::new(0xad);
+    let usd = fixture.usd;
+    fixture.transfer(
+        day(2026, 1, 15),
+        b"registry-upgrade-sale",
+        usd,
+        ("1000", "4000"),
+        300,
+    );
+    let certified = fixture
+        .book
+        .certify_statement(selection("income-statement", JANUARY, DECEMBER), None)
+        .unwrap()
+        .unwrap();
+    let produced = produce(&mut fixture.book, &certified.certificate);
+    verify(&fixture.book, &produced, &certified.certificate);
+    let key = fixture.book.checkpoint_public_key();
+    let sources = [
+        (
+            "account_types",
+            include_str!("../../../../registries/account_types.toml"),
+        ),
+        (
+            "entry_classes",
+            include_str!("../../../../registries/entry_classes.toml"),
+        ),
+        ("units", include_str!("../../../../registries/units.toml")),
+        (
+            "foundations",
+            include_str!("../../../../franken-stack.lock"),
+        ),
+    ];
+    let documents: Vec<_> = sources
+        .iter()
+        .map(|(name, text)| (*name, fa_registry::toml::parse(text).unwrap()))
+        .collect();
+    let encode = |docs: &[(&str, fa_registry::toml::Document)]| {
+        let mut writer = fa_model::Writer::new();
+        writer.list(docs, |w, (name, doc)| {
+            w.str(name).bytes(&doc.canonical_bytes());
+        });
+        writer.finish().unwrap()
+    };
+    let original = encode(&documents);
+    assert!(produced.bundle.bytes.ends_with(&original));
+
+    for change in [
+        "foundation_metadata",
+        "supersession",
+        "open_item_law",
+        "control_supersession",
+        "unknown_class_field",
+        "duplicate_control_id",
+        "duplicate_control_name",
+        "control_posting_class",
+    ] {
+        use fa_registry::toml::Value;
+        let mut documents = documents.clone();
+        if change == "foundation_metadata" {
+            // Foundation provenance is authenticated but does not supply an
+            // outsider's accounting algorithm. A new provenance field alone
+            // must not require the old executable to recompute this statement.
+            documents[3].1.root.insert(
+                "upgrade_evidence".into(),
+                Value::Str("independent recomputation fixture".into()),
+            );
+        } else {
+            let classes = &mut documents[1].1;
+            match change {
+                "supersession" => {
+                    classes.arrays.get_mut("class").unwrap()[4]
+                        .insert("supersession".into(), Value::Str("none".into()));
+                }
+                "open_item_law" => {
+                    classes.arrays.get_mut("class").unwrap()[1]
+                        .insert("carries_open_items".into(), Value::Bool(true));
+                }
+                "control_supersession" => {
+                    classes.arrays.get_mut("class").unwrap()[21]
+                        .insert("supersession".into(), Value::Str("reverses".into()));
+                }
+                "unknown_class_field" => {
+                    classes.arrays.get_mut("class").unwrap()[0]
+                        .insert("changes_visibility".into(), Value::Bool(true));
+                }
+                "duplicate_control_id" => {
+                    classes.arrays.get_mut("control_kind").unwrap()[1]
+                        .insert("id".into(), Value::Int(3));
+                }
+                "duplicate_control_name" => {
+                    classes.arrays.get_mut("control_kind").unwrap()[1]
+                        .insert("name".into(), Value::Str("policy_activation".into()));
+                }
+                "control_posting_class" => {
+                    classes.arrays.get_mut("control_kind").unwrap()[1]
+                        .insert("class".into(), Value::Str("Original".into()));
+                }
+                _ => unreachable!(),
+            }
+        }
+        let mut transcript = Vec::new();
+        for (name, doc) in &documents {
+            transcript.extend_from_slice(name.as_bytes());
+            transcript.push(0);
+            transcript.extend_from_slice(&fa_verify::blake3::hash_parts(
+                b"fa:registry-canonical-digest:v1",
+                &[&doc.canonical_bytes()],
+            ));
+        }
+        let mut certificate = certified.certificate.clone();
+        certificate.registry_digest =
+            fa_verify::blake3::hash_parts(b"fa:report-registry-closure:v2", &[&transcript]);
+        reseal(&mut certificate);
+        let mut changed = replace_certificate(&produced.bundle.bytes, &certificate);
+        changed.truncate(changed.len() - original.len());
+        changed.extend_from_slice(&encode(&documents));
+        // Deliberately authenticate the altered certificate. These cases must
+        // reach the semantic gate rather than fail an old digest or receipt.
+        let result = fa_verify::report::verify_report_expected(
+            &changed,
+            &[key],
+            None,
+            None,
+            Some(&certificate.digest),
+        );
+        if change == "foundation_metadata" {
+            assert_eq!(result.unwrap().output, certified.certificate.output);
+        } else {
+            assert_eq!(
+                result.unwrap_err().predicate,
+                "registry_closure",
+                "{change}"
+            );
+        }
+    }
+}
+
+#[test]
 fn resealed_statement_forgeries_and_missing_authenticated_records_are_refused() {
     let mut fixture = Fixture::new(0xec);
     let usd = fixture.usd;
