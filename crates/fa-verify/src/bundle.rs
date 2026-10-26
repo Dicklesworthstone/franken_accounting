@@ -841,22 +841,30 @@ pub(crate) fn verify_bundle_inspecting_balances(
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
-    observe: impl FnMut(usize, crate::BalanceClaim),
+    mut observe: impl FnMut(usize, crate::BalanceClaim),
 ) -> Result<BundleReport, BundleError> {
-    verify_bundle_observing(bundle, trusted_keys, receipt, observe, |_, _, _| {})
+    verify_bundle_observing(
+        bundle,
+        trusted_keys,
+        receipt,
+        |k, balance| observe(k, balance.claim),
+        |_, _, _, _| {},
+    )
 }
 
-/// [`verify_bundle_inspecting_balances`], also observing each record whose
-/// inclusion verified: its authenticated envelope, the legs the record
-/// rebuilds (empty for evidence records) and its proposal bytes (the record
-/// up to its proposal length, which the envelope's digest covers). The same
-/// rule holds: callers use observations only when the whole report verified.
+/// [`verify_bundle_inspecting_balances`], observing each verified balance
+/// whole (its claim and the leaves its fold read) and each record whose
+/// inclusion verified: its leaf index, authenticated envelope, the legs the
+/// record rebuilds (empty for evidence records) and its proposal bytes (the
+/// record up to its proposal length, which the envelope's digest covers). The
+/// same rule holds: callers use observations only when the whole report
+/// verified.
 pub(crate) fn verify_bundle_observing(
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
-    mut observe: impl FnMut(usize, crate::BalanceClaim),
-    mut observe_record: impl FnMut(&LeafEnvelope, &[crate::envelope::Leg], &[u8]),
+    mut observe: impl FnMut(usize, &crate::balance::Balance),
+    mut observe_record: impl FnMut(u64, &LeafEnvelope, &[crate::envelope::Leg], &[u8]),
 ) -> Result<BundleReport, BundleError> {
     for key in trusted_keys {
         ed25519::check_public_key(key).map_err(|reason| BundleError::TrustedKey {
@@ -968,7 +976,7 @@ pub(crate) fn verify_bundle_observing(
                         .map_err(VerifyError::Record);
                     if let Ok(legs) = &checked {
                         let proposal = item.record.get(..item.proposal_len).unwrap_or_default();
-                        observe_record(envelope, legs, proposal);
+                        observe_record(item.leaf_index, envelope, legs, proposal);
                     }
                     graded(&checked)
                 }
@@ -1014,14 +1022,14 @@ pub(crate) fn verify_bundle_observing(
             ),
             Some(s) => match verify_balance(b.proof, &s.checkpoint) {
                 Ok(balance) if balance.scope == crate::balance::SCOPE_RECOMPUTATION => {
-                    observe(k, balance.claim);
+                    observe(k, &balance);
                     Grade::Pass
                 }
                 Ok(balance)
                     if balance.scope == crate::balance::SCOPE_MEMBERSHIP_ONLY
                         && full_prefix_payloads =>
                 {
-                    observe(k, balance.claim);
+                    observe(k, &balance);
                     Grade::Pass
                 }
                 Ok(balance) => Grade::Fail(format!(

@@ -12,8 +12,10 @@
 //! effective date and legs. A row's account is matched by deriving its vid
 //! from its code and the book id; unit codes are matched to the legs' unit
 //! ids one to one (the codes' names are not authenticated offline). A
-//! migration chunk in scope is not judged: its visibility is not proven
-//! offline, as for balances. `Trial_Balance.txt` must then be exactly the
+//! migration chunk counts exactly when its run makes it visible: a verified
+//! migration-aware balance over one of its cells (fa-mv0f) decides that from
+//! the run bodies it carries, and its fold reads exactly the visible chunks.
+//! A chunk no verified balance covers is refused, never guessed. `Trial_Balance.txt` must then be exactly the
 //! refold of those proven rows, so it is proven too. Against a complete
 //! prefix, `Chart_of_Accounts.txt` must be exactly the chart the proven
 //! entries declare at the sequence (code, name, type, normal balance); one
@@ -383,27 +385,37 @@ fn same(extract: &Extracted, proven: &Proven, book: &[u8; 16], units: &Units) ->
         })
 }
 
-/// The records a verified bundle authenticates: each record's envelope, the
-/// legs it rebuilds and its proposal bytes.
-pub(crate) type Records = Vec<(LeafEnvelope, Vec<Leg>, Vec<u8>)>;
+/// The records a verified bundle authenticates: each record's leaf index,
+/// envelope, the legs it rebuilds and its proposal bytes.
+pub(crate) type Records = Vec<(u64, LeafEnvelope, Vec<Leg>, Vec<u8>)>;
 
-/// Verify the bundle and keep the records it authenticates.
+/// What a verified bundle authenticates: its records, and its balances, each
+/// with the leaves its fold read. A migration-aware balance proof decides
+/// each migration chunk of its cell from the run bodies it carries, and reads
+/// exactly the visible ones.
+pub(crate) struct Authenticated {
+    pub(crate) records: Records,
+    pub(crate) balances: Vec<crate::balance::Balance>,
+}
+
+/// Verify the bundle and keep what it authenticates.
 pub(crate) fn prove(
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
-) -> Result<(crate::bundle::BundleReport, Records), BundleError> {
+) -> Result<(crate::bundle::BundleReport, Authenticated), BundleError> {
     let mut records: Records = Vec::new();
+    let mut balances = Vec::new();
     let report = verify_bundle_observing(
         bundle,
         trusted_keys,
         receipt,
-        |_, _| {},
-        |envelope, legs, proposal| {
-            records.push((envelope.clone(), legs.to_vec(), proposal.to_vec()));
+        |_, balance| balances.push(balance.clone()),
+        |leaf, envelope, legs, proposal| {
+            records.push((leaf, envelope.clone(), legs.to_vec(), proposal.to_vec()));
         },
     )?;
-    Ok((report, records))
+    Ok((report, Authenticated { records, balances }))
 }
 
 impl AdsReport {
@@ -440,7 +452,7 @@ pub fn verify_ads(
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
 ) -> Result<AdsReport, BundleError> {
-    let (report, records) = prove(bundle, trusted_keys, receipt)?;
+    let (report, authenticated) = prove(bundle, trusted_keys, receipt)?;
     let mut out = AdsReport::new(
         report,
         field(certificate, "effective_through")
@@ -486,7 +498,7 @@ pub fn verify_ads(
         balances: ads_balances(trial_balance, escaped),
         chart: ads_chart(chart_of_accounts, escaped),
     };
-    Ok(judge(out, records, stated, &ADS_PARTS))
+    Ok(judge(out, authenticated, stated, &ADS_PARTS))
 }
 
 /// Judge what an extract states against the records a verified bundle
@@ -497,10 +509,11 @@ pub fn verify_ads(
 /// the chart is exactly the one the proven entries declare.
 pub(crate) fn judge(
     mut out: AdsReport,
-    records: Records,
+    authenticated: Authenticated,
     stated: Stated,
     parts: &Parts,
 ) -> AdsReport {
+    let Authenticated { records, balances } = authenticated;
     let scoped = stated.account_scope;
     out.account_scope.clone_from(&scoped);
     let manifest = out.bundle.manifest.clone();
@@ -553,7 +566,7 @@ pub(crate) fn judge(
     // none: its chart is then not judged, and the report says so.
     let declared = if matches!(manifest.scope, BundleScope::Prefix) {
         match crate::report::declared_chart(
-            records.iter().map(|(e, _, p)| (e, p.as_slice())),
+            records.iter().map(|(_, e, _, p)| (e, p.as_slice())),
             &manifest.book_id,
             manifest.through_seq,
         ) {
@@ -570,7 +583,7 @@ pub(crate) fn judge(
     };
     // The proven entries the export selects, by recorded sequence.
     let mut proven: BTreeMap<u64, Vec<Proven>> = BTreeMap::new();
-    for (envelope, legs, _) in records {
+    for (leaf, envelope, legs, _) in records {
         let Some(day) = envelope.effective_day else {
             continue;
         };
@@ -584,11 +597,37 @@ pub(crate) fn judge(
             continue;
         }
         if envelope.class == CLASS_MIGRATION {
-            out.failures.push(format!(
-                "a migration chunk recorded at {} is in scope; its visibility is not proven offline",
-                envelope.commit_seq
-            ));
-            continue;
+            // A migration chunk counts only when its run makes it visible.
+            // A verified balance over one of its cells, cut off on or after
+            // its day, decides that from the run bodies it carries (only the
+            // migration-aware format verifies such a cell): its fold reads
+            // the chunk exactly when it is visible.
+            let covering: Vec<&crate::balance::Balance> = balances
+                .iter()
+                .filter(|balance| {
+                    legs.iter().any(|leg| {
+                        (leg.account, leg.unit) == (balance.claim.account, balance.claim.unit)
+                    }) && balance
+                        .claim
+                        .effective_through
+                        .is_none_or(|through| through >= day)
+                })
+                .collect();
+            if covering.is_empty() {
+                out.failures.push(format!(
+                    "a migration chunk recorded at {} is in scope, and no verified balance over its cells proves whether its run makes it visible",
+                    envelope.commit_seq
+                ));
+                continue;
+            }
+            if !covering
+                .iter()
+                .any(|balance| balance.contributing.contains(&leaf))
+            {
+                // Its run hides it: the export selects it no more than the
+                // fold does.
+                continue;
+            }
         }
         proven.entry(envelope.commit_seq).or_default().push(Proven {
             class: envelope.class,
