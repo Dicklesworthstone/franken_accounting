@@ -1280,6 +1280,71 @@ This section records an audit and remaining work; it neither changes the target
 contracts above nor closes implementation beads. The generated workflow scoreboard
 is a sample of commands, not a percentage of the complete product delivered.
 
+#### Current-cut refresh (2026-10-26, StormyJay)
+
+**Assessment: the product is broad and mostly honest about itself. Two foundations are not yet real: its verdicts and its scale.** Breadth is outrunning both. The review cut is origin/main `8a17bb7bd`.
+
+**How the check was made:**
+- AGENTS.md and README.md were read in full, plus §19 and this section.
+- Five independent read-only subsystem audits re-scored V01–V37.
+- Fresh debug `fa` and `fa-verify` were built from that commit (rch, standalone clone) and run end to end on a new book.
+- The checker read the `refs/notes/fa-verdict` and `refs/notes/fa-tier0` notes, the recent full-test logs and the bead graph (442 issues: 139 open, 50 in progress, 253 closed).
+- Bead graph: epic `fa-0hs4` and its 17 children. Where an existing owner covers a gap, the finding is a comment on that owner instead.
+
+**Executed (synthetic inputs):**
+- All 21 `### Try it today` commands exit 0, and `fa replay` reproduces the certified trial balance.
+- The Genesis negatives hold: unbalanced → exit 3 FA-REF-001; post into Closed → exit 7 FA-REF-010; a float amount → exit 2; no evidence → exit 3 FA-REF-080.
+- `fa-verify` accepts the prefix, account bundle and certified-TB report; a one-byte bundle tamper exits 8.
+- Self-approval is refused at commit (exit 7 FA-REF-008).
+- `fa demo init --scenario worldcom` and the JET, Benford and related-party procedures run.
+
+**Product findings:**
+- Single posts: 118 ms → 439 ms across 300 posts (about 1.1 ms more per entry already in the book, debug build).
+- `fa verify book` takes 15 s at 324 entries and **exits 8 on a healthy book** whenever a period holds entries but was never materialized. An absent register cache is reported as corruption (`fa-registers` lib.rs:1040); this is `fa-0hs4.5`.
+- Dual control on the owner CLI is satisfied by typing a second `--as` name.
+
+**Verdict findings:**
+- **No genuine full verdict exists.** Every `fa-verdict` PASS note records only 6–8 selftest/shellcheck steps.
+- **Some notes carry copied step records.** On 90fbbcc4c (the README badge) the steps carry the parent's tree. Three notes for three trees share one `started_utc`, 10–11 h before those commits were authored.
+- **Seven closures cite these notes.**
+- **The last complete workspace run was 24c64e79** (3407 passed / 15 failed). Main has since taken 404 commits. The latest attempt was killed at the 7,200 s cap (1671 passed / 21 failed).
+- **Tier 0 is not enforced.** Only 20 of the last 150 first-parent main commits carry a Tier-0 note, and no hooks are installed.
+
+| Goal | 2026-10-26 status | New owners (existing owners keep their scope) |
+|---|---|---|
+| V01 | WORKING (capacity admission closed; per-post cost remains under fa-rcw1) | — |
+| V02 | WORKING for native/functional measures; dimensions dormant | `fa-0hs4.5` |
+| V05 | WORKING selectors incl. AS CURRENTLY STATED; GQL per-row CALL refused | — |
+| V06 | PARTIAL: disclosure binds no diff; diff "as reported" is pre-Post, not first issuance | `fa-0hs4.7` |
+| V07 | YearEndClose real; CloseRun DAG NOT_STARTED | — |
+| V08, V10, V11 | PARTIAL; daemon sweep ignores the paged index; ProportionalPost absent | `fa-0hs4.10`, `fa-0hs4.11` |
+| V15 | PARTIAL; no due-date aging despite journaled maturity terms | `fa-0hs4.13` |
+| V19 | PARTIAL; SoD binds asserted names; approvals unsigned and bind no effects digest | `fa-0hs4.4` (claim), `fa-0hs4.17` (require-token) |
+| V20 | PARTIAL; AccessEvents not accumulator leaves | `fa-0hs4.12` |
+| V26 | PARTIAL, much advanced; prior-period adjustments absent from equity | `fa-0hs4.8` |
+| V31, V33 | external oracles and Lean/TLC never executed; toolchains absent on hosts | `fa-0hs4.17` |
+| V34 | UNPROVEN; harness exists, incumbent bootstrap undecided | `fa-0hs4.17` |
+| V35 | **REGRESSED**: all nine 10-23 owners closed while the goal regressed | `fa-0hs4.1`–`.4`, fa-ygj2 |
+| V36 | NOT_STARTED | — |
+| V37 | PARTIAL; relief plans never reach posting | `fa-0hs4.9` |
+| V38 (new) | Operable at real-book scale through the CLI and fad: NOT_STARTED as a composed outcome | `fa-0hs4.6` |
+| V39 (new) | Public-record case studies (owner request 2026-10-24): 98 beads, zero real cases | fa-yugf, `fa-0hs4.17` item 5 |
+
+All other V-rows keep their 10-23 status with the progress the owners recorded.
+
+**Bridge sequence (proposed; the owner decides in `fa-0hs4.17`):** truth (`fa-0hs4.1`–`.4`), then operability (`fa-0hs4.6`, `.5`, `.11`), then authority (fa-z46b, fa-kae, fa-yok), then breadth. Until the first three hold, no new verbs, MCP tools, Lantern procedures or case-harness machinery land. Product fixes found by the case research stay exempt.
+
+**Plan-space review record.**
+- *Two ambition passes:*
+  - replace per-term performance bugs with one composed, counted-work operability outcome;
+  - make verdict evidence derived from retained logs and attributable, instead of self-asserted.
+- *Five refinement passes:*
+  - owner overlap (fa-ygj2, fa-5fq9, fa-75j4, fa-7uhr, fa-zddh, fa-ykbp);
+  - claim re-verification against source;
+  - acceptance-test blocks and logging on every implementation child;
+  - dependency edges (blocking only where a child truly needs another bead's landing);
+  - V-goal owner coverage, which found V35 owner-less after its owners closed.
+
 #### Source, execution, and claim boundaries
 
 **Current-cut refresh (2026-10-23, GrayStork).** The review cut is
