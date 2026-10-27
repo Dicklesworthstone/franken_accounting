@@ -721,8 +721,8 @@ pub(crate) fn folds_at<V: asupersync::fs::Vfs + Clone>(
             period_at(db, book, period, seq)?;
         }
         match read {
-            Some(entries) => fold_entries(book, entries, periods),
-            None => fold_entries(book, &entries_at(db, book, seq)?, periods),
+            Some(entries) => fold_entries(book, entries, periods, seq),
+            None => fold_entries(book, &entries_at(db, book, seq)?, periods, seq),
         }
     };
     match together() {
@@ -768,7 +768,7 @@ pub(crate) fn fold_period_counted<V: asupersync::fs::Vfs + Clone>(
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
     let entries = entries_at(db, book, seq)?;
-    fold_entries(book, &entries, &BTreeSet::from([period_code]))?
+    fold_entries(book, &entries, &BTreeSet::from([period_code]), seq)?
         .into_values()
         .next()
         .ok_or_else(|| KernelError::Corrupt("a requested period has no fold".into()).into())
@@ -791,10 +791,13 @@ struct PeriodFold {
 /// and decoded once for every period rather than once per period (fa-rbs3);
 /// a single period's fold is this with one code, so a period folds the same
 /// whether alone or beside others. An error is the first one the stream meets.
+/// `seq` is the prefix the entries were read at, the known-at a capacity
+/// witness names.
 pub(crate) fn fold_entries(
     book: &BookContext,
     entries: &[(VId, Entry, CommitSeq)],
     periods: &BTreeSet<&str>,
+    seq: CommitSeq,
 ) -> Result<BTreeMap<String, (Fold, u64)>, RegisterError> {
     let resolved = resolutions(entries)?;
     let activated = migration_activations(entries)?;
@@ -823,7 +826,13 @@ pub(crate) fn fold_entries(
             if let Some(release) = resolved.get(&vid) {
                 fold.watermark = Some(fold.watermark.map_or(*release, |w| w.max(*release)));
             } else {
-                add_entry(&mut fold.pending, entry, period_code, (vid, created_at), seq)?;
+                add_entry(
+                    &mut fold.pending,
+                    entry,
+                    period_code,
+                    (vid, created_at),
+                    seq,
+                )?;
                 fold.legs = fold
                     .legs
                     .checked_add(entry.proposal.legs.len() as u64)
