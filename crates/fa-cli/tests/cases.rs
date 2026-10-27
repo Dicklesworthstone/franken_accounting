@@ -76,7 +76,7 @@ fn _selftest() {
         "PASS _selftest-P-03 P native P-1/period_state_at_commit=Closed state=Closed refusal=FA-REF-010 exit=7 record_consistent=false commit_agrees=ok ref=agree",
         "UNRUN _selftest-N-01 N native N-1/default kind=no_finding twin=mutation:reported reason=filler_invariance",
         "PASS _selftest-R-01 R native -/default kind=read_back read=balance,1100,2026Q1,as-originally-reported value=1000.00",
-        "PASS _selftest-CASE-selftest-restatement R native -/default kind=case_show read=case show,selftest-restatement state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-PH-DET disclosure=reviewed twin=refused:FA-REF-179:exit=3",
+        "PASS _selftest-CASE-selftest-restatement R native -/default kind=case_show read=case show,selftest-restatement state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-PH-DET disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3",
     ] {
         assert!(o.lines.iter().any(|l| l == row), "{row}\n{text}");
     }
@@ -2341,6 +2341,28 @@ fn lifecycle_run(edits: &[PlantedEdit]) -> Box<RunOutcome> {
     }
 }
 
+/// The lifecycle fixture's unedited run, shared by its tests.
+fn lifecycle() -> &'static RunOutcome {
+    static RUN: std::sync::OnceLock<RunOutcome> = std::sync::OnceLock::new();
+    RUN.get_or_init(|| *lifecycle_run(&[]))
+}
+
+/// The logged calls of `o` that exited non-zero, as the two argv words
+/// after `--book $BOOK` and the refusal id.
+fn refused_calls(o: &RunOutcome) -> Vec<String> {
+    o.steps
+        .iter()
+        .filter(|s| s.exit != 0)
+        .map(|s| {
+            format!(
+                "{} {}",
+                words(&s.argv_redacted),
+                s.refusal_id.as_deref().unwrap_or("-")
+            )
+        })
+        .collect()
+}
+
 /// The fixture's `case_disclose` step, which a planted edit removes.
 const DISCLOSE_STEP: &str =
     "[[step]]\nseq = 17\nkind = \"case_disclose\"\nref = \"rc\"\nprincipal = \"case-poster-1\"\n\n";
@@ -2350,44 +2372,34 @@ const DISCLOSE_STEP: &str =
 /// date, the declared default), scenario fork/run/diff, rehearse, two
 /// approvals, post by a non-approver, statement diff, disclose and close.
 /// The case's number is logged once, every case and scenario call
-/// succeeds but the disclosure twin (FA-REF-179), and the generated row
-/// reads the case Closed with its kind, day, authority and reviewed
-/// disclosure (the target's lineage names Restates). The quarter reads
-/// 1,000.00 as originally reported and as reported in its issuance, and
-/// 1,200.00 as currently stated.
+/// succeeds but its three twins (one approval, FA-REF-012; the delta
+/// posted outside the case, FA-REF-178; the unreviewed disclosure,
+/// FA-REF-179), and the generated row reads the case Closed with its kind,
+/// day, authority and reviewed disclosure (the target's lineage names
+/// Restates). The quarter reads 1,000.00 as originally reported and as
+/// reported in its issuance, and 1,200.00 as currently stated.
 #[test]
 fn issue_lock_and_full_restatement_lifecycle_run() {
-    let o = lifecycle_run(&[]);
+    let o = lifecycle();
     let text = o.text();
     let cases: Vec<&String> = o.lines.iter().filter(|l| l.starts_with("CASES ")).collect();
     assert_eq!(cases, ["CASES native rc=1"], "{text}");
     assert_eq!(
         o.row("lifecycle-CASE-rc"),
         Some(
-            "PASS lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-LC-1 disclosure=reviewed twin=refused:FA-REF-179:exit=3"
+            "PASS lifecycle-CASE-rc R native -/default kind=case_show read=case show,rc state=Closed case_kind=Restatement determined_on=2026-05-15 authority=DOC-LC-1 disclosure=reviewed twin=refused:FA-REF-179:exit=3 one_approval=refused:FA-REF-012:exit=7:Rehearsed outside_case=refused:FA-REF-178:exit=3"
         ),
         "{text}"
     );
-    let refused: Vec<String> = o
-        .steps
-        .iter()
-        .filter(|s| s.exit != 0)
-        .map(|s| {
-            format!(
-                "{} {}",
-                // After `--book $BOOK`.
-                s.argv_redacted.get(2..4).unwrap_or_default().join(" "),
-                s.refusal_id.as_deref().unwrap_or("-")
-            )
-        })
-        .collect();
     // The as-filed assertion's two twins (B +/- 1 minor unit) and the
-    // disclosure twin are the only refused calls.
+    // case's three twins are the only refused calls.
     assert_eq!(
-        refused,
+        refused_calls(o),
         [
             "assert-balance --account FA-REF-140",
             "assert-balance --account FA-REF-140",
+            "case approve FA-REF-012",
+            "post --intent FA-REF-178",
             "case disclose FA-REF-179"
         ],
         "{text}"
@@ -2412,24 +2424,146 @@ fn issue_lock_and_full_restatement_lifecycle_run() {
 }
 
 /// A7b (§5.3): A is asserted as filed (1,000.00 on 6100) before the case;
-/// after the case restates A by 200.00, `recon.assertion_drift` reports
-/// exactly that attestation, Critical, citing the attestation, the account,
-/// the quarter and the delta recorded after it, with the drift's magnitude
-/// |sum of deltas| = 200.00 (the sign is the fold's, never the statistic's).
+/// after the case restates A, `recon.assertion_drift` reports exactly that
+/// attestation, Critical, citing the attestation, the account, the quarter
+/// and the delta recorded after it, with the drift's magnitude |sum of
+/// deltas|. The sign is the fold's, never the statistic's: restated up by
+/// 200.00 the quarter reads 1,200.00 and the drift 200.00; restated down by
+/// 100.00 (a planted copy: the delta's legs reversed, D-1 = 100 and P-1 =
+/// 900) it reads 900.00, below A, and the drift is 100.00, still positive.
 #[test]
 fn assertion_drift_reports_the_magnitude_of_the_summed_deltas() {
-    let o = lifecycle_run(&[]);
-    let text = o.text();
-    let row = o.row("lifecycle-D-01").unwrap_or_default();
-    assert!(
+    let drift = |o: &RunOutcome, statistic: &str| {
+        let row = o.row("lifecycle-D-01").unwrap_or_default();
         !row.starts_with("FAIL ")
             && row.contains(" procedure=recon.assertion_drift@1 ")
             && row.contains(" entry=delta-A-1 ")
             && row.contains(" cite=6100,attestation:lifecycle-R-01,period:2026Q1 ")
             && row.contains(" severity=Critical ")
-            && row.contains(" statistic_name=assertion_drift statistic=20000 scale=2 "),
+            && row.contains(&format!(
+                " statistic_name=assertion_drift statistic={statistic} scale=2 "
+            ))
+    };
+    let up = lifecycle();
+    assert!(drift(up, "20000"), "{}", up.text());
+    let edit = |file, old, new| PlantedEdit { file, old, new };
+    let down = lifecycle_run(&[
+        edit(
+            "facts.toml",
+            "literal = \"200\"\nrule = \"scale\"\nparam = 0\nvalue = \"20000\"",
+            "literal = \"100\"\nrule = \"scale\"\nparam = 0\nvalue = \"10000\"",
+        ),
+        edit(
+            "facts.toml",
+            "literal = \"1,200\"\nrule = \"scale\"\nparam = 0\nvalue = \"120000\"",
+            "literal = \"900\"\nrule = \"scale\"\nparam = 0\nvalue = \"90000\"",
+        ),
+        edit(
+            "books/native.toml",
+            "account = \"6100\"\nside = \"Dr\"\namount_literal = \"200.00\"",
+            "account = \"6100\"\nside = \"Cr\"\namount_literal = \"100.00\"",
+        ),
+        edit(
+            "books/native.toml",
+            "account = \"1000\"\nside = \"Cr\"\namount_literal = \"200.00\"",
+            "account = \"1000\"\nside = \"Dr\"\namount_literal = \"100.00\"",
+        ),
+        edit(
+            "expectations.toml",
+            "statistic_value = \"20000\"",
+            "statistic_value = \"10000\"",
+        ),
+    ]);
+    let text = down.text();
+    assert!(drift(&down, "10000"), "{text}");
+    for (id, value) in [("lifecycle-R-01", "1000.00"), ("lifecycle-R-03", "900.00")] {
+        assert!(
+            down.row(id)
+                .is_some_and(|r| r.starts_with("PASS ") && r.ends_with(&format!(" value={value}"))),
+            "{id}: {text}"
+        );
+    }
+    assert!(down.rows_ok, "{text}");
+}
+
+/// A7b (§3.3 step 5): one approval is not dual control. `fa case approve`
+/// citing the first approver's approval alone is refused FA-REF-012 (exit
+/// 7), `fa case show` then reads the case still Rehearsed, and the same
+/// approval with the second approver's is admitted.
+#[test]
+fn case_with_one_approval_is_refused_fa_ref_012_and_stays_rehearsed() {
+    let o = lifecycle();
+    let text = o.text();
+    let approves: Vec<_> = o
+        .steps
+        .iter()
+        .filter(|s| words(&s.argv_redacted) == "case approve")
+        .filter(|s| !s.argv_redacted.iter().any(|a| a == "--dry-run"))
+        .map(|s| {
+            let n = s
+                .argv_redacted
+                .iter()
+                .filter(|a| *a == "--approval")
+                .count();
+            (n, s.exit, s.refusal_id.as_deref().unwrap_or("-"))
+        })
+        .collect();
+    assert_eq!(approves, [(1, 7, "FA-REF-012"), (2, 0, "-")], "{text}");
+    let row = o.row("lifecycle-CASE-rc").unwrap_or_default();
+    assert!(
+        row.starts_with("PASS ")
+            && row.contains(" one_approval=refused:FA-REF-012:exit=7:Rehearsed "),
         "{text}"
     );
+}
+
+/// A7b (§3.3 step 5, FA-REF-178): a case-bound entry posts only through its
+/// case. The rehearsed delta's intent file, posted on its own while the
+/// case is Approved (confirmed and with restate), is refused FA-REF-178
+/// (exit 3) before `fa case post`, and the quarter as currently stated
+/// moves by the delta once, not twice.
+#[test]
+fn restatement_intent_outside_its_case_is_refused_fa_ref_178() {
+    let o = lifecycle();
+    let text = o.text();
+    let posts: Vec<_> = o
+        .steps
+        .iter()
+        .filter(|s| s.argv_redacted.get(2).is_some_and(|w| w == "post"))
+        .map(|s| {
+            (
+                s.reference.as_str(),
+                s.exit,
+                s.refusal_id.as_deref().unwrap_or("-"),
+            )
+        })
+        .collect();
+    assert!(posts.contains(&("delta-A-1", 3, "FA-REF-178")), "{text}");
+    let at = |sub: &str| {
+        o.steps
+            .iter()
+            .position(|s| words(&s.argv_redacted) == format!("case {sub}"))
+    };
+    let outside = o
+        .steps
+        .iter()
+        .position(|s| s.reference == "delta-A-1" && s.refusal_id.as_deref() == Some("FA-REF-178"));
+    assert!(outside.is_some() && outside < at("post"), "{text}");
+    let row = o.row("lifecycle-CASE-rc").unwrap_or_default();
+    assert!(
+        row.starts_with("PASS ") && row.ends_with(" outside_case=refused:FA-REF-178:exit=3"),
+        "{text}"
+    );
+    assert!(
+        o.row("lifecycle-R-03")
+            .is_some_and(|r| r.starts_with("PASS ") && r.ends_with(" value=1200.00")),
+        "{text}"
+    );
+}
+
+/// The two argv words after `--book $BOOK`.
+fn words(argv: &[String]) -> String {
+    argv.get(2..4).unwrap_or_default().join(" ")
 }
 
 /// A7b (§3.3 step 5): a history that ends before its `case_close` step

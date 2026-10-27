@@ -16,9 +16,11 @@
 //! `scenario_fork`/`scenario_run`/`scenario_diff` (the case's deltas
 //! planned into a scenario and its diff certified to a file),
 //! `case_rehearse` (that certificate), `case_approve` (the manifest digest
-//! approved by the case's two approvers), `case_post` (by its poster; then
-//! `fa case diff --statements --certify` and each restated target's
-//! lineage), `case_disclose` (an unreviewed twin first, refused
+//! approved by the case's two approvers; a twin first cites one approval,
+//! refused FA-REF-012, and the case stays Rehearsed), `case_post` (each
+//! delta's twin first, posted outside its case and refused FA-REF-178; then
+//! the post by its poster, `fa case diff --statements --certify` and each
+//! restated target's lineage), `case_disclose` (an unreviewed twin first, refused
 //! FA-REF-179, then a reviewed Disclosure copy of the case's disclosure
 //! stub) and `case_close`. `fa case` takes the book's number for a case,
 //! not its label: `case_open` logs the map (`CASES <variant>
@@ -172,6 +174,12 @@ pub struct CaseRun {
     pub disclosure: Option<String>,
     /// `fa case disclose` citing the unreviewed twin of that document.
     pub twin: Option<Call>,
+    /// `fa case approve` citing the first approver's approval alone, and
+    /// the state `fa case show` read after it.
+    pub one_approval: Option<(Call, String)>,
+    /// Each rehearsed delta posted on its own (`fa post --intent`) once the
+    /// case is approved.
+    pub outside: Vec<(String, Call)>,
     /// `fa explain lineage` of each restated target after the post.
     pub lineages: Vec<(String, Call)>,
     /// `fa case show <number>` after the history.
@@ -505,8 +513,9 @@ impl<'c> BookRun<'c> {
     }
 
     /// A `case_approve` step: the manifest's digest (`--dry-run`), approved
-    /// by each of the case's two approvers, then `fa case approve` with
-    /// both approvals.
+    /// by each of the case's two approvers. Its harness twin first: `fa case
+    /// approve` with the first approval alone, which must be refused
+    /// FA-REF-012 and leave the case Rehearsed. Then both approvals.
     pub(crate) fn case_approve(&mut self, step: &StepDef) {
         let Some((case, n)) = self.case_number(step) else {
             return;
@@ -527,12 +536,39 @@ impl<'c> BookRun<'c> {
             self.lines.push(reproduce(&manifest));
             return;
         };
-        let mut args = vec![s("case"), s("approve"), n];
+        let mut vids = Vec::new();
         for approver in &case.approvers {
             match self.approve_as(step.seq, approver, &digest) {
-                Some(vid) => args.extend([s("--approval"), vid]),
+                Some(vid) => vids.push(vid),
                 None => return,
             }
+        }
+        if let Some(first) = vids.first() {
+            let args = vec![
+                s("case"),
+                s("approve"),
+                n.clone(),
+                s("--approval"),
+                first.clone(),
+                s("--json"),
+            ];
+            let twin = self.call(step.seq, &case.id, "case", args);
+            let args = vec![s("case"), s("show"), n.clone(), s("--json")];
+            let show = self.call(step.seq, &case.id, "case", args);
+            let state = show
+                .event("case")
+                .and_then(|o| o.field("case"))
+                .and_then(|c| c.get("state"))
+                .and_then(Json::as_str)
+                .unwrap_or("none")
+                .to_string();
+            if let Some(r) = self.cases.get_mut(&case.id) {
+                r.one_approval = Some((twin, state));
+            }
+        }
+        let mut args = vec![s("case"), s("approve"), n];
+        for vid in vids {
+            args.extend([s("--approval"), vid]);
         }
         args.push(s("--json"));
         let call = self.call(step.seq, &case.id, "case", args);
@@ -548,6 +584,34 @@ impl<'c> BookRun<'c> {
         let Some((case, n)) = self.case_number(step) else {
             return;
         };
+        let rehearsed = self.cases.get(&case.id).and_then(|r| r.scenario.clone());
+        let planned = rehearsed
+            .map(|name| self.planned_into(&name))
+            .unwrap_or_default();
+        // The harness twin of each rehearsed delta: the same intent file
+        // `scenario_run` ran, posted on its own while the case is Approved,
+        // even confirmed and with restate, must be refused FA-REF-178.
+        for it in &planned {
+            let file = self.work.join(format!("{}.json", it.id));
+            if !file.exists() {
+                continue;
+            }
+            let args = vec![
+                s("post"),
+                s("--intent"),
+                file.display().to_string(),
+                s("--grant"),
+                s("restate"),
+                s("--yes"),
+                s("--as"),
+                it.principal.clone(),
+                s("--json"),
+            ];
+            let twin = self.call(step.seq, &it.id, "post", args);
+            if let Some(r) = self.cases.get_mut(&case.id) {
+                r.outside.push((it.id.clone(), twin));
+            }
+        }
         let args = vec![
             s("case"),
             s("post"),
@@ -573,10 +637,6 @@ impl<'c> BookRun<'c> {
             .iter()
             .filter_map(|p| p.get("entry").and_then(Json::as_str).map(str::to_string))
             .collect();
-        let rehearsed = self.cases.get(&case.id).and_then(|r| r.scenario.clone());
-        let planned = rehearsed
-            .map(|name| self.planned_into(&name))
-            .unwrap_or_default();
         for (i, it) in planned.iter().enumerate() {
             let vid = self
                 .planned_entries
@@ -610,10 +670,7 @@ impl<'c> BookRun<'c> {
         if diff.exit != 0 {
             self.lines.push(reproduce(&diff));
         }
-        let scenario = self.cases.get(&case.id).and_then(|r| r.scenario.clone());
-        let targets: Vec<String> = scenario
-            .map(|name| self.planned_into(&name))
-            .unwrap_or_default()
+        let targets: Vec<String> = planned
             .into_iter()
             .filter(|i| i.is_delta())
             .filter_map(|i| i.target.clone())
