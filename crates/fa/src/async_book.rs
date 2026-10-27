@@ -3604,6 +3604,16 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    pub fn fold_periods(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[&str],
+    ) -> Result<Vec<Fold>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(fa_registers::fold_periods_at(db, book, periods, None)?)
+        })
+    }
+
     pub async fn materialize_registers(
         &mut self,
         cx: &PurposeContexts,
@@ -3632,6 +3642,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 book,
                 period,
             )?)
+        })
+    }
+
+    /// [`AsyncBook::verify_registers`] for each of `periods`, in order, from
+    /// one shared read of the book; the results stop after the first error.
+    pub fn verify_registers_each(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[&str],
+    ) -> Result<Vec<Result<Verification, BookError>>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(
+                fa_registers::verify_periods_with_context(db, &cx.query(), book, periods)
+                    .into_iter()
+                    .map(|result| result.map_err(BookError::from))
+                    .collect(),
+            )
         })
     }
 

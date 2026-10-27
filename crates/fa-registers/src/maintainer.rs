@@ -317,15 +317,14 @@ fn load<V: asupersync::fs::Vfs + Clone>(
 
 /// Independent verification includes the state header, not merely its checksum.
 /// A coherently forged cursor or entry count cannot pass a journal refold.
-pub(crate) fn verify_state<V: asupersync::fs::Vfs + Clone>(
-    db: &Database<V>,
-    book: &BookContext,
+pub(crate) fn verify_state_in<V: asupersync::fs::Vfs + Clone>(
+    reads: &mut crate::Reads<'_, V>,
     period: &str,
 ) -> Result<(Option<CommitSeq>, Option<String>), RegisterError> {
-    match load(db, book, period) {
+    match load(reads.db, reads.book, period) {
         Ok(None) => Ok((None, None)),
         Ok(Some((through, fold, _))) => {
-            let truth = crate::fold_period_at(db, book, period, Some(through))?;
+            let truth = reads.fold_at(period, through)?;
             Ok((
                 Some(through),
                 (fold != truth)

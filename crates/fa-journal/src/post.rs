@@ -900,8 +900,8 @@ fn footprint_refusal<V: asupersync::fs::Vfs + Clone>(
 
 fn not_implemented(class_name: &str) -> Refusal {
     let lands_with = match class_name {
-        "settles on a two-phase entry" | "re-application by reversing a reversal" => {
-            "the full application-netting law (plan §5.7, §8.2; fa-06a)"
+        "settles on this entry class" | "re-application by reversing a reversal" => {
+            "the full application-netting law (plan §5.7, §8.2)"
         }
         "leg.base_amount" | "base_totals" => "the FX law slice (fa-p7r)",
         "leg.dimension_set" => "the dimension registry slice (plan §4.3)",
@@ -2135,7 +2135,20 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
                     "import the legacy open item net of its legacy applications",
                 )));
             }
-            _ => return Ok(Err(not_implemented("settles on a two-phase entry"))),
+            // A hold, or a resolution that does not post, applies nothing:
+            // applications ride the entry that posts.
+            EntryClass::PENDING | EntryClass::RESOLUTION => {
+                return Ok(Err(Refusal::new(
+                    code::SETTLE_SHAPE,
+                    exit::REFUSAL,
+                    format!(
+                        "leg {i}: a hold or a void carries no settles; only the entry that posts applies amounts"
+                    ),
+                    "plan §5.4, §5.7 (a reservation posts nothing until it is resolved; applications ride the posted sub-vector)",
+                    "remove `settles` from the hold; declare them on the resolution that posts it (fa post-reserve), or on the later receipt or payment",
+                )));
+            }
+            _ => return Ok(Err(not_implemented("settles on this entry class"))),
         }
         let mut sum: i128 = 0;
         let mut named: BTreeSet<(VId, u16)> = BTreeSet::new();

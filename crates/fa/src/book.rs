@@ -3877,6 +3877,12 @@ impl Book {
         with_store!(&self.store, core => core.fold_period(&self.purposes(), period_code))
     }
 
+    /// The register fold of each period, in order, from one read of the
+    /// journal: each equals that period's [`Book::fold_period`].
+    pub fn fold_periods(&self, period_codes: &[&str]) -> Result<Vec<Fold>, BookError> {
+        with_store!(&self.store, core => core.fold_periods(&self.purposes(), period_codes))
+    }
+
     /// Certify a trial balance without writing to the book. Retain the returned
     /// canonical certificate bytes to replay the exact historical report.
     pub fn certify_trial_balance(
@@ -4312,6 +4318,16 @@ impl Book {
     /// Refold a period and compare it to its stored registers (`fa verify registers`).
     pub fn verify_registers(&self, period_code: &str) -> Result<Verification, BookError> {
         with_store!(&self.store, core => core.verify_registers(&self.purposes(), period_code))
+    }
+
+    /// [`Book::verify_registers`] for each period, in order, reading the
+    /// book once for all of them; the results stop after the first error,
+    /// as a loop over the periods stops.
+    pub fn verify_registers_each(
+        &self,
+        period_codes: &[&str],
+    ) -> Result<Vec<Result<Verification, BookError>>, BookError> {
+        with_store!(&self.store, core => core.verify_registers_each(&self.purposes(), period_codes))
     }
 
     /// Prove one period's per-legal-entity register against the journal

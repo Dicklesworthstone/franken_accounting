@@ -17,9 +17,10 @@ use fa_model::{
 };
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_registers::{
-    CacheStatus, Cell, CellKey, Fold, RegisterError, balance_as_of, fold_period, fold_period_at,
-    materialize, period_activity, period_activity_excluding_classes, register_vid, trial_balance,
-    trial_balance_at, verify_period,
+    CacheStatus, Cell, CellKey, Fold, RegisterError, Verification, balance_as_of, fold_period,
+    fold_period_at, fold_periods_at, materialize, period_activity,
+    period_activity_excluding_classes, register_vid, trial_balance, trial_balance_at,
+    verify_period, verify_period_with_context, verify_periods_with_context,
 };
 use fa_time::{DateDay, FiscalCalendar, PeriodKind, PeriodTransition};
 use fgdb::{Database, DatabaseKeys, MemVfs, WriteBatch};
@@ -1522,6 +1523,131 @@ fn april_void_releases_only_its_march_hold_and_never_posts() {
             "known-at before the void retains both original holds"
         );
     }
+}
+
+#[test]
+fn folding_periods_together_equals_folding_each_alone() {
+    let mut h = harness();
+    let april = h.open_april();
+    let march = h.march.clone();
+    h.post_rent(1_200, b"march-rent");
+    let voided = h.hold(h.expense_legs(700), b"march-hold-voided");
+    h.hold(h.expense_legs(900), b"march-hold-kept");
+    let mut april_rent = h.proposal(h.expense_legs(300), b"april-rent", EntryClass::ORIGINAL);
+    april_rent.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    let before_void = h.commit(april_rent).recorded_at();
+    // An April void of a March hold moves March's fold from an April entry.
+    let mut void = h.proposal(Vec::new(), b"april-void", EntryClass::RESOLUTION);
+    void.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    void.control = Some(ControlPayload::ReservationRelease);
+    void.pending = Some(Pending {
+        timeout_ns: None,
+        resolution_of: Some(voided.entry_ref()),
+        disposition: Some(Disposition::Voids),
+    });
+    h.commit(void);
+    for known_at in [None, Some(before_void)] {
+        let alone: Vec<Fold> = [march.as_str(), april.as_str()]
+            .iter()
+            .map(|period| fold_period_at(&h.db, &h.book, period, known_at).unwrap())
+            .collect();
+        let together = fold_periods_at(&h.db, &h.book, &[&march, &april], known_at).unwrap();
+        assert_eq!(together, alone, "known at {known_at:?}");
+        // The request's order is kept, and a repeated code repeats its fold.
+        let reordered =
+            fold_periods_at(&h.db, &h.book, &[&april, &march, &april], known_at).unwrap();
+        assert_eq!(
+            reordered,
+            vec![alone[1].clone(), alone[0].clone(), alone[1].clone()]
+        );
+    }
+    let [m, a] =
+        <[Fold; 2]>::try_from(fold_periods_at(&h.db, &h.book, &[&march, &april], None).unwrap())
+            .unwrap();
+    assert_cell(&m.cells, h.rent, (1_200, 0, 1));
+    assert_cell(&m.pending, h.rent, (900, 0, 1));
+    assert_cell(&a.cells, h.rent, (300, 0, 1));
+    assert!(a.pending.is_empty());
+    // A period the book does not declare is refused as a single fold refuses it.
+    assert_eq!(
+        format!(
+            "{:?}",
+            fold_periods_at(&h.db, &h.book, &[&march, "FY2099-P01"], None).unwrap_err()
+        ),
+        format!(
+            "{:?}",
+            fold_period_at(&h.db, &h.book, "FY2099-P01", None).unwrap_err()
+        )
+    );
+    assert_eq!(
+        fold_periods_at(&h.db, &h.book, &[], None).unwrap(),
+        Vec::<Fold>::new()
+    );
+}
+
+#[test]
+fn verifying_periods_together_equals_verifying_each_alone() {
+    let mut h = harness();
+    let april = h.open_april();
+    let march = h.march.clone();
+    let unused = h
+        .book
+        .calendar
+        .periods_for_year(2026)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.kind == PeriodKind::Normal && p.code != march && p.code != april)
+        .unwrap()
+        .code;
+    // March is materialized and then posted to: green, stale by one entry.
+    h.post_rent(1_000, b"march-1");
+    h.materialize_march();
+    h.post_rent(5, b"march-2");
+    // April is materialized and one stored cell then rewritten: corrupt.
+    let mut april_rent = h.proposal(h.expense_legs(300), b"april-1", EntryClass::ORIGINAL);
+    april_rent.effective_date = DateDay::from_ymd(2026, 4, 15).unwrap();
+    h.commit(april_rent);
+    let april_fold = h.materialize_period(&april);
+    let mut batch = WriteBatch::new(relation::IN_PERIOD);
+    batch.set_vertex_property(
+        register_vid(h.book.book_id, &april_fold.cells[0].key),
+        property::DEBITS_POSTED,
+        Some(CanonicalScalar::bytes(7i128.to_le_bytes().to_vec()).unwrap()),
+    );
+    let ctx = h.ctx();
+    h.runtime
+        .block_on(async { h.db.write(&ctx.commit(), batch).await })
+        .expect("tamper write");
+    let query = ctx.query();
+    let periods = [march.as_str(), april.as_str(), unused.as_str()];
+    let alone: Vec<Verification> = periods
+        .iter()
+        .map(|period| verify_period_with_context(&h.db, &query, &h.book, period).unwrap())
+        .collect();
+    assert!(alone[0].is_green() && alone[0].stale, "{:?}", alone[0]);
+    // Lag is book-wide: March's second post and April's post.
+    assert_eq!(alone[0].lag_entries, 2);
+    assert_eq!(alone[1].cache_status, CacheStatus::Corrupt);
+    assert_eq!(alone[1].drift.len(), 1);
+    assert_eq!(alone[2].cache_status, CacheStatus::Uninitialized);
+    let together: Vec<Verification> = verify_periods_with_context(&h.db, &query, &h.book, &periods)
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(together, alone);
+    // A period the book does not declare ends the results with the error
+    // verifying it alone gives; the periods after it are not verified.
+    let stopped =
+        verify_periods_with_context(&h.db, &query, &h.book, &[&march, "FY2099-P01", &april]);
+    assert_eq!(stopped.len(), 2);
+    assert_eq!(stopped[0].as_ref().unwrap(), &alone[0]);
+    assert_eq!(
+        format!("{:?}", stopped[1].as_ref().unwrap_err()),
+        format!(
+            "{:?}",
+            verify_period_with_context(&h.db, &query, &h.book, "FY2099-P01").unwrap_err()
+        )
+    );
 }
 
 #[test]

@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_oracles::cases::amount::{format_amount, parse_amount};
 use fa_oracles::cases::book::{CaseDef, StepKind};
+use fa_oracles::cases::contrib::{ContribVerdict, named_inputs, witness};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Status, Target};
 use fa_oracles::cases::log::VerdictRecord;
 use fa_oracles::cases::observe::ObservedError;
@@ -1009,11 +1010,69 @@ fn t_row(run: &BookRun<'_>, e: &Expectation, t: Option<&Target>, mut row: RowLin
     if !fails.is_empty() {
         row.verdict = RowVerdict::Fail;
         row.reason = Some(fails.join("; "));
-    } else {
+        return (row, witnesses, None);
+    }
+    if let Some(why) = waits {
         row.verdict = RowVerdict::Unrun;
-        row.reason = Some(waits.unwrap_or_else(|| "contributing_entry,outsider".into()));
+        row.reason = Some(why);
+        return (row, witnesses, None);
+    }
+    // A11b: the contributing-entry witness decides whether the row is a T
+    // at all. Holding, it waits on the outsider check (A12); failing, the
+    // row is a read-back of its published value: an R, which it equals.
+    match contrib_verdict(run, e, t) {
+        Ok((verdict, named)) => {
+            row.projection.push(("contrib".into(), verdict.token()));
+            witnesses.push(("named_inputs".into(), named));
+            if verdict == ContribVerdict::Holds {
+                row.verdict = RowVerdict::Unrun;
+                row.reason = Some("outsider".into());
+            } else {
+                row.kind = "R".into();
+                row.verdict = RowVerdict::Pass;
+            }
+        }
+        Err(why) => {
+            row.projection
+                .push(("contrib".into(), format!("unrun({why})")));
+            row.verdict = RowVerdict::Unrun;
+            row.reason = Some("contributing_entry,outsider".into());
+        }
     }
     (row, witnesses, None)
+}
+
+/// A T read's contributing-entry witness (A11b) and its named inputs, or
+/// why it cannot run yet.
+fn contrib_verdict(
+    run: &BookRun<'_>,
+    e: &Expectation,
+    t: Option<&Target>,
+) -> Result<(ContribVerdict, String), String> {
+    let set = run.case.expectations.as_ref().ok_or("no expectations")?;
+    let reads = fa_oracles::cases::trace::t_reads(set);
+    let read = reads
+        .iter()
+        .find(|r| {
+            r.expectation.id == e.id
+                && (r.target.is_none()
+                    || r.target.map(|x| x.fact.as_str()) == t.map(|x| x.fact.as_str()))
+        })
+        .ok_or("no read")?;
+    let observed = run.reads.get(&super::reads::key(e, t)).ok_or("no read")?;
+    let contributions = observed.contributions.as_ref().ok_or_else(|| {
+        format!(
+            "needs:A11b {} lines",
+            super::reads::field(e, t, "read_verb").unwrap_or("-")
+        )
+    })?;
+    let certified = observed.value.clone()?;
+    let b = super::reads::field(e, t, "published")
+        .and_then(|f| run.value_of(f))
+        .map(|(v, _)| v);
+    let named = named_inputs(run.book, read);
+    let verdict = witness(run.case, run.book, read, contributions, certified, b);
+    Ok((verdict, named.into_iter().collect::<Vec<_>>().join(",")))
 }
 
 /// An R row (§5.3): a read-back of a posted value through a selector or an

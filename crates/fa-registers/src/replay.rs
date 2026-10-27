@@ -26,7 +26,7 @@ use fa_journal::scratch::{Maintenance, SeqMap, replayable, source_genesis};
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::{RegisterError, entries_at, entry_period, fold_period_at};
+use crate::{PeriodOf, RegisterError, entries_at, folds_at, take_fold};
 
 /// Refusal codes this module issues.
 pub mod code {
@@ -141,21 +141,18 @@ where
     let digest = map.digest()?;
     let mut entries_checked = 0;
     let mut folds_checked = 0;
+    let mut period_of = PeriodOf::new(book);
     for pair in &map.pairs {
-        let on = |entries: Vec<(VId, fa_model::Entry, CommitSeq)>| {
+        let src_entries = entries_at(source, book, pair.source_seq)?;
+        let scr_entries = entries_at(scratch, book, pair.scratch_seq)?;
+        let digests = |entries: &[(VId, fa_model::Entry, CommitSeq)]| {
             entries
-                .into_iter()
-                .map(|(vid, e, _)| (vid, e))
+                .iter()
+                .map(|(v, e, _)| (*v, e.entry_digest))
                 .collect::<BTreeMap<_, _>>()
         };
-        let src = on(entries_at(source, book, pair.source_seq)?);
-        let scr = on(entries_at(scratch, book, pair.scratch_seq)?);
-        let digests = |m: &BTreeMap<VId, fa_model::Entry>| {
-            m.iter()
-                .map(|(v, e)| (*v, e.entry_digest))
-                .collect::<Vec<_>>()
-        };
-        if digests(&src) != digests(&scr) {
+        let (src, scr) = (digests(&src_entries), digests(&scr_entries));
+        if src != scr {
             return Ok(Err(invalid(format!(
                 "at source {} / scratch {} the books select different entries ({} vs {})",
                 pair.source_seq.0,
@@ -166,14 +163,27 @@ where
         }
         entries_checked += src.len();
         let mut periods = BTreeSet::new();
-        for e in src.values() {
+        for (_, e, _) in &src_entries {
             if !e.proposal.legs.is_empty() {
-                periods.insert(entry_period(book, e)?);
+                periods.insert(period_of.period(e)?.to_string());
             }
         }
+        // Every period from the entry lists just read, not a fresh read and
+        // decode of the prefix per period and side (fa-rbs3).
+        // Each fold is the one fold_period_at returns, error included.
+        let periods: BTreeSet<&str> = periods.iter().map(String::as_str).collect();
+        let mut source_folds =
+            folds_at(source, book, &periods, pair.source_seq, Some(&src_entries));
+        let mut scratch_folds = folds_at(
+            scratch,
+            book,
+            &periods,
+            pair.scratch_seq,
+            Some(&scr_entries),
+        );
         for period in periods {
-            let a = fold_period_at(source, book, &period, Some(pair.source_seq))?;
-            let b = fold_period_at(scratch, book, &period, Some(pair.scratch_seq))?;
+            let (a, _) = take_fold(&mut source_folds, period)?;
+            let (b, _) = take_fold(&mut scratch_folds, period)?;
             if a.cells != b.cells || a.pending != b.pending || a.entries != b.entries {
                 return Ok(Err(invalid(format!(
                     "at source {} / scratch {} period `{period}` folds differently",

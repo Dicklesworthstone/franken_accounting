@@ -2206,6 +2206,43 @@ fn settle(target: EntryRef, ordinal: u16, usd: UnitId, cents: i128) -> Settlemen
     }
 }
 
+/// fa-0hs4.10: the entry that posts a hold is an open item like any
+/// Original. A receipt applies to the posted sub-vector, and its open amount
+/// is the posted part, not the reservation.
+#[test]
+fn a_receipt_applies_to_the_entry_that_posted_a_hold() {
+    let mut h = harness();
+    let usd = h.usd;
+    let held = h.invoice(50_000, b"held-invoice").legs;
+    let hold = h
+        .post(h.request(h.pending(held, b"held-invoice"), &["post"]))
+        .expect("admitted")
+        .entry_ref();
+    let posted_legs = h.invoice(30_000, b"posted-invoice").legs;
+    let posted = h
+        .post(h.request(
+            h.resolution_posts(hold, posted_legs, vec![0, 1], b"posted-invoice"),
+            &["post"],
+        ))
+        .expect("admitted")
+        .entry_ref();
+    h.post(h.request(
+        h.receipt(20_000, vec![settle(posted, 0, usd, 20_000)], b"rcpt-posted"),
+        &["post"],
+    ))
+    .expect("a receipt applies to the posted sub-vector");
+    assert_eq!(h.applied_to(posted.vid, 0), 20_000);
+    let r = h
+        .post(h.request(
+            h.receipt(10_001, vec![settle(posted, 0, usd, 10_001)], b"rcpt-over"),
+            &["post"],
+        ))
+        .unwrap_err();
+    assert_eq!((r.code, r.exit), ("FA-REF-072", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("but only 100.00 USD is open"), "{r}");
+    assert_eq!(h.applied_to(posted.vid, 0), 20_000);
+}
+
 #[test]
 fn prepared_receipts_compete_for_the_same_open_amount_in_both_commit_orders() {
     // Two real substrate transactions retain the same application witness.
@@ -2406,7 +2443,11 @@ fn applications_settle_open_items_within_the_open_amount_and_reversal_undoes_the
     let mut hold = h.pending(h.rent_legs(100), b"hold-settles");
     hold.legs[1].settles = vec![settle(invoice, 0, usd, 1)];
     let r = h.post(h.request(hold, &["post"])).unwrap_err();
-    assert_eq!((r.code, r.exit), ("FA-REF-102", exit::REFUSAL));
+    // A hold applies nothing until it posts (fa-0hs4.10): the settlement
+    // law refuses it and names where applications belong.
+    assert_eq!((r.code, r.exit), ("FA-REF-071", exit::REFUSAL), "{r}");
+    assert!(r.message.contains("carries no settles"), "{r}");
+    assert!(r.fix.contains("fa post-reserve"), "{r}");
     assert_eq!(h.db.frontier().unwrap(), frontier);
 
     // Target and shape against the witnessed invoice: unknown entry, an
@@ -9839,6 +9880,19 @@ fn large_batch_records_a_chunked_outcome_and_retries_without_another_commit() {
         .collect();
     let batch = h.batch(b"large-outcome", members);
     let basis = h.db.frontier().unwrap();
+    // Setup's own keyed controls already claim their intent keys; the batch
+    // is judged by the outcome rows it adds, and leaves those untouched.
+    let intent_outcome_rows = |db: &Database<MemVfs>| {
+        db.vertices()
+            .unwrap()
+            .into_iter()
+            .filter(|row| {
+                row.labels
+                    .contains(&fa_model::symbols::label::INTENT_OUTCOME)
+            })
+            .collect::<Vec<_>>()
+    };
+    let prior = intent_outcome_rows(&h.db);
     let posted = h.post_batch(batch.clone()).unwrap();
     assert_eq!(posted.recorded_at.0, basis.0 + 1);
     assert_eq!(posted.entries.len(), 350);
@@ -9848,17 +9902,21 @@ fn large_batch_records_a_chunked_outcome_and_retries_without_another_commit() {
     assert!(body.canonical_bytes().unwrap().len() > 16_384);
     assert_eq!(body.entries, posted.entries);
     assert_eq!(seq, posted.recorded_at);
-    let (coverage_rows, outcome_rows): (Vec<_>, Vec<_>) =
-        h.db.vertices()
-            .unwrap()
-            .into_iter()
-            .filter(|row| {
-                row.labels
-                    .contains(&fa_model::symbols::label::INTENT_OUTCOME)
-            })
-            .partition(|row| row.vid == fa_journal::outcome::coverage_vid(h.book.book_id));
-    assert_eq!(coverage_rows.len(), 1);
-    assert!(coverage_rows[0].created_at <= basis);
+    let after = intent_outcome_rows(&h.db);
+    for row in &prior {
+        assert!(after.contains(row), "a prior outcome row is unchanged");
+    }
+    let (coverage_rows, outcome_rows): (Vec<_>, Vec<_>) = after
+        .into_iter()
+        .filter(|row| !prior.iter().any(|p| p.vid == row.vid))
+        .partition(|row| row.vid == fa_journal::outcome::coverage_vid(h.book.book_id));
+    assert!(coverage_rows.is_empty(), "coverage predates the batch");
+    let coverage = prior
+        .iter()
+        .filter(|row| row.vid == fa_journal::outcome::coverage_vid(h.book.book_id))
+        .collect::<Vec<_>>();
+    assert_eq!(coverage.len(), 1);
+    assert!(coverage[0].created_at <= basis);
     assert_eq!(
         outcome_rows.len(),
         posted.entries.len() + 1 + body.canonical_bytes().unwrap().len().div_ceil(4096)

@@ -311,8 +311,10 @@ fn derived_state(book: &Book) -> (Vec<Check>, Vec<RegisterLag>) {
         // A verified cache with journal entries after its basis is lag, not
         // drift: green, and advanced by `fa registers advance`.
         let mut lagging: Vec<(String, usize)> = Vec::new();
-        for p in book.periods()? {
-            let v = book.verify_registers(&p.code)?;
+        let periods = book.periods()?;
+        let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
+        for (p, v) in periods.iter().zip(book.verify_registers_each(&codes)?) {
+            let v = v?;
             let materialized = v.stored_digest.is_some()
                 || v.drift
                     .iter()
@@ -724,10 +726,12 @@ fn survey(ctx: &mut Ctx<'_>, args: &Args) -> Result<Survey, Fail> {
         .map(|p| p.code.clone())
         .collect();
     let accounts = book.accounts()?.len();
-    let mut pending_cells = 0usize;
-    for code in &open {
-        pending_cells += book.fold_period(code)?.pending.len();
-    }
+    let open_codes: Vec<&str> = open.iter().map(String::as_str).collect();
+    let pending_cells: usize = book
+        .fold_periods(&open_codes)?
+        .iter()
+        .map(|fold| fold.pending.len())
+        .sum();
     // FA-CFG-02: a due-but-unswept hold is still pending; it is reported
     // as due until the sweep expires it.
     let due_holds = book.due_holds()?.len();

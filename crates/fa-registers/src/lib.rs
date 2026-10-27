@@ -32,7 +32,7 @@ pub mod replay;
 mod report;
 
 use core::fmt;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map};
 
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
@@ -527,6 +527,40 @@ pub fn entry_period(book: &BookContext, entry: &Entry) -> Result<String, Registe
     .map_err(|e| KernelError::Corrupt(format!("entry period: {e:?}")).into())
 }
 
+/// [`entry_period`] over a stream of entries. An entry's period depends
+/// only on its effective date, its declared period and the book's calendar,
+/// so each distinct pair is resolved once instead of rebuilding the fiscal
+/// year's periods for every entry (fa-rbs3). Errors are not kept: asking
+/// again gives [`entry_period`]'s error again.
+pub(crate) struct PeriodOf<'a> {
+    book: &'a BookContext,
+    resolved: BTreeMap<(DateDay, Option<String>), String>,
+}
+
+impl<'a> PeriodOf<'a> {
+    pub(crate) fn new(book: &'a BookContext) -> Self {
+        Self {
+            book,
+            resolved: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn period(&mut self, entry: &Entry) -> Result<&str, RegisterError> {
+        let key = (
+            entry.proposal.effective_date,
+            entry
+                .proposal
+                .effective_period
+                .as_ref()
+                .map(|p| p.code.clone()),
+        );
+        Ok(match self.resolved.entry(key) {
+            btree_map::Entry::Occupied(known) => known.into_mut().as_str(),
+            btree_map::Entry::Vacant(new) => new.insert(entry_period(self.book, entry)?).as_str(),
+        })
+    }
+}
+
 /// Resolve holds using authoritative payloads at the same known-at frontier.
 /// A missing or duplicated target is corruption, not an absent reservation.
 pub(crate) fn resolutions(
@@ -638,6 +672,90 @@ pub fn fold_period_at<V: asupersync::fs::Vfs + Clone>(
     fold_period_counted(db, book, period_code, known_at).map(|(fold, _)| fold)
 }
 
+/// [`fold_period_at`] for each of `periods`, in their order, reading and
+/// decoding the journal once for all of them rather than once per period
+/// (fa-rbs3). The result, an error included, is the one folding each period
+/// alone in order returns.
+pub fn fold_periods_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &[&str],
+    known_at: Option<CommitSeq>,
+) -> Result<Vec<Fold>, RegisterError> {
+    // An empty request reads nothing, as no single-period fold would.
+    if periods.is_empty() {
+        return Ok(Vec::new());
+    }
+    let seq = resolve_known_at(db, known_at)?;
+    let mut folds = folds_at(db, book, &periods.iter().copied().collect(), seq, None);
+    let mut ordered = Vec::with_capacity(periods.len());
+    for period in periods {
+        if let Some(Ok((fold, _))) = folds.get(*period) {
+            ordered.push(fold.clone());
+            continue;
+        }
+        return Err(match folds.remove(*period) {
+            Some(Err(error)) => error,
+            _ => KernelError::Corrupt("a requested period has no fold".into()).into(),
+        });
+    }
+    Ok(ordered)
+}
+
+/// Each of `periods` folded at `seq` exactly as [`fold_period_counted`] folds
+/// it alone: from one read and decode of the prefix when every fold
+/// succeeds; when any fails, every period is folded alone again, so each
+/// result, an error included, is the single fold's (fa-rbs3). Errors come
+/// only from damaged books, where the cost of exactness does not matter.
+/// `read` is [`entries_at`] of `db` at `seq` when the caller already holds it.
+pub(crate) fn folds_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: &BTreeSet<&str>,
+    seq: CommitSeq,
+    read: Option<&[(VId, Entry, CommitSeq)]>,
+) -> PeriodFolds {
+    let together = || -> Result<_, RegisterError> {
+        resolve_known_at(db, Some(seq))?;
+        for period in periods {
+            period_at(db, book, period, seq)?;
+        }
+        match read {
+            Some(entries) => fold_entries(book, entries, periods),
+            None => fold_entries(book, &entries_at(db, book, seq)?, periods),
+        }
+    };
+    match together() {
+        Ok(folds) => folds
+            .into_iter()
+            .map(|(period, fold)| (period, Ok(fold)))
+            .collect(),
+        Err(_) => periods
+            .iter()
+            .map(|period| {
+                (
+                    (*period).to_string(),
+                    fold_period_counted(db, book, period, Some(seq)),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Each requested period's fold and leg count, or the error folding that
+/// period alone gives ([`folds_at`]).
+pub(crate) type PeriodFolds = BTreeMap<String, Result<(Fold, u64), RegisterError>>;
+
+/// Take one period's fold out of [`folds_at`]'s answer.
+pub(crate) fn take_fold(
+    folds: &mut PeriodFolds,
+    period: &str,
+) -> Result<(Fold, u64), RegisterError> {
+    folds.remove(period).unwrap_or_else(|| {
+        Err(KernelError::Corrupt("a requested period has no fold".into()).into())
+    })
+}
+
 /// [`fold_period_at`], with the number of legs it added to cells, posted
 /// and held: the fold's own count of the work it did, which a rebuild
 /// reports as its work witness (plan §17, fa-ykbp).
@@ -649,69 +767,112 @@ pub(crate) fn fold_period_counted<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<(Fold, u64), RegisterError> {
     let seq = resolve_known_at(db, known_at)?;
     period_at(db, book, period_code, seq)?;
-    let mut cells: BTreeMap<CellKey, Cell> = BTreeMap::new();
-    let mut pending = BTreeMap::new();
-    let mut watermark: Option<CommitSeq> = None;
-    let mut count = 0u64;
-    let mut legs = 0u64;
-    let mut posted_legs_digest = [0u8; 32];
-    let mut pending_holds = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
-    let resolved = resolutions(&entries)?;
-    let activated = migration_activations(&entries)?;
+    fold_entries(book, &entries, &BTreeSet::from([period_code]))?
+        .into_values()
+        .next()
+        .ok_or_else(|| KernelError::Corrupt("a requested period has no fold".into()).into())
+}
+
+/// One period's fold while the entry stream passes ([`fold_entries`]).
+#[derive(Default)]
+struct PeriodFold {
+    cells: BTreeMap<CellKey, Cell>,
+    pending: BTreeMap<CellKey, Cell>,
+    watermark: Option<CommitSeq>,
+    count: u64,
+    legs: u64,
+    posted_legs_digest: [u8; 32],
+    pending_holds: BTreeMap<(CommitSeq, VId), [u8; 32]>,
+}
+
+/// Fold each of `periods` from one entry stream, as [`entries_at`] returns
+/// it for the fold's prefix, with each fold's leg count. The journal is read
+/// and decoded once for every period rather than once per period (fa-rbs3);
+/// a single period's fold is this with one code, so a period folds the same
+/// whether alone or beside others. An error is the first one the stream meets.
+pub(crate) fn fold_entries(
+    book: &BookContext,
+    entries: &[(VId, Entry, CommitSeq)],
+    periods: &BTreeSet<&str>,
+) -> Result<BTreeMap<String, (Fold, u64)>, RegisterError> {
+    let resolved = resolutions(entries)?;
+    let activated = migration_activations(entries)?;
+    let mut folds: BTreeMap<&str, PeriodFold> = periods
+        .iter()
+        .map(|period| (*period, PeriodFold::default()))
+        .collect();
+    let mut period_of = PeriodOf::new(book);
     for (vid, entry, created_at) in entries {
         if entry.proposal.legs.is_empty() {
             continue;
         }
-        if entry_period(book, &entry)? != period_code {
+        let Some(period_code) = periods.get(period_of.period(entry)?).copied() else {
             continue;
-        }
-        let contribution = contribution_seq(&entry, created_at, &activated)?;
-        watermark = Some(watermark.map_or(contribution, |w: CommitSeq| w.max(contribution)));
+        };
+        let Some(fold) = folds.get_mut(period_code) else {
+            continue;
+        };
+        let (vid, created_at) = (*vid, *created_at);
+        let contribution = contribution_seq(entry, created_at, &activated)?;
+        fold.watermark = Some(
+            fold.watermark
+                .map_or(contribution, |w: CommitSeq| w.max(contribution)),
+        );
         if entry.proposal.class == EntryClass::PENDING {
             if let Some(release) = resolved.get(&vid) {
-                watermark = Some(watermark.map_or(*release, |w| w.max(*release)));
+                fold.watermark = Some(fold.watermark.map_or(*release, |w| w.max(*release)));
             } else {
-                add_entry(&mut pending, &entry, period_code, (vid, created_at), seq)?;
-                legs = legs
+                add_entry(&mut fold.pending, entry, period_code, (vid, created_at), seq)?;
+                fold.legs = fold
+                    .legs
                     .checked_add(entry.proposal.legs.len() as u64)
                     .ok_or(RegisterError::Overflow)?;
-                let hold_digest = fold_entry_contributions([0u8; 32], created_at, vid, &entry)?;
-                pending_holds.insert((created_at, vid), hold_digest);
+                let hold_digest = fold_entry_contributions([0u8; 32], created_at, vid, entry)?;
+                fold.pending_holds.insert((created_at, vid), hold_digest);
             }
         } else {
-            count = count.checked_add(1).ok_or(RegisterError::Overflow)?;
-            add_entry(&mut cells, &entry, period_code, (vid, created_at), seq)?;
-            legs = legs
+            fold.count = fold.count.checked_add(1).ok_or(RegisterError::Overflow)?;
+            add_entry(&mut fold.cells, entry, period_code, (vid, created_at), seq)?;
+            fold.legs = fold
+                .legs
                 .checked_add(entry.proposal.legs.len() as u64)
                 .ok_or(RegisterError::Overflow)?;
-            posted_legs_digest =
-                fold_entry_contributions(posted_legs_digest, created_at, vid, &entry)?;
+            fold.posted_legs_digest =
+                fold_entry_contributions(fold.posted_legs_digest, created_at, vid, entry)?;
         }
     }
-    let cells: Vec<Cell> = cells.into_values().collect();
-    let pending: Vec<Cell> = pending.into_values().collect();
-    let fold_digest = digest_of(
-        period_code,
-        &cells,
-        &pending,
-        watermark,
-        posted_legs_digest,
-        &pending_holds,
-    )?;
-    Ok((
-        Fold {
-            period: period_code.to_string(),
-            cells,
-            pending,
-            watermark,
-            entries: count,
-            fold_digest,
-            posted_legs_digest,
-            pending_holds,
-        },
-        legs,
-    ))
+    folds
+        .into_iter()
+        .map(|(period_code, fold)| {
+            let cells: Vec<Cell> = fold.cells.into_values().collect();
+            let pending: Vec<Cell> = fold.pending.into_values().collect();
+            let fold_digest = digest_of(
+                period_code,
+                &cells,
+                &pending,
+                fold.watermark,
+                fold.posted_legs_digest,
+                &fold.pending_holds,
+            )?;
+            Ok((
+                period_code.to_string(),
+                (
+                    Fold {
+                        period: period_code.to_string(),
+                        cells,
+                        pending,
+                        watermark: fold.watermark,
+                        entries: fold.count,
+                        fold_digest,
+                        posted_legs_digest: fold.posted_legs_digest,
+                        pending_holds: fold.pending_holds,
+                    },
+                    fold.legs,
+                ),
+            ))
+        })
+        .collect()
 }
 
 type CellValues = (i128, i128, u64);
@@ -961,6 +1122,16 @@ fn stored_registers<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     fold: &Fold,
 ) -> Result<BTreeMap<VId, VertexRow>, RegisterError> {
+    stored_registers_in(db, book, fold, &db.vertices()?)
+}
+
+/// [`stored_registers`] among `rows`, the book's current vertices.
+fn stored_registers_in<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: &Fold,
+    rows: &[VertexRow],
+) -> Result<BTreeMap<VId, VertexRow>, RegisterError> {
     let expected: BTreeSet<_> = fold
         .cells
         .iter()
@@ -974,10 +1145,10 @@ fn stored_registers<V: asupersync::fs::Vfs + Clone>(
         )?
         .into_iter()
         .collect();
-    Ok(db.vertices()?.into_iter().filter(|row| {
+    Ok(rows.iter().filter(|row| {
         expected.contains(&row.vid) || (row.labels.contains(&label::REGISTER)
             && (linked.contains(&row.vid) || matches!(prop(row, property::EFFECTIVE_PERIOD), Some(CanonicalScalar::Text(p)) if p.as_str() == fold.period)))
-    }).map(|row| (row.vid, row)).collect())
+    }).map(|row| (row.vid, row.clone())).collect())
 }
 
 fn stored_values(row: &VertexRow, pending: bool) -> Result<Option<CellValues>, RegisterError> {
@@ -1026,12 +1197,119 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
+    verify_period_in(&mut Reads::new(db, book, &[period_code]), period_code)
+}
+
+type Memberships = BTreeMap<VId, Vec<(fgdb_types::EId, VId)>>;
+
+/// What verifying several periods reads of the book, each read once
+/// (fa-rbs3). A `&Database` cannot change, so every answer is the one a
+/// fresh read gives: a journal prefix is read and decoded once, and every
+/// requested period folded from it ([`folds_at`]); the current vertices and
+/// the edges' period memberships are scanned once, and a prefix's Entry rows
+/// once while it is in use.
+pub(crate) struct Reads<'a, V: asupersync::fs::Vfs + Clone> {
+    pub(crate) db: &'a Database<V>,
+    pub(crate) book: &'a BookContext,
+    periods: BTreeSet<String>,
+    folds: BTreeMap<CommitSeq, PeriodFolds>,
+    vertices: Option<Vec<VertexRow>>,
+    memberships: Option<Memberships>,
+    entry_rows: BTreeMap<CommitSeq, BTreeMap<VId, VertexRow>>,
+}
+
+impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
+    pub(crate) fn new(db: &'a Database<V>, book: &'a BookContext, periods: &[&str]) -> Self {
+        Self {
+            db,
+            book,
+            periods: periods.iter().map(|period| (*period).to_string()).collect(),
+            folds: BTreeMap::new(),
+            vertices: None,
+            memberships: None,
+            entry_rows: BTreeMap::new(),
+        }
+    }
+
+    /// `fold_period_at(db, book, period, Some(seq))`, exactly.
+    pub(crate) fn fold_at(&mut self, period: &str, seq: CommitSeq) -> Result<Fold, RegisterError> {
+        let (db, book) = (self.db, self.book);
+        if !self.periods.contains(period) {
+            return fold_period_at(db, book, period, Some(seq));
+        }
+        let periods = &self.periods;
+        let folds = self.folds.entry(seq).or_insert_with(|| {
+            folds_at(
+                db,
+                book,
+                &periods.iter().map(String::as_str).collect(),
+                seq,
+                None,
+            )
+        });
+        if let Some(Ok((fold, _))) = folds.get(period) {
+            return Ok(fold.clone());
+        }
+        match folds.remove(period) {
+            Some(Err(error)) => Err(error),
+            _ => fold_period_at(db, book, period, Some(seq)),
+        }
+    }
+
+    /// The current vertices and the edges' period memberships.
+    fn scans(&mut self) -> Result<(&[VertexRow], &Memberships), RegisterError> {
+        if self.vertices.is_none() {
+            self.vertices = Some(self.db.vertices()?);
+        }
+        if self.memberships.is_none() {
+            self.memberships = Some(period_memberships(&self.db.edges()?));
+        }
+        match (&self.vertices, &self.memberships) {
+            (Some(rows), Some(memberships)) => Ok((rows, memberships)),
+            _ => Err(KernelError::Corrupt("a book scan was not read".into()).into()),
+        }
+    }
+
+    /// Read the Entry rows at `seq` unless they are held. Rows are the
+    /// book's size, so at most the head's and one other prefix's are held:
+    /// a book's periods usually share one basis.
+    fn load_entry_rows(&mut self, seq: CommitSeq, head: CommitSeq) -> Result<(), RegisterError> {
+        if self.entry_rows.contains_key(&seq) {
+            return Ok(());
+        }
+        if seq != head {
+            self.entry_rows.retain(|at, _| *at == head);
+        }
+        let rows = self
+            .db
+            .vertices_at(seq)?
+            .into_iter()
+            .filter(|row| row.labels.contains(&label::ENTRY))
+            .map(|row| (row.vid, row))
+            .collect();
+        self.entry_rows.insert(seq, rows);
+        Ok(())
+    }
+
+    fn entry_rows(&self, seq: CommitSeq) -> Result<&BTreeMap<VId, VertexRow>, RegisterError> {
+        self.entry_rows.get(&seq).ok_or_else(|| {
+            KernelError::Corrupt("a prefix's entry rows were not read".into()).into()
+        })
+    }
+}
+
+fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
+    reads: &mut Reads<'_, V>,
+    period_code: &str,
+) -> Result<Verification, RegisterError> {
+    let (db, book) = (reads.db, reads.book);
     let head = db.frontier()?;
-    let (through, state_error) = maintainer::verify_state(db, book, period_code)?;
+    let (through, state_error) = maintainer::verify_state_in(reads, period_code)?;
     let basis = through.unwrap_or(head);
-    let fold = fold_period_at(db, book, period_code, Some(basis))?;
-    let mut result = verify_projection(db, book, &fold)?;
-    let has_stored_cells = !stored_registers(db, book, &fold)?.is_empty();
+    let fold = reads.fold_at(period_code, basis)?;
+    let (rows, memberships) = reads.scans()?;
+    let mut result = verify_projection_in(db, book, &fold, rows, memberships)?;
+    let has_stored_cells = !stored_registers_in(db, book, &fold, rows)?.is_empty();
     let uninitialized = through.is_none() && state_error.is_none() && !has_stored_cells;
     if let Some(error) = state_error {
         result.projection_errors.push(error);
@@ -1049,25 +1327,14 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
         result.drift.clear();
         result.pending_drift.clear();
         result.cells_checked = 0;
-        result.lag_entries = db
-            .vertices_at(head)?
-            .into_iter()
-            .filter(|row| row.labels.contains(&label::ENTRY))
-            .count();
+        reads.load_entry_rows(head, head)?;
+        result.lag_entries = reads.entry_rows(head)?.len();
     }
     if basis < head {
-        let before: BTreeMap<_, _> = db
-            .vertices_at(basis)?
-            .into_iter()
-            .filter(|row| row.labels.contains(&label::ENTRY))
-            .map(|row| (row.vid, row))
-            .collect();
-        let current: BTreeMap<_, _> = db
-            .vertices_at(head)?
-            .into_iter()
-            .filter(|row| row.labels.contains(&label::ENTRY))
-            .map(|row| (row.vid, row))
-            .collect();
+        reads.load_entry_rows(basis, head)?;
+        reads.load_entry_rows(head, head)?;
+        let before = reads.entry_rows(basis)?;
+        let current = reads.entry_rows(head)?;
         // Freshness is not head-minus-basis: register publications and other
         // non-entry commits do not create work. Never hide a rewrite or
         // retirement of the authoritative prefix behind a historical check.
@@ -1075,7 +1342,7 @@ pub fn verify_period<V: asupersync::fs::Vfs + Clone>(
             .values()
             .filter(|row| row.created_at > basis)
             .count();
-        for (vid, row) in &before {
+        for (vid, row) in before {
             if current.get(vid).is_none_or(|now| {
                 now.created_at != row.created_at
                     || prop(now, property::FA_PAYLOAD) != prop(row, property::FA_PAYLOAD)
@@ -1122,7 +1389,39 @@ pub fn verify_period_with_context<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     period_code: &str,
 ) -> Result<Verification, RegisterError> {
-    let mut result = verify_period(db, book, period_code)?;
+    verify_period_with_context_in(&mut Reads::new(db, book, &[period_code]), cx, period_code)
+}
+
+/// [`verify_period_with_context`] for each of `periods`, in order, from one
+/// shared read of the book ([`Reads`], fa-rbs3): each result is the one
+/// verifying that period alone returns, and the results stop after the
+/// first error, as a loop over the periods stops.
+pub fn verify_periods_with_context<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    periods: &[&str],
+) -> Vec<Result<Verification, RegisterError>> {
+    let mut reads = Reads::new(db, book, periods);
+    let mut results = Vec::with_capacity(periods.len());
+    for period in periods {
+        let result = verify_period_with_context_in(&mut reads, cx, period);
+        let failed = result.is_err();
+        results.push(result);
+        if failed {
+            break;
+        }
+    }
+    results
+}
+
+fn verify_period_with_context_in<V: asupersync::fs::Vfs + Clone>(
+    reads: &mut Reads<'_, V>,
+    cx: &QueryCx,
+    period_code: &str,
+) -> Result<Verification, RegisterError> {
+    let (db, book) = (reads.db, reads.book);
+    let mut result = verify_period_in(reads, period_code)?;
     let at = db.frontier()?;
     let mut next = match checkpoint::load_latest(db, cx, book, period_code, at) {
         Ok(value) => value,
@@ -1143,7 +1442,7 @@ pub fn verify_period_with_context<V: asupersync::fs::Vfs + Clone>(
                 .push("register checkpoint chain repeats a snapshot".into());
             break;
         }
-        let truth = fold_period_at(db, book, period_code, Some(snapshot.through))?;
+        let truth = reads.fold_at(period_code, snapshot.through)?;
         if snapshot.fold != truth {
             result.projection_errors.push(format!(
                 "register checkpoint at {} disagrees with its independently refolded journal prefix",
@@ -1183,17 +1482,29 @@ fn verify_projection<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     fold: &Fold,
 ) -> Result<Verification, RegisterError> {
+    let rows = db.vertices()?;
+    verify_projection_in(db, book, fold, &rows, &period_memberships(&db.edges()?))
+}
+
+/// [`verify_projection`] against `rows`, the book's current vertices, and
+/// `memberships`, its period memberships ([`period_memberships`]).
+fn verify_projection_in<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    fold: &Fold,
+    rows: &[VertexRow],
+    memberships: &Memberships,
+) -> Result<Verification, RegisterError> {
     let period_code = &fold.period;
     let mut drift = Vec::new();
     let mut pending_drift = Vec::new();
     let mut projection_errors = Vec::new();
-    let mut candidates = stored_registers(db, book, fold)?;
+    let mut candidates = stored_registers_in(db, book, fold, rows)?;
     let pvid = period_vid(&book.calendar.id, period_code);
     let linked: BTreeSet<_> = db
         .in_neighbours(pvid, relation::IN_PERIOD)?
         .into_iter()
         .collect();
-    let memberships = period_memberships(&db.edges()?);
     let mut stored_digest: Option<Option<[u8; 32]>> = None;
     let columns = fold_columns(fold);
     for (key, (posted, pending)) in &columns {
