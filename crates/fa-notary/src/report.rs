@@ -12,12 +12,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::migration::RunBody;
 use fa_journal::refusal::{Outcome, Refusal, exit};
-use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin, Reader, Writer};
+use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin, Oid, Reader, Writer};
 use fgdb::Database;
 use fgdb_crypto::Hasher;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::{Bundle, Journal, StoredCheckpoint, code};
+
+mod functional;
+pub use functional::{
+    MAX_FUNCTIONAL_BOOK_BYTES, MAX_FUNCTIONAL_RATE_BYTES, MAX_FUNCTIONAL_RATES,
+    rate_oids as functional_rate_oids,
+};
 
 mod explanation;
 pub use explanation::check_scope as check_explanation_scope;
@@ -83,7 +89,15 @@ pub fn assemble(
     known_at: CommitSeq,
     bodies: &BTreeMap<VId, RunBody>,
 ) -> Outcome<Bundle> {
-    assemble_inner(journal, checkpoint, certificate, known_at, bodies, &[])
+    assemble_inner(
+        journal,
+        checkpoint,
+        certificate,
+        known_at,
+        bodies,
+        &[],
+        None,
+    )
 }
 
 /// Package a native statement, open-item report, balance explanation, aging,
@@ -152,7 +166,71 @@ pub fn assemble_with_registries(
         known_at,
         bodies,
         registries,
+        None,
     )
+}
+
+/// Package a replayed functional trial balance with its original six-registry
+/// closure, exact historical version-2 BookSpec, and every authenticated Rate
+/// document cited at or before known-at. The facade must govern every Rate read.
+/// This profile supports sequence-selected trunk reports under SpotClose and
+/// PeriodAverage, including exact inherited reversals; other valuation laws and
+/// migration-origin monetary entries require their own independent interpreter.
+///
+/// Major 3 preserves the complete-prefix layout and appends six registry frames,
+/// bytes(BookSpec), then list(fixed32 Rate OID, bytes(inline DocumentRecord)).
+/// BookSpec is a declared report basis bound by the expected certificate and
+/// signed bundle; it does not assert separate checkpoint membership at genesis.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_functional_with_registries(
+    journal: &Journal,
+    checkpoint: &StoredCheckpoint,
+    certificate: &[u8],
+    known_at: CommitSeq,
+    bodies: &BTreeMap<VId, RunBody>,
+    registries: &[(String, Vec<u8>)],
+    book_spec: &[u8],
+    rates: &[(Oid, Vec<u8>)],
+) -> Outcome<Bundle> {
+    let expected = [
+        "account_types",
+        "entry_classes",
+        "units",
+        "foundations",
+        "fx_laws",
+        "rounding_laws",
+    ];
+    if !functional::certificate(certificate, journal, known_at)
+        || registries
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .ne(expected)
+        || registries
+            .iter()
+            .any(|(_, bytes)| bytes.len() > 1024 * 1024)
+        || !bodies.is_empty()
+    {
+        return Ok(Err(refused(
+            "functional trial balance requires its exact six-registry closure and supported native source",
+        )));
+    }
+    if let Err(refusal) = functional::validate(journal, known_at, book_spec, rates)? {
+        return Ok(Err(refusal));
+    }
+    assemble_inner(
+        journal,
+        checkpoint,
+        certificate,
+        known_at,
+        bodies,
+        registries,
+        Some(FunctionalClosure { book_spec, rates }),
+    )
+}
+
+struct FunctionalClosure<'a> {
+    book_spec: &'a [u8],
+    rates: &'a [(Oid, Vec<u8>)],
 }
 
 /// Package an already replayed aging-to-control reconciliation with the exact
@@ -386,8 +464,15 @@ fn assemble_inner(
     known_at: CommitSeq,
     bodies: &BTreeMap<VId, RunBody>,
     registries: &[(String, Vec<u8>)],
+    functional: Option<FunctionalClosure<'_>>,
 ) -> Outcome<Bundle> {
-    let major = if registries.is_empty() { 1 } else { 2 };
+    let major = if functional.is_some() {
+        3
+    } else if registries.is_empty() {
+        1
+    } else {
+        2
+    };
     if !(major == 1
         && (certificate_format(certificate, b"fa:report-certificate:v1")
             || certificate_format(certificate, b"fa:report-certificate:v2")
@@ -402,7 +487,8 @@ fn assemble_inner(
                 || roll_forward_certificate(certificate)
                 || equity_certificate(certificate)
                 || cash_flow_certificate(certificate)
-                || policy_cash_flow_certificate(certificate)))
+                || policy_cash_flow_certificate(certificate))
+        || major == 3 && functional::certificate(certificate, journal, known_at))
     {
         return Ok(Err(refused(
             "offline report bundles require a native v1/v2 trial balance, v8 dimension-filtered trial balance, v4 statement, or v3 open-item report, balance explanation, effective-date aging, aging reconciliation, roll-forward, direct cash-flow or policy cash-flow with authenticated registries",
@@ -419,13 +505,21 @@ fn assemble_inner(
     for len in [certificate.len(), checkpoint.bytes.len(), prefix.len()] {
         budget = budget.saturating_add(len);
     }
-    if major == 2 {
+    if major >= 2 {
         budget = budget.saturating_add(4);
         for (name, canonical) in registries {
             budget = budget
                 .saturating_add(8)
                 .saturating_add(name.len())
                 .saturating_add(canonical.len());
+        }
+    }
+    if let Some(closure) = &functional {
+        budget = budget
+            .saturating_add(8)
+            .saturating_add(closure.book_spec.len());
+        for (_, payload) in closure.rates {
+            budget = budget.saturating_add(36).saturating_add(payload.len());
         }
     }
     let mut ordered = Vec::new();
@@ -484,10 +578,16 @@ fn assemble_inner(
         .list(&ordered, |w, (index, bytes)| {
             w.u64(*index).bytes(bytes);
         });
-    if major == 2 {
+    if major >= 2 {
         w.list(registries, |w, (name, canonical)| {
             w.str(name).bytes(canonical);
         });
+    }
+    if let Some(closure) = functional {
+        w.bytes(closure.book_spec)
+            .list(closure.rates, |w, (oid, payload)| {
+                w.fixed(&oid.0).bytes(payload);
+            });
     }
     let bytes = w.finish().map_err(fa_model::EntryError::from)?;
     if bytes.len() > MAX_REPORT_BUNDLE_BYTES {
