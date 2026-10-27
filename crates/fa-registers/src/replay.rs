@@ -20,14 +20,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_journal::refusal::{Refusal, exit};
 use fa_journal::scratch::{Maintenance, SeqMap, replayable, source_genesis};
 use fgdb::Database;
 use fgdb_types::{CommitSeq, VId};
 
-use crate::{RegisterError, entries_at, entry_period, fold_entries, period_at, resolve_known_at};
+use crate::{PeriodOf, RegisterError, entries_at, folds_at, take_fold};
 
 /// Refusal codes this module issues.
 pub mod code {
@@ -142,6 +141,7 @@ where
     let digest = map.digest()?;
     let mut entries_checked = 0;
     let mut folds_checked = 0;
+    let mut period_of = PeriodOf::new(book);
     for pair in &map.pairs {
         let src_entries = entries_at(source, book, pair.source_seq)?;
         let scr_entries = entries_at(scratch, book, pair.scratch_seq)?;
@@ -165,28 +165,25 @@ where
         let mut periods = BTreeSet::new();
         for (_, e, _) in &src_entries {
             if !e.proposal.legs.is_empty() {
-                periods.insert(entry_period(book, e)?);
+                periods.insert(period_of.period(e)?.to_string());
             }
         }
         // Every period from the entry lists just read, not a fresh read and
         // decode of the prefix per period and side (fa-rbs3).
+        // Each fold is the one fold_period_at returns, error included.
         let periods: BTreeSet<&str> = periods.iter().map(String::as_str).collect();
-        if !periods.is_empty() {
-            resolve_known_at(source, Some(pair.source_seq))?;
-            resolve_known_at(scratch, Some(pair.scratch_seq))?;
-        }
-        for period in &periods {
-            period_at(source, book, period, pair.source_seq)?;
-            period_at(scratch, book, period, pair.scratch_seq)?;
-        }
-        let source_folds = fold_entries(book, &src_entries, &periods)?;
-        let scratch_folds = fold_entries(book, &scr_entries, &periods)?;
+        let mut source_folds =
+            folds_at(source, book, &periods, pair.source_seq, Some(&src_entries));
+        let mut scratch_folds = folds_at(
+            scratch,
+            book,
+            &periods,
+            pair.scratch_seq,
+            Some(&scr_entries),
+        );
         for period in periods {
-            let (Some((a, _)), Some((b, _))) =
-                (source_folds.get(period), scratch_folds.get(period))
-            else {
-                return Err(KernelError::Corrupt("a requested period has no fold".into()).into());
-            };
+            let (a, _) = take_fold(&mut source_folds, period)?;
+            let (b, _) = take_fold(&mut scratch_folds, period)?;
             if a.cells != b.cells || a.pending != b.pending || a.entries != b.entries {
                 return Ok(Err(invalid(format!(
                     "at source {} / scratch {} period `{period}` folds differently",

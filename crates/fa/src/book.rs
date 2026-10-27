@@ -4255,6 +4255,16 @@ impl Book {
         with_store!(&self.store, core => core.verify_registers(&self.purposes(), period_code))
     }
 
+    /// [`Book::verify_registers`] for each period, in order, reading the
+    /// book once for all of them; the results stop after the first error,
+    /// as a loop over the periods stops.
+    pub fn verify_registers_each(
+        &self,
+        period_codes: &[&str],
+    ) -> Result<Vec<Result<Verification, BookError>>, BookError> {
+        with_store!(&self.store, core => core.verify_registers_each(&self.purposes(), period_codes))
+    }
+
     /// Prove one period's per-legal-entity register against the journal
     /// at the head (FA-INV-01 `per-entity`; see
     /// [`fa_registers::verify_entities`]).

@@ -3568,6 +3568,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// [`AsyncBook::verify_registers`] for each of `periods`, in order, from
+    /// one shared read of the book; the results stop after the first error.
+    pub fn verify_registers_each(
+        &self,
+        cx: &PurposeContexts,
+        periods: &[&str],
+    ) -> Result<Vec<Result<Verification, BookError>>, BookError> {
+        self.query(cx, |db, book| {
+            Ok(
+                fa_registers::verify_periods_with_context(db, &cx.query(), book, periods)
+                    .into_iter()
+                    .map(|result| result.map_err(BookError::from))
+                    .collect(),
+            )
+        })
+    }
+
     /// Refold one period's per-legal-entity register at the head and prove
     /// it against the journal (FA-INV-01 `per-entity`): per account and
     /// unit the entity cells sum to the plain fold's cell, every entry

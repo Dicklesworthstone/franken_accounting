@@ -14972,8 +14972,9 @@ fn verify_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let mut diagnostics = Vec::new();
             let mut actions = Vec::new();
             let mut repairs = Vec::new();
-            for p in &periods {
-                let v = match book.verify_registers(p) {
+            let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
+            for (p, v) in periods.iter().zip(book.verify_registers_each(&codes)?) {
+                let v = match v {
                     Ok(v) => v,
                     Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(
                         why,
@@ -21067,8 +21068,9 @@ fn registers_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             // Rematerializing over cells a period already has rewrites them
             // (verbs.toml [[dangerous]]): every period is checked, and the
             // whole command refused, before anything is written.
-            for p in &periods {
-                let v = match book.verify_registers(p) {
+            let codes: Vec<&str> = periods.iter().map(String::as_str).collect();
+            for v in book.verify_registers_each(&codes)? {
+                let v = match v {
                     Ok(v) => v,
                     Err(BookError::Registers(fa_registers::RegisterError::ProjectionDrift(_)))
                     | Err(BookError::Registers(fa_registers::RegisterError::Kernel(

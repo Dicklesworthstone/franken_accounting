@@ -311,8 +311,10 @@ fn derived_state(book: &Book) -> (Vec<Check>, Vec<RegisterLag>) {
         // A verified cache with journal entries after its basis is lag, not
         // drift: green, and advanced by `fa registers advance`.
         let mut lagging: Vec<(String, usize)> = Vec::new();
-        for p in book.periods()? {
-            let v = book.verify_registers(&p.code)?;
+        let periods = book.periods()?;
+        let codes: Vec<&str> = periods.iter().map(|p| p.code.as_str()).collect();
+        for (p, v) in periods.iter().zip(book.verify_registers_each(&codes)?) {
+            let v = v?;
             let materialized = v.stored_digest.is_some()
                 || v.drift
                     .iter()
